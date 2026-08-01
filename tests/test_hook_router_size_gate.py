@@ -44,7 +44,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # session_handover_pickup sibling.
 # Lowered by #3882, which moved the Slack self-DM destination helpers
 # (tool-suffix + destination lookup) into the self_dm_destinations sibling.
-_CEILING_LOC = 4284
+# Lowered to the measured LOC of the vendored tree after the upstream sync,
+# which carries both sides' extractions and so sits below either side's ceiling.
+_CEILING_LOC = 4186
 
 
 def _count_loc(text: str) -> int:

@@ -281,7 +281,7 @@ class TestNeedsWorkDelegation:
         assert backend.replies == []
         row.refresh_from_db()
         assert row.answer_kind == "delegated"
-        assert report.delegated == 1
+        assert report.dispatched == 1
 
     def test_rerun_does_not_create_a_second_task(self) -> None:
         _row("investigate the flaky test")

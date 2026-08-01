@@ -97,7 +97,7 @@ class TestDelegatedPathHasNoProseAck:
 
         report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
-        assert report.delegated == 1
+        assert report.dispatched == 1
         # The delegated path creates the Task but posts NO thread reply.
         assert backend.replies == [], f"Expected no thread replies on the delegated path; got: {backend.replies!r}"
 

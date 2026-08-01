@@ -14,8 +14,16 @@ might be handed at another invocation (pre-commit stage / ``prek run
 argument that is a ``src/`` path was mis-read as the commit message, so the
 ``fix:``/``refactor:`` exemption could never match and a ``fix(db)`` commit was
 gated.
+
+``src/`` and ``BLUEPRINT.md`` name teatree's OWN tree, which is the git repo root
+only in a plain clone. :class:`TestVendoredLayout` and :class:`TestStandaloneLayout`
+run the shipped script against real git checkouts of both layouts, because that
+mapping is the part no in-process test of :func:`_is_blueprint` can reach.
 """
 
+import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -153,6 +161,9 @@ class TestMain:
         else:
             monkeypatch.setattr(hook.sys, "argv", ["check_blueprint_sync.py", str(msg_file)])
         monkeypatch.setattr(hook, "_staged_files", lambda: staged)
+        # The staged literals below are repo-root-relative, i.e. the plain-clone
+        # layout; the vendored one is covered against a real checkout instead.
+        monkeypatch.setattr(hook, "_vendoring_prefix", lambda: "")
         monkeypatch.setattr(hook, "_is_merge_commit", lambda: options.is_merge_commit)
         monkeypatch.setattr(hook, "_is_revert_commit", lambda: options.is_revert_commit)
         return hook.main()
@@ -324,3 +335,220 @@ class TestMain:
             options=_RunOptions(is_revert_commit=False),
         )
         assert rc == 1
+
+
+FORK_OWN_SRC = "src/fork_overlay/sibling.py"
+CORE_SRC = "src/teatree/thing.py"
+_GIT_BIN = shutil.which("git") or "/usr/bin/git"
+
+
+@dataclass(frozen=True)
+class _Checkout:
+    """A real git checkout plus where teatree's own tree sits inside it."""
+
+    repo: Path
+    source_root: Path
+    script: Path
+
+    def stage(self, *repo_relative: str) -> None:
+        for path in repo_relative:
+            target = self.repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"# edit {path}\n", encoding="utf-8")
+        _git(self.repo, "add", *repo_relative)
+
+    def run_hook(self, message: str, *, cwd: Path | None = None) -> int:
+        msg_file = self.repo / ".git" / "COMMIT_EDITMSG"
+        msg_file.write_text(message + "\n", encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(self.script), str(msg_file)],
+            cwd=cwd or self.source_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).returncode
+
+    def commit(self, message: str, *only: str) -> int:
+        """Commit through real git, so the hook runs as git actually invokes it."""
+        return subprocess.run(
+            [_GIT_BIN, "commit", "-q", "-m", message, *(["--", *only] if only else [])],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).returncode
+
+    def head_subject(self) -> str:
+        result = subprocess.run(
+            [_GIT_BIN, "log", "-1", "--format=%s"],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run([_GIT_BIN, *args], cwd=repo, capture_output=True, text=True, check=True)
+
+
+def _install_commit_msg_hook(checkout: _Checkout) -> None:
+    """Wire the script as git's own ``commit-msg`` hook, entered at teatree's root.
+
+    That re-entry is prek's ``--cd`` venue, and it is where git's RELATIVE
+    ``GIT_INDEX_FILE`` meets the hook's own resolution — an interaction no
+    direct invocation of the script can reach.
+    """
+    offset = checkout.source_root.relative_to(checkout.repo).as_posix()
+    git_hook = checkout.repo / ".git" / "hooks" / "commit-msg"
+    git_hook.write_text(
+        f'#!/bin/sh\ncd "{offset}" || exit 2\nexec {sys.executable} scripts/hooks/check_blueprint_sync.py "$@"\n',
+        encoding="utf-8",
+    )
+    git_hook.chmod(0o755)
+
+
+def _build_checkout(tmp_path: Path, *, vendored: bool) -> _Checkout:
+    """A git checkout carrying the SHIPPED hook script at the layout under test.
+
+    ``vendored`` puts teatree's tree under ``vendor/teatree/`` with a sibling
+    ``src/fork_overlay/`` the fork owns — the layout where every path the hook
+    reasons about arrives prefixed and the fork's own source is not teatree's.
+    """
+    repo = tmp_path / "repo"
+    source_root = repo / "vendor" / "teatree" if vendored else repo
+    hooks_dir = source_root / "scripts" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    script = hooks_dir / "check_blueprint_sync.py"
+    shutil.copy(Path(hook.__file__), script)
+
+    for seed in ("BLUEPRINT.md", "docs/blueprint/configuration.md", CORE_SRC):
+        seeded = source_root / seed
+        seeded.parent.mkdir(parents=True, exist_ok=True)
+        seeded.write_text(f"# {seed}\n", encoding="utf-8")
+    if vendored:
+        (repo / "src" / "fork_overlay").mkdir(parents=True)
+        (repo / FORK_OWN_SRC).write_text("# overlay\n", encoding="utf-8")
+
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "hook@example.test")
+    _git(repo, "config", "user.name", "hook")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "chore: seed")
+    return _Checkout(repo=repo, source_root=source_root, script=script)
+
+
+class TestStandaloneLayout:
+    """A plain clone: teatree's root IS the repo root, so nothing is prefixed."""
+
+    @pytest.fixture
+    def checkout(self, tmp_path: Path) -> _Checkout:
+        return _build_checkout(tmp_path, vendored=False)
+
+    def test_src_without_blueprint_is_gated(self, checkout: _Checkout) -> None:
+        checkout.stage("src/teatree/thing.py")
+        assert checkout.run_hook("feat(core): a capability") == 1
+
+    def test_src_with_blueprint_passes(self, checkout: _Checkout) -> None:
+        checkout.stage("src/teatree/thing.py", "BLUEPRINT.md")
+        assert checkout.run_hook("feat(core): a capability") == 0
+
+    def test_src_with_appendix_passes(self, checkout: _Checkout) -> None:
+        checkout.stage("src/teatree/thing.py", "docs/blueprint/configuration.md")
+        assert checkout.run_hook("feat(core): a capability") == 0
+
+
+class TestVendoredLayout:
+    """A fork vendoring core: teatree's tree is ``vendor/teatree/``.
+
+    Every staged path git reports is relative to the FORK root, so teatree's own
+    source arrives as ``vendor/teatree/src/…`` and its BLUEPRINT as
+    ``vendor/teatree/BLUEPRINT.md`` — while ``src/fork_overlay/`` belongs to the
+    fork and is not teatree source at all.
+    """
+
+    @pytest.fixture
+    def checkout(self, tmp_path: Path) -> _Checkout:
+        return _build_checkout(tmp_path, vendored=True)
+
+    def test_core_src_without_blueprint_is_gated(self, checkout: _Checkout) -> None:
+        checkout.stage("vendor/teatree/src/teatree/thing.py")
+        assert checkout.run_hook("feat(core): a capability") == 1
+
+    def test_core_src_with_vendored_blueprint_passes(self, checkout: _Checkout) -> None:
+        checkout.stage("vendor/teatree/src/teatree/thing.py", "vendor/teatree/BLUEPRINT.md")
+        assert checkout.run_hook("feat(core): a capability") == 0
+
+    def test_core_src_with_vendored_appendix_passes(self, checkout: _Checkout) -> None:
+        checkout.stage("vendor/teatree/src/teatree/thing.py", "vendor/teatree/docs/blueprint/configuration.md")
+        assert checkout.run_hook("feat(core): a capability") == 0
+
+    def test_fork_own_src_is_not_teatree_source(self, checkout: _Checkout) -> None:
+        checkout.stage(FORK_OWN_SRC)
+        assert checkout.run_hook("feat(overlay): a capability") == 0
+
+    @pytest.mark.parametrize(
+        ("staged", "expected"),
+        [
+            (["vendor/teatree/src/teatree/thing.py"], 1),
+            (["vendor/teatree/src/teatree/thing.py", "vendor/teatree/BLUEPRINT.md"], 0),
+        ],
+    )
+    def test_verdict_is_unchanged_by_a_concurrent_agents_staged_file(
+        self, checkout: _Checkout, staged: list[str], expected: int
+    ) -> None:
+        # A shared clone lets a sibling agent's staged work reach this hook's
+        # index read. It must not be able to move the verdict.
+        checkout.stage(*staged)
+        alone = checkout.run_hook("feat(core): a capability")
+        checkout.stage(FORK_OWN_SRC)
+        assert (alone, checkout.run_hook("feat(core): a capability")) == (expected, expected)
+
+    def test_verdict_is_unchanged_by_the_invoking_cwd(self, checkout: _Checkout) -> None:
+        checkout.stage("vendor/teatree/src/teatree/thing.py")
+        from_source_root = checkout.run_hook("feat(core): a capability")
+        from_repo_root = checkout.run_hook("feat(core): a capability", cwd=checkout.repo)
+        assert (from_source_root, from_repo_root) == (1, 1)
+
+
+class TestUnderRealGitCommit:
+    """The hook wired as git's own ``commit-msg``, entered at teatree's root.
+
+    Git exports a RELATIVE ``GIT_INDEX_FILE`` to its hooks, so this is the only
+    shape that proves the hook still reads the right index once it resolves paths
+    from teatree's root rather than the process cwd — and the only one that shows
+    a commit is genuinely refused rather than merely returning non-zero.
+    """
+
+    @pytest.fixture(params=[False, True], ids=["standalone", "vendored"])
+    def checkout(self, request: pytest.FixtureRequest, tmp_path: Path) -> _Checkout:
+        built = _build_checkout(tmp_path, vendored=request.param)
+        _install_commit_msg_hook(built)
+        return built
+
+    def _core_src(self, checkout: _Checkout) -> str:
+        return (checkout.source_root / CORE_SRC).relative_to(checkout.repo).as_posix()
+
+    def _blueprint(self, checkout: _Checkout) -> str:
+        return (checkout.source_root / "BLUEPRINT.md").relative_to(checkout.repo).as_posix()
+
+    def test_core_src_without_blueprint_refuses_the_commit(self, checkout: _Checkout) -> None:
+        checkout.stage(self._core_src(checkout))
+        assert checkout.commit("feat(core): a capability") != 0
+        assert checkout.head_subject() == "chore: seed"
+
+    def test_core_src_with_blueprint_creates_the_commit(self, checkout: _Checkout) -> None:
+        checkout.stage(self._core_src(checkout), self._blueprint(checkout))
+        assert checkout.commit("feat(core): a capability") == 0
+        assert checkout.head_subject() == "feat(core): a capability"
+
+    def test_path_limited_commit_ignores_a_concurrent_agents_staged_file(self, checkout: _Checkout) -> None:
+        # git points GIT_INDEX_FILE at a temporary index holding only the named
+        # paths, so a sibling agent's staged work in a shared clone is neither
+        # committed nor judged.
+        core, blueprint = self._core_src(checkout), self._blueprint(checkout)
+        checkout.stage(core, blueprint)
+        checkout.stage("src/fork_overlay/sibling.py")
+        assert checkout.commit("feat(core): a capability", core, blueprint) == 0
+        assert checkout.head_subject() == "feat(core): a capability"

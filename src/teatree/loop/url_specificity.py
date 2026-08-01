@@ -3,7 +3,8 @@
 A *prefix* claims a set of PR/MR URLs. Two prefix shapes are recognised:
 
 * Plain ``https://host/owner/repo/`` → ``url.startswith(prefix)``.
-* Wildcard ``https://host/*/repo/`` → matches any owner segment.
+* Wildcard ``https://host/*/repo/`` → matches any namespace path, however
+    deeply nested (``group/repo``, ``group/subgroup/repo``).
 
 The specificity score (number of fixed, non-wildcard characters that
 contributed to the match) breaks ties when two overlays both claim a URL: the
@@ -23,9 +24,10 @@ def url_matches_prefix(url: str, prefix: str) -> bool:
     Two prefix shapes are recognised:
 
     * Plain prefix ``https://host/owner/repo/`` → ``url.startswith(prefix)``.
-    * Wildcard ``https://host/*/repo/`` → matches any owner segment, so
-        ``https://gitlab.com/some-namespace/product/-/merge_requests/1``
-        survives a claim of ``https://gitlab.com/*/product/``.
+    * Wildcard ``https://host/*/repo/`` → matches any namespace path, so a
+        flat ``.../some-namespace/product/-/merge_requests/1`` and a nested
+        ``.../some-namespace/sub-group/product/-/merge_requests/1`` both
+        survive a claim of ``https://gitlab.com/*/product/``.
 
     Centralised here so :class:`MyPrsScanner` and :class:`ReviewerPrsScanner`
     agree on the URL semantics — both honour bare slugs identically without
@@ -54,10 +56,10 @@ def url_match_specificity(url: str, prefix: str) -> int:
     if not url.startswith(head + "/"):
         return 0
     remainder = url[len(head) + 1 :]
-    slash = remainder.find("/")
-    if slash < 0:
-        return 0
-    if not remainder[slash + 1 :].startswith(tail):
+    # Searching from index 1 spans one or MORE namespace segments while still
+    # anchoring on a separator, so ``*/repo/`` reaches a subgroup-nested
+    # ``group/subgroup/repo/`` yet keeps rejecting ``owner/repo-extra/``.
+    if remainder.find(f"/{tail}", 1) < 0:
         return 0
     # Specificity = non-wildcard literals (head + tail), so a strict
     # ``owner/repo`` prefix outscores a ``*/repo`` claim of the same URL.

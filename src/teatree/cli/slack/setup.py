@@ -27,6 +27,7 @@ Manifest-building and Slack API helpers live in
 callers are unaffected.
 """
 
+import datetime as dt
 import json
 import re
 import time
@@ -37,6 +38,7 @@ import typer
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.cli.slack.app_resolve import overlay_scope_profile, read_overlay_field, write_overlay_fields
+from teatree.cli.slack.config_token import ConfigTokenStore
 from teatree.cli.slack.manifest import (
     _BOT_ONLY_SCOPES,
     _CONFIG_REFRESH_REF,
@@ -58,7 +60,7 @@ from teatree.cli.slack.manifest import (
 from teatree.cli.slack.token_store import SlackTokenWriteError, app_token_slot, bot_token_slot, store_slack_token
 from teatree.config import discover_overlays
 from teatree.utils.django_bootstrap import ensure_django
-from teatree.utils.secrets import read_pass, write_pass
+from teatree.utils.secrets import read_pass
 
 # Re-exported so existing ``from teatree.cli.slack.setup import …`` callers
 # keep working without touching their imports.
@@ -231,7 +233,21 @@ def _finish_with_smoke_test(*, overlay: str, app_id: str, token_ref: str, skip_s
 
 
 def _export_with_rotation(*, app_id: str) -> SlackManifest:
-    """Export the live manifest, rotating the config token once on auth failure."""
+    """Export the live manifest, rotating the config token once on auth failure.
+
+    The reactive complement to the age-based rotation in
+    :mod:`teatree.cli.slack.config_token`: proactive rotation keeps the pair
+    inside Slack's 12-hour window, while this catches a pair invalidated *early*
+    — revoked, or reseeded out of band — rather than by the clock. On its own it
+    is not a recovery mechanism, because a pair that reached expiry has a refresh
+    half exactly as dead as its access half.
+
+    Persistence goes through :meth:`ConfigTokenStore.persist`, which raises
+    rather than reporting failure in a return value. The previous code called
+    ``write_pass`` twice and discarded both results: Slack's rotate is one-shot,
+    so a failed write there left the old pair already spent and the new one
+    dropped on the floor — bricking the credential with no recovery path.
+    """
     config_token = read_pass(_CONFIG_TOKEN_REF)
     try:
         return export_manifest(app_id=app_id, config_token=config_token)
@@ -245,8 +261,7 @@ def _export_with_rotation(*, app_id: str) -> SlackManifest:
             )
             raise typer.Exit(code=1) from exc
         access, refresh = rotate_config_token(refresh_token=refresh_token)
-        write_pass(_CONFIG_TOKEN_REF, access)
-        write_pass(_CONFIG_REFRESH_REF, refresh)
+        ConfigTokenStore().persist(access=access, refresh=refresh, issued_at=dt.datetime.now(dt.UTC))
         return export_manifest(app_id=app_id, config_token=access)
 
 

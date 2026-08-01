@@ -16,6 +16,7 @@ we can verify, refuse; if we can't, don't block" posture as
 
 from teatree.core.migration_leaf_probe import sha_forks_migration_graph
 from teatree.core.models import Ticket
+from teatree.core.worktree.target_branch import resolve_target_branch
 
 MIGRATION_LEAF_CONFLICT_REASON = "migration_leaf_conflict"
 
@@ -43,8 +44,7 @@ def check_clear_migration_fork(reviewed_sha: str, ticket: Ticket | None) -> str 
     repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     if not repo:
         return None
-    explicit = str(extra.get("target_branch") or "").strip()
-    target = (explicit if "/" in explicit else f"origin/{explicit}") if explicit else "origin/main"
+    target = resolve_target_branch(ticket, repo, branch=invoking or worktree.branch)
     conflict = sha_forks_migration_graph(repo, reviewed_sha, target)
     if conflict is None:
         return None

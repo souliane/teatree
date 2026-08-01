@@ -442,8 +442,19 @@ class Command(TyperCommand):
         self,
         dry_run: bool = typer.Option(default=False, help="Plan the reclaim set without removing anything."),  # noqa: FBT001 — CLI flag
     ) -> str:
-        """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246)."""
-        return reclaim_disk(dry_run=dry_run).render()
+        """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246).
+
+        Exits non-zero when docker was reachable and refused a prune (daemon
+        down, or no ``/var/run/docker.sock`` in the container the CLI runs in).
+        A silent ``Total reclaimed: 0B`` success reads exactly like "nothing
+        left to reclaim" to an operator whose disk is full.
+        """
+        report = reclaim_disk(dry_run=dry_run)
+        self.stdout.write(report.render())
+        if report.failures:
+            self.stderr.write(report.failure_summary())
+            raise SystemExit(1)
+        return ""
 
     @command(name="stamp-owners")
     def stamp_owners(

@@ -40,6 +40,21 @@ def _is_production_python(path: str) -> bool:
     return path.endswith(".py") and not _is_test_path(path)
 
 
+def _is_framework_migration(path: str) -> bool:
+    """Whether *path* is a Django migration module.
+
+    Migrations are framework-loaded by name and are conventionally numbered
+    (``0406_add_….py``), so the module name is not a Python identifier and
+    ``from <package>.0406_add_… import Migration`` is a ``SyntaxError``. The
+    symbol check's remedy — make the reference visible with an import — is
+    therefore unavailable to every migration, so its ``Migration`` class is
+    exempted for the same reason as a decorated framework entrypoint: it is
+    exercised through the framework (``migrate``, and the migration tests that
+    invoke the ``RunPython`` callables), never by importing the class by name.
+    """
+    return "/migrations/" in f"/{path.lstrip('/')}"
+
+
 @dataclass(frozen=True)
 class CoverageScope:
     """The ``[tool.coverage.run]`` ``source`` roots and ``omit`` globs.
@@ -229,6 +244,26 @@ def _inherits_protocol(node: ast.ClassDef, protocol_names: set[str], typing_alia
     return False
 
 
+def _public_symbols_on_lines(tree: ast.Module, lines: set[int]) -> set[str]:
+    """Public module-level ``def``/``class`` names declared on *lines*.
+
+    Private ``_``-prefixed helpers, decorated framework entrypoints and
+    ``typing.Protocol`` classes are skipped — see
+    :func:`_changed_production_symbols` for why each is exempt.
+    """
+    protocol_names, typing_aliases = _typing_protocol_bindings(tree)
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        if node.lineno not in lines or node.name.startswith("_") or node.decorator_list:
+            continue
+        if isinstance(node, ast.ClassDef) and _inherits_protocol(node, protocol_names, typing_aliases):
+            continue
+        names.add(node.name)
+    return names
+
+
 def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope) -> dict[str, set[str]]:
     """Return ``{file_path: {public top-level symbols defined on added lines}}``.
 
@@ -248,14 +283,19 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
     test_harness.py`` (#2565/#2885) purely to appease this check; this
     exemption generalizes that fix into the gate itself. So decorated
     top-level defs and Protocol classes are excluded to avoid penalising
-    those established patterns. Only files inside the coverage ``source``
-    scope are considered — the symbol check matches the line-coverage
-    check's file set.
+    those established patterns. Django migrations are excluded for the same
+    reason, with an extra twist that makes the exemption mandatory rather than
+    merely kind: their module names are numbered, so the remedy this check
+    prescribes cannot be written at all (see :func:`_is_framework_migration`).
+    Only files inside the coverage ``source`` scope are considered — the symbol
+    check matches the line-coverage check's file set.
     """
     added = added_lines_by_file(diff)
     out: dict[str, set[str]] = {}
     for path, lines in added.items():
         if not _is_production_python(path) or not scope.includes(path):
+            continue
+        if _is_framework_migration(path):
             continue
         source_file = repo_root / path
         if not source_file.is_file():
@@ -264,16 +304,7 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
             tree = ast.parse(source_file.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
-        protocol_names, typing_aliases = _typing_protocol_bindings(tree)
-        names: set[str] = set()
-        for node in tree.body:
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-                continue
-            if node.lineno not in lines or node.name.startswith("_") or node.decorator_list:
-                continue
-            if isinstance(node, ast.ClassDef) and _inherits_protocol(node, protocol_names, typing_aliases):
-                continue
-            names.add(node.name)
+        names = _public_symbols_on_lines(tree, lines)
         if names:
             out[path] = names
     return out

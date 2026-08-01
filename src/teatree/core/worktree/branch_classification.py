@@ -36,6 +36,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from teatree.utils import git
@@ -197,16 +198,72 @@ def effective_default_target(repo: str) -> str:
     :mod:`worktree_done` import) so the two teardown paths resolve the base the
     SAME way without an import cycle.
 
+    A repo declared SINGLE-BRANCH (``single_branch_repos``) answers with its
+    PINNED branch instead of the forge default. For a fork bootstrap the two are
+    not the same thing: the repo default is still the empty initial commit while
+    every change in the repo's life lands on the bootstrap branch behind one open
+    PR. Measured against the default, EVERY branch reads as thousands of commits
+    ahead and nothing is ever reapable — which is what left 31 worktrees standing
+    over 37 branches on the two repos in that state, each one correctly kept for a
+    reason that was an artefact of the wrong base.
+
     Fail-safe to ``origin/main`` on an unresolvable default: the downstream
     content gate fails CLOSED (an unresolvable target makes ``git cherry``
     inconclusive → a blocker → refuse), so a wrong/missing base keeps the branch
     rather than wiping it.
     """
+    if pinned := _pinned_single_branch_target(repo):
+        return f"origin/{pinned}"
     try:
         default = git.default_branch(repo)
     except (RuntimeError, CommandFailedError):
         return _FALLBACK_DEFAULT_TARGET
     return f"origin/{default}"
+
+
+@lru_cache(maxsize=1)
+def _declared_single_branch_repos() -> tuple[str, ...]:
+    """The ``single_branch_repos`` entries, read ONCE per process.
+
+    Cached because :func:`effective_default_target` is called per branch and per
+    worktree by the reaper — a few hundred times in one ``workspace clean-all`` —
+    and an uncached settings read there cost enough to push the dry-run past its
+    own timeout. The declaration cannot change mid-run, and
+    :func:`reset_single_branch_cache` exists for the tests that vary it.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps this leaf import-light
+
+    return tuple(get_effective_settings().single_branch_repos)
+
+
+def reset_single_branch_cache() -> None:
+    """Drop the memoised declaration — for tests, and after a config write."""
+    _declared_single_branch_repos.cache_clear()
+
+
+def _pinned_single_branch_target(repo: str) -> str:
+    """*repo*'s pinned branch when it is declared single-branch, else ``""``.
+
+    Keyed on the REMOTE URL rather than the checkout path: the declaration names a
+    repo slug, and a clone's directory name is whatever it was cloned into. The
+    remote is only consulted once something is actually declared, so the default
+    (nothing declared) costs no subprocess at all.
+
+    Any failure to read the config or the remote answers ``""``, so the caller
+    falls through to the forge default exactly as before — this must never be the
+    reason a target cannot be resolved.
+    """
+    try:
+        declared = _declared_single_branch_repos()
+        if not declared:
+            return ""
+        from teatree.core.gates.single_branch_repo_guard import (  # noqa: PLC0415 — deferred: keeps this leaf light
+            resolve_pinned_branch,
+        )
+
+        return resolve_pinned_branch(git.remote_url(repo), list(declared))
+    except Exception:  # noqa: BLE001 — resolution is best-effort; fall through to the forge default.
+        return ""
 
 
 def content_equivalence_blockers(repo: str, branch: str, target: str = "origin/main") -> list[str]:

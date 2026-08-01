@@ -53,6 +53,7 @@ if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
+from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
     _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
@@ -89,7 +90,7 @@ from hooks.scripts.direct_command_guard import (
 from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa: F401 re-export for test access
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
-from hooks.scripts.engagement import engage
+from hooks.scripts.engagement import autoload_skill_demand, engage
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
@@ -98,15 +99,17 @@ from hooks.scripts.forge_api_detect import (
     _REVIEW_POST_BODY_FLAG_RE,  # noqa: F401 re-export for test access
     _REVIEW_POST_METHOD_RE,  # noqa: F401 re-export for test access
     _effective_method_is_write,  # noqa: F401 re-export for test access
-    _is_api_create_endpoint_write,
 )
 from hooks.scripts.gate_result import (
     GateOutcome,
+    GateSkipped,
     ValidatorTimedOut,
     classify_validator_run,
     validator_timeout_seconds,
+    warn_gate_skipped,
     warn_validator_timed_out,
 )
+from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
 from hooks.scripts.handlers.classifier_denial import (
     handle_classifier_deny_stop_gate,
     handle_clear_classifier_deny_marker,
@@ -133,6 +136,7 @@ from hooks.scripts.mode_posture_probe import resolved_defers_questions as _resol
 from hooks.scripts.mode_posture_probe import resolved_pauses_self_pump as _resolved_pauses_self_pump_stdlib
 from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
+    extract_api_mr_fields,
     extract_cli_mr_fields,
     extract_mr_target_repo,
     merge_target_managed_state,
@@ -171,6 +175,7 @@ from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_d
 from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
+from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
 from hooks.scripts.skill_loader_input import strip_ambient_context as _strip_ambient_context
@@ -608,10 +613,16 @@ def handle_user_prompt_submit(data: dict) -> None:
         from lib.skill_loader import suggest_skills  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
         result = suggest_skills(loader_input)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
+    except Exception:  # noqa: BLE001 — crash-proof hook: a broken suggester degrades to the standing demand below
+        result = {"suggestions": [], "advisory": [], "companions": []}
     finally:
         sys.path.pop(0)
+
+    # ``autoload`` is a STANDING opt-in, so the platform-skill demand it implies
+    # must not depend on the suggester surviving — nor on the overlay metadata
+    # the suggester needs. A silently degraded suggester is precisely what made
+    # "teatree is on" indistinguishable from "the owner never opted in".
+    result["suggestions"] = [*autoload_skill_demand(loader_input["loaded_skills"]), *result.get("suggestions", [])]
 
     # Deterministic t3 CLI reminder — injected when prompt matches
     # workspace/infrastructure patterns, regardless of skill suggestions.
@@ -764,11 +775,9 @@ def _claim_loop_ownership(session_id: str) -> None:
             if not _db_owner_is_current_session(session_id):
                 box[0] = registry
                 return
-        elif owner is None:
-            db_live = _db_live_foreign_owner(session_id, current_pid=current_pid)
-            if db_live:
-                box[0] = registry
-                return
+        elif owner is None and _db_live_foreign_owner(session_id, current_pid=current_pid):
+            box[0] = registry
+            return
         box[0] = _tick_owner_record(session_id, "")
 
 
@@ -894,8 +903,26 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 # supplied by those off-ramps, so this prefers strict-degrade over the
 # original "a missed normalization fails open" rationale.
 #
-# This is the INVERSE operation from RESOLUTION (:func:`_skill_resolves`),
-# which deliberately does NOT touch the namespace — see its docstring.
+# RESOLUTION (:func:`_skill_resolves`) applies the INVERSE of the promotion arm
+# and nothing else: it de-qualifies THIS plugin's own namespace back to the bare
+# directory name, and leaves every foreign namespace untouched — see its
+# docstring.
+
+
+def _dequalify_own_namespace(segment: str) -> str:
+    """Strip THIS plugin's own ``<namespace>:`` prefix from a bare skill token.
+
+    The exact inverse of :func:`_canonical_skill_token`'s promotion arm. The
+    write boundary canonicalizes a plugin-owned bare name UP to
+    ``<namespace>:<name>`` before it reaches ``<session>.pending``, and no skill
+    directory is named that way — so without this inverse EVERY plugin-owned
+    skill in ``pending`` was dropped as unresolvable and the skill-loading gate
+    could never enforce one. The de-qualified name must still exist as a real
+    skill dir, so nothing resolves that would not have resolved bare, and a
+    foreign namespace is returned untouched (and stays unresolvable).
+    """
+    prefix, _, bare = segment.rpartition(":")
+    return bare if prefix and bare and prefix == _plugin_namespace() else segment
 
 
 def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
@@ -909,11 +936,16 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     when the literal path is a file under a search dir (or its parent), or
     when its ``<skill>`` parent-dir name exists as a skill dir.
 
-    No namespace ``:``-stripping is performed in either branch — stripping
-    would mis-resolve a stale ``old:code`` / ``skills/old:code/SKILL.md``
-    onto an installed bare ``code`` and re-introduce the very fail-closed
-    lockout class this gate exists to prevent. A name that resolves only by
-    discarding its namespace is treated as unresolvable (fail open).
+    A FOREIGN namespace is never ``:``-stripped — stripping would mis-resolve a
+    stale ``old:code`` onto an installed bare ``code`` and re-introduce the very
+    fail-closed lockout class this gate exists to prevent. Such a name is
+    treated as unresolvable (fail open). The PATH-shaped branch is never
+    de-qualified either: its segment is a literal DIRECTORY name, so a stale
+    ``skills/<ns>:code/SKILL.md`` must not resolve onto a bare ``code``.
+
+    The bare branch de-qualifies THIS plugin's OWN namespace
+    (:func:`_dequalify_own_namespace`), which is not a relaxation but the exact
+    inverse of :func:`_canonical_skill_token`'s promotion arm.
 
     Symlinked skill dirs (the common install shape) resolve through
     ``is_file``.
@@ -926,7 +958,7 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
             return True
         segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
     else:
-        segment = stripped.rsplit("/", 1)[-1]
+        segment = _dequalify_own_namespace(stripped.rsplit("/", 1)[-1])
     if not segment or segment == "SKILL.md":
         return False
     return any(is_file_safe(d / segment / "SKILL.md") for d in search_dirs)
@@ -1512,80 +1544,20 @@ def handle_protect_default_branch(data: dict) -> bool:
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
 
-# The ``glab mr create``/``update`` inline/file/dynamic title & description
-# parsing lives in the bare sibling module ``mr_cli_fields`` (split out for
-# module health); ``extract_cli_mr_fields`` is imported above. The REST-API
-# surface and the target-repo parsing stay here.
-# REST-API field args set on a ``glab api``/``gh api`` MR/PR write
-# (``--field title=…`` / ``-f description=…`` / ``--raw-field …``). Three
-# shapes, in order:
-#   1. whole token quoted — ``--field 'description=multi word …'`` (the common
-#      shell form; the value runs to the matching CLOSING outer quote, so
-#      embedded spaces and newlines are kept);
-#   2. value quoted only — ``--field description='multi word …'``;
-#   3. bare value — ``--field description=oneword`` (runs to next whitespace).
-# ``body`` is GitHub's PR-description field (``gh api … -f body=…``); it is
-# normalised to ``description`` so the overlay validator sees one key.
-_API_FIELD_RE = re.compile(
-    r"""(?:--field|--raw-field|-f|-F)[ =]+"""
-    r"""(?:(?P<oq>['"])(?P<key>title|description|body)=(?P<oqval>.*?)(?P=oq)"""
-    r"""|(?P<key2>title|description|body)=(?:(?P<q>['"])(?P<qval>.*?)(?P=q)|(?P<bval>[^\s'"]*)))""",
-    re.DOTALL,
-)
-# MR title/description value parsing and TARGET-repo slug parsing moved to
-# mr_cli_fields (module health) — see extract_cli_mr_fields / extract_mr_target_repo.
+# Every surface an MR title/description can be SET from — the ``glab mr``
+# CLI inline/file/dynamic parsing, the REST-API field surface, and the
+# TARGET-repo slug parsing — lives in the bare sibling module ``mr_cli_fields``
+# (split out for module health); its extractors are imported above. Only the
+# gate handler below stays here.
 
 
-def _extract_api_mr_fields(command: str) -> tuple[str, str] | None:
-    """Title/description for an out-of-band ``glab api``/``gh api`` MR write.
+def _extract_mr_fields(data: dict) -> "tuple[str, str] | GateSkipped | None":
+    """Return ``(title, description)`` for an MR create/update, else a skip/``None``.
 
-    Closes the gap where a non-compliant title/description reaches GitLab via
-    ``glab api --method PUT .../merge_requests/N --field description=…`` (or a
-    ``gh api`` POST), entirely outside the ``glab mr create`` surface the gate
-    historically watched. Validates ONLY the fields the command actually sets.
-
-    Neither field set (e.g. ``--field state_event=close``): returns ``None`` —
-    nothing to validate (never-lockout: a partial state edit must not be
-    force-validated against an empty description). Exactly one field set: the
-    untouched field is back-filled with the set field's value as a known-good
-    placeholder so the verdict reflects ONLY the field under edit. A valid
-    ``type(scope): … (ticket_url)`` line is, by the canonical grammar,
-    simultaneously a valid title and a valid description first line — so
-    mirroring the set field can never inject a spurious failure for the
-    untouched field, while a non-compliant edited field is still rejected
-    (without this, editing only the description would false-block on
-    ``Title is empty.``). Both fields set: validated as a pair, like a create.
-
-    Reuses :func:`_is_api_create_endpoint_write` so a bare ``GET`` read is
-    never treated as a write.
-    """
-    if not re.search(r"\b(?:gh|glab)\s+api\b", command):
-        return None
-    if not _is_api_create_endpoint_write(command):
-        return None
-    fields: dict[str, str] = {}
-    for m in _API_FIELD_RE.finditer(command):
-        if m.group("oq"):
-            key, value = m.group("key"), (m.group("oqval") or "")
-        else:
-            key = m.group("key2")
-            value = (m.group("qval") if m.group("q") else m.group("bval")) or ""
-        fields["description" if key == "body" else key] = value
-    if not fields:
-        return None
-    title = fields.get("title")
-    description = fields.get("description")
-    if title is None:
-        title = description or ""
-    if description is None:
-        description = title
-    return title, description
-
-
-def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
-    """Return ``(title, description)`` for an MR create/update, else ``None``.
-
-    ``None`` means "not an MR-metadata mutation" — nothing to validate. A
+    ``None`` means "not an MR-metadata mutation" — nothing to validate and
+    nothing to say. A :class:`GateSkipped` means the command IS an MR mutation
+    the gate cannot evaluate, and carries the reason the caller must print — a
+    recognised-but-unevaluated call is never allowed through in silence. A
     returned tuple means the command IS an MR mutation and must be validated
     *even if title/description are empty* — an empty/missing title is exactly
     the kind of bad metadata the gate must reject, not silently pass (#119).
@@ -1596,13 +1568,13 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     1.  ``glab mr create/update --title/--description`` (inline quotes), via
         :func:`extract_cli_mr_fields`. ``create`` validates both fields;
         ``update`` validates ONLY the field(s) it sets (a metadata-only
-        reviewer/label/state edit is skipped — never-lockout).
+        reviewer/label/state edit is a named skip — never-lockout).
     2.  The same command's file-based / heredoc description
         (``-F``/``--description-file``) — read via :func:`_read_message_file`
         instead of passed through as a falsely-empty string (the slip class: a
         multi-line prose description whose first line was not the
         ``type(scope): … (ticket_url)`` form). A double-quoted ``$(…)``/``$VAR``
-        the hook cannot resolve before shell expansion is SKIPPED, never
+        the hook cannot resolve before shell expansion is a named skip, never
         validated as the truncated literal fragment.
     3.  Out-of-band ``glab api``/``gh api`` PUT/POST to an MR/PR endpoint —
         the web-UI-equivalent description edit that bypasses the CLI (this is
@@ -1622,11 +1594,12 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
         command = tool_input.get("command", "")
         # ``extract_cli_mr_fields`` detects a REAL ``glab mr create/update``
         # invocation (ignoring the verb embedded in a quoted arg / heredoc body)
-        # and returns the fields, or None when it is not a CLI mutation.
+        # and returns the fields, a named GateSkipped, or None when it is not a
+        # CLI mutation — only the last falls through to the REST-API surface.
         cli_fields = extract_cli_mr_fields(command)
         if cli_fields is not None:
             return cli_fields
-        return _extract_api_mr_fields(command)
+        return extract_api_mr_fields(command)
 
     if tool_name in _MR_TOOLS:
         return tool_input.get("title", ""), tool_input.get("description", "")
@@ -1641,6 +1614,12 @@ _MR_VALIDATE_BROKEN_ENV_DENY = (
     "set T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
 )
 
+_MR_VALIDATE_BROKEN_ENV_SKIP = (
+    "the overlay validator (`t3 tool validate-mr`) is not resolvable in this "
+    "environment and T3_MR_VALIDATE_ALLOW_BROKEN_ENV is set, so the fail-closed "
+    "deny was deliberately bypassed"
+)
+
 
 def _handle_broken_validate_env(data: dict) -> bool:
     """Decide the gate's action when no validator could be resolved.
@@ -1648,11 +1627,13 @@ def _handle_broken_validate_env(data: dict) -> bool:
     The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
     must never reach GitLab just because the env could not validate it. The
     explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the per-gate
-    self-rescue, and the broken-env deny additionally routes through
+    self-rescue — and taking it is announced, never mute, so an MR that goes out
+    unvalidated says so. The broken-env deny additionally routes through
     :func:`_fail_open_or_deny` so the master ``danger_gate_fail_open`` switch and
     the always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
     """
     if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
+        warn_gate_skipped("MR-metadata", _MR_VALIDATE_BROKEN_ENV_SKIP)
         return False
     return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY)
 
@@ -1696,9 +1677,18 @@ def handle_validate_mr_metadata(data: dict) -> bool:
     UNRESOLVABLE validator (no ``t3``, no script — the ``None`` broken-env path)
     FAILS CLOSED; the ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores
     fail-open there.
+
+    Every outcome in which the gate does NOT actually validate the MR — an
+    unresolvable ``$(…)``/``$VAR`` field, an update setting no governed field,
+    the broken-env opt-in, a crash, a timeout — emits one loud named line. Only
+    "this is not an MR mutation" and a clean PASS are silent, so a mute gate can
+    never be mistaken for one that swallowed the call.
     """
     fields = _extract_mr_fields(data)
     if fields is None:
+        return False
+    if isinstance(fields, GateSkipped):
+        warn_gate_skipped("MR-metadata", fields.reason)
         return False
     title, description = fields
     command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
@@ -4615,77 +4605,6 @@ def handle_loop_self_pump(data: dict) -> bool | None:
 _DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
 
 
-def _bash_env_file() -> Path:
-    """Path to the shell-sourceable teatree env file (``$HOME/.teatree``).
-
-    The harness spawns the Stop hook as a bare ``python3`` that does NOT
-    source the user's shell profile, so ``export VAR=value`` lines in this
-    file never reach ``os.environ`` (hooks don't source
-    ``.zshrc`` or the env file).
-    ``TEATREE_BASH_ENV_FILE`` overrides the location (tests / non-default
-    HOME).
-    """
-    override = os.environ.get("TEATREE_BASH_ENV_FILE", "").strip()
-    if override:
-        return Path(override)
-    return Path(os.environ.get("HOME", str(Path.home()))) / ".teatree"
-
-
-def _read_bash_env_var(name: str) -> str:
-    """Last ``export <name>=<value>`` value in :func:`_bash_env_file`.
-
-    Pure-stdlib parse — no ``teatree`` import (the hook interpreter may
-    lack it, #810) and no shell invocation. Tolerant of a leading
-    ``export``/whitespace, spaces around ``=``, single/double quotes, and
-    trailing ``# comments``. Crash-proof: a missing or unreadable file
-    yields ``""``. Last assignment wins, mirroring shell sourcing.
-    """
-    try:
-        path = _bash_env_file()
-        if not path.is_file():
-            return ""
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    value = ""
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        key, sep, rest = line.partition("=")
-        if not sep or key.strip() != name:
-            continue
-        value = _strip_bash_value(rest)
-    return value
-
-
-def _strip_bash_value(rest: str) -> str:
-    """Strip surrounding quotes and a trailing ``# comment``."""
-    rest = rest.strip()
-    quote = rest[0] if rest[:1] in {"'", '"'} else ""
-    if quote:
-        end = rest.find(quote, 1)
-        if end != -1:
-            return rest[1:end]
-        return rest[1:]
-    return rest.split("#", 1)[0].strip()
-
-
-def _resolve_loop_env(name: str) -> str:
-    """Resolve a loop control var: process env first, bash env file second.
-
-    The process env is authoritative — an explicit value (even empty)
-    there is never overridden by the file. The file is consulted only when
-    the var is wholly absent from ``os.environ``, recovering the
-    kill-switch the unsourced Stop hook would otherwise miss.
-    """
-    if name in os.environ:
-        return os.environ[name]
-    return _read_bash_env_var(name)
-
-
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
@@ -5893,8 +5812,7 @@ def _consideration_gate(data: dict) -> bool | None:
         return None
     # An issue reference in the assistant's turn text is the spec's
     # "open a teatree issue" half — gate clears.
-    assistant_text = _current_turn_assistant_text(transcript_path)
-    if _TEATREE_ISSUE_REF.search(assistant_text):
+    if _TEATREE_ISSUE_REF.search(_current_turn_assistant_text(transcript_path)):
         return None
     bullets = "\n".join(f"  - {path}" for path in promotable)
     body = (
@@ -5942,6 +5860,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_config_overwrite,
         handle_protect_default_branch,
         handle_block_main_clone_mutation,
+        handle_block_second_branch,
         handle_block_interactive_authoring,
         handle_block_self_dm_via_mcp,
         handle_block_mcp_slack_write,
@@ -5957,6 +5876,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_unknown_repo_push,
         handle_block_raw_review_post,
         handle_validate_mr_metadata,
+        handle_block_glab_stale_base_remote,
         handle_block_self_reviewer_assign,
         handle_block_ai_signature,
         handle_block_uncovered_diff,

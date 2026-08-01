@@ -19,6 +19,7 @@ from typing import TypedDict, cast
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
+from teatree.core.models.types import PlanAdequacy
 
 
 class FileChange(TypedDict, total=False):
@@ -182,6 +183,8 @@ class AgentResult(TypedDict, total=False):
 
     summary: str
     plan_text: str
+    base_sha: str
+    adequacy: PlanAdequacy
     files_modified: list[FileChange]
     tests_run: list[SingleTestResult]
     tests_passed: int
@@ -202,11 +205,62 @@ class AgentResult(TypedDict, total=False):
 
 type JSONSchema = dict[str, object]
 
+#: One :class:`~teatree.core.models.types.AdequacySection` — substantive ``content``
+#: (free text, or a list of items for ``integration_seams``/``edge_cases``) OR an
+#: explicit reasoned ``none_reason`` negative. Shared by all four required sections
+#: of the ``adequacy`` manifest so the schema cannot drift section-to-section.
+_ADEQUACY_SECTION_SCHEMA: JSONSchema = {
+    "type": "object",
+    "properties": {
+        "content": {"type": ["string", "array"], "items": {"type": "string"}},
+        "none_reason": {"type": "string"},
+    },
+}
+
 RESULT_JSON_SCHEMA: JSONSchema = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "One-line summary of what the agent did."},
         "plan_text": {"type": "string", "description": "Full plan text produced by the planner agent."},
+        "base_sha": {
+            "type": "string",
+            "description": (
+                "The 40-char hex target-branch HEAD the plan was authored against, recorded on the "
+                "PlanArtifact so a plan bound to a stale base is detectable (SELFCATCH-3)."
+            ),
+        },
+        "adequacy": {
+            "type": "object",
+            "description": (
+                "The plan's four-section adequacy manifest recorded on the PlanArtifact (SELFCATCH-3). "
+                "Each section is substantive (`content`) OR carries an explicit reasoned negative "
+                "(`none_reason`); silence never passes."
+            ),
+            "properties": {
+                "design": _ADEQUACY_SECTION_SCHEMA,
+                "integration_seams": _ADEQUACY_SECTION_SCHEMA,
+                "edge_cases": _ADEQUACY_SECTION_SCHEMA,
+                "test_strategy": _ADEQUACY_SECTION_SCHEMA,
+                "mechanism_placement": {
+                    "type": "object",
+                    "description": (
+                        "A directive-linked ticket's fifth section — the generic-shape decision checked "
+                        "against the ratified MechanismSketch."
+                    ),
+                },
+                "approved_debt": {
+                    "type": "array",
+                    "description": "Audited debt waivers the plan explicitly approves (pattern + reason).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string"},
+                            "reason": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
         "files_modified": {
             "type": "array",
             "items": {
@@ -387,8 +441,11 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:
 #: - ``coding``: at least one file change recorded.
 #: - ``testing``: at least one test result OR a positive ``tests_passed``.
-#: - ``reviewing``: a typed ``review_verdict`` returned for server-side
-#:   recording (corr-11), carrying a verdict the recorder can persist.
+#: - ``reviewing`` / ``codex_reviewing`` / ``codex_adversarial_reviewing``: a
+#:   typed ``review_verdict`` returned for server-side recording (corr-11),
+#:   carrying a verdict the recorder can persist. The three share one contract
+#:   because they share one deliverable — a recorded verdict — so a codex review
+#:   can no longer complete on prose while recording nothing.
 #:   ``decisions`` used to satisfy this too, and that alternative is what let
 #:   138 reviewing tasks complete having recorded no verdict at all while every
 #:   open PR logged ``solo_overlay_no_review`` (#3654): a summary-plus-decisions
@@ -408,12 +465,14 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #: — ``debugging``, ``bughunt``, ``e2e``, ``e2e_reviewing``, ``requesting_review``,
 #: ``architectural_review``, ``backlog_sweep``, ``dogfood_smoke``, ``eval_local``,
 #: the ``codex_*`` review variants, and any free-form phase — must still RETURN a
-#: result envelope, which :func:`prose_summary_allowed` enforces.
+#: result envelope, which :meth:`ProseSummaryPolicy.allowed` enforces.
 PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
     "reviewing": ("review_verdict",),
+    "codex_reviewing": ("review_verdict",),
+    "codex_adversarial_reviewing": ("review_verdict",),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
     "directive_reading": ("directive_candidate",),

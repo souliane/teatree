@@ -93,6 +93,15 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
     '  "plan_text": "<the complete plan — file-level changes, data model, API contracts, test',
     '                strategy, and the E2E test plan / Acceptance scenarios section when UI-visible>"',
     "A summary-only result with no `plan_text` drops the plan and the phase is refused, wasting the run.",
+    "ALSO return `base_sha` and `adequacy` — under `require_plan_adequacy` PlanArtifact.record",
+    "REFUSES a plan without them, and the headless lane can only supply them through this envelope:",
+    '  "base_sha": "<`git rev-parse origin/<target-branch>` — the full 40-char hex HEAD you planned against>",',
+    '  "adequacy": {"design": {"content": "<the approach>"},',
+    '               "integration_seams": {"content": ["<registry/contract/sibling path the change touches>"]},',
+    '               "edge_cases": {"content": ["<edge case>"]},',
+    '               "test_strategy": {"content": "<what proves it, fail-before included>"}}',
+    "Every section must be substantive OR carry an explicit reasoned negative instead of `content`",
+    '(e.g. {"none_reason": "no seams: single leaf module, no registry touched"}); silence never passes.',
 )
 
 # Injected into a headless scanning_news brief (#3584): the shell-denied scanner

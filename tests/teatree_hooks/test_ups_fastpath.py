@@ -45,7 +45,7 @@ class TestRecordPresence:
         # The write lands at ``canonical_config_db().parent / presence_heartbeat`` and
         # is byte-compatible with ``PresenceHeartbeat.record`` — the availability reader
         # parses it back into a fresh turn carrying the session id.
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         ups.record_presence("sess-1")
         target = tmp_path / "presence_heartbeat"
         assert target.is_file()
@@ -54,7 +54,7 @@ class TestRecordPresence:
         assert turn.session_id == "sess-1"
 
     def test_on_disk_shape_matches_record(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         ups.record_presence("s2")
         raw = (tmp_path / "presence_heartbeat").read_text(encoding="utf-8")
         assert raw.endswith("\n")

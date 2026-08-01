@@ -24,14 +24,46 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode, UserSettings
+from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
-from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewEvidence, ReviewRequestPost, Ticket
+from teatree.core.models import (
+    ConfigSetting,
+    OnBehalfApproval,
+    OnBehalfAudit,
+    ReviewEvidence,
+    ReviewRequestPost,
+    Ticket,
+)
 from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
 _CMD = "teatree.core.management.commands.review_request_post"
+_FORGE = "teatree.core.backend_factory.code_host_from_overlay"
 _SHA = "a" * 40
+
+
+class _DraftProbeHost:
+    def __init__(self, answer: DraftState | Exception) -> None:
+        self._answer = answer
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        _ = (slug, pr_id)
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return self._answer
+
+
+@pytest.fixture(autouse=True)
+def _forge_answers_non_draft() -> Iterator[None]:
+    """Default every case to a forge that CONFIRMS the MR is not a draft.
+
+    The draft gate fails closed, so with no forge to answer, every post here
+    would refuse ``draft_state_unknown`` and drown the behaviour under test.
+    Draft-gate cases re-patch this same target with their own host.
+    """
+    with patch(_FORGE, return_value=_DraftProbeHost(DraftState.NOT_DRAFT)):
+        yield
 
 
 class _FakeBackend:
@@ -90,6 +122,62 @@ def _gate_required(*, required: bool) -> AbstractContextManager[object]:
         "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
         return_value=UserSettings(require_anti_vacuity_attestation=required),
     )
+
+
+class TestReviewExemptRepoIsRefusedFirst(_DataDirMixin, TestCase):
+    """A repo the owner reviews in person is refused ahead of every other gate.
+
+    Every gate below decides whether THIS attempt may post; the exemption says no
+    attempt ever may — so it costs no channel resolve, no forge probe, no
+    attestation, and above all no ``ReviewRequestPost`` claim, whose orphan would
+    wedge every later post for the MR on ``already_claimed``.
+    """
+
+    def test_refuses_with_exit_two_and_takes_no_claim(self) -> None:
+        ConfigSetting.objects.set_value("review_exempt_repos", ["org/repo"])
+        backend = _FakeBackend()
+
+        with patch(f"{_CMD}.messaging_from_overlay", return_value=backend):
+            code, payload = _run()
+
+        assert code == 2
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "review_exempt_repo"
+        assert payload["mr_url"] == _MR_URL
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_refuses_ahead_of_the_anti_vacuity_gate_and_the_channel_resolve(self) -> None:
+        ConfigSetting.objects.set_value("review_exempt_repos", ["org/repo"])
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+
+        with (
+            _gate_required(required=True),
+            patch(
+                f"{_CMD}.resolve_guard_target",
+                side_effect=AssertionError("the channel must not resolve for an exempt repo"),
+            ),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA)
+
+        assert (code, payload["reason"]) == (2, "review_exempt_repo")
+
+    def test_a_repo_outside_the_declared_patterns_still_posts(self) -> None:
+        """The control: an undeclared repo must reach the ordinary post path."""
+        ConfigSetting.objects.set_value("review_exempt_repos", ["other-org/other-repo"])
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
 
 
 class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
@@ -268,9 +356,10 @@ class TestReviewRequestPostOverlayResolution(_DataDirMixin, TestCase):
             seen["guard"] = kw.get("overlay_name")
             return _TARGET
 
-        def _draft(mr_url: str, *, overlay_name: str = "") -> bool:
+        def _draft(mr_url: str, *, overlay_name: str = "") -> str:
+            _ = mr_url
             seen["draft"] = overlay_name
-            return False
+            return ""
 
         def _messaging(name: str | None = None) -> _FakeBackend:
             seen["messaging"] = name
@@ -280,7 +369,7 @@ class TestReviewRequestPostOverlayResolution(_DataDirMixin, TestCase):
             patch.dict(os.environ),
             patch(f"{_CMD}.overlay_for_mr_url", return_value="t3-acme"),
             patch(f"{_CMD}.resolve_guard_target", side_effect=_guard),
-            patch(f"{_CMD}.is_draft_mr", side_effect=_draft),
+            patch(f"{_CMD}.draft_refusal_reason", side_effect=_draft),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", side_effect=_messaging),
         ):
@@ -564,8 +653,8 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         backend = _FakeBackend()
         with (
+            patch(_FORGE, return_value=_DraftProbeHost(DraftState.DRAFT)),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.is_draft_mr", return_value=True),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
@@ -574,6 +663,35 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert code == 2, payload
         assert payload["action"] == "refused"
         assert payload["reason"] == "draft_mr"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_unknown_draft_state_refuses_instead_of_posting(self) -> None:
+        """An UNANSWERABLE draft probe must refuse, never post (fail CLOSED).
+
+        The probe raises the exact live failure — the ``glab`` binary is absent
+        from the deploy image — so a genuinely-DRAFT MR the user marked draft to
+        HOLD a review-request batch reads as "not a draft" and the batch fires.
+        This drives the gate through the real ``draft_state`` code path (only
+        ``code_host_from_overlay`` is patched), so a swallowed probe error
+        surfaces here as a post rather than a refusal.
+        """
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        missing_cli = FileNotFoundError(2, "No such file or directory", "glab")
+
+        with (
+            patch(f"{_CMD}.overlay_for_mr_url", return_value=""),
+            patch(_FORGE, return_value=_DraftProbeHost(missing_cli)),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 2, payload
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "draft_state_unknown"
         assert backend.posts == []
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
 
@@ -655,6 +773,10 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         backend = _FakeBackend()
         buf = io.StringIO()
         with (
+            # This URL carries no parsable PR ref, so the draft gate refuses it on
+            # its own merits (``test_unparsable_url_is_unknown``). Stubbed out here
+            # so the case still reaches the cache-key fallback it is about.
+            patch(f"{_CMD}.draft_refusal_reason", return_value=""),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(
                 f"{_CMD}.should_post_review_request",

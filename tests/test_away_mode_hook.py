@@ -171,10 +171,11 @@ class TestLoopTurnDefersThroughRealPredicateInvariant9:
     @pytest.fixture(autouse=True)
     def _empty_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # #22: handle_record_presence writes via ups_fastpath.record_presence to
-        # canonical_config_db().parent — pin it at tmp_path so that write and the
-        # PRESENCE read below coincide (as they do in production).
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-        target = tmp_path / "presence_heartbeat"
+        # primary_data_dir() — the DATA dir, not the control DB's parent — so
+        # XDG_DATA_HOME is what pins it, and the PRESENCE read below coincides with
+        # that write exactly as it does in production.
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        target = tmp_path / "teatree" / "presence_heartbeat"
         monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
     def test_loop_turn_with_no_heartbeat_defers(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -205,10 +206,11 @@ class TestSelfPumpTurnWithFreshUserPromptRendersLive:
     @pytest.fixture(autouse=True)
     def _isolated_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # #22: handle_record_presence writes via ups_fastpath.record_presence to
-        # canonical_config_db().parent — pin it at tmp_path so that write and the
-        # PRESENCE read below coincide (as they do in production).
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-        target = tmp_path / "presence_heartbeat"
+        # primary_data_dir() — the DATA dir, not the control DB's parent — so
+        # XDG_DATA_HOME is what pins it, and the PRESENCE read below coincides with
+        # that write exactly as it does in production.
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        target = tmp_path / "teatree" / "presence_heartbeat"
         monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
     def test_fresh_user_prompt_prefixed_by_loop_text_renders_live(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -255,10 +257,11 @@ class TestWalkThroughSecondQuestionStaysLive:
     @pytest.fixture(autouse=True)
     def _isolated_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # #22: handle_record_presence writes via ups_fastpath.record_presence to
-        # canonical_config_db().parent — pin it at tmp_path so that write and the
-        # PRESENCE read below coincide (as they do in production).
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-        target = tmp_path / "presence_heartbeat"
+        # primary_data_dir() — the DATA dir, not the control DB's parent — so
+        # XDG_DATA_HOME is what pins it, and the PRESENCE read below coincides with
+        # that write exactly as it does in production.
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        target = tmp_path / "teatree" / "presence_heartbeat"
         monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
     def test_second_question_after_notification_turn_still_renders_live(

@@ -15,9 +15,10 @@ in, keeping the policy module free of a back-reference to ``teatree.core``),
 and ``resolve_requires`` (the single dependency resolver, which handles the
 transitive ``requires`` chain so we never parallel-implement the dep chain).
 
-The prompt-hook path surfaces framework skills only (cwd-based); the overlay's
-own skill + companions surface through the dispatch paths (agent launch,
-runtime phase).
+Every path resolves overlay scope the same way — ``overlay_active`` or a
+``remote_patterns`` match on the cwd's git remote — so the overlay's own skill
+and its companions surface through the prompt hook as well as the dispatch
+paths (agent launch, runtime phase).
 """
 
 from pathlib import Path

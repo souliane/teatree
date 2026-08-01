@@ -133,8 +133,14 @@ _FORGE_TOOL_MARKER_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def _token_carries_forge_marker(token: str) -> bool:
-    """Return True iff ``token`` contains a forge-tool marker as a whole word."""
+def token_carries_forge_marker(token: str) -> bool:
+    """Return True iff ``token`` contains a forge-tool marker as a whole word.
+
+    The SINGLE forge-marker matcher every publish-inertness caller shares —
+    this module's opaque-transport detection and the commit carve-out's
+    :func:`teatree.hooks._commit_carve_out.segment_is_publish_inert` — so the
+    two cannot drift back to disagreeing on what a forge token is.
+    """
     return bool(_FORGE_TOOL_MARKER_RE.search(token))
 
 
@@ -423,12 +429,12 @@ def _segment_is_opaque_forge_transport_raw(words: list[str], raws: list[str]) ->
     rest_raws = raws[skipped:]
     leader = canonical_leader(rest_words[0])
     carries_forge = leader in _OPAQUE_TRANSPORT_LEADERS and any(
-        _token_carries_forge_marker(token) for token in rest_words
+        token_carries_forge_marker(token) for token in rest_words
     )
     carries_live_substitution = any(
         _raw_has_live_substitution(raw)
         for word, raw in zip(rest_words, rest_raws, strict=True)
-        if leader in _OPAQUE_TRANSPORT_LEADERS or _token_carries_forge_marker(word)
+        if leader in _OPAQUE_TRANSPORT_LEADERS or token_carries_forge_marker(word)
     )
     return carries_forge or carries_live_substitution
 
@@ -462,7 +468,7 @@ def _segment_is_interpreter_forge_transport(words: list[str]) -> bool:
     rest = strip_wrapper_prefix(words)
     if not rest or canonical_leader(rest[0]) not in _OPAQUE_TRANSPORT_LEADERS:
         return False
-    return any(_token_carries_forge_marker(token) for token in rest)
+    return any(token_carries_forge_marker(token) for token in rest)
 
 
 def command_has_interpreter_forge_transport(command: str) -> bool:

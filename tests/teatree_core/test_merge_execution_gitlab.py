@@ -1,22 +1,27 @@
 """GitLab transport for the §17.4 keystone merge (sibling of test_merge_execution.py).
 
 The §17.4.3 live-forge reads (:meth:`CodeHostQuery.live_head_sha`,
-:meth:`CodeHostQuery.pr_is_draft`, :meth:`CodeHostQuery.required_checks_status`)
+:meth:`CodeHostQuery.pr_draft_state`, :meth:`CodeHostQuery.required_checks_status`)
 and ``execute_bound_merge`` originally hardcoded ``gh pr view`` / ``gh api``,
 which left GitLab MRs unreachable through the sanctioned path. These
 tests assert that each read dispatches by code-host kind (carried on the
-:class:`PrRef`'s ``host_kind``) and invokes the equivalent ``glab api`` call.
+:class:`PrRef`'s ``host_kind``) and invokes the equivalent ``glab api`` call —
+except the draft read, which GitLab answers over the HTTP API so the headless
+image (no ``glab`` binary) can answer it at all.
 
-Only the unstoppable external — the ``glab`` / ``gh`` subprocess — is
-stubbed; every teatree model / FSM / DB write is real.
+Only the unstoppable externals — the ``glab`` / ``gh`` subprocess and the GitLab
+HTTP client — are stubbed; every teatree model / FSM / DB write is real.
 """
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import DraftState
 from teatree.core.merge import (
     CodeHostQuery,
     MergeHeadMovedError,
@@ -24,11 +29,33 @@ from teatree.core.merge import (
     MergePreconditionError,
     execute_bound_merge,
     merge_ticket_pr,
-    pr_slug_resolution,
+    resolve_host_kind,
 )
+from teatree.core.merge.execution import assert_not_draft
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
+
+_DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_state"
+
+
+@contextmanager
+def _http_draft_state(state: DraftState) -> Iterator[None]:
+    """Script the HTTP-transport draft probe (the one read that is not ``glab``)."""
+    with patch(_DRAFT_PROBE, return_value=state):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _draft_probe_answers_non_draft() -> Iterator[None]:
+    """Default the HTTP draft probe to a CONFIRMED non-draft MR.
+
+    The step-4 gate now holds on an unreadable draft flag, and these cases stub
+    only ``glab`` — without a scripted HTTP answer every keystone flow here would
+    refuse on the draft probe rather than on the behaviour under test.
+    """
+    with _http_draft_state(DraftState.NOT_DRAFT):
+        yield
 
 
 def _gitlab_query() -> CodeHostQuery:
@@ -76,7 +103,6 @@ class _GlabStub:
         self,
         *,
         sha: str = _SHA,
-        draft: bool = False,
         state: str = "opened",
         pipeline_status: str = "success",
         jobs: list[dict[str, str]] | None = None,
@@ -84,7 +110,6 @@ class _GlabStub:
         merge_sha: str = "merged0deadbeef",
     ) -> None:
         self.sha = sha
-        self.draft = draft
         self.state = state
         self.pipeline_status = pipeline_status
         self.jobs = jobs if jobs is not None else [{"status": "success"}]
@@ -97,7 +122,6 @@ class _GlabStub:
             {
                 "iid": _PR_IID,
                 "sha": self.sha,
-                "draft": self.draft,
                 "state": self.state,
             },
         )
@@ -143,7 +167,7 @@ class TestHostKindDetection(TestCase):
     def test_gitlab_com_issue_url_resolves_to_gitlab(self) -> None:
         ticket = _make_ticket(gitlab=True)
         clear = _clear(ticket)
-        assert pr_slug_resolution._resolve_host_kind(clear) == "gitlab"
+        assert resolve_host_kind(clear, repo_slug=_GITLAB_SLUG) == "gitlab"
 
     def test_self_hosted_gitlab_issue_url_resolves_to_gitlab(self) -> None:
         ticket = Ticket.objects.create(
@@ -152,27 +176,31 @@ class TestHostKindDetection(TestCase):
             issue_url=_GITLAB_SELF_HOSTED_URL,
         )
         clear = _clear(ticket)
-        assert pr_slug_resolution._resolve_host_kind(clear) == "gitlab"
+        assert resolve_host_kind(clear, repo_slug=_GITLAB_SLUG) == "gitlab"
 
     def test_github_issue_url_resolves_to_github(self) -> None:
         ticket = _make_ticket(gitlab=False)
         clear = _clear(ticket, slug="souliane/teatree", pr_id=1)
-        assert pr_slug_resolution._resolve_host_kind(clear) == "github"
+        assert resolve_host_kind(clear, repo_slug="souliane/teatree") == "github"
 
-    def test_missing_issue_url_defaults_to_github(self) -> None:
-        # Back-compat: a CLEAR without a ticket / without an issue_url
-        # keeps the legacy ``gh`` transport so existing GitHub callers
-        # are not regressed.
+    def test_missing_issue_url_no_longer_defaults_to_github(self) -> None:
+        # The legacy ``or "github"`` default bound the GitHub transport against
+        # a GitLab MR for every ticketless CLEAR. An unresolvable forge now
+        # fails loud; the sanctioned escape is the recorded ``host_kind``.
         clear = MergeClear.objects.create(
             ticket=None,
             pr_id=1,
-            slug="souliane/teatree",
+            slug=_GITLAB_SLUG,
             reviewed_sha=_SHA,
             reviewer_identity="cold-reviewer",
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.DOCS,
         )
-        assert pr_slug_resolution._resolve_host_kind(clear) == "github"
+        with (
+            patch("teatree.core.merge.host_kind.find_project_root", return_value=None),
+            pytest.raises(MergePreconditionError, match="could not resolve the forge"),
+        ):
+            resolve_host_kind(clear, repo_slug=_GITLAB_SLUG)
 
 
 class TestFetchLiveHeadShaGitLab(TestCase):
@@ -203,23 +231,33 @@ class TestFetchLiveHeadShaGitLab(TestCase):
             assert _gitlab_query().live_head_sha() == ""
 
 
-class TestFetchPrIsDraftGitLab(TestCase):
-    def test_draft_true_when_mr_draft(self) -> None:
-        stub = _GlabStub(draft=True)
-        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
-            assert _gitlab_query().pr_is_draft() is True
+class TestFetchPrDraftStateGitLab(TestCase):
+    """The draft read is the one GitLab keystone probe on the HTTP transport.
 
-    def test_draft_false_when_mr_not_draft(self) -> None:
-        stub = _GlabStub(draft=False)
-        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
-            assert _gitlab_query().pr_is_draft() is False
+    It also gates the review-request broadcast, which runs headless where no
+    ``glab`` binary exists — see ``backends.gitlab.client.fetch_pr_draft_state``.
+    The forge-payload mapping lives in ``test_gitlab_code_host.py``; here we pin
+    that the keystone query reaches it and that an UNREADABLE probe holds the
+    merge instead of waving it through.
+    """
 
-    def test_draft_false_on_api_failure(self) -> None:
-        def _boom(argv: list[str]) -> tuple[int, str, str]:
-            return (1, "", "boom")
+    def test_draft_refuses_at_the_floor(self) -> None:
+        with (
+            _http_draft_state(DraftState.DRAFT),
+            pytest.raises(MergePreconditionError, match="is in draft state"),
+        ):
+            assert_not_draft(_gitlab_query())
 
-        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_boom):
-            assert _gitlab_query().pr_is_draft() is False
+    def test_confirmed_non_draft_clears_the_floor(self) -> None:
+        with _http_draft_state(DraftState.NOT_DRAFT):
+            assert_not_draft(_gitlab_query())
+
+    def test_unreadable_draft_state_holds_the_merge(self) -> None:
+        with (
+            _http_draft_state(DraftState.UNKNOWN),
+            pytest.raises(MergePreconditionError, match="could not be read from the forge"),
+        ):
+            assert_not_draft(_gitlab_query())
 
 
 class TestFetchRequiredChecksGitLab(TestCase):
@@ -408,7 +446,7 @@ class TestGitLabEndToEndMerge(TestCase):
     """One integration test: full ``merge_ticket_pr`` over a GitLab MR.
 
     Stubs ``_run_glab`` only. Walks the entire §17.4.3 chain:
-    CodeHostQuery.live_head_sha → pr_is_draft → required_checks_status
+    CodeHostQuery.live_head_sha → pr_draft_state → required_checks_status
     → execute_bound_merge → record_merge_and_advance.
     """
 
@@ -416,7 +454,7 @@ class TestGitLabEndToEndMerge(TestCase):
         ticket = _make_ticket(gitlab=True)
         clear = _clear(ticket)
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
-        stub = _GlabStub(sha=_SHA, draft=False, pipeline_status="success")
+        stub = _GlabStub(sha=_SHA, pipeline_status="success")
 
         with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             outcome: MergeOutcome = merge_ticket_pr(

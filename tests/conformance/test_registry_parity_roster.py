@@ -21,11 +21,13 @@ stays tree-wide, so the scope itself cannot silently re-narrow.
 
 import ast
 import re
-from pathlib import Path
+from functools import cache
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from tests.conformance._src_tree import REPO_ROOT, SRC_DIR, src_modules
+
+_REPO_ROOT = REPO_ROOT
 #: The WHOLE package — the scan root is the package, never a hardcoded subset.
-_SCAN_ROOT = _REPO_ROOT / "src" / "teatree"
+_SCAN_ROOT = SRC_DIR
 
 # A module-level constant whose NAME matches this shape is a paired routing/phase
 # registry — the corpus's unit of coverage.
@@ -48,6 +50,9 @@ PARITY_LANE_ROSTER: dict[str, str] = {
     "_TOOLS_BY_PHASE": "tests/conformance/test_registry_parity.py",
     "_ZONE_HANDLERS": "tests/conformance/test_registry_parity.py",
     "_HANDLER_TARGET_PHASES": "tests/conformance/test_registry_parity.py",
+    # un-mergeable-condition ↔ scheduled-remedy parity: a ledger kind with no remedy
+    # is a KeyError on the dispatch path.
+    "_FIX_REASON_BY_KIND": "tests/teatree_loop/test_persistence_zone_handlers.py",
     # fan-out panel parity (keys ⊆ SUBAGENT_BY_PHASE) — the #2229 conformance lane.
     "FANOUT_BY_PHASE": "tests/teatree_core/test_phase_agent_conformance.py",
 }
@@ -78,20 +83,21 @@ def _registry_constants(tree: ast.Module) -> set[str]:
     return names
 
 
+@cache
 def _discovered_by_module() -> dict[str, set[str]]:
     """Registry-shaped constants keyed by their module path (relative to ``src``)."""
     by_module: dict[str, set[str]] = {}
-    for path in _SCAN_ROOT.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path, tree in src_modules():
         found = _registry_constants(tree)
         if found:
             by_module[path.relative_to(_SCAN_ROOT).as_posix()] = found
     return by_module
 
 
-def discovered_registries() -> set[str]:
+@cache
+def discovered_registries() -> frozenset[str]:
     """Every registry-shaped constant across the WHOLE package — introspection, not a hand-list."""
-    return {name for names in _discovered_by_module().values() for name in names}
+    return frozenset(name for names in _discovered_by_module().values() for name in names)
 
 
 class TestParityRosterIsComplete:

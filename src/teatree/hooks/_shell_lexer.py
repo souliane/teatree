@@ -378,6 +378,31 @@ def _match_operator(state: _LexerState) -> str | None:
     return None
 
 
+def _ampersand_is_redirect_glue(state: _LexerState, op: str) -> bool:
+    r"""Return True iff a matched ``&`` is really part of a REDIRECT, not a separator.
+
+    Bash lexes ``&`` glued to a redirection as one redirection operator, never
+    as a command separator: ``2>&1`` / ``>&2`` / ``1<&0`` duplicate a file
+    descriptor, and ``&>file`` / ``&>>file`` redirect stdout+stderr. Emitting
+    the ``&`` as a separator instead split the trailing duplication target into
+    a PHANTOM one-word segment (``… 2>&1`` -> segment ``['1']``), whose
+    unrecognised leader failed every ALL-SEGMENTS proof -- the pre-publish leak
+    gates then refused the provably-private skip for ANY command carrying the
+    ubiquitous ``2>&1`` tail (#1415/#1213 live over-block). Glue is recognised
+    by RAW adjacency, mirroring bash: the char immediately before the ``&`` is
+    an unquoted ``>``/``<`` (fd duplication -- a quoted ``">"`` closes with its
+    quote char, so a real background ``&`` after a quoted word never matches),
+    or the char immediately after is ``>`` (the ``&>`` both-streams redirect,
+    which bash prefers over background-plus-empty-redirect).
+    """
+    if op != "&":
+        return False
+    if state.i > 0 and state.command[state.i - 1] in {">", "<"}:
+        return True
+    nxt = state.i + 1
+    return nxt < len(state.command) and state.command[nxt] == ">"
+
+
 def _consume_open_paren(state: _LexerState) -> None:
     """Emit a bare ``(`` as a subshell-open separator (fresh-token position only)."""
     state.append_op("(", 1)
@@ -471,6 +496,13 @@ def _try_consume_structured(state: _LexerState) -> bool:
             return True
     op = _match_operator(state)
     if op is not None:
+        if _ampersand_is_redirect_glue(state, op):
+            # ``2>&1`` / ``>&2`` / ``&>file``: the ``&`` belongs to the redirect
+            # word -- append it as a word char so no phantom segment is split off.
+            state.begin_token()
+            state.current.append(ch)
+            state.i += 1
+            return True
         state.append_op(op, len(op))
         return True
     return False

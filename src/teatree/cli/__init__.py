@@ -62,6 +62,7 @@ from teatree.cli.loop import loop_app
 from teatree.cli.loops import loops_app
 from teatree.cli.mcp import mcp_app
 from teatree.cli.mutation import mutation_app
+from teatree.cli.notion import notion_app
 from teatree.cli.outer import outer_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
@@ -197,6 +198,7 @@ app.add_typer(goal_app, name="goal")
 app.add_typer(worker_app, name="worker")
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(notion_app, name="notion")
 app.add_typer(prompts_app, name="prompts")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")

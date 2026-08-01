@@ -1389,6 +1389,76 @@ class TestPrivateRepoCarveOut:
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("_private_repo_cfg")
+class TestTildeShipIsGradedAgainstTheRepoItNames:
+    """``cd ~/<repo> && git commit`` is graded against the repo it NAMES.
+
+    The quote gate is where a wrong landing repo genuinely flips the verdict: it
+    has no ``privacy-scan`` backstop (that tool carries no verbatim-quote
+    detector), so ``command_targets_private_only`` is the last decision. An
+    unexpanded ``~`` made the resolver walk UP onto the SESSION's repo, so a
+    quote committed into a PUBLIC repo was downgraded whenever the session
+    happened to sit in a private one, and a legitimate private commit was denied
+    whenever it sat in a public one.
+
+    Both directions are asserted at the live handler, because a fix that only
+    makes the gate quieter is indistinguishable from removing it.
+    """
+
+    _QUOTE = 'git commit -m "the user said: \\"ship it now without review\\""'
+
+    @staticmethod
+    def _home_ship(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, remote: str) -> None:
+        home = tmp_path / "home"
+        (home / name).mkdir(parents=True)
+        _git_init_remote(home / name, remote)
+        monkeypatch.setenv("HOME", str(home))
+
+    @staticmethod
+    def _session(tmp_path: Path, remote: str) -> Path:
+        session = tmp_path / "session"
+        session.mkdir()
+        _git_init_remote(session, remote)
+        return session
+
+    def test_tilde_ship_of_a_public_repo_still_denies_from_a_private_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # STILL-BLOCKS control: the commit lands in a PUBLIC repo, so a verbatim
+        # quote in its message must be refused — even though the session sits in
+        # an allowlisted-private repo whose ``.git`` the walk-up used to find.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        self._home_ship(tmp_path, monkeypatch, "skills-repo", "git@github.com:souliane/teatree.git")
+        session = self._session(tmp_path, "git@gitlab.com:acmecorp-engineering/product.git")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"cd ~/skills-repo && {self._QUOTE}"},
+            "cwd": str(session),
+        }
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_tilde_ship_of_a_private_repo_still_downgrades_from_a_public_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # STILL-GRANTS control: the same mechanism must not have been traded for
+        # a strict bug — a commit landing in the allowlisted-private repo still
+        # downgrades, from a session sitting in a public clone.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        self._home_ship(tmp_path, monkeypatch, "product", "git@gitlab.com:acmecorp-engineering/product.git")
+        session = self._session(tmp_path, "git@github.com:souliane/teatree.git")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"cd ~/product && {self._QUOTE}"},
+            "cwd": str(session),
+        }
+        assert handle_quote_scanner_pretool(data) is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "WARNING" in captured.err
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
 class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
     """A readable commit body is resolved+scanned for ALL visibilities; the sentinel is visibility-scoped (#1415/#1213).
 

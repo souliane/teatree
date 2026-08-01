@@ -14,12 +14,12 @@ merge under a supervisor that cannot block. G3 signal-trust: any factory signal 
 ``instrumentation_gap`` ⇒ ``signal_untrusted`` (never verify against an untrustworthy
 score). G4 budget: the shared self-improve budget precheck refuses ⇒ ``budget:<reason>``.
 
-G1b and G2 are scoped to the arc whose risk they actually bound (#3643, #3649).
+G1b, G2 and G3 are scoped to the arc whose risk they actually bound (#3643, #3649).
 :func:`evaluate_execution_guards` runs the full G1→G1b→G2→G3→G4 chain for the
 post-admission arc, where the loop changes config, merges a mechanism, and measures
-against the score. :func:`evaluate_intake_guards` drops BOTH for the pre-admission arc,
-which only interprets owner intent and then STOPS at the structural human ratify gate
-(:meth:`~teatree.core.models.directive.Directive.admit` raises without a consumed,
+against the score. :func:`evaluate_intake_guards` drops ALL THREE for the pre-admission
+arc, which only interprets owner intent and then STOPS at the structural human ratify
+gate (:meth:`~teatree.core.models.directive.Directive.admit` raises without a consumed,
 answered ratify question).
 
 Why the narrowing is not a weakening: G2's precondition — a proven live merge
@@ -31,6 +31,19 @@ satisfied-by-accident the way a guard chain can. Requiring the critic there gate
 intent behind an unshipped subsystem — 37 captured directives went uninterpreted for
 weeks — while protecting nothing the ratify gate does not already protect. Every
 effectful step stays behind BOTH the human gate and the full execution chain.
+
+G3 carries that same argument and was left behind by the original narrowing. It is a
+trust predicate on the FACTORY SCORE — "never verify against an untrustworthy score" —
+and verifying is a post-admission step (``VERIFYING``). Every score/signal reader in
+this loop sits in the execution arc: the admission baseline
+(:func:`~teatree.loops.directive_loop.implement._baseline_snapshot`) and the
+no-regression comparison (:mod:`~teatree.loops.directive_loop.verify`). Intake reads
+none of them, and it has ALREADY declared the score irrelevant by dropping G1b — so
+gating it on that same score's trustworthiness was self-contradictory, and while
+``factory_score_enabled`` is off it blocked intake on the credibility of a number
+nothing was computing. It cost 25 captured directives, the identical failure mode
+#3643 fixed for G2. G3 stays in the execution chain, where an untrustworthy score
+would corrupt a real keep/revert decision.
 
 Nothing here mutates state, so every guard is table-tested; a refusal returns a typed
 :class:`~teatree.loops.outer_loop.guards.GuardVerdict` and the tick is a total no-op.
@@ -75,7 +88,7 @@ def evaluate_intake_guards(
     overlay: str = "",
     now: datetime | None = None,
 ) -> GuardVerdict:
-    """Run G1→G3→G4 for the pre-admission arc; return the first refusal, else allow."""
+    """Run G1→G4 for the pre-admission arc; return the first refusal, else allow."""
     return _evaluate(settings=settings, seams=seams, overlay=overlay, now=now, gates=_INTAKE_GATES)
 
 
@@ -96,10 +109,11 @@ class _ArcGates:
 
     score: bool
     critic: bool
+    signal_trust: bool
 
 
-_INTAKE_GATES = _ArcGates(score=False, critic=False)
-_EXECUTION_GATES = _ArcGates(score=True, critic=True)
+_INTAKE_GATES = _ArcGates(score=False, critic=False, signal_trust=False)
+_EXECUTION_GATES = _ArcGates(score=True, critic=True, signal_trust=True)
 
 
 def _evaluate(
@@ -117,8 +131,7 @@ def _evaluate(
         return GuardVerdict.refuse(SCORE_OFF)
     if gates.critic and not (resolved.critic_probe or probe_critic_liveness)().live:
         return GuardVerdict.refuse(CRITIC_NOT_LIVE)
-    trust = probe_signal_trust(overlay=overlay, now=now, report=resolved.signal_report)
-    if not trust.trusted:
+    if gates.signal_trust and not probe_signal_trust(overlay=overlay, now=now, report=resolved.signal_report).trusted:
         return GuardVerdict.refuse(SIGNAL_UNTRUSTED)
     resolved_budget = resolved.budget if resolved.budget is not None else precheck_budget()
     if not resolved_budget.ok:

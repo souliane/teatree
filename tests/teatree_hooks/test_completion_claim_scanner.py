@@ -615,3 +615,78 @@ class TestFormatBlockMessage:
         assert "NOT done" in message
         for reason in verdict.missing:
             assert reason in message
+
+
+# The #2665 over-fire this pair pins: an ordinary PROGRESS UPDATE — a numbered list
+# of in-flight lanes, nothing claimed done — was read as "this turn enumerates N
+# things, therefore it claims done" and blocked six times in one session, each firing
+# costing a full re-emission of a 15-row deliverable->evidence table. Enumeration is
+# not a claim: a status report describes work IN PROGRESS, a completion claim asserts
+# a finished STATE about the ticket's deliverables.
+_RUNNING_LANES_PROGRESS_UPDATE = (
+    "Status right now — three lanes in flight:\n"
+    "1. Importer lane: PR #1 open, CI green, waiting on review.\n"
+    "2. Dashboard lane: e2e run 3 still running, roughly 8 minutes left.\n"
+    "3. Factory-repair lane: dispatched, the coder is working through defect 2.\n"
+    "Nothing is done yet; I will report again when run 3 lands.\n"
+)
+
+# The same shape with per-item "NOT done" lines. A message that already says what is
+# NOT done is self-evidently not claiming completion.
+_NOT_DONE_STATUS_REPORT = (
+    "Where each deliverable stands:\n"
+    "- Importer backend: NOT done — PR open, CI red.\n"
+    "- Dashboard frontend: NOT done — e2e still failing on the seeded fixture.\n"
+    "- Factory repair: committed locally, not pushed.\n"
+)
+
+# A progress report whose enumerated lines carry NO in-progress marker, and whose only
+# completeness verb is a bare "Done" bound to ONE STEP rather than to the ticket's
+# deliverables. "Done with step 3" is not "the work is done".
+_STEP_SCOPED_DONE_PROGRESS = (
+    "Progress so far on the gate repair:\n"
+    "1. Read the gate code and the scanner module.\n"
+    "2. Wrote the regression tests.\n"
+    "3. Ran the affected suite.\n"
+    "Done with step 3; moving on to the question gate.\n"
+)
+
+# The anti-vacuity control for every no-fire case above: a genuine multi-deliverable
+# completion claim with NO on-target evidence must STILL block. It asserts a finished
+# state about the deliverables ("all deliverables complete") and every row is the
+# forbidden artifact-existence proxy.
+_UNBACKED_MULTI_DELIVERABLE_CLAIM = (
+    "The dashboard ticket is done, all deliverables complete.\n"
+    "- Backend rate cache: PR #412 opened.\n"
+    "- Frontend rate surface: PR #413 opened.\n"
+    "- E2E spec: pushed to the branch.\n"
+)
+
+
+class TestProgressReportIsNotACompletionClaim:
+    """Anti-vacuous set: enumeration in a status report clears; an unbacked claim fires."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [_RUNNING_LANES_PROGRESS_UPDATE, _NOT_DONE_STATUS_REPORT, _STEP_SCOPED_DONE_PROGRESS],
+        ids=["running-lanes", "explicit-not-done", "step-scoped-done"],
+    )
+    def test_progress_update_does_not_fire(self, text: str) -> None:
+        assert scanner.find_completion_block(text) is None
+
+    def test_unbacked_multi_deliverable_claim_still_fires(self) -> None:
+        verdict = scanner.find_completion_block(_UNBACKED_MULTI_DELIVERABLE_CLAIM)
+        assert verdict is not None
+        assert verdict.deliverable_count == 3
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    def test_in_progress_minority_does_not_exempt_a_claim(self) -> None:
+        # Preservation: one in-progress row out of two is NOT a status report — the turn
+        # still asserts everything is done, so the gate must keep firing. Only a turn
+        # DOMINATED by in-progress rows is exempt.
+        text = (
+            "Everything is done and ready to merge.\n"
+            "- REQ-03: MR !41 opened.\n"
+            "- REQ-05: still running in CI.\n"
+        )
+        assert scanner.find_completion_block(text) is not None

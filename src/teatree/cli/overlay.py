@@ -18,7 +18,7 @@ from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
 from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
 from teatree.cli.wip import register_wip_commands
-from teatree.utils.django_db import runner_prefix
+from teatree.utils.django_db import project_env_is_drivable, runner_prefix
 from teatree.utils.run import CommandFailedError, run_streamed, spawn
 from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton
 
@@ -148,13 +148,18 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
     When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
     environment so that ``get_overlay()`` can resolve the correct overlay even when
     multiple overlays are installed.
+
+    A project directory whose virtualenv is not drivable from here
+    (:func:`project_env_is_drivable`) takes the ``python -m teatree`` path too: the
+    overlay is reachable in the running interpreter either way, and hopping into a
+    foreign-platform environment would have uv destroy it.
     """
     env = _base_env()
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
 
     with _faithful_child_exit():
-        if project_path and (project_path / "manage.py").is_file():
+        if project_path and (project_path / "manage.py").is_file() and project_env_is_drivable(project_path):
             cmd = _managepy_cmd(project_path, "manage.py", *args)
             run_streamed(cmd, cwd=project_path, env=env)
         else:
@@ -342,6 +347,9 @@ class OverlayAppBuilder:
             """
             if project_path is None:
                 typer.echo("Cannot find overlay project directory.")
+                raise typer.Exit(code=1)
+            if not project_env_is_drivable(project_path):
+                typer.echo(f"{project_path} holds a virtualenv from another platform — uv would delete it. Refusing.")
                 raise typer.Exit(code=1)
 
             try:

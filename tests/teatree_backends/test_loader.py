@@ -267,6 +267,38 @@ def test_get_messaging_dm_only_refuses_non_owner_channel() -> None:
         backend.post_message(channel="C-public", text="leak")
 
 
+class TestCredentiallessSlackNeverPretendsToBeSlack:
+    """A Slack backend with no bot token must not be handed out (#3334 class).
+
+    ``read_pass`` returns ``""`` on any store failure — a locked gpg-agent under a
+    long-lived daemon is the common one — so ``resolve_messaging_tokens`` can hand
+    back an empty bot token. Constructing ``SlackBotBackend`` anyway produced a
+    backend whose every call short-circuits to ``{}`` BEFORE any HTTP, which the
+    notify layer then reported as ``conversations.open ok:false`` and "Slack post
+    returned no message ts" — Slack-shaped diagnoses for a credential fault that
+    never reached Slack. That sent the owner hunting a scope problem that did not
+    exist. Degrading to noop is the truthful answer, and it keeps the documented
+    contract that a messaging credential fault never wedges merges/CI/PR sweeps.
+    """
+
+    def test_empty_bot_token_degrades_to_noop(self) -> None:
+        overlay = _build_overlay(messaging_backend="slack")
+        _stub_token(overlay, slack="")
+        assert isinstance(get_messaging(overlay), NoopMessagingBackend)
+
+    def test_the_degradation_is_logged_with_the_unresolvable_ref(self, caplog: pytest.LogCaptureFixture) -> None:
+        overlay = _build_overlay(messaging_backend="slack", slack_token_ref="secrets/example-overlay/slack")
+        _stub_token(overlay, slack="")
+        with caplog.at_level(logging.WARNING, logger="teatree.backends.loader"):
+            get_messaging(overlay)
+        assert "secrets/example-overlay/slack" in caplog.text
+
+    def test_a_real_bot_token_is_untouched(self) -> None:
+        overlay = _build_overlay(messaging_backend="slack")
+        _stub_token(overlay, slack="xoxb-fake")
+        assert isinstance(get_messaging(overlay), SlackBotBackend)
+
+
 def test_get_messaging_raises_on_unknown_choice() -> None:
     overlay = _build_overlay(messaging_backend="bogus")
     _stub_token(overlay)

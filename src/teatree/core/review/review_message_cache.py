@@ -13,15 +13,12 @@ entry — is unit-testable without ``call_command``.
 
 import json
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
+from teatree.paths import data_dir_root
+
 logger = logging.getLogger(__name__)
-
-
-class ReviewMessageCacheError(RuntimeError):
-    """The review-message record could not be located — ``T3_DATA_DIR`` is unset."""
 
 
 def _read_existing_payload(path: Path) -> dict[str, dict[str, str]]:
@@ -64,15 +61,14 @@ def persist_review_message(
     MR entries in the same ticket file are preserved verbatim. Returns the
     file path written.
 
-    Raises :class:`ReviewMessageCacheError` (a named error, not a bare
-    ``KeyError``) when ``T3_DATA_DIR`` is unset, and tolerates a corrupt existing
+    The root is :func:`teatree.paths.data_dir_root` — ``T3_DATA_DIR`` when set, else the
+    canonical data dir. It must NOT require ``T3_DATA_DIR``: the worker container does not
+    set it, so raising here made this sanctioned post path unusable from the containerized
+    loop (the record is a durable *record*, never the dedup oracle — that stays the #1084
+    live-channel read plus the ``ReviewRequestPost`` claim). Tolerates a corrupt existing
     record by moving it aside and proceeding empty (see :func:`_read_existing_payload`).
     """
-    data_dir = os.environ.get("T3_DATA_DIR")
-    if not data_dir:
-        msg = "T3_DATA_DIR is not set — cannot locate the review-message record directory."
-        raise ReviewMessageCacheError(msg)
-    path = Path(data_dir) / "tickets" / iid / "mr_review_messages.json"
+    path = data_dir_root() / "tickets" / iid / "mr_review_messages.json"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = _read_existing_payload(path)

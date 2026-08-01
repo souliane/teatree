@@ -302,6 +302,40 @@ class SendProxyMode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class PrReviewBackend(StrEnum):
+    """Which reviewer executes the self-authored-PR cold review.
+
+    *   :attr:`AUTO` (default) — resolve per tick: codex when its binary is on
+        PATH and it is not cooling down from a quota exhaustion, else claude.
+        This is the only value that can change its mind, and it exists so a box
+        with no codex installed, or an account that just ran out, keeps getting
+        reviews instead of none.
+    *   :attr:`CLAUDE` / :attr:`CODEX` — an explicit pin. A pin is honoured as
+        written and never silently degrades to the other backend: an operator who
+        named a reviewer wants to know it is unavailable, not to discover weeks
+        later that something else has been reviewing their diffs.
+
+    Note what the tiers do NOT govern: whether a self-PR is reviewed at all.
+    Every self-authored open PR is admitted to the review board regardless; this
+    picks WHO reviews it.
+    """
+
+    AUTO = "auto"
+    CLAUDE = "claude"
+    CODEX = "codex"
+
+    @classmethod
+    def parse(cls, value: str) -> "PrReviewBackend":
+        """Parse a pr-review-backend string; invalid values raise ``ValueError``."""
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid pr_review_backend {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class MissingIssuePolicy(StrEnum):
     """What to do when a commit/MR needs an issue reference and none is in hand.
 

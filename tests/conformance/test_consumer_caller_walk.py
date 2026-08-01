@@ -29,9 +29,12 @@ separately (#3678 § "Runtime counterpart").
 
 import ast
 from collections.abc import Callable, Iterator
+from functools import cache
 from pathlib import Path
 
-_SRC_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree"
+from tests.conformance._src_tree import SRC_DIR, src_modules
+
+_SRC_DIR = SRC_DIR
 _DOCTOR_DIR = _SRC_DIR / "cli" / "doctor"
 _SCANNERS_DIR = _SRC_DIR / "loop" / "scanners"
 
@@ -47,20 +50,20 @@ _GOVERNOR_MODULE = "core/admission_governor.py"
 
 # Scanners registered/exported but DELIBERATELY instantiated into no live job — the
 # reviewable allowlist idiom the family shares (``ROUTES_WITHOUT_STATIC_PRODUCER`` /
-# ``FIELDS_WITHOUT_SRC_READER``). ``CodexReviewScanner`` dispatches ``/codex:review``,
-# but codex is not available on this host — the ``codex_reviewing`` lane is stale and
-# the real re-wiring is tracked by souliane/teatree#3569. It stays exported (the class,
-# markers, and CLI surface are kept) yet is wired into no job. A NEW never-instantiated
-# scanner is NOT on this list and fails until it is wired or consciously allowlisted.
-SCANNERS_WITHOUT_LIVE_INSTANTIATION: frozenset[str] = frozenset({"CodexReviewScanner"})
+# ``FIELDS_WITHOUT_SRC_READER``). Empty: every scanner is wired. ``CodexReviewScanner``
+# was the one entry, and `pr_review_backend` wired it into `_self_pr_review_scanner_for`
+# — an allowlist must not outlive its justification, which the sibling test enforces.
+# A NEW never-instantiated scanner is NOT on this list and fails until it is wired or
+# consciously allowlisted.
+SCANNERS_WITHOUT_LIVE_INSTANTIATION: frozenset[str] = frozenset()
 
 _DefOwner = tuple[str, str | None]  # (relative-file, containing-top-level-def-name | None)
 
 
 def _src_trees() -> Iterator[tuple[str, ast.Module]]:
     """Every ``src/teatree`` module as (repo-relative path, parsed AST)."""
-    for path in _SRC_DIR.rglob("*.py"):
-        yield str(path.relative_to(_SRC_DIR)), ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path, tree in src_modules():
+        yield str(path.relative_to(_SRC_DIR)), tree
 
 
 def _call_name(call: ast.Call) -> str | None:
@@ -82,6 +85,7 @@ def _referenced_name(node: ast.AST) -> str | None:
     return None
 
 
+@cache
 def _references_by_owner() -> dict[str, set[_DefOwner]]:
     """``name -> {(file, containing-top-level-def)}`` for every reference under ``src``.
 
@@ -113,14 +117,16 @@ def _has_external_reference(name: str, def_file: str, references: dict[str, set[
 def _named_defs(directory: Path, *, is_member: Callable[[ast.stmt], bool]) -> dict[str, str]:
     """Top-level ``FunctionDef``/``ClassDef`` matching *is_member* -> its repo-relative file."""
     members: dict[str, str] = {}
-    for path in directory.glob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path, tree in src_modules():
+        if path.parent != directory:
+            continue
         for node in tree.body:
             if is_member(node) and isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
                 members.setdefault(node.name, str(path.relative_to(_SRC_DIR)))
     return members
 
 
+@cache
 def doctor_checks() -> dict[str, str]:
     """Every ``_check_*`` / ``check_*`` probe defined in ``cli/doctor`` -> its file."""
     return _named_defs(
@@ -129,6 +135,7 @@ def doctor_checks() -> dict[str, str]:
     )
 
 
+@cache
 def scanner_classes() -> dict[str, str]:
     """Every concrete ``*Scanner`` class defined in ``loop/scanners`` (base Protocol excluded)."""
     return _named_defs(
@@ -137,6 +144,7 @@ def scanner_classes() -> dict[str, str]:
     )
 
 
+@cache
 def instantiated_names() -> set[str]:
     """Every callee name invoked as ``Name(...)`` under ``src`` — a class here is instantiated."""
     names: set[str] = set()
@@ -149,6 +157,7 @@ def instantiated_names() -> set[str]:
     return names
 
 
+@cache
 def governor_consumers() -> dict[str, str]:
     """Every top-level function consulting the governor decision/cap API -> its file.
 
@@ -169,18 +178,21 @@ def governor_consumers() -> dict[str, str]:
     return consumers
 
 
+@cache
 def module_calls(rel_file: str, name: str) -> bool:
     """True when the module at *rel_file* calls ``name(...)`` at least once."""
     tree = ast.parse((_SRC_DIR / rel_file).read_text(encoding="utf-8"))
     return any(isinstance(node, ast.Call) and _call_name(node) == name for node in ast.walk(tree))
 
 
+@cache
 def module_references(rel_file: str, targets: frozenset[str]) -> bool:
     """True when the module at *rel_file* references any identifier in *targets*."""
     tree = ast.parse((_SRC_DIR / rel_file).read_text(encoding="utf-8"))
     return any(_referenced_name(node) in targets for node in ast.walk(tree))
 
 
+@cache
 def called_from_another_module(name: str, own_file: str) -> str | None:
     """The first module OTHER than *own_file* that calls ``name(...)``, else ``None``."""
     for rel, tree in _src_trees():

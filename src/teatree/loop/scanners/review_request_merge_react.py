@@ -7,7 +7,7 @@ loop visually — reviewers see at a glance which requests have landed,
 instead of merged requests looking still-open in the channel.
 
 This scanner is the merge-audit half of the review-request ledger,
-distinct from the fibonacci nag (:mod:`teatree.loop.scanners.review_nag`):
+distinct from the re-ping nag (:mod:`teatree.loop.scanners.review_nag`):
 the nag is noise the user opts into, the merge reaction is a low-noise
 positive signal that always runs. Both walk the same ``ReviewRequestPost``
 rows and both mark a row ``done_at`` when its MR leaves the open state, so

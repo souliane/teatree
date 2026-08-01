@@ -2,7 +2,9 @@
 
 import stat
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -24,7 +26,11 @@ from teatree.core.worktree.worktree_env import (
     write_env_cache,
 )
 from teatree.types import BaseImageConfig, DbImportStrategy
+from teatree.utils import secrets
 from tests.teatree_core.conftest import CommandOverlay
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class TestDockerHostAddress(TestCase):
@@ -202,6 +208,30 @@ def _make_worktree(
     return wt, wt_path
 
 
+@contextmanager
+def _fake_pass_store(*, writable: bool = True) -> "Iterator[dict[str, str]]":
+    """Patch ``pass`` with a read-consistent in-memory store, yielded for inspection.
+
+    Read-consistent is the point: a fake that accepts writes but always reads back empty
+    cannot tell "the cache advertises a key that resolves" apart from "the cache
+    advertises a dangling key", which is the whole distinction under test. *writable*
+    ``False`` simulates a host with no usable ``pass``.
+    """
+    store: dict[str, str] = {}
+
+    def _write(key: str, value: str) -> bool:
+        if not writable:
+            return False
+        store[key] = value
+        return True
+
+    with (
+        patch.object(secrets, "read_pass", side_effect=lambda key: store.get(key, "")),
+        patch.object(secrets, "write_pass", side_effect=_write),
+    ):
+        yield store
+
+
 class TestRenderEnvCache(TestCase):
     def test_returns_none_when_no_worktree_path(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1")
@@ -238,8 +268,9 @@ class TestRenderEnvCache(TestCase):
             assert "DATABASE_URL" not in spec.keys
 
     def test_core_filters_postgres_password_without_overlay_declaring_it(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, _fake_pass_store() as store:
             wt, _ = _make_worktree(tmp, ticket_name="tp", ticket_url="https://ex.com/2", variant="acme")
+            store[wt.pass_key] = "s3cr3t-pw"
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
                 spec = render_env_cache(wt)
             assert spec is not None
@@ -247,10 +278,62 @@ class TestRenderEnvCache(TestCase):
             assert "POSTGRES_PASSWORD=" not in spec.content
             assert "s3cr3t-pw" not in spec.content
             # The symbolic pass-key reference replaces the stripped literal.
-            assert "POSTGRES_PASSWORD_PASS_KEY=teatree/wt/" in spec.content
+            assert f"POSTGRES_PASSWORD_PASS_KEY={wt.pass_key}" in spec.content
+
+    def test_omits_the_pass_key_reference_when_no_entry_answers_it(self) -> None:
+        """A render must not name a ``pass`` entry that does not exist.
+
+        The dangling half of the credential defect: the cache advertised
+        ``POSTGRES_PASSWORD_PASS_KEY`` for every worktree while the only writer of that
+        entry was the by-hand ``env migrate-secrets``, so a consumer resolving the
+        reference on a freshly provisioned worktree got a ``pass show`` miss and fell
+        through to whatever literal was in the ambient env — or to no password at all.
+        """
+        with tempfile.TemporaryDirectory() as tmp, _fake_pass_store():
+            wt, _ = _make_worktree(tmp, ticket_name="tn", ticket_url="https://ex.com/3", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
+                spec = render_env_cache(wt)
+            assert spec is not None
+            assert "POSTGRES_PASSWORD_PASS_KEY" not in spec.content
+            assert "POSTGRES_PASSWORD_PASS_KEY" not in spec.keys
 
 
 class TestWriteEnvCache(TestCase):
+    def test_write_creates_the_pass_entry_the_cache_advertises(self) -> None:
+        """Provisioning — not a later by-hand migration — is what creates the entry."""
+        with tempfile.TemporaryDirectory() as tmp, _fake_pass_store() as store:
+            wt, _ = _make_worktree(tmp, ticket_name="tw", ticket_url="https://ex.com/4", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert store[wt.pass_key] == "s3cr3t-pw"
+            content = spec.path.read_text(encoding="utf-8")
+            assert f"POSTGRES_PASSWORD_PASS_KEY={wt.pass_key}" in content
+            assert "s3cr3t-pw" not in content
+
+    def test_write_leaves_no_reference_when_pass_cannot_hold_the_secret(self) -> None:
+        """``pass`` unavailable degrades to the env_extra literal, never to a dead reference."""
+        with tempfile.TemporaryDirectory() as tmp, _fake_pass_store(writable=False):
+            wt, _ = _make_worktree(tmp, ticket_name="tx", ticket_url="https://ex.com/5", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            assert "POSTGRES_PASSWORD_PASS_KEY" not in spec.path.read_text(encoding="utf-8")
+
+    def test_written_cache_is_not_drifted_against_a_fresh_render(self) -> None:
+        """The write stores the secret BEFORE rendering, so the file matches a later render.
+
+        Storing it after would leave every provisioned worktree permanently drifted:
+        ``detect_drift`` renders without writing, and its render would emit a reference
+        the on-disk file was built without.
+        """
+        with tempfile.TemporaryDirectory() as tmp, _fake_pass_store():
+            wt, _ = _make_worktree(tmp, ticket_name="td", ticket_url="https://ex.com/6", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
+                write_env_cache(wt)
+                drifted, _ = detect_drift(wt)
+            assert drifted is False
+
     def test_writes_cache_in_hidden_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(

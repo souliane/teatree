@@ -111,12 +111,18 @@ def _make_origin_and_clone(tmp_path: Path) -> _Origin:
 def _run_ensure_clone(
     tmp_path: Path, *, clone_dir: Path, repo_url: Path, force_offline: bool
 ) -> subprocess.CompletedProcess[str]:
-    """Run the extracted ``network_up`` + ``ensure_clone`` against a local origin."""
+    """Run the extracted ``detect_host_root`` + ``network_up`` + ``ensure_clone`` against a local origin.
+
+    ``ensure_clone`` derives the vendored-fork root itself from ``CLONE_DIR``, so
+    the harness needs no state beyond the two variables the entrypoint sets before
+    it — the property that keeps every branch reachable here under ``set -u``.
+    """
     harness = tmp_path / "harness.sh"
     harness.write_text(
         "set -euo pipefail\n"
         f'CLONE_DIR="{clone_dir}"\n'
         f'REPO_URL="{repo_url}"\n'
+        f"{_extract_shell_function('detect_host_root')}\n"
         f"{_extract_shell_function('network_up')}\n"
         f"{_extract_shell_function('ensure_clone')}\n"
         "ensure_clone\n",
@@ -160,3 +166,31 @@ class TestEnsureCloneOffline:
         assert result.returncode != 0
         assert not (fresh / ".git").exists()
         assert "cannot bootstrap the source offline" in result.stderr
+
+
+class TestEnsureCloneVendoredSubtree:
+    """A vendored fork ships its own tree: nothing is cloned, fetched, or fast-forwarded."""
+
+    def test_vendored_subtree_skips_clone_and_self_update(self, tmp_path: Path) -> None:
+        origin = _make_origin_and_clone(tmp_path)
+        vendored = tmp_path / "fork" / "vendor" / "teatree"
+        vendored.mkdir(parents=True)
+        (tmp_path / "fork" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+        result = _run_ensure_clone(tmp_path, clone_dir=vendored, repo_url=origin.url, force_offline=False)
+
+        assert result.returncode == 0, result.stderr
+        assert "vendored subtree" in result.stderr
+        # Upstream is NEVER cloned over the fork's own core: the tree stays as shipped.
+        assert not (vendored / ".git").exists()
+
+    def test_vendor_path_without_a_host_pyproject_is_not_a_fork(self, tmp_path: Path) -> None:
+        """Detection keys on the host project's ``pyproject.toml``, not the path shape alone."""
+        origin = _make_origin_and_clone(tmp_path)
+        lookalike = tmp_path / "notafork" / "vendor" / "teatree"
+
+        result = _run_ensure_clone(tmp_path, clone_dir=lookalike, repo_url=origin.url, force_offline=False)
+
+        assert result.returncode == 0, result.stderr
+        assert "vendored subtree" not in result.stderr
+        assert (lookalike / ".git").exists()

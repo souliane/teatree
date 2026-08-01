@@ -21,7 +21,7 @@ a kind nothing produces is dead surface.
 """
 
 import ast
-from pathlib import Path
+from functools import cache
 
 from teatree.loop.dispatch import _CONDITIONAL_HANDLERS
 from teatree.loop.dispatch_tables import (
@@ -31,8 +31,9 @@ from teatree.loop.dispatch_tables import (
     STATUSLINE_DROP_PREFIXES,
     STATUSLINE_ZONE_BY_KIND,
 )
+from tests.conformance._src_tree import SRC_DIR, src_modules
 
-_LOOP_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "loop"
+_LOOP_DIR = SRC_DIR / "loop"
 
 # Kinds that DELIBERATELY render through the generic ``("statusline", "in_flight")``
 # fallback in ``_dispatch_one`` — low-priority bookkeeping / status observations
@@ -119,10 +120,17 @@ def emitted_signal_kinds() -> tuple[set[str], set[str]]:
     Introspection, not a hand-list: a new scanner emitting a new kind is discovered
     the moment it lands, so the totality assertion cannot silently lag it.
     """
+    literals, prefixes = _emitted_signal_kinds()
+    return set(literals), set(prefixes)
+
+
+@cache
+def _emitted_signal_kinds() -> tuple[frozenset[str], frozenset[str]]:
     literals: set[str] = set()
     prefixes: set[str] = set()
-    for path in _LOOP_DIR.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path, tree in src_modules():
+        if _LOOP_DIR not in path.parents:
+            continue
         bindings = _string_assignments(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -137,7 +145,7 @@ def emitted_signal_kinds() -> tuple[set[str], set[str]]:
             call_literals, call_prefixes = _resolve_kind(argument, bindings)
             literals |= call_literals
             prefixes |= call_prefixes
-    return literals, prefixes
+    return frozenset(literals), frozenset(prefixes)
 
 
 #: Every kind the dispatcher routes or drops EXPLICITLY (never via the in_flight

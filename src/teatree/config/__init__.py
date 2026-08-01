@@ -30,6 +30,7 @@ from teatree.config.enums import (
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
+    PrReviewBackend,
     SendProxyMode,
     Wip,
 )
@@ -110,6 +111,7 @@ __all__ = [
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
+    "PrReviewBackend",
     "SendProxyMode",
     "SettingHome",
     "TeaTreeConfig",

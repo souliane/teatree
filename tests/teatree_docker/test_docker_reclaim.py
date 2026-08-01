@@ -183,22 +183,46 @@ def test_run_prune_returns_zero_when_docker_binary_missing(monkeypatch):
     assert outcome == reclaim.PruneOutcome(reclaimed="0B", bytes_reclaimed=0)
 
 
-def test_run_prune_returns_zero_on_timeout(monkeypatch):
-    def slow(cmd, **_):
-        raise TimeoutExpired(cmd, 1)
+def test_run_prune_records_the_reason_on_nonzero_exit(monkeypatch):
+    """Docker answered and refused: reclaim nothing, but say why.
 
-    monkeypatch.setattr(reclaim, "run_allowed_to_fail", slow)
-    outcome = reclaim._run_prune(["docker", "builder", "prune", "-af"])
-    assert outcome.bytes_reclaimed == 0
+    This previously asserted a bare ``PruneOutcome("0B", 0)`` — pinning the
+    silent-no-op as intended behaviour. The reason is what lets the caller tell
+    "refused" apart from "nothing to reclaim".
+    """
 
-
-def test_run_prune_returns_zero_on_nonzero_exit(monkeypatch):
     def failed(cmd, **_):
         return CompletedProcess(args=cmd, returncode=1, stdout="", stderr="daemon down")
 
     monkeypatch.setattr(reclaim, "run_allowed_to_fail", failed)
     outcome = reclaim._run_prune(["docker", "image", "prune", "-f"])
-    assert outcome == reclaim.PruneOutcome(reclaimed="0B", bytes_reclaimed=0)
+
+    assert outcome.bytes_reclaimed == 0
+    assert outcome.failure == "daemon down"
+
+
+def test_run_prune_reports_a_timeout_rather_than_swallowing_it(monkeypatch):
+    """A timed-out prune did not finish; claiming a clean ``0B`` asserts more than is known."""
+
+    def slow(cmd, **_):
+        raise TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", slow)
+    outcome = reclaim._run_prune(["docker", "builder", "prune", "-af"])
+
+    assert outcome.bytes_reclaimed == 0
+    assert outcome.failure is not None
+    assert "timed out" in outcome.failure
+
+
+def test_run_prune_falls_back_to_exit_status_when_stderr_is_empty(monkeypatch):
+    def silent_failure(cmd, **_):
+        return CompletedProcess(args=cmd, returncode=2, stdout="", stderr="   ")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", silent_failure)
+    outcome = reclaim._run_prune(["docker", "volume", "prune", "-f"])
+
+    assert outcome.failure == "exit status 2"
 
 
 def test_reclaim_disk_end_to_end_with_real_run_prune_seam(monkeypatch):
@@ -224,3 +248,87 @@ def test_reclaim_report_total_human_is_always_a_string(dry_run, monkeypatch):
     monkeypatch.setattr(reclaim, "_run_prune", lambda argv: reclaim.PruneOutcome("0B", 0))
     report = reclaim.reclaim_disk(dry_run=dry_run)
     assert isinstance(report.total_human, str)
+
+
+# --- Fail-loud: a reachable-but-erroring docker must never read as a 0B success ---
+#
+# The tolerance this module documents is for docker being ABSENT (CI sandboxes,
+# hermetic tests). A docker that answers and refuses is a different case: the
+# operator asked for a reclaim, none happened, and the disk is still full. These
+# pin the distinction — absence stays silent, failure is surfaced.
+
+
+def test_daemon_unreachable_surfaces_as_report_failures(monkeypatch):
+    """The observed defect: the containerized ``t3`` worker has no docker socket.
+
+    Every prune errored with "failed to connect to the docker API", yet the
+    command exited 0 printing ``Total reclaimed: 0B`` — indistinguishable from
+    "nothing to reclaim" — while the disk stayed full.
+    """
+    unreachable = "failed to connect to the docker API at unix:///var/run/docker.sock"
+
+    def no_socket(cmd, **_):
+        return CompletedProcess(args=cmd, returncode=1, stdout="", stderr=unreachable)
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", no_socket)
+    report = reclaim.reclaim_disk()
+
+    assert len(report.failures) == 3, "every step failed; every failure must be reported"
+    assert all(unreachable in detail for _, detail in report.failures)
+    assert unreachable in report.failure_summary()
+
+
+def test_every_step_still_runs_when_an_earlier_one_fails(monkeypatch):
+    """A failing step must not forfeit the reclaim the remaining steps can still do.
+
+    Aborting on the first error is the wrong loud: under disk pressure the
+    partial reclaim is exactly what the operator needs.
+    """
+
+    def first_fails(cmd, **_):
+        if cmd[1] == "builder":
+            return CompletedProcess(args=cmd, returncode=1, stdout="", stderr="cache locked")
+        return CompletedProcess(args=cmd, returncode=0, stdout="Total reclaimed space: 512MB\n", stderr="")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", first_fails)
+    report = reclaim.reclaim_disk()
+
+    assert len(report.steps) == 3
+    assert report.total_bytes == 2 * 512 * 10**6  # the two survivors still reclaimed
+    assert [label for label, _ in report.failures] == ["build cache"]
+
+
+def test_missing_docker_binary_stays_tolerated(monkeypatch):
+    """No docker at all is ABSENCE, not failure — the CI-sandbox tolerance survives the fix."""
+
+    def boom(cmd, **_):
+        msg = "docker"
+        raise FileNotFoundError(msg)
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", boom)
+    report = reclaim.reclaim_disk()
+
+    assert report.failures == ()
+    assert report.total_bytes == 0
+
+
+def test_render_marks_failed_steps(monkeypatch):
+    def failed(cmd, **_):
+        return CompletedProcess(args=cmd, returncode=1, stdout="", stderr="daemon down")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", failed)
+    rendered = reclaim.reclaim_disk().render()
+
+    assert "FAILED" in rendered
+    assert "daemon down" in rendered
+
+
+def test_successful_reclaim_reports_no_failures(monkeypatch):
+    def ok(cmd, **_):
+        return CompletedProcess(args=cmd, returncode=0, stdout="Total reclaimed space: 1.0GB\n", stderr="")
+
+    monkeypatch.setattr(reclaim, "run_allowed_to_fail", ok)
+    report = reclaim.reclaim_disk()
+
+    assert report.failures == ()
+    assert "FAILED" not in report.render()

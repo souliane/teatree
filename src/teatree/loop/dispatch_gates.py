@@ -172,6 +172,20 @@ def review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAct
     ]
 
 
+def fix_kind_of(payload: ActionPayload) -> str:
+    """Which un-mergeable condition this dispatch is for — the ledger's discriminator.
+
+    ``my_pr.conflicted`` stamps ``fix_kind`` on its payload; capability D's
+    ``my_pr.failed`` predates the field and carries none, so its absence means the
+    CI-red lane. An unrecognised value falls back there too rather than claiming a
+    slot no remedy owns.
+    """
+    from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    declared = str(payload.get("fix_kind") or "")
+    return declared if declared in RedMrFixAttempt.Kind.values else RedMrFixAttempt.Kind.CI_RED
+
+
 def claim_red_mr_fix(payload: ActionPayload) -> bool:
     """Idempotency claim for capability D's ``my_pr.failed`` fix dispatch.
 
@@ -181,10 +195,13 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
     and the next tick retries — the marker can no longer be burned before the
     action lands.
 
-    Returns True when the ``(pr_url, head_sha)`` pair was not seen on a previous
-    tick — the caller proceeds to create the Task. Returns False when the same
-    failing SHA already has a recorded attempt — the statusline mirror still
-    emitted at dispatch so the user sees the red MR, but no new Task is created.
+    Returns True when the ``(pr_url, head_sha, fix_kind)`` triple was not seen on a
+    previous tick — the caller proceeds to create the Task. Returns False when the
+    same head already has a recorded attempt of that kind — the statusline mirror
+    still emitted at dispatch so the user sees the MR, but no new Task is created.
+    The kind is part of the key because CI redness and a merge conflict are
+    independent conditions with independent remedies: fixing one must not consume
+    the other's dispatch slot at the same head.
 
     SIG-2 (#7) hardens WHAT is claimed: the real head sha is recovered from
     ``payload['raw']`` via the shared dual-forge helper when the top-level
@@ -212,6 +229,7 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
         row = RedMrFixAttempt.claim(
             pr_url=pr_url,
             head_sha=sha,
+            kind=fix_kind_of(payload),
             overlay=str(payload.get("overlay", "")),
             worktree_hint=str(payload.get("worktree_hint", "")),
         )

@@ -147,23 +147,34 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # django_tasks_db's own shipped prune is retention/task_results.py, kept apart so the
 # orchestrator never imports a third-party table's library directly. Two root leaves collapse
 # to one package entry, mirroring cleanup/ and evidence/.
-# 103: +managers_inbound.py (#3910) — the IncomingEvent/ReplyDispatch queryset predicates carved
+# 103: +invocation_cwd.py — where the operator STOOD when they invoked ``t3``, read from the
+# environment the containerized ``deploy/t3`` entry point exports and degrading to ``Path.cwd()``
+# when unset. A genuine new root concern that must have NO teatree deps: its consumer is the
+# interface layer (``cli/overlay_dev.py``), so it cannot live under a domain subpackage, and it
+# imports nothing of teatree's own — no existing subpackage owns a dependency-free
+# process-environment leaf.
+# 104: +projection_signals.py — the ORM half of the host-projection seam: the post_save/post_delete
+# receivers that republish ``config/host_projection.py``'s payload whenever a projected control-DB
+# row changes. It bridges core models and teatree.config, so core/models/ may not own it (that
+# package may not import config) and config/ may not either (it may not import the ORM); the
+# registration point is ``core/apps.py``'s ``ready()``, which is a root concern.
+# 105: +managers_inbound.py (#3910) — the IncomingEvent/ReplyDispatch queryset predicates carved
 # out of managers.py, which had reached the 500-LOC module-health ceiling and could not take
 # another method. The inbound queue answers "what is still owed a drain", a different question
 # from the ticket/worktree/task lifecycle the hub keeps. It lands at the root beside the four
 # managers_* leaves it belongs with (managers_overlay, managers_issue_match,
 # managers_phase_cadence, managers_task_claim); filing it under a subpackage would separate it
 # from its siblings to satisfy a counter.
-# 104: +schema_readiness.py (#3901) — the schema-vs-code admission predicate plus the
+# 106: +schema_readiness.py (#3901) — the schema-vs-code admission predicate plus the
 # `pending_migrations` graph walk it now owns. A genuine new root concern with no other
 # home: the claim chokepoint reads it through managers_task_claim (its own tach node), and
 # core/gates/schema_guard reads the same primitive, so putting it under gates/ would put
 # managers on the teatree.core node it is itself a dependency OF — a cycle tach refuses.
-# 105: +forge_push.py (#3927) — the `t3 push` credential-resolution + non-interactive-push seam
+# 107: +forge_push.py (#3927) — the `t3 push` credential-resolution + non-interactive-push seam
 # (the ONE supported push path from the worker container). A flat root leaf consumed by the
 # `t3 push` CLI command and `utils/git_sync.push`; owned by no existing subpackage — merge/ is
 # the keystone transition, not a push-credential seam.
-# 106: +managers_task_sweeps.py (#3957) — the boot-sweep concern carved out of managers.py,
+# 108: +managers_task_sweeps.py (#3957) — the boot-sweep concern carved out of managers.py,
 # which had crossed the 500-LOC module-health ceiling and could not take another method.
 # reclaim_orphaned_claims, replay_orphaned_transitions and reap_stale_claims share ONE ordering
 # contract — the run_boot_sweeps rescue-before-fail sequence — so they move together or not at
@@ -171,7 +182,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # the root beside the managers_* leaves it belongs with (managers_overlay, managers_inbound,
 # managers_issue_match, managers_phase_cadence, managers_task_claim); filing it under a
 # subpackage would separate it from its siblings to satisfy a counter.
-PINNED_FLAT_CORE_MODULES = 106
+PINNED_FLAT_CORE_MODULES = 108
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

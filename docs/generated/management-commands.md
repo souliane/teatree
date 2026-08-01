@@ -382,7 +382,7 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 | Subcommand | Description |
 | --- | --- |
-| `record` | Record a deferred question (called by the PreToolUse away-mode hook) |
+| `record` | Record a deferred question by hand — the agent-facing capture surface |
 | `answer` | Resolve a pending question with a user answer (resumes a parked headless task) |
 | `dismiss` | Dismiss a pending question without answering it |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
@@ -452,6 +452,10 @@ Group root — forces sub-commands to be addressed by name.
 ## `review_request_check`
 
 Decide POST or SUPPRESS for a review-request message.
+
+## `review_request_groups`
+
+Print each work group's readiness, its blockers, and how to broadcast it.
 
 ## `review_request_post`
 

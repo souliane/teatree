@@ -30,7 +30,7 @@ Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model t
 
 ## CLI Reference
 
-Top-level commands (no overlay needed): `t3 startoverlay`, `t3 docs`, `t3 agent`, `t3 sessions`, `t3 cost`, `t3 tokens`, `t3 speak`, `t3 ui`, `t3 admin`, `t3 info`, `t3 config`, `t3 banned-terms`, `t3 ci`, `t3 codex`, `t3 review`, `t3 review-request`, `t3 eval`, `t3 doctor`, `t3 tool`, `t3 setup`, `t3 update`, `t3 assess`, `t3 overlay`, `t3 loop`, `t3 mcp`, `t3 slack`, `t3 task`, `t3 recover`, `t3 dogfood`, `t3 dream`, `t3 mutation`, `t3 push`. (This list is kept honest by `tests/teatree_skill_support/test_teatree_skill_cli_reference.py`, which asserts every name is a registered `t3` command; the in-sync full reference with descriptions is `docs/generated/cli-reference.md`.)
+Top-level commands (no overlay needed): `t3 startoverlay`, `t3 docs`, `t3 agent`, `t3 sessions`, `t3 cost`, `t3 tokens`, `t3 speak`, `t3 ui`, `t3 admin`, `t3 info`, `t3 config`, `t3 banned-terms`, `t3 ci`, `t3 codex`, `t3 review`, `t3 review-request`, `t3 eval`, `t3 doctor`, `t3 tool`, `t3 setup`, `t3 update`, `t3 assess`, `t3 overlay`, `t3 loop`, `t3 mcp`, `t3 notion`, `t3 slack`, `t3 task`, `t3 recover`, `t3 dogfood`, `t3 dream`, `t3 mutation`, `t3 push`. (This list is kept honest by `tests/teatree_skill_support/test_teatree_skill_cli_reference.py`, which asserts every name is a registered `t3` command; the in-sync full reference with descriptions is `docs/generated/cli-reference.md`.)
 
 Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
 
@@ -48,6 +48,71 @@ t3 <overlay> tasks start              # Claim and launch next interactive task i
 t3 <overlay> pr create <ticket-id>    # Open the PR: validate ship gates + trigger the ship transition (advance a TESTED ticket toward review)
 t3 <overlay> followup sync            # Daily ticket/PR sync
 ```
+
+### Notion, headless (`t3 notion`)
+
+The claude.ai Notion connector is interactively authenticated, so it does not exist in a
+cron/headless run. `t3 notion` is the replacement: the public Notion API under an internal
+**integration token** (env `NOTION_TOKEN`, else the overlay's `NOTION_TOKEN_PASS_KEY` entry,
+else `pass show notion/integration-token`). Agents call `t3`, never the API directly.
+
+```bash
+t3 notion whoami                       # verify the token; print the integration pages must be shared with
+t3 notion doctor <page>                # triage one page: token present? valid? shared? still LIVE?
+t3 notion fetch <page> --comments      # page as Markdown, plus its open discussions (--json for raw blocks)
+t3 notion audit-fetch <page> --reason '<why>'     # audit-read a page refused as dead; stamps the output
+t3 notion append <page> --body-file f  # append at the end, verified by a re-fetch
+t3 notion section show <page> --heading '## 🔧 …'      # which blocks the owned section covers
+t3 notion section replace <page> --heading '## 🔧 …' --body-file f --legacy '## 🔧 …old…'
+t3 notion comment post <page> --body-file f --marker '[t3:…]'   # post once per marker; re-post needs --allow-duplicate
+t3 notion property get <page> --name 'GitLab Reference'         # the poll a block fetch cannot answer (--json for raw)
+t3 notion property set <page> --name Status --value Merged      # payload shaped by the property's OWN live type
+t3 notion query <database-id> [--data-source] [--filter-file f]
+```
+
+**One-time human setup** (no code can do it): create an internal integration, store its
+secret in `pass`, and **share the integration onto each page/database** (page ••• →
+Connections). Until that grant exists Notion answers 404 — reported as "not shared with this
+integration", distinct from "not a Notion object".
+
+**`section replace` is the idempotency primitive** the `/prd-agent` and `/bdd-test-creation`
+skills own a named H2 section with. It is **block-scoped**: it appends the new body under the
+matched heading, archives only that section's own blocks, and renames a legacy heading in
+place — so block-level comments and discussions outside (and on the heading itself) survive.
+There is no whole-page replace on this surface, because one would destroy every discussion on
+the page. Two matching headings stop the write rather than guessing.
+
+**`comment post` is dedup-driven by default.** The same skills post a notification comment and
+check for their own marker first, so the marker already being in the page's open discussions
+reports `duplicate` at exit 0 having written nothing — a forgotten flag under-posts, never
+double-posts, and `--allow-duplicate` is the deliberate second copy. Notion exposes only
+*unresolved* discussions, so a marker whose thread a human resolved is posted again.
+
+**`property get`/`set` reach what `fetch` cannot.** A property hangs off the page object rather
+than its blocks, so a block-tree render can never answer "what is this page's GitLab Reference?".
+The write derives its payload from the property's own live type — the caller names a value, never
+a Notion type — and a type with no plain-text form (formula, rollup, relation, people, files) is
+refused rather than written as something else.
+
+**An archived page is refused, not returned.** An archived Notion page renders as COMPLETELY
+current — full acceptance criteria, a `Status` still reading "In Progress", live comment
+threads — so a superseded spec is read as the requirement and the work built against it is
+the WRONG work. Every page-scoped command goes through one liveness chokepoint and exits
+`14` rather than handing back the body. The predicate: `archived`/`in_trash` is the only
+signal that CONCLUDES death and is decisive; membership of the page's own parent database is
+the corroboration that turns an unverifiable read into an explicit UNKNOWN and supplies the
+successor. **UNKNOWN refuses** — a parent database this integration cannot query fails closed.
+`t3 notion doctor` reports liveness as its own third stage (`OK`/`DEAD`/`UNKNOWN`, never a
+bare OK it did not establish). The only escape is a READ escape for a genuine audit —
+`t3 notion audit-fetch <page> --reason '<why>'`, its own command rather than a flag on
+`fetch` so it cannot be reached by habit. It needs written prose, announces itself on stderr,
+and stamps the emitted Markdown; there is no audited write.
+
+Every write re-fetches and refuses to report success unless the change landed. Failures exit
+with their own codes so an unattended caller can branch: `3` no token, `4` bad token,
+`5` capability not granted, `6` page not shared, `7` not a Notion object, `8` rate-limited,
+`9` write reported but not landed, `10` ambiguous section, `11` unrepresentable Markdown,
+`14` page archived/superseded or its liveness unprovable.
 
 ## Key Models
 

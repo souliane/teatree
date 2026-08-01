@@ -77,6 +77,36 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     raise ImproperlyConfigured(msg)
 
 
+def _cwd_overlay_name(overlays: "dict[str, OverlayBase]") -> str | None:
+    """The registered overlay owning the current working directory, or ``None``.
+
+    Keeps the ambient tier of :func:`get_overlay` in agreement with the one
+    ``teatree.config`` already applies. ``get_effective_settings`` resolves the
+    active overlay as ``T3_OVERLAY_NAME`` → cwd walked up to its ``manage.py``
+    (:func:`teatree.config.discover_active_overlay`) → the single installed
+    overlay, while :func:`get_overlay` stopped one tier short. On a
+    multi-overlay install that made ONE process hold TWO active overlays: the
+    settings tier layered an overlay's DB rows while every backend, gate and
+    skill resolver here raised ``Multiple overlays found`` and was swallowed
+    into a "nothing configured" degradation by its caller.
+
+    Consulted ONLY where :func:`get_overlay` would otherwise raise, and only
+    honoured when the discovered name is actually registered — so the named,
+    env-pinned and single-overlay paths stay byte-for-byte unchanged, and a cwd
+    that belongs to no registered overlay still fails loud.
+    """
+    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    try:
+        entry = discover_active_overlay()
+    except Exception:
+        logger.debug("ambient overlay discovery failed; falling through to the multi-overlay error", exc_info=True)
+        return None
+    if entry is None or entry.name not in overlays:
+        return None
+    return entry.name
+
+
 def _canonical_overlay_name(name: str) -> str | None:
     """Fold a stored overlay name onto its canonical registered name, or ``None``.
 

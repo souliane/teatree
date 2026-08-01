@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import DraftState
 from teatree.core.merge.authorization import (
     _assert_clear_actionable,
     _assert_clear_authorized,
@@ -32,6 +33,7 @@ from teatree.utils.pr_ref import PrRef
 
 _SHA = "a" * 40
 _SLUG = "souliane/teatree"
+_DRAFT_PROBE = "teatree.core.merge.ci_rollup.CodeHostQuery.pr_draft_state"
 
 
 def _clear(**overrides: object) -> MergeClear:
@@ -142,13 +144,21 @@ class TestFloorGates(TestCase):
 
     def test_assert_not_draft_refuses_a_draft_head(self) -> None:
         with (
-            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_is_draft", return_value=True),
-            pytest.raises(MergePreconditionError, match="draft state"),
+            patch(_DRAFT_PROBE, return_value=DraftState.DRAFT),
+            pytest.raises(MergePreconditionError, match="is in draft state"),
         ):
             assert_not_draft(self._query())
 
     def test_assert_not_draft_passes_a_non_draft_head(self) -> None:
-        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_is_draft", return_value=False):
+        with patch(_DRAFT_PROBE, return_value=DraftState.NOT_DRAFT):
+            assert_not_draft(self._query())
+
+    def test_assert_not_draft_refuses_an_unreadable_draft_state(self) -> None:
+        """An unreadable draft flag cannot rule out a draft — the floor holds."""
+        with (
+            patch(_DRAFT_PROBE, return_value=DraftState.UNKNOWN),
+            pytest.raises(MergePreconditionError, match="could not be read from the forge"),
+        ):
             assert_not_draft(self._query())
 
     def test_assert_ci_not_failed_refuses_a_failed_verdict(self) -> None:

@@ -126,7 +126,7 @@ def test_select_for_agent_launch_overlay_active(tmp_path: Path):
     assert "debug" in result.skills
 
 
-# ── SkillLoadingPolicy.select_for_prompt_hook (framework/cwd only) ───
+# ── SkillLoadingPolicy.select_for_prompt_hook (cwd/overlay context) ──
 
 
 def test_select_for_prompt_hook_framework_from_cwd(tmp_path: Path):
@@ -222,19 +222,19 @@ def test_overlay_in_scope_when_active(tmp_path: Path):
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme"},
             overlay_active=True,
-            lifecycle_skill="code",
         )
         is True
     )
 
 
-def test_overlay_out_of_scope_without_lifecycle(tmp_path: Path):
+def test_overlay_out_of_scope_when_cwd_has_no_remote(tmp_path: Path):
+    # Real ``_matches_any_remote`` against a non-repo directory: no remote to
+    # match, so an inactive overlay stays out of scope.
     assert (
         SkillLoadingPolicy._overlay_in_scope(
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
             overlay_active=False,
-            lifecycle_skill="",
         )
         is False
     )
@@ -246,7 +246,6 @@ def test_overlay_out_of_scope_when_remote_patterns_not_a_list(tmp_path: Path):
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": "not-a-list"},
             overlay_active=False,
-            lifecycle_skill="code",
         )
         is False
     )
@@ -258,7 +257,6 @@ def test_overlay_out_of_scope_when_remote_patterns_empty(tmp_path: Path):
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": []},
             overlay_active=False,
-            lifecycle_skill="code",
         )
         is False
     )
@@ -270,7 +268,6 @@ def test_overlay_out_of_scope_when_remote_patterns_all_non_string(tmp_path: Path
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": [123, None, ""]},
             overlay_active=False,
-            lifecycle_skill="code",
         )
         is False
     )
@@ -283,7 +280,6 @@ def test_overlay_in_scope_on_remote_match(tmp_path: Path, monkeypatch):
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
             overlay_active=False,
-            lifecycle_skill="code",
         )
         is True
     )
@@ -296,7 +292,6 @@ def test_overlay_out_of_scope_on_remote_no_match(tmp_path: Path, monkeypatch):
             cwd=tmp_path,
             overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
             overlay_active=False,
-            lifecycle_skill="code",
         )
         is False
     )
@@ -311,7 +306,6 @@ def test_base_detected_skills_omits_overlay_skill_when_no_skill_path(tmp_path: P
         cwd=tmp_path,
         overlay_skill_metadata={},
         overlay_active=True,
-        lifecycle_skill="code",
     )
     assert ordered == []
 
@@ -321,7 +315,6 @@ def test_base_detected_skills_omits_overlay_skill_when_skill_path_blank(tmp_path
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "  "},
         overlay_active=True,
-        lifecycle_skill="code",
     )
     assert ordered == []
 
@@ -331,7 +324,6 @@ def test_base_detected_skills_includes_overlay_skill_when_active(tmp_path: Path)
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
-        lifecycle_skill="code",
     )
     assert ordered == ["t3:acme"]
 
@@ -404,6 +396,47 @@ def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkey
     assert "acme-conventions" not in result.skills
     # The lifecycle skill is unaffected — core work still gets `code`.
     assert "code" in result.skills
+
+
+def test_prompt_hook_surfaces_overlay_skill_and_companions_on_remote_match(tmp_path: Path, monkeypatch):
+    # The UserPromptSubmit path has no lifecycle skill and no session-active
+    # overlay: the cwd's remote match is the ONLY overlay-scope signal it has.
+    # A matching remote means overlay work, so the overlay's own skill and its
+    # companions are surfaced as HARD demands, not advisory ones.
+    monkeypatch.setattr(
+        "teatree.skill_support.loading._matches_any_remote",
+        lambda _cwd, _patterns: True,
+    )
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        overlay_skill_metadata=_OVERLAY_META,
+        loaded_skills=set(),
+        companion_skills=_COMPANIONS,
+    )
+    assert "t3:acme" in result.skills
+    assert "t3-acme-review" in result.skills
+    assert "acme-conventions" in result.skills
+    assert result.advisory_skills == ()
+
+
+def test_prompt_hook_withholds_overlay_skill_when_remote_does_not_match(tmp_path: Path, monkeypatch):
+    # ANTI-VACUITY TWIN: the single flipped input is the remote match. Core-only
+    # work keeps the overlay skill and its companions out of the demand set.
+    monkeypatch.setattr(
+        "teatree.skill_support.loading._matches_any_remote",
+        lambda _cwd, _patterns: False,
+    )
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        overlay_skill_metadata=_OVERLAY_META,
+        loaded_skills=set(),
+        companion_skills=_COMPANIONS,
+    )
+    assert "t3:acme" not in result.skills
+    assert "t3-acme-review" not in result.skills
+    assert "acme-conventions" not in result.skills
 
 
 def test_framework_detection_independent_of_overlay_scope(tmp_path: Path, monkeypatch):

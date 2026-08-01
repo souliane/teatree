@@ -91,7 +91,8 @@ class TestLoopSlackAnswerCommand:
         payload = json.loads(out.getvalue())
         assert payload["processed"] == 1
         assert payload["acked"] == 1
-        assert "delegated" in payload
+        assert "dispatched" in payload
+        assert "covered" in payload
 
     def test_lease_contention_skips(self) -> None:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="thanks!")

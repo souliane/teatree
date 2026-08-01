@@ -315,6 +315,65 @@ class DjangoDbImporter:
             logger.warning("DSLR restore stderr for %s: %s", snap_name, stderr)
             self.stdout.write(f"    Restore error: {stderr[:200]}\n")
 
+    def _reference_db_table_count(self) -> int:
+        """Number of public tables in the reference DB, or ``0`` when it cannot be read."""
+        result = run_allowed_to_fail(
+            [
+                "psql",
+                "-h",
+                self.pg_host,
+                "-U",
+                self.pg_user,
+                "-d",
+                self.cfg.ref_db_name,
+                "-tAc",
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'",
+            ],
+            env=self.pg_env,
+            expected_codes=None,
+        )
+        if result.returncode != 0:
+            return 0
+        count = result.stdout.strip()
+        return int(count) if count.isdigit() else 0
+
+    def _bootstrap_dslr_snapshot_from_reference_db(self) -> bool:
+        """Take the FIRST snapshot for a reference DB that is already populated locally.
+
+        Without this the DSLR-only fast path deadlocks for any tenant whose
+        ``development-<tenant>`` reference DB exists on the host but has never
+        been snapshotted: :meth:`_resolve_dslr_snapshots` finds nothing, and the
+        out-of-band warmer deliberately skips exactly those tenants (its config
+        builder keeps only tenants that ALREADY have a snapshot), so a snapshot
+        is never created and every provision falls through to the gated slow
+        path that needs an explicit user authorization.
+
+        Snapshotting a database that is already on this host downloads nothing
+        and restores nothing, so it is not the slow/remote path that gate
+        protects against. An empty reference DB is left alone — a data-less
+        snapshot would shadow the real dump-download path the next provision
+        needs.
+        """
+        tables = self._reference_db_table_count()
+        if tables == 0:
+            logger.info("No DSLR snapshot and no populated %s to bootstrap one from", self.cfg.ref_db_name)
+            return False
+        self.stdout.write(
+            f"  No DSLR snapshot for {self.cfg.ref_db_name} yet, but it holds {tables} tables — "
+            f"bootstrapping the first snapshot from the local reference DB.\n",
+        )
+        if self._migrate_reference_db() is _MigrateResult.FAILED:
+            self.stderr.write(
+                f"  WARNING: migrating {self.cfg.ref_db_name} failed — refusing to snapshot an "
+                f"un-migrated reference DB.\n",
+            )
+            return False
+        self._take_dslr_snapshot()
+        if not self._copy_ref_to_ticket():
+            return False
+        self.stdout.write(f"  Created {self.cfg.ticket_db_name} from the bootstrapped reference DB.\n")
+        return True
+
     def _try_restore_from_dslr(self, *, skip_dslr: bool) -> bool:
         if skip_dslr:
             logger.info("DSLR restore skipped (skip_dslr=True)")
@@ -325,7 +384,7 @@ class DjangoDbImporter:
         _ensure_ref_db(self.cfg.ref_db_name, self.pg_host, self.pg_user, self.pg_env)
         snapshots = self._resolve_dslr_snapshots()
         if not snapshots:
-            return False
+            return self._bootstrap_dslr_snapshot_from_reference_db()
         for snap_name in snapshots:
             self.stdout.write(f"  Restoring {self.cfg.ref_db_name} from DSLR snapshot: {snap_name}\n")
             ok, is_env, stderr = _dslr.restore_ref_from_dslr(self.dslr_cmd, self.dslr_env, snap_name)

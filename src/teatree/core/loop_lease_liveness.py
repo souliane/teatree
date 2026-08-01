@@ -13,7 +13,63 @@ regardless of pid liveness.
 """
 
 from collections.abc import Callable
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+#: How long a PER-LOOP lease whose owner cannot be verified stays live.
+#:
+#: Three times the 60s per-tick re-claim heartbeat, so an owner that is actually
+#: running never lapses even across two skipped ticks, while an owner that has
+#: DIED releases its slots within minutes instead of pinning them for the whole
+#: ``ttl_seconds`` (1800s) TTL. Without this bound an unverifiable owner received
+#: MORE protection than a verifiable one — a provably-dead pid is reclaimable
+#: immediately, so a null pid holding every ``loop:<name>`` slot for a full 30
+#: minutes let a restarting worker be locked out by its own dead predecessor and
+#: SKIP every loop indefinitely.
+UNVERIFIABLE_OWNER_GRACE = timedelta(seconds=180)
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseClaim:
+    """The four stored facts about one lease claim that decide its liveness.
+
+    They travel together through every predicate below because they are one
+    lease, and reading them off a ``.values()`` dict at each call site is how
+    they drift. :meth:`from_row` is the single place the ORM's column names are
+    known, so a renamed column breaks in one place rather than four.
+    """
+
+    session_id: str
+    owner_pid: int | None = None
+    expires_at: datetime | None = None
+    acquired_at: datetime | None = None
+
+    @classmethod
+    def from_row(cls, row: dict | None) -> "LeaseClaim":
+        """Build a claim from a ``LoopLease`` ``.values()`` row; an absent row is an unowned slot."""
+        values = row or {}
+        return cls(
+            session_id=values.get("session_id") or "",
+            owner_pid=values.get("owner_pid"),
+            expires_at=values.get("lease_expires_at"),
+            acquired_at=values.get("acquired_at"),
+        )
+
+    def within_ttl(self, now: datetime) -> bool:
+        return self.expires_at is not None and self.expires_at > now
+
+    def within_unverifiable_grace(self, now: datetime) -> bool:
+        """Whether this claim is still inside :data:`UNVERIFIABLE_OWNER_GRACE`.
+
+        The liveness bound for an owner whose process cannot be verified. Every
+        winning claim write stamps ``acquired_at``, and the per-tick re-claim IS
+        the heartbeat, so this reads as "did the owner prove liveness recently".
+        A null ``acquired_at`` cannot date the claim at all and is therefore NOT
+        within grace — an unverifiable owner biases to reclaimable, never pinned.
+        """
+        if self.acquired_at is None:
+            return False
+        return self.acquired_at + UNVERIFIABLE_OWNER_GRACE > now
 
 
 def pid_alive_probe() -> Callable[[int], bool] | None:
@@ -50,14 +106,7 @@ def anchorable_owner_pid(owner_pid: int | None) -> int | None:
     return owner_pid
 
 
-def lease_is_live(
-    session_id: str,
-    owner_pid: int | None,
-    expires_at: datetime | None,
-    now: datetime,
-    *,
-    trust_pid_past_ttl: bool,
-) -> bool:
+def lease_is_live(claim: LeaseClaim, now: datetime, *, trust_pid_past_ttl: bool) -> bool:
     """Whether a non-empty session's lease is live (#1073/#1604/#3571).
 
     The single liveness predicate every caller shares so they can never drift. A
@@ -66,42 +115,47 @@ def lease_is_live(
     dead session's pid is routinely reused / cross-namespace so an alive pid is not
     proof the session is alive: ``True`` (``t3-master``) keeps it live past TTL (the
     #1604 busy-owner protection); ``False`` (a ``loop:<name>`` slot) falls through to
-    the TTL so a lapsed TTL is reclaimable while a fresh TTL still reads live. An
-    INDETERMINATE pid (null, or ``pid_alive`` unavailable) fails CLOSED to the TTL.
+    the TTL so a lapsed TTL is reclaimable while a fresh TTL still reads live.
     An empty ``session_id`` is never live.
+
+    An INDETERMINATE pid (null, or ``pid_alive`` unavailable) is the degraded case
+    and gets the SHORTEST leash, not the longest. On a ``loop:<name>`` slot it is
+    live only while BOTH the TTL holds AND the claim is inside
+    :data:`UNVERIFIABLE_OWNER_GRACE`, because nothing else can distinguish a
+    running owner from a dead one — and ``anchorable_owner_pid`` deliberately
+    nulls a dead pid at claim time, so a session that dies leaves exactly this
+    shape behind. ``t3-master`` keeps the plain TTL: its owner may be busy inside
+    a long beat and fire no re-claim, so ``acquired_at`` is not a heartbeat there
+    and the #1604 busy-owner protection must not be shortened.
     """
-    if not session_id:
+    if not claim.session_id:
         return False
-    if owner_pid is not None:
+    within_ttl = claim.within_ttl(now)
+    if claim.owner_pid is not None:
         pid_alive = pid_alive_probe()
         if pid_alive is not None:
-            if not pid_alive(owner_pid):
+            if not pid_alive(claim.owner_pid):
                 return False
             if trust_pid_past_ttl:
                 return True
             # Per-loop slot: an alive-but-possibly-reused pid does not extend
             # liveness past the TTL; fall through to the TTL backstop.
-    return expires_at is not None and expires_at > now
+            return within_ttl
+    if trust_pid_past_ttl:
+        return within_ttl
+    return within_ttl and claim.within_unverifiable_grace(now)
 
 
-def live_foreign_owner_session(row: dict | None, session_id: str, now: datetime, *, trust_pid_past_ttl: bool) -> str:
+def live_foreign_owner_session(claim: LeaseClaim, session_id: str, now: datetime, *, trust_pid_past_ttl: bool) -> str:
     """The non-empty session of a live owner *other than* ``session_id``, or ``""``.
 
     Live is the slot-aware :func:`lease_is_live` verdict; the same session refreshing
     its own claim is never "foreign". Returns ``""`` when the slot is unowned, owned
     by ``session_id`` itself, or held by a dead/expired (reclaimable) owner.
     """
-    owner_session = (row or {}).get("session_id") or ""
-    if owner_session == session_id:
+    if claim.session_id == session_id:
         return ""
-    is_live = lease_is_live(
-        owner_session,
-        (row or {}).get("owner_pid"),
-        (row or {}).get("lease_expires_at"),
-        now,
-        trust_pid_past_ttl=trust_pid_past_ttl,
-    )
-    return owner_session if is_live else ""
+    return claim.session_id if lease_is_live(claim, now, trust_pid_past_ttl=trust_pid_past_ttl) else ""
 
 
 def pid_is_foreign(stored_pid: int | None, current_pid: int | None) -> bool:

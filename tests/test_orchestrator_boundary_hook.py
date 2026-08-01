@@ -167,7 +167,7 @@ class TestMainAgentHeavyBashBlocked:
             "make all",
             "sleep 600",
             "find . -name '*.py' -exec grep -l TODO {} ;",
-            "ls -laR /Users/adrien/workspace",
+            "ls -laR /Users/dev/workspace",
         ],
     )
     def test_heavy_main_agent_bash_blocked(self, command: str) -> None:

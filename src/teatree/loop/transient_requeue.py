@@ -92,7 +92,6 @@ from datetime import datetime
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
-from teatree.agents.outage_classifier import is_transient_failure
 from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
@@ -106,6 +105,7 @@ from teatree.core.repair_loop import (
     requeue_verdict,
     terminal_reason_fingerprint,
 )
+from teatree.failure_signatures import is_transient_failure
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
 

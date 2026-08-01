@@ -31,7 +31,11 @@ ticket/issue, merge target) — is design wording, not a done-claim about
 delivered work, and is suppressed. This narrows ONLY the design-table shape: a
 genuine multi-deliverable false-"done" with no evidence stays BLOCKED regardless
 of which delivery words it uses or omits (the gate does NOT require any positive
-delivery vocabulary to fire). Third, a claim accompanied by a COMPLETE
+delivery vocabulary to fire). Third, a STATUS/PROGRESS report — a turn carrying a
+progress frame ("status", "so far", "in flight") whose enumerated rows are a
+strict majority unfinished ("running", "waiting", "pending") — describes work in
+progress, so enumerating its lanes is not claiming they finished. Fourth, a claim
+accompanied by a COMPLETE
 deliverable->on-target-evidence map clears: every enumerated deliverable carries
 on-target evidence (merged to
 target / verified on the correct surface / passing E2E), the authoritative spec
@@ -59,11 +63,24 @@ _COMPLETENESS_CLAIM_RE: Final[re.Pattern[str]] = re.compile(
     r"ready to go|"
     r"good to (?:merge|go|ship)|"
     r"(?:work|ticket|task|feature) is (?:now )?(?:done|complete|finished|shipped)|"
-    r"(?:i'?m |we'?re )?done(?: here)?|"
-    r"(?:it'?s |this is )?(?:all )?(?:done|complete|finished|shipped)|"
+    r"(?:i'?m|i am|we'?re|we are)\s+done(?:\s+here)?|"
+    r"(?:it'?s|it is|this is|that'?s|that is)\s+(?:all\s+)?(?:done|complete|finished|shipped)|"
     r"clear to merge"
     r")\b",
     re.IGNORECASE,
+)
+
+# A bare "Done." standing alone as its own line IS a whole-work assertion; a bare
+# "done" anywhere in prose is not. The subject-bound legs above deliberately no
+# longer match an unqualified token, because that token appears in every ordinary
+# progress sentence an agent writes — "nothing is done yet", "done with step 3",
+# "once done", "I'm not done investigating" — and each of those was read as a
+# completion claim (#2665 over-fire). The standalone-line shape keeps the genuine
+# sign-off ("Done." / "**All done!**") firing while a token carrying a
+# continuation ("Done with step 3") does not.
+_STANDALONE_DONE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t>]*(?:[-*+]\s+)?(?:\*\*|__)?(?:all\s+)?(?:done|complete|finished|shipped)(?:\*\*|__)?[.!]?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # An honest refusal overrides any completeness verb in the same turn: a turn
@@ -233,6 +250,30 @@ _DESIGN_DECISION_LINE_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# A STATUS/PROGRESS frame: the turn is reporting where in-flight work stands, not
+# asserting it finished. Pairs with a dominant majority of in-progress rows (below)
+# to characterise the #2665 over-fire that cost the most delivery capacity — an
+# ordinary progress update whose only sin was enumerating its lanes.
+_PROGRESS_FRAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bstatus\b|\bprogress\b|\bso far\b|\bright now\b|\bcurrently\b|"
+    r"\bin flight\b|\bin-flight\b|\bin progress\b|\bunderway\b|\bongoing\b|"
+    r"\bstill\b|\bwhere (?:things|each|we) \w+ stand\w*\b|"
+    r"\bwill report\b|\breport again\b|\bupdate\b",
+    re.IGNORECASE,
+)
+
+# An enumerated line whose status is UNFINISHED. Deliberately excludes "open" /
+# "opened" / "created" / "raised": those are the artifact-existence proxy this gate
+# exists to reject, so counting them as in-progress would exempt the very claim the
+# gate targets.
+_IN_PROGRESS_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\brunning\b|\bin flight\b|\bin-flight\b|\bin progress\b|\bunderway\b|\bongoing\b|"
+    r"\bstill\b|\bpending\b|\bqueued\b|\bblocked\b|\bwaiting\b|\bawaiting\b|"
+    r"\bwip\b|\btodo\b|\bnot started\b|\bnot yet\b|\bnot done\b|\bnot pushed\b|"
+    r"\bdispatched\b|\bworking\b|\bfailing\b|\bretrying\b|\bremaining\b|\bnext up\b",
+    re.IGNORECASE,
+)
+
 # Minimum enumerated lines for the multi-deliverable scope this gate targets.
 _MIN_DELIVERABLES: Final[int] = 2
 
@@ -277,6 +318,23 @@ def _is_design_decision_prose(text: str, bodies: list[str]) -> bool:
     return decision_lines * 2 >= len(bodies)
 
 
+def _is_progress_report(text: str, bodies: list[str]) -> bool:
+    """True when the turn reports work IN PROGRESS rather than claiming it finished.
+
+    Precision-preserving AND of two independent signals, so a genuine
+    multi-deliverable done-claim is never exempted: (1) the turn carries a
+    status/progress FRAME (``_PROGRESS_FRAME_RE``), AND (2) a STRICT majority of
+    the enumerated lines carry an unfinished status (``_IN_PROGRESS_LINE_RE``).
+    The strict majority is deliberately harsher than the sibling suppressions'
+    ``>= half``: a turn that asserts everything is done while half its rows are
+    still running is contradictory, and the gate must keep firing on it.
+    """
+    if not bodies or not _PROGRESS_FRAME_RE.search(text):
+        return False
+    in_progress = sum(1 for body in bodies if _IN_PROGRESS_LINE_RE.search(body))
+    return in_progress * 2 > len(bodies)
+
+
 class CompletionVerdict(NamedTuple):
     """Why a completion claim was blocked, for the handler's BLOCK reason.
 
@@ -291,7 +349,7 @@ class CompletionVerdict(NamedTuple):
 
 def _has_completeness_claim(text: str) -> bool:
     """True when ``text`` asserts the whole of the work is done/clean."""
-    return bool(_COMPLETENESS_CLAIM_RE.search(text))
+    return bool(_COMPLETENESS_CLAIM_RE.search(text) or _STANDALONE_DONE_LINE_RE.search(text))
 
 
 def _is_honest_refusal(text: str) -> bool:
@@ -340,8 +398,9 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
     refusal, when the turn is architecture/planning/recommendation prose
     enumerating options rather than delivered work, when it is a no-delivery-
     context design/decision table (locked design rows, not delivered work), when
-    the ticket is single-deliverable, or when every leg of the map is satisfied.
-    Empty/odd input yields ``None``.
+    it is a status/progress report whose rows are dominated by unfinished work,
+    when the ticket is single-deliverable, or when every leg of the map is
+    satisfied. Empty/odd input yields ``None``.
     """
     if _no_claim_to_evaluate(text):
         return None
@@ -351,6 +410,8 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
     if _is_recommendation_prose(text, bodies):
         return None
     if _is_design_decision_prose(text, bodies):
+        return None
+    if _is_progress_report(text, bodies):
         return None
     missing: list[str] = []
     lines_without_evidence = [

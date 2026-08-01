@@ -7,6 +7,7 @@ import typer
 
 from teatree.cli.setup._process import run_captured
 from teatree.self_update import current_editable_source
+from teatree.utils.editable_pth import editable_install_for_repo
 
 
 class ToolInstaller:
@@ -24,7 +25,11 @@ class ToolInstaller:
 
         Repair path: when the editable source has been deleted (e.g. the worktree
         it was installed from got cleaned up), reinstall editable from the main
-        clone so the global ``t3`` is re-anchored at a stable path.
+        clone so the global ``t3`` is re-anchored at a stable path. The install
+        shape comes from :func:`editable_install_for_repo`, so a fork that vendors
+        core installs ``vendor/teatree`` with the root as ``--with-editable`` —
+        pointing uv at the root itself would build the fork's distribution, which
+        ships no ``t3`` entry point and registers no overlay.
         """
         uv_bin = shutil.which("uv")
         t3_on_path = shutil.which("t3") is not None
@@ -43,7 +48,7 @@ class ToolInstaller:
             typer.echo("      Install uv: https://docs.astral.sh/uv/getting-started/installation/")
             return False
 
-        result = run_captured([uv_bin, "tool", "install", "--force", "--editable", str(self.repo)])
+        result = run_captured(editable_install_for_repo(self.repo).install_argv(uv_bin))
         if result.returncode != 0:
             typer.echo(f"WARN  `uv tool install` failed: {result.stderr.strip()}")
             return False

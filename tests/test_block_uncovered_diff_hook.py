@@ -19,13 +19,99 @@ turns the block tests red — the anti-vacuity guarantee.
 
 import json
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import hooks.scripts.hook_router as router
-from hooks.scripts.coverage_gate import diff_coverage_finding
+from hooks.scripts.coverage_gate import diff_coverage_finding, repo_ships_branch, shipped_branch
 from hooks.scripts.hook_router import _is_merge_class_mutation, handle_block_uncovered_diff
 from teatree.utils.diff_coverage import UNREFERENCED_SYMBOL_IMPORT_HINT
+
+SHIP_BRANCH = "feat/widget"
+
+
+def build_repo(root: Path, name: str, remote: str, *, branch: str = SHIP_BRANCH) -> Path:
+    """A real git repo with an ``origin`` remote and *branch* checked out.
+
+    The gate proves a measurement is in scope by resolving the push remote of
+    the branch being shipped, so a test that expects the gate to REACH the
+    measurement must hand it a repo that genuinely ships something. Real git
+    under ``tmp_path`` per the repo's test doctrine — no faked ``.git`` dirs.
+    """
+    repo = root / name
+    repo.mkdir(parents=True)
+    git = ["git", "-C", str(repo)]
+    subprocess.run([*git, "init", "-q", "-b", "main"], check=True)
+    subprocess.run([*git, "config", "user.email", "t@example.com"], check=True)
+    subprocess.run([*git, "config", "user.name", "t"], check=True)
+    subprocess.run([*git, "remote", "add", "origin", remote], check=True)
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    subprocess.run([*git, "checkout", "-qb", branch], check=True)
+    return repo
+
+
+@pytest.fixture
+def shipping_repo(tmp_path: Path) -> Path:
+    """The repo a gated create command ships from — the in-scope measurement target."""
+    return build_repo(
+        tmp_path,
+        "session-clone",
+        "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
+    )
+
+
+@dataclass
+class T3Measurement:
+    """What the gate asked ``t3 tool diff-coverage`` for, if it asked at all."""
+
+    calls: int = 0
+    argv: list[str] = field(default_factory=list)
+    cwd: str | None = None
+
+    @property
+    def ran(self) -> bool:
+        return self.calls > 0
+
+    @property
+    def repo(self) -> Path:
+        return Path(self.argv[self.argv.index("--repo") + 1])
+
+
+@contextmanager
+def t3_reports(stdout: str, *, returncode: int = 0, raises: Exception | None = None) -> Iterator[T3Measurement]:
+    """Fake ONLY the ``t3 tool diff-coverage`` shellout; let every git probe run for real.
+
+    The gate resolves its scope with real ``git`` reads against the repo under
+    test, so a blanket ``subprocess.run`` patch would swallow those too and the
+    test would grade a stubbed resolver instead of the real one. ``t3`` is the
+    genuine external boundary (a separate tool with its own environment) and is
+    the only call faked here.
+    """
+    real_run = subprocess.run
+    measurement = T3Measurement()
+
+    def dispatch(argv, **kwargs):
+        if not (isinstance(argv, list) and "diff-coverage" in argv):
+            return real_run(argv, **kwargs)
+        measurement.calls += 1
+        measurement.argv = argv
+        measurement.cwd = kwargs.get("cwd")
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(args=argv, returncode=returncode, stdout=stdout, stderr="")
+
+    with patch.object(router.subprocess, "run", side_effect=dispatch):
+        yield measurement
+
+
+CLEAN_REPORT = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
 
 
 class TestMergeClassMutationDetection:
@@ -136,43 +222,37 @@ def test_finding_row_names_the_from_import_workaround():
 
 
 class TestBlocksUncoveredDiff:
-    def test_blocks_gh_pr_ready_when_diff_coverage_fails(self, monkeypatch, capsys):
+    def test_blocks_gh_pr_ready_when_diff_coverage_fails(self, shipping_repo, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=_finding_json(),
-            stderr="",
-        )
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
-            blocked = handle_block_uncovered_diff({"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}})
-        assert blocked is True
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        with t3_reports(_finding_json(), returncode=1) as measurement:
+            assert handle_block_uncovered_diff(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
         assert "gate 12" in out["permissionDecisionReason"]
         # It shelled `t3 tool diff-coverage --json` — reusing the gate as-is.
-        assert run.call_args[0][0][:3] == ["/usr/local/bin/t3", "tool", "diff-coverage"]
-        assert "--json" in run.call_args[0][0]
+        assert measurement.argv[:3] == ["/usr/local/bin/t3", "tool", "diff-coverage"]
+        assert "--json" in measurement.argv
 
-    def test_blocks_non_draft_pr_create_on_unreferenced_symbol(self, monkeypatch):
+    def test_blocks_non_draft_pr_create_on_unreferenced_symbol(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout=_finding_json(uncovered=[], symbols=["build_widget"]), stderr=""
-        )
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --title t --body b"}}
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"gh pr create --head {SHIP_BRANCH} --title t --body b"},
+            "cwd": str(shipping_repo),
+        }
+        with t3_reports(_finding_json(uncovered=[], symbols=["build_widget"]), returncode=1):
             assert handle_block_uncovered_diff(data) is True
 
-    def test_deny_preamble_names_the_from_import_workaround(self, monkeypatch, capsys):
+    def test_deny_preamble_names_the_from_import_workaround(self, shipping_repo, monkeypatch, capsys):
         # souliane/teatree#3521: the deny preamble (shown even for a
         # line-only finding, symbols=[]) must not say a bare "cover it" —
         # it names the imports-only reading and the `from <module> import
         # <symbol>` workaround, since a flagged symbol may already be
         # covered via `import mod` + `mod.sym()`.
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        with t3_reports(_finding_json(), returncode=1):
             assert handle_block_uncovered_diff(data) is True
         reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
         assert "from <module> import <symbol>" in reason
@@ -213,44 +293,41 @@ class TestFailsOpenOnBrokenSubprocess:
     ``if result.returncode != 0: deny``) turns these RED.
     """
 
-    def test_fail_open_on_module_not_found_crash(self, monkeypatch):
+    def test_fail_open_on_module_not_found_crash(self, shipping_repo, monkeypatch):
         # The exact #122 shape: coverage missing → traceback on stderr,
         # empty stdout, exit 1. The current (buggy) gate denied here.
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        crashed = subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr="Traceback (most recent call last):\nModuleNotFoundError: No module named 'coverage'",
-        )
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --title t --body b"}}
-        with patch.object(router.subprocess, "run", return_value=crashed):
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"gh pr create --head {SHIP_BRANCH} --title t --body b"},
+            "cwd": str(shipping_repo),
+        }
+        with t3_reports("", returncode=1) as measurement:
             assert handle_block_uncovered_diff(data) is False
+        assert measurement.ran  # anti-vacuity: it FAILED OPEN, it did not skip before measuring
 
-    def test_fail_open_on_nonzero_with_unparseable_stdout(self, monkeypatch):
+    def test_fail_open_on_nonzero_with_unparseable_stdout(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        garbage = subprocess.CompletedProcess(args=[], returncode=2, stdout="some non-json error text", stderr="boom")
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
-        with patch.object(router.subprocess, "run", return_value=garbage):
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        with t3_reports("some non-json error text", returncode=2) as measurement:
             assert handle_block_uncovered_diff(data) is False
+        assert measurement.ran
 
-    def test_fail_open_on_malformed_json(self, monkeypatch):
+    def test_fail_open_on_malformed_json(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        truncated = subprocess.CompletedProcess(args=[], returncode=1, stdout='{"passes": fal', stderr="")
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
-        with patch.object(router.subprocess, "run", return_value=truncated):
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        with t3_reports('{"passes": fal', returncode=1) as measurement:
             assert handle_block_uncovered_diff(data) is False
+        assert measurement.ran
 
 
 class TestAllowsCleanCases:
-    def test_allows_gh_pr_ready_when_diff_coverage_clean(self, monkeypatch):
+    def test_allows_gh_pr_ready_when_diff_coverage_clean(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        clean = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=clean, stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
-            assert (
-                handle_block_uncovered_diff({"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}) is False
-            )
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        with t3_reports(CLEAN_REPORT) as measurement:
+            assert handle_block_uncovered_diff(data) is False
+        assert measurement.ran
 
     def test_noop_when_not_a_merge_class_mutation(self):
         # `git commit` is NOT the gate's trigger (Gate 12 is pre-MERGE,
@@ -258,23 +335,28 @@ class TestAllowsCleanCases:
         data = {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'x'"}}
         assert handle_block_uncovered_diff(data) is False
 
-    def test_noop_for_draft_pr_create(self, monkeypatch):
+    def test_noop_for_draft_pr_create(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --draft --title t --body b"}}
-        with patch.object(router.subprocess, "run") as run:
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create --draft --title t --body b"},
+            "cwd": str(shipping_repo),
+        }
+        with t3_reports(CLEAN_REPORT) as measurement:
             assert handle_block_uncovered_diff(data) is False
-        run.assert_not_called()
+        assert not measurement.ran
 
-    def test_fail_open_when_t3_not_on_path(self, monkeypatch):
+    def test_fail_open_when_t3_not_on_path(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: None)
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
         assert handle_block_uncovered_diff(data) is False
 
-    def test_fail_open_when_t3_times_out(self, monkeypatch):
+    def test_fail_open_when_t3_times_out(self, shipping_repo, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        with patch.object(router.subprocess, "run", side_effect=subprocess.TimeoutExpired("t3", 30)):
-            data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}, "cwd": str(shipping_repo)}
+        with t3_reports("", raises=subprocess.TimeoutExpired("t3", 30)) as measurement:
             assert handle_block_uncovered_diff(data) is False
+        assert measurement.ran
 
 
 class TestMeasuresTheGatedCommandsWorktree:
@@ -291,59 +373,40 @@ class TestMeasuresTheGatedCommandsWorktree:
     """
 
     def _worktree(self, root: Path, name: str) -> Path:
-        wt = root / name
-        (wt / ".git").mkdir(parents=True)
-        return wt
+        return build_repo(root, name, f"git@gitlab.com:my-org/{name}.git")  # privacy-scan:allow
 
     def test_measures_the_cd_target_worktree_not_the_session_cwd(self, tmp_path, monkeypatch):
         x = self._worktree(tmp_path, "worktree-x")  # the PR's worktree (cd target)
         y = self._worktree(tmp_path, "worktree-y")  # the session cwd (a DIFFERENT worktree)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        captured: dict = {}
-
-        def fake_run(argv, **kwargs):
-            captured["argv"] = argv
-            captured["cwd"] = kwargs.get("cwd")
-            return subprocess.CompletedProcess(args=argv, returncode=1, stdout=_finding_json(), stderr="")
-
-        with patch.object(router.subprocess, "run", side_effect=fake_run):
-            data = {
-                "tool_name": "Bash",
-                "tool_input": {"command": f"cd {x} && gh pr create --title t --body b"},
-                "cwd": str(y),
-            }
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"cd {x} && gh pr create --title t --body b"},
+            "cwd": str(y),
+        }
+        with t3_reports(_finding_json(), returncode=1) as measurement:
             assert handle_block_uncovered_diff(data) is True
 
         # The gate measured X (the cd target), never the session cwd Y.
-        assert "--repo" in captured["argv"]
-        repo_arg = captured["argv"][captured["argv"].index("--repo") + 1]
-        assert Path(repo_arg).resolve() == x.resolve()
-        assert Path(captured["cwd"]).resolve() == x.resolve()
-        assert str(y.resolve()) not in captured["argv"]
+        assert measurement.repo.resolve() == x.resolve()
+        assert Path(measurement.cwd).resolve() == x.resolve()
+        assert str(y.resolve()) not in measurement.argv
 
     def test_falls_back_to_session_cwd_when_command_has_no_leading_cd(self, tmp_path, monkeypatch):
         y = self._worktree(tmp_path, "session-cwd")
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        captured: dict = {}
-
-        def fake_run(argv, **kwargs):
-            captured["argv"] = argv
-            captured["cwd"] = kwargs.get("cwd")
-            clean = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
-            return subprocess.CompletedProcess(args=argv, returncode=0, stdout=clean, stderr="")
-
-        with patch.object(router.subprocess, "run", side_effect=fake_run):
-            data = {
-                "tool_name": "Bash",
-                "tool_input": {"command": "gh pr create --title t --body b"},
-                "cwd": str(y),
-            }
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create --title t --body b"},
+            "cwd": str(y),
+        }
+        with t3_reports(CLEAN_REPORT) as measurement:
             assert handle_block_uncovered_diff(data) is False
 
         # No leading cd → the gate measures the session cwd's OWN repo (correct
         # when the command runs there), never a bare cwd-less run.
-        assert Path(captured["cwd"]).resolve() == y.resolve()
-        assert "--repo" in captured["argv"]
+        assert Path(measurement.cwd).resolve() == y.resolve()
+        assert measurement.repo.resolve() == y.resolve()
 
 
 class TestScopesToThePublishedRepo:
@@ -358,11 +421,7 @@ class TestScopesToThePublishedRepo:
     """
 
     def _repo(self, root: Path, name: str, remote: str) -> Path:
-        repo = root / name
-        repo.mkdir()
-        subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)  # noqa: S607 — real git under tmp_path (repo test doctrine)
-        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", remote], check=True)  # noqa: S607 - git resolved on PATH (test)
-        return repo
+        return build_repo(root, name, remote)
 
     def test_cross_repo_target_skips_the_session_repo_measurement(self, tmp_path, monkeypatch):
         session_repo = self._repo(
@@ -376,9 +435,9 @@ class TestScopesToThePublishedRepo:
             "tool_input": {"command": "glab mr create -R other-org/other-repo --title t --description d"},
             "cwd": str(session_repo),
         }
-        with patch.object(router.subprocess, "run") as run:
+        with t3_reports(_finding_json(), returncode=1) as measurement:
             assert handle_block_uncovered_diff(data) is False
-        run.assert_not_called()
+        assert not measurement.ran
 
     def test_matching_target_still_enforces(self, tmp_path, monkeypatch):
         # Anti-vacuity: an explicit target that IS the measured repo (bare slug
@@ -389,31 +448,181 @@ class TestScopesToThePublishedRepo:
             "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
         )
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr create -R my-org/my-repo --title t --description d"},
             "cwd": str(session_repo),
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with t3_reports(_finding_json(), returncode=1):
             assert handle_block_uncovered_diff(data) is True
 
-    def test_flagless_create_keeps_the_cwd_scope(self, tmp_path, monkeypatch):
-        # No explicit target: the cwd repo IS the publish target — enforced.
-        session_repo = self._repo(
-            tmp_path,
-            "session-clone",
-            "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
-        )
+    def test_flagless_create_in_the_repo_that_ships_the_branch_enforces(self, shipping_repo, monkeypatch):
+        # No explicit target, and the measured repo genuinely ships the branch:
+        # the gate measures it and still DENIES an under-covered diff.
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": "glab mr create --title t --description d"},
-            "cwd": str(session_repo),
+            "tool_input": {"command": f"glab mr create -s {SHIP_BRANCH} --title t --description d"},
+            "cwd": str(shipping_repo),
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with t3_reports(_finding_json(), returncode=1):
             assert handle_block_uncovered_diff(data) is True
+
+
+class TestPublishTargetComesFromTheShipNotTheCwd:
+    """A ship from repo B, issued from a session sitting in repo A, measures B.
+
+    The regression this locks: with no explicit ``-R`` the gate used to answer
+    "is the measured repo the publish target?" with an unconditional ``True`` —
+    "no target named, so cwd must be it". A markdown-only ship of one repo,
+    issued from a session in another, was then denied on dozens of uncovered
+    symbols belonging to the session's repo, which the author never touched.
+    The publish target now comes from the branch being shipped.
+    """
+
+    def test_tilde_cd_ship_measures_the_shipped_repo_not_the_session_cwd(self, tmp_path, monkeypatch):
+        # The recorded incident's exact shape: `cd ~/<repo> && glab mr create
+        # --source-branch <b>`, hook cwd = an unrelated repo. `~` is not an
+        # absolute path, so the unexpanded form was anchored on the session cwd
+        # and the walk-up landed on the SESSION repo's own `.git`.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        shipped = build_repo(tmp_path, "shipped-repo", "git@gitlab.com:my-org/shipped.git")  # privacy-scan:allow
+        session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": f"cd ~/shipped-repo && glab mr create -s {SHIP_BRANCH} --title t --description d"
+            },
+            "cwd": str(session),
+        }
+        # The finding would belong to the SESSION repo; measuring `shipped` is
+        # what makes the verdict ALLOW rather than a deny on foreign symbols.
+        with t3_reports(CLEAN_REPORT) as measurement:
+            assert handle_block_uncovered_diff(data) is False
+        assert measurement.repo.resolve() == shipped.resolve()
+
+    def test_repo_that_does_not_ship_the_branch_is_skipped_not_measured(self, tmp_path, monkeypatch):
+        # The measured repo has no such branch, so its diff is a different
+        # repo's work — skip rather than deny on foreign symbols.
+        session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -s fix/lives-in-another-repo --title t --description d"},
+            "cwd": str(session),
+        }
+        with t3_reports(_finding_json(), returncode=1) as measurement:
+            assert handle_block_uncovered_diff(data) is False
+        assert not measurement.ran
+
+    def test_skip_reason_is_reported_not_silent(self, tmp_path, monkeypatch, capsys):
+        session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -s fix/lives-in-another-repo --title t --description d"},
+            "cwd": str(session),
+        }
+        with t3_reports(CLEAN_REPORT):
+            handle_block_uncovered_diff(data)
+        err = capsys.readouterr().err
+        assert "coverage gate 12 skipped" in err
+        assert "-R <owner>/<repo>" in err
+
+    def test_unresolvable_cd_target_skips_instead_of_walking_up_to_the_session_repo(self, tmp_path, monkeypatch):
+        # An unexpanded `$VAR` cd target resolves to no directory. Anchoring it
+        # on the session cwd and walking UP finds the SESSION repo — a
+        # confident wrong answer. Refuse to guess.
+        session = build_repo(tmp_path, "session-repo", "git@gitlab.com:my-org/session.git")  # privacy-scan:allow
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "cd $WORKTREE && gh pr create --title t --body b"},
+            "cwd": str(session),
+        }
+        with t3_reports(_finding_json(), returncode=1) as measurement:
+            assert handle_block_uncovered_diff(data) is False
+        assert not measurement.ran
+
+    def test_fork_push_remote_still_enforces(self, tmp_path, monkeypatch):
+        # Anti-vacuity for the fork workflow: the branch pushes to a FORK
+        # remote while the MR targets upstream. The repo still ships the
+        # branch, so the gate keeps measuring — a fix that made the gate stop
+        # firing here would be a removal, not a fix.
+        repo = build_repo(tmp_path, "fork-clone", "git@github.com:upstream-org/app.git")  # privacy-scan:allow
+        git = ["git", "-C", str(repo)]
+        subprocess.run([*git, "remote", "add", "fork", "git@github.com:me/app.git"], check=True)
+        subprocess.run([*git, "config", f"branch.{SHIP_BRANCH}.pushRemote", "fork"], check=True)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"gh pr create --head {SHIP_BRANCH} --title t --body b"},
+            "cwd": str(repo),
+        }
+        with t3_reports(_finding_json(), returncode=1):
+            assert handle_block_uncovered_diff(data) is True
+
+    def test_detached_head_with_no_named_branch_is_skipped(self, tmp_path, monkeypatch):
+        repo = build_repo(tmp_path, "detached", "git@gitlab.com:my-org/detached.git")  # privacy-scan:allow
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach"], check=True)  # noqa: S607 — real git under tmp_path
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create --title t --body b"},
+            "cwd": str(repo),
+        }
+        with t3_reports(_finding_json(), returncode=1) as measurement:
+            assert handle_block_uncovered_diff(data) is False
+        assert not measurement.ran
+
+
+class TestShippedBranchParsing:
+    """The branch a create command ships, read as exact shlex tokens."""
+
+    def test_glab_source_branch_long_flag(self):
+        assert shipped_branch("glab mr create --source-branch feat/x --title t") == "feat/x"
+
+    def test_glab_source_branch_short_flag(self):
+        assert shipped_branch("glab mr create -s feat/x --title t") == "feat/x"
+
+    def test_gh_head_flag(self):
+        assert shipped_branch("gh pr create --head feat/x --title t --body b") == "feat/x"
+
+    def test_gh_cross_fork_head_keeps_only_the_branch(self):
+        # `<user>:<branch>` names the head REPO plus the ref; only the ref is a branch.
+        assert shipped_branch("gh pr create --head someone:feat/x --title t --body b") == "feat/x"
+
+    def test_glab_target_branch_is_not_the_shipped_branch(self):
+        # `-b`/`--target-branch` is where the MR merges INTO, never the ship.
+        assert shipped_branch("glab mr create -b main --title t --description d") is None
+
+    def test_no_branch_flag_defers_to_the_repos_own_head(self):
+        assert shipped_branch("glab mr create --title t --description d") is None
+
+    def test_gh_pr_ready_names_no_branch(self):
+        assert shipped_branch("gh pr ready 42") is None
+
+
+class TestRepoShipsBranch:
+    """The proof that a measured repo is the working tree the ship comes from."""
+
+    def test_true_for_a_local_branch_with_a_push_remote(self, shipping_repo):
+        assert repo_ships_branch(shipping_repo, SHIP_BRANCH) is True
+
+    def test_falls_back_to_the_repos_checked_out_branch(self, shipping_repo):
+        assert repo_ships_branch(shipping_repo, None) is True
+
+    def test_false_for_a_branch_that_lives_elsewhere(self, shipping_repo):
+        assert repo_ships_branch(shipping_repo, "fix/somewhere-else") is False
+
+    def test_false_when_the_repo_has_no_push_destination(self, tmp_path):
+        repo = build_repo(tmp_path, "remoteless", "git@gitlab.com:my-org/x.git")  # privacy-scan:allow
+        subprocess.run(["git", "-C", str(repo), "remote", "remove", "origin"], check=True)  # noqa: S607 — real git under tmp_path
+        assert repo_ships_branch(repo, SHIP_BRANCH) is False
+
+    def test_false_for_a_directory_that_is_not_a_repo(self, tmp_path):
+        assert repo_ships_branch(tmp_path, SHIP_BRANCH) is False
 
 
 class TestRegisteredInPreToolUseChain:

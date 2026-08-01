@@ -23,8 +23,9 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.gates.review_skill_gate import (
     PER_PR_REVIEW_SKILL,
+    accepted_per_pr_review_skills,
     configured_review_skill,
-    per_pr_review_skill,
+    configured_review_skill_alternates,
     recorded_review_skill,
 )
 from teatree.core.management.commands.lifecycle import ReviewSkillEvidenceError
@@ -32,8 +33,14 @@ from teatree.core.models import Session, Ticket
 
 
 @contextmanager
-def _configured_review_skill(skill: str) -> Iterator[None]:
-    with patch("teatree.core.gates.review_skill_gate.configured_review_skill", return_value=skill):
+def _configured_review_skill(skill: str, *alternates: str) -> Iterator[None]:
+    with (
+        patch("teatree.core.gates.review_skill_gate.configured_review_skill", return_value=skill),
+        patch(
+            "teatree.core.gates.review_skill_gate.configured_review_skill_alternates",
+            return_value=alternates,
+        ),
+    ):
         yield
 
 
@@ -89,6 +96,77 @@ class TestReviewingRequiresReviewSkillEvidence(TestCase):
             pytest.raises(ReviewSkillEvidenceError, match="custom-per-pr-review"),
         ):
             self._visit_reviewing(ticket)
+
+
+class TestAlternateReviewSkillsSatisfyTheGate(TestCase):
+    """A configured alternate is a SUBSTITUTE reviewer, never a bypass.
+
+    An overlay that runs one deep-review skill by default but accepts a
+    second (a different model's reviewer) must be able to record either and
+    pass. What stays refused is a run of NEITHER — the gate keeps its teeth.
+    """
+
+    def _ticket_ready_for_review(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
+        Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        return ticket
+
+    def _visit_reviewing(self, ticket: Ticket) -> None:
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer")
+
+    def test_evidence_for_an_alternate_skill_passes(self) -> None:
+        ticket = self._ticket_ready_for_review()
+        ticket.record_review_skill_run("codex-review")
+        with _configured_review_skill("elite-review", "codex-review"):
+            self._visit_reviewing(ticket)
+        session = ticket.sessions.first()
+        assert session is not None
+        assert "reviewing" in session.visited_phases
+
+    def test_evidence_for_the_primary_still_passes(self) -> None:
+        ticket = self._ticket_ready_for_review()
+        ticket.record_review_skill_run("elite-review")
+        with _configured_review_skill("elite-review", "codex-review"):
+            self._visit_reviewing(ticket)
+        session = ticket.sessions.first()
+        assert session is not None
+        assert "reviewing" in session.visited_phases
+
+    def test_an_unconfigured_skill_is_still_refused(self) -> None:
+        ticket = self._ticket_ready_for_review()
+        ticket.record_review_skill_run("some-other-skill")
+        with (
+            _configured_review_skill("elite-review", "codex-review"),
+            pytest.raises(ReviewSkillEvidenceError) as raised,
+        ):
+            self._visit_reviewing(ticket)
+        assert "elite-review" in str(raised.value)
+        assert "codex-review" in str(raised.value)
+
+    def test_alternates_alone_never_arm_the_gate(self) -> None:
+        ticket = self._ticket_ready_for_review()
+        with _configured_review_skill("", "codex-review"):
+            self._visit_reviewing(ticket)
+        session = ticket.sessions.first()
+        assert session is not None
+        assert "reviewing" in session.visited_phases
+
+
+class TestAcceptedReviewSkillResolution(TestCase):
+    def test_alternates_join_the_configured_primary(self) -> None:
+        with _configured_review_skill("elite-review", "codex-review"):
+            assert accepted_per_pr_review_skills() == frozenset({"elite-review", "codex-review"})
+
+    def test_no_configured_skill_accepts_nothing(self) -> None:
+        with _configured_review_skill("", "codex-review"):
+            assert accepted_per_pr_review_skills() == frozenset()
+
+    def test_alternates_are_read_from_effective_settings_stripped_and_deduped(self) -> None:
+        with patch(
+            "teatree.core.gates.review_skill_gate.get_effective_settings",
+            return_value=UserSettings(review_skill_alternates=[" codex-review ", "codex-review", "  "]),
+        ):
+            assert configured_review_skill_alternates() == ("codex-review",)
 
 
 class TestReviewSkillGateRepoScoping(TestCase):
@@ -181,15 +259,15 @@ class TestPerPrReviewTierScoping(TestCase):
 
     def test_periodic_architectural_skill_resolves_to_the_per_pr_tier(self) -> None:
         with self._tiers(review="ac-reviewing-codebase"):
-            assert per_pr_review_skill() == PER_PR_REVIEW_SKILL
+            assert accepted_per_pr_review_skills() == frozenset({PER_PR_REVIEW_SKILL})
 
     def test_a_distinct_per_pr_skill_is_left_alone(self) -> None:
         with self._tiers(review="custom-per-pr-review"):
-            assert per_pr_review_skill() == "custom-per-pr-review"
+            assert accepted_per_pr_review_skills() == frozenset({"custom-per-pr-review"})
 
     def test_unset_review_skill_stays_a_noop(self) -> None:
         with self._tiers(review=""):
-            assert per_pr_review_skill() == ""
+            assert accepted_per_pr_review_skills() == frozenset()
 
     def test_gate_still_blocks_without_per_pr_tier_evidence(self) -> None:
         ticket = self._ticket_ready_for_review()

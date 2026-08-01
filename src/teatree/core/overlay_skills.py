@@ -26,7 +26,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import AppRegistryNotReady, ImproperlyConfigured
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -57,14 +57,17 @@ def _overlay_or_none(overlay_name: str) -> "OverlayBase | None":
     The single guarded load both resolvers below share. It is guarded because
     they run at CLI-BUILD time — before Django is configured — where
     :func:`teatree.core.overlay_loader.get_overlay` raises
-    :class:`~django.core.exceptions.ImproperlyConfigured`. Each caller then
-    answers with its neutral default, so a build-time caller never regresses.
+    :class:`~django.core.exceptions.ImproperlyConfigured` (settings not configured
+    yet) or :class:`~django.core.exceptions.AppRegistryNotReady` (settings
+    configured, but ``django.setup()`` has not populated the app registry yet —
+    the two are siblings, not sub/superclass, so both must be named). Each caller
+    then answers with its neutral default, so a build-time caller never regresses.
     """
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI/build startup light
 
     try:
         return get_overlay(overlay_name or None)
-    except ImproperlyConfigured:
+    except (ImproperlyConfigured, AppRegistryNotReady):
         logger.debug("overlay %r unavailable; answering with the neutral default", overlay_name)
         return None
 

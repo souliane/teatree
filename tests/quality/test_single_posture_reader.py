@@ -14,7 +14,8 @@ Three assertions, each of which would have gone RED on the pre-#3826 tree:
     against, so the divergence was unrepresentable as a test at all.
 2.  :class:`TestNoSecondPostureArtifact` — no shipped module names the retired mirror,
     a planted mirror changes nothing, and raw access to the override table is confined
-    to the one cold reader. A future fast path cannot quietly reintroduce a file.
+    to the cold reader plus the projector that derives the host's copy of that row for
+    it. A future fast path cannot quietly reintroduce a file.
 3.  :class:`TestFailsTowardAsking` — an unresolvable posture asks the user. The old
     design failed closed to the most restrictive posture, which is what muted the owner.
 """
@@ -46,9 +47,11 @@ _SHIPPED_ROOTS = (_REPO / "src", _REPO / "hooks", _REPO / "scripts", _REPO / "de
 #: the ONLY place in the tree the string may still appear.
 RETIRED_MIRROR_FILENAME = "availability_override.json"
 
-#: The one module allowed to read the override table outside the ORM + migrations: the
-#: Django-free cold resolver. Every other reader goes through `ModeOverride`.
-COLD_OVERRIDE_READER = "src/teatree/config/cold_mode.py"
+#: The only modules allowed to read the override table outside the ORM + migrations: the
+#: Django-free cold resolver, and the publisher that projects that same row onto the host
+#: for it — a strictly-derived, write-triggered, generation-stamped projector with zero
+#: authority, not a second source of truth. Every other reader goes through `ModeOverride`.
+COLD_OVERRIDE_READERS = frozenset({"src/teatree/config/cold_mode.py", "src/teatree/config/host_projection.py"})
 
 _OVERRIDE_TABLE = ModeOverride._meta.db_table
 
@@ -266,7 +269,13 @@ class TestResolversAgree(_PostureCase):
 
 
 class TestNoSecondPostureArtifact(_PostureCase):
-    """No posture may be read from an on-disk artifact, and none may be reintroduced."""
+    """No posture is read from a hand-written artifact, and none may be reintroduced.
+
+    The host projection is not one: it carries the same rows, but strictly derived,
+    republished by the write seam itself and refused whenever its generation says it
+    might be stale. What is forbidden is a file some chokepoint writes its own opinion
+    into, which is what drifted a week out of date.
+    """
 
     def test_no_shipped_module_names_the_retired_mirror(self) -> None:
         offenders = [
@@ -292,15 +301,15 @@ class TestNoSecondPostureArtifact(_PostureCase):
     def test_raw_override_table_access_is_confined_to_the_cold_reader(self) -> None:
         # Every other consumer reads the row through the `ModeOverride` ORM model, so a
         # new hand-rolled reader (the shape that produced the mirror) shows up here.
-        readers = sorted(
+        readers = {
             str(path.relative_to(_REPO))
             for root in _SHIPPED_ROOTS
             for path in root.rglob("*.py")
             if _OVERRIDE_TABLE in path.read_text(encoding="utf-8", errors="ignore")
             and "migrations" not in path.parts
             and "models" not in path.parts
-        )
-        assert readers == [COLD_OVERRIDE_READER], f"unexpected raw reader of {_OVERRIDE_TABLE}: {readers}"
+        }
+        assert readers == COLD_OVERRIDE_READERS, f"unexpected raw reader of {_OVERRIDE_TABLE}: {sorted(readers)}"
 
 
 class TestFailsTowardAsking(_PostureCase):

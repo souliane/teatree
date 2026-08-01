@@ -16,6 +16,7 @@ graph TD
     teatree.ci_oauth_switch --> teatree.credential_config
     teatree.ci_oauth_switch --> teatree.token_report
     teatree.ci_oauth_switch --> teatree.utils
+    teatree.config --> teatree.db
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -38,6 +39,7 @@ graph TD
     teatree.core --> teatree.paths
     teatree.core --> teatree.pricing
     teatree.core --> teatree.project
+    teatree.core --> teatree.failure_signatures
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
@@ -89,6 +91,7 @@ graph TD
     teatree.core.models --> teatree.verification
     teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types
+    teatree.agents --> teatree.failure_signatures
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
@@ -207,6 +210,7 @@ graph TD
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
+    teatree.loop --> teatree.failure_signatures
     teatree.loop --> teatree.self_update
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
@@ -356,6 +360,9 @@ graph TD
     teatree.overlay_sdk --> teatree.utils
     teatree.overlay_sdk --> teatree.docker
     teatree.overlay_sdk --> teatree.visual_qa
+    teatree.db --> teatree.docker
+    teatree.db --> teatree.paths
+    teatree.db --> teatree.utils
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core
@@ -381,6 +388,7 @@ graph TD
     teatree.request_cache
     teatree.types
     teatree.pricing
+    teatree.failure_signatures
     teatree.verification
     teatree.templates
     teatree.claude_sessions

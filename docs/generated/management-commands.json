@@ -752,7 +752,7 @@
       "name": "questions",
       "subcommands": [
         {
-          "help": "Record a deferred question (called by the PreToolUse away-mode hook)",
+          "help": "Record a deferred question by hand \u2014 the agent-facing capture surface",
           "name": "record"
         },
         {
@@ -883,12 +883,17 @@
       ]
     },
     {
-      "help": "Decide POST or SUPPRESS for a review-request message.\n\nExit/output is machine-readable: ``action`` is ``post`` or\n``suppress``; ``permalink`` points at the existing message when\nsuppressed by a live-channel match. The caller MUST abort the\npost on ``suppress``.",
+      "help": "Decide POST or SUPPRESS for a review-request message.\n\nExit/output is machine-readable: ``action`` is ``post``, ``suppress``, or\n``refused``; ``permalink`` points at the existing message when suppressed\nby a live-channel match. The caller MUST abort the post on ``suppress``\nand on ``refused`` \u2014 ``review_exempt_repo`` (exit 2), ``draft_mr`` (the MR\nis held back as a Draft), ``draft_state_unknown`` (the forge could not be\nread, so a Draft cannot be ruled out) and ``work_group_not_ready`` (a\nsibling merge request in the same unit of work is not review-ready, with\nthe per-member detail in ``blockers``) are all refusals.",
       "name": "review_request_check",
       "subcommands": []
     },
     {
-      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (no recorded approval / no\nanti-vacuity attestation).",
+      "help": "Print each work group's readiness, its blockers, and how to broadcast it.\n\nNever posts. Exits ``1`` when the forge listing could not be read, ``0``\notherwise \u2014 a held group is a normal state to report, not a failure.",
+      "name": "review_request_groups",
+      "subcommands": []
+    },
+    {
+      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no\nrecorded approval, no anti-vacuity attestation, a draft MR, an\nunreadable draft state, or a work group holding this member back).",
       "name": "review_request_post",
       "subcommands": []
     },

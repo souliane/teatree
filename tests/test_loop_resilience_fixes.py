@@ -14,6 +14,7 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core.backend_protocols import DraftState
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.messaging.notify_with_fallback import notify_with_fallback
 
@@ -265,7 +266,7 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
         # bypass rather than asserting on a specific trusted author.
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
-            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_is_draft", return_value=False),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_draft_state", return_value=DraftState.NOT_DRAFT),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value="green"),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
             patch.object(author_trust, "repo_is_internal", return_value=True),

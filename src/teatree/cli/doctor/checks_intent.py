@@ -159,14 +159,13 @@ def _directive_consumer_liveness(
     The chain probed is the INTAKE one: this queue holds the pre-admission arc — the rows
     the tick interprets before stopping at the structural human ratify gate. The
     post-admission ``evaluate_execution_guards`` additionally gates on
-    ``factory_score_enabled`` and on a live critic, neither of which blocks intake, so
-    probing that chain would report a consumer as dead while it is in fact draining
-    this queue.
+    ``factory_score_enabled``, on a live critic and on signal trust, none of which blocks
+    intake, so probing that chain would report a consumer as dead while it is in fact
+    draining this queue.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: DB read at call time
     from teatree.loops.directive_loop.guards import (  # noqa: PLC0415 — deferred: ORM-backed probes
         FLAG_OFF,
-        SIGNAL_UNTRUSTED,
         evaluate_intake_guards,
     )
     from teatree.loops.directive_loop.loop import DIRECTIVE_LOOP_NAME  # noqa: PLC0415 — deferred: loop-package import
@@ -184,10 +183,7 @@ def _directive_consumer_liveness(
         settings=settings if settings is not None else get_effective_settings(None), seams=seams
     )
     if not verdict.ok:
-        remedies = {
-            FLAG_OFF: "turn on the DARK `directive_loop_enabled` setting",
-            SIGNAL_UNTRUSTED: "close the factory-signal instrumentation gap",
-        }
+        remedies = {FLAG_OFF: "turn on the DARK `directive_loop_enabled` setting"}
         remedy = remedies.get(verdict.reason, f"clear the {verdict.reason.split(':', 1)[0]} refusal")
         blockers.append(f"clear the guard refusal {verdict.reason!r} — {remedy}")
     return not blockers, "To restore the consumer: " + "; ".join(blockers) + "."

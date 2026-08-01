@@ -17,9 +17,11 @@ from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.modelkit.phases import canonicalize_stage_skill_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
+from teatree.core.review.mr_triage import RepoOwner
 from teatree.core.statusline_segment import StatuslineSegment
 from teatree.core.worktree.health import HealthCheck
 from teatree.core.worktree.health import default_health_checks as _default_health_checks
+from teatree.provisioning.skill_drift import SkillSourceClone
 from teatree.types import (
     DEFAULT_MR_TITLE_REGEX,
     DEFAULT_TRANSITION_EMOJIS,
@@ -172,6 +174,13 @@ class OverlayConfig(BaseModel):
     # lookup gerund (``reviewing``) resolve to one entry; an unknown phase key
     # fails LOUD at config load.
     stage_skills: dict[str, list[str]] = Field(default_factory=dict)
+    # The local clones whose reviewed ref is the source of truth for the skills
+    # installed on this box. An install is a physical COPY, so it cannot announce
+    # that its source moved on; declaring the source here is what lets
+    # ``t3 doctor`` compare the two and FAIL on a stale or never-installed skill
+    # instead of leaving a merged fix silently unreached. Empty in core — an
+    # overlay that declares no source reports no drift rather than a false one.
+    skill_source_clones: list[SkillSourceClone] = Field(default_factory=list)
     # The single skill injected alongside ``/t3:review`` for a reviewer
     # sub-agent; empty string disables injection without dropping the skill.
     pr_review_companion: str = "code-review"
@@ -192,6 +201,7 @@ class OverlayConfig(BaseModel):
     # a no-op; the public overlay promotes ``review_skill`` via its
     # ``overlay_settings.py`` (``REVIEW_SKILL``).
     review_skill: str = ""
+    review_skill_alternates: list[str] = Field(default_factory=list)
     architectural_review_skill: str = "ac-reviewing-codebase"
     scanning_news_skill: str = "scanning-news"
     eval_local_skill: str = "eval"
@@ -291,6 +301,18 @@ class OverlayConfig(BaseModel):
 
     def _register_secret(self, attr_name: str, pass_key: str) -> None:
         self._secret_registry()[attr_name] = pass_key
+
+    def secret_pass_key(self, name: str) -> str:
+        """The ``pass`` entry *name* is routed to, or ``""`` when unregistered.
+
+        The path itself, never the value — a caller that needs to RESOLVE the
+        secret through the audited :class:`~teatree.llm.credentials.Credential`
+        machinery (env first, then ``pass``, failing loud) needs the overlay's
+        routed entry as a ``pass_path_override``, which :meth:`_read_secret`
+        cannot supply because it returns the already-read value and silently
+        empties on a miss.
+        """
+        return self._secret_registry().get(name, "")
 
     def _read_secret(self, name: str) -> str:
         """Read the ``pass`` value registered for *name* at point of use; ``""`` if unregistered."""
@@ -556,6 +578,29 @@ class OverlayReview:
         """STATIC working-repo slugs the §17.4/#2323 cross-repo merge probe binds against."""
         return []
 
+    def repo_owner_for_slug(self, slug: str) -> RepoOwner:
+        """Which org function reviews *slug* — picks how long a review request waits.
+
+        The default answers ENGINEERING for every repo, which is the cadence the
+        review nag has always enforced, so an overlay with no ownership model keeps
+        the behaviour it shipped with. An overlay that HAS one overrides this and
+        owns its own answer for a repo it does not recognise.
+        """
+        _ = slug
+        return RepoOwner.ENGINEERING
+
+    def review_exempt_repo_slugs(self) -> tuple[str, ...]:
+        """Repo patterns whose merge requests must never get a review request.
+
+        A SEPARATE axis from :meth:`repo_owner_for_slug`, not a reading of it:
+        ownership answers the patient owner for a repo it does not recognise, so
+        deriving exemption from it would exempt everything unrecognised. The
+        default declares none, so the refusal is inert until an overlay names its
+        own repos. Read through :mod:`teatree.core.review.repo_exemption`, which
+        unions this with the ``review_exempt_repos`` setting.
+        """
+        return ()
+
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request.
 
@@ -666,6 +711,27 @@ class OverlayBase(ABC):
         if self.config.workspace_repos:
             return list(self.config.workspace_repos)
         return self.get_repos()
+
+    def get_repo_clone_url(self, repo_name: str) -> str:
+        """The remote to clone *repo_name* from when no local clone exists yet.
+
+        This is what makes a runtime with an EMPTY clone root able to provision:
+        the containerized stack owns its own workspace volume and has no operator
+        pre-seeded checkouts, so provisioning materialises each repo from its
+        remote on first use. A host-native run with the clone already present
+        never reaches this hook.
+
+        The default declares no remote (``""``), which keeps the pre-existing
+        behaviour: a missing clone fails loud with "No git clone found" rather
+        than cloning something the overlay never named. Overlays that know their
+        repos' canonical remotes override it.
+
+        Return a URL git can clone WITHOUT an embedded secret — authentication is
+        the runtime's credential-helper concern (``deploy/entrypoint.sh`` wires
+        ``gh``/``glab`` as https helpers), never a token pasted into the URL,
+        which would persist in the new clone's ``.git/config``.
+        """
+        return ""
 
     # ── Statusline contribution ──────────────────────────────────────
 

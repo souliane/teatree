@@ -59,17 +59,16 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 
 #: Every review phase whose DELIVERABLE is a recorded verdict. All four share one
 #: read-mostly-with-shell grant (:data:`_REVIEW_WITH_SHELL`), applied from this set
-#: so the entries cannot drift apart. The shell is load-bearing for the ``codex_*``
-#: variants specifically: they have NO server-side envelope seam (they are not in
-#: ``attempt_recorder._REVIEW_VERDICT_PHASES``) and the MCP post path
+#: so the entries cannot drift apart, and all four are in
+#: ``attempt_recorder._REVIEW_VERDICT_PHASES`` — one evidence contract, one seam.
+#: The shell stays load-bearing for the ``codex_*`` variants: the MCP post path
 #: (:class:`teatree.cli.review.service.ReviewService`) is GitLab-only, so on a
 #: GitHub PR the shell (``t3 teatree review record`` / ``t3 teatree review
 #: post-comment``, bound to a ``git rev-parse HEAD`` sha off a ``git worktree add
-#: --detach`` cold checkout) is their ONLY way to deliver a verdict — a shell-less
-#: codex member reads the diff but never delivers, stalling and leaking an "I have
-#: no Bash/git/gh" question to the owner. ``reviewing`` and ``e2e_reviewing`` carry
-#: the same shell grant and additionally have that envelope seam. ``requesting_review``
-#: is deliberately NOT a member: it records no verdict and stays plain read-only.
+#: --detach`` cold checkout) is how they post findings — a shell-less codex member
+#: reads the diff but never delivers, stalling and leaking an "I have no
+#: Bash/git/gh" question to the owner. ``requesting_review`` is deliberately NOT a
+#: member: it records no verdict and stays plain read-only.
 VERDICT_REVIEW_PHASES: Final[frozenset[str]] = frozenset(
     {"reviewing", "codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"}
 )

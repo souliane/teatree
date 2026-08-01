@@ -14,6 +14,7 @@ from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
+from teatree.core.review.mr_triage import RepoOwner
 from teatree.loop.domain_optional_scanner_jobs import (
     _arch_review_jobs_for_overlay,
     _audit_jobs_for_overlay,
@@ -26,6 +27,8 @@ from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _admit_colleague_prs_to_board,
     _competing_url_prefixes,
+    _mr_conflict_scanner_for,
+    _mr_triage_scanner_for,
     _pr_sweep_scanner_for,
     _self_pr_review_scanner_for,
     _slack_broadcasts_scanner_for,
@@ -55,6 +58,7 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     ReviewNagScanner,
     ReviewRequestMergeReactScanner,
+    ReviewRequestResumeScanner,
     ScanSignal,
     SlackDmInboundScanner,
     SlackMentionsScanner,
@@ -67,6 +71,8 @@ from teatree.loop.scanners import (
     WorkStateScanner,
 )
 from teatree.loop.scanners.base import ScannerError
+from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
+from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 from teatree.messaging import notify_with_fallback
 
@@ -206,6 +212,9 @@ def _ship_jobs_for_overlay(
     tag = backend.name
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
     jobs: list[_ScannerJob] = []
+    # One enricher for the whole overlay: its per-tick budget is shared across the
+    # hosts below rather than multiplied by them, and this builder runs once a tick.
+    ci_enricher = BoundedCiEnricher()
     for code_host in backend.hosts:
         url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
         competing_prefixes = _competing_url_prefixes(
@@ -220,6 +229,7 @@ def _ship_jobs_for_overlay(
                     identities=backend.identities,
                     allowed_url_prefixes=url_prefixes,
                     competing_url_prefixes=competing_prefixes,
+                    ci_enricher=ci_enricher,
                 ),
                 overlay=tag,
             ),
@@ -231,9 +241,19 @@ def _ship_jobs_for_overlay(
                     overlay=tag,
                 ),
             )
+        # Every open merge request owes a resolved conflict whatever its review
+        # policy says, so the sweep rides the ship domain alongside the merge
+        # engine rather than the colleague-facing review loop the away posture
+        # skips. Default-OFF: the builder returns None until an overlay opts in.
+        conflict_scanner = _mr_conflict_scanner_for(backend, code_host)
+        if conflict_scanner is not None:
+            jobs.append(_ScannerJob(scanner=conflict_scanner, overlay=tag))
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
+    triage_scanner = _mr_triage_scanner_for(backend)
+    if triage_scanner is not None:
+        jobs.append(_ScannerJob(scanner=triage_scanner, overlay=tag))
     return jobs
 
 
@@ -318,6 +338,18 @@ def _review_jobs_for_overlay(
     return jobs
 
 
+def _repo_owner_resolver(backend: OverlayBackends) -> Callable[[str], RepoOwner]:
+    """The overlay's repo-ownership answer, or core's when the overlay has no class.
+
+    A TOML-only overlay has no object to ask, so it keeps the shipped engineering
+    cadence rather than inheriting a patience it never declared.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return default_repo_owner
+    return overlay.review.repo_owner_for_slug
+
+
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """The single review-nag (overlay-scoped). Intake is the unified ``issue_intake`` job."""
     tag = backend.name
@@ -330,6 +362,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=backend.identities,
+                        repo_owner=_repo_owner_resolver(backend),
                     ),
                     overlay=tag,
                 ),
@@ -338,6 +371,14 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         host=backend.host,
                         identities=backend.identities,
+                    ),
+                    overlay=tag,
+                ),
+                _ScannerJob(
+                    scanner=ReviewRequestResumeScanner(
+                        messaging=backend.messaging,
+                        host=backend.host,
+                        overlay=tag,
                     ),
                     overlay=tag,
                 ),
@@ -570,6 +611,7 @@ def _messaging_jobs_for_backend(
             messaging=messaging,
             host=backend.host,
             identities=backend.identities,
+            repo_owner=_repo_owner_resolver(backend),
         )
         jobs.append(_ScannerJob(scanner=nag, overlay=tag))
     return jobs

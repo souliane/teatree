@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
-from teatree.core.backend_protocols import PrOpenState, ReviewState
+from teatree.core.backend_protocols import PrMergeState, PrOpenState, ReviewState
 from teatree.core.models import Ticket
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
@@ -17,6 +17,11 @@ from teatree.loop.scanners.reviewer_prs import CacheEntry, ReviewerPrsScanner, _
 from teatree.loop.scanners.reviewer_prs import mark_reviewed as _mark_reviewed_helper
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.types import RawAPIDict
+
+#: What the fake answers for a PR no case pinned — an open merge request whose
+#: conflict state was never established, which is what a real forge returns while
+#: it is still computing mergeability.
+_UNPINNED_MERGE_STATE = PrMergeState(state="OPEN", merge_commit_oid="")
 
 
 @dataclass
@@ -33,9 +38,21 @@ class FakeCodeHost:
     pr_open_state_by_url: dict[str, PrOpenState] = field(default_factory=dict)
     pr_open_state_default: PrOpenState = PrOpenState.UNKNOWN
     get_pr_open_state_calls: list[str] = field(default_factory=list)
+    approvals: RawAPIDict = field(default_factory=dict)
+    raise_on_approvals: Exception | None = None
+    merge_state_by_pr: dict[tuple[str, int], PrMergeState] = field(default_factory=dict)
+    merge_state_default: PrMergeState = _UNPINNED_MERGE_STATE
+    fetch_pr_merge_state_calls: list[tuple[str, int]] = field(default_factory=list)
+    raise_on_merge_state: Exception | None = None
 
     def current_user(self) -> str:
         return self.user
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        self.fetch_pr_merge_state_calls.append((slug, pr_id))
+        if self.raise_on_merge_state is not None:
+            raise self.raise_on_merge_state
+        return self.merge_state_by_pr.get((slug, pr_id), self.merge_state_default)
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         _ = (author, updated_after)
@@ -80,6 +97,12 @@ class FakeCodeHost:
     def get_issue(self, issue_url: str) -> RawAPIDict:
         _ = issue_url
         return {}
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> RawAPIDict:
+        _ = (repo, pr_iid)
+        if self.raise_on_approvals is not None:
+            raise self.raise_on_approvals
+        return self.approvals
 
 
 @dataclass

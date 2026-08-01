@@ -14,7 +14,10 @@ import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.utils.run as utils_run_mod
+import teatree.utils.singleton as singleton_mod
 from teatree.core.models import Ticket, Worktree
+from teatree.core.runners.service_launch import ServiceLauncher
+from teatree.utils.singleton import singleton
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
@@ -103,21 +106,34 @@ class TestRunBackend(TestCase):
 
 
 class TestRunBuildFrontend(TestCase):
+    """``run build-frontend`` surfaces every ``ServiceLauncher`` refusal as exit 1.
+
+    The launcher reports ``ok=False`` for three distinct conditions — no command
+    configured, a build already in flight, and a non-zero build exit. Each one
+    means nothing was built, so each must stop the caller the way the sibling
+    ``run tests`` / ``run lint`` already do; a production-build gate that exits 0
+    having built nothing reports green to CI and to the loop.
+    """
+
+    @staticmethod
+    def _register(tmp_path: Path) -> Path:
+        wt_dir = tmp_path / "frontend"
+        wt_dir.mkdir()
+        ticket = Ticket.objects.create(overlay="test")
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/frontend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+        )
+        return wt_dir
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_calls_overlay_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "frontend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/frontend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
+            wt_dir = self._register(Path(tmp))
 
             mock_run = _popen_mock()
             with patch.object(utils_run_mod, "Popen", mock_run):
@@ -131,24 +147,46 @@ class TestRunBuildFrontend(TestCase):
 
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_command_returns_message(self) -> None:
+    def test_no_command_raises_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = self._register(Path(tmp))
+
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("run", "build-frontend", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_build_already_in_flight_raises_system_exit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            wt_dir = tmp_path / "frontend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/frontend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
+            wt_dir = self._register(tmp_path)
+            worktree = Worktree.objects.get(extra__worktree_path=str(wt_dir))
+            held = ServiceLauncher(worktree, "build-frontend")
 
-            result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
+            with (
+                patch.object(singleton_mod, "DATA_DIR", tmp_path),
+                singleton(held._lock_name()),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "build-frontend", path=str(wt_dir))
 
-            assert "no run command configured" in result.lower()
-            assert "build-frontend" in result.lower()
+            assert exc_info.value.code == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failing_build_raises_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = self._register(Path(tmp))
+
+            with (
+                patch.object(utils_run_mod, "Popen", _popen_mock(returncode=1)),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "build-frontend", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
 
 
 class TestRunTests(TestCase):

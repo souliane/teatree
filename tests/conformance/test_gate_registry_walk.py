@@ -19,14 +19,13 @@ sibling seam sharing the same drift shape.
 
 import ast
 from collections.abc import Iterable
-from pathlib import Path
+from functools import cache
 
 import pytest
 
 from teatree.core.model_registries import populate_model_registries
 from teatree.core.modelkit import gate_registry
-
-_SRC_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree"
+from tests.conformance._src_tree import src_modules
 
 # The register/get callable pairs the walk covers, keyed by the runtime resolver
 # used for the liveness cross-check. A NEW registry seam of this shape enrolls
@@ -48,7 +47,8 @@ def _first_string_arg(call: ast.Call) -> str | None:
     return None
 
 
-def _literal_call_names(func_name: str) -> set[str]:
+@cache
+def _literal_call_names(func_name: str) -> frozenset[str]:
     """Every string-literal first arg passed to a call of ``func_name`` under ``src/teatree``.
 
     Introspection over the source tree: ``register_gate("x", fn)`` and
@@ -56,8 +56,7 @@ def _literal_call_names(func_name: str) -> set[str]:
     hand-listed out of sync with the code.
     """
     names: set[str] = set()
-    for path in _SRC_DIR.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for _path, tree in src_modules():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -68,7 +67,7 @@ def _literal_call_names(func_name: str) -> set[str]:
             literal = _first_string_arg(node)
             if literal is not None:
                 names.add(literal)
-    return names
+    return frozenset(names)
 
 
 def _assert_covers(*, producers: Iterable[str], consumers: Iterable[str], label: str) -> None:

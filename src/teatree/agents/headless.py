@@ -30,7 +30,13 @@ from django.utils import timezone
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
 from teatree.agents._headless_options import SpawnOverrides, _build_options, resolve_headless_max_turns
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
+from teatree.agents.harness import (
+    Harness,
+    HarnessSession,
+    pydantic_ai_thread,
+    resolve_dispatch_provider,
+    resolve_harness,
+)
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_failure_taxonomy import error_result_reason as _error_result_reason
@@ -54,7 +60,7 @@ from teatree.agents.usage_window import (
     park_or_rotate_on_limit,
     park_task_on_all_exhausted,
 )
-from teatree.config import AgentHarnessProvider, get_effective_settings
+from teatree.config import AgentHarnessProvider
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import AllTokensExhaustedError
@@ -123,7 +129,23 @@ def run_headless(
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
-    """Run a headless task in-process via ``claude-agent-sdk``."""
+    """Drive an agent for *task* in-process via the ``agent_harness`` backend.
+
+    Non-agentic phases (``short_describe``) are short-circuited by the callers
+    (``core.tasks.execute_headless_task`` and the ``tasks work-next-headless`` CLI) via
+    ``run_deterministic_phase`` before dispatch ever reaches here (#3570), so this path
+    only drives a real agent run.
+    """
+    return _run_headless_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+
+
+def _run_headless_agent(
+    task: Task,
+    *,
+    phase: str,
+    overlay_skill_metadata: SkillMetadata,
+) -> TaskAttempt:
+    """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
 
     # Checked BEFORE resolving the harness (souliane/teatree#2916): for a
@@ -151,7 +173,10 @@ def run_headless(
         stage_skills=stage_skills,
     )
 
-    provider = get_effective_settings().agent_harness_provider
+    # Resolved through the SAME task-overlay settings scope and the SAME phase pin the
+    # harness above came from, so the transport and the credential can never disagree
+    # about which harness this dispatch is running.
+    provider = resolve_dispatch_provider(task, phase=phase)
     lane = _resolve_dispatch_lane(harness, provider)
 
     child_env_result = _admission_park_or_child_env(task, harness, provider, lane=lane, phase=phase)
@@ -303,7 +328,7 @@ def _resolve_child_env_or_failure(
     credential lazily inside ``harness.open`` — this returns ``None``
     unconditionally for it (no CLI child, no child env), and that harness's
     ``CredentialError`` is caught by the broad guard around the drive call in
-    ``run_headless``.
+    ``_run_headless_agent``.
 
     For the #116 quarantined reader phase, the resolved env is filtered through
     :func:`~teatree.agents.reader_profile.reader_child_env` so ``options.env`` carries
@@ -353,7 +378,7 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", la
     """Fold a non-success drive outcome into a recorded failure (or park), or ``None``.
 
     Collapses the stuck-loop / usage-limit / error-result terminal cases into a
-    single return so ``run_headless`` stays within its early-return budget. A usage-limit
+    single return so ``_run_headless_agent`` stays within its early-return budget. A usage-limit
     hit is PARKED not FAILED when Directive #3 auto-recovery is enabled (the flag-off
     default records the terminal FAILED exactly as before). A park keeps the run's
     conversation so the resume continues it rather than restarting (#3605). A max-tokens

@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.backend_protocols import DraftState
 from teatree.core.merge.authorization import (
     MergePrecheck,
     PresentedApprovals,
@@ -34,13 +35,10 @@ from teatree.core.merge.authorization import (
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
-from teatree.core.merge.pr_slug_resolution import (
-    _reconcile_slug_against_reviewed_sha,
-    _resolve_host_kind,
-    resolve_pr_repo_slug,
-)
+from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.project import find_project_root
 from teatree.utils.pr_ref import PrRef
@@ -193,9 +191,7 @@ def assert_merge_preconditions(
         return dataclasses.replace(reconcile, standing_delegation_by=standing_delegation_by)
 
     # 4. Not draft.
-    if query.pr_is_draft():
-        msg = f"{slug}#{pr_id} is in draft state — refusing to merge (§17.4.3 step 4)"
-        raise MergePreconditionError(msg)
+    _assert_draft_state_clears(query.pr_draft_state(), slug=slug, pr_id=pr_id, refusing="refusing to merge")
 
     # 3. CI still not FAILED — against the forge's LIVE rollup, not the saved
     # snapshot. Three-valued (green/pending/failed):
@@ -233,6 +229,25 @@ def assert_merge_preconditions(
     return MergePrecheck(verified_sha=live_sha, standing_delegation_by=standing_delegation_by)
 
 
+def _assert_draft_state_clears(state: DraftState, *, slug: str, pr_id: int, refusing: str) -> None:
+    """Let only a CONFIRMED non-draft through §17.4.3 step 4.
+
+    An unreadable draft flag cannot rule out a draft, and an irreversible merge is
+    the harmful direction — so ``UNKNOWN`` holds, like the indeterminate rollup
+    (``ROLLUP_QUERY_FAILED``), changed-path (``CHANGED_PATHS_UNAVAILABLE``), and
+    head-provenance (``fetch_pr_same_repo`` → ``None``) inputs around it.
+    """
+    if state is DraftState.DRAFT:
+        msg = f"{slug}#{pr_id} is in draft state — {refusing} (§17.4.3 step 4)"
+        raise MergePreconditionError(msg)
+    if state is DraftState.UNKNOWN:
+        msg = (
+            f"draft state for {slug}#{pr_id} could not be read from the forge — {refusing} "
+            f"(§17.4.3 step 4; an unreadable draft flag cannot rule out a draft)"
+        )
+        raise MergePreconditionError(msg)
+
+
 def assert_not_draft(query: CodeHostQuery) -> None:
     """§17.4.3 step 4 floor: refuse the bound merge when the PR/MR is in draft state.
 
@@ -241,9 +256,12 @@ def assert_not_draft(query: CodeHostQuery) -> None:
     snapshot and the irreversible PUT is refused here. A registered
     ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
     """
-    if query.pr_is_draft():
-        msg = f"{query.ref.slug}#{query.ref.pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
-        raise MergePreconditionError(msg)
+    _assert_draft_state_clears(
+        query.pr_draft_state(),
+        slug=query.ref.slug,
+        pr_id=query.ref.pr_id,
+        refusing="refusing bound merge",
+    )
 
 
 def assert_ci_not_failed(query: CodeHostQuery) -> None:
@@ -491,7 +509,7 @@ def _merge_ticket_pr_inner(
 ) -> MergeOutcome:
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
-    host_kind = _resolve_host_kind(clear)
+    host_kind = resolve_host_kind(clear, repo_slug=slug)
     slug = _reconcile_slug_against_reviewed_sha(
         initial_slug=slug,
         pr_id=pr_id,

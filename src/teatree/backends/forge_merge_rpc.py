@@ -1,13 +1,19 @@
 """Forge merge-RPC argv + payload parsing — canonical home for the merge transport.
 
-The 5 §17.4.3 merge-RPC methods on :class:`GitHubCodeHost` /
-:class:`GitLabCodeHost` delegate to :class:`GhMergeRpc` / :class:`GlabMergeRpc`
-here, each holding its forge's allow-to-fail runner. This keeps the gh and glab
-argv in one focused module — the chokepoint home the argv-ban rule (#1890) will
-point at — while the methods stay on the host classes so the ``CodeHostBackend``
-Protocol is satisfied. Raw I/O only: every verdict / transient / head-moved
-classification stays in ``teatree.core.merge.execution`` for byte-for-byte error
-parity on the keystone path.
+The §17.4.3 merge-RPC methods on :class:`GitHubCodeHost` / :class:`GitLabCodeHost`
+delegate to :class:`GhMergeRpc` / :class:`GlabMergeRpc` here, each holding its
+forge's allow-to-fail runner. This keeps the gh and glab argv in one focused
+module — the chokepoint home the argv-ban rule (#1890) will point at — while the
+methods stay on the host classes so the ``CodeHostBackend`` Protocol is satisfied.
+Raw I/O only: every verdict / transient / head-moved classification stays in
+``teatree.core.merge.execution`` for byte-for-byte error parity on the keystone
+path.
+
+The draft probe is the one merge-RPC read GitLab does NOT route through here: it
+also gates the review-request broadcast, which runs in the headless deploy image
+where no ``glab`` binary exists, so :class:`GitLabCodeHost` answers it over the
+token-authenticated HTTP API instead. GitHub keeps the ``gh`` transport (the
+binary is in that image).
 """
 
 import json
@@ -19,7 +25,9 @@ from typing import cast
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
     ROLLUP_QUERY_FAILED,
+    DraftState,
     ForgeMergeResult,
+    MergeConflictState,
     PrMergeState,
 )
 from teatree.types import RawAPIDict
@@ -157,6 +165,40 @@ def _github_protection_required_contexts(rc: int, out: str, err: str) -> set[str
     return contexts
 
 
+def _gh_conflict_state(data: RawAPIDict) -> MergeConflictState:
+    """Map GitHub's ``mergeable`` enum onto the conflict axis.
+
+    GitHub answers ``UNKNOWN`` while it recomputes mergeability after a push, so
+    the enum already carries the third value; anything it does not name (a field
+    an older API omits) joins it there rather than reading as clean.
+    """
+    mergeable = str(data.get("mergeable") or "").upper()
+    if mergeable == "CONFLICTING":
+        return MergeConflictState.CONFLICTED
+    if mergeable == "MERGEABLE":
+        return MergeConflictState.CLEAN
+    return MergeConflictState.UNKNOWN
+
+
+def _glab_conflict_state(mr: RawAPIDict) -> MergeConflictState:
+    """Map GitLab's ``has_conflicts`` + ``merge_status`` pair onto the conflict axis.
+
+    ``has_conflicts`` is the direct answer and is computed independently of why
+    else a merge request may be unmergeable, so a draft or an unapproved merge
+    request still reports its real conflict state. ``merge_status`` supplies the
+    *was it computed* half: GitLab reports ``checking``/``unchecked`` while the
+    background job runs, during which ``has_conflicts`` is a default rather than a
+    finding. Only ``can_be_merged`` alongside a false ``has_conflicts`` is clean.
+    """
+    conflicts = mr.get("has_conflicts")
+    merge_status = str(mr.get("merge_status") or "").lower()
+    if conflicts is True or merge_status == "cannot_be_merged":
+        return MergeConflictState.CONFLICTED
+    if conflicts is False and merge_status == "can_be_merged":
+        return MergeConflictState.CLEAN
+    return MergeConflictState.UNKNOWN
+
+
 class GhMergeRpc:
     """GitHub ``gh`` merge-RPC argv + payload parsing — raw I/O for one host."""
 
@@ -170,7 +212,7 @@ class GhMergeRpc:
         return out.strip() if rc == 0 else ""
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
-        rc, out, _ = self._run(["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit"])
+        rc, out, _ = self._run(["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit,mergeable"])
         if rc != 0 or not out.strip():
             return PrMergeState(state="", merge_commit_oid="")
         try:
@@ -182,13 +224,26 @@ class GhMergeRpc:
         state = str(data.get("state") or "")
         merge_commit = data.get("mergeCommit")
         oid = str(merge_commit.get("oid") or "") if isinstance(merge_commit, dict) else ""
-        return PrMergeState(state=state, merge_commit_oid=oid)
+        return PrMergeState(state=state, merge_commit_oid=oid, conflict=_gh_conflict_state(data))
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        """Tri-state draft flag — ``UNKNOWN`` on a non-zero rc or unrecognised payload.
+
+        A failed ``gh`` call and a genuine ``isDraft: false`` are different facts;
+        collapsing them to ``False`` hands every consumer a confident "not a draft"
+        manufactured from a read failure.
+        """
         rc, out, _ = self._run(
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "isDraft", "--jq", ".isDraft"],
         )
-        return rc == 0 and out.strip().lower() == "true"
+        if rc != 0:
+            return DraftState.UNKNOWN
+        answer = out.strip().lower()
+        if answer == "true":
+            return DraftState.DRAFT
+        if answer == "false":
+            return DraftState.NOT_DRAFT
+        return DraftState.UNKNOWN
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The PR author ``login`` — the §17.4.3 author-gate input (#1773).
@@ -361,15 +416,7 @@ class GlabMergeRpc:
             return PrMergeState(state="", merge_commit_oid="")
         state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
         oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
-        return PrMergeState(state=state, merge_commit_oid=oid)
-
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return False
-        # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the legacy
-        # field kept for compatibility — accept either.
-        return bool(mr.get("draft") or mr.get("work_in_progress"))
+        return PrMergeState(state=state, merge_commit_oid=oid, conflict=_glab_conflict_state(mr))
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The MR author ``username`` — the §17.4.3 author-gate input (#1773).

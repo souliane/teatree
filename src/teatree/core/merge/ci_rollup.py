@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree.core.backend_protocols import PrMergeState, changed_paths_unavailable, rollup_query_failed
+from teatree.core.backend_protocols import DraftState, PrMergeState, changed_paths_unavailable, rollup_query_failed
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
@@ -96,13 +96,14 @@ class CodeHostQuery:
         """
         return self.backend.fetch_pr_merge_state(slug=self.ref.slug, pr_id=self.ref.pr_id)
 
-    def pr_is_draft(self) -> bool:
-        """Whether the PR/MR is in draft state — §17.4.3 step 4.
+    def pr_draft_state(self) -> DraftState:
+        """Tri-state draft flag — §17.4.3 step 4.
 
         GitLab reads ``draft``/``work_in_progress`` and GitHub ``isDraft`` inside
-        the backend.
+        the backend. ``UNKNOWN`` when the forge did not answer; the step-4 gate
+        holds the merge on it, like every other indeterminate keystone input.
         """
-        return self.backend.fetch_pr_is_draft(slug=self.ref.slug, pr_id=self.ref.pr_id)
+        return self.backend.fetch_pr_draft_state(slug=self.ref.slug, pr_id=self.ref.pr_id)
 
     def pr_author(self) -> str:
         """The PR/MR author handle — the §17.4.3 author-gate input (#1773).

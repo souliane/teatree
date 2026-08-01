@@ -8,6 +8,8 @@ directory, and building the Playwright environment dict.
 """
 
 import os
+import shutil
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +22,7 @@ from teatree.core.intake.resolve import _find_env_cache, _get_user_cwd, _parse_e
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME
 from teatree.paths import get_data_dir
-from teatree.utils.run import CommandFailedError, run_checked, run_streamed
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked, run_streamed
 
 #: The out-of-repo capture directory the runner exports as
 #: ``T3_E2E_ARTIFACTS_DIR`` (#3331): ``<ticket_dir>/.t3-cache/artifacts`` — a
@@ -181,16 +183,50 @@ def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
     Returns ``cache_path / repo.e2e_dir`` — the directory passed as ``cwd`` to Playwright.
     """
     ref = branch_override or repo.branch
+    url = _fetchable_url(repo.url)
     cache_path = get_data_dir("e2e-repos") / repo.name
     try:
         if not cache_path.exists():
-            run_checked(["git", "clone", "--branch", ref, "--depth", "1", repo.url, str(cache_path)])
+            run_checked(["git", "clone", "--branch", ref, "--depth", "1", url, str(cache_path)])
         else:
-            run_checked(["git", "-C", str(cache_path), "fetch", "origin", ref])
+            # Fetch by URL rather than `origin`: a cache cloned before this resolution
+            # existed still carries the ssh-form remote, which is unreachable here.
+            run_checked(["git", "-C", str(cache_path), "fetch", url, ref])
             run_checked(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"])
     except CommandFailedError as exc:
-        raise E2eBranchNotFoundError(name=repo.name, ref=ref, url=repo.url) from exc
+        if _remote_lacks_ref(url, ref):
+            raise E2eBranchNotFoundError(name=repo.name, ref=ref, url=repo.url) from exc
+        raise
     return cache_path / repo.e2e_dir
+
+
+def _fetchable_url(url: str) -> str:
+    """The configured URL, or its HTTPS form on a host with no ssh client.
+
+    The deploy image ships no ssh client, but it bakes an HTTPS credential helper
+    (deploy/Dockerfile, ``git config --system``) fed by the ``GITLAB_TOKEN`` the wrapper
+    forwards. An ssh-form remote consults neither: git dies on "cannot run ssh: No
+    such file or directory" while the very same repo is one Authorization header away
+    over HTTPS. A host that HAS ssh keeps the configured URL untouched, so a developer
+    laptop and CI behave exactly as before.
+    """
+    if not url.startswith("git@") or shutil.which("ssh"):
+        return url
+
+    host, _, path = url.partition(":")
+    return f"https://{host.removeprefix('git@')}/{path}"
+
+
+def _remote_lacks_ref(url: str, ref: str) -> bool:
+    """Whether *ref* is absent from *url*, so a failure is a bad ref rather than anything else.
+
+    Without this check every ``CommandFailedError`` -- an auth failure, a network
+    blip, a corrupt cache -- is reported as "branch not found", which sends the
+    reader hunting a ref that is demonstrably on the remote while the real git
+    stderr is discarded.
+    """
+    listing = run_allowed_to_fail(["git", "ls-remote", "--heads", "--tags", url, ref], expected_codes=None)
+    return not listing.stdout.strip()
 
 
 def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
@@ -203,6 +239,11 @@ def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
     package_json = playwright_root / "package.json"
     if not package_json.is_file():
         return
+    _ensure_node_modules(playwright_root)
+    _ensure_playwright_browsers(playwright_root)
+
+
+def _ensure_node_modules(playwright_root: Path) -> None:
     node_modules = playwright_root / "node_modules"
     if node_modules.is_dir() and any(node_modules.iterdir()):
         return
@@ -210,14 +251,62 @@ def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
     run_checked(install_cmd, cwd=playwright_root)
 
 
+def _playwright_browsers_dir() -> Path:
+    """Where Playwright keeps its downloaded browsers."""
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override:
+        return Path(override)
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform == "win32":
+        return Path.home() / "AppData" / "Local" / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
+
+
+def _ensure_playwright_browsers(playwright_root: Path) -> None:
+    """Install the browser THIS clone pins, checked independently of node deps.
+
+    Node modules and browsers are separately satisfiable, so they get separate
+    guards. Folding them together -- returning early on a populated
+    ``node_modules`` -- made this a no-op on precisely the state a repeat run has,
+    so a clone whose browsers were never downloaded could never acquire them and
+    every run died in ``browserType.launch``.
+
+    Driven from the clone rather than baked into the image on purpose: the browser
+    build is pinned by the clone's own ``@playwright/test``, so an image-level
+    browser silently drifts the next time either side moves.
+    """
+    if not (playwright_root / "node_modules" / "@playwright" / "test").is_dir():
+        return
+    browsers = _playwright_browsers_dir()
+    if browsers.is_dir() and any(browsers.glob("chromium*")):
+        return
+    run_checked(["npx", "playwright", "install", "chromium"], cwd=playwright_root)
+
+
 def resolve_private_tests_path() -> Path | None:
     """Resolve the private tests directory from the ``T3_PRIVATE_TESTS`` env or the DB config."""
     from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps command import light
 
     private_tests = os.environ.get("T3_PRIVATE_TESTS", "") or cold_reader.str_setting("private_tests", default="")
-    if not private_tests:
+    return _existing_dir(private_tests)
+
+
+def _exported_private_tests_path() -> Path | None:
+    """The ``T3_PRIVATE_TESTS`` directory, env var ONLY — never the DB setting.
+
+    Split out from :func:`resolve_private_tests_path` because the two sources rank
+    differently against an overlay's declared repo (see
+    :func:`resolve_external_specs_path`): the export is an instruction about this
+    run, the DB row is a standing preference.
+    """
+    return _existing_dir(os.environ.get("T3_PRIVATE_TESTS", ""))
+
+
+def _existing_dir(raw: str) -> Path | None:
+    if not raw:
         return None
-    path = Path(private_tests).expanduser()
+    path = Path(raw).expanduser()
     return path if path.is_dir() else None
 
 
@@ -246,15 +335,25 @@ def overlay_e2e_repo(e2e_config: Mapping[str, str]) -> E2ERepo | None:
 def resolve_external_specs_path(repo: str, branch: str, *, overlay_repo: E2ERepo | None = None) -> Path:
     """Resolve the Playwright working directory for the ``external`` runner.
 
-    Resolution order (first match wins):
+    Resolution order (first match wins) — EXPLICIT beats DEFAULT throughout:
     an explicit ``--repo <name>`` clones the configured ``[e2e_repos.<name>]`` at
     *branch* (or its default) and always wins;
+    else an explicitly-exported ``T3_PRIVATE_TESTS`` names a checkout to run as-is;
     else, when *overlay_repo* is supplied (the overlay's
     :func:`overlay_e2e_repo`), it is cloned at its ``ref`` (a ``--branch``/``--ref``
     override wins so an open MR's branch can be run);
-    else the ``T3_PRIVATE_TESTS`` directory is used. *branch* is only meaningful
-    for a clone path — a ``T3_PRIVATE_TESTS`` directory is checked out by the user,
-    so a branch there is a misuse.
+    else the DB-configured ``private_tests`` directory is used. *branch* is only
+    meaningful for a clone path — a private-tests directory is checked out by the
+    user, so a branch there is a misuse.
+
+    The env var outranks *overlay_repo* because an overlay that declares a ``url``
+    supplies a DEFAULT, and a per-invocation export is an instruction. Ranked the
+    other way, an overlay with a ``url`` made ``T3_PRIVATE_TESTS`` unreachable and
+    the runner could only ever execute specs already pushed to a remote — so a
+    deterministic, stack-free lane (no browser, no BASE_URL, no credentials) could
+    not be run against the working tree at all, which is precisely what CI does.
+    The DB ``private_tests`` setting keeps its lowest precedence: it is a standing
+    preference, not an instruction about this run.
 
     Raises :class:`E2eSpecsResolutionError` (carrying the CLI exit code) on any
     misconfiguration so the caller maps one exception to one ``SystemExit``.
@@ -269,6 +368,11 @@ def resolve_external_specs_path(repo: str, branch: str, *, overlay_repo: E2ERepo
             raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
         ensure_external_e2e_dependencies(playwright_root)
         return playwright_root
+    exported_private_tests = _exported_private_tests_path()
+    if exported_private_tests is not None:
+        if branch:
+            raise E2eSpecsResolutionError.branch_needs_repo()
+        return exported_private_tests
     if overlay_repo is not None:
         try:
             playwright_root = clone_or_update_e2e_repo(overlay_repo, branch)

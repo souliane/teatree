@@ -34,6 +34,7 @@ from pydantic_ai.toolsets import FunctionToolset
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
 import teatree.agents.pydantic_ai_config as pyconfig_mod
+from teatree.agents import harness_registry
 from teatree.agents.harness import (
     ClaudeSdkHarness,
     Harness,
@@ -41,10 +42,12 @@ from teatree.agents.harness import (
     PydanticAiHarness,
     PydanticAiHarnessSession,
     pydantic_ai_thread,
+    resolve_dispatch_provider,
     resolve_effort,
     resolve_harness,
 )
 from teatree.agents.harness_options import HarnessOptions
+from teatree.agents.harness_registry import InvalidHarnessProviderError, register_harness
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
 from teatree.agents.pydantic_ai_config import (
@@ -56,7 +59,7 @@ from teatree.agents.pydantic_ai_config import (
     build_openai_compatible_provider,
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
-from teatree.config import get_effective_settings
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.llm.credentials import CredentialError
 from teatree.llm.openai_compatible import OpenAICompatibleBackend
@@ -1140,6 +1143,72 @@ class TestVerifierPinnedToClaude(TestCase):
 
     def test_no_phase_uses_the_configured_pydantic_ai(self) -> None:
         assert isinstance(resolve_harness(), PydanticAiHarness)
+
+
+class TestResolveDispatchProvider(TestCase):
+    """The Layer-2 provider follows the SAME phase pin Layer 1 does.
+
+    ``resolve_harness`` validates the CONFIGURED pair and then lets ``PHASE_HARNESS`` flip
+    Layer 1 for a verification phase. The credential must follow that flip, or a valid
+    ``pydantic_ai`` deployment hands the claude_sdk child-env resolver a provider invalid
+    under the harness it is actually running and every verification dispatch is refused.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_no_configured_pin_stays_unpinned(self) -> None:
+        assert resolve_dispatch_provider(phase="testing") is None
+
+    def test_unpinned_phase_keeps_the_configured_provider(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+        for phase in (None, "coding", "debugging", "shipping"):
+            with self.subTest(phase=phase):
+                assert resolve_dispatch_provider(phase=phase) is AgentHarnessProvider.ANTHROPIC_API
+
+    def test_verification_pin_drops_a_provider_invalid_under_the_pinned_harness(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+        for phase in ("reviewing", "requesting_review", "testing"):
+            with self.subTest(phase=phase):
+                assert resolve_dispatch_provider(phase=phase) is None
+
+    def test_the_drop_is_warned_never_silent(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+        with self.assertLogs("teatree.agents.harness", level="WARNING") as logs:
+            resolve_dispatch_provider(phase="testing")
+        assert any("anthropic_api" in message and "claude_sdk" in message for message in logs.output)
+
+    def test_a_flip_onto_a_harness_the_pin_is_still_valid_under_keeps_it(self) -> None:
+        # Not "drop the pin on ANY flip" — only on one the flip INVALIDATES. An
+        # overlay-registered backend that also accepts ``anthropic_api`` keeps the pin,
+        # so the drop can never over-suppress a credential that still applies.
+        register_harness(
+            "shares_anthropic_api",
+            lambda context: ClaudeSdkHarness(),
+            valid_providers=frozenset({AgentHarnessProvider.ANTHROPIC_API.value}),
+        )
+        self.addCleanup(harness_registry._REGISTRY.pop, "shares_anthropic_api", None)
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+        with patch.object(harness_mod, "resolve_phase_harness", return_value="shares_anthropic_api"):
+            assert resolve_dispatch_provider(phase="testing") is AgentHarnessProvider.ANTHROPIC_API
+
+    def test_an_invalid_pair_no_pin_explains_is_left_for_the_dispatch_guard(self) -> None:
+        # The control: a pair the phase pin does NOT explain is passed through untouched, so
+        # ``resolve_harness``'s InvalidHarnessProviderError still fires on it.
+        with patch.dict(
+            os.environ,
+            {"T3_AGENT_HARNESS": "claude_sdk", "T3_AGENT_HARNESS_PROVIDER": "openai_compatible"},
+        ):
+            assert resolve_dispatch_provider(phase="coding") is AgentHarnessProvider.OPENAI_COMPATIBLE
+            with pytest.raises(InvalidHarnessProviderError):
+                resolve_harness(phase="coding")
 
 
 class TestOpenAICompatibleLaneAndModelCallSite(TestCase):

@@ -346,6 +346,32 @@ def _clean_registry() -> Iterator[None]:
     clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_live_aux_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No pytest run may reach a live model through the aux one-shot seam.
+
+    ``evals/README.md`` states the contract — pytest is the deterministic,
+    no-live-model lane; the metered lane is ``t3 eval``. The aux seam
+    (:func:`teatree.agents.one_shot.run_one_shot`) is the one place production
+    code calls a model on an ordinary code path rather than through an agent
+    spawn, and it is reached by the inbound Slack reading, the cheap answer
+    builder, and the ticket short-describer. On a developer machine, where the
+    ``claude`` child EXISTS, an unpatched call would run and bill; in CI it
+    would merely be slow. Neither is a test result.
+
+    Patched at :func:`~teatree.agents.harness.resolve_harness` — the single
+    module attribute every caller funnels through, whichever name they imported
+    ``run_one_shot`` under. A test that wants a turn injects its own ``harness=``
+    (the documented DI parameter), which bypasses this entirely.
+    """
+
+    def _refuse() -> object:
+        msg = "aux one-shot model turns are disabled under pytest; inject harness= or a reader seam"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("teatree.agents.one_shot.resolve_harness", _refuse)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Arm the worker-thread DB-handle sentinel for the whole suite.
 

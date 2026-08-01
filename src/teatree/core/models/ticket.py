@@ -50,13 +50,22 @@ class Ticket(
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
-        STARTED = "started", "Started"
-        PLANNED = "planned", "Planned"
+        # Work begins BEFORE the plan is recorded — `plan()` is the
+        # STARTED -> PLANNED transition and it requires a PlanArtifact. Labelled
+        # "Started"/"Planned" the pair reads as though planning should come
+        # first; naming the milestone rather than the status makes the real
+        # order self-evident on the board.
+        STARTED = "started", "Work started"
+        PLANNED = "planned", "Plan recorded"
         CODED = "coded", "Coded"
         TESTED = "tested", "Tested"
-        REVIEWED = "reviewed", "Reviewed"
+        # "Self-reviewed", not "Reviewed": this is the author's own pre-ship pass,
+        # which the FSM places BEFORE shipping. Peer review is IN_REVIEW, two
+        # columns later. Labelled "Reviewed" the two read as one phase in the
+        # wrong order, and the board looks mis-sequenced when it matches the FSM.
+        REVIEWED = "reviewed", "Self-reviewed"
         SHIPPED = "shipped", "Shipped"
-        IN_REVIEW = "in_review", "In review"
+        IN_REVIEW = "in_review", "In peer review"
         MERGED = "merged", "Merged"
         RETROSPECTED = "retrospected", "Retrospected"
         DELIVERED = "delivered", "Delivered"
@@ -225,13 +234,29 @@ class Ticket(
         if not extra.get("issue_title"):
             set_keys["issue_title"] = title
             written.append("extra")
-        if not self.short_description:
-            max_len = self._meta.get_field("short_description").max_length or 80
-            also_set["short_description"] = title[:max_len]
+        if seed := self.short_description_seed(title):
+            also_set["short_description"] = seed
             written.append("short_description")
         if written:
             self.merge_extra(set_keys=set_keys or None, also_set=also_set or None)
         return written
+
+    def short_description_seed(self, title: str) -> str:
+        """The card label a blank ``short_description`` takes from *title*.
+
+        Returns ``""`` when nothing should change — a blank forge title, or a
+        ``short_description`` the operator (or the summariser) already wrote,
+        which is a decision and never overwritten. A blank one is an absence,
+        so it is seeded with the title truncated to the column width and the
+        card stops rendering ``(no description)``.
+
+        Every writer of ``extra['issue_title']`` shares this rule: the board
+        renders ``short_description``, so a title stamped without it repairs
+        nothing a reader can see.
+        """
+        if not title or self.short_description:
+            return ""
+        return title[: self._meta.get_field("short_description").max_length or 80]
 
     @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
     def scope(

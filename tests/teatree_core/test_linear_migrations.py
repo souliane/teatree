@@ -159,13 +159,20 @@ def test_dlm_installed_and_live_core_graph_is_clean() -> None:
 
 
 def test_live_core_graph_is_linear_by_dependency() -> None:
-    """The live core graph is a single simple chain BY DEPENDENCY — not by numbering.
+    """The live core graph is one connected chain BY DEPENDENCY — not by numbering.
 
     Stronger than ``django_linear_migrations``'s dlm.E005 (which only counts leaf
     nodes): a mid-graph diamond (0005 -> 0007, 0005 -> 0006b, both -> 0008) has one
-    leaf yet is not linear, so dlm passes while this test would reject it. This is
-    the guard the finding asked for — it catches a future renumber-at-merge that
-    BRANCHES the graph, without demanding contiguous numbers.
+    leaf yet is not linear, so dlm passes while this test rejects it — 0008 merges
+    two parents while CARRYING OPERATIONS, which is the renumber-at-merge accident
+    this guard exists to catch.
+
+    The one branch shape that is legitimate is a branch closed by an explicit no-op
+    MERGE migration (``makemigrations --merge``). A vendored fork produces exactly
+    that on every sync where upstream and the fork both added a migration off the
+    same parent, and rejoining is the only safe resolution: renaming a migration a
+    deployed box has already applied makes Django re-run it. So a merge node may
+    carry several core parents, and only if it carries NO operations.
 
     It asserts NOTHING about the numbers being contiguous. The live graph
     legitimately skips 0006 (0005 -> 0007 -> 0008 — see those migrations' headers),
@@ -200,31 +207,42 @@ def test_live_core_graph_is_linear_by_dependency() -> None:
         ]
 
     core_parents: dict[str, list[str]] = {name: _chain_parents(migration) for name, migration in chain_core.items()}
-    # No migration MERGES two core parents.
-    for name, parents in core_parents.items():
-        assert len(parents) <= 1, f"{name} depends on multiple core migrations {parents} — the graph merges"
 
-    # No parent is depended on by two children — no BRANCH.
+    # Only a no-op MERGE migration may carry several core parents. A node that merges
+    # AND migrates is the renumber-at-merge accident, not a sanctioned rejoin.
+    for name in sorted(name for name, parents in core_parents.items() if len(parents) > 1):
+        operations = chain_core[name].operations
+        assert not operations, (
+            f"{name} depends on multiple core migrations {core_parents[name]} while carrying "
+            f"{len(operations)} operation(s) — only an EMPTY merge migration may rejoin two branches"
+        )
+
     core_children: dict[str, list[str]] = {name: [] for name in chain_core}
     for name, parents in core_parents.items():
         for parent in parents:
             core_children[parent].append(name)
-    for parent, children in core_children.items():
-        assert len(children) <= 1, f"{parent} is the parent of multiple migrations {children} — the graph branches"
 
     roots = [name for name, parents in core_parents.items() if not parents]
     leaves = [name for name, children in core_children.items() if not children]
     assert roots == ["0001_initial"], f"expected exactly one non-squash root (0001_initial), got {roots}"
     assert len(leaves) == 1, f"expected exactly one leaf migration, got {leaves}"
 
-    # Walk the unique chain from the root and confirm it visits every non-squash
-    # node — a disconnected component would leave a node the walk never reaches.
-    chain: list[str] = []
-    node: str | None = roots[0]
-    while node is not None:
-        chain.append(node)
-        children = core_children[node]
-        node = children[0] if children else None
-    assert set(chain) == set(chain_core), (
-        "the dependency chain does not cover every core migration — graph is disconnected"
+    # Every node is on a path root -> leaf. Forward reachability catches a disconnected
+    # component; backward reachability catches a BRANCH no merge ever closed (its tip
+    # would be a second leaf, or a stub the leaf walk never reaches).
+    def _reachable(start: str, edges: dict[str, list[str]]) -> set[str]:
+        seen: set[str] = set()
+        pending = [start]
+        while pending:
+            node = pending.pop()
+            if node not in seen:
+                seen.add(node)
+                pending.extend(edges[node])
+        return seen
+
+    assert _reachable(roots[0], core_children) == set(chain_core), (
+        "the dependency graph does not reach every core migration from the root — graph is disconnected"
+    )
+    assert _reachable(leaves[0], core_parents) == set(chain_core), (
+        "a core migration does not lead to the single leaf — a branch was left unmerged"
     )
