@@ -102,6 +102,74 @@ class TestClassifyBranch(TestCase):
         assert report.is_orphan
 
 
+class TestClassifyBranchWhoseWorkAlreadyLanded:
+    """#3977: work that reached the base under a DIFFERENT path owes no PR.
+
+    Real git — the defect is a path-level comparison missing content the base
+    carries elsewhere, so git's own blob identity has to be in the loop.
+    """
+
+    FIX = "def parse(raw: str) -> int:\n    return int(raw.strip() or 0)\n"
+
+    @pytest.fixture(autouse=True)
+    def _repo_with_the_fix_on_a_branch(self, tmp_path: Path) -> None:
+        origin = tmp_path / "origin.git"
+        _run_git("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+        self.clone = tmp_path / "clone"
+        _run_git("clone", "-q", str(origin), str(self.clone), cwd=tmp_path)
+        _run_git("config", "user.email", "t@t", cwd=self.clone)
+        _run_git("config", "user.name", "t", cwd=self.clone)
+        (self.clone / "app").mkdir()
+        (self.clone / "app" / "parse.py").write_text("def parse(raw):\n    return 0\n")
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "initial module", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+
+        _run_git("checkout", "-q", "-b", "fix/parse", cwd=self.clone)
+        (self.clone / "app" / "parse.py").write_text(self.FIX)
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "fix(parse): honour whitespace", cwd=self.clone)
+        _run_git("checkout", "-q", "main", cwd=self.clone)
+
+    def _land_the_fix_under_a_different_path(self) -> None:
+        (self.clone / "core").mkdir()
+        (self.clone / "core" / "parsing.py").write_text(self.FIX)
+        (self.clone / "app" / "parse.py").unlink()
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "refactor(core): split the parsing module", cwd=self.clone)
+        _run_git("push", "-q", "origin", "main", cwd=self.clone)
+
+    @_patch_open_pr
+    @_patch_tree_match
+    def test_synced_once_the_same_bytes_are_on_the_base_elsewhere(
+        self,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+    ) -> None:
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = ""
+        self._land_the_fix_under_a_different_path()
+
+        report = classify_branch(str(self.clone), "fix/parse")
+
+        assert report.status is BranchStatus.SYNCED
+        assert not report.is_orphan
+
+    @_patch_open_pr
+    @_patch_tree_match
+    def test_still_an_orphan_while_the_base_genuinely_lacks_the_content(
+        self,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+    ) -> None:
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = ""
+
+        report = classify_branch(str(self.clone), "fix/parse")
+
+        assert report.is_orphan
+
+
 class TestFindOrphansInWorkspace(TestCase):
     def _make_worktree(self, repo_path: str, branch: str) -> Worktree:
         ticket = Ticket.objects.create(
