@@ -1,3 +1,4 @@
+# test-path: cross-cutting — asserts over .pre-commit-config.yaml + ci.yml + pyproject.toml; no src/teatree/ mirror.
 """The pre-push stage must never run the FULL local test suite (#112/#21/#38).
 
 push -> CI is the gate. A host under load times out unrelated wall-clock and
