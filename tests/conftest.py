@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.config.host_projection import SILENCE_ADVISORY_ENV
 from tests._db_template import build_or_reuse_template, restore_from_template
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
@@ -138,6 +139,25 @@ def _clear_backend_caches() -> Iterator[None]:
         yield
     reset_backend_caches()
     reset_overlay_cache()
+
+
+@pytest.fixture(autouse=True)
+def _silence_host_projection_advisory() -> Iterator[None]:
+    """Keep the once-per-process host-projection advisory off every test's stderr.
+
+    No projection is published under test, so the cold readers correctly fall back and
+    warn — but that warning is a process-global write emitted on the FIRST call in each
+    xdist worker, so it lands in whichever test happened to run first and is read as
+    trailing output (`json.loads(result.output)` then fails on "Extra data"). That makes
+    the victim a function of shard and shuffle seed rather than of any change.
+
+    Silenced through the env seam the function itself reads, never `mock.patch`:
+    `teatree.config.cold_db` binds `warn_once` directly, so a patched module attribute
+    would not reach the live caller. `tests/teatree_config/test_host_projection.py`
+    unsets it to cover the advisory in both directions.
+    """
+    with patch.dict(os.environ, {SILENCE_ADVISORY_ENV: "1"}):
+        yield
 
 
 @pytest.fixture(autouse=True)

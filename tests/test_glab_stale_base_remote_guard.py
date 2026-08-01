@@ -1,3 +1,6 @@
+# test-path: cross-cutting — drives the hooks/scripts/glab_stale_base_remote_guard.py
+# PreToolUse gate; the teatree.config import only reads the cold-hook settings that gate
+# consults, so there is no src/teatree/ module this file mirrors.
 """Tests for the stale ``glab-base`` remote PreToolUse gate.
 
 ``glab`` persists a ``-R <slug>`` override as a git remote named ``glab-base`` in

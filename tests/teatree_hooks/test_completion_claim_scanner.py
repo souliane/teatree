@@ -684,9 +684,5 @@ class TestProgressReportIsNotACompletionClaim:
         # Preservation: one in-progress row out of two is NOT a status report — the turn
         # still asserts everything is done, so the gate must keep firing. Only a turn
         # DOMINATED by in-progress rows is exempt.
-        text = (
-            "Everything is done and ready to merge.\n"
-            "- REQ-03: MR !41 opened.\n"
-            "- REQ-05: still running in CI.\n"
-        )
+        text = "Everything is done and ready to merge.\n- REQ-03: MR !41 opened.\n- REQ-05: still running in CI.\n"
         assert scanner.find_completion_block(text) is not None

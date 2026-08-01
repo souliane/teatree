@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.config import cold_db, cold_reader
+from teatree.config import cold_db, cold_reader, host_projection
 from teatree.config.host_projection import (
     GENERATION_KEY,
     GLOBAL_SCOPE,
@@ -485,3 +485,33 @@ def test_projection_round_trips_through_its_payload() -> None:
     projection = _mode_projection()
 
     assert HostProjection.from_payload(projection.as_payload()) == projection
+
+
+class TestAdvisorySilenceSeam:
+    """The silence seam must gag the advisory ONLY when set — both directions asserted.
+
+    The advisory is the entire remedy for #3499's silence, so a seam that suppressed it
+    unconditionally would reintroduce that bug wholesale while every test still passed.
+    """
+
+    def test_advisory_reaches_stderr_when_the_seam_is_unset(self, capsys: pytest.CaptureFixture[str]) -> None:
+        host_projection._warned.clear()
+
+        host_projection.warn_once("projection is absent", env={})
+
+        assert "projection is absent" in capsys.readouterr().err
+
+    def test_advisory_is_silenced_when_the_seam_is_set(self, capsys: pytest.CaptureFixture[str]) -> None:
+        host_projection._warned.clear()
+
+        host_projection.warn_once("projection is absent", env={host_projection.SILENCE_ADVISORY_ENV: "1"})
+
+        assert capsys.readouterr().err == ""
+
+    def test_a_repeated_advisory_is_written_once(self, capsys: pytest.CaptureFixture[str]) -> None:
+        host_projection._warned.clear()
+
+        host_projection.warn_once("projection is absent", env={})
+        host_projection.warn_once("projection is absent", env={})
+
+        assert capsys.readouterr().err.count("projection is absent") == 1

@@ -609,10 +609,19 @@ class ProjectionReader:
 
 _warned: set[str] = set()
 
+#: Suppresses the once-per-process advisory. Read INSIDE :func:`warn_once` rather than
+#: patched onto it: callers bind the function directly (``from … import warn_once`` in
+#: :mod:`teatree.config.cold_db`), so a patched module attribute would never reach them —
+#: the env seam is the only one every caller shares. The test harness sets it because the
+#: advisory is a process-global write to stderr, and whichever test happens to run first in
+#: an xdist worker would otherwise read it as trailing output; :mod:`tests.teatree_config`
+#: unsets it to cover the advisory itself.
+SILENCE_ADVISORY_ENV = "T3_SILENCE_HOST_PROJECTION_ADVISORY"
 
-def warn_once(advisory: str) -> None:
+
+def warn_once(advisory: str, env: Mapping[str, str] = os.environ) -> None:
     """Print *advisory* to stderr at most once per process, so a hot hook path stays quiet."""
-    if not advisory or advisory in _warned:
+    if not advisory or advisory in _warned or env.get(SILENCE_ADVISORY_ENV):
         return
     _warned.add(advisory)
     sys.stderr.write(advisory + "\n")
