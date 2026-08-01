@@ -120,7 +120,7 @@ def _adopt_body(url: str, spec: PullRequestSpec, *, token: str) -> None:
     _write_pr_body(url, spec.description, token=token)
     outcome = verify_by_reread(
         label=f"pr-body {url}",
-        reread=lambda: _body_changed(url, current, token=token),
+        reread=lambda: _body_changed(url, current, spec.description, token=token),
     )
     if not outcome.confirmed:
         raise CommandFailedError(
@@ -132,8 +132,12 @@ def _adopt_body(url: str, spec: PullRequestSpec, *, token: str) -> None:
         )
 
 
-def _body_changed(url: str, previous: str, *, token: str) -> bool:
-    """Whether a re-read shows the body is no longer *previous* — i.e. the write landed.
+def _body_changed(url: str, previous: str, intended: str, *, token: str) -> bool:
+    """Whether a re-read shows the write landed.
+
+    True when the body left *previous*, or already matched *intended* (a redelivered
+    ship, or the losing side of a concurrent adopt, writing back byte-identical content
+    — a landed no-op, not a failed confirmation).
 
     Deliberately NOT ``not lacks_rationale(new_body)``: a ship description built from a
     commit with no ``## Why`` gets a bare header appended by ``ensure_standard_body``, so
@@ -142,7 +146,10 @@ def _body_changed(url: str, previous: str, *, token: str) -> bool:
     body is the description generator's problem, and the same on a non-adopted PR.
     """
     now = _read_pr_body(url, token=token)
-    return now is not None and now.strip() != previous.strip()
+    if now is None:
+        return False
+    now_stripped = now.strip()
+    return now_stripped != previous.strip() or now_stripped == intended.strip()
 
 
 def _read_pr_body(url: str, *, token: str) -> str | None:

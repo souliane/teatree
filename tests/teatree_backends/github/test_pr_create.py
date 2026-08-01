@@ -288,6 +288,19 @@ class TestAdoptedPrBodyReplacesTheHookPlaceholder:
         assert create_pr(_spec(description=thin), token="t") == {"web_url": _ADOPTED_URL}
         assert stub.body == thin
 
+    def test_a_body_already_equal_to_the_ship_description_still_confirms(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify-by-re-read must not treat a landed idempotent write as unconfirmed.
+
+        A redelivered ship (or a losing concurrent hook) writes back byte-identical
+        content — the write lands as a no-op (#3991).
+        """
+        thin = "fix(x): thing\n\n## What\n\n## Why"
+        stub = _GhPrStub(thin)
+        self._adopting(monkeypatch, stub)
+
+        assert create_pr(_spec(description=thin), token="t") == {"web_url": _ADOPTED_URL}
+        assert stub.body == thin
+
     def test_an_unreadable_body_still_adopts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Cannot tell placeholder from authored → leave it, never blind-overwrite."""
 
