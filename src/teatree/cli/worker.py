@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, TypedDict
 import typer
 
 if TYPE_CHECKING:
-    from teatree.loop.drain import DrainReport
+    from teatree.loop.drain import DrainProgress, DrainReport
     from teatree.loop.worker_lifecycle import StopReport
 
 
@@ -271,6 +271,36 @@ def ensure_command(
 #: apart and proceed knowing a stuck task re-queues via its lease lapse.
 _GRACE_EXCEEDED_EXIT = 3
 
+#: Shortest measured drain-to-broken-pipe interval across the three deploys that died
+#: mid-drain (276.8s / 280.0s / ~280s). A 3s spread is a fixed idle timeout, not a flaky
+#: link — so a silent wait can never reach its own 1800s budget, and the deploy dies
+#: before the swap that clears `worker_quiescing` (#3983).
+OBSERVED_SSH_IDLE_TIMEOUT_SECONDS = 276.0
+#: Heartbeat cadence, chosen to leave room for several missed lines inside that window.
+_PROGRESS_ECHO_INTERVAL_SECONDS = 60.0
+
+
+class _DrainHeartbeat:
+    """Echo at most one drain progress line per :data:`_PROGRESS_ECHO_INTERVAL_SECONDS`.
+
+    Writes to STDERR so `--json` stdout stays a single parseable document, and relies
+    on ``click.echo``'s unconditional flush: the deploy reaches this through
+    `docker compose exec -T`, whose piped stdio Python would otherwise block-buffer —
+    an unflushed heartbeat never reaches the transport it exists to keep alive.
+    """
+
+    def __init__(self) -> None:
+        self._next_at = 0.0
+
+    def __call__(self, progress: "DrainProgress") -> None:
+        if progress.waited_seconds < self._next_at:
+            return
+        self._next_at = progress.waited_seconds + _PROGRESS_ECHO_INTERVAL_SECONDS
+        typer.echo(
+            f"draining: {len(progress.still_claimed)} task(s) still in flight after {progress.waited_seconds:.0f}s",
+            err=True,
+        )
+
 
 @worker_app.command("drain")
 def drain_command(
@@ -286,7 +316,8 @@ def drain_command(
     the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
     when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
     CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a stuck
-    task re-queues via its lease lapse.
+    task re-queues via its lease lapse. The wait heartbeats to stderr while it runs, so
+    the deploy's SSH session never idles out mid-drain and takes the deploy with it.
 
     THE WORKER IS LEFT QUIESCED: this command stops nothing, and the gate it sets is
     cleared only by a fresh container boot (``deploy/entrypoint.sh``). On a bare host
@@ -301,7 +332,7 @@ def drain_command(
     from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
     from teatree.loop.drain import DrainOutcome, drain_worker  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
-    report = drain_worker(timeout=timeout, poll_interval=poll_interval)
+    report = drain_worker(timeout=timeout, poll_interval=poll_interval, on_progress=_DrainHeartbeat())
     quiescing = worker_is_quiescing()
     if json_output:
         typer.echo(

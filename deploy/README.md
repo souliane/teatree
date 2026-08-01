@@ -582,8 +582,12 @@ service is down — exactly the outage it exists to repair.
    non-zero / a worker stuck `Created`, a free worker flock over overdue loop
    work, an `execute_headless_task` stranded RUNNING with no live worker, a READY
    loop timer stale past 2× its cadence, a PENDING `interactive` task under
-   `agent_runtime=headless`, a FAILED task on a still-live ticket, and a runtime
-   clone drifted off its default branch.
+   `agent_runtime=headless`, a FAILED task on a still-live ticket, a runtime
+   clone drifted off its default branch, and a `worker_quiescing` gate older than
+   any deploy could explain
+   ([#3983](https://github.com/souliane/teatree/issues/3983) — a deploy killed
+   between its drain and the swap that clears the gate leaves the claim path
+   admitting ZERO work while every other surface stays green).
 4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the

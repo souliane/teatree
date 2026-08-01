@@ -4,9 +4,9 @@ The first half of drain-then-deploy (rolling / zero-downtime deploy): a deploy
 must never kill an in-flight sub-agent. ``drain_worker`` flips the
 ``worker_quiescing`` config gate ON — after which the claim/admission chokepoint
 (``TaskQuerySet.claim_next_pending`` / ``_claimable_for_target``) admits ZERO new
-work — then polls the SSOT in-flight predicate
-(``Task.objects.active_claim_exists``, a live CLAIMED lease) until it reads clear
-or the grace ``timeout`` lapses. It NEVER stops the supervisor and never touches a
+work — then polls the SSOT in-flight set (``Task.objects.active_claims``, the live
+CLAIMED leases) until it reads empty or the grace ``timeout`` lapses. It NEVER stops
+the supervisor and never touches a
 CLAIMED lease; an in-flight task keeps renewing via ``renew_lease`` and finishes.
 
 ``deploy/deploy.sh`` runs ``t3 worker drain`` before swapping the worker image; the
@@ -14,6 +14,11 @@ FRESH worker's init clears ``worker_quiescing`` so admission resumes. On a grace
 overrun the deploy proceeds anyway — a still-CLAIMED task re-queues PENDING via its
 lease lapse (``reclaim_orphaned_claims``) and is picked up by the fresh worker, so
 no work is lost.
+
+The wait reports a :class:`DrainProgress` sample on every poll. Waiting on in-flight
+agents is inherently long, and the deploy reaches this command through an SSH session
+that tears down after ~280s of silence — so a wait that says nothing cannot reach its
+own 1800s budget, and the deploy dies before the swap that clears the gate (#3983).
 """
 
 import time
@@ -29,6 +34,15 @@ class DrainOutcome(Enum):
 
     DRAINED = "drained"
     GRACE_EXCEEDED = "grace_exceeded"
+
+
+@dataclass(frozen=True, slots=True)
+class DrainProgress:
+    """One heartbeat sample of an ongoing drain wait."""
+
+    waited_seconds: float
+    #: The pks still CLAIMED with a live lease at this sample.
+    still_claimed: list[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,47 +75,49 @@ def _still_claimed_pks() -> list[int]:
     return list(Task.objects.active_claims().order_by("pk").values_list("pk", flat=True))
 
 
-def _in_flight() -> bool:
-    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM needs the app registry
-
-    return Task.objects.active_claim_exists()
-
-
 def drain_worker(
     *,
     timeout: int,
     poll_interval: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
+    on_progress: Callable[[DrainProgress], None] | None = None,
 ) -> DrainReport:
     """Quiesce admission and wait for in-flight CLAIMED leases to clear.
 
     Sets ``worker_quiescing`` ON (so no new task is admitted), then polls the
-    in-flight predicate every ``poll_interval`` seconds. Returns a
-    :class:`DrainReport` with :attr:`DrainOutcome.DRAINED` as soon as no live lease
-    remains, or :attr:`DrainOutcome.GRACE_EXCEEDED` (naming the still-CLAIMED pks)
-    once ``timeout`` seconds elapse. The in-flight set is checked BEFORE the first
-    sleep, so a quiet worker returns DRAINED immediately. ``sleep`` / ``monotonic``
-    are injectable so a test can drive the wait without wall-clock time.
+    in-flight set every ``poll_interval`` seconds. Returns a :class:`DrainReport`
+    with :attr:`DrainOutcome.DRAINED` as soon as no live lease remains, or
+    :attr:`DrainOutcome.GRACE_EXCEEDED` (naming the still-CLAIMED pks) once
+    ``timeout`` seconds elapse. The in-flight set is checked BEFORE the first
+    sleep, so a quiet worker returns DRAINED immediately. ``on_progress`` receives
+    one :class:`DrainProgress` per poll the wait continues past — the heartbeat the
+    deploy's transport needs to tell a working drain from a hung session.
+    ``sleep`` / ``monotonic`` are injectable so a test can drive the wait without
+    wall-clock time.
     """
     set_worker_quiescing(value=True)
     start = monotonic()
     while True:
-        if not _in_flight():
+        still_claimed = _still_claimed_pks()
+        if not still_claimed:
             return DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=monotonic() - start)
         waited = monotonic() - start
         if waited >= timeout:
             return DrainReport(
                 outcome=DrainOutcome.GRACE_EXCEEDED,
                 waited_seconds=waited,
-                still_claimed=_still_claimed_pks(),
+                still_claimed=still_claimed,
             )
+        if on_progress is not None:
+            on_progress(DrainProgress(waited_seconds=waited, still_claimed=still_claimed))
         sleep(poll_interval)
 
 
 __all__ = [
     "QUIESCING_SETTING",
     "DrainOutcome",
+    "DrainProgress",
     "DrainReport",
     "drain_worker",
     "set_worker_quiescing",
