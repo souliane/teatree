@@ -208,19 +208,19 @@ def handle_block_self_reviewer_assign(data: dict) -> bool:
     if not _gate_enabled():
         return False
 
-    tool_name = data.get("tool_name", "")
-    if tool_name == "Bash":
+    if data.get("tool_name", "") == "Bash":
         command = data.get("tool_input", {}).get("command", "")
         if not command or not _bash_assigns_reviewer(command):
             return False
-        if reason := _reviewer_ok_token(command):
-            sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
-            return False
-        return _fail_open_or_deny(data, _REASON)
+        reason = _reviewer_ok_token(command)
+    elif _mcp_assigns_reviewer(data):
+        reason = _mcp_reviewer_ok_token(data.get("tool_input", {}))
+    else:
+        return False
 
-    if _mcp_assigns_reviewer(data):
-        if reason := _mcp_reviewer_ok_token(data.get("tool_input", {})):
-            sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
-            return False
-        return _fail_open_or_deny(data, _REASON)
-    return False
+    # Both surfaces waive on the same token and deny the same way; resolving the surface
+    # first keeps that decision in one place instead of once per branch.
+    if reason:
+        sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
+        return False
+    return _fail_open_or_deny(data, _REASON)

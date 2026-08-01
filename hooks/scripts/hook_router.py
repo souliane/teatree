@@ -175,8 +175,8 @@ from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_d
 from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
-from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
+from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
 from hooks.scripts.skill_loader_input import strip_ambient_context as _strip_ambient_context
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
