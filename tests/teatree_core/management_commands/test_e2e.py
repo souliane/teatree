@@ -43,6 +43,20 @@ pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
 
+
+@pytest.fixture(autouse=True)
+def _published_port_host_is_localhost() -> Iterator[None]:
+    """Pin the docker-host name, which is not what this module is about.
+
+    ``host_published_port_host`` probes for a host alias and answers the bridge
+    gateway when the caller is itself containerized — which the suite IS in CI. The
+    resolution has its own tests; leaving it live here would make every ``BASE_URL``
+    assertion depend on where the suite happens to run.
+    """
+    with patch.object(e2e_mod, "host_published_port_host", return_value="localhost"):
+        yield
+
+
 _GIT = shutil.which("git") or "git"
 
 

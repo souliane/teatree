@@ -12,14 +12,19 @@ from teatree.core.worktree.clone_provision import ensure_clone
 from tests._git_repo import make_git_repo, run_git
 
 
+class _StubProvisioning:
+    def __init__(self, urls: dict[str, str]) -> None:
+        self._urls = urls
+
+    def repo_clone_url(self, repo_name: str) -> str:
+        return self._urls.get(repo_name, "")
+
+
 class _StubOverlay:
     """Minimal stand-in for the one hook ``ensure_clone`` reads off an overlay."""
 
     def __init__(self, urls: dict[str, str]) -> None:
-        self._urls = urls
-
-    def get_repo_clone_url(self, repo_name: str) -> str:
-        return self._urls.get(repo_name, "")
+        self.provisioning = _StubProvisioning(urls)
 
 
 @pytest.fixture

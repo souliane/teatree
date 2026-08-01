@@ -150,6 +150,19 @@ class TestTheDatabaseIsOffTheHostFilesystem:
         assert "host-reachable filesystem" in capsys.readouterr().out
 
 
+@pytest.fixture
+def _on_a_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the HOST precondition, which is the whole subject of this check.
+
+    ``foreign_writers`` returns nothing when it believes it is containerized — every
+    visible process is then the stack itself — and the suite runs in a container in CI.
+    Unpinned, the planted descriptor below would be reported as no writer at all, and
+    the passing case would pass without ever looking.
+    """
+    monkeypatch.setattr("teatree.db.write_domain.is_running_in_container", lambda: False)
+
+
+@pytest.mark.usefixtures("_on_a_host")
 class TestNoHostProcessHoldsTheDatabaseWritable:
     """Planted against a REAL descriptor — the condition, not a proxy for it."""
 

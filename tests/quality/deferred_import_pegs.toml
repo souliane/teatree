@@ -19,7 +19,9 @@
 # 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
 # after the app registry is ready, so it stays call-time.
 "src/teatree/core/admission_governor.py" = 1
-"src/teatree/core/apps.py" = 2
+# 3: every `AppConfig.ready()` registration is call-time by Django's own contract —
+# the app registry is not ready at module import, so these can never be top-level.
+"src/teatree/core/apps.py" = 3
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
@@ -224,6 +226,10 @@
 # is on the overlay hook surface, so its ORM imports are call-time.
 "src/teatree/core/worktree/worktree_env.py" = 6
 "src/teatree/core/worktree/worktree_tasks.py" = 1
+# 1: the single-branch pin resolver lives with the gate that enforces it; a
+# module-level edge would pull the whole gates subtree into this branch-naming leaf,
+# which every provisioning path imports.
+"src/teatree/core/worktree/branch_classification.py" = 1
 
 [intra_loop]
 "src/teatree/loop/domain_jobs.py" = 1

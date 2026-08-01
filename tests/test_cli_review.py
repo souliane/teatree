@@ -181,34 +181,37 @@ class TestGetGitlabToken:
         """
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         overlay = MagicMock()
-        overlay.config.get_gitlab_token.return_value = "glpat-FROM-OVERLAY"
-        with (
-            patch("teatree.core.overlay_loader.get_overlay", return_value=overlay),
-            patch.object(utils_run_mod.subprocess, "run") as mock_run,
-        ):
+        overlay.config.get_gitlab_token.return_value = "gl-from-overlay"
+        # The read consults ``_owning_overlay`` (via ``get_overlay_for_url``), never the
+        # bare ``get_overlay`` — and the class-level fixture has already pinned that seam
+        # empty. Overriding it here is what makes this the overlay tier's own case.
+        monkeypatch.setattr("teatree.cli.review.forge_target._owning_overlay", lambda _repo: overlay)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
-            assert ReviewService.get_gitlab_token() == "glpat-FROM-OVERLAY"
+            assert ReviewService.get_gitlab_token() == "gl-from-overlay"
 
-    def test_env_wins_over_overlay(self, monkeypatch):
-        """An explicitly-exported ``$GITLAB_TOKEN`` is an operator's stated choice, so it wins.
+    def test_overlay_wins_over_env(self, monkeypatch):
+        """The owning overlay's secret beats an ambient ``$GITLAB_TOKEN``.
 
-        Mirrors the ``_resolve_base_url`` precedence exactly.
+        Mirrors the ``_resolve_base_url`` precedence exactly: there the overlay's
+        ``gitlab_url`` is taken whenever it reads, and ``$GITLAB_URL`` serves as the
+        fallback beneath it. The token has to resolve the same way or a post is
+        addressed to the overlay's instance while authenticating with another's —
+        one process-wide env value cannot be the right credential for two forges.
         """
         monkeypatch.setenv("GITLAB_TOKEN", "gl-from-env")
         overlay = MagicMock()
-        overlay.config.get_gitlab_token.return_value = "glpat-FROM-OVERLAY"
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
-            assert ReviewService.get_gitlab_token() == "gl-from-env"
+        overlay.config.get_gitlab_token.return_value = "gl-from-overlay"
+        monkeypatch.setattr("teatree.cli.review.forge_target._owning_overlay", lambda _repo: overlay)
+        assert ReviewService.get_gitlab_token() == "gl-from-overlay"
 
     def test_falls_back_to_glab_when_overlay_has_no_token(self, monkeypatch):
         """An overlay with no configured secret still reaches the ambient ``glab`` credential."""
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         overlay = MagicMock()
         overlay.config.get_gitlab_token.return_value = ""
-        with (
-            patch("teatree.core.overlay_loader.get_overlay", return_value=overlay),
-            patch.object(utils_run_mod.subprocess, "run") as mock_run,
-        ):
+        monkeypatch.setattr("teatree.cli.review.forge_target._owning_overlay", lambda _repo: overlay)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="  Token: glpat-AMBIENT\n", returncode=0)
             assert ReviewService.get_gitlab_token() == "glpat-AMBIENT"
 
@@ -220,10 +223,12 @@ class TestGetGitlabToken:
         a recoverable config problem into a dead review surface.
         """
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with (
-            patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("no overlay")),
-            patch.object(utils_run_mod.subprocess, "run") as mock_run,
-        ):
+
+        monkeypatch.setattr(
+            "teatree.cli.review.forge_target._owning_overlay",
+            MagicMock(side_effect=RuntimeError("no overlay")),
+        )
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="  Token: glpat-AMBIENT\n", returncode=0)
             assert ReviewService.get_gitlab_token() == "glpat-AMBIENT"
 

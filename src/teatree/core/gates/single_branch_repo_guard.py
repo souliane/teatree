@@ -3,8 +3,8 @@
 Some repos are, for a stretch of their life, deliberately ONE branch wide. A fork
 bootstrap is the standing example: everything lands on one long-lived integration
 branch behind one open PR until that PR merges, because the repo has no reviewed
-history yet to base a second branch on and a second PR would have to be re-based
-onto whatever the first one becomes.
+history yet to base a second branch on, so any sibling request would have to be
+re-based onto whatever the open one becomes.
 
 Prose did not hold this. The recorded outcome on the two repos that carry the rule
 was 31 worktrees across 37 local branches, two of them duplicating a fix already

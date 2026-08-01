@@ -18,6 +18,12 @@ stage or by ``prek run --all-files``) is never mistaken for the commit message â
 that coupling was the bug behind task #35, where a ``fix(db)`` commit was gated
 because the first line of a staged source file was read as the "commit type".
 
+``src/`` and ``BLUEPRINT.md`` name teatree's OWN tree, which is the git repo root
+only in a plain clone. A fork that vendors core under ``vendor/teatree/`` gets every
+staged path prefixed by it, while the fork's own ``src/`` is not teatree source at
+all â€” so both halves of the verdict are read through :func:`_vendoring_prefix`,
+anchored on the shipped script's own location rather than on the process cwd.
+
 A commit mid-``git merge`` is exempt regardless of message or staged files
 (mirroring ``check_module_health.py``'s own merge exemption): its staged tree
 carries every upstream commit's changes in one shot, so it would otherwise

@@ -290,6 +290,14 @@ def write_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = Non
     without writing, so a cache written before the entry existed would read as
     permanently drifted.
     """
+    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
+
+    # An unprovisioned worktree has no cache to write, so it must not reach the
+    # overlay resolution or store a secret nothing will ever advertise.
+    extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
+    if not extra.get("worktree_path"):
+        return None
+
     if overlay is None:
         overlay = get_overlay_for_worktree(worktree)
     store_postgres_secret(worktree, overlay)
@@ -298,9 +306,6 @@ def write_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = Non
     if spec is None:
         return None
 
-    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
-
-    extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     wt_path = Path(extra["worktree_path"])
 
     spec.path.parent.mkdir(parents=True, exist_ok=True)

@@ -6,8 +6,6 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
     dependencies = [
         ("core", "0049_task_failure_kind_task_failure_reason_and_more"),
-        ("core", "0048_park_self_addressed_handovers"),
-        ("core", "0047_merge_upstream_vendor_sync"),
     ]
 
     operations = [

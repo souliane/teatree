@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import DraftState
 from teatree.core.merge import merge_ticket_pr
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.host_kind import resolve_host_kind
@@ -31,6 +32,7 @@ pytestmark = pytest.mark.django_db  # ast-grep-ignore: ac-django-no-pytest-djang
 _SHA = "d" * 40
 _GITLAB_SLUG = "acme-eng/widget-api"
 _MR_IID = 6264
+_DRAFT_PROBE = "teatree.core.merge.ci_rollup.CodeHostQuery.pr_draft_state"
 
 
 @pytest.fixture(autouse=True)
@@ -191,7 +193,13 @@ class TestTicketlessGitLabKeystone(TestCase):
         seed_merge_safe_verdict(slug=_GITLAB_SLUG, pr_id=_MR_IID, sha=_SHA)
         stub = _GlabStub()
 
-        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
+        with (
+            # The §17.4.3 draft floor probes the live forge, which has no credential
+            # here and refuses on UNKNOWN. That floor is pinned in
+            # test_authorization_gates.py; this case is about the TRANSPORT.
+            patch(_DRAFT_PROBE, return_value=DraftState.NOT_DRAFT),
+            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub),
+        ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
         clear.refresh_from_db()

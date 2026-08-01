@@ -292,6 +292,8 @@ Guard it by isolating the run, not by trusting the observation: bind an ephemera
 
 Neither holds on a developer machine, so the symptoms are venue errors wearing a config error's clothes:
 
+<!-- skill-symbol-ref: verbatim docker/compose error text naming the deploy env FILE, not an importable module -->
+
 ```text
 env file .../deploy/teatree.env not found
 Error response from daemon: mounts denied: The path /home/teatree/.local/share/teatree

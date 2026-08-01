@@ -38,6 +38,11 @@ def clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("teatree.cli.mcp_owning_domain.find_main_clone", lambda: repo)
     monkeypatch.delenv("TEATREE_ROLE", raising=False)
     monkeypatch.delenv(DELEGATED_ENV_VAR, raising=False)
+    # Container-ness must come from this fixture, not from the ambient /.dockerenv the
+    # CI image itself carries — otherwise the venue the suite happens to run in decides
+    # the routing verdict. $TEATREE_ROLE stays live so the "never delegates to itself"
+    # case still drives it; /.dockerenv detection is covered against teatree.docker.
+    monkeypatch.setattr(mcp_owning_domain, "is_running_in_container", lambda: bool(os.environ.get("TEATREE_ROLE")))
     return repo
 
 

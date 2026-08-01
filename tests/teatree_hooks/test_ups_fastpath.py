@@ -47,7 +47,7 @@ class TestRecordPresence:
         # parses it back into a fresh turn carrying the session id.
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         ups.record_presence("sess-1")
-        target = tmp_path / "presence_heartbeat"
+        target = tmp_path / "teatree" / "presence_heartbeat"
         assert target.is_file()
         turn = live_presence.PresenceHeartbeat(locate=lambda: target).last_user_turn()
         assert turn is not None
@@ -56,7 +56,7 @@ class TestRecordPresence:
     def test_on_disk_shape_matches_record(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
         ups.record_presence("s2")
-        raw = (tmp_path / "presence_heartbeat").read_text(encoding="utf-8")
+        raw = (tmp_path / "teatree" / "presence_heartbeat").read_text(encoding="utf-8")
         assert raw.endswith("\n")
         doc = json.loads(raw)
         assert set(doc) == {"at", "session"}

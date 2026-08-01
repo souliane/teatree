@@ -105,6 +105,18 @@ class TeatreeConnectors(OverlayConnectors):
 
 class TeatreeProvisioning(OverlayProvisioning):
     @override
+    def repo_clone_url(self, repo_name: str) -> str:
+        """The public GitHub remote for teatree's own repo; ``""`` for anything else.
+
+        ``TEATREE_REPO_URL`` (the same name ``deploy/entrypoint.sh`` reads for the
+        runtime clone) overrides it, so a fork-hosted deployment provisions from
+        its own remote rather than upstream.
+        """
+        if Path(repo_name).name != "teatree":
+            return ""
+        return os.environ.get("TEATREE_REPO_URL") or f"https://github.com/{_DEFAULT_FOLLOWUP_REPOS[0]}.git"
+
+    @override
     def reap_external_resources(self, worktree: "Worktree") -> list[str]:
         result = reap_compose_project(compose_project(worktree))
         return [] if result.is_noop else [str(result)]
@@ -154,18 +166,6 @@ class TeatreeOverlay(OverlayBase):
     @override
     def get_repos(self) -> list[str]:
         return ["teatree"]
-
-    @override
-    def get_repo_clone_url(self, repo_name: str) -> str:
-        """The public GitHub remote for teatree's own repo; ``""`` for anything else.
-
-        ``TEATREE_REPO_URL`` (the same name ``deploy/entrypoint.sh`` reads for the
-        runtime clone) overrides it, so a fork-hosted deployment provisions from
-        its own remote rather than upstream.
-        """
-        if Path(repo_name).name != "teatree":
-            return ""
-        return os.environ.get("TEATREE_REPO_URL") or f"https://github.com/{_DEFAULT_FOLLOWUP_REPOS[0]}.git"
 
     @override
     def get_checking_sources(self) -> list[str]:

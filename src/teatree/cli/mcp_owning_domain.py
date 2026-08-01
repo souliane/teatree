@@ -40,7 +40,9 @@ def owning_domain_wrapper() -> Path | None:
     """
     if is_running_in_container() or os.environ.get(DELEGATED_ENV_VAR):
         return None
-    if ControlDbBoundary(CANONICAL_DB).read_write_allowed:
+    # The line above already settled which side of the boundary this process is on, so
+    # the domain is passed down rather than re-derived — one detection, one answer.
+    if ControlDbBoundary(CANONICAL_DB, containerized=False).read_write_allowed:
         return None
 
     try:

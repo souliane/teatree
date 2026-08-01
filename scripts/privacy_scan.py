@@ -57,8 +57,11 @@ _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
 # Every branch must yield a FOUR-octet address. The ``10`` branch carries its own
 # second octet because ``10`` alone left it three-wide, so a three-component string
 # like a doc section reference or a three-part version string matched as a private
-# IP — and a real four-octet address matched only its first three octets.
-_IP_RE = re.compile(r"\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
+# IP — and a real four-octet address matched only its first three octets. The two
+# guards bound the quad against a LONGER dotted run on either side: a preceding dot
+# would let a five-part build train donate an inner quad, and a following ``.<digit>``
+# the same from the right. A trailing sentence period is not one of them.
+_IP_RE = re.compile(r"\b(?<![\d.])(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b(?!\.\d)")
 _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
 _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")

@@ -443,7 +443,7 @@ class ProjectionPublisher:
 
     @staticmethod
     def _mode_rows(conn: sqlite3.Connection, sql: str) -> list[tuple[object, ...]]:
-        """The rows of *sql*, or none at all when the table is not there yet.
+        """The rows of *sql*, or none at all when the table has not been migrated.
 
         A control plane whose mode tables have not been migrated must still publish the
         settings the kill-switches read: letting one unreachable table forfeit the whole

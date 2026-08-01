@@ -120,6 +120,19 @@ def _reaped_gone(pid: int, marker: str) -> bool:
     return not any(record.pid == pid and marker in record.command for record in process_snapshot())
 
 
+@pytest.fixture
+def _on_a_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the HOST precondition the reap/watch cases describe.
+
+    ``orphan_detection_applies`` is False in a container and BOTH entry points return
+    early there — and the suite itself runs containerized in CI. Without this the cases
+    below would go green by short-circuiting rather than by exercising the PID-1 proof
+    they name, and the one that wants a real thread back would get ``None``.
+    """
+    monkeypatch.setattr(serve_lifecycle_mod, "is_running_in_container", lambda: False)
+
+
+@pytest.mark.usefixtures("_on_a_host")
 class TestReapRealOrphan:
     def test_reaps_a_real_reparented_process_and_only_it(self) -> None:
         # Unique per test process so a leftover orphan from an aborted earlier
@@ -194,11 +207,13 @@ class TestHardExit:
         hard.assert_called_once_with(0)
 
 
+@pytest.mark.usefixtures("_on_a_host")
 class TestStartParentDeathWatch:
     def test_starts_a_named_daemon_thread_running_the_watch(self) -> None:
         # patch the watch loop to a no-op so the started thread exits immediately
         with patch("teatree.mcp.serve_lifecycle.watch_until_orphaned") as watch:
             thread = start_parent_death_watch(poll_seconds=0.001)
+            assert thread is not None
             thread.join(timeout=2.0)
 
         assert thread.daemon is True
