@@ -36,8 +36,8 @@ def _check_marker_jam() -> bool:
     The jam signature: non-terminal ``ImplementedIssueMarker`` rows whose ticket
     is already terminal, gone, or stalled — they never left ``dispatched`` /
     ``ticket_created`` (release-on-completion only fires on the live transition),
-    so they permanently consume the ``issue_implementer_max_concurrent`` budget
-    and no new issue is ever claimed. Reads the non-mutating :meth:`find_stale`
+    so they permanently consume the in-flight intake budget and no new issue is
+    ever claimed. Reads the non-mutating :meth:`find_stale`
     preview across every
     overlay. A WARN (never a hard FAIL): the loop self-heals each tick, and the
     operator can force it now with ``t3 loop reclaim-markers``. Crash-proof: any
@@ -84,6 +84,7 @@ def _check_intake_budget_deadlock() -> bool:
         IntakeBudget,
         read_intake_budget,
     )
+    from teatree.core.intake.concurrency import resolve_intake_concurrency  # noqa: PLC0415 — deferred: same
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
 
     try:
@@ -97,7 +98,11 @@ def _check_intake_budget_deadlock() -> bool:
             settings = get_effective_settings(overlay)
             if not settings.issue_implementer_enabled:
                 continue
-            budget = read_intake_budget(overlay, settings.issue_implementer_max_concurrent)
+            # The LIVE limit, never the static setting: the resource loop may have moved
+            # it (#3992), and a doctor reading a different number than the gate is the
+            # second opinion this whole surface exists to prevent.
+            limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=overlay)
+            budget = read_intake_budget(overlay, limit)
             if budget.deadlocked:
                 jammed.append(budget)
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run

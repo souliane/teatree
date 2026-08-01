@@ -242,9 +242,12 @@ stop_snapshotter_enabled = true # snapshot session findings before a stop, so co
 unknown_repo_push_gate_enabled = true # refuse a push to a repo teatree does not recognise
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
+adaptive_intake_concurrency_enabled = true # let the resource loop set intake concurrency from observed headroom
 disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes", "~/.cache/go-build"] # cache directories disk reclamation may empty
 disk_crit_free_gb = 10.0 # free disk below this many GB is critical
 disk_warn_free_gb = 25.0 # free disk below this many GB warns
+intake_ram_per_agent_gb = 6.2 # RAM one admitted ticket is sized at when deriving intake concurrency
+intake_ram_reserve_gb = 4.0 # RAM held back from intake sizing so a burst is absorbed instead of OOMing
 ram_crit_avail_gb = 1.5 # available RAM below this many GB is critical
 ram_warn_avail_gb = 3.0 # available RAM below this many GB warns
 resource_pressure_cadence_minutes = 5 # minutes between resource-pressure checks

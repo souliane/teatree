@@ -864,6 +864,16 @@ class _ResourcePressureSettings:
     disk_crit_free_gb: float = 10.0
     ram_warn_avail_gb: float = 3.0
     ram_crit_avail_gb: float = 1.5
+    # #3992 The resource loop derives issue-intake concurrency from observed headroom
+    # instead of it being a hand-set constant. Flipping this OFF is the kill-switch:
+    # ``issue_implementer_max_concurrent`` is then used verbatim, as before.
+    adaptive_intake_concurrency_enabled: bool = True
+    # Headroom held back rather than admitted against, so a burst is absorbed instead of
+    # becoming an OOM — and so tightening lowers the limit BEFORE the memory ceiling.
+    intake_ram_reserve_gb: float = 4.0
+    # Measured cost of one agent in full verification over the idle baseline. The number
+    # that varies by box, hence a setting: it is what one admitted ticket is sized at.
+    intake_ram_per_agent_gb: float = 6.2
     # Allow-LIST only (never a denylist): exactly these regenerable cache dirs
     # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —

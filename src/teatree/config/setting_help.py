@@ -21,6 +21,7 @@ conformance suite reads ``key = value`` lines out of the rendered TOML by that s
 SETTING_HELP: dict[str, str] = {
     "active_loop_schedule": "name of the weekly schedule deciding when the autonomous loops may run",
     "admin_autologin_enabled": "log the loopback operator into Django admin without a password prompt",
+    "adaptive_intake_concurrency_enabled": "let the resource loop set intake concurrency from observed headroom",
     "admission_governor_enabled": "let the governor refuse new work when the box is already saturated",
     "admit_colleague_prs_to_board": "put pull requests opened by colleagues onto the review board",
     "agent_harness": "which agent CLI teatree drives (claude, codex, ...)",
@@ -126,6 +127,8 @@ SETTING_HELP: dict[str, str] = {
     "idle_stack_reaper_disabled": "stop reaping idle local stacks",
     "incoming_event_retention_days": "days an incoming event row is kept",
     "incremental_push_gate": "scope the push gate to the diff instead of running it whole-tree",
+    "intake_ram_per_agent_gb": "RAM one admitted ticket is sized at when deriving intake concurrency",
+    "intake_ram_reserve_gb": "RAM held back from intake sizing so a burst is absorbed instead of OOMing",
     "internal_publish_namespaces": "repo namespaces treated as internal, where internal identifiers may appear",
     "issue_implementer_cadence_hours": "hours between issue-implementer runs",
     "issue_implementer_enabled": "let the loop claim and implement labelled issues",

@@ -158,6 +158,7 @@ class TeatreeSettingsSchema(BaseSettings):
         return (init_settings, _TeatreeTableTomlSource(settings_cls))
 
     admin_autologin_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    adaptive_intake_concurrency_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admission_governor_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admit_colleague_prs_to_board: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     agent_harness: Annotated[str, BeforeValidator(parse_harness_name), _DEFAULT_OVERLAY]
@@ -239,6 +240,8 @@ class TeatreeSettingsSchema(BaseSettings):
     idle_stack_reaper_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     incoming_event_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     incremental_push_gate: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    intake_ram_per_agent_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
+    intake_ram_reserve_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     issue_implementer_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     issue_implementer_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     issue_implementer_label: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]

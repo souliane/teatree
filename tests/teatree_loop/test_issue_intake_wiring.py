@@ -8,14 +8,18 @@ The mini-loop wires it into the live tick and routes the emitted
 ``issue_intake.admitted`` signal to ``t3:orchestrator`` (maker-side kickoff).
 """
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
+from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
 from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -355,3 +359,54 @@ class IssueIntakeMiniLoopTests(TestCase):
         assert len(first) == 1
         assert second == []
         assert Task.objects.filter(ticket__issue_url=url, phase="coding").count() == 1
+
+
+class IssueIntakeAdaptiveConcurrencyTests(TestCase):
+    """#3992: the in-flight limit comes from the resource loop, not from the setting.
+
+    The acceptance is stated as a difference, not a value: with the adaptation removed
+    the limit is the same number under every reading, which is precisely the failure the
+    ticket describes. So the first case asserts that an idle box and a loaded box do not
+    hand intake the same ceiling.
+    """
+
+    def _record(self, value: int, *, age: timedelta = timedelta()) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.record_adaptive_concurrency(value)
+        ResourcePressureMarker.objects.filter(pk=marker.pk).update(adaptive_intake_recorded_at=timezone.now() - age)
+
+    def _limit(self) -> int:
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        return scanner.max_concurrent
+
+    def test_idle_and_loaded_boxes_do_not_yield_the_same_limit(self) -> None:
+        self._record(4)
+        idle = self._limit()
+        self._record(1)
+        loaded = self._limit()
+
+        assert idle != loaded
+
+    def test_headroom_lifts_the_limit_above_the_static_setting(self) -> None:
+        self._record(4)
+
+        assert self._limit() == 4
+
+    def test_pressure_lowers_the_limit_below_the_static_setting(self) -> None:
+        self._record(1)
+
+        assert self._limit() == 1
+
+    def test_a_stale_reading_leaves_the_static_setting_in_charge(self) -> None:
+        self._record(4, age=ADAPTIVE_FRESHNESS + timedelta(minutes=1))
+
+        assert self._limit() == 2
+
+    def test_the_adapted_limit_is_what_the_budget_gate_enforces(self) -> None:
+        ImplementedIssueMarkerFactory(overlay="acme")
+        self._record(1)
+
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
+            assert _issue_intake_scanner_for(_backend()) is None

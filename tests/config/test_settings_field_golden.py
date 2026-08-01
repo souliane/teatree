@@ -22,6 +22,7 @@ from teatree.config import UserSettings
 #: WITHOUT updating this set is a red test — see the module docstring for routing.
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
+        "adaptive_intake_concurrency_enabled",
         "admin_autologin_enabled",
         "admission_governor_enabled",
         "admit_colleague_prs_to_board",
@@ -100,6 +101,8 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "idle_stack_reaper_cadence_minutes",
         "idle_stack_reaper_disabled",
         "incremental_push_gate",
+        "intake_ram_per_agent_gb",
+        "intake_ram_reserve_gb",
         "issue_implementer_cadence_hours",
         "issue_implementer_enabled",
         "issue_implementer_label",
