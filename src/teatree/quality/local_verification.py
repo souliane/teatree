@@ -57,6 +57,10 @@ class PhaseMandate:
 #: dispatched agent reads to decide what to run in a phase.
 PHASE_MANDATES: tuple[PhaseMandate, ...] = (
     PhaseMandate(surface="CLAUDE.md", phase="every phase (repo-root agent instructions)"),
+    PhaseMandate(surface="AGENTS.md", phase="every phase (repo-root agent instructions)"),
+    PhaseMandate(surface="README.md", phase="onboarding (quick-start command index)"),
+    PhaseMandate(surface="docs/contributing.md", phase="onboarding (contributor quick-start)"),
+    PhaseMandate(surface="tests/README.md", phase="testing (test-strategy command index)"),
     PhaseMandate(surface="skills/code/SKILL.md", phase="coding"),
     PhaseMandate(surface="skills/test/SKILL.md", phase="testing"),
     PhaseMandate(surface="skills/ship/SKILL.md", phase="shipping"),

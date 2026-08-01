@@ -16,12 +16,19 @@
 ## Running
 
 ```bash
-uv run pytest                          # full suite, parallel (-n auto), no coverage — fast default
-uv run pytest -x -q                    # add --exitfirst/-x to stop on first failure
+bash dev/test-affected.sh              # the diff-scoped lane — the local default (`--full` for the whole suite)
 uv run pytest tests/teatree_core/      # specific module
-uv run pytest --tach                   # skip tests unaffected by changes
+uv run pytest tests/teatree_core/test_resolve.py -x -q   # single file; -x stops on first failure
+bash dev/ci-parity-fast.sh             # pre-push inner loop: scoped prek + makemigrations + affected tests + push gate
 bash dev/test-cov.sh                   # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 ```
+
+The local default is **diff-scoped**, not the whole tree ([#3994](https://github.com/souliane/teatree/issues/3994)):
+a local whole-tree sweep pays again for the run CI's required sharded lane is
+about to make, and it sits on the critical path. `dev/test-affected.sh` is
+fail-safe TO FULL — a migration, a conftest / `factories.py` / test-settings
+edit, an unclassifiable path, or a missing merge-base each escalate to the
+whole suite on their own — so scoping never under-runs.
 
 The default `addopts` is lean and parallel (`-n auto`, pytest-xdist): no
 coverage, no doctests, no `--exitfirst`. Coverage + doctests + the 93% floor

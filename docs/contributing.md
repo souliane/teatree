@@ -16,12 +16,19 @@ uv tool install --editable . --overrides uv-overrides.txt && t3 setup
 ## Day-to-day commands
 
 ```bash
-uv run pytest                 # full suite, parallel (-n auto), no coverage — fast default
+bash dev/test-affected.sh     # the diff-scoped lane — the local default (`--full` for the whole suite)
+bash dev/ci-parity-fast.sh    # pre-push inner loop: scoped prek + makemigrations + affected tests + push gate
 bash dev/test-cov.sh          # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 uv run ruff check             # lint
 uv run ruff format            # format
 prek run --all-files          # all pre-commit hooks
 ```
+
+The local default is diff-scoped, not the whole tree
+([#3994](https://github.com/souliane/teatree/issues/3994)): a local whole-tree sweep pays
+again for the run CI's required sharded lane is about to make. The lane is fail-safe TO
+FULL — a migration, a conftest / `factories.py` / test-settings edit, an unclassifiable
+path or a missing merge-base each escalate on their own — so scoping never under-runs.
 
 ## Worktree-first
 

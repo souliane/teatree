@@ -28,6 +28,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _EXPECTED_SURFACES = (
     "CLAUDE.md",
+    "AGENTS.md",
+    "README.md",
+    "docs/contributing.md",
+    "tests/README.md",
     "skills/code/SKILL.md",
     "skills/test/SKILL.md",
     "skills/ship/SKILL.md",

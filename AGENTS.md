@@ -301,13 +301,16 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 ### Testing
 
 ```bash
-uv run pytest                       # Full suite, parallel (-n auto), NO coverage — the fast default
+bash dev/test-affected.sh           # the diff-scoped lane — the local default (`--full` opts into the whole suite)
+bash dev/ci-parity-fast.sh          # pre-push inner loop: scoped prek + makemigrations + affected tests + push gate
 bash dev/test-cov.sh                # Coverage lane: parallel + --cov --doctest-modules, 93% floor (CI parity)
 prek run --all-files                # Commit-stage hooks ONLY (ruff, codespell, tach, ty)
 t3 tool verify-gates                # FULL CI-parity gate set: commit AND push stages
-bash dev/test-fast.sh               # Opt-in local suite: Python 3.13, host, parallel
-bash dev/test-matrix.sh             # Opt-in Docker matrix: Python 3.13 + 3.14
+bash dev/test-fast.sh               # Declared exception: whole host suite, Python 3.13, parallel
+bash dev/test-matrix.sh             # Declared exception: Docker matrix, Python 3.13 + 3.14
 ```
+
+**The local default is diff-scoped; the whole suite is a declared exception ([#3994](https://github.com/souliane/teatree/issues/3994)).** A local whole-tree sweep pays a second time for the run CI's required sharded lane is about to make, and it is on the critical path — measured as most of a 3.5h ticket cycle against a 30m target. `dev/test-affected.sh` is fail-safe TO FULL (a migration, a conftest / `factories.py` / test-settings edit, an unclassifiable path, a missing merge-base, or a change to the selection machinery itself each run everything on their own), so scoping never under-runs. Reach for `--full` / `dev/test-fast.sh` / `dev/ci-parity.sh` when a change is genuinely cross-cutting and declare it; CI's sharded `test (3.13)` lane and the 93% whole-tree floor remain the merge authority either way. `teatree.quality.local_verification` pins that every per-phase mandate surface names the scoped lane.
 
 **The push path does NOT run the test suite — push -> CI is the gate.** The full suite is CI's job, never the local push path: a host under load times out unrelated wall-clock and concurrency tests and blocks an otherwise-good push (#112/#21/#38). The pre-push hooks are fast, scoped gates only (public-repo leak refusal, doc-update, comment-density, ensure-pr). Guarded by `tests/test_no_full_suite_on_pre_push.py` so a full-suite hook can't silently regress back onto pre-push.
 
@@ -324,7 +327,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 1. **Django test client** (`client.get(...)`, `client.post(...)`) for views and URL endpoints.
 3. **`call_command("name", ...)`** for management commands — exercises the full Typer + Django glue.
 4. **`subprocess.run(["t3", ...])`** (marked `@pytest.mark.integration`) when the bug would only surface through the real entry point.
-5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output. **Run those `git`/script subprocesses with a `GIT_*`-stripped env** (`{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}`): the suite can run from the inline pre-commit `pytest` hook, where the outer `git commit` exports `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` — inherited, they hijack the tmp-repo git calls so the test mutates the real repo. A test that passes standalone but fails under `git commit` is this.
+5. **Real filesystem + real `git` under `tmp_path`** for anything that provisions worktrees, writes env files, or runs `git worktree add`. No mocking `Path`, `subprocess`, or git output. **Run those `git`/script subprocesses with a `GIT_*`-stripped env** (`{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}`): the suite can run from the inline pre-commit `pytest` hook, where the outer `git commit` exports `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` — inherited, they hijack the tmp-repo git calls so the test mutates the real repo. A test that passes standalone but fails under `git commit` is this. <!-- local-verification: cited-not-prescribed — names the hook's own pytest invocation, prescribes nothing -->
 6. **Real Django ORM against the test DB** — use factories or `Model.objects.create(...)`, not mocked querysets.
 
 **When a unit test is justified:**
@@ -360,7 +363,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Skills are in this repo.** When `/t3:retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
-After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — a bare `prek run --all-files` skips the push-stage gates CI re-runs) then `uv run pytest` then commit.
+After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — a bare `prek run --all-files` skips the push-stage gates CI re-runs) then `bash dev/test-affected.sh` then commit.
 
 ## Abstraction Boundaries
 
