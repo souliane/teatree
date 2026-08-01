@@ -14,9 +14,14 @@ single enable verdict (``Loop.enabled`` + ``LoopState``) admits it, bumping
 
 Both acquire the in-flight ``LoopLease`` (``dream-tick``) first so two passes
 never overlap — the loser SKIPs (the #786 WS2 CAS, correct on the prod SQLite
-backend). On a successful pass the ``DreamRunMarker`` is stamped succeeded
-(clearing the staleness alarm); a failed pass bumps only the attempt timestamp,
-so staleness keeps firing until a clean run lands.
+backend), unless the holder's pid is PROVABLY dead, in which case
+:mod:`teatree.loops.dream.lease` reclaims it. On a successful pass the
+``DreamRunMarker`` is stamped succeeded (clearing the staleness alarm); a failed pass
+bumps only the attempt timestamp, so staleness keeps firing until a clean run lands.
+
+The process EXIT CODE mirrors that marker (:class:`PassOutcome`, #3993): a pass that
+ran and did not stamp success exits non-zero, so a caller can tell a blocked pass from
+a healthy one without reading a worker log.
 
 Anything touching the ORM is a management command (AGENTS.md § "Deciding Where
 a New Command Lives"); ``t3 dream`` is the thin Typer wrapper that delegates
@@ -25,6 +30,7 @@ here via ``call_command``.
 
 import datetime as dt
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated
 
 import typer
@@ -54,6 +60,22 @@ class PipelineMode:
 
 
 _DEFAULT_MODE = PipelineMode()
+
+
+class PassOutcome(StrEnum):
+    """What one invocation did — the sole input to the process exit code (#3993).
+
+    The exit code MIRRORS the marker: a pass that ran and did not stamp
+    ``last_succeeded_at`` is ``FAILED`` and exits non-zero, so a blocked pass stops
+    being indistinguishable from a healthy one to its caller. ``SKIPPED`` (disabled,
+    not due, lease held) never ran a pass, and ``DRY_RUN`` never writes a marker by
+    design — neither is a failure, so both exit 0.
+    """
+
+    STAMPED = "stamped"
+    SKIPPED = "skipped"
+    DRY_RUN = "dry_run"
+    FAILED = "failed"
 
 
 class Command(TyperCommand):
@@ -98,12 +120,14 @@ class Command(TyperCommand):
         ] = False,
     ) -> None:
         """Run one consolidation pass NOW (manual escape hatch; ignores cadence)."""
-        self._run_pass(
-            since=_parse_since(since),
-            dry_run=dry_run,
-            enforce_cadence=False,
-            propose_evals=propose_evals or full,
-            mode=PipelineMode(force_all_phases=full, validate_live=validate_live or full),
+        _surface_exit_code(
+            self._run_pass(
+                since=_parse_since(since),
+                dry_run=dry_run,
+                enforce_cadence=False,
+                propose_evals=propose_evals or full,
+                mode=PipelineMode(force_all_phases=full, validate_live=validate_live or full),
+            )
         )
 
     @command(name="tick")
@@ -117,7 +141,9 @@ class Command(TyperCommand):
         """
         from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415 — deferred: lazy command import
 
-        self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
+        _surface_exit_code(
+            self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
+        )
 
     @command(name="compliance")
     def compliance(self) -> None:
@@ -135,13 +161,14 @@ class Command(TyperCommand):
         enforce_cadence: bool,
         propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
-    ) -> None:
+    ) -> PassOutcome:
         import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         from teatree.core.models import DreamRunMarker, Loop, LoopLease  # noqa: PLC0415 — deferred: ORM/app-registry
         from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.dream import lease  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: keeps command import light
             DREAM_LEASE_NAME,
             DREAM_LEASE_SECONDS,
@@ -157,25 +184,27 @@ class Command(TyperCommand):
             row = Loop.objects.filter(name=MINI_LOOP.name).first()
             if row is None or not loop_enabled(MINI_LOOP.name):
                 self.stdout.write("SKIP  dream loop disabled (no enabled Loop row / LoopState hold).")
-                return
+                return PassOutcome.SKIPPED
             if not row.is_due(now):
                 self.stdout.write("SKIP  dream cadence not elapsed.")
-                return
+                return PassOutcome.SKIPPED
 
-        owner = f"pid-{os.getpid()}"
-        if not LoopLease.objects.acquire(DREAM_LEASE_NAME, owner=owner, lease_seconds=DREAM_LEASE_SECONDS):
-            self.stdout.write("SKIP  another dream pass is already running — dream-tick lease held.")
-            return
+        owner = lease.lease_owner(os.getpid())
+        verdict = lease.acquire(owner=owner, lease_seconds=DREAM_LEASE_SECONDS)
+        if verdict.message:
+            self.stdout.write(verdict.message)
+        if not verdict.acquired:
+            return PassOutcome.SKIPPED
 
         enabled = propose_evals or _env_propose_evals()
         try:
-            succeeded = self._consolidate_and_mark(
+            outcome = self._consolidate_and_mark(
                 since=since, dry_run=dry_run, now=now, propose_evals=enabled, mode=mode
             )
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
-        if enforce_cadence and succeeded:
+        if enforce_cadence and outcome is PassOutcome.STAMPED:
             Loop.objects.mark_run(MINI_LOOP.name, now)
 
         # Re-read confirmation so a stamped success can be cited (resilience #7).
@@ -183,6 +212,8 @@ class Command(TyperCommand):
             marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
             stamped = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "none"
             self.stdout.write(f"      dream marker last_succeeded_at={stamped}")
+
+        return outcome
 
     def _consolidate_and_mark(
         self,
@@ -192,7 +223,7 @@ class Command(TyperCommand):
         now: dt.datetime,
         propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
-    ) -> bool:
+    ) -> PassOutcome:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
         from teatree.loops.dream import engine  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415 — lazy command import
@@ -204,7 +235,7 @@ class Command(TyperCommand):
             if not dry_run:
                 DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
-            return False
+            return PassOutcome.FAILED
 
         evals = f"; {result.evals_proposed} eval candidate(s)" if result.evals_proposed else ""
         empty = (
@@ -222,7 +253,7 @@ class Command(TyperCommand):
                 f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}; "
                 "no rows or marker written.",
             )
-            return False
+            return PassOutcome.DRY_RUN
 
         if result.members_replayed == 0:
             # No transcript was replayed, so nothing was distilled — the
@@ -237,7 +268,7 @@ class Command(TyperCommand):
             self.stdout.write(
                 f"WARN  dream pass found 0 transcript members — marker NOT stamped succeeded{memory_phases}.",
             )
-            return False
+            return PassOutcome.FAILED
 
         promoted = self._promote_candidates(
             propose_evals=propose_evals,
@@ -274,7 +305,7 @@ class Command(TyperCommand):
                 f"{memory_phases}{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped "
                 f"succeeded.",
             )
-            return False
+            return PassOutcome.FAILED
 
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
@@ -283,7 +314,7 @@ class Command(TyperCommand):
             f"{promoted}{compliance}{automation_asks}"
             f"{memory_phases}{memory_promote}{gates_summary}.",
         )
-        return True
+        return PassOutcome.STAMPED
 
     def _run_compliance_measurement(
         self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool
@@ -477,6 +508,17 @@ class Command(TyperCommand):
     def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
         """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545)."""
         return self._phase_runner().run_memory_phases_and_gates(clusters_recorded=clusters_recorded, dry_run=dry_run)
+
+
+def _surface_exit_code(outcome: PassOutcome) -> None:
+    """Turn a pass outcome into the process exit code (#3993).
+
+    ``SystemExit``, never ``typer.Exit``: these commands are reached through
+    ``call_command``, which swallows ``typer.Exit`` and exits 0 on a real failure
+    (AGENTS.md § "Deciding Where a New Command Lives").
+    """
+    if outcome is PassOutcome.FAILED:
+        raise SystemExit(1)
 
 
 def _env_propose_evals() -> bool:

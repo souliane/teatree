@@ -31,6 +31,7 @@ from teatree.loops.dream.gates import (
 )
 
 if TYPE_CHECKING:
+    from teatree.core.models import DreamQaProbe
     from teatree.loops.dream.decay import ArchivedMemory
 
 
@@ -54,12 +55,12 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
 
     Wiring entry point for the dream command (#2545): derives probes from the
     BEFORE snapshot, reconstructs the RECORDED prior-session probe SET
-    (:func:`_reconstruct_prior_probes`) and replays it against the AFTER snapshot to
-    feed gate (b) interference — distinct from gate (e) monotonicity, which tracks
-    this pass's current-probe pass-rate against the recorded baseline (F6.3, restoring
+    (:func:`_reconstruct_prior_probes`) and replays it across BOTH snapshots to feed
+    gate (b) interference — distinct from gate (e) monotonicity, which tracks this
+    pass's current-probe pass-rate against the recorded baseline (F6.3, restoring
     the two from collapsing onto one predicate that never replayed the persisted
-    corpus). Reads the recorded prior-session pass-rate as the interference /
-    monotonicity baseline, computes the durable-home set for the consolidation
+    corpus). Reads the recorded prior-session pass-rate as the monotonicity baseline,
+    computes the durable-home set for the consolidation
     gate as the pruned index lines whose lesson is still findable in the AFTER
     snapshot (transfer-before-prune) OR whose pointer targets a file in the durable
     ``archive/`` cold store (*archive_dir*, this/prior pass, #2723), threads the caller's *maintenance_performed*
@@ -93,7 +94,6 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
         schema_before=schema_before,
         schema_after=schema_after,
         homed_index_lines=homed_index_lines,
-        prior_pass_rate=prior_rate if had_prior else now_rate,
         pass_rate_first=prior_rate if had_prior else now_rate,
         pass_rate_second=now_rate,
         archived=archived,
@@ -139,11 +139,31 @@ def persist_probe_results(
                 "scope": scope,
             },
         )
-        if not created and not row.is_prior_session:
-            row.is_prior_session = True
-            row.save(update_fields=["is_prior_session"])
+        if not created:
+            _carry_row_over(row, probe)
         row.record_result(passed=answerable)
     return passed
+
+
+def _carry_row_over(row: "DreamQaProbe", probe: QaProbe) -> None:
+    """Mark a re-recorded row prior-session and re-key it onto the memory's CURRENT answer.
+
+    ``record_result`` scores the FRESHLY-derived probe, so a row whose
+    ``expected_answer`` stays frozen at creation reports a pass-rate for text the memory
+    no longer carries — the question and its recorded rate then describe different
+    answers, and gate (b)'s replay of the frozen text can never reach that rate (#3993).
+    Editing a memory in place is how a lesson is normally updated, so the question (the
+    file) is the stable identity and its answer follows the file.
+    """
+    fields: list[str] = []
+    if not row.is_prior_session:
+        row.is_prior_session = True
+        fields.append("is_prior_session")
+    if row.expected_answer != probe.expected_answer:
+        row.expected_answer = probe.expected_answer
+        fields.append("expected_answer")
+    if fields:
+        row.save(update_fields=fields)
 
 
 def _reconstruct_prior_probes(scope: str) -> list[QaProbe]:
