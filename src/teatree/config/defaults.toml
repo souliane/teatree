@@ -217,6 +217,7 @@ solo_repo_url_pattern = "" # regex matching repos the operator works on alone
 
 [teatree.Gates."Pre-Django hooks"]
 banned_terms_gate_enabled = true # run the banned-term scan before a publish
+banned_terms_required = false # refuse to scan when no banned-term list is configured, instead of warning
 completion_claim_gate_enabled = true # refuse a multi-deliverable completion claim carrying no evidence map
 config_overwrite_gate_enabled = true # refuse a blind overwrite of a config file that was not read first
 deny_circuit_breaker_enabled = true # pause dispatch after repeated classifier denials instead of retrying

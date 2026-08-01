@@ -135,11 +135,26 @@ def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, .
 def fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> tuple[object, ...] | None:
     """Read-only single-row `query`; fails open to `None` on any error or a missing row.
 
-    The shared single-row fetch: `cold_reader._fetch_value_row` and `loop_status`
-    both read one row through it, collapsing the `_QUERY_ERROR` sentinel to `None`.
+    The shared single-row fetch, collapsing the `_QUERY_ERROR` sentinel to `None`.
+    """
+    return fetch_one_confirmed(db, query, parameters_bindings)[0]
+
+
+def fetch_one_confirmed(
+    db: Path, query: str, parameters_bindings: tuple[object, ...]
+) -> tuple[tuple[object, ...] | None, bool]:
+    """`(row, ran)` — the row, plus whether the read actually RAN.
+
+    `fetch_one`'s confirming sibling, for a caller that must tell a clean "no such row" from a
+    store it could not read at all (a locked DB, a corrupt file, an absent table). `fetch_one`
+    collapses both to `None`, which is right for a fail-open caller and exactly wrong for a
+    security gate: the banned-terms scanner read "no `banned_terms` row" out of a DB that was
+    merely busy, and opened (#4008). `ran` is `False` only when sqlite itself errored.
     """
     row = _execute_readonly(db, query, parameters_bindings)
-    return None if row is _QUERY_ERROR else cast("tuple[object, ...] | None", row)
+    if row is _QUERY_ERROR:
+        return (None, False)
+    return (cast("tuple[object, ...] | None", row), True)
 
 
 def fetch_all(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> list[tuple[object, ...]]:

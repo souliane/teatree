@@ -317,9 +317,10 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     try:
         # check-banned-terms.sh contract: exit 0 = clean, exit 1 = banned term
         # found (with a BANNED TERM report on stdout), exit 2 = the scanner
-        # could not run (an old interpreter / import crash) OR the term list is
-        # genuinely unset. Any other code is also a scanner failure. A failed
-        # scanner fails CLOSED, never ALLOW.
+        # could not run (an old interpreter / import crash), the term store could
+        # not be read, OR the term list is genuinely unset on a deployment that
+        # requires one. Any other code is also a scanner failure. A failed scanner
+        # fails CLOSED, never ALLOW.
         result = run_allowed_to_fail(
             [str(script), str(scan_file)],
             expected_codes=(0, 1),
