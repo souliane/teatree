@@ -421,6 +421,50 @@ class TestLaneRunnerChangeIsScopedNotFull:
             assert classify_selection(_changed(("M", path))).full, path
 
 
+class TestVcsConfigChangeIsScopedNotFull:
+    """#3994: `.gitignore` & siblings are mapped to their readers, not escalated.
+
+    Measured on this ticket's own branch: a `.gitignore` edit escalated the lane to
+    ``FULL (fail-safe)``, so a ticket touching a small surface still ran the whole suite
+    locally — the acceptance criterion the prose fixes alone could not reach. These files
+    are the same shape as a doc (#3645) or a `dev/` runner (#3817): nothing imports them,
+    the local suite never executes one, and the only test that can observe an edit is one
+    whose source NAMES it. The list is an ALLOWLIST — everything unlisted keeps the
+    fail-safe FULL, which the last two tests pin.
+    """
+
+    _GITIGNORE_READERS: ClassVar[dict[str, tuple[str, ...]]] = {
+        ".gitignore": ("tests/teatree_quality/test_provisioned_worktree_is_selection_clean.py",)
+    }
+
+    @pytest.mark.parametrize("path", sorted(mod.NON_EXECUTABLE_CONFIG_PATHS))
+    def test_vcs_config_edit_alone_does_not_force_full(self, path: str) -> None:
+        verdict = classify_selection(_changed(("M", path)))
+        assert not verdict.full, verdict.reason
+        assert verdict.scoped_reference_mapped == (path,)
+
+    def test_vcs_config_edit_force_keeps_the_tests_that_name_it(self) -> None:
+        keep = _force_keep(_changed(("M", ".gitignore")), reference_readers=self._GITIGNORE_READERS)
+        reader = "tests/teatree_quality/test_provisioned_worktree_is_selection_clean.py"
+        assert reader in keep.paths
+        assert [r.kind for r in keep.reasons if r.test == reader] == ["reference-read"]
+
+    def test_every_allowlisted_path_exists_on_disk(self) -> None:
+        # Membership is by EXACT path: a rename would leave a stale entry that narrows
+        # nothing while reading as covered.
+        missing = sorted(p for p in mod.NON_EXECUTABLE_CONFIG_PATHS if not (_REPO_ROOT / p).is_file())
+        assert not missing, f"stale NON_EXECUTABLE_CONFIG_PATHS entries: {missing}"
+
+    def test_dependency_and_pytest_config_still_force_full(self) -> None:
+        # The allowlist must never reach a file that DOES change execution: a dependency
+        # bump or the pytest config changes what every test does.
+        for path in ("uv.lock", "pyproject.toml", ".pre-commit-config.yaml", "manage.py"):
+            assert classify_selection(_changed(("M", path))).full, path
+
+    def test_a_real_full_trigger_beside_a_vcs_config_still_forces_full(self) -> None:
+        assert classify_selection(_changed(("M", ".gitignore"), ("M", "tests/conftest.py"))).full
+
+
 class TestBuildSelectionFailSafe:
     def test_dirty_merge_base_forces_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(base_ref: str, cwd: Path) -> ChangedSet:

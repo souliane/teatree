@@ -28,7 +28,7 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 ## Running things
 
 ```bash
-uv run pytest                    # full suite, parallel (-n auto), no coverage — fast default
+bash dev/test-affected.sh        # the diff-scoped lane — the local default (`--full` opts into the whole suite)
 bash dev/test-cov.sh             # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 bash dev/ci-parity-fast.sh       # inner-loop: scoped prek + makemigrations + affected tests + push gate, NO floor
 bash dev/ci-parity.sh            # the EXACT full CI predicate in one command (see below)
