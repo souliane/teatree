@@ -6,8 +6,8 @@ must never kill an in-flight sub-agent. ``drain_worker`` flips the
 (``TaskQuerySet.claim_next_pending`` / ``_claimable_for_target``) admits ZERO new
 work — then polls the SSOT in-flight set (``Task.objects.active_claims``, the live
 CLAIMED leases) until it reads empty or the grace ``timeout`` lapses. It NEVER stops
-the supervisor and never touches a
-CLAIMED lease; an in-flight task keeps renewing via ``renew_lease`` and finishes.
+the supervisor and never touches a CLAIMED lease; an in-flight task keeps renewing
+via ``renew_lease`` and finishes.
 
 ``deploy/deploy.sh`` runs ``t3 worker drain`` before swapping the worker image; the
 FRESH worker's init clears ``worker_quiescing`` so admission resumes. On a grace
