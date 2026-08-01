@@ -395,11 +395,13 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     try:
         terms = resolve_banned_terms()
     except BannedTermsUnsetError as exc:
-        # The term list is genuinely UNSET (no banned_terms row AND no env). By
-        # default this WARNS loud and allows the commit (exit 0) — an unset list
-        # is not a banned-term violation on a dev/solo box (#3247). Only a
-        # deployment that set ``banned_terms_required`` keeps the fail-loud exit
-        # 2. An explicit ``banned_terms = []`` does not raise and is a no-op.
+        # A genuinely UNSET list (no banned_terms row AND no env) WARNS loud and
+        # allows the commit (exit 0) by default — an unset list is not a
+        # banned-term violation on a dev/solo box (#3247), unless the deployment
+        # set ``banned_terms_required``. A store that could not be READ at all
+        # (``BannedTermsUnreadableError``) fails CLOSED (exit 2) regardless of
+        # ``banned_terms_required`` (#4008) — see ``report_unset``. An explicit
+        # ``banned_terms = []`` does not raise and is a no-op.
         return report_unset(exc)
     if not terms:
         return 0  # explicit empty list ⇒ deliberate no-op
