@@ -131,6 +131,31 @@ class IssueIntakeGateTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
             assert _issue_intake_scanner_for(_backend()) is None
 
+    def test_full_budget_reports_the_reason_it_claimed_nothing(self) -> None:
+        # #3978: a tick that claims nothing because the budget is full used to return
+        # None silently, so the loop read enabled, errorless and idle while admitting
+        # nothing. The reason must reach the log naming the slots and their holders.
+        url = "https://github.com/o/r/issues/900"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.NOT_STARTED)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
+            self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs,
+        ):
+            assert _issue_intake_scanner_for(_backend()) is None
+        reported = "\n".join(logs.output)
+        assert "at budget" in reported
+        assert "1/1" in reported
+        assert url in reported
+
+    def test_budget_with_room_reports_nothing(self) -> None:
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled()),
+            patch("teatree.loop.scanner_factories.logger") as log,
+        ):
+            assert _issue_intake_scanner_for(_backend()) is not None
+        log.warning.assert_not_called()
+
     def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
         # Fleet-safety Stage 2: at full budget the scanner is STILL emitted when the
         # kill-switch is on (so the per-tick heartbeat runs), but claims nothing new.

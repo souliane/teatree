@@ -39,6 +39,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_compose_output_root_pinned,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
+    _check_intake_budget_deadlock,
     _check_loop_classification_drift,
     _check_loop_presets,
     _check_marker_jam,
@@ -127,6 +128,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_gh_token_permissions",
+    "_check_intake_budget_deadlock",
     "_check_intent_freshness",
     "_check_interactive_permission_mode",
     "_check_legacy_overlay_alias",
@@ -256,18 +258,23 @@ def _run_loop_intent_gates() -> bool:
     ``_check_loop_classification_drift`` (a ``Loop`` row disagreeing with the shipped
     ``[loops.<name>]`` table) and ``_check_marker_jam`` (#3275, orphaned issue-markers
     stranding the intake budget) are surfacing-only WARNs — their return values are deliberately discarded so
-    neither can become a gate by accident. ``_check_intent_freshness`` is the "no
-    owner-intent silently rots" gate: it HARD-FAILs when a consumable intent queue is
-    non-empty while its consumer is not live — masked/disabled/held, or refused by the
-    consumer's own guard chain (the directive-loop silent-freeze incident — directives
-    stuck at CAPTURED behind an idle loop, zero signal), so its verdict IS returned for
-    the caller's ``ok`` aggregation.
+    neither can become a gate by accident.
+
+    Two verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
+    silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
+    its consumer is not live — masked/disabled/held, or refused by the consumer's own
+    guard chain (the directive-loop silent-freeze incident — directives stuck at
+    CAPTURED behind an idle loop, zero signal). ``_check_intake_budget_deadlock`` (#3978)
+    is its issue-intake twin: a full in-flight budget held entirely by claims that are
+    going nowhere admits no work at all while every other signal reads healthy. Both are
+    evaluated before the ``and`` so neither can mask the other.
     """
     _check_loop_presets()
     _check_loop_classification_drift()
     _check_aged_sweep_skips()
     _check_marker_jam()
-    return _check_intent_freshness()
+    intake_ok = _check_intake_budget_deadlock()
+    return _check_intent_freshness() and intake_ok
 
 
 def _check_claude_session_posture() -> bool:

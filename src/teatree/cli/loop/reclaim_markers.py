@@ -6,7 +6,7 @@ budget is stranded by orphaned ``dispatched`` markers had no CLI to free it. Thi
 wraps :meth:`ImplementedIssueMarker.objects.reconcile_stale` — the same
 retroactive path the loop runs each tick — so the budget can be freed by hand.
 
-Both graces the manager takes are exposed as options. Without them the command
+Every grace the manager takes is exposed as an option. Without them the command
 could only ever reproduce the tick's own verdict, so an operator staring at a
 claim stranded minutes ago had to wait out the six-hour grace with no way to say
 "I can see it is dead, release it now" — leaving raw SQL as the only lever, which
@@ -44,7 +44,15 @@ def reclaim_markers_command(
         None,
         "--stall-grace-hours",
         min=0,
-        help="How long a claim whose ticket stopped moving may hold its slot (default: 24).",
+        help="How long a claim whose ticket stopped moving may hold its slot while an open PR "
+        "proves it is still mid-flight (default: 24).",
+    ),
+    dead_grace_hours: float | None = typer.Option(
+        None,
+        "--dead-grace-hours",
+        min=0,
+        help="How long a claim whose ticket has nothing queued and no open PR may hold its slot "
+        "(default: 2). The attempt is over rather than slow, so it is not held to the stall grace.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the reconcile result as JSON."),
 ) -> None:
@@ -57,6 +65,7 @@ def reclaim_markers_command(
         overlay,
         orphan_grace=None if orphan_grace_hours is None else dt.timedelta(hours=orphan_grace_hours),
         stall_grace=None if stall_grace_hours is None else dt.timedelta(hours=stall_grace_hours),
+        dead_grace=None if dead_grace_hours is None else dt.timedelta(hours=dead_grace_hours),
     )
     if json_output:
         import json  # noqa: PLC0415 — deferred: only the JSON path needs it
@@ -75,6 +84,6 @@ def reclaim_markers_command(
     scope = f"overlay {overlay!r}" if overlay else "all overlays"
     typer.echo(
         f"Reclaimed {result.released} stale issue-marker(s) for {scope}: "
-        f"{len(result.completed)} completed (terminal ticket), "
+        f"{len(result.completed)} completed (terminal ticket or merged PR), "
         f"{len(result.abandoned)} abandoned (gone or stalled ticket)."
     )
