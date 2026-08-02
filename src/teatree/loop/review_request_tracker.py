@@ -1,8 +1,8 @@
 """Recorder for bot review-request posts (#1038).
 
 When the bot posts an MR to the review channel,
-it must call :func:`record_review_request_post` so the fibonacci nag
-scanner can detect "already posted" MRs and escalate the cadence.
+it must call :func:`record_review_request_post` so the nag scanner can
+detect "already posted" MRs and escalate the cadence.
 
 This module is the *write* surface. The *read* path lives in
 :mod:`teatree.loop.scanners.review_nag`.
@@ -32,8 +32,9 @@ def record_review_request_post(
     """Persist (or update) a ``ReviewRequestPost`` for *mr_url*.
 
     Idempotent on ``mr_url``: a re-post overwrites the channel and
-    thread reference but leaves ``last_nag_at`` and ``done_at`` alone
-    so the nag state is preserved across retries.
+    thread reference but leaves ``last_nag_at``, ``nag_count`` and
+    ``done_at`` alone so the nag state — including how far the backoff
+    has already widened — is preserved across retries.
     """
     with transaction.atomic():
         post, created = ReviewRequestPost.objects.get_or_create(

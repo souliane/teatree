@@ -115,6 +115,55 @@ class TestReinstallRunningEditable:
         assert any("tool" in c and "install" in c and "--reinstall" in c for c in calls)
         assert any(c[-1] == "setup" for c in calls)
 
+    def test_reinstall_keeps_the_vendored_forks_host_root_co_installed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `--reinstall` rebuilds the tool env from THIS command line, so dropping
+        # `--with-editable` uninstalls the fork distribution that registers the
+        # `teatree.overlays` entry point. Every headless task on an overlay-owned
+        # ticket then dies at dispatch with "Overlay not found. Available: t3-teatree".
+        root = tmp_path / "downstream-fork"
+        (root / "vendor" / "teatree").mkdir(parents=True)
+        (root / "pyproject.toml").write_text('[project]\nname = "downstream-fork"\n', encoding="utf-8")
+        vendored = root / "vendor" / "teatree"
+        (vendored / "pyproject.toml").write_text('[project]\nname = "teatree"\n', encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def _runner(cmd: list[str], **_kw: object) -> _Proc:
+            calls.append(cmd)
+            return _Proc(0, "ok", "")
+
+        monkeypatch.setattr(self_update_mod.shutil, "which", _which_all)
+        monkeypatch.setattr(self_update_mod, "current_editable_source", lambda _uv: vendored)
+
+        assert reinstall_running_editable(runner=_runner).ok is True
+        assert calls[0] == [
+            "/usr/bin/uv",
+            "tool",
+            "install",
+            "--editable",
+            str(vendored),
+            "--reinstall",
+            "--with-editable",
+            str(root),
+        ]
+
+    def test_reinstall_of_a_plain_clone_declares_no_host(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        source = tmp_path / "teatree"
+        source.mkdir()
+        (source / "pyproject.toml").write_text('[project]\nname = "teatree"\n', encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def _runner(cmd: list[str], **_kw: object) -> _Proc:
+            calls.append(cmd)
+            return _Proc(0, "ok", "")
+
+        monkeypatch.setattr(self_update_mod.shutil, "which", _which_all)
+        monkeypatch.setattr(self_update_mod, "current_editable_source", lambda _uv: source)
+
+        assert reinstall_running_editable(runner=_runner).ok is True
+        assert "--with-editable" not in calls[0]
+
     def test_skips_reinstall_for_non_editable_install_but_runs_setup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []
 

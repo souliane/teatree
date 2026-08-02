@@ -530,9 +530,20 @@ class TestEmitVerdictProvenance(_ReaperFixture):
     """
 
     def _make_unresolvable_clone(self, state: str) -> Worktree:
+        """A row whose clone cannot be found by NAME and whose checkout is gone.
+
+        Both halves are needed. A stale ``clone_path`` alone is no longer
+        unresolvable: the resolver asks git which clone the CHECKOUT belongs to,
+        and an on-disk worktree answers. Genuinely unresolvable means there is
+        nothing left to ask — no name match and no checkout.
+        """
         worktree = self._make_worktree(state)
         worktree.repo_path = "ghostrepo"
-        worktree.extra = {**worktree.extra, "clone_path": str(self.tmp_path / "moved-away" / "ghostrepo")}
+        worktree.extra = {
+            **worktree.extra,
+            "clone_path": str(self.tmp_path / "moved-away" / "ghostrepo"),
+            "worktree_path": str(self.tmp_path / "moved-away" / "gone-checkout"),
+        }
         worktree.save(update_fields=["repo_path", "extra"])
         return worktree
 
@@ -544,6 +555,25 @@ class TestEmitVerdictProvenance(_ReaperFixture):
         assert outcome.emit.unique_commit_shas == [], "no probe ran, so no commit can be named"
         assert outcome.emit.content_verified is False
         assert outcome.emit.verdict_source == "clone-unresolvable"
+
+    def test_a_stale_clone_path_over_a_live_checkout_is_now_verifiable(self) -> None:
+        """The recovered case: the stored path moved away, but git still knows the clone.
+
+        This is the bulk of what used to emit as ``clone-unresolvable`` — a row
+        whose recorded clone path went stale while the worktree itself sat right
+        there. It emitted an empty commit list with ``content_verified: false``,
+        which reads identically to a branch proven to hold nothing.
+        """
+        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree.repo_path = "ghostrepo"
+        worktree.extra = {**worktree.extra, "clone_path": str(self.tmp_path / "moved-away" / "ghostrepo")}
+        worktree.save(update_fields=["repo_path", "extra"])
+
+        outcome = self._reap(worktree)
+
+        assert outcome.emit is not None
+        assert outcome.emit.content_verified is True
+        assert outcome.emit.verdict_source != "clone-unresolvable"
 
     def test_a_proven_redundant_record_still_emits_the_deletable_shape(self) -> None:
         _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)  # the tip's content ships…

@@ -27,7 +27,13 @@ from pathlib import Path
 from typing import cast
 
 from teatree.config import value_coercion
-from teatree.config.cold_db import canonical_config_db, fetch_one_confirmed, loop_status, row_exists
+from teatree.config.cold_db import (
+    canonical_config_db,
+    canonical_projection,
+    fetch_one_confirmed,
+    loop_status,
+    row_exists,
+)
 
 __all__ = [
     "SettingRead",
@@ -79,6 +85,20 @@ def read_setting(
     return read_setting_confirmed(key, scope=scope, env=env, db_path=db_path).value
 
 
+def _absent_db_read(key: str, *, scope: str, env: Mapping[str, str], db_path: Path | None) -> "SettingRead":
+    """The read when the canonical database file is not on this side of the volume.
+
+    The ordinary host case: the database lives in a named volume only the container can
+    open, so the value comes from the published projection rather than being None. An
+    explicitly passed db_path never falls through — that caller named the file it means,
+    and substituting a projection would answer a different question.
+    """
+    if db_path is not None:
+        return SettingRead(None, readable=True)
+    projection = canonical_projection(env=env)
+    return SettingRead(projection.setting(key, scope=scope) if projection is not None else None, readable=True)
+
+
 def read_setting_confirmed(
     key: str,
     *,
@@ -95,7 +115,11 @@ def read_setting_confirmed(
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if not db.exists():
-        return SettingRead(None, readable=True)
+        # The ordinary host case: the database lives in a named volume only the container
+        # can open, so fall through to the published projection rather than to None. An
+        # explicitly passed db_path never does — that caller named the file it means, and
+        # substituting a projection would answer a different question.
+        return _absent_db_read(key, scope=scope, env=env, db_path=db_path)
     row, ran = fetch_one_confirmed(
         db,
         "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",

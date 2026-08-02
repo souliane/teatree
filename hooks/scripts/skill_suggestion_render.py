@@ -37,6 +37,13 @@ def render_skill_suggestion_message(
     companion line, and the *t3_reminder* — each omitted when empty. With no
     hard suggestions the message is just the companion line and reminder (a
     companion of an already-loaded skill still surfaces).
+
+    The LOAD directive names each skill through the SAME *normalize* the
+    *pending* write uses, so the token the agent is told to load is the token
+    the PreToolUse gate demands. An overlay's ``skill_path`` arrives here in its
+    path shape (``skills/<name>/SKILL.md``) — unloadable as a slash command, and
+    not what lands in *pending* — so rendering it raw asked for a skill that
+    could never satisfy the gate.
     """
     suggestions = result.get("suggestions", [])
     advisory = set(result.get("advisory", []))
@@ -47,7 +54,7 @@ def render_skill_suggestion_message(
 
     demanded = [skill for skill in suggestions if skill not in advisory]
     pending.write_text("\n".join(normalize(skill) for skill in demanded) + "\n", encoding="utf-8")
-    skill_list = ", ".join(f"/{skill}" for skill in suggestions)
+    skill_list = ", ".join(f"/{normalize(skill)}" for skill in suggestions)
     parts = [f"LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): {skill_list}."]
     if companion_line:
         parts.append(companion_line)

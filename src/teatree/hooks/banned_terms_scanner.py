@@ -485,17 +485,26 @@ def format_unavailable_body_source_message() -> str:
 def format_scanner_unavailable_message() -> str:
     """Render the PreToolUse deny reason when the banned-terms scanner could not run.
 
-    The shell scanner crashed or its interpreter cannot import the matcher
-    (an old system ``python3`` below the repo's >= 3.13 floor). The gate fails
+    The shell scanner could not resolve a runnable interpreter — most often
+    because ``uv`` on PATH is a version-manager shim keyed on the CWD repo's
+    ``.python-version`` and exits 127 before uv runs, and otherwise because the
+    ``python3`` fallback is below the repo's >= 3.13 floor. The gate fails
     CLOSED rather than let an unscanned body through — a security gate that
-    fails open on a crash is the bug class (#1954). The fix the operator needs
-    is a working ``uv`` or a Python >= 3.13 on PATH so the scanner runs.
+    fails open on a crash is the bug class (#1954).
+
+    The message names INTERPRETER RESOLUTION as the cause. The previous wording
+    ("its interpreter cannot import the matcher — install uv") misdirected the
+    operator into reinstalling a uv that was already installed and healthy,
+    while the real fault was the shim in front of it.
     """
     return (
-        "BLOCKED: banned-terms posting gate (#1415/#1954). The scanner could not run "
-        "(its interpreter cannot import the matcher — install uv, or a Python >= 3.13, "
-        "so the scanner runs). Failing closed: an unscanned body is not allowed onto a "
-        "public surface."
+        "BLOCKED: banned-terms posting gate (#1415/#1954). The scanner could not run — this "
+        "is an interpreter/uv RESOLUTION failure, not a matcher problem. Usually 'uv' on PATH "
+        "is a version-manager shim (pyenv/asdf) that picks its interpreter from the CWD repo's "
+        ".python-version and exits 127 before uv runs, so reinstalling uv does not help: point "
+        "T3_UV at a real uv binary, or make uv / a Python >= 3.13 reachable outside the shim. "
+        "Run the hook directly to see the full reason: scripts/hooks/check-banned-terms.sh "
+        "<file>. Failing closed: an unscanned body is not allowed onto a public surface."
     )
 
 

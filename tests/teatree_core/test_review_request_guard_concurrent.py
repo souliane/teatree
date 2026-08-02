@@ -37,6 +37,7 @@ from django.db import connections
 from teatree.core.gates.review_request_guard import GuardTarget, _claim_or_reclaim, canonical_mr_url
 from teatree.core.models import ReviewRequestPost
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import run_racing_threads
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="the-review-team", token="xoxb-bot")
@@ -75,6 +76,8 @@ def _make_alias(tmp_path: Path) -> str:
                 slack_thread_ts VARCHAR(64) NOT NULL,
                 bot_id VARCHAR(64) NOT NULL,
                 last_nag_at DATETIME NULL,
+                nag_count INTEGER NOT NULL DEFAULT 0,
+                resumed_at DATETIME NULL,
                 created_at DATETIME NOT NULL,
                 done_at DATETIME NULL
             )
@@ -94,22 +97,12 @@ def _teardown_alias(alias: str) -> None:
 def _run_two_claims(alias: str, canonical: str) -> list[str]:
     """Two real threads race ``_claim_or_reclaim`` on the same MR URL."""
     barrier = threading.Barrier(2)
-    results: dict[int, str] = {}
 
-    def runner(idx: int) -> None:
-        try:
-            barrier.wait(timeout=10)
-            results[idx] = _claim_or_reclaim(canonical, _TARGET, using=alias).action
-        finally:
-            connections[alias].close()
+    def claim(_idx: int) -> str:
+        barrier.wait(timeout=10)
+        return _claim_or_reclaim(canonical, _TARGET, using=alias).action
 
-    threads = [threading.Thread(target=runner, args=(i,)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=15)
-
-    return [results.get(0, ""), results.get(1, "")]
+    return run_racing_threads(claim, 2)
 
 
 @pytest.fixture

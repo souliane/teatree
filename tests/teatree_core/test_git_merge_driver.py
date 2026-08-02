@@ -17,6 +17,7 @@ from pathlib import Path
 import git_merge_generated as driver
 import pytest
 
+import teatree
 from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
 from teatree.core.git_merge_driver import install_merge_driver
 from tests._git_repo import make_git_repo, run_git
@@ -24,7 +25,12 @@ from tests._git_repo import make_git_repo, run_git
 # The literal git config value the driver contract is pinned to. Asserting the
 # installed value against the production constant would be tautological — both
 # sides would read the same string, so a broken command could never fail here.
-_EXPECTED_DRIVER_COMMAND = "uv run python scripts/hooks/git_merge_generated.py %O %A %B %P"
+# The script path is ABSOLUTE: git runs a merge driver from the top of the working
+# tree, which in a fork that vendors core is the fork root, where the repo-relative
+# path names nothing. The root is re-derived here from the installed package rather
+# than through `teatree_source_root`, so the shape stays independently pinned.
+_TEATREE_ROOT = Path(teatree.__file__).resolve().parents[2]
+_EXPECTED_DRIVER_COMMAND = f"uv run python {_TEATREE_ROOT}/scripts/hooks/git_merge_generated.py %O %A %B %P"
 
 
 def _forbidden_regenerate(generator_argv: list[str], output_path: str) -> bool:
@@ -84,6 +90,69 @@ class TestDriverMain:
     def test_registered_paths_cover_the_gitattributes_entries(self):
         assert "docs/generated/cli-reference.md" in driver.registered_paths()
         assert "evals/README.md" in driver.registered_paths()
+
+
+class TestVendoredLayout:
+    """``%P`` arrives OUTER-repo-relative when core is vendored (souliane/teatree#3582).
+
+    git passes ``%P`` relative to the top of the working tree, and the generator keys
+    are relative to teatree's own root. In a fork that vendors core those differ by the
+    vendoring prefix, so every generated doc missed the lookup and resolved by silently
+    keeping ours — a worse outcome than the textual conflict it replaced.
+    """
+
+    def _outer_layout(self) -> tuple[Path, str]:
+        """An outer repo root one level above teatree's root, plus that prefix."""
+        root = driver.teatree_source_root().resolve()
+        return root.parent, root.name
+
+    def test_outer_relative_path_maps_onto_a_generator_key(self):
+        outer, prefix = self._outer_layout()
+        mapped = driver.teatree_relative_path(f"{prefix}/docs/generated/cli-reference.md", repo_root=outer)
+
+        assert mapped == "docs/generated/cli-reference.md"
+        assert mapped in driver.registered_paths()
+
+    def test_path_outside_the_vendored_tree_is_untouched(self):
+        outer, _prefix = self._outer_layout()
+
+        assert driver.teatree_relative_path("overlay/docs/notes.md", repo_root=outer) == "overlay/docs/notes.md"
+
+    def test_plain_clone_path_is_untouched(self):
+        root = driver.teatree_source_root().resolve()
+
+        assert (
+            driver.teatree_relative_path("docs/generated/cli-reference.md", repo_root=root)
+            == "docs/generated/cli-reference.md"
+        )
+
+    def test_main_regenerates_for_an_outer_relative_path(self, tmp_path, monkeypatch):
+        outer, prefix = self._outer_layout()
+        ours_slot = tmp_path / "ours"
+        ours_slot.write_text("OURS\n", encoding="utf-8")
+
+        def fake_regenerate(generator_argv: list[str], output_path: str) -> bool:
+            assert generator_argv == ["scripts/hooks/generate_cli_reference.py"]
+            Path(output_path).write_text("REGENERATED\n", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(driver, "_regenerate", fake_regenerate)
+        monkeypatch.chdir(outer)
+        rc = driver.main(["base", str(ours_slot), "theirs", f"{prefix}/docs/generated/cli-reference.md"])
+
+        assert rc == 0
+        assert ours_slot.read_text(encoding="utf-8") == "REGENERATED\n"
+
+
+class TestDriverCommandNamesARealScript:
+    def test_the_registered_command_points_at_an_existing_script(self, tmp_path):
+        repo = make_git_repo(tmp_path / "repo")
+        install_merge_driver(repo)
+        configured = run_git(repo, "config", "--get", "merge.generated.driver")
+        script = Path(configured.split()[3])
+
+        assert script.is_absolute(), f"driver script must be absolute, got {script}"
+        assert script.is_file(), f"driver script does not exist: {script}"
 
 
 class TestInstallMergeDriver:

@@ -276,12 +276,13 @@ def _read_text(path: Path) -> str:
 def _signature_in_hot(normalized_sig: str, hot_norm: str) -> bool:
     """Whether the cold *normalized_sig* is already present in the hot index text.
 
-    The renamed-file guard: a rule moved to a DIFFERENT hot filename. The hot index
-    clips its summary, so a long cold signature is never a verbatim substring of the
-    hot text — compare a :data:`_DEDUP_PREFIX_CHARS` prefix (bounded just under the hot
-    clip) so a clipped, renamed rule is still recognised as already loaded. A short
-    signature compares in full. Empty signatures never match (they would match every
-    hot text).
+    The renamed-file guard: a rule moved to a DIFFERENT hot filename in a prose-bearing
+    (hand-curated) ``MEMORY.md``. Such a summary may be clipped, so a long cold signature
+    is never a verbatim substring of the hot text — compare a :data:`_DEDUP_PREFIX_CHARS`
+    prefix so a clipped, renamed rule is still recognised as already loaded. A short
+    signature compares in full. Empty signatures never match (they would match every hot
+    text). Against a re-indexed pointer-only hot index there is no prose to match, so this
+    guard is inert and pointer-name dedup carries the load.
     """
     if not normalized_sig:
         return False

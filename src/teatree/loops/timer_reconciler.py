@@ -388,7 +388,8 @@ def _run_slack_answer_cycle_under_lease() -> dict[str, int]:
             "eyes_reacted": report.eyes_reacted,
             "acked": report.acked,
             "answered_simple": report.answered_simple,
-            "delegated": report.delegated,
+            "dispatched": report.dispatched,
+            "covered": report.covered,
             "errors": report.errors,
         }
     finally:

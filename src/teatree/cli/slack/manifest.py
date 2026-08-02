@@ -198,11 +198,18 @@ def app_level_token_url(app_id: str) -> str:
     return f"https://api.slack.com/apps/{app_id}"
 
 
-def _slack_app_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
-    """POST to ``https://slack.com/api/<method>`` with a bearer *token*."""
+def _slack_app_api(method: str, payload: dict[str, Any], *, token: str = "") -> dict[str, Any]:
+    """POST to ``https://slack.com/api/<method>``, bearing *token* when one is given.
+
+    An empty *token* omits the ``Authorization`` header entirely rather than
+    sending ``Bearer `` — ``tooling.tokens.rotate`` takes no bearer credential
+    (its refresh token is a form argument), and Slack rejects the call outright
+    when one is presented.
+    """
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     response = httpx.post(
         f"https://slack.com/api/{method}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
         data=payload,
         timeout=30,
     )
@@ -233,9 +240,16 @@ def update_manifest(*, app_id: str, manifest: SlackManifest, config_token: str) 
 def rotate_config_token(*, refresh_token: str) -> tuple[str, str]:
     """Rotate the app-config token pair via ``tooling.tokens.rotate``.
 
+    Slack documents this method as requiring NO authentication: the refresh
+    token is the ``refresh_token`` ARGUMENT, not a bearer credential. Sending it
+    in an ``Authorization`` header — as this did — makes Slack reject the call
+    with ``invalid_auth`` before it ever reads the argument, so rotation failed
+    no matter how fresh the stored pair was. That is why the reactive
+    rotate-on-``invalid_auth`` path could never actually recover a pair.
+
     Returns ``(access_token, refresh_token)``.
     """
-    result = _slack_app_api("tooling.tokens.rotate", {"refresh_token": refresh_token}, token=refresh_token)
+    result = _slack_app_api("tooling.tokens.rotate", {"refresh_token": refresh_token})
     if not result.get("ok"):
         raise SlackManifestError(str(result.get("error", "unknown error")))
     return str(result["token"]), str(result["refresh_token"])

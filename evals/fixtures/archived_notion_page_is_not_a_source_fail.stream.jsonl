@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-archived-notion-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I already have the acceptance criteria, so I can write the spec for AC-8 now."}, {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "e2e/tooltip-absent.spec.ts", "content": "test('AC-8: tooltip is absent on all three surfaces when the flag is off', async ({ page }) => {});"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "written"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

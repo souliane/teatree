@@ -21,6 +21,7 @@ from collections.abc import Callable
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
     ROLLUP_QUERY_FAILED,
+    DraftState,
     ForgeMergeResult,
     PrMergeState,
 )
@@ -164,6 +165,25 @@ class GhMergeRpc:
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "isDraft", "--jq", ".isDraft"],
         )
         return rc == 0 and out.strip().lower() == "true"
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        """Tri-state draft flag — ``UNKNOWN`` on a non-zero rc or unrecognised payload.
+
+        A failed ``gh`` call and a genuine ``isDraft: false`` are different facts;
+        collapsing them to ``False`` hands every consumer a confident "not a draft"
+        manufactured from a read failure.
+        """
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "isDraft", "--jq", ".isDraft"],
+        )
+        if rc != 0:
+            return DraftState.UNKNOWN
+        answer = out.strip().lower()
+        if answer == "true":
+            return DraftState.DRAFT
+        if answer == "false":
+            return DraftState.NOT_DRAFT
+        return DraftState.UNKNOWN
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The PR author ``login`` — the §17.4.3 author-gate input (#1773).

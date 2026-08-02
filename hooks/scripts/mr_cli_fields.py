@@ -1,12 +1,12 @@
 """``glab mr create``/``update`` title & description extraction for the gate.
 
-Split out of ``hook_router.py`` by concern (module health): the ``glab mr`` CLI
-inline / file / dynamic-value title & description parsing and its helpers, plus
-the MR TARGET-repo slug parsing (:func:`extract_mr_target_repo`). The gate
-handler (``handle_validate_mr_metadata``) and the out-of-band
-``glab api``/``gh api`` field surface stay in the router; the router delegates
-the CLI title/description surface here via :func:`extract_cli_mr_fields` and the
-target-repo parsing via :func:`extract_mr_target_repo`.
+Split out of ``hook_router.py`` by concern (module health): every surface an MR
+title/description can be SET from — the ``glab mr`` CLI inline / file /
+dynamic-value parsing (:func:`extract_cli_mr_fields`), the out-of-band
+``glab api``/``gh api`` REST field surface (:func:`extract_api_mr_fields`) —
+plus the MR TARGET-repo slug parsing (:func:`extract_mr_target_repo`). Only the
+gate handler (``handle_validate_mr_metadata``) stays in the router, which
+delegates each surface here.
 
 A bare sibling module (like ``unknown_repo_push_gate``): the router puts its own
 dir on ``sys.path`` so ``from mr_cli_fields import …`` resolves both as the live
@@ -17,6 +17,9 @@ import re
 import shlex
 from pathlib import Path
 from urllib.parse import unquote
+
+from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write
+from hooks.scripts.gate_result import GateSkipped
 
 # The MR-mutation verb itself — ``glab mr create``/``update``. Matched against
 # the command with quoted spans and heredoc bodies stripped (see
@@ -50,6 +53,14 @@ _MR_DESC_FLAG_PRESENT_RE = re.compile(r"(?:--description-file|--description\b|\s
 # An unexpanded shell construct inside a DOUBLE-quoted value — command
 # substitution ``$(…)``, parameter expansion ``${…}``/``$VAR``, or a backtick.
 _DYNAMIC_VALUE_RE = re.compile(r"\$[({A-Za-z_]|`")
+
+# The named reasons a recognised MR mutation is nonetheless not evaluated,
+# carried on the :class:`GateSkipped` the caller prints.
+_DYNAMIC_FIELD_REASON = (
+    "the {field} value is an unexpanded shell construct (`$(…)`/`${{…}}`/`$VAR`/backtick) "
+    "that only the shell resolves at runtime, so the hook never sees the real text"
+)
+_UPDATE_SETS_NO_FIELD_REASON = "this `glab mr update` sets neither a title nor a description"
 
 # File-based message arg — the standard multi-line path (#831's shape):
 # ``glab mr create --description-file FILE`` / ``-F FILE``. The captured token
@@ -100,7 +111,7 @@ def _looks_dynamic_value(match: "re.Match[str] | None") -> bool:
     return bool(_DYNAMIC_VALUE_RE.search(match.group("val")))
 
 
-def _shlex_flag_value(command: str, flag: str) -> tuple[bool, str | None]:
+def shlex_flag_value(command: str, flag: str) -> tuple[bool, str | None]:
     """Return ``(parsed, value)`` for *flag*'s value via a shlex split of *command*.
 
     ``parsed`` is ``False`` when the command cannot be shlex-split (unbalanced
@@ -135,7 +146,7 @@ def _resolved_literal_value(command: str, flag: str, regex_match: "re.Match[str]
     or shlex does not see the flag (the regex matched a looser span), so no
     command that parses today changes verdict beyond gaining the full body.
     """
-    parsed, value = _shlex_flag_value(command, flag)
+    parsed, value = shlex_flag_value(command, flag)
     if parsed and value is not None:
         return value
     return regex_match.group("val")
@@ -159,7 +170,7 @@ def _read_message_file(command: str) -> str | None:
         return None
 
 
-def _extract_inline_or_file_desc(command: str) -> str | None:
+def _extract_inline_or_file_desc(command: str) -> "str | GateSkipped":
     """Description text from a Bash MR command — inline quote, then file/heredoc.
 
     Inline ``--description 'x'`` wins. When the flag is present but the inline
@@ -168,17 +179,17 @@ def _extract_inline_or_file_desc(command: str) -> str | None:
     read and validated rather than passed through as a falsely-empty (and
     trivially "valid"-looking) string.
 
-    Returns ``None`` when the inline value is an unexpanded ``$(…)``/``$VAR`` the
-    hook cannot resolve (:func:`_looks_dynamic_value`) — the caller then skips
-    validation entirely (never-lockout; the remote CI gate validates the real,
-    runtime-expanded body). Returns ``""`` only when a file-based source is
-    unreadable — the validator then rejects the empty first line, the correct
-    verdict for a genuinely empty description.
+    Returns a :class:`GateSkipped` when the inline value is an unexpanded
+    ``$(…)``/``$VAR`` the hook cannot resolve (:func:`_looks_dynamic_value`) — the
+    caller then skips validation entirely and SAYS SO (never-lockout; the remote
+    CI gate validates the real, runtime-expanded body). Returns ``""`` only when a
+    file-based source is unreadable — the validator then rejects the empty first
+    line, the correct verdict for a genuinely empty description.
     """
     inline = _MR_DESC_FLAG_RE.search(command)
     if inline is not None and inline.group("val"):
         if _looks_dynamic_value(inline):
-            return None
+            return GateSkipped(_DYNAMIC_FIELD_REASON.format(field="--description"))
         return _resolved_literal_value(command, "--description", inline)
     if _MR_DESC_FLAG_PRESENT_RE.search(command):
         from_file = _read_message_file(command)
@@ -187,23 +198,29 @@ def _extract_inline_or_file_desc(command: str) -> str | None:
     return ""
 
 
-def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
+def extract_cli_mr_fields(command: str) -> "tuple[str, str] | GateSkipped | None":
     """Title/description for a ``glab mr create``/``update`` CLI command.
 
-    ``None`` means "not an MR mutation to validate" — either the command does
-    not actually invoke ``glab mr create/update`` (the verb only appears inside a
-    quoted arg / heredoc body — see :func:`strip_quoted_and_heredoc`), or it is
-    one but must be skipped (never-lockout). A tuple is validated.
+    Three outcomes, deliberately distinct (the mute-skip class, #1528's sibling):
 
-    Skips when the hook cannot resolve a field statically — an unexpanded
-    ``$(…)``/``${…}``/``$VAR``/backtick the shell only expands at runtime (the
-    captured fragment, e.g. ``$(cat ``, is not the real value). For ``update``
-    it validates ONLY the field(s) the command actually sets: a metadata-only
-    edit (reviewer/label/assignee/state — neither field present) is skipped, and
-    an unset field is back-filled with a known-good placeholder so the combined
-    validator's verdict reflects only the field under edit. ``create`` keeps the
-    stricter both-fields contract — an empty title/description on a create is
-    exactly the bad metadata the gate must catch (#119).
+    ``None`` — NOT an MR mutation at all. The command does not actually invoke
+    ``glab mr create/update``; the verb only appears inside a quoted arg or a
+    heredoc body (see :func:`strip_quoted_and_heredoc`). The one outcome that is
+    legitimately silent — this gate has no opinion on the call.
+
+    :class:`GateSkipped` — it IS an MR mutation, but the gate cannot evaluate it,
+    carrying the human-readable reason the caller must print. Either a field is an
+    unexpanded ``$(…)``/``${…}``/``$VAR``/backtick the shell only expands at
+    runtime (the captured fragment, e.g. ``$(cat ``, is not the real value), or an
+    ``update`` sets neither governed field.
+
+    A ``(title, description)`` tuple — validate it.
+
+    For ``update`` only the field(s) the command actually sets are validated: an
+    unset field is back-filled with a known-good placeholder so the validator's
+    verdict reflects only the field under edit. ``create`` keeps the stricter
+    both-fields contract — an empty title/description on a create is exactly the
+    bad metadata the gate must catch (#119).
     """
     op_match = _MR_OP_RE.search(strip_quoted_and_heredoc(command))
     if op_match is None:
@@ -211,15 +228,15 @@ def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
     operation = op_match.group(1)
     title_match = _MR_TITLE_FLAG_RE.search(command)
     if _looks_dynamic_value(title_match):
-        return None
+        return GateSkipped(_DYNAMIC_FIELD_REASON.format(field="--title"))
     description = _extract_inline_or_file_desc(command)
-    if description is None:
-        return None
+    if isinstance(description, GateSkipped):
+        return description
     title = _resolved_literal_value(command, "--title", title_match) if title_match else ""
     if operation == "update":
         desc_present = bool(_MR_DESC_FLAG_PRESENT_RE.search(command))
         if title_match is None and not desc_present:
-            return None
+            return GateSkipped(_UPDATE_SETS_NO_FIELD_REASON)
         if title_match is None:
             title = description.split("\n", 1)[0]
         elif not desc_present:
@@ -336,3 +353,66 @@ def merge_target_managed_state(command: str, managed_slugs: list[str]) -> bool |
     if "/" not in target_lower:
         return None
     return any(entry in target_lower for entry in managed_slugs)
+
+
+# REST-API field args set on a ``glab api``/``gh api`` MR/PR write
+# (``--field title=…`` / ``-f description=…`` / ``--raw-field …``). Three
+# shapes, in order:
+#   1. whole token quoted — ``--field 'description=multi word …'`` (the common
+#      shell form; the value runs to the matching CLOSING outer quote, so
+#      embedded spaces and newlines are kept);
+#   2. value quoted only — ``--field description='multi word …'``;
+#   3. bare value — ``--field description=oneword`` (runs to next whitespace).
+# ``body`` is GitHub's PR-description field (``gh api … -f body=…``); it is
+# normalised to ``description`` so the overlay validator sees one key.
+_API_FIELD_RE = re.compile(
+    r"""(?:--field|--raw-field|-f|-F)[ =]+"""
+    r"""(?:(?P<oq>['"])(?P<key>title|description|body)=(?P<oqval>.*?)(?P=oq)"""
+    r"""|(?P<key2>title|description|body)=(?:(?P<q>['"])(?P<qval>.*?)(?P=q)|(?P<bval>[^\s'"]*)))""",
+    re.DOTALL,
+)
+_API_VERB_RE = re.compile(r"\b(?:gh|glab)\s+api\b")
+
+
+def extract_api_mr_fields(command: str) -> tuple[str, str] | None:
+    """Title/description for an out-of-band ``glab api``/``gh api`` MR write.
+
+    Closes the gap where a non-compliant title/description reaches GitLab via
+    ``glab api --method PUT .../merge_requests/N --field description=…`` (or a
+    ``gh api`` POST), entirely outside the ``glab mr create`` surface the gate
+    historically watched. Validates ONLY the fields the command actually sets.
+
+    Neither field set (e.g. ``--field state_event=close``): returns ``None`` —
+    nothing to validate (never-lockout: a partial state edit must not be
+    force-validated against an empty description). Exactly one field set: the
+    untouched field is back-filled with the set field's value as a known-good
+    placeholder so the verdict reflects ONLY the field under edit. A valid
+    ``type(scope): … (ticket_url)`` line is, by the canonical grammar,
+    simultaneously a valid title and a valid description first line — so
+    mirroring the set field can never inject a spurious failure for the
+    untouched field, while a non-compliant edited field is still rejected
+    (without this, editing only the description would false-block on
+    ``Title is empty.``). Both fields set: validated as a pair, like a create.
+
+    Reuses :func:`_is_api_create_endpoint_write` so a bare ``GET`` read is
+    never treated as a write.
+    """
+    if not _API_VERB_RE.search(command) or not _is_api_create_endpoint_write(command):
+        return None
+    fields: dict[str, str] = {}
+    for match in _API_FIELD_RE.finditer(command):
+        if match.group("oq"):
+            key, value = match.group("key"), (match.group("oqval") or "")
+        else:
+            key = match.group("key2")
+            value = (match.group("qval") if match.group("q") else match.group("bval")) or ""
+        fields["description" if key == "body" else key] = value
+    if not fields:
+        return None
+    title = fields.get("title")
+    description = fields.get("description")
+    if title is None:
+        title = description or ""
+    if description is None:
+        description = title
+    return title, description

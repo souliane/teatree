@@ -20,8 +20,11 @@ from teatree.cli.recommended_authorizations import (
     RECOMMENDED_AUTHORIZATIONS,
     RecommendedAuthorization,
     find_missing_authorizations,
+    find_template_gaps,
     load_automode_allow,
+    load_template_automode_allow,
     report_missing_authorizations,
+    verify_shipped_template,
 )
 
 runner = CliRunner()
@@ -342,3 +345,53 @@ class TestDoctorAuthorizationsCommand:
         assert result is True
         assert any("OK" in line for line in printed)
         assert all("WARN" not in line for line in printed)
+
+
+class TestVerifyShippedTemplate:
+    """The ship side is VERIFIED, not merely recommended.
+
+    ``report_missing_authorizations`` can only advise about the operator's own
+    settings. The template teatree itself ships is teatree's to get right, so a
+    recommendation absent from it is a hard FAIL: until it is fixed every fresh
+    container is seeded starved of exactly the rule the advisory nags for.
+    """
+
+    def test_committed_template_carries_every_recommendation(self) -> None:
+        assert find_template_gaps() == []
+
+    def test_verify_passes_on_the_committed_template(self) -> None:
+        printed: list[str] = []
+
+        assert verify_shipped_template(lambda msg="": printed.append(str(msg))) is True
+        assert any("OK" in line for line in printed)
+
+    def test_verify_fails_on_a_starved_template(self, tmp_path: Path) -> None:
+        # The anti-vacuity control: without it a check that always returned True
+        # would pass the assertion above. A template granting nothing must FAIL
+        # and must name every recommendation it lacks.
+        path = tmp_path / "starved.json"
+        path.write_text(json.dumps({"autoMode": {"allow": []}}), encoding="utf-8")
+        printed: list[str] = []
+
+        result = verify_shipped_template(lambda msg="": printed.append(str(msg)), path)
+
+        blob = "\n".join(printed)
+        assert result is False
+        assert "FAIL" in blob
+        for rec in RECOMMENDED_AUTHORIZATIONS:
+            assert rec.key in blob
+
+    def test_absent_template_is_not_a_failure(self, tmp_path: Path) -> None:
+        # An install that ships no template has nothing to starve; reporting a
+        # missing file as a fully-starved template would redden every such box.
+        printed: list[str] = []
+
+        assert load_template_automode_allow(tmp_path / "absent.json") is None
+        assert verify_shipped_template(lambda msg="": printed.append(str(msg)), tmp_path / "absent.json") is True
+
+    def test_unparseable_template_is_not_read_as_starved(self, tmp_path: Path) -> None:
+        path = tmp_path / "broken.json"
+        path.write_text("{ not json", encoding="utf-8")
+
+        assert load_template_automode_allow(path) is None
+        assert find_template_gaps(path) == []

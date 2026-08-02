@@ -461,6 +461,51 @@ class TestQuotedOrHistoricalQuestionDoesNotFire:
         assert is_user_directed_question(prose) is True
 
 
+class TestReportedQuestionDoesNotFire:
+    """A question the turn REPORTS as already routed is not a live ask.
+
+    The gate exists so a decision the agent needs is never lost in a log line.
+    A turn that states an open question EXISTS and names where it was recorded
+    or relayed has already routed it — forcing a second ``AskUserQuestion``
+    re-asks the product owner through the wrong channel and costs a round trip.
+    """
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            (
+                "Open product question — should the rate cache refresh hourly or daily? "
+                "— recorded as TODO-12 and relayed to the PO."
+            ),
+            (
+                "One open question is tracked: does the seeded fixture need the gated "
+                "flag or the tenant override? It is filed as issue #88."
+            ),
+            (
+                "The pricing question (fixed or variable margin?) has been relayed to the "
+                "product owner in the ticket thread."
+            ),
+            ("I logged the remaining decision as a task: do we ship the banner behind a flag or unconditionally?"),
+        ],
+    )
+    def test_reported_open_question_does_not_fire(self, prose: str) -> None:
+        assert is_user_directed_question(prose) is False
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "Should I merge PR #1 or wait for review?",
+            "I recorded the plan as TODO-4. Do you want me to open the PR or hold?",
+            (
+                "The refresh-interval question is recorded as TODO-12. Separately, should I "
+                "deploy to staging or production first?"
+            ),
+        ],
+    )
+    def test_live_question_beside_a_reported_one_still_fires(self, prose: str) -> None:
+        assert is_user_directed_question(prose) is True
+
+
 class TestFailSafeAndEdgeInputs:
     def test_missing_transcript_path_is_noop(self, capsys: pytest.CaptureFixture[str]) -> None:
         result = handle_enforce_structured_question({})

@@ -133,13 +133,43 @@ def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
     return check(repo=repo, args=["worktree", "add", "--detach", path, ref])
 
 
+def remote_branch_start_point(repo: str, branch: str, remote: str = "origin") -> str:
+    """``<remote>/<branch>`` when the branch exists on *remote*, else ``""``.
+
+    Resolved against the REMOTE, not against whatever ``refs/remotes/*`` this
+    clone happens to hold: a targeted ``git fetch <remote> <branch>`` runs first
+    so a clone that has never seen the branch (or whose tracking ref is stale)
+    still answers correctly. A branch that genuinely does not exist upstream
+    makes the fetch exit non-zero, which is the expected "no start point" answer
+    and never an error.
+    """
+    check(repo=repo, args=["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"])
+    ref = f"refs/remotes/{remote}/{branch}"
+    return f"{remote}/{branch}" if run(repo=repo, args=["rev-parse", "--verify", "--quiet", ref]) else ""
+
+
 def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+    """``git worktree add`` for *branch*, born from its REMOTE tip when one exists.
+
+    ``-b <branch>`` with no start point forks the clone's current HEAD — the
+    default branch — so provisioning a ticket's EXISTING remote branch silently
+    produced a same-named local branch carrying default-branch content. Every
+    consumer downstream then read the default branch's files while believing it
+    read the ticket's: the frontend i18n mirror is the case that surfaced it,
+    filled from ``master`` so every key the ticket ADDS rendered raw.
+
+    So a created branch starts at ``origin/<branch>`` whenever the remote holds
+    one (git then sets up tracking), and only falls back to HEAD for a branch
+    that is genuinely new.
+    """
     args = ["worktree", "add"]
     if create_branch:
         args.extend(["-b", branch])
     args.append(path)
     if not create_branch:
         args.append(branch)
+    elif start_point := remote_branch_start_point(repo, branch):
+        args.append(start_point)
     try:
         run_checked(["git", "-C", repo, *args])
     except CommandFailedError:

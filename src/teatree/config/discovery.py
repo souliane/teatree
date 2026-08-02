@@ -30,19 +30,23 @@ def discover_overlays() -> list[OverlayEntry]:
     rather than emitted as a separate one — older ``slack-bot`` runs wrote a
     ``teatree`` entry for the ``t3-teatree`` overlay, which made discovery list both
     as if they were distinct overlays (souliane/teatree#1108).
+
+    A registry ``path`` is read through :func:`_registry_project_path`, so a path
+    stored on one side of a container boundary never names a directory on the other.
     """
     from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     seen: dict[str, OverlayEntry] = {}
 
-    ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
+    ep_values = {ep.name: ep.value for ep in entry_points(group="teatree.overlays")}
+    ep_names = set(ep_values)
 
     # 1. DB overlays registry
     config = _facade.load_config()
     for name, overlay_cfg in config.raw.get("overlays", {}).items():
         overlay_class = overlay_cfg.get("class", "")
         path_str = overlay_cfg.get("path", "")
-        project_path = Path(path_str).expanduser() if path_str else None
+        project_path = _registry_project_path(path_str, ep_values.get(name, "") or overlay_class)
         overrides: dict[str, Any] = {}
         for key, parser in (OVERLAY_OVERRIDABLE_SETTINGS | TOML_OVERLAY_OVERRIDABLE_SETTINGS).items():
             if key in overlay_cfg:
@@ -66,15 +70,53 @@ def discover_overlays() -> list[OverlayEntry]:
         )
 
     # 2. Entry points (skip if already found via toml)
-    for ep in entry_points(group="teatree.overlays"):
-        if ep.name not in seen:
-            seen[ep.name] = OverlayEntry(
-                name=ep.name,
-                overlay_class=ep.value,
-                project_path=_resolve_ep_project_path(ep.value),
+    for ep_name, ep_value in ep_values.items():
+        if ep_name not in seen:
+            seen[ep_name] = OverlayEntry(
+                name=ep_name,
+                overlay_class=ep_value,
+                project_path=_resolve_ep_project_path(ep_value),
             )
 
     return list(seen.values())
+
+
+def _registry_project_path(path_str: str, module_locator: str) -> Path | None:
+    """The overlay root a registry ``path`` names on THIS side of the container boundary.
+
+    The ``overlays`` registry lives in the DB-home config store, which host and
+    container both read — so one stored ``path`` is interpreted under two different
+    filesystem layouts. ``~/workspace/<org>/<fork>`` resolves under the operator's
+    home on the host and under ``/home/teatree`` in the container, where the fork is
+    bind-mounted somewhere else entirely. The stored value therefore cannot be taken
+    as the overlay root unconditionally: on the far side it names nothing, which
+    silently degrades every consumer that asks the registry where the overlay lives —
+    ``t3 info`` prints a path that does not exist, ``overlay_class`` falls back to
+    ``""`` because no ``manage.py`` is found to read the settings module out of, the
+    overlay's skills root (and with it its ``t3 <overlay> tool`` commands) resolves
+    nowhere, and PR-slug / dev-repo resolution loses the overlay's clone.
+
+    A path that resolves is always authoritative — the host, and the deployment box
+    where host and container paths coincide, are byte-for-byte unchanged. Only when
+    it does not does the INSTALLED package answer instead: *module_locator* is the
+    overlay's ``teatree.overlays`` entry-point value (or its registry ``class``), and
+    :func:`_resolve_ep_project_path` walks from where that package actually sits on
+    this filesystem up to its ``manage.py``. That is boundary-neutral by
+    construction — the import system already resolved it here.
+
+    ``None`` when the registry declares no path at all (an entry-point overlay
+    configured only for its overrides); the stored path unchanged when nothing else
+    resolves — including when a malformed ``class`` makes the locator unresolvable —
+    so the failure still names what the operator configured rather than taking down
+    discovery, which nearly every CLI path runs through.
+    """
+    stored = Path(path_str).expanduser() if path_str else None
+    if stored is None or stored.is_dir() or not module_locator:
+        return stored
+    try:
+        return _resolve_ep_project_path(module_locator) or stored
+    except (ImportError, ValueError):
+        return stored
 
 
 def _match_canonical_ep(alias: str, ep_names: "set[str]") -> str | None:

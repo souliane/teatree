@@ -272,6 +272,81 @@ def test_db_registry_wins_over_entry_point(tmp_path: Path, config_db: Path) -> N
         assert result[0].overlay_class == "myoverlay.settings"
 
 
+# ── registry paths across a container boundary ───────────────────────
+
+
+def _overlay_entry_point(name: str, value: str) -> MagicMock:
+    ep = MagicMock()
+    ep.name = name
+    ep.value = value
+    return ep
+
+
+def test_registry_path_from_the_other_side_resolves_through_the_installed_package(
+    tmp_path: Path,
+    config_db: Path,
+) -> None:
+    """A stored ``path`` that names nothing here falls back to where the package really is.
+
+    The DB-home ``overlays`` registry is shared by host and container, so a
+    ``~``-rooted path written on the host names nothing inside the container (the
+    fork is bind-mounted elsewhere). Left unresolved it degrades every consumer:
+    ``t3 info`` prints a dead path and ``overlay_class`` stays blank because no
+    ``manage.py`` is found to read the settings module out of.
+    """
+    fork_root = tmp_path / "container" / "teatree"
+    _write_manage_py(fork_root, "fork.settings")
+    _seed_config_db(config_db, overlays={"t3-fork": {"path": "/home/other-side/workspace/org/fork"}})
+
+    with (
+        patch("importlib.metadata.entry_points", return_value=[_overlay_entry_point("t3-fork", "fork_overlay:Fork")]),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=fork_root),
+    ):
+        by_name = {e.name: e for e in discover_overlays()}
+
+    assert by_name["t3-fork"].project_path == fork_root
+    assert by_name["t3-fork"].overlay_class == "fork.settings"
+
+
+def test_registry_path_that_resolves_is_never_replaced(tmp_path: Path, config_db: Path) -> None:
+    """Host and the deployment box (paths coincide) keep the configured path verbatim."""
+    project = tmp_path / "my-overlay"
+    _write_manage_py(project, "myoverlay.settings")
+    _seed_config_db(config_db, overlays={"my-overlay": {"path": str(project)}})
+
+    with (
+        patch(
+            "importlib.metadata.entry_points",
+            return_value=[_overlay_entry_point("my-overlay", "my_overlay:MyOverlay")],
+        ),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=tmp_path / "decoy"),
+    ):
+        by_name = {e.name: e for e in discover_overlays()}
+
+    assert by_name["my-overlay"].project_path == project
+
+
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_unresolvable_registry_path_is_reported_as_configured(tmp_path: Path, config_db: Path) -> None:
+    """With nothing installed to resolve against, the operator's own path is preserved."""
+    del tmp_path
+    _seed_config_db(config_db, overlays={"my-overlay": {"path": "/nowhere/my-overlay"}})
+
+    by_name = {e.name: e for e in discover_overlays()}
+
+    assert by_name["my-overlay"].project_path == Path("/nowhere/my-overlay")
+
+
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_malformed_class_does_not_take_discovery_down(config_db: Path) -> None:
+    """Discovery runs on nearly every CLI path — bad operator config must not lock it out."""
+    _seed_config_db(config_db, overlays={"my-overlay": {"path": "/nowhere/my-overlay", "class": ":Broken"}})
+
+    by_name = {e.name: e for e in discover_overlays()}
+
+    assert by_name["my-overlay"].project_path == Path("/nowhere/my-overlay")
+
+
 def test_discover_from_manage_py_no_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

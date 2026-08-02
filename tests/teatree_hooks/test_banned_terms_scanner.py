@@ -2140,6 +2140,18 @@ class TestFormatScannerUnavailableMessage:
         message = banned_terms_scanner.format_scanner_unavailable_message()
         assert "uv" in message.lower() or "python" in message.lower()
 
+    def test_message_names_resolution_not_a_matcher_import(self) -> None:
+        # The far more common cause is a version-manager shim fronting uv that
+        # exits 127 on the CWD repo's .python-version. The old wording ("its
+        # interpreter cannot import the matcher — install uv") sent the operator
+        # to reinstall a uv that was already installed and healthy, so the
+        # message must name RESOLUTION and the shim, and offer the T3_UV escape.
+        message = banned_terms_scanner.format_scanner_unavailable_message().lower()
+        assert "resolution" in message
+        assert "shim" in message
+        assert "t3_uv" in message
+        assert "cannot import the matcher" not in message
+
 
 class TestMarkerDenyMessage:
     def test_scanner_unavailable_marker_maps_to_its_message(self) -> None:

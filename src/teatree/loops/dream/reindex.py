@@ -108,9 +108,8 @@ def _first_binding_line(body: str) -> str:
 def signature_text(text: str) -> str:
     """The memory's UNCLIPPED signature — the canonical lesson line (#2746 nit-4).
 
-    The single frontmatter-aware extractor shared by the hot index
-    (:func:`_summary_for`), the cold ``MEMORY_ARCHIVE.md`` index, and the
-    retention probe (both via :func:`gates._signature_line`). Resolution order:
+    The single frontmatter-aware extractor shared by the cold ``MEMORY_ARCHIVE.md``
+    index and the retention probe (via :func:`gates._signature_line`). Resolution order:
     the frontmatter ``description:``/``summary:`` value, else the first
     substantive body prose line (metadata ``key:`` lines skipped), else the first
     BINDING line, else ``""``. NEVER clipped — the verbatim line is what retention

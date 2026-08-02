@@ -20,12 +20,29 @@ dispatch), it has NOT been touched by an E2E/evidence run within
 ``idle_stack_e2e_recent_minutes`` (``Worktree.last_e2e_run``), and it is NOT
 explicitly pinned (``extra['reaper_pinned']``). A stack under active delivery
 or holding fresh evidence is the live target of in-flight work — reaping it
-forces a slow re-provision.
+forces a slow re-provision; and (6) its own docker stack is PROVEN QUIET
+(:func:`stack_activity`).
 
-FAIL-SAFE doctrine: every uncertainty resolves to KEEP. A db-only partial
-stack (the wt595 leak class — app tier down but a stray ``db-1`` lingering) is
-reapable, not "healthy": ``stop_services`` brings the WHOLE compose project
-down so no stray container survives.
+Guards (2)-(5) are all authored by the CONTROL PLANE: an FSM transition, a
+``Session``/``Task`` row, a lease, a post-hoc ``lifecycle record-e2e-run``.
+None of them can see a stack being driven OUT OF BAND — a Playwright run, a
+browser, a ``curl`` — because such a driver writes no row anywhere the reaper
+reads (it may not even share the reaper's database). Inferring idleness from
+control-plane silence is therefore FAIL-OPEN: absence of a teatree-authored
+signal is the reaper's own blindness, not proof that nobody is using the
+stack. Guard (6) closes that: it asks the STACK, over the docker socket the
+reaper already holds, whether it has emitted anything inside the window — an
+HTTP request served for an out-of-band driver logs in the app tier within
+seconds, so a live E2E run registers by construction and needs no cooperation
+from the runner. It keys on the compose project name, never on
+``worktree_path``, so it answers identically from a container whose mounts
+resolve that path differently.
+
+FAIL-SAFE doctrine: every uncertainty resolves to KEEP — including a docker
+probe that cannot answer (``StackActivity.UNKNOWN``). A db-only partial stack
+(the wt595 leak class — app tier down but a stray ``db-1`` lingering) is
+reapable once quiet, not "healthy": ``stop_services`` brings the WHOLE compose
+project down so no stray container survives.
 
 :func:`preserve_reason` is the single predicate: it returns the human-readable
 reason a worktree is KEPT, or ``None`` when it is reapable.
@@ -36,8 +53,10 @@ filter over that classification.
 """
 
 import logging
+import subprocess  # noqa: S404 — imported only for the SubprocessError type caught below; shell-outs go through teatree.utils.run
 from collections.abc import Iterator
 from datetime import datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 
 from django.db.models import Q
@@ -56,30 +75,84 @@ logger = logging.getLogger(__name__)
 
 _RUNNING_STATES: tuple[str, ...] = (Worktree.State.SERVICES_UP, Worktree.State.READY)
 
+_DOCKER_PROBE_TIMEOUT_SECONDS = 10.0
 
-def _running_container_count(project: str) -> int:
-    """Count running docker containers for *project*.
 
-    Used only for an advisory partial-stack log line — the reaper does NOT
-    gate reaping on this count (a db-only partial stack is reapable, and an
-    already-gone stack is reaped idempotently). Returns ``-1`` when docker
-    cannot be queried so the log line distinguishes "verified empty" from
-    "could not verify".
+class StackActivity(StrEnum):
+    """Whether a compose project's own containers prove it busy, quiet, or neither."""
+
+    BUSY = "busy"
+    QUIET = "quiet"
+    UNKNOWN = "unknown"
+
+
+def _docker_probe(cmd: list[str]) -> str | None:
+    """The combined output of a read-only docker probe, or ``None`` when docker could not answer.
+
+    A missing binary, an unreachable daemon socket, a wedged daemon (timeout)
+    and a non-zero exit all collapse to ``None`` — the caller turns that into
+    ``StackActivity.UNKNOWN`` so an unanswerable probe KEEPS the stack rather
+    than crashing the tick or silently reading as "quiet". Both streams are
+    joined because ``docker logs`` forwards the container's stdout and stderr
+    separately and a dev app server logs its requests on stderr.
+    """
+    try:
+        result = run_allowed_to_fail(cmd, expected_codes=None, timeout=_DOCKER_PROBE_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout + result.stderr if result.returncode == 0 else None
+
+
+def _project_container_ids(project: str) -> list[str] | None:
+    """The running container ids of *project*, or ``None`` when docker could not answer."""
+    output = _docker_probe(
+        ["docker", "ps", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.ID}}"]
+    )
+    if output is None:
+        return None
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def _emitted_within_window(container_id: str, *, window_minutes: int) -> bool | None:
+    """Whether *container_id* wrote any log line inside the window; ``None`` if unanswerable.
+
+    The window is passed as a RELATIVE duration so the daemon resolves it
+    against its own clock — host/container clock skew cannot make a busy stack
+    read quiet.
+    """
+    output = _docker_probe(["docker", "logs", "--since", f"{window_minutes}m", "--tail", "1", container_id])
+    if output is None:
+        return None
+    return bool(output.strip())
+
+
+def stack_activity(project: str, *, window_minutes: int) -> StackActivity:
+    """Ask the STACK — not the control plane — whether anything is driving it.
+
+    ``BUSY`` when any container of *project* emitted output inside the window:
+    an out-of-band driver (Playwright, a browser, ``curl``) leaves no row the
+    reaper can read, but the HTTP request it serves is logged by the app tier
+    within seconds, so a live run registers here by construction. ``QUIET``
+    only when EVERY container was proven silent — or when the project has no
+    running container at all, which nobody can be driving (stopping it is then
+    idempotent bookkeeping). ``UNKNOWN`` for an unnamed project or any probe
+    docker could not answer.
     """
     if not project:
-        return -1
-    cmd = [
-        "docker",
-        "ps",
-        "--filter",
-        f"label=com.docker.compose.project={project}",
-        "--format",
-        "{{.Names}}",
-    ]
-    result = run_allowed_to_fail(cmd, expected_codes=None)
-    if result.returncode != 0:
-        return -1
-    return sum(1 for name in result.stdout.splitlines() if name.strip())
+        return StackActivity.UNKNOWN
+    container_ids = _project_container_ids(project)
+    if container_ids is None:
+        return StackActivity.UNKNOWN
+    if not container_ids:
+        return StackActivity.QUIET
+    window = max(1, window_minutes)
+    for container_id in container_ids:
+        emitted = _emitted_within_window(container_id, window_minutes=window)
+        if emitted is None:
+            return StackActivity.UNKNOWN
+        if emitted:
+            return StackActivity.BUSY
+    return StackActivity.QUIET
 
 
 def _active_worktree_path() -> Path | None:
@@ -191,20 +264,40 @@ def worktree_protects_against_reap(worktree: Worktree, *, now: datetime | None =
     return active_delivery_keep_reason(worktree, now=now)
 
 
+def _stack_activity_keep_reason(worktree: Worktree, *, window_minutes: int) -> str | None:
+    """The reason the stack's OWN containers keep it, or ``None`` when proven quiet.
+
+    The only guard that can see an out-of-band driver, and the only one whose
+    "cannot tell" answer is honest rather than inferred. ``UNKNOWN`` KEEPS: a
+    stack the reaper cannot prove idle is not idle.
+    """
+    project = compose_project(worktree)
+    activity = stack_activity(project, window_minutes=window_minutes)
+    if activity is StackActivity.BUSY:
+        return f"its stack emitted output within the last {window_minutes}m — something is driving it"
+    if activity is StackActivity.UNKNOWN:
+        return f"could not prove the stack {project or '<unnamed project>'} is quiet — fail-closed KEEP"
+    logger.info("idle_stack: stack %s proven quiet across every container — reaping", project or worktree.repo_path)
+    return None
+
+
 def preserve_reason(
     worktree: Worktree,
     *,
     cutoff: datetime,
     e2e_cutoff: datetime,
     active_path: Path | None,
+    activity_window_minutes: int,
 ) -> str | None:
     """Return why *worktree* is KEPT by the reaper, or ``None`` when it is reapable.
 
-    The single fail-safe predicate: the structural guards first
+    The single fail-safe predicate, cheapest guard first: the structural guards
     (:func:`_structural_keep_reason`), then the #2227 active-delivery guards
-    (:func:`_active_delivery_keep_reason`). A non-``None`` reason is a
-    human-readable phrase the reaper logs so a preserve (and, by absence, a
-    reap) is never silent.
+    (:func:`_active_delivery_keep_reason`), then the docker-observed
+    stack-activity guard (:func:`_stack_activity_keep_reason`) — which shells
+    out, so it runs only for a candidate every DB guard already cleared. A
+    non-``None`` reason is a human-readable phrase the reaper logs so a
+    preserve (and, by absence, a reap) is never silent.
     """
     structural = _structural_keep_reason(worktree, cutoff=cutoff, active_path=active_path)
     if structural is not None:
@@ -212,10 +305,7 @@ def preserve_reason(
     delivery = _active_delivery_keep_reason(worktree, e2e_cutoff=e2e_cutoff)
     if delivery is not None:
         return delivery
-    running = _running_container_count(compose_project(worktree))
-    if running == 0:
-        logger.info("idle_stack: worktree %s has zero running containers — reaping (idempotent)", worktree.repo_path)
-    return None
+    return _stack_activity_keep_reason(worktree, window_minutes=activity_window_minutes)
 
 
 def classify_running_worktrees(
@@ -227,7 +317,9 @@ def classify_running_worktrees(
     worktree is reapable; a non-``None`` reason names why it is KEPT, so a reap
     is never silent. ``e2e_recent_minutes`` defaults to
     ``idle_stack_e2e_recent_minutes`` from config; caller-supplied *now* is the
-    test/clock seam.
+    test/clock seam. The docker stack-activity window reuses *idle_minutes*, so
+    "idle" has ONE meaning: no control-plane touch AND no stack output for that
+    many minutes.
     """
     moment = now or timezone.now()
     cutoff = moment - timedelta(minutes=idle_minutes)
@@ -242,7 +334,16 @@ def classify_running_worktrees(
         .order_by("pk")
     )
     for worktree in candidates:
-        yield worktree, preserve_reason(worktree, cutoff=cutoff, e2e_cutoff=e2e_cutoff, active_path=active_path)
+        yield (
+            worktree,
+            preserve_reason(
+                worktree,
+                cutoff=cutoff,
+                e2e_cutoff=e2e_cutoff,
+                active_path=active_path,
+                activity_window_minutes=idle_minutes,
+            ),
+        )
 
 
 def reapable_worktrees(
@@ -252,8 +353,8 @@ def reapable_worktrees(
 
     Scoped per overlay (mirroring ``check_local_stack_limit``). The
     ``preserve_reason is None`` filter over :func:`classify_running_worktrees`:
-    a worktree is yielded only when no structural guard and none of the #2227
-    active-delivery guards keeps it.
+    a worktree is yielded only when no structural guard, none of the #2227
+    active-delivery guards, and no observed stack activity keeps it.
     """
     for worktree, reason in classify_running_worktrees(
         overlay=overlay, idle_minutes=idle_minutes, e2e_recent_minutes=e2e_recent_minutes, now=now
@@ -263,10 +364,12 @@ def reapable_worktrees(
 
 
 __all__ = [
+    "StackActivity",
     "active_delivery_keep_reason",
     "classify_running_worktrees",
     "preserve_reason",
     "reapable_worktrees",
+    "stack_activity",
     "ticket_is_busy",
     "worktree_protects_against_reap",
 ]

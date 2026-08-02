@@ -9,13 +9,40 @@ completed, the plan gate refused the ``STARTED → PLANNED`` transition
 ``normalize_phase`` records the artifact so the ticket advances.
 """
 
+import contextlib
+from collections.abc import Iterator
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
-from teatree.agents.attempt_recorder import record_result_envelope
+from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
+from teatree.config import UserSettings
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import plan_artifact as plan_artifact_module
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_artifact import PlanArtifact
+
+_FORTY_HEX = "a" * 40
+
+
+def _full_adequacy() -> dict:
+    return {
+        "design": {"content": "carry base_sha + adequacy through the result envelope"},
+        "integration_seams": {"content": ["src/teatree/agents/result_schema.py"]},
+        "edge_cases": {"none_reason": "no edges: the recorder already reads both keys"},
+        "test_strategy": {"content": "record a planning envelope under the flag"},
+    }
+
+
+@contextlib.contextmanager
+def _plan_adequacy_required() -> Iterator[None]:
+    with patch.object(
+        plan_artifact_module,
+        "get_effective_settings",
+        return_value=UserSettings(require_plan_adequacy=True),
+    ):
+        yield
 
 
 class TestPlanArtifactPhaseAlias(TestCase):
@@ -75,3 +102,45 @@ class TestPlanArtifactPhaseAlias(TestCase):
         with pytest.raises(NoPlanArtifactError):
             record_result_envelope(task, {"plan_text": "   "}, phase="plan")
         assert not PlanArtifact.objects.filter(ticket=task.ticket).exists()
+
+
+class TestPlanAdequacyIsSatisfiableFromTheEnvelope(TestCase):
+    """``require_plan_adequacy`` is graduatable on the headless lane (SELFCATCH-3).
+
+    ``_maybe_record_plan_artifact`` reads ``base_sha`` and ``adequacy`` off the
+    result envelope, but the schema declared neither, so ``validate_result_keys``
+    rejected the only envelope that could satisfy the flag — leaving it permanently
+    ungraduatable headlessly. Both keys are schema properties, so a planner can
+    supply them and the flag's enforcement path becomes reachable.
+    """
+
+    def _planning_task(self) -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        task.claim(claimed_by="loop-slot")
+        return task
+
+    def test_a_bound_adequate_envelope_passes_key_validation(self) -> None:
+        envelope = {"plan_text": "the plan", "base_sha": _FORTY_HEX, "adequacy": _full_adequacy()}
+        assert validate_result_keys(envelope) == ""
+
+    def test_a_bound_adequate_envelope_records_the_artifact_under_the_flag(self) -> None:
+        task = self._planning_task()
+        with _plan_adequacy_required():
+            record_result_envelope(
+                task,
+                {"plan_text": "the plan", "base_sha": _FORTY_HEX, "adequacy": _full_adequacy()},
+                phase="planning",
+            )
+        task.refresh_from_db()
+        artifact = PlanArtifact.objects.get(ticket=task.ticket)
+        assert artifact.base_sha == _FORTY_HEX
+        assert artifact.adequacy == _full_adequacy()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_a_thin_envelope_is_still_refused_under_the_flag(self) -> None:
+        # The gate keeps its teeth: an unbound, manifest-less plan still fails loud.
+        task = self._planning_task()
+        with _plan_adequacy_required(), pytest.raises(ValueError, match="require_plan_adequacy"):
+            record_result_envelope(task, {"plan_text": "scope: X\nacceptance: Y"}, phase="planning")

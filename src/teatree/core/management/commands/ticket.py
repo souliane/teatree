@@ -1,5 +1,6 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
+import dataclasses
 from typing import Annotated, TypedDict
 
 import typer
@@ -21,7 +22,7 @@ from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
-from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug
+from teatree.core.merge import MergePreconditionError, resolve_host_kind, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
@@ -46,6 +47,7 @@ class ClearIssueResult(TypedDict, total=False):
     clear_id: int
     pr_id: int
     slug: str
+    host_kind: str
     blast_class: str
     human_authorizer: str
     ticket_id: int
@@ -241,6 +243,16 @@ class Command(
             str,
             typer.Option(help="Orchestrator judgment: substrate / logic / docs (§17.4.2)."),
         ] = "logic",
+        forge: Annotated[
+            str,
+            typer.Option(
+                "--forge",
+                help=(
+                    "The forge hosting the PR/MR: github / gitlab. Required when the CLEAR has no "
+                    "ticket and the repo is not the running clone — an owner/repo slug carries no host."
+                ),
+            ),
+        ] = "",
         ticket_id: Annotated[
             int,
             typer.Option(help="Optional teatree Ticket id this CLEAR authorises the merge for."),
@@ -339,13 +351,19 @@ class Command(
             expedite_authorizer=expedite_authorize,
             local_ci_green_sha=local_ci_green_sha,
             executing_loop_identity=executing_loop_identity,
+            host_kind=forge,
         )
 
-        # Resolve the verdict's owner/repo BEFORE issuing: resolve_pr_repo_slug
-        # fails closed in a degenerate environment (workstream slug, no ticket
-        # issue_url, no clone origin), and resolving it after MergeClear.issue()
-        # persisted the row would orphan an already-issued CLEAR behind a traceback.
-        # Issue runs only when resolution succeeds, so neither failure persists a row.
+        # Resolve the verdict's owner/repo AND the forge BEFORE issuing:
+        # resolve_pr_repo_slug fails closed in a degenerate environment (workstream
+        # slug, no ticket issue_url, no clone origin) and resolve_host_kind fails
+        # closed when nothing names the forge (a ticketless CLEAR for a repo the
+        # running clone is not). Resolving either after MergeClear.issue() persisted
+        # the row would orphan an already-issued CLEAR behind a traceback — an
+        # unconsumable row that ratchets the S4 stale-CLEAR signal hard-red after
+        # 48h. Issue runs only when BOTH resolve, so neither failure persists a row,
+        # and the resolved forge is stamped on the CLEAR so the loop that executes
+        # it later needs no ambient context.
         #
         # Issue + record the sibling verdict inside ONE transaction (F3.2): the
         # CLEAR and its read-side ReviewVerdict are two halves of one atomic
@@ -355,6 +373,7 @@ class Command(
         # (a phantom that `review status` would later read as merge-safe).
         try:
             verdict_slug = resolve_pr_repo_slug(request)
+            request = dataclasses.replace(request, host_kind=resolve_host_kind(request, repo_slug=verdict_slug))
             with transaction.atomic():
                 clear = MergeClear.issue(request)
                 # Record the durable read-side sibling (a merge-safe judgment by
@@ -386,12 +405,15 @@ class Command(
         # inputs the caller supplied.
         if resolved_ticket is None:
             resolved_ticket = clear.adopt_owning_ticket()
-        self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
+        self.stdout.write(
+            f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]} on {clear.host_kind}"
+        )
         result: ClearIssueResult = {
             "issued": True,
             "clear_id": int(clear.pk),
             "pr_id": int(clear.pr_id),
             "slug": clear.slug,
+            "host_kind": clear.host_kind,
             "blast_class": clear.blast_class,
             "human_authorizer": clear.human_authorizer,
             "recorded_verdict_id": int(verdict.pk),

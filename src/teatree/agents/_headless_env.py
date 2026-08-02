@@ -50,17 +50,24 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the
     spawned ``claude`` CLI rides the plan, not the meter. *scope* is the
     overlay the per-account routing selector picks an account for, so two
-    overlays ride distinct subscription accounts. The sole caller
-    (``_resolve_child_env_or_failure``) is already scoped to a
-    :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch, so a
-    NON-``None`` *provider* must be a Layer-2 provider valid under Layer 1
-    ``agent_harness=claude_sdk`` (:meth:`~teatree.config.AgentHarnessProvider.valid_for`) —
-    an ``openai_compatible`` provider reaching here is a genuine cross-layer
-    misconfiguration and raises :class:`CredentialError` loud rather than
-    silently falling through to the ambient env. Also raises when the selected
-    token resolves from neither the env nor the ``pass`` store (or every
-    configured account is exhausted), so a misconfigured headless run always
-    fails loud.
+    overlays ride distinct subscription accounts.
+
+    A NON-``None`` *provider* reaching here must be valid under Layer 1
+    ``agent_harness=claude_sdk`` (:meth:`~teatree.config.AgentHarnessProvider.valid_for`),
+    so an ``openai_compatible`` one is a genuine cross-layer misconfiguration and raises
+    :class:`CredentialError` loud rather than silently falling through to the ambient env.
+    That premise is GUARANTEED by the caller, not assumed from the harness alone: the sole
+    caller (``_resolve_child_env_or_failure``) is scoped to a
+    :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch, and the *provider* it passes
+    comes from :func:`~teatree.agents.harness.resolve_dispatch_provider`, which drops a
+    Layer-2 pin that a verification-phase Layer-1 flip
+    (:func:`~teatree.agents.model_tiering.resolve_phase_harness`) invalidated. Without that
+    drop a VALID ``pydantic_ai`` deployment reaches here on every verification phase and is
+    refused.
+
+    Also raises when the selected token resolves from neither the env nor the ``pass``
+    store (or every configured account is exhausted), so a misconfigured headless run
+    always fails loud.
     """
     if provider is None:
         reject_ambient_base_url_redirect()

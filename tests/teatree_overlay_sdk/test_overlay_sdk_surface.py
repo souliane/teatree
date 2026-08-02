@@ -145,6 +145,7 @@ EXPECTED_PROVISIONING_SIGNATURES: dict[str, str] = {
     "health_checks": "(self, worktree: 'Worktree') -> list['HealthCheck']",
     "post_db_steps": "(self, worktree: 'Worktree') -> list[teatree.types.ProvisionStep]",
     "reap_external_resources": "(self, worktree: 'Worktree') -> list[str]",
+    "repo_clone_url": "(self, repo_name: str) -> str",
     "reset_passwords_command": "(self, worktree: 'Worktree') -> teatree.types.ProvisionStep | None",
     "resolve_variant": "(self, name: str) -> teatree.core.provision.variant.Variant",
     "services_config": "(self, worktree: 'Worktree') -> dict[str, teatree.types.ServiceSpec]",
@@ -177,6 +178,8 @@ EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {
     "can_auto_merge": "(self, *, target_ref: str, thread_ref: str) -> teatree.core.gates.merge_guard.MergeGuard",
     "classify_customer_display_impact": "(self, changed_files: list[str]) -> bool",
     "merge_candidate_repo_slugs": "(self) -> list[str]",
+    "repo_owner_for_slug": "(self, slug: str) -> teatree.core.review.mr_triage.RepoOwner",
+    "review_exempt_repo_slugs": "(self) -> tuple[str, ...]",
     "visual_qa_targets": "(self, changed_files: list[str]) -> list[str]",
 }
 

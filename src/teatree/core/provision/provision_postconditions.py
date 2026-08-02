@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.worktree.readiness import Probe, ProbeResult
-from teatree.core.worktree.worktree_env import env_cache_path
+from teatree.core.worktree.worktree_env import env_cache_path, worktree_pg_connection
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,11 +51,26 @@ def _env_cache_probe(cache_path: Path) -> Probe:
     return Probe(name="env-cache", description=f"Env cache written: {cache_path}", check_fn=_check)
 
 
-def _app_db_probe(db_name: str) -> Probe:
+def _app_db_probe(db_name: str, connection: tuple[str, str, dict[str, str]]) -> Probe:
+    """Probe *db_name*'s existence over the WORKTREE's postgres connection, not the defaults.
+
+    *connection* is ``worktree_pg_connection``'s ``(user, host, env)``. Shelling ``psql``
+    on the bare process env instead resolves ``pg_user()``/``pg_host()`` to
+    ``postgres``/``localhost`` and carries no ``PGPASSWORD``, because the worktree's role,
+    port and password reference live in its own env cache and never in the env of the
+    ``worktree status`` process. On a host whose ``postgres`` role is absent or
+    password-protected that psql cannot connect at all, which
+    :func:`~teatree.utils.db.db_exists` correctly refuses to read as absence
+    (souliane/teatree#3094) — so the aggregate reported ``provisioned_ok: False`` for a
+    database that demonstrably existed. Empty ``user``/``host``/``env`` (an unprovisioned
+    worktree) keep the ``db_exists`` defaults.
+    """
+    user, host, env = connection
+
     def _check() -> ProbeResult:
         from teatree.utils.db import db_exists  # noqa: PLC0415 — psql shell-out kept off import path
 
-        ok = db_exists(db_name)
+        ok = db_exists(db_name, user=user, host=host, env=env or None)
         return ProbeResult(name="app-db", passed=ok, reason="exists" if ok else f"database {db_name!r} does not exist")
 
     return Probe(name="app-db", description=f"Application database exists: {db_name}", check_fn=_check)
@@ -91,7 +106,7 @@ def aggregate_provision_post_conditions(overlay: "OverlayBase", worktree: "Workt
         if cache is not None:
             probes.append(_env_cache_probe(cache))
     if worktree.db_name and overlay.provisioning.db_import_strategy(worktree) is not None:
-        probes.append(_app_db_probe(worktree.db_name))
+        probes.append(_app_db_probe(worktree.db_name, worktree_pg_connection(worktree, overlay=overlay)))
     probes.extend(
         _step_post_condition_probe(step.name, condition)
         for step in overlay.get_provision_steps(worktree)

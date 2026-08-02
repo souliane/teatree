@@ -10,14 +10,8 @@ import httpx
 import pytest
 import typer.testing
 
-from teatree.backends.notion import (
-    NotionClient,
-    NotionFileRef,
-    _brave_cookies,
-    _is_signed,
-    download_notion_file,
-    resolve_signed_url,
-)
+from teatree.backends.notion import NotionClient, NotionFileRef, download_notion_file, resolve_signed_url
+from teatree.backends.notion.attachments import _brave_cookies, _is_signed
 from teatree.cli.tools import tool_app
 
 # A `file://`-prefixed ref as emitted by `notion-fetch` for a <file> block.
@@ -57,7 +51,7 @@ class TestDownloadNotionFile:
 
     def _patch_transport(self, monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
         empty_cookies = httpx.Cookies()
-        monkeypatch.setattr("teatree.backends.notion._brave_cookies", lambda _: empty_cookies)
+        monkeypatch.setattr("teatree.backends.notion.attachments._brave_cookies", lambda _: empty_cookies)
         original_client_init = httpx.Client.__init__
 
         def patched_init(self: httpx.Client, **kwargs: Any) -> None:
@@ -334,7 +328,7 @@ class TestResolveSignedUrl:
 
 class TestDownloadViaRef:
     def test_resolves_ref_then_downloads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.backends.notion._brave_cookies", lambda _: httpx.Cookies())
+        monkeypatch.setattr("teatree.backends.notion.attachments._brave_cookies", lambda _: httpx.Cookies())
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v3/getSignedFileUrls":
@@ -355,7 +349,7 @@ class TestDownloadViaRef:
         assert dest.read_bytes() == b"REF-BYTES"
 
     def test_rejects_unsigned_url_without_ref(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.backends.notion._brave_cookies", lambda _: httpx.Cookies())
+        monkeypatch.setattr("teatree.backends.notion.attachments._brave_cookies", lambda _: httpx.Cookies())
 
         with pytest.raises(ValueError, match="not signed"):
             download_notion_file(url="https://plain.example/x.pdf", dest=tmp_path / "x.pdf")

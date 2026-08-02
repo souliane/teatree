@@ -75,6 +75,27 @@ RECOMMENDED_AUTHORIZATIONS: tuple[RecommendedAuthorization, ...] = (
         keyphrases=("read-only", "docker compose ps"),
     ),
     RecommendedAuthorization(
+        key="shell-syntax-is-not-an-operation",
+        sentence=(
+            "Shell syntax is not an operation: judge a command by the effective operations "
+            "it performs, not by the wrapper it arrives in. Allow it when every effective "
+            "operation is individually allowable; refuse it when any one is independently "
+            "refusable. A command's purpose is not its terminal pager."
+        ),
+        keyphrases=("effective operation", "wrapper"),
+    ),
+    RecommendedAuthorization(
+        key="wrapping-never-relaxes-a-refusable-operation",
+        sentence=(
+            "Wrapping never makes an operation allowable. Destructive deletion outside "
+            "scratch, privilege escalation, remote execution, force-push, hook bypass, "
+            "remote database writes, credential exfiltration, writes outside the "
+            "workspace, and publication without the sanctioned gate stay refused wherever "
+            "they appear, however they are nested."
+        ),
+        keyphrases=("wrapping never", "stay refused"),
+    ),
+    RecommendedAuthorization(
         key="reland-on-a-fresh-branch",
         sentence=(
             "When a push is blocked by the leak or commit-identity gate after a rebase, "
@@ -248,6 +269,75 @@ def report_missing_authorizations(
     echo("      User-specific items (VPS hosts, dev-DB credentials, exact repo paths) are")
     echo("      deliberately NOT recommended generically — those are yours to add.")
     return True
+
+
+def _shipped_template_path() -> Path:
+    """The committed settings template every container and fresh box is seeded from."""
+    return Path(__file__).resolve().parents[3] / "deploy" / "claude-settings.template.json"
+
+
+def load_template_automode_allow(template_path: Path | None = None) -> list[str] | None:
+    """The shipped template's ``autoMode.allow`` entries, or ``None`` when unreadable.
+
+    ``None`` distinguishes "cannot read the template" from "the template grants
+    nothing" — a check that collapses the two would report a missing file as a
+    fully-starved template and fail on an install that simply does not ship one.
+    """
+    path = template_path if template_path is not None else _shipped_template_path()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    automode = data.get("autoMode") if isinstance(data, dict) else None
+    allow = automode.get("allow") if isinstance(automode, dict) else None
+    if not isinstance(allow, list):
+        return None
+    return [entry for entry in allow if isinstance(entry, str)]
+
+
+def find_template_gaps(template_path: Path | None = None) -> list[RecommendedAuthorization]:
+    """Recommended authorizations the SHIPPED template does not carry.
+
+    The host-facing :func:`find_missing_authorizations` can only advise, because
+    the operator's settings are theirs. The template is teatree's own, so a
+    recommendation absent from it is a defect teatree can fix — and until it is
+    fixed every fresh box is seeded starved of exactly the rule the doctor is
+    about to nag the operator for.
+    """
+    shipped = load_template_automode_allow(template_path)
+    if shipped is None:
+        return []
+    return [rec for rec in RECOMMENDED_AUTHORIZATIONS if not rec.is_covered_by(shipped)]
+
+
+def verify_shipped_template(
+    echo: Callable[[str], object],
+    template_path: Path | None = None,
+) -> bool:
+    """FAIL when teatree's own shipped template lacks a recommendation it makes.
+
+    This is the verifying counterpart to :func:`report_missing_authorizations`,
+    which can only advise. A recommendation nobody applies is not a nag — it is a
+    starved default that costs every fresh box a round trip per blocked call, so
+    the ship side is a hard check rather than another suggestion. Returns ``True``
+    when the template covers every recommendation, or when no template ships.
+    """
+    if load_template_automode_allow(template_path) is None:
+        echo("OK    No shipped Claude settings template to verify")
+        return True
+    gaps = find_template_gaps(template_path)
+    if not gaps:
+        echo(f"OK    Shipped settings template carries all {len(RECOMMENDED_AUTHORIZATIONS)} recommendations")
+        return True
+    echo(f"FAIL  Shipped settings template is missing {len(gaps)} recommended authorization(s).")
+    echo(f"      Every container seeded from {_shipped_template_path()} starts without them.")
+    for rec in gaps:
+        echo("")
+        echo(f"      [{rec.key}]")
+        echo(f"        {rec.sentence}")
+    return False
 
 
 def authorizations() -> bool:

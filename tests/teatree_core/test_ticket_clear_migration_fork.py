@@ -24,7 +24,7 @@ from teatree.core.management.commands._clear_migration_fork import (
     check_clear_migration_fork,
 )
 from teatree.core.migration_leaf_probe import MigrationLeafConflict
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import ConfigSetting, Ticket, Worktree
 
 _BASE_MIGRATION = (
     "from django.db import migrations\n\n\n"
@@ -268,3 +268,44 @@ class TestCheckClearMigrationForkResolution(TestCase):
         assert "0002_a" in reason
         assert "0002_b" in reason
         assert "makemigrations --merge" in reason
+
+
+class TestCheckClearMigrationForkTargetResolution(TestCase):
+    """The migration-fork pre-flight probes the SAME target the ship path uses.
+
+    Its sibling :mod:`_clear_branch_currency` resolves the target the same way;
+    both must honour the ``target_branch`` setting (#940), or a line of work
+    stacked on an integration branch has its graph checked against ``main``.
+    """
+
+    _INTEGRATION = "chore/long-lived-integration"
+
+    def _ticket_with_worktree(self, **extra: object) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra=dict(extra))
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/repo",
+            branch="feat/x",
+            extra={"worktree_path": "/repo"},
+        )
+        return ticket
+
+    def _observed_target(self, ticket: Ticket) -> str:
+        seen: dict[str, str] = {}
+
+        def _fake_probe(repo: str, reviewed_sha: str, target: str) -> None:
+            _ = repo, reviewed_sha
+            seen["target"] = target
+
+        with mock.patch.object(_clear_migration_fork, "sha_forks_migration_graph", _fake_probe):
+            assert check_clear_migration_fork("a" * 40, ticket) is None
+        return seen["target"]
+
+    def test_configured_setting_is_the_probe_target(self) -> None:
+        ConfigSetting.objects.set_value("target_branch", self._INTEGRATION)
+        assert self._observed_target(self._ticket_with_worktree()) == f"origin/{self._INTEGRATION}"
+
+    def test_a_prefixed_explicit_target_is_remote_qualified(self) -> None:
+        ticket = self._ticket_with_worktree(target_branch="release/1.2")
+        assert self._observed_target(ticket) == "origin/release/1.2"

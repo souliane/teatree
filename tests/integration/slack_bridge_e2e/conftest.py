@@ -211,6 +211,7 @@ class _FakeUserSettings:
     # Mirror the real ``UserSettings`` defaults so the fixture stays a structural
     # subset.
     review_skill: str = ""
+    review_skill_alternates: list[str] = field(default_factory=list)
     architectural_review_skill: str = "ac-reviewing-codebase"
     scanning_news_skill: str = "scanning-news"
     eval_local_skill: str = "eval"

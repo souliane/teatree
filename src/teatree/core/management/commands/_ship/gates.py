@@ -27,6 +27,7 @@ from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.core.worktree.branch_currency import require_current_branch
+from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -116,24 +117,6 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
     )
 
 
-def resolve_target_branch(ticket: Ticket, repo: str) -> str:
-    """Stacked-PR target resolver (#940).
-
-    Reads ``ticket.extra['target_branch']`` first (stacked PRs base on
-    a different branch than ``origin/main``); falls back to
-    ``origin/<default>`` — the same resolver shape
-    :func:`assert_commits_ahead_of_base` uses.
-    """
-    extra = ticket.extra or {}
-    explicit = str(extra.get("target_branch") or "").strip()
-    if explicit:
-        return explicit if "/" in explicit else f"origin/{explicit}"
-    try:
-        return f"origin/{git.default_branch(repo=repo)}"
-    except (CommandFailedError, RuntimeError, ValueError):
-        return "origin/main"
-
-
 def run_branch_currency_gate(
     ticket: Ticket,
     worktree: Worktree,
@@ -154,7 +137,7 @@ def run_branch_currency_gate(
     branch = worktree.branch
     if not repo or not branch:
         return None
-    target = resolve_target_branch(ticket, repo)
+    target = resolve_target_branch(ticket, repo, branch=branch)
 
     result = require_current_branch(repo, branch, target=target)
     if result["error"]:

@@ -37,6 +37,7 @@ from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
+from teatree.core.worktree.target_branch import resolve_pr_target_branch
 from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
 
@@ -267,6 +268,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         branch=branch_name,
         title=title,
         description=description,
+        target_branch=resolve_pr_target_branch(owning_ticket, branch=branch_name),
         labels=overlay_pr_labels(),
         assignee=assignee,
         draft=False,

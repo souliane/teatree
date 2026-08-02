@@ -7,6 +7,7 @@ import pytest
 from teatree.backends import gitlab, notion, slack
 from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.backends.gitlab.api import GitLabAPI
+from teatree.backends.notion import client as notion_client
 from teatree.backends.slack import client as slack_client
 from teatree.core.backend_protocols import BackendResolutionError
 
@@ -41,7 +42,7 @@ def test_notion_backend_fetches_page_with_version_header(monkeypatch: pytest.Mon
             assert path == "https://api.notion.com/v1/pages/page-123"
             return httpx.Response(200, json={"id": "page-123"}, request=httpx.Request("GET", path))
 
-    monkeypatch.setattr(notion.httpx, "Client", DummyClient)
+    monkeypatch.setattr(notion_client.httpx, "Client", DummyClient)
 
     client = notion.NotionClient(token="secret", version="2022-06-28")
 

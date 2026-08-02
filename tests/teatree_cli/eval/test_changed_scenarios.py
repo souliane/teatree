@@ -14,7 +14,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS
+from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS, specs_under
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 
 _REPO_ROOT = SCENARIOS_DIR.parents[1]
@@ -50,7 +50,14 @@ class TestChangedScenarios:
         # Every real scenario file changed → the selection exceeds the cap; the deferral
         # note must appear on stderr (#2737) while stdout still prints only the capped run
         # set — a corpus-wide PR's truncated coverage is visible, not silently dropped.
-        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in discover_specs()})
+        # Scope to THIS repo's own scenarios before making paths repo-relative.
+        # ``discover_specs()`` returns the union catalog — core plus every installed
+        # overlay's scenarios — and an overlay installed from outside this repo (the
+        # vendored-fork topology) has ``source_path``s that are not under
+        # ``_REPO_ROOT`` at all, so mapping the union through ``relative_to`` raises.
+        # ``specs_under`` is the per-consumer filter that exists for exactly this.
+        core_specs = specs_under(discover_specs(), SCENARIOS_DIR)
+        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in core_specs})
         result = CliRunner().invoke(app, ["eval", "changed-scenarios"], input="\n".join(all_files) + "\n")
         assert result.exit_code == 0, result.output
         assert "capped to" in result.stderr

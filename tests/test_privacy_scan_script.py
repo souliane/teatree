@@ -318,6 +318,84 @@ class TestGitSshRemoteIsNotAnEmail:
         assert "email" in result.stdout
 
 
+class TestPrivateIpIsAFullDottedQuad:
+    """A version string is not a private address; a private address still is.
+
+    ``_IP_RE``'s ``10`` branch matched only ``10.<n>.<n>`` — three components,
+    one short of a dotted quad — so an ordinary three-part version string
+    (``10.15.7``, ``urllib3>=10.2.3``) was reported as ``private_ip`` and the
+    pre-push leak gate refused a legitimate push. The gate exists to stop a real
+    private address reaching a public surface, so both directions are asserted
+    here: the version strings must be CLEAN, and every genuine private address —
+    including the quad the cured ``macOS`` semver is one octet short of — must
+    still be FLAGGED.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'requires = "urllib3>=10.2.3"',
+            'node_version = "10.24.1"',
+            "upgrade notes for macOS 10.15.7",
+            "bumped to 10.0.0 from 9.8.7",
+            "timeout 10.5.1 seconds",
+            # A quad sliced out of a longer dotted run is not an address either.
+            "the 1.10.20.30.40 build train",
+            # Four components, but an out-of-range octet — a build number.
+            "windows build 10.0.19045.1",
+        ],
+    )
+    def test_version_string_is_not_a_private_ip(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "ping 10.0.0.5",  # privacy-scan:allow self-fixture
+            "host lives at 10.15.7.1",  # privacy-scan:allow self-fixture
+            "gateway 192.168.1.1",  # privacy-scan:allow self-fixture
+            "bastion 172.16.0.10",  # privacy-scan:allow self-fixture
+            "edge 172.31.255.254",  # privacy-scan:allow self-fixture
+            "subnet 10.0.0.0/8",  # privacy-scan:allow self-fixture
+            "broadcast 10.255.255.255",  # privacy-scan:allow self-fixture
+            # Four components: ambiguous with a four-part version, and the gate
+            # must fail toward blocking rather than let an address through.
+            "four part 10.2.3.4",  # privacy-scan:allow self-fixture
+        ],
+    )
+    def test_genuine_private_ip_is_still_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "private_ip" in result.stdout
+
+    def test_address_ending_a_sentence_is_still_flagged(self) -> None:
+        # The trailing guard rejects a following ``.<digit>`` only — a sentence
+        # period must not hide an address.
+        line = "the box lives at 10.0.0.5."  # privacy-scan:allow self-fixture
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_reported_match_is_the_whole_address(self) -> None:
+        # The three-octet pattern truncated its own finding to ``10.0.0``, which
+        # is not something an operator can grep for in the diff being refused.
+        line = "ping 10.0.0.5"  # privacy-scan:allow self-fixture
+        result = _run(line + "\n")
+        assert "private_ip: 10.0.0.5" in result.stdout, result.stdout  # privacy-scan:allow self-fixture
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "public 172.15.0.1",
+            "public 172.32.0.1",
+            "public 8.8.8.8",
+        ],
+    )
+    def test_public_address_is_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
 class TestPrivacyScanBannedTermsSource:
     """The banned-terms source is DB-home ``banned_terms``.
 

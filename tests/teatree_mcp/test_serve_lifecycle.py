@@ -20,6 +20,7 @@ from teatree.mcp.serve_lifecycle import (
     ProcessRecord,
     _hard_exit,
     is_serve_command,
+    orphan_detection_applies,
     orphaned_serve_pids,
     process_snapshot,
     reap_orphaned_servers,
@@ -119,6 +120,19 @@ def _reaped_gone(pid: int, marker: str) -> bool:
     return not any(record.pid == pid and marker in record.command for record in process_snapshot())
 
 
+@pytest.fixture
+def _on_a_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the HOST precondition the reap/watch cases describe.
+
+    ``orphan_detection_applies`` is False in a container and BOTH entry points return
+    early there — and the suite itself runs containerized in CI. Without this the cases
+    below would go green by short-circuiting rather than by exercising the PID-1 proof
+    they name, and the one that wants a real thread back would get ``None``.
+    """
+    monkeypatch.setattr(serve_lifecycle_mod, "is_running_in_container", lambda: False)
+
+
+@pytest.mark.usefixtures("_on_a_host")
 class TestReapRealOrphan:
     def test_reaps_a_real_reparented_process_and_only_it(self) -> None:
         # Unique per test process so a leftover orphan from an aborted earlier
@@ -193,11 +207,13 @@ class TestHardExit:
         hard.assert_called_once_with(0)
 
 
+@pytest.mark.usefixtures("_on_a_host")
 class TestStartParentDeathWatch:
     def test_starts_a_named_daemon_thread_running_the_watch(self) -> None:
         # patch the watch loop to a no-op so the started thread exits immediately
         with patch("teatree.mcp.serve_lifecycle.watch_until_orphaned") as watch:
             thread = start_parent_death_watch(poll_seconds=0.001)
+            assert thread is not None
             thread.join(timeout=2.0)
 
         assert thread.daemon is True
@@ -220,3 +236,41 @@ class TestServeWiring:
         reap.assert_called_once_with()
         watch.assert_called_once_with()
         build.return_value.run.assert_called_once_with("stdio")
+
+
+class TestOrphanDetectionIsHostOnly:
+    """PID 1 proves the client is gone on a host; in a container it is the entrypoint.
+
+    A server started by ``docker compose run --entrypoint t3 … mcp serve`` has
+    ``getppid() == 1`` from its first instant, so the watchdog hard-exited it before it
+    answered a single request (exit 0, empty stdout) and the reaper would SIGTERM every
+    sibling server in the same container. That is what blocked routing the MCP server
+    into the containerized stack.
+    """
+
+    def test_the_pid1_proof_holds_on_a_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_ROLE", raising=False)
+
+        assert orphan_detection_applies(containerized=False) is True
+
+    def test_the_pid1_proof_does_not_hold_in_a_container(self) -> None:
+        assert orphan_detection_applies(containerized=True) is False
+
+    def test_the_containerized_runtime_is_detected_by_its_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The deploy entrypoint sets ``TEATREE_ROLE`` for every role."""
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+
+        assert orphan_detection_applies() is False
+
+    def test_no_watchdog_thread_is_armed_in_a_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+
+        assert start_parent_death_watch() is None
+
+    def test_no_sibling_is_reaped_in_a_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+
+        with patch.object(serve_lifecycle_mod, "os") as never_signalled:
+            assert reap_orphaned_servers(matcher=lambda _: True) == []
+
+        never_signalled.kill.assert_not_called()

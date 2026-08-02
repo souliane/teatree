@@ -1,5 +1,6 @@
 """Tests for ``teatree.paths`` helpers."""
 
+import os
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -78,6 +79,21 @@ class TestRunningFromWorktree:
         (tmp_path / "bare").mkdir()
         assert running_from_worktree(tmp_path / "bare") is False
 
+    def test_vendored_core_inside_a_fork_worktree_is_a_worktree(self, tmp_path: Path) -> None:
+        # A vendoring fork's core tree has no .git of its own — the fork
+        # checkout that CONTAINS it decides. Read as "not a worktree", the
+        # vendored code of a fork WORKTREE resolved onto the true canonical DB.
+        fork = _make_repo(tmp_path / "fork-wt", worktree=True)
+        vendored = fork / "vendor" / "teatree"
+        vendored.mkdir(parents=True)
+        assert running_from_worktree(vendored) is True
+
+    def test_vendored_core_inside_a_fork_primary_clone_is_primary(self, tmp_path: Path) -> None:
+        fork = _make_repo(tmp_path / "fork", worktree=False)
+        vendored = fork / "vendor" / "teatree"
+        vendored.mkdir(parents=True)
+        assert running_from_worktree(vendored) is False
+
 
 class TestResolveDataDir:
     def test_primary_clone_uses_canonical(self, tmp_path: Path) -> None:
@@ -131,6 +147,17 @@ class TestResolveDataDir:
         with pytest.raises(CanonicalDBFromWorktreeError):
             resolve_data_dir(env={"XDG_DATA_HOME": str(canonical_xdg)}, home=home, repo_root=repo)
 
+    def test_vendored_core_in_a_fork_worktree_auto_isolates(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        fork = _make_repo(tmp_path / "fork-wt", worktree=True)
+        vendored = fork / "vendor" / "teatree"
+        vendored.mkdir(parents=True)
+
+        resolved = resolve_data_dir(env={}, home=home, repo_root=vendored)
+
+        assert resolved.auto_isolated is True
+        assert resolved.path.parent == _worktree_isolation_root(home)
+
 
 class TestIsolatedSlug:
     def test_slug_is_deterministic_and_short(self) -> None:
@@ -177,6 +204,48 @@ class TestSqliteSnapshot:
         try:
             assert conn.execute("SELECT note FROM marker").fetchone()[0] == "canonical"
             assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            conn.close()
+
+    def test_snapshot_includes_commits_still_resident_in_the_wal(self, tmp_path: Path) -> None:
+        """A LIVE WAL DB's uncheckpointed commits must reach the snapshot.
+
+        This is the shape every real ``db_backup`` runs against: the loop holds
+        the control DB open and commits continuously, so the newest rows sit in
+        the ``-wal`` until a checkpoint folds them back. An ``?immutable=1``
+        source open ignores the ``-wal`` entirely, so it captured only what the
+        last checkpoint had written — a backup that passes ``integrity_check``
+        while silently missing days of work. Asserting on ROW COUNT rather than
+        on the open mode keeps the test about the guarantee, not the mechanism.
+        """
+        src = tmp_path / "canonical" / "db.sqlite3"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        writer = sqlite3.connect(src)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute("CREATE TABLE marker (id INTEGER PRIMARY KEY, note TEXT)")
+            writer.execute("INSERT INTO marker (note) VALUES ('checkpointed')")
+            writer.commit()
+            writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # Committed AFTER the last checkpoint, so these live only in the -wal.
+            writer.executemany(
+                "INSERT INTO marker (note) VALUES (?)",
+                [(f"wal-resident-{n}",) for n in range(500)],
+            )
+            writer.commit()
+            assert (src.parent / "db.sqlite3-wal").stat().st_size > 0, "precondition: commits are WAL-resident"
+
+            dst = tmp_path / "snapshot.sqlite3"
+            # Snapshot while the writer still holds the DB open — the live case.
+            _sqlite_snapshot(src, dst)
+        finally:
+            writer.close()
+
+        conn = sqlite3.connect(dst)
+        try:
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert conn.execute("SELECT count(*) FROM marker").fetchone()[0] == 501
         finally:
             conn.close()
 
@@ -353,3 +422,59 @@ class TestFindOverlayDb:
     def test_returns_none_when_no_db_anywhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(paths, "DATA_DIR", tmp_path / "absent")
         assert find_overlay_db("foo", str(tmp_path / "absent")) is None
+
+
+class TestCanonicalControlDbLivesInItsVolume:
+    """The real install's DB resolves into the control-DB volume; every private copy does not.
+
+    The split is what lets one machine hold a container-owned canonical database AND
+    the per-worktree isolated copies that must keep sitting beside their own data dir.
+    """
+
+    def test_the_canonical_data_dir_resolves_into_the_control_db_volume(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        volume = tmp_path / "control-db"
+        monkeypatch.setenv(paths.CONTROL_DB_DIR_ENV, str(volume))
+
+        resolved = paths.canonical_db_in(paths._TRUE_CANONICAL_DATA_DIR, env=os.environ)
+
+        assert resolved == volume / "db.sqlite3"
+
+    def test_an_isolated_worktree_dir_keeps_its_database_beside_itself(self, tmp_path: Path) -> None:
+        isolated = tmp_path / "teatree-worktrees" / "abc123"
+
+        assert paths.canonical_db_in(isolated, env={}) == isolated / "db.sqlite3"
+
+    def test_an_explicit_xdg_sandbox_keeps_its_database_beside_itself(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox" / "teatree"
+
+        assert paths.canonical_db_in(sandbox, env={}) == sandbox / "db.sqlite3"
+
+    def test_the_volume_directory_is_not_derived_from_home(self) -> None:
+        # A home-derived default would exist on the host too, which is precisely what
+        # must not happen: the path has to be unreachable outside the container.
+        assert Path.home() not in paths.DEFAULT_CONTROL_DB_DIR.parents
+        assert paths.control_db_dir({}) == paths.DEFAULT_CONTROL_DB_DIR
+
+    def test_the_env_override_wins(self, tmp_path: Path) -> None:
+        assert paths.control_db_dir({paths.CONTROL_DB_DIR_ENV: str(tmp_path)}) == tmp_path
+
+    def test_a_blank_env_override_falls_back_to_the_default(self) -> None:
+        assert paths.control_db_dir({paths.CONTROL_DB_DIR_ENV: "   "}) == paths.DEFAULT_CONTROL_DB_DIR
+
+
+class TestPrimaryDataDirIsNotTheDatabasesParent:
+    """Two different filesystems now, so the data dir must never be derived from the DB."""
+
+    def test_the_primary_data_dir_stays_on_the_bind_mounted_tree(self, tmp_path: Path) -> None:
+        control_db = paths.ControlDb({paths.CONTROL_DB_DIR_ENV: "/var/lib/teatree/control-db"}, home=tmp_path)
+
+        assert control_db.primary_data_dir() == tmp_path / ".local" / "share" / "teatree"
+
+    def test_the_data_dir_and_the_database_diverge_for_the_real_install(self) -> None:
+        # The module-level constants are the REAL install's answers, resolved at import
+        # from the real home — the test harness's tmp `HOME` deliberately does not reach
+        # them, which is the same isolation that keeps a worktree off the canonical DB.
+        assert paths.TRUE_CANONICAL_DB.parent != paths._TRUE_CANONICAL_DATA_DIR
+        assert paths.TRUE_CANONICAL_DB.parent == paths.DEFAULT_CONTROL_DB_DIR

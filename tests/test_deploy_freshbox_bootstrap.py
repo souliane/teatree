@@ -25,33 +25,71 @@ import yaml
 DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 DEPLOY_SH = DEPLOY_DIR / "deploy.sh"
+CLI_WRAPPER = DEPLOY_DIR / "t3"
 DOCKERFILE = DEPLOY_DIR / "Dockerfile"
 DEV_DOCKERFILE = Path(__file__).resolve().parents[1] / "dev" / "Dockerfile.test"
 
 _HOME = "/home/teatree"  # privacy-scan:allow — the box's public, documented deploy home
+# The host-side root every compose bind SOURCE is written against. Both scripts
+# that create those dirs set it from `$HOME`, which on the box IS `_HOME`.
+_HOST_HOME_PLACEHOLDER = "${TEATREE_HOST_HOME:-" + _HOME + "}"
 
 
 def _bind_sources() -> set[str]:
-    """Every host bind-mount SOURCE path the shared service list declares."""
+    """Every host bind-mount SOURCE path the shared service list declares.
+
+    Sources are written as ``${TEATREE_HOST_HOME:-/home/teatree}/<suffix>``; the
+    placeholder resolves to the box's deploy home so the paths compare directly
+    against the ``$HOME``-rooted dirs the scripts pre-create.
+    """
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     volumes = compose["x-teatree-common"]["volumes"]
-    return {entry["source"] for entry in volumes if isinstance(entry, dict) and entry.get("type") == "bind"}
+    return {
+        entry["source"].replace(_HOST_HOME_PLACEHOLDER, _HOME, 1)
+        for entry in volumes
+        if isinstance(entry, dict) and entry.get("type") == "bind"
+    }
+
+
+def _created_dirs(script: str, command: str, var: str) -> set[str]:
+    """The absolute paths *script* pre-creates with *command*, rooted at *var*.
+
+    Backslash line continuations are folded first so a multi-line invocation
+    reads as one command; the host-home variable expands to the deploy user's
+    home to match the compose bind sources.
+    """
+    folded = re.sub(r"\\\n\s*", " ", script)
+    pattern = re.compile(r'"\$' + re.escape(var) + r'(/[^"]+)"')
+    targets: set[str] = set()
+    for line in folded.splitlines():
+        if not line.strip().startswith(command):
+            continue
+        targets.update(_HOME + suffix for suffix in pattern.findall(line))
+    return targets
 
 
 def _install_d_targets(script: str) -> set[str]:
-    """The absolute paths ``deploy.sh`` pre-creates via ``install -d``.
+    """The absolute paths ``deploy.sh`` pre-creates via ``install -d``."""
+    return _created_dirs(script, "install -d", "HOME")
 
-    Backslash line continuations are folded first so a multi-line ``install -d``
-    reads as one command; ``$HOME`` expands to the deploy user's home to match the
-    compose bind sources.
+
+def _wrapper_mount_source_arrays() -> dict[str, set[str]]:
+    """The host paths each ``*_MOUNT_SOURCES`` array in ``deploy/t3`` declares.
+
+    The wrapper names its bind sources ONCE, in arrays, because the same list
+    answers both "pre-create these" and "can the container see this path?" — the
+    unreachable-path diagnostic reads them, so the two cannot drift. Only arrays
+    an ``install -d`` line actually expands are returned, so a dead array cannot
+    satisfy the invariant below.
     """
-    folded = re.sub(r"\\\n\s*", " ", script)
-    targets: set[str] = set()
-    for line in folded.splitlines():
-        if not line.strip().startswith("install -d"):
-            continue
-        targets.update(_HOME + suffix for suffix in re.findall(r'"\$HOME(/[^"]+)"', line))
-    return targets
+    text = CLI_WRAPPER.read_text(encoding="utf-8")
+    pattern = re.compile(r'"\$TEATREE_HOST_HOME(/[^"]+)"')
+    install_lines = [line for line in text.splitlines() if line.strip().startswith("install -d")]
+    return {
+        name: {_HOME + suffix for suffix in pattern.findall(body)}
+        for name, body in re.findall(r"^(\w+_MOUNT_SOURCES)=\(\n(.*?)^\)$", text, re.MULTILINE | re.DOTALL)
+        if any(f'"${{{name}[@]}}"' in line for line in install_lines)
+    }
 
 
 def _base_digest(dockerfile_text: str) -> str | None:
@@ -73,6 +111,39 @@ class TestDeployPreCreatesEveryBindSource:
         assert secret_lines, "pass store must be pre-created"
         for line in secret_lines:
             assert "-m 700" in line, "credential-plane dirs must be created mode 700"
+
+    def test_deploy_exports_the_host_home_the_mounts_read(self) -> None:
+        # The dirs created above are rooted at `$HOME`; the mounts are rooted at
+        # `$TEATREE_HOST_HOME`. Exporting one from the other is what makes them
+        # the same dirs by construction instead of by coincidence.
+        assert 'export TEATREE_HOST_HOME="$HOME"' in DEPLOY_SH.read_text(encoding="utf-8")
+
+
+class TestCliWrapperPreCreatesEveryBindSource:
+    """Off-box, `deploy/t3` is the entry point — it owns the same invariant.
+
+    dockerd refuses a bind whose source is absent on the host ("mounts denied"),
+    so the wrapper that starts a one-off container must create the sources too;
+    on the box it is a no-op next to `deploy.sh`.
+    """
+
+    def test_all_bind_sources_are_pre_created(self) -> None:
+        arrays = _wrapper_mount_source_arrays()
+        created = set().union(*arrays.values()) if arrays else set()
+        missing = _bind_sources() - created
+        assert not missing, f"deploy/t3 does not pre-create bind sources: {sorted(missing)}"
+
+    def test_credential_plane_is_created_mode_700(self) -> None:
+        arrays = _wrapper_mount_source_arrays()
+        secret_arrays = [name for name, paths in arrays.items() if any(p.endswith("/.password-store") for p in paths)]
+        assert secret_arrays, "pass store must be pre-created"
+        folded = re.sub(r"\\\n\s*", " ", CLI_WRAPPER.read_text(encoding="utf-8"))
+        install_lines = [line for line in folded.splitlines() if line.strip().startswith("install -d")]
+        for name in secret_arrays:
+            expanding = [line for line in install_lines if f'"${{{name}[@]}}"' in line]
+            assert expanding, f"{name} must be passed to install -d"
+            for line in expanding:
+                assert "-m 700" in line, "credential-plane dirs must be created mode 700"
 
 
 class TestHostDerivedRuntimeUid:

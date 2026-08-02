@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -341,7 +342,6 @@ class TestSlackBotCommand:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open", side_effect=opened.append),
@@ -364,7 +364,6 @@ class TestSlackBotCommand:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -380,7 +379,6 @@ class TestSlackBotCommand:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -425,7 +423,6 @@ class TestSlackBotCommand:
         inputs = "garbage\nxoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -439,7 +436,6 @@ class TestSlackBotCommand:
         inputs = "xoxb-1-test\nxapp-1-test\nbad-id\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -511,7 +507,6 @@ class TestSmokeTestInvocation:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -675,6 +670,44 @@ class TestExportUpdateRotate:
         ):
             rotate_config_token(refresh_token="xoxe-OLD")
 
+    def test_rotate_sends_no_authorization_header(self) -> None:
+        """Slack documents tooling.tokens.rotate as taking NO bearer credential.
+
+        Presenting the refresh token as one made Slack answer ``invalid_auth``
+        before it read the ``refresh_token`` argument, so rotation failed however
+        fresh the stored pair was. Asserted at the HTTP layer on purpose: every
+        other rotate test mocks ``_slack_app_api``, which is precisely why this
+        was invisible.
+        """
+        captured: dict[str, object] = {}
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            captured.update(kwargs, url=url)
+            return httpx.Response(
+                200,
+                json={"ok": True, "token": "xoxe.xoxp-N", "refresh_token": "xoxe-NR"},
+                request=httpx.Request("POST", url),
+            )
+
+        with patch("teatree.cli.slack.manifest.httpx.post", side_effect=fake_post):
+            rotate_config_token(refresh_token="xoxe-OLD")
+
+        assert captured["headers"] == {}
+        assert captured["data"] == {"refresh_token": "xoxe-OLD"}
+
+    def test_manifest_calls_still_bear_their_config_token(self) -> None:
+        """The optional header must not silently drop auth from the calls that DO need it."""
+        captured: dict[str, object] = {}
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            captured.update(kwargs)
+            return httpx.Response(200, json={"ok": True, "manifest": {}}, request=httpx.Request("POST", url))
+
+        with patch("teatree.cli.slack.manifest.httpx.post", side_effect=fake_post):
+            export_manifest(app_id="A1", config_token="xoxe.xoxp-1")
+
+        assert captured["headers"] == {"Authorization": "Bearer xoxe.xoxp-1"}
+
 
 class TestDeepLinks:
     def test_app_manifest_editor_url(self) -> None:
@@ -736,7 +769,6 @@ class TestUpdatePathModeResolution:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", return_value="xoxe.xoxp-token"),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
@@ -758,7 +790,6 @@ class TestUpdatePathModeResolution:
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", return_value="xoxe.xoxp-token"),
             patch("teatree.cli.slack.app_resolve.read_pass", return_value=""),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
@@ -776,7 +807,6 @@ class TestUpdatePathModeResolution:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -792,7 +822,6 @@ class TestUpdatePathModeResolution:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open", side_effect=opened.append),
@@ -823,7 +852,6 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", return_value="xoxe.xoxp-token"),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True) as smoke,
@@ -851,7 +879,6 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open", side_effect=opened.append),
             patch("teatree.cli.slack.setup.read_pass", return_value="xoxe.xoxp-token"),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
@@ -874,35 +901,40 @@ class TestUpdatePathBehavior:
                 {"ok": True, "manifest": current},  # retry export
             ]
         )
-        written: dict[str, str] = {}
+        stored = {
+            "teatree/slack-app-config-token": "xoxe.xoxp-OLD",
+            "teatree/slack-app-config-refresh": "xoxe-OLDR",
+        }
 
-        def fake_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+        def fake_api(method: str, payload: dict[str, Any], *, token: str = "") -> dict[str, Any]:
             return next(seq)
 
         def fake_read(key: str) -> str:
-            if key == "teatree/slack-app-config-token":
-                return "xoxe.xoxp-OLD"
-            if key == "teatree/slack-app-config-refresh":
-                return "xoxe-OLDR"
-            return "xoxb-bot"
+            return stored.get(key, "xoxb-bot")
 
-        def fake_write(key: str, value: str) -> bool:
-            written[key] = value
+        def store_write(key: str, value: str) -> bool:
+            stored[key] = value
             return True
 
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.setup.write_pass", side_effect=fake_write),
+            # The rotated pair is persisted through ConfigTokenStore now, so the
+            # verified write (and its read-back) lives in the config_token module.
+            patch("teatree.cli.slack.config_token.read_pass", side_effect=lambda k: stored.get(k, "")),
+            patch("teatree.cli.slack.config_token.write_pass", side_effect=store_write),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
             patch("teatree.cli.slack.manifest._slack_app_api", side_effect=fake_api),
         ):
             result = _invoke_setup(inputs="", args=["--overlay", "acme"])
 
         assert result.exit_code == 0, result.stdout
-        assert written["teatree/slack-app-config-token"] == "xoxe.xoxp-NEW"
-        assert written["teatree/slack-app-config-refresh"] == "xoxe-NEWR"
+        assert stored["teatree/slack-app-config-token"] == "xoxe.xoxp-NEW"
+        assert stored["teatree/slack-app-config-refresh"] == "xoxe-NEWR"
+        # The issue time lands with the pair, so the next run knows its age
+        # without asking Slack — the whole basis of rotating before expiry.
+        assert stored["teatree/slack-app-config-issued-at"]
 
     def test_config_token_expired_no_refresh_is_degraded_nonzero(self) -> None:
         self._seed_app()
@@ -916,7 +948,6 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
@@ -947,7 +978,6 @@ class TestDegradedPath:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open", side_effect=opened.append),
             patch("teatree.cli.slack.setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True) as smoke,
@@ -1001,7 +1031,6 @@ class TestUpdatePathSmokeFailure:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", return_value="xoxe.xoxp-token"),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=False),
@@ -1020,7 +1049,6 @@ class TestUpdatePathSmokeFailure:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", return_value=""),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test") as smoke,
@@ -1034,7 +1062,6 @@ class TestUpdatePathSmokeFailure:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
@@ -1050,7 +1077,6 @@ class TestUpdatePathSmokeFailure:
             patch("teatree.cli.slack.setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup.read_pass", return_value="xoxe.xoxp-token"),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.token_store.read_pass", return_value=""),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
@@ -1150,7 +1176,6 @@ class TestTokenRefMigration:
             patch("teatree.cli.slack.token_store.read_pass", side_effect=fake_read),
             patch("teatree.cli.slack.token_store.write_pass", side_effect=fake_write),
             patch("teatree.cli.slack.setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.setup.write_pass", side_effect=fake_write),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
         ):
@@ -1177,7 +1202,6 @@ class TestTokenRefMigration:
             patch("teatree.cli.slack.token_store.read_pass", side_effect=fake_read),
             patch("teatree.cli.slack.token_store.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.setup.write_pass", return_value=True),
             patch("teatree.cli.slack.setup.webbrowser.open"),
         ):
             result = _invoke_setup(inputs="", args=["--overlay", "acme", "--skip-smoke-test"])
@@ -1223,7 +1247,6 @@ class TestTokenRefMigration:
             patch("teatree.cli.slack.token_store.read_pass", side_effect=fake_read),
             patch("teatree.cli.slack.token_store.write_pass", side_effect=fake_write),
             patch("teatree.cli.slack.setup.read_pass", side_effect=fake_read),
-            patch("teatree.cli.slack.setup.write_pass", side_effect=fake_write),
             patch("teatree.cli.slack.setup.webbrowser.open"),
             patch("teatree.cli.slack.setup._smoke_test", return_value=True),
             patch("teatree.cli.slack.setup._run_update_path"),

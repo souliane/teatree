@@ -91,8 +91,20 @@ def find_main_clone_git_mutation(
 
 
 def deny_reason(finding: MainCloneFinding) -> str:
-    """The FAIL-LOUD deny message pointing the agent at branching a worktree."""
+    """The FAIL-LOUD deny message pointing the agent at branching a worktree.
+
+    The override instruction names the field the scanner actually reads FOR THIS
+    SURFACE. An edit call has no ``command``, so telling its author to "append the
+    token to the command" describes a field that does not exist on their call and
+    costs a round trip; the Bash ``description`` is called out as unscanned for the
+    same reason — it is where the token gets put when nothing says otherwise.
+    """
     what = f"editing `{finding.target}` in" if finding.surface == "edit" else f"`{finding.target}` against"
+    where = (
+        "the Edit `new_string` / Write `content` / `file_path`"
+        if finding.surface == "edit"
+        else "the `command` string (the Bash `description` is NOT scanned)"
+    )
     return (
         f"BLOCKED: {what} a teatree-managed MAIN CLONE's working tree. The main "
         "clone exists only to branch worktrees from — never edit it, switch it to "
@@ -103,7 +115,7 @@ def deny_reason(finding: MainCloneFinding) -> str:
         "or: git worktree add -b <branch> ../<repo>-wt origin/main\n"
         "Read-only git, `git fetch`, `git pull --ff-only`, `git checkout <default>`, "
         "and `git worktree add/remove/prune/list` are always allowed. Vetted "
-        "one-off: append `[main-clone-ok: <reason>]` to the command."
+        f"one-off: put `[main-clone-ok: <reason>]` in {where} (first 512 chars)."
     )
 
 

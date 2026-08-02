@@ -21,6 +21,7 @@ from teatree.core.management.commands._test_plan import tracked as _tracked_mani
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.worktree_env import compose_project
+from teatree.utils.ports import host_published_port_host
 from teatree.utils.run import run_streamed
 
 # Re-exports for back-compat with tests and external callers (#1322 split).
@@ -226,15 +227,20 @@ class Command(MachineOutputCommand):
                 raise SystemExit(1)
             return None, None, None
 
+        # The frontend port is published on the DOCKER HOST. `localhost` names that
+        # host only when the CLI runs natively; from inside the containerized CLI it is
+        # the container's own loopback, where nothing listens.
+        host = host_published_port_host()
+
         if linked_ticket is not None:
             linked_wt = _resolve_linked_worktree(linked_ticket)
             if linked_wt is not None:
                 port = self._require_frontend_port(linked_wt, linked_ticket)
-                return f"http://localhost:{port}", compose_project(linked_wt), _linked_env_cache(linked_wt)
+                return f"http://{host}:{port}", compose_project(linked_wt), _linked_env_cache(linked_wt)
 
         worktree = resolve_worktree()
         port = self._require_frontend_port(worktree, linked_ticket)
-        return f"http://localhost:{port}", compose_project(worktree), None
+        return f"http://{host}:{port}", compose_project(worktree), None
 
     def _resolve_linked_ticket(self, linked_to: int) -> Ticket | None:
         """Resolve ``--linked-to <pk>`` to a Ticket or exit on misconfig.

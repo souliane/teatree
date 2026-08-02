@@ -133,6 +133,28 @@ class TestShellDeniedPhaseEvidenceGate:
         assert check_evidence({"answer": {"thread_ref": "x", "text": "hi"}}, "answering") == ""
 
 
+class TestCodexReviewEvidenceGate:
+    """Every verdict-producing review phase carries the same evidence contract.
+
+    ``codex_reviewing`` / ``codex_adversarial_reviewing`` are dispatched as review
+    phases whose deliverable IS a recorded verdict, so a summary-only completion is
+    the same silent no-review the ``reviewing`` contract already refuses.
+    """
+
+    @pytest.mark.parametrize("phase", ["codex_reviewing", "codex_adversarial_reviewing"])
+    def test_codex_review_phases_require_a_verdict(self, phase: str) -> None:
+        assert required_evidence_for_phase(phase) == ("review_verdict",)
+
+    @pytest.mark.parametrize("phase", ["codex_reviewing", "codex_adversarial_reviewing"])
+    def test_summary_only_codex_review_is_missing_evidence(self, phase: str) -> None:
+        assert check_evidence({"summary": "reviewed the diff"}, phase)
+
+    @pytest.mark.parametrize("phase", ["codex_reviewing", "codex_adversarial_reviewing"])
+    def test_unrecordable_verdict_does_not_satisfy_the_gate(self, phase: str) -> None:
+        assert check_evidence({"review_verdict": {"verdict": "LGTM"}}, phase)
+        assert check_evidence({"review_verdict": {"verdict": "hold"}}, phase) == ""
+
+
 class TestDirectiveInterpretationEvidenceGate:
     """North-star PR-6: the interpret phase must hand back a real payload, not a summary."""
 
@@ -205,7 +227,19 @@ class TestProseSummaryAllowed:
         # Accepts every alias — the exemption is keyed on the canonical token.
         assert ProseSummaryPolicy.allowed(phase) is True
 
-    @pytest.mark.parametrize("phase", ["coding", "code", "testing", "reviewing", "answering", "scanning_news"])
+    @pytest.mark.parametrize(
+        "phase",
+        [
+            "coding",
+            "code",
+            "testing",
+            "reviewing",
+            "codex_reviewing",
+            "codex_adversarial_reviewing",
+            "answering",
+            "scanning_news",
+        ],
+    )
     def test_an_evidence_gated_phase_defers_to_its_own_gate(self, phase: str) -> None:
         # Not an exemption: check_evidence refuses the manufactured summary downstream
         # with a message naming the missing field, after the #3263 coding salvage.
@@ -223,7 +257,6 @@ class TestProseSummaryAllowed:
             "backlog_sweep",
             "dogfood_smoke",
             "eval_local",
-            "codex_reviewing",
             "some_free_form_phase",
             "",
         ],

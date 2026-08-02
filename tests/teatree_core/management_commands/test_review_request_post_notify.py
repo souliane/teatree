@@ -115,6 +115,9 @@ class TestReviewRequestPostAfterReceipt(_Base):
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: notify_backend)
 
         with (
+            # The draft gate precedes the post and fails CLOSED against the
+            # unreachable forge of a test env; it has its own suite.
+            patch(f"{_CMD}.draft_refusal_reason", return_value=""),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=_FakeBackend()),

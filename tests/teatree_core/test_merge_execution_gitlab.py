@@ -13,13 +13,16 @@ model / FSM / DB write is real. Since #4007 the GitLab side is the httpx
 """
 
 import json
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import DraftState
 from teatree.core.merge import (
     CodeHostQuery,
     MergeHeadMovedError,
@@ -27,8 +30,9 @@ from teatree.core.merge import (
     MergePreconditionError,
     execute_bound_merge,
     merge_ticket_pr,
-    pr_slug_resolution,
+    resolve_host_kind,
 )
+from teatree.core.merge.execution import assert_not_draft
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
@@ -75,6 +79,9 @@ def _response(status: int, body: str) -> httpx.Response:
     return httpx.Response(status, text=body, request=httpx.Request("PUT", "https://gitlab.example/api"))
 
 
+_PROJECT_ID = 42
+
+
 class _GitLabApiStub:
     """Scripted GitLab REST payloads keyed by endpoint; records every endpoint hit."""
 
@@ -107,6 +114,19 @@ class _GitLabApiStub:
         if "/merge_requests/" in endpoint:
             return {"iid": _PR_IID, "sha": self.sha, "draft": self.draft, "state": self.state}
         return {}
+
+    def resolve_project(self, repo: str) -> object:
+        """The project the draft probe resolves before it can read the MR.
+
+        Without it the probe names no project, answers UNKNOWN, and the keystone refuses
+        to merge — correct for an unread probe, and it would fail every merge test here
+        for a reason none of them is about.
+        """
+        self.calls.append(f"resolve_project:{repo}")
+        return SimpleNamespace(project_id=_PROJECT_ID, full_path=repo)
+
+    def resolve_project_from_remote(self, repo: str) -> object:
+        return self.resolve_project(repo)
 
     def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
         self.calls.append(endpoint)
@@ -193,44 +213,6 @@ def _make_ticket(*, gitlab: bool = True) -> Ticket:
     )
 
 
-class TestHostKindDetection(TestCase):
-    """The CLEAR's ticket ``issue_url`` selects the transport."""
-
-    def test_gitlab_com_issue_url_resolves_to_gitlab(self) -> None:
-        ticket = _make_ticket(gitlab=True)
-        clear = _clear(ticket)
-        assert pr_slug_resolution._resolve_host_kind(clear) == "gitlab"
-
-    def test_self_hosted_gitlab_issue_url_resolves_to_gitlab(self) -> None:
-        ticket = Ticket.objects.create(
-            overlay="acme",
-            state=Ticket.State.IN_REVIEW,
-            issue_url=_GITLAB_SELF_HOSTED_URL,
-        )
-        clear = _clear(ticket)
-        assert pr_slug_resolution._resolve_host_kind(clear) == "gitlab"
-
-    def test_github_issue_url_resolves_to_github(self) -> None:
-        ticket = _make_ticket(gitlab=False)
-        clear = _clear(ticket, slug="souliane/teatree", pr_id=1)
-        assert pr_slug_resolution._resolve_host_kind(clear) == "github"
-
-    def test_missing_issue_url_defaults_to_github(self) -> None:
-        # Back-compat: a CLEAR without a ticket / without an issue_url
-        # keeps the legacy ``gh`` transport so existing GitHub callers
-        # are not regressed.
-        clear = MergeClear.objects.create(
-            ticket=None,
-            pr_id=1,
-            slug="souliane/teatree",
-            reviewed_sha=_SHA,
-            reviewer_identity="cold-reviewer",
-            gh_verify_result=MergeClear.VerifyResult.GREEN,
-            blast_class=MergeClear.BlastClass.DOCS,
-        )
-        assert pr_slug_resolution._resolve_host_kind(clear) == "github"
-
-
 class TestFetchLiveHeadShaGitLab(TestCase):
     def test_uses_the_mr_rest_endpoint(self) -> None:
         stub = _GitLabApiStub(sha=_SHA)
@@ -254,20 +236,6 @@ class TestFetchLiveHeadShaGitLab(TestCase):
 
         with _patch_gitlab(_Bad()):
             assert _gitlab_query().live_head_sha() == ""
-
-
-class TestFetchPrIsDraftGitLab(TestCase):
-    def test_draft_true_when_mr_draft(self) -> None:
-        with _patch_gitlab(_GitLabApiStub(draft=True)):
-            assert _gitlab_query().pr_is_draft() is True
-
-    def test_draft_false_when_mr_not_draft(self) -> None:
-        with _patch_gitlab(_GitLabApiStub(draft=False)):
-            assert _gitlab_query().pr_is_draft() is False
-
-    def test_draft_false_on_api_failure(self) -> None:
-        with _patch_gitlab(_FailingClient()):
-            assert _gitlab_query().pr_is_draft() is False
 
 
 class TestFetchRequiredChecksGitLab(TestCase):
@@ -404,3 +372,84 @@ class TestGitLabEndToEndMerge(TestCase):
         # The GitLab API path must have been reached; the ``gh`` runner was never
         # patched, so a GitHub-branch regression would fail loudly rather than pass.
         assert any("merge_requests" in call for call in stub.calls)
+
+
+_DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_state"
+
+
+@contextmanager
+def _http_draft_state(state: DraftState) -> Iterator[None]:
+    """Script the HTTP-transport draft probe (the one read that is not ``glab``)."""
+    with patch(_DRAFT_PROBE, return_value=state):
+        yield
+
+
+class TestHostKindDetection(TestCase):
+    """The CLEAR's ticket ``issue_url`` selects the transport."""
+
+    def test_gitlab_com_issue_url_resolves_to_gitlab(self) -> None:
+        ticket = _make_ticket(gitlab=True)
+        clear = _clear(ticket)
+        assert resolve_host_kind(clear, repo_slug=_GITLAB_SLUG) == "gitlab"
+
+    def test_self_hosted_gitlab_issue_url_resolves_to_gitlab(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            state=Ticket.State.IN_REVIEW,
+            issue_url=_GITLAB_SELF_HOSTED_URL,
+        )
+        clear = _clear(ticket)
+        assert resolve_host_kind(clear, repo_slug=_GITLAB_SLUG) == "gitlab"
+
+    def test_github_issue_url_resolves_to_github(self) -> None:
+        ticket = _make_ticket(gitlab=False)
+        clear = _clear(ticket, slug="souliane/teatree", pr_id=1)
+        assert resolve_host_kind(clear, repo_slug="souliane/teatree") == "github"
+
+    def test_missing_issue_url_no_longer_defaults_to_github(self) -> None:
+        # The legacy ``or "github"`` default bound the GitHub transport against
+        # a GitLab MR for every ticketless CLEAR. An unresolvable forge now
+        # fails loud; the sanctioned escape is the recorded ``host_kind``.
+        clear = MergeClear.objects.create(
+            ticket=None,
+            pr_id=1,
+            slug=_GITLAB_SLUG,
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        with (
+            patch("teatree.core.merge.host_kind.find_project_root", return_value=None),
+            pytest.raises(MergePreconditionError, match="could not resolve the forge"),
+        ):
+            resolve_host_kind(clear, repo_slug=_GITLAB_SLUG)
+
+
+class TestFetchPrDraftStateGitLab(TestCase):
+    """The draft read is the one GitLab keystone probe on the HTTP transport.
+
+    It also gates the review-request broadcast, which runs headless where no
+    ``glab`` binary exists — see ``backends.gitlab.client.fetch_pr_draft_state``.
+    The forge-payload mapping lives in ``test_gitlab_code_host.py``; here we pin
+    that the keystone query reaches it and that an UNREADABLE probe holds the
+    merge instead of waving it through.
+    """
+
+    def test_draft_refuses_at_the_floor(self) -> None:
+        with (
+            _http_draft_state(DraftState.DRAFT),
+            pytest.raises(MergePreconditionError, match="is in draft state"),
+        ):
+            assert_not_draft(_gitlab_query())
+
+    def test_confirmed_non_draft_clears_the_floor(self) -> None:
+        with _http_draft_state(DraftState.NOT_DRAFT):
+            assert_not_draft(_gitlab_query())
+
+    def test_unreadable_draft_state_holds_the_merge(self) -> None:
+        with (
+            _http_draft_state(DraftState.UNKNOWN),
+            pytest.raises(MergePreconditionError, match="could not be read from the forge"),
+        ):
+            assert_not_draft(_gitlab_query())

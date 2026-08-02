@@ -17,6 +17,7 @@ from teatree.config.enums import (
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
+    PrReviewBackend,
     SendProxyMode,
     Wip,
 )
@@ -553,6 +554,24 @@ class _ReviewGateSettings:
     # Distinct from ``architectural_review_skill`` (the periodic cadence
     # scanner) — this one gates a single ticket's reviewing attestation.
     review_skill: str = ""
+    # Additional skills whose recorded run ALSO satisfies the reviewing-phase
+    # evidence gate — substitutes for ``review_skill``, never a bypass. An
+    # overlay that accepts a second deep reviewer (a different model's, say)
+    # names it here so either recorded run passes while a run of NEITHER stays
+    # refused. Empty default = the single-skill behaviour; alternates alone never
+    # arm the gate, which stays keyed on ``review_skill`` being set.
+    review_skill_alternates: list[str] = field(default_factory=list)
+    # How long a review backend stays parked after its account ran out of quota
+    # (``ReviewBackendCooldown``). Long enough that `auto` stops re-probing every
+    # tick — each probe costs a burned dispatch to rediscover the same exhaustion —
+    # and short enough that a refilled window is picked up the same working day.
+    review_backend_cooldown_hours: int = 6
+    # Which reviewer executes the self-authored-PR cold review. ``auto`` (the
+    # default) resolves per tick — codex when its binary is present and not
+    # cooling down from a quota exhaustion, else claude — so a codex-less box or
+    # an exhausted account keeps getting reviews. An explicit ``claude`` /
+    # ``codex`` pin is honoured as written and never silently degrades.
+    pr_review_backend: PrReviewBackend = PrReviewBackend.AUTO
     # #3569 The single review-board admission knob. Self-authored open PRs are
     # ALWAYS admitted to the review board (always cold-reviewed by ``t3:reviewer``,
     # per-SHA deduped). COLLEAGUE / requested-reviewer PRs are admitted to the same
@@ -909,6 +928,16 @@ class _RetentionSettings:
     # retired-key registry in ``config/retired_settings.py``.
     task_sweep_disabled: bool = False
     task_sweep_recheck_interval_hours: int = 1
+    # The branch every shipped PR targets when the ticket does not name one
+    # itself. Empty (the default) keeps the historical behaviour — the repo's
+    # own default branch. Set it when a whole line of work stacks onto ONE
+    # long-lived integration branch instead of ``main``: every PR then targets
+    # that branch, and ``run_branch_currency_gate`` merges it into each
+    # worktree before shipping, so a merge into the integration branch
+    # propagates to the branches still in flight. ``Ticket.extra['target_branch']``
+    # still wins, and a branch that IS the configured target falls back to the
+    # repo default so the integration branch itself never targets itself.
+    target_branch: str = ""
     # #1397 Cap on concurrent locally-running stacks for a single overlay.
     # Each running worktree (``services_up``/``ready``) holds docker
     # containers, browsers, language servers, and CI processes — on a
@@ -1008,6 +1037,22 @@ class _ProvisioningSettings:
     # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
     # pre-governor static behaviour. Per-overlay overridable.
     admission_governor_enabled: bool = True
+    # Repos that are ONE branch wide while listed — ``<repo-slug>=<branch>`` entries.
+    # While a repo is listed, provisioning a worktree on any OTHER branch is
+    # refused, as are the raw ``git worktree add`` / ``checkout -b`` / ``switch
+    # -c`` / ``branch <name>`` / non-pinned ``push`` forms
+    # (:mod:`teatree.core.gates.single_branch_repo_guard`). The case it exists for
+    # is a fork bootstrap: the repo's whole reviewed history is in flight behind
+    # one open PR, so there is nothing to base a second branch ON, and the
+    # measured cost of leaving that to prose was 31 worktrees across 37 branches
+    # on two repos, two of them redoing a fix already in flight. Cleanup verbs
+    # (``worktree list/remove/prune``, ``branch -D``) stay allowed — they are how a
+    # repo that already sprawled gets back into line. REMOVING an entry is how the
+    # rule ends when that PR merges. Per-overlay overridable.
+    # Its kill-switch (``single_branch_repo_gate_enabled``) is a COLD-HOOK setting
+    # rather than a field here, for the same reason ``main_clone_guard_gate_enabled``
+    # is: the Bash seam reads it from a cold hook with no importable teatree.
+    single_branch_repos: list[str] = field(default_factory=list)
     # RAM-used-percent ceiling above which a new provision is HELD (queued,
     # not started) rather than admitted, so a cold multi-repo provision never
     # pushes the host into OOM. Mirrors the self-improve budget gate's
@@ -1069,9 +1114,25 @@ class _ProvisioningSettings:
     clean_ignore: list[str] = field(default_factory=list)
 
 
+# The conventional-commit scopes a work group must NOT be keyed on (the
+# ``work_group_generic_scopes`` default). A module constant so the field default stays a
+# single line; ``.copy`` gives each settings instance its own list.
+_DEFAULT_WORK_GROUP_GENERIC_SCOPES = [
+    "build",
+    "chore",
+    "ci",
+    "config",
+    "deps",
+    "docs",
+    "infra",
+    "test",
+    "tooling",
+]
+
+
 @dataclass
 class _PrePublishGateSettings:
-    """Slack voice + speak/mr-reminder + the pre-publish / commit-time gate kill-switches and repo patterns."""
+    """Slack voice, speak/mr-reminder, the pre-publish gate kill-switches, repo patterns, review batching."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Pre-publish")
 
@@ -1119,6 +1180,10 @@ class _PrePublishGateSettings:
     # ``[overlays.<name>].review_nag_enabled = true`` only after the
     # concurrency + merged-MR fixes are validated.
     review_nag_enabled: bool = False
+    # Ceiling for the nag's Fibonacci re-ask backoff. Uncapped, the sequence runs past
+    # the point where a reminder still reads as one — a request nobody answered would
+    # go quiet for months instead of settling into a monthly rhythm.
+    review_nag_max_interval_days: int = 30
     # Live-Slack dedup window for the review-request guard (#1084 follow-up).
     # The guard reads the review channel's recent history bounded to this many
     # days when deciding POST vs SUPPRESS; a posted ``ReviewRequestPost`` row is
@@ -1134,6 +1199,43 @@ class _PrePublishGateSettings:
     # outside the scan and the request was duplicated. Fail-safe positive int:
     # a non-positive / mistyped value degrades to 5. Per-overlay overridable.
     review_request_dedup_max_pages: int = 5
+    # Repo patterns whose merge requests must NEVER get a review request: the user
+    # asks for review in person there, so a posted request is noise a colleague has
+    # to dismiss. Matched by ``teatree.core.review.repo_exemption`` on the same
+    # host-stripped leading-segment-prefix grammar ``private_repos`` uses, and unioned
+    # with the overlay's own ``review_exempt_repo_slugs()``. Empty default = INERT (no
+    # repo is exempt). Per-overlay overridable (DB-home).
+    review_exempt_repos: list[str] = field(default_factory=list)
+    # Whether a review-EXEMPT merge request still gates its work group's readiness.
+    # ``True`` is the conservative reading — an exempt member keeps holding the group,
+    # so the bias is toward NOT broadcasting a partial batch.
+    review_exempt_repos_count_toward_group_readiness: bool = True
+    # Turns the work-group batch gate from ADVISORY (surface the group, broadcast
+    # anyway) into a hard refusal: no member is broadcast while a sibling is not yet
+    # review-ready. Default false = INERT, the advisory behaviour. Per-overlay overridable.
+    require_work_group_batch: bool = False
+    # Conventional-commit scopes too generic to group merge requests on — two changes
+    # sharing ``chore`` say nothing about being one unit of work, so keying a group on
+    # one would batch unrelated merge requests and hold each behind the others.
+    work_group_generic_scopes: list[str] = field(default_factory=_DEFAULT_WORK_GROUP_GENERIC_SCOPES.copy)
+    # Above this many members a work group is surfaced to the user as a question rather
+    # than held silently: past a dozen the grouping key is likelier wrong than the batch
+    # real, and silence would strand every member behind that bad key.
+    work_group_max_members: int = 12
+    # Slack reaction names meaning "paused — not reviewable yet", so a thread carrying
+    # one reads as deliberately held rather than un-actioned.
+    review_pause_reaction_emojis: list[str] = field(default_factory=lambda: ["double_vertical_bar", "pause_button"])
+    # Arms the in-thread "now ready for review" reply once a paused request resumes.
+    # Default false = INERT: nothing reaches a colleague thread until an operator opts in.
+    review_resume_reply_enabled: bool = False
+    # Anti-spam bound on "what is the state of this merge request?" questions raised per
+    # tick, so a backlog of ambiguous merge requests cannot arrive as one flood the user
+    # answers none of.
+    mr_state_questions_max_per_tick: int = 2
+    # Arms the merge-conflict scanner. Default false = INERT: each open merge request
+    # costs a forge merge-state read, so an operator opts in per overlay once that
+    # per-tick cost is acceptable.
+    mr_conflict_scan_enabled: bool = False
     # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
     # enabled (default), the main agent is blocked from running a HEAVY /
     # long-running foreground Bash command (test suite, build, dev

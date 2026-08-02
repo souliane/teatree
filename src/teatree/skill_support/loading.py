@@ -188,7 +188,6 @@ class SkillLoadingPolicy:
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=overlay_active,
-            lifecycle_skill=lifecycle_skill,
             companion_skills=companion_skills,
         )
         if explicit_skills:
@@ -225,7 +224,6 @@ class SkillLoadingPolicy:
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=False,
-            lifecycle_skill="",
             companion_skills=companion_skills,
         )
         hard_resolved = set(self._resolve_requires_chain(hard, skill_index or []))
@@ -270,7 +268,6 @@ class SkillLoadingPolicy:
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=True,
-            lifecycle_skill=lifecycle_skill,
             companion_skills=companion_skills,
         )
         if agent_declared_skills:
@@ -316,7 +313,6 @@ class SkillLoadingPolicy:
         cwd: Path,
         overlay_skill_metadata: OverlaySkillMetadata,
         overlay_active: bool,
-        lifecycle_skill: str,
         companion_skills: list[str] | None = None,
     ) -> list[str]:
         ordered: list[str] = []
@@ -324,7 +320,6 @@ class SkillLoadingPolicy:
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=overlay_active,
-            lifecycle_skill=lifecycle_skill,
         )
         if overlay_in_scope:
             skill_path = str(overlay_skill_metadata.get("skill_path", "")).strip()
@@ -342,7 +337,6 @@ class SkillLoadingPolicy:
         cwd: Path,
         overlay_skill_metadata: OverlaySkillMetadata,
         overlay_active: bool,
-        lifecycle_skill: str,
     ) -> bool:
         """Whether an overlay repo is actually in scope for this task.
 
@@ -352,11 +346,15 @@ class SkillLoadingPolicy:
         ``remote_patterns``. Teatree-core-only work (no overlay-active, no
         matching remote) is NOT overlay work, so its companion-skill load
         gate must not fire.
+
+        Scope is deliberately independent of the caller's lifecycle skill:
+        the ``UserPromptSubmit`` suggester resolves no lifecycle skill at all,
+        so gating on one made the remote-match branch dead there and the
+        overlay's own skill could never be surfaced on a prompt (BLUEPRINT
+        § 11.5).
         """
         if overlay_active:
             return True
-        if not lifecycle_skill:
-            return False
         patterns_object = overlay_skill_metadata.get("remote_patterns", [])
         if not isinstance(patterns_object, list):
             return False

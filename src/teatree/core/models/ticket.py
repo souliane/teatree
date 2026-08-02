@@ -50,13 +50,22 @@ class Ticket(
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
-        STARTED = "started", "Started"
-        PLANNED = "planned", "Planned"
+        # Work begins BEFORE the plan is recorded — `plan()` is the
+        # STARTED -> PLANNED transition and it requires a PlanArtifact. Labelled
+        # "Started"/"Planned" the pair reads as though planning should come
+        # first; naming the milestone rather than the status makes the real
+        # order self-evident on the board.
+        STARTED = "started", "Work started"
+        PLANNED = "planned", "Plan recorded"
         CODED = "coded", "Coded"
         TESTED = "tested", "Tested"
-        REVIEWED = "reviewed", "Reviewed"
+        # "Self-reviewed", not "Reviewed": this is the author's own pre-ship pass,
+        # which the FSM places BEFORE shipping. Peer review is IN_REVIEW, two
+        # columns later. Labelled "Reviewed" the two read as one phase in the
+        # wrong order, and the board looks mis-sequenced when it matches the FSM.
+        REVIEWED = "reviewed", "Self-reviewed"
         SHIPPED = "shipped", "Shipped"
-        IN_REVIEW = "in_review", "In review"
+        IN_REVIEW = "in_review", "In peer review"
         MERGED = "merged", "Merged"
         RETROSPECTED = "retrospected", "Retrospected"
         DELIVERED = "delivered", "Delivered"
@@ -206,16 +215,7 @@ class Ticket(
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
     def stamp_issue_title(self, title: str) -> list[str]:
-        """Persist the forge issue *title* onto this ticket for the dashboard.
-
-        Stores the full title under ``extra['issue_title']`` (the input the
-        summariser reads) and seeds ``short_description`` with the title,
-        truncated to the column width, so a card shows a human label
-        immediately — before any LLM-refined summary. Never clobbers an
-        existing value, and a blank title is a no-op. Returns the fields
-        written (empty when nothing changed), saving only those via the locked
-        ``merge_extra`` primitive.
-        """
+        """Persist the forge issue *title* onto this ticket for the dashboard."""
         if not title:
             return []
         extra = self.extra if isinstance(self.extra, dict) else {}
@@ -225,13 +225,18 @@ class Ticket(
         if not extra.get("issue_title"):
             set_keys["issue_title"] = title
             written.append("extra")
-        if not self.short_description:
-            max_len = self._meta.get_field("short_description").max_length or 80
-            also_set["short_description"] = title[:max_len]
+        if seed := self.short_description_seed(title):
+            also_set["short_description"] = seed
             written.append("short_description")
         if written:
             self.merge_extra(set_keys=set_keys or None, also_set=also_set or None)
         return written
+
+    def short_description_seed(self, title: str) -> str:
+        """The card label a blank ``short_description`` takes from *title*."""
+        if not title or self.short_description:
+            return ""
+        return title[: self._meta.get_field("short_description").max_length or 80]
 
     @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
     def scope(
@@ -250,23 +255,7 @@ class Ticket(
 
     @transition(field=state, source=[State.SCOPED, State.STARTED], target=State.STARTED)
     def start(self) -> None:
-        """Schedule worktree provisioning + planning task.
-
-        The worker creates per-repo git worktrees, then calls
-        ``schedule_planning()`` once the layout exists. FSM invariant (BLUEPRINT
-        §4): transition bodies stay pure — long I/O is offloaded to an
-        ``@task`` worker, enqueued after commit so the state change and the
-        queued work land atomically.
-
-        Source ``[SCOPED, STARTED]`` makes re-firing idempotent: if the previous
-        provisioning worker failed, the operator can re-call ``start()``
-        without rolling back through ``rework``. The worker's own state guard
-        prevents duplicate work when provisioning already succeeded.
-
-        The ``execute_provision`` enqueue is the ``post_transition`` receiver's
-        job (``teatree.core.signals``), keyed on the transition name — the body
-        stays free of the task up-edge (#2385).
-        """
+        """Schedule worktree provisioning + planning task."""
 
     @transition(
         field=state,
@@ -275,12 +264,7 @@ class Ticket(
         conditions=[_check_plan_artifact],
     )
     def plan(self, *, parent_task: "Task | None" = None) -> None:
-        """Advance STARTED → PLANNED after a PlanArtifact record exists.
-
-        Guarded by check_plan_artifact() — requires at least one PlanArtifact
-        row for this ticket.  The condition is the single source of truth for
-        the plan gate; no prose rule or wall-clock check is needed.
-        """
+        """Advance STARTED → PLANNED after a PlanArtifact record exists."""
         self._consume_pending_phase_tasks("planning")
         self.schedule_coding(parent_task=parent_task)
 
@@ -298,21 +282,7 @@ class Ticket(
         conditions=[is_auto_implement],
     )
     def code_direct(self, *, parent_task: "Task | None" = None) -> None:
-        """Advance a plan-skipped auto-implement ticket straight to CODED.
-
-        The issue-implementer auto-start path
-        (``persistence._handle_orchestrator``) schedules a ``coding`` task
-        directly, skipping the scope/plan phases, so the normal ``code()`` guard
-        (``source=PLANNED``) can never fire when that task completes — the wedge
-        that left tickets with completed coding yet zero transitions and no PR.
-        This is the plan-skipped sibling of ``code()``, reachable ONLY for a
-        ticket carrying the ``auto_implement`` marker (the ``is_auto_implement``
-        condition), so the normal author flow's plan gate is untouched. Unlike
-        ``code()`` it runs no ``plan_currency`` gate (there is no plan to check),
-        but it keeps the same dirty-worktree preflight and schedules testing, so
-        the FSM proceeds coding -> testing -> reviewing -> shipping instead of
-        silently no-opping.
-        """
+        """Advance a plan-skipped auto-implement ticket straight to CODED."""
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing(parent_task=parent_task)
@@ -355,30 +325,7 @@ class Ticket(
         target=State.REVIEWED,
     )
     def reconcile_reviewed(self) -> None:
-        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808).
-
-        EVERY non-terminal state reconciles to ``REVIEWED`` — the source
-        set is *derived* from ``_RECONCILE_SOURCE_STATES`` (all states
-        except the terminal ``_TERMINAL_STATES``: SHIPPED/MERGED/DELIVERED/
-        IGNORED), never a hand-maintained allow-list.
-
-        The shipping gate is the single source of truth: it verifies the
-        required phases aggregated across **all** of the ticket's sessions
-        (``aggregate_phase_records``/``check_gate_across_ticket``) *before*
-        calling this, so a passing gate implies a shippable FSM state and
-        ``ship()`` never raises a raw ``TransitionNotAllowed`` at ``pr create``.
-        Deriving the source from the terminal set (not a hand-kept list) means a
-        newly added non-terminal state cannot silently re-break the gate.
-        Terminal states stay non-recoverable: SHIPPED/MERGED/DELIVERED are
-        post-ship success and IGNORED is abandoned — none reconcile backward.
-
-        This transition body stays pure: task ledger consumption is the
-        caller's responsibility on the gate-verified path
-        (``reconcile_fsm_for_ship``). Calling this directly from the
-        ungated ``ticket transition`` CLI or from ``--skip-validation``
-        must NOT complete active reviewing tasks — those paths skip the
-        attestation that would justify it.
-        """
+        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808)."""
 
     @transition(
         field=state,
@@ -409,14 +356,7 @@ class Ticket(
         ],
     )
     def mark_reviewed_externally(self) -> None:
-        """Reviewer-role short-circuit: any pre-shipped state → REVIEW_POSTED.
-
-        External review tickets bypass the implementation lifecycle: the reviewer posts on
-        someone else's PR, so this lands ``REVIEW_POSTED`` not ``DELIVERED`` (no reviewer ghost
-        shown as "Landed") and stamps the head SHA + ``last_review_state`` so ``ReviewerPrsScanner``
-        won't re-spawn until the SHA moves or the approval drops. Idempotent at REVIEW_POSTED —
-        a re-review at a new head re-stamps and stays put.
-        """
+        """Reviewer-role short-circuit: any pre-shipped state → REVIEW_POSTED."""
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
             # #800 N3: canonical locked RMW — a concurrent pr_urls /
@@ -444,28 +384,7 @@ class Ticket(
         conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
     )
     def mark_review_no_action(self) -> None:
-        """Reviewer-role terminal disposition for a no-postable-action review.
-
-        Sibling of :meth:`mark_reviewed_externally` for the case the reviewer
-        concludes an external review with nothing to post or approve (e.g. a
-        bot MR — Aikido/Dependabot — no diff worth commenting on, no approval
-        to give). Without it the reviewing Task never reaches a terminal state
-        (the only other path, ``Task.complete()`` → ``mark_reviewed_externally``,
-        requires APPROVED), so ``pending-spawn`` re-dispatched it forever
-        (#1077).
-
-        Unlike ``mark_reviewed_externally`` (fired *from* an
-        already-COMPLETED task) this transition is driven directly via
-        ``t3 teatree ticket transition <id> mark_review_no_action`` while the
-        reviewing task is still PENDING, so it consumes that task itself.
-        It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER APPROVED):
-        the dedup's APPROVED-only suppression therefore does not hide a future
-        *genuine* review, while ``_already_reviewed_at_head``
-        still treats a no-action observation at the current head SHA as
-        "already handled" so the task is not re-queued. A head-SHA move drops
-        ``last_review_state`` (the existing #959 reset) so a new revision is
-        still reviewed — no lost obligation.
-        """
+        """Reviewer-role terminal disposition for a no-postable-action review."""
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
             self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.REVIEWED_NO_ACTION.value})
@@ -473,26 +392,7 @@ class Ticket(
 
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
-        """Schedule push + PR creation.
-
-        The worker pushes the worktree branch, opens the pull request, and
-        calls ``request_review()`` on success. FSM invariant (BLUEPRINT §4):
-        transition bodies stay pure — long I/O is offloaded to an ``@task``
-        worker, enqueued after commit so the state change and the queued work
-        land atomically.
-
-        Source ``[REVIEWED, SHIPPED]`` makes re-firing idempotent: if the
-        previous ship worker failed (push rejected, code host unavailable,
-        credentials missing), the operator can re-call ``ship()`` to retry.
-        The worker's own state guard skips duplicate work if push already
-        succeeded.
-
-        Three preflight guards run first, each raising an
-        :class:`InvalidTransitionError` subclass (the outer atomic rolls back):
-        ``_refuse_if_worktree_dirty`` (#884), the #88 DoD gate
-        (``check_local_e2e_dod``, green local E2E for a UI-visible ticket), and
-        the #118 forced-repro gate (``check_forced_repro``, a no-op while off).
-        """
+        """Schedule push + PR creation."""
         self._refuse_if_worktree_dirty("shipping")
         get_gate("local_e2e_dod")(self)
         get_gate("forced_repro")(self)
@@ -504,22 +404,7 @@ class Ticket(
 
     @transition(field=state, source=[State.IN_REVIEW, State.MERGED], target=State.MERGED)
     def mark_merged(self) -> None:
-        """Schedule worktree teardown.
-
-        The worker removes git worktrees, deletes the local branch, drops the
-        per-worktree DB and runs overlay cleanup hooks. FSM invariant (BLUEPRINT
-        §4): transition bodies stay pure — long I/O is offloaded to an ``@task``
-        worker, enqueued after commit so state change and queued work land atomically.
-
-        Source ``[IN_REVIEW, MERGED]`` makes a second merge signal a no-op, not a
-        crash. The ``execute_teardown`` enqueue is the ``post_transition``
-        receiver's job (``teatree.core.signals``), keyed on the transition (#2385)
-        and on ENTRY into the terminal state (#3879) — so that no-op mints no
-        duplicate job, and ``TeardownDispatch.drain_terminal_backlog`` is the retry.
-
-        The ``merge_evidence`` gate (#4a) preflights: MERGED is unreachable without
-        a real merged-SHA row, so the ungated ``_advance_ticket`` walk fails loud.
-        """
+        """Schedule worktree teardown."""
         get_gate("merge_evidence")(self)
 
     @transition(
@@ -528,49 +413,16 @@ class Ticket(
         target=State.MERGED,
     )
     def reconcile_merged(self) -> None:
-        """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343).
-
-        The merge keystone (``merge.execution.record_merge_and_advance``) calls
-        this from its post hook: an authorised, audited PR-merge is the authority
-        — whatever pre-merged state the ticket sat in, the FSM must follow. Mirrors
-        ``reconcile_reviewed`` (#808) — the source is derived from the pre-merged
-        set so a future-added pre-merged state cannot re-introduce the stale class.
-        Post-MERGED states (``RETROSPECTED``/``DELIVERED``) and ``IGNORED`` are NOT
-        sources: the keystone must never drag a ticket BACKWARD past MERGED.
-
-        Schedules the same teardown work as ``mark_merged`` (the ``post_transition``
-        receiver enqueues ``execute_teardown`` for this transition too, #2385).
-
-        Gated by ``merge_evidence`` (#4a): the keystone writes the MergeAudit row
-        BEFORE this call, so authorised merges pass and an evidence-less reconcile is refused.
-        """
+        """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343)."""
         get_gate("merge_evidence")(self)
 
     @transition(field=state, source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
     def retrospect(self) -> None:
-        """Schedule retrospection I/O.
-
-        The worker writes retro artifacts and calls ``mark_delivered()`` on
-        success. FSM invariant (BLUEPRINT §4): transition bodies stay pure —
-        long I/O is offloaded to an ``@task`` worker, enqueued after commit so
-        the state change and the queued work land atomically.
-
-        Source ``[MERGED, RETROSPECTED]`` makes re-firing idempotent: if a
-        previous retro worker failed, the operator can re-call ``retrospect()``
-        to retry. The worker's own state guard skips when retrospection
-        already produced its artifacts.
-
-        The ``execute_retrospect`` enqueue is the ``post_transition`` receiver's
-        job (``teatree.core.signals``), keyed on the transition name (#2385).
-        """
+        """Schedule retrospection I/O."""
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        """Reach DELIVERED past the Definition-of-Done gates — each NO-OP unless configured.
-
-        ``fix_record_dod``, ``spec_coverage`` (#2232), ``integration_review`` (PR-08), and
-        ``critic`` (SELFCATCH-5 — a CriticFinding per failing class, advisory) gate the close.
-        """
+        """Reach DELIVERED past the Definition-of-Done gates — each NO-OP unless configured."""
         get_gate("fix_record_dod")(self)
         get_gate("spec_coverage")(self)
         get_gate("integration_review")(self)
@@ -578,16 +430,7 @@ class Ticket(
 
     @transition(field=state, source=[State.MERGED, State.DELIVERED], target=State.REVIEWED)
     def reopen_for_followup(self) -> None:
-        """Reopen a terminally-shipped ticket to REVIEWED for a follow-up PR (#3327).
-
-        One ticket → N PRs: the narrow "new branch on the same ticket" edge that
-        ``pr create --adopt-worktree`` fires so PR-B can ship after PR-A merged.
-        Only MERGED/DELIVERED need it (SHIPPED ships directly; IN_REVIEW/
-        RETROSPECTED reconcile to REVIEWED; IGNORED is abandoned). Pure body that
-        keeps the phase ledger (unlike ``reopen()``): the follow-up re-ships from
-        REVIEWED, then gets its own review via SHIPPED → IN_REVIEW. Re-shipping
-        merged work is foreclosed upstream by the #788 hollow-ship guard.
-        """
+        """Reopen a terminally-shipped ticket to REVIEWED for a follow-up PR (#3327)."""
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:
@@ -602,22 +445,7 @@ class Ticket(
         target=State.STARTED,
     )
     def reopen(self) -> None:
-        """Reopen a post-ship ticket back to STARTED.
-
-        Triggered when new draft MRs appear after the ticket was shipped,
-        indicating additional work is needed.
-
-        #1286: retire every session's phase ledger here — ``reopen()`` is
-        the explicit workstream-boundary transition. Without this, the
-        prior workstream's ``testing``/``reviewing`` attestations remain
-        in ``aggregate_phase_records()`` and false-pass the next
-        workstream's shipping gate (the ``AGENTS.md`` § "Reused-ticket
-        attestation" risk). Same operation the sanctioned
-        ``lifecycle clear-ledger --confirm`` performs, run inside the FSM
-        transition body so the cross-workstream gate-bypass is structurally
-        foreclosed rather than relying on the agent remembering to call
-        ``clear-ledger`` on reuse.
-        """
+        """Reopen a post-ship ticket back to STARTED."""
         extra = self._extra()
         extra.pop("tests_passed", None)
         extra["reopened_from"] = self.state

@@ -211,6 +211,7 @@ DURABLE_GATE_SETTINGS: frozenset[str] = frozenset(
         "require_review_context",  # producer: lifecycle record-review-context
         "require_reviewed_state_for_review_request",  # satisfied by the FSM state itself
         "require_rubric_verification",  # producer: ticket rubric-set / rubric-grade
+        "require_work_group_batch",  # standing doctrine knob
     }
 )
 

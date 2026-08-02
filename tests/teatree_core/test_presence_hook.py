@@ -20,15 +20,15 @@ from teatree.core.models import ConfigSetting, Mode
 
 @pytest.fixture
 def presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> live_presence.PresenceHeartbeat:
-    # #22: the handler now writes the heartbeat in pure stdlib via
-    # ``ups_fastpath.record_presence`` — to ``canonical_config_db().parent /
-    # presence_heartbeat`` — instead of booting Django to call ``PRESENCE.record``.
-    # ``T3_CONFIG_DB`` pins that PRIMARY data dir at ``tmp_path`` (the write path), and
-    # ``live_presence.PRESENCE`` (read by ``last_seen`` / ``_is_live_user_turn``) is
-    # pointed at the SAME file, so write and read coincide exactly as they do in
-    # production (``canonical_config_db().parent == teatree.paths.DATA_DIR``).
-    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-    target = tmp_path / "presence_heartbeat"
+    # #22: the handler writes the heartbeat in pure stdlib via
+    # ``ups_fastpath.record_presence`` — to ``primary_data_dir() / presence_heartbeat`` —
+    # instead of booting Django to call ``PRESENCE.record``. That is the DATA dir, NOT the
+    # control DB's parent (the database lives in a named volume), so ``XDG_DATA_HOME`` is
+    # what pins the write path; ``live_presence.PRESENCE`` (read by ``last_seen`` /
+    # ``_is_live_user_turn``) is pointed at the SAME file, so write and read coincide
+    # exactly as they do in production.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    target = tmp_path / "teatree" / "presence_heartbeat"
     heartbeat = live_presence.PresenceHeartbeat(locate=lambda: target)
     monkeypatch.setattr(live_presence, "PRESENCE", heartbeat)
     return heartbeat

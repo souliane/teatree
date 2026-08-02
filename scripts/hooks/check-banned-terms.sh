@@ -52,16 +52,25 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 scanner_unavailable() {
   echo "ERROR: banned-terms scanner could not run: $1" >&2
-  echo "  Install uv, or a Python >= 3.13, so the scanner can import the matcher." >&2
+  echo "  Interpreter RESOLUTION found nothing that answers: no uv on this box ran" >&2
+  echo "  '--version' (a version-manager SHIM exiting 127 is skipped, never accepted)," >&2
+  echo "  and python3 could not import the matcher." >&2
+  echo "  Point T3_UV at a working uv binary, or install a Python >= 3.13." >&2
   echo "  Failing CLOSED (exit 2): a crash must never be treated as a clean scan." >&2
   exit 2
 }
 
+# shellcheck source=lib/resolve-uv.sh
+. "${script_dir}/lib/resolve-uv.sh"
+
 # Prefer ``uv run`` so the matcher comes from this repo's environment (critical
 # in a worktree, where a bare ``python3`` may import a different editable
-# install). Fall back to ``python3 -m`` when uv is unavailable.
-if command -v uv >/dev/null 2>&1; then
-  exec uv run --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
+# install). ``resolve_uv`` probes rather than trusting PATH, so a broken shim
+# falls through here instead of wedging the gate; ``uv_project_run_prefix`` keeps
+# the run from reconciling an environment on the other side of a bind mount.
+if uv_bin="$(resolve_uv)"; then
+  uv_project_run_prefix "${uv_bin}" "${repo_root}"
+  exec "${UV_PROJECT_RUN[@]}" run --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
 fi
 
 # ``python3`` fallback. Probe-import the matcher BEFORE running the scanner: an

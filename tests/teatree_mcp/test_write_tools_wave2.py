@@ -24,6 +24,9 @@ from teatree.mcp import build_server
 from teatree.mcp.write_tool_run import _last_json_object, run_command, run_emitting_command
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
+_CHECK_CMD = "teatree.core.management.commands.review_request_check"
+_POST_CMD = "teatree.core.management.commands.review_request_post"
+
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
     return _payloads(async_to_sync(build_server().call_tool)(tool, args))[0]
@@ -54,8 +57,11 @@ class _FakeMessaging:
 class TestReviewRequestCheckTool(TestCase):
     def test_returns_the_gate_decision(self) -> None:
         # Bare test env has no review channel configured, so the guard peeks
-        # SUPPRESS — proving the tool reaches the real review-request guard.
-        result = _call("review_request_check", {"mr_url": "https://github.com/acme/widgets/pull/9"})
+        # SUPPRESS — proving the tool reaches the real review-request guard. The
+        # draft gate runs first and fails CLOSED against an unreachable forge, so
+        # it is pinned postable here; it has its own suite.
+        with patch(f"{_CHECK_CMD}.draft_refusal_reason", return_value=""):
+            result = _call("review_request_check", {"mr_url": "https://github.com/acme/widgets/pull/9"})
 
         assert result["action"] == "suppress"
         assert result["reason"] == "no_review_channel_or_token"
@@ -79,6 +85,9 @@ class TestReviewRequestPostTool(TestCase):
         # refuses over MCP exactly as on the CLI.
         target = GuardTarget(channel_id="C123", channel_name="reviews", token="tok")
         with (
+            # Pinned postable: the draft gate precedes the on-behalf one and fails
+            # CLOSED against the unreachable forge of a bare test env.
+            patch(f"{_POST_CMD}.draft_refusal_reason", return_value=""),
             patch("teatree.core.management.commands.review_request_post.resolve_guard_target", return_value=target),
             patch(
                 "teatree.core.management.commands.review_request_post.should_post_review_request",

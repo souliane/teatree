@@ -16,8 +16,10 @@ repair / fresh-write contract is exercised end to end with real `jq`.
 """
 
 import json
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -69,7 +71,13 @@ def _run_seed(tmp_path: Path, existing: str | None) -> tuple[Path, subprocess.Co
         check=False,
         env={
             "HOME": str(home),
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            # The running interpreter's bin dir FIRST, mirroring the deploy image
+            # (`FROM python:3.13-*`, whose PATH puts /usr/local/bin ahead of the distro
+            # /usr/bin). `seed_claude_settings` runs the resolver as `python3 <file>`, and
+            # the resolver uses PEP 695 `type` aliases: a distro python3 older than 3.12
+            # dies on a SyntaxError, the seed takes its `- skipping` branch, and every
+            # assertion below reads a settings.json that was never written.
+            "PATH": os.pathsep.join([str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]),
             "CLONE_DIR": str(_REPO),
             "TEATREE_CLAUDE_SETTINGS_TEMPLATE": str(TEMPLATE),
         },

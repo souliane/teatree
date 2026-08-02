@@ -33,23 +33,74 @@ x-teatree-common: &teatree-common
       # passes the exact build SHA so the image and its lockfile-keyed tag pin together.
       TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
   env_file:
-    - teatree.env
-  # All services mount all state so admin and worker share ONE db.sqlite3
-  # (WAL — safe concurrent reads) and one editable install. The DB, worktrees,
-  # and workspaces are HOST bind mounts at their canonical absolute paths, so the
-  # container and the host see the same files (path identity — no XDG knob). This
-  # puts the factory's DB on the same daily-backed-up host disk as the operator's
-  # real DB instead of a Docker-internal named volume.
+    # OPTIONAL on purpose. This is the BOX-side secrets file: the deploy workflow
+    # writes it over SSH, and it is gitignored, so it never exists on a laptop.
+    # A hard requirement made every compose-backed command (`t3 dashboard`, and so
+    # the whole CLI wrapper) unrunnable locally with `env file … not found` —
+    # local runs take their config from the host environment and the DB instead.
+    - path: teatree.env
+      required: false
+  # All services mount all state so admin and worker share ONE db.sqlite3 and one
+  # editable install. The worktrees and workspaces are HOST bind mounts at their
+  # canonical absolute paths, so the container and the host see the same files
+  # (path identity — no XDG knob).
+  #
+  # The CONTROL DB is the exception: it lives in the `teatree_control_db` NAMED
+  # VOLUME, a real Linux filesystem with no VM boundary and no host path at all.
+  # A host process cannot open a file it cannot name, which is what finally ends
+  # host/container write contention — `read_write_allowed` was evaluated once at
+  # connection setup with no revocation path, so a host process that connected
+  # before the container claimed ownership kept write access for its whole life.
+  # The volume is the DIRECTORY, never the file: SQLite's `-wal`/`-shm` sidecars
+  # must live beside the database, so mounting the file alone would strand them on
+  # the container's own disk layer.
+  #
+  # The DATA DIR stays a host bind mount. `backups/`, the handover mirror and the
+  # overlay registry all have to stay host-visible — the handover mirror
+  # deliberately so, since a hand-off written on either side bootstraps a session
+  # on the other — and it is where the host projection is published for the
+  # Django-free Claude Code hooks (teatree.config.host_projection).
+  #
+  # Every mount TARGET below is a container path under HOME=/home/teatree and is
+  # therefore FIXED — it is what `teatree.paths` resolves inside the container, so
+  # a target change breaks the container. Only the host-side SOURCE root varies:
+  # `TEATREE_HOST_HOME` is the host home whose tree carries this state. On the box
+  # it is the deploy user's home, `/home/teatree` (the default here, and what
+  # deploy/deploy.sh exports from `$HOME`), so path identity holds and the box is
+  # unaffected. Off-box — an operator laptop whose home is `/Users/<name>` — the
+  # sources follow the real host home while the targets stay canonical; only path
+  # IDENTITY is given up there, and the CLI wrapper deploy/t3 exports the value.
   volumes:
-    - teatree_src:/home/teatree/teatree
+    # The source tree the container executes. Default: the `teatree_src` named
+    # volume — the box's self-updating runtime clone (the entrypoint fast-forwards
+    # it from origin; `t3 update` is the in-loop path). Set `TEATREE_SOURCE_MOUNT`
+    # to a host directory to bind-mount a WORKING TREE here instead, so the
+    # containerized `t3` runs the code being edited on the host; deploy/t3 sets it
+    # automatically when the wrapper is invoked from a fork that vendors core.
+    # A fork mounts its ROOT here (core then sits at `vendor/teatree` beneath it)
+    # and pairs that with TEATREE_CLONE_DIR — see the per-service environment.
+    - ${TEATREE_SOURCE_MOUNT:-teatree_src}:/home/teatree/teatree
+    # The control DB's own filesystem. The target is FIXED and identical to
+    # `teatree.paths.DEFAULT_CONTROL_DB_DIR`, so the path resolves the same inside
+    # and outside the container while existing only inside it: a host process that
+    # tries to open the canonical DB gets a directory it cannot create, and fails
+    # loudly instead of quietly opening a second database.
+    - teatree_control_db:/var/lib/teatree/control-db
+    # The container's own CLONE root (`config.clone_root()`), holding the source
+    # clones worktrees are cut from. Mounted BENEATH the `t3-workspaces` bind
+    # below: docker orders mounts by target depth, so this lands first and the
+    # worktree bind lands on top of it. That nesting is deliberate — the clones
+    # are container-owned and invisible to the host, while the worktrees they
+    # produce stay host-visible so an operator can read and edit the code.
+    - teatree_clones:/home/teatree/workspace
     - type: bind
-      source: /home/teatree/.local/share/teatree
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree
       target: /home/teatree/.local/share/teatree
     - type: bind
-      source: /home/teatree/.local/share/teatree-worktrees
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree-worktrees
       target: /home/teatree/.local/share/teatree-worktrees
     - type: bind
-      source: /home/teatree/workspace/t3-workspaces
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/workspace/t3-workspaces
       target: /home/teatree/workspace/t3-workspaces
     # Credential plane: the host-provisioned pass store + its GPG home, as
     # DEDICATED mounts decoupled from the data dir (a data-dir change must never
@@ -58,11 +109,34 @@ x-teatree-common: &teatree-common
     # slack/postgres secret writers insert into pass at runtime. Secrets stay
     # gpg-encrypted on the host disk, OUTSIDE the backed-up data dir.
     - type: bind
-      source: /home/teatree/.password-store
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.password-store
       target: /home/teatree/.password-store
     - type: bind
-      source: /home/teatree/.gnupg
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg
       target: /home/teatree/.gnupg
+    # Backing store for the CONTAINER-LOCAL GPG home (deploy/entrypoint.sh's
+    # resolve_gnupg_home). gpg-agent and keyboxd bind their `S.*` sockets inside
+    # GNUPGHOME, and the bind mount above cannot host a unix socket when the host
+    # is not Linux (Docker Desktop for Mac serves it over `fakeowner`), so keyboxd
+    # dies and gpg finds zero keys. The entrypoint copies the key material here,
+    # where a socket binds normally. On the box the bind mount works in place and
+    # this stays EMPTY and unused.
+    #
+    # tmpfs, not a bind and not the container's own disk layer: it holds a copy of
+    # the host's PRIVATE KEY material, so it belongs in RAM and must vanish with
+    # the container. Mounted as the PARENT directory with a sticky world-writable
+    # mode because compose cannot set a tmpfs's uid/gid — the entrypoint then
+    # creates the 0700 home inside it as the teatree user, and 0700 on the home
+    # itself is the mode gpg actually inspects.
+    #
+    # `mode` MUST carry the `0o` prefix: compose parses a bare `1777` as DECIMAL,
+    # which lands as octal 3361 (`d-wxrwS--t`) and the non-root user cannot even
+    # create the home inside it.
+    - type: tmpfs
+      target: /home/teatree/.gnupg-run
+      tmpfs:
+        size: 16m
+        mode: 0o1777
     # Claude session plane: session transcripts + per-project memory corpus —
     # the dream pass's input AND product (#3277 classifies dream's use as PRODUCT
     # DATA: it reads transcripts and maintains */memory; runtime STATE still never
@@ -79,9 +153,22 @@ x-teatree-common: &teatree-common
     # / tool-use concurrency are configurable rather than stock CLI defaults
     # (#3359 — see deploy/entrypoint.sh seed_claude_settings).
     - type: bind
-      source: /home/teatree/.claude/projects
+      source: ${TEATREE_HOST_HOME:-/home/teatree}/.claude/projects
       target: /home/teatree/.claude/projects
     - teatree_uv:/opt/teatree/uv
+    # The daemon control channel. `worktree provision` builds the overlay's base
+    # image and `worktree start` brings that stack up, so the WORKER — the service
+    # that runs both — must reach dockerd; without it provisioning dies on
+    # "failed to connect to the docker API at unix:///var/run/docker.sock".
+    #
+    # The mount is in the SHARED set, but the CAPABILITY is not: the socket is
+    # mode 0660 owned by root, and every app service runs as the non-root
+    # TEATREE_UID, so init/admin/slack-listener can see the node and cannot open
+    # it. Only teatree-worker declares the matching `group_add` below, which is
+    # what actually grants access — one service, granted explicitly, in one place
+    # a reader can check. Read-write on purpose: the docker API is a socket, and
+    # a read-only bind would refuse the write half of every request.
+    - /var/run/docker.sock:/var/run/docker.sock
   init: true
 
 # Memory sizing (#3651). Every `mem_limit` below is a ceiling, not a reservation:
@@ -107,7 +194,16 @@ services:
     # deploy/entrypoint.sh's setup_disk_tmpdir.
     environment:
       TEATREE_ROLE: init
+      T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+      # Where core lives INSIDE the source mount. The default is the mount root
+      # itself — the box's runtime clone, byte-identical to the image ENV. A fork
+      # mounts its ROOT at that path instead and exports the vendored subpath
+      # (`.../teatree/vendor/teatree`), which is the layout the entrypoint's
+      # HOST_ROOT detection matches to add `--with-editable <fork root>` — the
+      # install that registers the overlay entry point. Interpolated from the
+      # host env because that is the only channel deploy/t3 can reach compose on.
+      TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
     restart: "no"
 
   # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
@@ -116,8 +212,36 @@ services:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: worker
+      T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+      TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+    # THE ONE SERVICE THAT MAY DRIVE THE DAEMON. The shared mount set carries
+    # /var/run/docker.sock, but the socket is mode 0660 root-owned and every app
+    # service runs as the non-root TEATREE_UID, so the mount alone grants nothing.
+    # This supplementary group IS the grant, and only the worker declares it —
+    # the service that runs `worktree provision` (docker build) and
+    # `worktree start` (compose up).
+    #
+    # The GID is the socket's owning group as seen INSIDE the container, which is
+    # not always the host's: on Linux the two agree (same kernel, so a `stat` on
+    # the host socket is authoritative), while Docker Desktop serves the socket
+    # from its own VM where it is root:root — gid 0. The default is therefore 0,
+    # correct on Docker Desktop with nothing exported; on Linux
+    # deploy/docker-socket-gid.sh resolves the real gid and both deploy.sh and
+    # deploy/t3 export it. Adding a supplementary group is strictly narrower than
+    # the watchdog's `user: "0:0"` — the process keeps its own UID.
+    #
+    # Handing a container the host docker socket IS root-equivalent on the host,
+    # and there is no materially safer shape that still works here: a socket
+    # proxy would have to allow build + container create/start/exec + volume +
+    # network to serve provisioning at all, which is the same authority through
+    # one more hop; and a docker-in-docker sidecar needs `privileged` itself and
+    # cannot see the host bind mounts the provisioned worktree stacks are made
+    # of. So it is an accepted cost, bounded to the one service that needs it.
+    # See deploy/README.md § security posture.
+    group_add:
+      - "${TEATREE_DOCKER_SOCKET_GID:-0}"
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -161,8 +285,10 @@ services:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: admin
+      T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+      TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -194,8 +320,10 @@ services:
     <<: *teatree-common
     environment:
       TEATREE_ROLE: slack-listener
+      T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+      TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -233,6 +361,28 @@ services:
       # deploy-in-flight probe that keeps a rolling deploy from paging as an outage
       # (#3732). The host path is /tmp/teatree-deploy.lock; see the /host-tmp mount.
       TEATREE_WATCHDOG_DEPLOY_LOCK: /host-tmp/teatree-deploy.lock
+      # The checkout this stack is deployed from — the directory holding `deploy/`.
+      # The entrypoint's watchdog branch execs `$TEATREE_DEPLOY_CHECKOUT/deploy/
+      # watchdog.sh`, so it must carry the same value the bind mount below uses.
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}
+      # THE HOST'S INTERPOLATION ENVIRONMENT, forwarded verbatim. The watchdog's
+      # repair is an inner `docker compose -f <this file> up -d --no-recreate`, and
+      # compose interpolates from the environment of whoever runs it — so a
+      # container missing these renders the in-file DEFAULTS instead of what the
+      # host deployed, and any service it has to (re)create comes back pointing at
+      # the wrong source tree, home and clone dir.
+      #
+      # On the box every one of these already IS its default (the deploy user's
+      # home is /home/teatree, the source is the `teatree_src` volume), so the
+      # forward is a no-op there and the box is unchanged. Off-box they are the
+      # whole difference between a repair and a corruption, which is why the
+      # watchdog could not simply be switched on once its mount was portable.
+      TEATREE_HOST_HOME: ${TEATREE_HOST_HOME:-/home/teatree}
+      TEATREE_SOURCE_MOUNT: ${TEATREE_SOURCE_MOUNT:-teatree_src}
+      TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      TEATREE_UID: ${TEATREE_UID:-1001}
+      TEATREE_IMAGE: ${TEATREE_IMAGE:-teatree-headless:latest}
+      TEATREE_DOCKER_SOCKET_GID: ${TEATREE_DOCKER_SOCKET_GID:-0}
       # The watchdog role execs watchdog.sh before the entrypoint's TMPDIR export
       # and runs no agents, so it never writes scratch to this root — but #3641's
       # contract is that EVERY service declares the output root explicitly, so the
@@ -247,9 +397,19 @@ services:
       # This checkout, READ-ONLY, at PATH IDENTITY (source == target). Path
       # identity keeps the inner `docker compose ... up -d` config hash identical
       # to the host's, so the watchdog never recreates itself or the app services.
+      #
+      # Both sides read the SAME variable, so identity holds by construction on
+      # any topology rather than only where the checkout happens to sit at the
+      # box path. The default is the box path, so the box is unchanged and needs
+      # nothing exported. Off-box the checkout is anywhere — a fork's
+      # `<fork>/vendor/teatree`, an operator's `~/workspace/...` — and dockerd
+      # refuses a source path the host does not have, which is why hard-coding
+      # the box path left this service permanently `Created` ("mounts denied")
+      # on every non-box host. deploy.sh and deploy/t3 both export the value from
+      # the checkout they were invoked out of.
       - type: bind
-        source: /home/teatree/teatree-deploy
-        target: /home/teatree/teatree-deploy
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}
         read_only: true
       # The host temp root, READ-ONLY, at a DISTINCT target so the container's own
       # /tmp is untouched. The only thing read from it is deploy.sh's convergence
@@ -280,3 +440,17 @@ services:
 volumes:
   teatree_src:
   teatree_uv:
+  # The container's OWN clone root — the source clones provisioning creates
+  # worktrees from. A named volume, NOT a bind of the host's `~/workspace`,
+  # because sharing checkouts across the boundary CANNOT work: a git worktree
+  # records an absolute `gitdir` pointer into its source clone, so a host-created
+  # worktree reads as `fatal: not a git repository: /Users/...` in the container
+  # and vice versa. Each side owning its clones is the only self-consistent
+  # arrangement; the container fills this volume by cloning what it needs
+  # (`OverlayBase.get_repo_clone_url` -> `core.worktree.clone_provision`).
+  # It is a VOLUME rather than the image's writable layer so the clones — minutes
+  # of network each — survive container recreation.
+  teatree_clones:
+  # The control DB's directory — db.sqlite3 plus whatever journal sidecars the
+  # engine keeps beside it. Deliberately NOT reachable from the host.
+  teatree_control_db:

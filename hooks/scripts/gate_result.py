@@ -14,11 +14,17 @@ is the typed verdict; :func:`classify_validator_run` maps a finished validator
 subprocess to ALLOW / DENY / CANNOT_EVALUATE, reading a crash SIGNATURE (a Python
 traceback) rather than the ambiguous exit code alone (a clean "invalid" and an
 uncaught exception both exit ``1``). :class:`ValidatorTimedOut` covers the third
-can't-evaluate shape — the validator was too SLOW to finish inside its allowance.
-A caller maps every CANNOT_EVALUATE to fail-open-WITH-A-LOUD-WARN — never a deny —
-so a crashing or over-slow validator produces one loud stderr line and lets the
-tool through; the remote backstop still catches genuinely non-compliant content
-later.
+can't-evaluate shape — the validator was too SLOW to finish inside its allowance —
+and :class:`GateSkipped` the fourth: the gate recognised the call but never reached
+the validator at all. A caller maps every CANNOT_EVALUATE to
+fail-open-WITH-A-LOUD-WARN — never a deny, and never SILENCE — so a crashing,
+over-slow or unevaluable call produces one loud stderr line and lets the tool
+through; the remote backstop still catches genuinely non-compliant content later.
+
+Silence is reserved for exactly one outcome: the call is not this gate's surface.
+Every other outcome is named, because a mute skip and a mute block are
+indistinguishable from outside the hook — a gate that goes quiet on the pass path
+gets blamed for whatever silence follows it.
 
 The seam also owns the time ALLOWANCE every such gate gives its validator
 (:func:`validator_timeout_seconds`) and the warn a breach emits
@@ -78,6 +84,43 @@ class ValidatorTimedOut:
     """
 
     allowance_seconds: int
+
+
+@dataclass(frozen=True)
+class GateSkipped:
+    """The gate RECOGNISED the call but never evaluated it — allow, and say so.
+
+    The third CANNOT_EVALUATE shape, alongside a crash and a timeout: the gate
+    matched the surface it governs, then found it could not statically resolve
+    what to validate (an unexpanded ``$(…)``/``$VAR`` the shell only expands at
+    runtime, a partial edit that sets no governed field, an operator's
+    broken-env opt-in). Distinct from a bare ``None`` — which means "not my
+    surface at all", the one outcome that is legitimately silent.
+
+    The distinction has to be expressible because a MUTE skip and a MUTE block
+    are indistinguishable from outside the hook: a gate that recognises a call,
+    declines to evaluate it and says nothing looks exactly like a gate that
+    swallowed it. ``reason`` is the human-readable naming :func:`warn_gate_skipped`
+    prints so the outcome is never an empty result.
+    """
+
+    reason: str
+
+
+def warn_gate_skipped(gate: str, reason: str) -> None:
+    """Emit the one loud line that keeps a SKIP distinguishable from a PASS.
+
+    Skipped is not passed: the call is allowed through *unvalidated*, so the
+    line has to say which check did not run and why, and name the backstop that
+    still applies. Mirrors :func:`warn_validator_timed_out` — same posture, same
+    stderr channel, for the outcome where the validator was never even reached.
+    """
+    sys.stderr.write(
+        f"NOTE: the {gate} gate did NOT validate this call — {reason}. SKIPPED is "
+        "not PASSED: the call proceeds UNVALIDATED (fail-open-with-warn), so a "
+        "later silence or failure is the command's, not this gate's. The remote "
+        "CI job remains the backstop.\n"
+    )
 
 
 class CompletedRun(Protocol):

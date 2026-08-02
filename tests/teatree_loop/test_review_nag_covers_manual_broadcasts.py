@@ -20,6 +20,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import OnBehalfPostMode, TeaTreeConfig, UserSettings
+from teatree.core.backend_protocols import DraftState, PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.review_nag import ReviewNagScanner
@@ -62,8 +63,8 @@ class FakeSlack:
         return []
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
-        _ = (channel, ts)
-        return {}
+        _ = channel
+        return {"ts": ts}  # a thread root nobody has reacted to — not paused
 
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
         _ = (channel, thread_ts)
@@ -101,6 +102,28 @@ class FakeSlack:
 
     def auth_test(self) -> RawAPIDict:
         return {"ok": True}
+
+
+@dataclass
+class FakeHost:
+    """A code host reporting every MR live-open, non-draft and unapproved.
+
+    The nag fails CLOSED on an unverifiable merge request, so a scanner with no
+    host nags nothing — this fixture is what makes the #1256 seeding question
+    (does the nag scanner SEE the row?) answerable at all.
+    """
+
+    def get_pr_open_state(self, *, pr_url: str) -> Any:
+        _ = pr_url
+        return PrOpenState.OPEN
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        _ = (slug, pr_id)
+        return DraftState.NOT_DRAFT
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> dict[str, Any]:
+        _ = (repo, pr_iid)
+        return {"approvals_left": 1, "approved_by": [], "unresolved_resolvable": 0}
 
 
 def _fetcher(messages: dict[str, list[RawAPIDict]]):
@@ -167,7 +190,7 @@ class TestReviewNagCoversBothPaths(TestCase):
 
         # --- 4. The nag scanner must fire on BOTH threads ---
         nag_slack = FakeSlack()
-        signals = ReviewNagScanner(messaging=nag_slack).scan()
+        signals = ReviewNagScanner(messaging=nag_slack, host=FakeHost()).scan()
 
         pinged_threads = {p["thread_ts"] for p in nag_slack.posts}
         assert BOT_THREAD_TS in pinged_threads, "ReviewNagScanner did not nag the bot-tracked MR thread"

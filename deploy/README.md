@@ -38,17 +38,33 @@ The stack is five services from one image (`deploy/Dockerfile`), selected by
 
 `worker` and `admin` wait for `init` to complete, so the editable install on the
 shared clone happens exactly once. All three mount the same state, so the admin and
-the worker read the **same** `db.sqlite3` (WAL — safe concurrent reads):
+the worker read the **same** `db.sqlite3` (rollback journal, `BEGIN IMMEDIATE` —
+writers serialize and readers wait behind them; see `SQLITE_WRITE_SERIALIZATION_OPTIONS`):
 
-| Mount | Path | Kind | Holds |
-| --- | --- | --- | --- |
-| `teatree_src` | `/home/teatree/teatree` | named volume | the teatree clone (source) |
-| DB dir | `/home/teatree/.local/share/teatree` | **host bind mount** | the canonical DB (`db.sqlite3`) + backups |
-| worktrees | `/home/teatree/.local/share/teatree-worktrees` | **host bind mount** | per-worktree isolated DBs |
-| workspaces | `/home/teatree/workspace/t3-workspaces` | **host bind mount** | ticket worktrees |
-| pass store | `/home/teatree/.password-store` | **host bind mount** | the gpg-encrypted secret store (Anthropic OAuth token, …) |
-| GPG home | `/home/teatree/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
-| `teatree_uv` | `/opt/teatree/uv` | named volume | the runtime teatree Python + venv + `t3` shims |
+Every **container target** below is fixed — it is what `teatree.paths` resolves
+inside the container (`HOME=/home/teatree`, no `XDG_DATA_HOME`). Each **host
+source** is that target rebased onto `$TEATREE_HOST_HOME`, which defaults to
+`/home/teatree`; on the box the deploy user's home *is* `/home/teatree`, so
+source == target (path identity).
+
+| Mount | Container target | Host source | Kind | Holds |
+| --- | --- | --- | --- | --- |
+| source tree | `/home/teatree/teatree` | `$TEATREE_SOURCE_MOUNT` | named volume `teatree_src`, or a **host bind mount** when set | the teatree clone (source) |
+| control DB | `/var/lib/teatree/control-db` | — | named volume `teatree_control_db` | the canonical DB (`db.sqlite3`) + its journal sidecars |
+| data dir | `/home/teatree/.local/share/teatree` | `$TEATREE_HOST_HOME/.local/share/teatree` | **host bind mount** | backups, the handover mirror, the overlay registry, the host projection |
+| worktrees | `/home/teatree/.local/share/teatree-worktrees` | `$TEATREE_HOST_HOME/.local/share/teatree-worktrees` | **host bind mount** | per-worktree isolated DBs |
+| workspaces | `/home/teatree/workspace/t3-workspaces` | `$TEATREE_HOST_HOME/workspace/t3-workspaces` | **host bind mount** | ticket worktrees |
+| pass store | `/home/teatree/.password-store` | `$TEATREE_HOST_HOME/.password-store` | **host bind mount** | the gpg-encrypted secret store (Anthropic OAuth token, …) |
+| GPG home | `/home/teatree/.gnupg` | `$TEATREE_HOST_HOME/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
+| GPG runtime home | `/home/teatree/.gnupg-run` | — | `tmpfs` | the container-local GPG home, when the bind mount above cannot host a socket (see below) |
+| session plane | `/home/teatree/.claude/projects` | `$TEATREE_HOST_HOME/.claude/projects` | **host bind mount** | Claude session transcripts + the per-project memory corpus (the dream pass's input and product) |
+| `teatree_uv` | `/opt/teatree/uv` | — | named volume | the runtime teatree Python + venv + `t3` shims |
+
+`deploy.sh` exports `TEATREE_HOST_HOME="$HOME"` and `deploy/t3` defaults it to
+`$HOME`, so the dirs those scripts pre-create and the dirs compose mounts are the
+same dirs by construction. Both also **create** every host source first: dockerd
+auto-creates a missing bind source root-owned, which locks the non-root container
+out of it.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
@@ -58,6 +74,44 @@ happened when #3262 moved the data dir to a bind mount while these paths still
 pointed inside it). Secrets stay gpg-encrypted on the host disk, outside the
 backed-up data dir. A box using the `CLAUDE_CODE_OAUTH_TOKEN` env path instead just
 leaves these dirs empty (`deploy.sh` pre-creates them owned by the deploy user).
+
+### The GPG home off-box: a container-local copy
+
+`gpg-agent` and `keyboxd` bind their `S.*` sockets **inside** `GNUPGHOME`. On the
+box that home is a bind mount of a real local filesystem, binding works, and
+nothing below applies — every service shares the one home and therefore one
+`gpg-agent`, which is what makes the gpg-agent-cached-passphrase option above work.
+
+Off-box the same mount is served by a file-sharing transport that cannot host a
+unix socket at all (Docker Desktop for Mac reports the filesystem as `fakeowner`).
+A host whose `common.conf` carries `use-keyboxd` — the GnuPG 2.4 default on
+Homebrew — routes the **public** keyring through `keyboxd`, which then dies with
+`exit status 2` trying to bind `S.keyboxd`. gpg reports `No Keybox daemon running`,
+finds zero keys, and every `pass show` fails even though `private-keys-v1.d` is
+mounted and intact — surfacing at boot as *"the pass store lists anthropic/ entries
+but gpg cannot DECRYPT them"*.
+
+So `deploy/entrypoint.sh`'s `resolve_gnupg_home` reads the mount table, and when
+`GNUPGHOME` sits on anything that cannot host a socket it copies the key material
+into a container-local home on the `.gnupg-run` **tmpfs** and points `GNUPGHOME`
+there. Boot logs the switch. Notes:
+
+- The **host GPG home is strictly read-only**. The switch is decided from
+  `/proc/mounts`, so not even the detection touches it; the stale `S.*` sockets in
+  it are left alone and `common.conf` is never edited.
+- `use-keyboxd` is **copied, not stripped** — on a keyboxd host the public keys
+  live only in `public-keys.d/pubring.db`, so dropping it would find zero keys.
+- Host **daemon** configs (`gpg-agent.conf`, `scdaemon.conf`, `dirmngr.conf`) are
+  deliberately not copied: they routinely name host-only binaries
+  (`pinentry-program …/pinentry-mac`) that do not exist in the image.
+- tmpfs, so the copied private key stays in RAM and vanishes with the container.
+  It is re-derived at every boot, so a rotated host key is picked up on restart.
+- Absence stays a no-op: a host with no key material yields an empty derived home
+  and the same "no credential" diagnostics as before.
+- This covers the entrypoint's own process tree — the role process and everything
+  it spawns. A `docker exec` into a running service bypasses the entrypoint and so
+  still sees the image's `GNUPGHOME`; pass `-e GNUPGHOME=/home/teatree/.gnupg-run/gnupg`
+  for a one-off `exec` that needs to decrypt.
 
 ### Worker sizing: derived from the host
 
@@ -74,18 +128,102 @@ a baked-in 3-core cap. When `python3` is absent or RAM is unreadable — or on a
 apply. The watchdog's `up -d --no-recreate` does not re-size a running worker; the
 next deploy re-asserts the derived caps.
 
-### External DB — one DB on the host disk
+### The control DB is in a named volume; everything else is a bind mount
 
-The DB, worktrees, and workspaces are **host bind mounts at their canonical
-absolute paths**, not Docker-internal named volumes. The bind source and the
-container target are the identical path (path identity — `deploy/Dockerfile` sets
-no `XDG_DATA_HOME` and HOME is `/home/teatree` in both the container and the box),
-so the container and the host converge on **one** `db.sqlite3` on the host's
-daily-backed-up disk. There is no separate Docker-internal factory DB to drift
-from the operator's real DB.
+The control DB lives in the `teatree_control_db` **named volume**, mounted at
+`/var/lib/teatree/control-db` — the path `teatree.paths.DEFAULT_CONTROL_DB_DIR`
+resolves to, and one that exists only inside the container. That is the point: a
+host process cannot open a file it cannot name. Write access is granted once at
+connection setup and never revoked, so a host process that opened the database
+before the container claimed it kept writing for its whole life; with no host path
+there is nothing to open. It also means a host `t3` cannot work at all — `t3` runs
+through `deploy/t3`, in the container, by construction.
 
-`teatree_src` and `teatree_uv` stay Docker-managed named volumes for now (later
-PRs handle code-mount modes).
+The volume is the **directory**, never the file: SQLite's `-wal`/`-shm` sidecars
+must live beside the database, and mounting the file alone would strand them on the
+container's own disk layer.
+
+The worktrees, workspaces and the **data dir** stay host bind mounts at their
+canonical absolute paths (path identity — `deploy/Dockerfile` sets no
+`XDG_DATA_HOME` and HOME is `/home/teatree` in both the container and the box).
+`backups/`, the handover mirror and the overlay registry all have to stay
+host-visible; the handover mirror deliberately so, since a hand-off written on
+either side bootstraps a session on the other. The data dir is also where the
+**host projection** is published — the strictly-derived read surface the
+Django-free Claude Code hooks consult now that they cannot open the database
+(`teatree.config.host_projection`).
+
+`teatree_uv` stays a Docker-managed named volume. `teatree_src` is the **default**
+for the source tree; see [Running a host working tree](#running-a-host-working-tree)
+for the bind-mount mode.
+
+### Exporting the DB by hand
+
+Take the snapshot **from inside a container, with SQLite's online `.backup`** —
+never `cp` the live file. A WAL-mode DB keeps its newest commits in the `-wal`
+until a checkpoint folds them back, so a plain file copy captures whatever the
+last checkpoint happened to leave behind and silently drops the rest. `.backup`
+takes real read locks and reads the WAL, so it is consistent even while the loop
+is writing:
+
+```bash
+docker exec teatree-teatree-worker-1 sh -c \
+  'sqlite3 "$T3_CONTROL_DB_DIR/db.sqlite3" \
+     ".backup '"'"'$HOME/.local/share/teatree/backups/export-'"$(date +%Y%m%d-%H%M%S)"'.sqlite3'"'"'"'
+```
+
+`$HOME` resolves inside the container, so this keeps working if the deploy
+user's home ever moves — and it keeps a container-local absolute path out of
+the repository.
+
+The artifact lands in `~/.local/share/teatree/backups/` on the host — normal
+shell access, normal Time Machine. Verify any snapshot before trusting it; both
+checks must pass, and `integrity_check` alone is not sufficient (a snapshot that
+lost WAL-resident rows still reports `ok`):
+
+```bash
+sqlite3 ~/.local/share/teatree/backups/<artifact>.sqlite3 \
+  'PRAGMA integrity_check; PRAGMA foreign_key_check;'
+```
+
+The unattended `db_backup` loop drives the same online-backup engine
+(`teatree.paths._sqlite_snapshot`), so its artifacts carry the same guarantee.
+
+### Running a host working tree
+
+The container executes whatever is mounted at `/home/teatree/teatree`. By default
+that is the `teatree_src` named volume — the box's runtime clone, which the
+entrypoint fast-forwards from origin (and `t3 update` drives in-loop). Point
+`TEATREE_SOURCE_MOUNT` at a host directory to bind-mount a **working tree** there
+instead, so an edit on the host changes what the containerized `t3` executes on
+the very next invocation:
+
+```bash
+TEATREE_SOURCE_MOUNT=/path/to/checkout deploy/t3 --help
+```
+
+`deploy/t3` sets it automatically when the wrapper is invoked from a fork that
+vendors teatree core (`<fork>/vendor/teatree/deploy/t3`): that layout means the
+operator is running the CLI *from* the tree they are editing, so the container
+runs that tree. A stock teatree checkout (`<clone>/deploy/t3` — the box) does not
+match and keeps the self-updating volume.
+
+The `[slack]` editable install on `teatree_uv` resolves `teatree` through this
+mount path, so the mounted tree supplies the code while the volume supplies the
+dependency set. A working tree whose dependency pins have moved past the image's
+needs a rebuild (`docker compose build`) or an `init` run.
+
+### Off-box (an operator laptop)
+
+`TEATREE_HOST_HOME` is what makes the stack mountable off the box: dockerd refuses
+a bind whose source is absent on the host (`mounts denied: the path … is not shared
+from the host`), and `/home/teatree` exists only on the box. `deploy/t3` defaults
+it to `$HOME`, so on a laptop the sources follow the real host home (`/Users/…`)
+while the targets stay canonical. Only *path identity* is given up there — an
+absolute host path recorded in the DB (a worktree row outside
+`$TEATREE_HOST_HOME/workspace/t3-workspaces`) does not resolve inside the
+container. On macOS every source must also be under a Docker Desktop shared path
+(*Settings → Resources → File sharing*).
 
 ### UID invariant — the container user must equal the host deploy user
 
@@ -202,23 +340,26 @@ GitHub-hosted repos); a first publish creates the package, which the owner can
 then make public or keep private (a private package still pulls on the box with a
 `packages: read` token).
 
-### One-time volume migration (operator step)
+### One-time control-DB migration (operator step)
 
-A box that ran an older deploy has its state in Docker named volumes
-(`teatree_teatree_data`, `teatree_teatree_worktrees`, `teatree_teatree_workspaces`).
-`deploy/migrate-volume-data.sh` is a **one-time, idempotent, operator-run** step
-that moves that real factory state onto the host bind paths before the stack
-switches to bind mounts. Run it once, with the stack stopped:
+A box whose control DB is still in the data dir moves it into the volume with
+`deploy/migrate-control-db-to-volume.sh`, run once with the stack **stopped** so
+the source is quiescent:
 
 ```bash
-docker compose -f deploy/docker-compose.yml down   # the script refuses while up
-sudo deploy/migrate-volume-data.sh                 # sudo: reads /var/lib/docker/volumes
+docker compose -f deploy/docker-compose.yml down
+docker compose -f deploy/docker-compose.yml run --rm --no-deps \
+    --entrypoint deploy/migrate-control-db-to-volume.sh teatree-worker
+docker compose -f deploy/docker-compose.yml up -d
 ```
 
-It archives the existing host DB + backups (timestamped, never deleted) before
-overwriting them with the container volume's copy (the real factory state), then
-copies the credentials, worktrees, and workspaces across and brings the stack up.
-A fresh box with no prior volumes does not need this step.
+It copies with SQLite's online `.backup` — never `cp`, which is how the
+unrestorable backups in this data dir were produced — then verifies `PRAGMA
+integrity_check`, `PRAGMA foreign_key_check` and per-table row-count equality on
+the far side, failing non-zero and naming the offending table if any of the three
+disagrees. It refuses to overwrite an existing database in the target unless
+`MIGRATE_FORCE=1`, and it leaves the source in place so the operator archives it
+only once the stack is verified. A fresh box does not need this step.
 
 Re-running the deploy workflow is **idempotent** — it converges the same stack.
 
@@ -598,6 +739,40 @@ The DM leaves the box via a `docker compose exec` inside a *live app container*,
 not from the watchdog itself — the watchdog runs `network_mode: none`, so the
 docker socket is its only channel.
 
+The read-only checkout it mounts is `${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}`,
+used as BOTH the bind source and its target so path identity holds on any host,
+and read again by the entrypoint to exec `…/deploy/watchdog.sh`. `deploy.sh` and
+`deploy/t3` each export it from the checkout they were invoked out of, so the box
+resolves the historical path and needs nothing set.
+
+### Security posture: the docker socket
+
+Two services reach `/var/run/docker.sock`, and both need it for a different
+reason:
+
+- **`teatree-watchdog`** — the supervisor. It is the only thing that can restart
+  a dead stack, so the socket is its whole purpose. It runs `user: "0:0"` so the
+  socket is readable whatever group owns it, and `network_mode: none` so the
+  socket is also its *only* channel.
+- **`teatree-worker`** — `worktree provision` runs `docker build` and
+  `worktree start` runs `compose up`, so provisioning simply cannot work without
+  the daemon. The socket is in the shared mount set, but the worker is the only
+  service that can open it: the socket is mode `0660` root-owned and every app
+  service runs as the non-root `TEATREE_UID`, so the grant is the worker's
+  `group_add: ["${TEATREE_DOCKER_SOCKET_GID:-0}"]`, not the mount.
+  `deploy/docker-socket-gid.sh` resolves that GID — the host socket's group on
+  Linux (where the daemon shares the host kernel), `0` under Docker Desktop
+  (where the socket comes from the product's own VM as root:root).
+
+**This is root-equivalent access to the host, and it is an accepted cost, not a
+mitigated one.** There is no materially safer shape that still does the job: a
+socket proxy would have to allow build, container create/start/exec, volumes and
+networks to serve provisioning at all — the same authority behind one more hop —
+and a docker-in-docker sidecar needs `privileged` itself *and* cannot see the
+host bind mounts the provisioned worktree stacks are built from. What is bounded
+instead is the blast surface: exactly two services, each declaring its grant in
+one reviewable place, and the worker keeping its non-root UID.
+
 ### Deploy-awareness (#3732)
 
 `deploy.sh` fast-forwards the checkout and swaps the image, which **recreates**
@@ -680,6 +855,8 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
 | `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
+| `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target for the watchdog's read-only mount, and the root it execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` |
+| `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/docker-socket-gid.sh` |
 
 It needs `python3` in the image for the richest DM body (baked into the image);
 without it the DM degrades to a generic "red findings" body.
@@ -691,10 +868,12 @@ Docker Desktop settings matter:
 
 - **Docker socket:** enable *Settings → Advanced → "Allow the default Docker
   socket to be used"* so `/var/run/docker.sock` is present for the socket mount.
-- **File sharing:** the read-only checkout bind mount (`/home/teatree/teatree-deploy`)
-  must be under a path Docker Desktop is allowed to share (*Settings → Resources →
-  File sharing*). Adjust the bind source in `deploy/docker-compose.yml` if your
-  checkout lives elsewhere on the Mac.
+- **File sharing:** the read-only checkout bind mount resolves to
+  `$TEATREE_DEPLOY_CHECKOUT` — the checkout `deploy.sh` / `deploy/t3` was invoked
+  out of — so it follows the Mac checkout automatically and needs no edit. It
+  must still be under a path Docker Desktop is allowed to share (*Settings →
+  Resources → File sharing*); a path outside that set leaves the container
+  `Created` with `mounts denied`.
 - **Start at login:** enable *Settings → General → "Start Docker Desktop when you
   sign in"* so the daemon — and therefore the watchdog — comes back after a
   reboot, the macOS analogue of "Docker enabled on boot" on Linux.

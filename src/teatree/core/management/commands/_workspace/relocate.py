@@ -29,6 +29,7 @@ from teatree.config import OverlayEntry
 from teatree.core.models import Worktree
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.utils import git
+from teatree.utils.git_worktree_query import canonical_repo_root
 from teatree.utils.run import CommandFailedError
 
 
@@ -95,13 +96,30 @@ class _Candidate:
 def _resolve_clone(worktree: Worktree, old: Path) -> str | None:
     """The source clone ``git worktree move`` runs from (NOT *old* itself).
 
-    Prefers the provision-time ``extra['clone_path']``; falls back to a scan of
-    the OLD workspace root (``<old_ws>/<branch>/<repo>`` → ``<old_ws>`` is
-    ``old.parent.parent``). ``None`` when no clone can be located.
+    Three tiers, most authoritative first:
+
+    1.  the provision-time ``extra['clone_path']``;
+    2.  ``git rev-parse --git-common-dir`` read from the checkout itself
+        (:func:`canonical_repo_root`) — git's own answer, true for ANY layout;
+    3.  a scan of the OLD workspace root, kept as the last resort for a row whose
+        directory is gone from disk (git cannot be asked about a dir that is not
+        there).
+
+    Tier 2 is what makes relocate work on the worktrees that most need relocating.
+    Tier 3 assumes the canonical ``<old_ws>/<branch>/<repo>`` layout — it derives
+    the workspace root as ``old.parent.parent`` and looks for a clone named
+    ``repo_path`` under it — so on a NON-canonical path (exactly the case relocate
+    exists to repair) it scanned the wrong directory for the wrong name and
+    reported "source clone not found", skipping the worktree forever. Measured on
+    an ``<root>/<repo>/<branch>`` pair: both were refused, while
+    ``git rev-parse --git-common-dir`` named the clone correctly from inside each.
     """
     stored = (worktree.extra or {}).get("clone_path")
     if stored:
         return str(stored)
+    from_git = canonical_repo_root(old)
+    if from_git is not None:
+        return str(from_git)
     found = find_clone_path(old.parent.parent, worktree.repo_path)
     return str(found) if found is not None else None
 

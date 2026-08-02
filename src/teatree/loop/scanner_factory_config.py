@@ -49,9 +49,9 @@ def _gitlab_approvals_enabled() -> bool:
 def _user_slack_id_for_overlay(overlay_name: str) -> str:
     """Resolve ``slack_user_id`` for the active overlay (overlay → global → empty).
 
-    Used by :class:`ReviewNagScanner` to know where to DM long-stale MR
-    warnings. Reads the DB overlays registry + ``ConfigSetting`` store directly
-    so a fresh tick picks up a runtime config change without an overlay reload.
+    Used by the PR-sweep scanner to know where to DM its findings. Reads the DB
+    overlays registry + ``ConfigSetting`` store directly so a fresh tick picks up
+    a runtime config change without an overlay reload.
     """
     from teatree.config import cold_reader, load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
 

@@ -2,6 +2,7 @@ import hashlib
 import socket
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from teatree.utils.run import run_allowed_to_fail
@@ -9,6 +10,57 @@ from teatree.utils.run import run_allowed_to_fail
 # Duplicated from teatree.core.models.types to avoid circular import
 # through Django model registration.
 type Ports = dict[str, int]
+
+# Docker publishes the host under these names to containers. Docker Desktop provides
+# both; a Linux daemon provides them only when the container was started with
+# ``--add-host=host.docker.internal:host-gateway``, which is why neither may be
+# assumed and the fallback below exists.
+_HOST_ALIASES = ("host.docker.internal", "gateway.docker.internal")
+
+# The default bridge gateway, which is the host on a stock Linux daemon that
+# publishes no alias at all.
+_DEFAULT_BRIDGE_GATEWAY = "172.17.0.1"
+
+
+def running_in_container() -> bool:
+    """Whether THIS process is executing inside a container.
+
+    Deliberately not an OS check. The containerized CLI reports ``platform.system()
+    == "Linux"`` whatever the host is, so branching on the OS answers "what kind of
+    machine is this" when the question is "which side of the boundary am I on".
+    """
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        # No /proc at all (macOS, Windows): not a Linux container.
+        return False
+    return any(marker in cgroup for marker in ("docker", "containerd", "kubepods"))
+
+
+def host_published_port_host() -> str:
+    """The hostname that reaches a port published on the Docker HOST from here.
+
+    ``localhost`` when running natively, which is the common case and unchanged.
+    Inside a container that same name is the container's own loopback -- nothing is
+    listening there, and a caller gets ECONNREFUSED against a port that is demonstrably
+    open on the host -- so the host has to be named explicitly.
+
+    The alias is PROBED rather than inferred from the platform: Docker Desktop resolves
+    ``host.docker.internal``, a stock Linux daemon resolves neither alias, and asking
+    the resolver is the only answer that holds on both without special-casing either.
+    """
+    if not running_in_container():
+        return "localhost"
+
+    for alias in _HOST_ALIASES:
+        try:
+            socket.gethostbyname(alias)
+        except OSError:
+            continue
+        return alias
+    return _DEFAULT_BRIDGE_GATEWAY
 
 
 def find_free_port(host: str = "127.0.0.1") -> int:

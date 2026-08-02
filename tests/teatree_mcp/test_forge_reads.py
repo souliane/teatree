@@ -14,7 +14,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.backends.types import Service
-from teatree.core.backend_protocols import ApprovalState, PrMergeState, PrOpenState
+from teatree.core.backend_protocols import ApprovalState, DraftState, PrMergeState, PrOpenState
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
 from tests.teatree_mcp._call_tool_result import structured as _structured
@@ -49,9 +49,9 @@ class _FakeForge:
         self.calls.append(("fetch_pr_merge_state", {"slug": slug, "pr_id": pr_id}))
         return PrMergeState(state="OPEN", merge_commit_oid="")
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        self.calls.append(("fetch_pr_is_draft", {"slug": slug, "pr_id": pr_id}))
-        return False
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        self.calls.append(("fetch_pr_draft_state", {"slug": slug, "pr_id": pr_id}))
+        return DraftState.NOT_DRAFT
 
     def get_pr_author(self, *, pr_url: str) -> str:
         self.calls.append(("get_pr_author", {"pr_url": pr_url}))
@@ -126,7 +126,9 @@ class TestForgeReadTools(TestCase):
         assert result["open_state"] == "open"
         assert result["state"] == "OPEN"
         assert result["merged"] is False
-        assert result["draft"] is False
+        # Tri-state like its ``open_state`` sibling: a boolean could not tell an
+        # agent reading this snapshot that the forge never answered.
+        assert result["draft"] == "not_draft"
         assert result["author"] == "octocat"
         assert result["approvals_left"] == 1
         assert result["approved_by"] == ["reviewer"]

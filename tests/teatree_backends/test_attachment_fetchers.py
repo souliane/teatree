@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 import teatree.backends.notion as notion_mod
+import teatree.backends.notion.attachments as notion_attachments
 from teatree.backends.attachment_fetchers import install_attachment_fetchers
 from teatree.core.intake.attachment_fetch_registry import resolve_attachment_fetcher
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef
@@ -46,7 +47,7 @@ class TestInstallAttachmentFetchers:
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            mock.patch.object(notion_mod, "_brave_cookies", return_value=httpx.Cookies()),
+            mock.patch.object(notion_attachments, "_brave_cookies", return_value=httpx.Cookies()),
             pytest.raises(ValueError, match="not signed"),
         ):
             fetcher(AttachmentRef("https://www.notion.so/acme/Design-abc", AttachmentKind.NOTION), Path(tmp) / "f")

@@ -50,9 +50,11 @@ and :mod:`teatree.hooks._repo_visibility` are both at the per-file LOC cap.
 
 import sys
 from pathlib import Path
+from typing import Final
 
 from teatree.hooks import _commit_carve_out, _repo_visibility
-from teatree.hooks._gh_glab_hiding import command_segments_with_raw
+from teatree.hooks._command_parser import is_publish_command
+from teatree.hooks._gh_glab_hiding import command_segments_with_raw, raw_has_live_substitution
 from teatree.hooks._publish_detection import segment_is_api_read, segment_is_api_write
 from teatree.hooks.leak_policy import Visibility, scans_on_visibility
 from teatree.hooks.publish_destination import (
@@ -189,18 +191,93 @@ def _api_write_segment_verdict(words: list[str], *, config_path: Path | None) ->
     return _visibility_segment_verdict(dest, config_path=config_path)
 
 
+# Span openers a LIVE substitution rides. The tail after each opener is checked
+# for a DETECTABLE publish invocation (:func:`_command_parser.is_publish_command`),
+# so a ``$(gh pr create …)`` hidden inside a body value can never ride a
+# private-target skip, while a ``$(cat <path>)`` / ``$(git log …)`` body cannot.
+_SUBSTITUTION_OPENERS: Final[tuple[str, ...]] = ("$(", "<(", ">(", "`")
+
+
+def _live_substitution_hides_publish(raw: str) -> bool:
+    """Return True iff a LIVE substitution span in ``raw`` carries a detectable publish.
+
+    ``raw`` is one token's as-written source span. Only a substitution bash
+    would EXPAND counts (:func:`raw_has_live_substitution` -- a single-quoted
+    marker is inert literal text, #3357). For each live opener the tail of the
+    token is run through the SAME publish detection the gates key on
+    (:func:`is_publish_command`), so the detection posture inside a substitution
+    equals the posture at the top level: a ``$(gh issue create …)`` /
+    ``$(glab api … -f body=…)`` is a hidden publish (the caller must SCAN); a
+    ``$(cat body.md)`` / ``$(echo x)`` is not. An undetectable wrapper inside a
+    substitution (``$(./release.sh)``) is accepted exactly as it is at the top
+    level, where a bare ``./release.sh`` is not a publish either -- the
+    provably-private destination (#1213/#1415 skip scope) bounds the blast
+    radius to a non-public surface.
+    """
+    if not raw_has_live_substitution(raw):
+        return False
+    for opener in _SUBSTITUTION_OPENERS:
+        start = raw.find(opener)
+        while start != -1:
+            if is_publish_command(raw[start + len(opener) :]):
+                return True
+            start = raw.find(opener, start + len(opener))
+    return False
+
+
+def _construct_bearing_segment_verdict(
+    words: list[str], raws: list[str], cwd: Path | None, *, config_path: Path | None
+) -> str:
+    """Verdict for a segment carrying a LIVE substitution or transport construct.
+
+    A PROVABLY-private target has no public-leak surface, so a construct in the
+    command must not force a scan-impossibility block on it (#1213/#1415: the
+    ``-d "$(cat body.md)"`` / heredoc-writer shapes were hard-blocking every
+    private ``glab mr create``, forcing the QUOTE_OK/ALLOW_BANNED_TERM escapes).
+    The construct is dangerous only when it could carry a HIDDEN PUBLIC post, so
+    the segment stays skip-eligible when ALL of:
+
+    - no live substitution span detectably publishes
+        (:func:`_live_substitution_hides_publish`);
+    - the segment's destination resolves to a LITERAL slug (an unexpanded ``$``
+        in the slug could name a PUBLIC repo at run time -> :data:`_SCAN`); and
+    - that literal destination classifies ``NON_PUBLIC``
+        (:func:`_visibility_segment_verdict` -- ``PUBLIC`` and probe-unconfirmed
+        ``UNKNOWN`` both keep the fail-closed :data:`_SCAN`, #3442).
+
+    A construct-bearing segment with NO destination is skip-eligible only when
+    it is a provably-inert local segment (:func:`_segment_is_skip_inert` -- e.g.
+    the ``cat > <bodyfile> <<EOF`` writer that materialises the post's own body
+    file); every other no-destination construct still scans (:data:`_SCAN`).
+    """
+    if any(_live_substitution_hides_publish(raw) for raw in raws):
+        return _SCAN
+    if segment_is_api_write(words):
+        return _api_write_segment_verdict(words, config_path=config_path)
+    rest = strip_cd_prefix(words)
+    dest = _destination_from_words(rest, cwd)
+    if dest is not None:
+        if "$" in dest.slug:
+            return _SCAN
+        return _visibility_segment_verdict(dest, config_path=config_path)
+    return _SKIP_INERT if _segment_is_skip_inert(words) else _SCAN
+
+
 def _segment_visibility_verdict(
     words: list[str], raws: list[str], cwd: Path | None, *, config_path: Path | None
 ) -> str:
     """Classify one top-level segment as :data:`_SCAN` / :data:`_SKIP_PUBLISH` / :data:`_SKIP_INERT`.
 
-    A LIVE ``$(...)``/transport construct or an unrecognised chained executable
-    forces :data:`_SCAN` (the ALL-SEGMENTS anti-leak posture); a repo-targeted
+    A LIVE ``$(...)``/transport construct routes through
+    :func:`_construct_bearing_segment_verdict`: it skips ONLY for a literal,
+    provably-non-public destination (or a provably-inert local segment) with no
+    detectable publish inside any substitution span -- a hidden public post, an
+    unexpanded ``$`` in the slug, an affirmatively-PUBLIC or probe-unconfirmed
+    target all still force :data:`_SCAN` (fail closed, #3442). A repo-targeted
     publish to a PROVABLY non-public target is :data:`_SKIP_PUBLISH`; a
     repo-targeted publish (structured or ``api`` WRITE) to an affirmatively-PUBLIC
-    OR probe-unconfirmed target forces :data:`_SCAN` (fail closed on a probe
-    error, #3442); an ``api`` read or an inert nav/local segment is
-    :data:`_SKIP_INERT`.
+    OR probe-unconfirmed target forces :data:`_SCAN`; an ``api`` read or an inert
+    nav/local segment is :data:`_SKIP_INERT`.
 
     ``raws`` carries each token's as-written source span (index-aligned with
     ``words``) so the substitution check fires only on a marker bash would actually
@@ -208,7 +285,7 @@ def _segment_visibility_verdict(
     scan on a private-target post (#3357).
     """
     if _segment_carries_substitution_or_transport(words, raws):
-        return _SCAN
+        return _construct_bearing_segment_verdict(words, raws, cwd, config_path=config_path)
     if segment_is_api_write(words):
         return _api_write_segment_verdict(words, config_path=config_path)
     if segment_is_api_read(words):
@@ -236,9 +313,13 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
     on every target it cannot PROVE non-public (#1415/#1213, #3442). A segment is
     safe when it is one of:
 
-    - a ``gh``/``glab``/``t3 review`` publish whose destination is PROVABLY
-        non-public (allowlisted-private / internal-namespace / probe-confirmed
-        private) and carries no substitution/transport construct;
+    - a ``gh``/``glab``/``t3 review`` publish whose destination is a LITERAL
+        slug that is PROVABLY non-public (allowlisted-private /
+        internal-namespace / probe-confirmed private) -- a substitution/transport
+        construct in the segment is tolerated as long as no live substitution
+        span detectably publishes (:func:`_construct_bearing_segment_verdict`),
+        so a ``-d "$(cat body.md)"`` / heredoc body toward a provably-private
+        repo never needs an escape flag (#1213/#1415);
     - a raw ``gh``/``glab api`` WRITE whose URL path resolves to a PROVABLY
         non-public repo (:func:`_api_write_segment_verdict`);
     - a read-only ``api`` GET (posts no body); or
@@ -255,11 +336,13 @@ def gate_skips_for_visibility(command: str, cwd: Path | None, *, config_path: Pa
         signal, mirroring the bash pre-push gate and the fail-closed-always
         leak-gate doctrine (#3442); the offline ``private_repos`` allowlist is the
         network-free way to keep an own-private post skip-eligible;
-    - a segment carries a ``$(...)``/transport construct, is an unrecognised
-        chained executable (``sh -c``/``make``/``./x.sh`` -- can shell out to a
-        hidden public post), or is a raw ``api`` WRITE to an affirmatively-public
-        or unresolvable URL -- these keep the ALL-SEGMENTS anti-leak posture so an
-        obscured public post cannot hide behind a leading non-public segment;
+    - a segment carries a live substitution span that DETECTABLY publishes
+        (``-d "$(gh pr create …)"``), resolves a slug carrying an unexpanded
+        ``$``, is an unrecognised chained executable (``sh -c``/``make``/
+        ``./x.sh`` -- can shell out to a hidden public post), or is a raw ``api``
+        WRITE to an affirmatively-public or unresolvable URL -- these keep the
+        ALL-SEGMENTS anti-leak posture so an obscured public post cannot hide
+        behind a leading non-public segment;
     - the command carries a ``git commit`` segment (the landing-repo carve-out
         and the #703 pre-push backstop own that surface, unchanged); or
     - the command has no repo-targeted publish segment at all (a Slack/curl post

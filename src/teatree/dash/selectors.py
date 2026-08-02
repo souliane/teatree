@@ -122,6 +122,36 @@ class KanbanCard:
     pr_chips: tuple[PrChip, ...] = ()
 
 
+#: What each lifecycle state MEANS, surfaced as the column's tooltip. The labels
+#: alone do not say what a state represents or why it sits where it does — and the
+#: two places the order surprises a reader (work starts BEFORE the plan is
+#: recorded; the author's own review comes BEFORE shipping, peer review after) are
+#: exactly the ones that need saying out loud.
+STATE_MEANINGS: dict[str, str] = {
+    State.NOT_STARTED: "Admitted to the board. Nothing claimed it yet.",
+    State.SCOPED: "Scope agreed — what is in and out is settled.",
+    State.STARTED: (
+        "Someone picked it up and a worktree exists. Comes BEFORE the plan: "
+        "the plan is recorded from the work, not ahead of it."
+    ),
+    State.PLANNED: "A PlanArtifact is recorded. The plan() transition refuses without one.",
+    State.CODED: "The change is written and committed on its branch.",
+    State.TESTED: "Its tests pass — the broader CI/QA run, not just the author's own.",
+    State.REVIEWED: (
+        "The AUTHOR's own pre-ship review is done. This is not peer review; that is 'In peer review', after shipping."
+    ),
+    State.SHIPPED: "A pull/merge request exists on the target branch.",
+    State.IN_REVIEW: "Review was REQUESTED from someone else and is outstanding.",
+    State.MERGED: "The PR is merged into its target branch.",
+    State.RETROSPECTED: "A retro extracted the lessons and turned them into enforcement.",
+    State.DELIVERED: "Done and confirmed on the surface that matters.",
+    State.REVIEW_POSTED: (
+        "A review this factory performed on someone else's PR has been posted. Terminal for a reviewer ticket."
+    ),
+    State.IGNORED: "Abandoned on purpose. Kept for the audit trail, never worked.",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class KanbanColumn:
     state: str
@@ -131,6 +161,10 @@ class KanbanColumn:
     @property
     def count(self) -> int:
         return len(self.cards)
+
+    @property
+    def meaning(self) -> str:
+        return STATE_MEANINGS.get(self.state, "")
 
 
 @dataclass(frozen=True, slots=True)
