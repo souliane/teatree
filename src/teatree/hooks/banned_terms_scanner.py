@@ -47,6 +47,7 @@ from teatree.hooks._command_parser import is_publish_command as _is_publish_comm
 from teatree.hooks._command_parser import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
 from teatree.hooks._hook_state import note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError
 from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
@@ -109,6 +110,12 @@ def _banned_terms_configured(config_path: Path | None) -> bool:
     gate must still scan rather than silently no-op. *config_path* overrides the
     DB path (else the canonical DB / ``T3_CONFIG_DB``). A malformed registry
     propagates :class:`BannedTermsUnsetError` (fail-loud), never a silent no-op.
+
+    A legacy row that could not be READ at all (locked, corrupt, or missing its
+    table) raises :class:`BannedTermsUnreadableError` rather than resolving to
+    "not configured": an errored read is indistinguishable from an unset row, and
+    treating it as unset let a busy store open this publish-surface gate the same
+    way it opened the commit-only shell scanner (#4008).
     """
     from teatree.hooks.banned_term_registry import load_registry  # noqa: PLC0415  dual-read cycle
 
@@ -116,7 +123,10 @@ def _banned_terms_configured(config_path: Path | None) -> bool:
         return True
     if load_registry(db_path=config_path) is not None:
         return True
-    return isinstance(cold_reader.read_setting(_TERMS_KEY, db_path=config_path), list)
+    read = cold_reader.read_setting_confirmed(_TERMS_KEY, db_path=config_path)
+    if not read.readable:
+        raise BannedTermsUnreadableError.for_store(_TERMS_KEY, _TERMS_ENV)
+    return isinstance(read.value, list)
 
 
 def _scanner_script() -> Path:
@@ -278,6 +288,28 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     return _run_shell_scanner(text, config_path)
 
 
+def _configured_or_unreadable(config_path: Path | None) -> bool | None:
+    """``_banned_terms_configured``, or ``None`` when the legacy row could not be READ.
+
+    Isolated from :func:`_run_shell_scanner` so its own unreadable-store handling
+    does not add to that function's return-statement count. ``None`` is the
+    FAIL-CLOSED signal — a legacy row that errored on read (locked, corrupt, or
+    missing its table) is indistinguishable from unset, so it must never resolve
+    to ``False`` ("nothing configured"): that collapse is exactly what let a busy
+    store open this publish-surface gate the same way it opened the commit-only
+    shell scanner (#4008).
+    """
+    try:
+        return _banned_terms_configured(config_path)
+    except BannedTermsUnreadableError:
+        sys.stderr.write(
+            "[teatree] NOTE: banned-terms could not be READ from the config store while "
+            "resolving whether the gate is configured. Failing CLOSED rather than reporting "
+            "a clean scan — retry, or repair the store.\n"
+        )
+        return None
+
+
 def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
@@ -286,13 +318,17 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     configured, so there is nothing to scan. Returns
     :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED) when the scanner
     could not run, INCLUDING a MISSING scanner script while banned-terms IS
-    configured (HLG-7): a missing script is a broken install, not a clean scan, so
-    it is failed loud + closed like a crashing interpreter (#1954) rather than
-    silently reporting clean. *config_path* overrides the DB path the shell scanner
-    reads (forwarded as ``T3_CONFIG_DB`` in the subprocess env).
+    configured (HLG-7), OR the legacy row could not be READ at all (#4008): both
+    are a broken install/store, not a clean scan, so both fail loud + closed like
+    a crashing interpreter (#1954) rather than silently reporting clean.
+    *config_path* overrides the DB path the shell scanner reads (forwarded as
+    ``T3_CONFIG_DB`` in the subprocess env).
     """
-    if not _banned_terms_configured(config_path):
-        return None
+    configured = _configured_or_unreadable(config_path)
+    if configured is not True:
+        # ``None`` (store unreadable) fails CLOSED; ``False`` (nothing configured)
+        # is the genuine no-op — one branch, so the return budget stays sane.
+        return SCANNER_UNAVAILABLE_MARKER if configured is None else None
     script = _scanner_script()
     if not script.is_file():
         # banned-terms IS configured (checked above) but the scanner script is
