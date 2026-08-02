@@ -58,4 +58,15 @@ def schema_preflight_result() -> CheckResult:
     return CheckResult(check=SCHEMA_PREFLIGHT, ok=True, skipped=False, detail="")
 
 
-__all__ = ["SCHEMA_PREFLIGHT", "migrate_self_db", "schema_preflight_result"]
+def skipped_preflight_result(reason: str) -> CheckResult:
+    """Report the pre-flight as not-run without touching the database (#4005).
+
+    Omitting the row entirely is what made a failed migration pass *silently*: with no
+    row, neither a renderer nor a caller could tell the pre-flight had been meant to run
+    at all. Naming it as skipped costs nothing — building the row opens no connection, so
+    the topology guard still runs strictly before anything reaches the DB.
+    """
+    return CheckResult(check=SCHEMA_PREFLIGHT, ok=True, skipped=True, detail=reason)
+
+
+__all__ = ["SCHEMA_PREFLIGHT", "migrate_self_db", "schema_preflight_result", "skipped_preflight_result"]

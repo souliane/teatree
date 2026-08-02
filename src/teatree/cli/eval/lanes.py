@@ -49,6 +49,11 @@ def coverage(
 
 def pinned_regressions(
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--strict",
+        help="Also exit non-zero when a check could not run (a green with skips asserted nothing).",
+    ),
 ) -> None:
     """Run the deterministic regression corpus over the real gate/checker code paths.
 
@@ -57,10 +62,15 @@ def pinned_regressions(
     bare-reference gate, the substrate-merge and maker≠checker floors, the
     pid-anchored loop lease, the migration-graph leaf count) on a must-block and
     a must-allow input. Any violated invariant exits non-zero.
+
+    ``--strict`` additionally demands a VALIDATED green (#4005), matching the suite's
+    own ``t3 eval --strict``. The default stays lenient because the pre-push hook runs
+    on the host, where the container-owned control DB is unreachable by design and
+    blocking every push there is the false red the skip exists to end.
     """
     ensure_django()
     require_valid_format(output_format)
     report = run_regression_corpus()
     typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
-    if not report.ok:
+    if not report.ok or (strict and not report.validated):
         sys.exit(1)

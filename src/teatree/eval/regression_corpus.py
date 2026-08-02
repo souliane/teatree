@@ -51,8 +51,7 @@ from teatree.eval.regression_corpus_predicates import (
     _check_ship_branch_reconcile_renamed,
 )
 from teatree.eval.regression_corpus_report import render_json, render_text
-from teatree.eval.regression_corpus_schema import schema_preflight_result
-from teatree.paths import DB_FILENAME, control_db_dir
+from teatree.eval.regression_corpus_schema import schema_preflight_result, skipped_preflight_result
 
 __all__ = [
     "CheckResult",
@@ -200,16 +199,6 @@ def _django_ready() -> bool:
     return apps.ready
 
 
-def _canonical_control_db_unreachable_reason() -> str | None:
-    """The topology answer for the CANONICAL control DB — this lane's DB-backed checks.
-
-    Every ``needs_db`` check queries the one control database, so the question this
-    lane asks is about that database specifically, named here rather than inferred
-    from whatever the process happens to be configured with.
-    """
-    return control_db_unreachable_reason(control_db_dir(os.environ) / DB_FILENAME, env=os.environ)
-
-
 def _configured_db_unreachable_reason() -> str | None:
     """Why this process cannot reach the database its DB-backed checks will actually query.
 
@@ -242,8 +231,11 @@ def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> Regr
     # self-DB, which (for a worktree's auto-isolated copy) is a stale-schema
     # snapshot never migrated. Bring it current in-process before any ORM check
     # so a migration-adding PR can't red the pre-push lane with OperationalError.
-    if db_ready and unreachable is None and any(check.needs_db for check in checks):
-        results.append(schema_preflight_result())
+    # When it cannot run it is still REPORTED (#4005) — omitting the row is what let a
+    # failed migration pass silently, with nothing naming the pre-flight as not-run.
+    if any(check.needs_db for check in checks):
+        blocked = "Django not configured" if not db_ready else unreachable
+        results.append(schema_preflight_result() if blocked is None else skipped_preflight_result(blocked))
     for check in checks:
         if check.needs_db and not db_ready:
             results.append(CheckResult(check=check, ok=True, skipped=True, detail="Django not configured"))

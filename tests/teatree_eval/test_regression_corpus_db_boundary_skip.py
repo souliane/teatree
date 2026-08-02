@@ -12,10 +12,13 @@ The fix is a SKIP with the reason named, not a bypass — so the tests below pin
 halves: the boundary fault does not redden the lane, AND nothing else got softer.
 """
 
+from unittest.mock import patch
+
 import pytest
 from django.db import connection
 
 from teatree.db.boundary import DbBoundaryError
+from teatree.eval import regression_corpus_schema
 from teatree.eval.regression_corpus import run_regression_corpus
 from teatree.eval.regression_corpus_models import RegressionCheck
 
@@ -109,16 +112,19 @@ class TestUnreachableControlDbSkipsBeforeThePreflight:
         report = run_regression_corpus((self._db_check(),))
         assert report.ok is True
         assert report.failures == ()
-        (result,) = report.results
+        (result,) = [r for r in report.results if r.check.failure_class == "probe"]
         assert result.skipped is True
         assert "container-only mount by design" in result.detail
 
-    def test_the_preflight_is_not_even_appended(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Proof the guard runs FIRST: no pre-flight row is produced at all, so
-        # nothing tried to open the database.
+    def test_the_preflight_never_opens_the_database(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Proof the guard runs FIRST. The pre-flight is REPORTED as skipped (#4005) so a
+        # reader can tell it was meant to run, but nothing tried to open the database.
         _host_pointed_at_the_container_only_db(monkeypatch)
-        report = run_regression_corpus((self._db_check(),))
-        assert len(report.results) == 1
+        with patch.object(regression_corpus_schema, "migrate_self_db") as migrate:
+            report = run_regression_corpus((self._db_check(),))
+        migrate.assert_not_called()
+        (preflight,) = [r for r in report.results if r.check is regression_corpus_schema.SCHEMA_PREFLIGHT]
+        assert preflight.skipped is True
 
     def test_a_non_db_check_still_runs_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The skip is scoped to DB-backed checks. The git/FSM checks that need no
