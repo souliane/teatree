@@ -38,6 +38,36 @@ class TestTheDegradedTierIsReported:
         assert "restrictive" in out.lower()
         assert "global" in out
 
+    def test_the_recorded_caller_is_named(self, tmp_path: Path, capsys) -> None:
+        # #3980: the fault this tier actually hit is deterministic — a sync ORM read from an
+        # async frame — so "which call site" is the whole diagnosis, and the traceback at the
+        # read never carries it.
+        marker = _marker(
+            tmp_path,
+            {
+                "scopes": ["global"],
+                "callers": ["headless.py:198 in _run_headless_agent"],
+                "occurrences": 4,
+                "first_seen": time.time(),
+                "last_seen": time.time(),
+            },
+        )
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=marker):
+            assert _check_config_override_tier_healthy() is False
+        out = capsys.readouterr().out
+        assert "headless.py:198 in _run_headless_agent" in out
+        assert "async frame" in out
+
+    def test_a_marker_without_callers_still_reports(self, tmp_path: Path, capsys) -> None:
+        # The foil: a marker written before the field existed must not break the surface.
+        marker = _marker(
+            tmp_path,
+            {"scopes": ["global"], "occurrences": 1, "first_seen": time.time(), "last_seen": time.time()},
+        )
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=marker):
+            assert _check_config_override_tier_healthy() is False
+        assert "Called from" not in capsys.readouterr().out
+
     def test_no_marker_passes_silently(self, tmp_path: Path, capsys) -> None:
         with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp_path / "absent.json"):
             assert _check_config_override_tier_healthy() is True

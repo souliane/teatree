@@ -21,7 +21,7 @@ from pydantic_ai.settings import ModelSettings
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
-from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
+from teatree.agents.regulated_path import RegulatedPathPolicy
 from teatree.llm.credentials import AnthropicApiKeyCredential
 from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_openai_compatible_backend
 
@@ -133,6 +133,12 @@ class PydanticAiModelConfig:
         is a base ``ModelSettings`` key both bindings honour), so it lives here rather than on
         the router-only :class:`OpenAICompatibleLaneConfig`. Resolved SYNCHRONOUSLY by :func:`resolve_harness`
         from the ``pydantic_ai_max_tokens`` setting; ``None`` leaves the binding's own default.
+    *   ``regulated_path`` — the regulated-lane allowlist gate's policy, resolved SYNCHRONOUSLY by
+        :func:`resolve_harness` (:class:`~teatree.agents.regulated_path.RegulatedPathPolicy`, #3980).
+        Binding-agnostic for the same reason ``max_tokens`` is: both bindings gate their model id
+        through it. ``None`` means "not resolved here" and the gate reads the stored settings at
+        model-build time — the pre-#3980 behaviour, kept so a harness built without an explicit
+        policy still enforces what the operator stored.
 
     Prompt-cache breakpoints (the :class:`~teatree.agents.context_plan.ContextPlan`
     → ``cache_control`` path, #3157 E2) are NOT wired into the harness here: nothing
@@ -148,6 +154,7 @@ class PydanticAiModelConfig:
     backend: OpenAICompatibleLaneConfig = field(default_factory=OpenAICompatibleLaneConfig)
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
     max_tokens: int | None = None
+    regulated_path: RegulatedPathPolicy | None = None
 
 
 def native_anthropic_model_name(options: HarnessOptions) -> str:
@@ -165,7 +172,7 @@ def native_anthropic_model_name(options: HarnessOptions) -> str:
     return options.model or resolve_tier(DEFAULT_TIER)
 
 
-def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
+def resolve_native_anthropic_model(options: HarnessOptions, regulated_path: RegulatedPathPolicy | None) -> Model:
     """Construct the direct Anthropic Messages-API model (#3157 E1b) — the cache_control path.
 
     The one branch that makes real ``cache_control`` reachable: a native ``pydantic_ai``
@@ -174,11 +181,12 @@ def resolve_native_anthropic_model(options: HarnessOptions) -> Model:
     dependency (``pydantic-ai-slim[anthropic]``); it is imported lazily so a router-only
     install never pays for it, and its absence fails LOUD with the install hint only when
     this binding is actually selected — the same late-fail contract the OpenAI-compatible
-    credential uses. The model id (:func:`native_anthropic_model_name`) is gated by the regulated-path
-    allowlist first.
+    credential uses. The model id (:func:`native_anthropic_model_name`) is gated by *regulated_path*
+    first — the policy resolved SYNCHRONOUSLY when the harness was built, never read here (this
+    runs inside the async event loop, where the settings read is refused, #3980).
     """
     model_name = native_anthropic_model_name(options)
-    assert_model_allowed_on_regulated_path(model_name)
+    RegulatedPathPolicy.resolve(regulated_path).assert_allowed(model_name)
     try:
         from pydantic_ai.models.anthropic import AnthropicModel  # noqa: PLC0415 — optional extra, imported lazily
         from pydantic_ai.providers.anthropic import AnthropicProvider  # noqa: PLC0415 — optional extra, imported lazily

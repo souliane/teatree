@@ -145,10 +145,9 @@ def _run_headless_agent(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
         return _record_failure(task, error=budget_breach)
 
-    backend = _resolve_backend_or_failure(task, phase=phase)
-    if isinstance(backend, TaskAttempt):
-        return backend
-    harness = backend
+    harness = _resolve_backend_or_failure(task, phase=phase)
+    if isinstance(harness, TaskAttempt):
+        return harness
 
     # Resolve the overlay's stage skills ONCE and thread the list into every
     # consumer (#3206). Re-resolving per prompt builder re-warns on a
@@ -167,10 +166,9 @@ def _run_headless_agent(
     provider = resolve_dispatch_provider(task, phase=phase)
     lane = _resolve_dispatch_lane(harness, provider)
 
-    child_env_result = _admission_park_or_child_env(task, harness, provider, lane=lane, phase=phase)
-    if isinstance(child_env_result, TaskAttempt):
-        return child_env_result
-    child_env = child_env_result
+    child_env = _admission_park_or_child_env(task, harness, provider, lane=lane, phase=phase)
+    if isinstance(child_env, TaskAttempt):
+        return child_env
 
     prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
     system_context = build_system_context(
@@ -187,6 +185,11 @@ def _run_headless_agent(
         overrides=SpawnOverrides(env=child_env, turn_ceiling=_turn_ceiling(harness)),
     )
 
+    # Resolved HERE, not inside the coroutine (#3980): Django refuses a synchronous ORM read to a
+    # thread that owns a running event loop, and the config resolver catches that refusal and
+    # resolves the whole DB override tier as unreadable — so a ceiling read from inside
+    # ``asyncio.run`` silently returns shipped defaults on every dispatch instead of failing.
+    watchdog = LoopWatchdog.from_settings()
     try:
         # The quarantined reader (#116) also spawns inside ``reader_env_hermetic`` so its
         # ``os.environ`` is reduced to the allowlist: the SDK merges ``os.environ`` under
@@ -195,7 +198,7 @@ def _run_headless_agent(
         # suspenders). A no-op ``nullcontext`` for every non-reader phase.
         reader_scrub = reader_env_hermetic() if is_reader_phase(phase) else contextlib.nullcontext()
         with git_env_hermetic(), reader_scrub:
-            outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
+            outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness, watchdog=watchdog))
     except CredentialError as exc:
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
         # ``harness.open`` — this is the same "fail loud, record it" contract
@@ -364,12 +367,13 @@ async def _drive_with_heartbeat(
     options: ClaudeAgentOptions,
     harness: Harness,
     *,
-    watchdog: LoopWatchdog | None = None,
+    watchdog: LoopWatchdog,
 ) -> HarnessOutcome:
-    """Run the agent in-process while sending lease heartbeats (#882, #997)."""
-    if watchdog is None:
-        watchdog = LoopWatchdog.from_settings()
+    """Run the agent in-process while sending lease heartbeats (#882, #997).
 
+    *watchdog* is REQUIRED rather than resolved here: its ceilings come from the DB-home config
+    tier, and this coroutine runs inside the event loop where that read is refused (#3980).
+    """
     # Sample accumulated deltas once before the run: prior-attempt totals are
     # static for this run. The read runs in a worker thread (so the event loop
     # is never blocked) that gets its OWN Django DB connection; close it in the

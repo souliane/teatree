@@ -226,14 +226,19 @@ def _check_config_override_tier_healthy() -> bool:
         return True
     if report is None:
         return True
+    # The caller is what makes the record actionable (#3980): the deterministic fault this tier
+    # actually hit in production — a sync ORM read from inside an event loop — is settled by WHERE
+    # the read was made, and the traceback at the read holds only the ORM frames.
+    called_from = f" Called from: {'; '.join(report.callers)}." if report.callers else ""
     typer.echo(
         f"FAIL  The ConfigSetting override tier FAILED to read {report.occurrences} time(s) "
         f"(scopes: {', '.join(report.scopes)}; most recent {int(report.age_seconds)}s ago). While "
         "degraded, the autonomy/approval gates resolve to their most RESTRICTIVE value rather "
         "than your stored configuration, so the factory is running more conservatively than you "
-        "configured it to. Typical causes are SQLite lock contention against a large control DB, "
-        "an exhausted file-handle budget, or a full disk. Fix the underlying read fault; the "
-        "record clears itself once no further read fails for "
+        f"configured it to.{called_from} Typical causes are a config read reached from an async "
+        "frame (deterministic — fix the caller, not the DB), SQLite lock contention against a "
+        "large control DB, an exhausted file-handle budget, or a full disk. Fix the underlying "
+        "fault; the record clears itself once no further read fails for "
         f"{MARKER_TTL_SECONDS // 3600}h, or delete {marker_path()} to acknowledge it now."
     )
     return False
