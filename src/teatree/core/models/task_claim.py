@@ -139,3 +139,30 @@ def renew_lease(task: "Task", *, lease_seconds: int = 300) -> None:
         raise LeaseLostError(msg)
     task.heartbeat_at = now
     task.lease_expires_at = expires
+
+
+def describe_lease_loss(task: "Task") -> str:
+    """Name what actually took *task*'s claim, read back from the row (#3982).
+
+    A single worker driving every loop still loses leases to ITSELF: an event-loop-starved
+    heartbeat lets the lease lapse, this same process's ``reclaim_orphaned_claims`` sweep
+    requeues the row, and the still-running agent's next renewal finds the claim generation
+    moved on. Reporting that as "re-claimed by another worker" sends the operator hunting
+    for a second worker that does not exist, so the reclaimer is read rather than assumed.
+
+    Every reason keeps the ``lease lost for task <pk>:`` opening, which is what
+    :func:`~teatree.core.modelkit.task_failure_taxonomy.classify_failure` keys
+    ``FailureKind.LEASE_LOST`` on once the caller prefixes ``stuck_loop: ``.
+    """
+    opening = f"lease lost for task {task.pk}:"
+    current = type(task).objects.filter(pk=task.pk).values("status", "claimed_by").first()
+    if current is None:
+        return f"{opening} the row no longer exists"
+    status, owner = str(current["status"]), current["claimed_by"]
+    if status in task.Status.terminal():
+        return f"{opening} the row is already {status} — the attempt has nothing left to hand over"
+    if status == task.Status.PENDING:
+        return f"{opening} the lease lapsed and the row was requeued in-process — no competing worker holds it"
+    if owner == task.claimed_by:
+        return f"{opening} re-claimed in-process by this same worker ({owner!r}) — no competing worker holds it"
+    return f"{opening} re-claimed by a competing worker ({owner!r})"

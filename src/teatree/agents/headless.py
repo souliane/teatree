@@ -62,7 +62,9 @@ from teatree.agents.usage_window import (
 )
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
+from teatree.core.models.task_claim import describe_lease_loss
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.phase_landing import phase_landing_evidence
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -115,6 +117,10 @@ class HarnessOutcome:
     rate_limit_info: RateLimitInfo | None = None
     #: (#2886) The pydantic_ai session's conversation, ``None`` for every other backend.
     thread: "list[ModelMessage] | None" = None
+    #: (#3982) Whether ``stuck_reason`` is a LOST LEASE rather than a watchdog breach. A
+    #: typed flag, not a phrase match on the reason: the reason now names the actual
+    #: reclaimer, so any discriminator built on its wording would drift with it.
+    lease_lost: bool = False
 
 
 def run_headless(
@@ -302,7 +308,7 @@ def _active_agent_count() -> int:
 def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt | None:
     """Fold a non-success drive outcome into a recorded failure (or park), or ``None``."""
     if outcome.stuck_reason is not None:
-        return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
+        return _record_stuck_outcome(task, outcome, stuck_reason=outcome.stuck_reason)
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
     if limit is not None:
         sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
@@ -351,9 +357,16 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
 
 
 def _renew_lease_closing_connection(task: Task) -> None:
-    """Renew *task*'s lease and close THIS thread's DB connection."""
+    """Renew *task*'s lease and close THIS thread's DB connection.
+
+    A lost lease is re-raised naming what actually took the claim (#3982). The diagnosis
+    is a read-back, so it must run in THIS thread — the ``finally`` below closes the only
+    DB connection this thread owns.
+    """
     try:
         task.renew_lease(lease_seconds=_LEASE_SECONDS)
+    except LeaseLostError as exc:
+        raise LeaseLostError(describe_lease_loss(task)) from exc
     finally:
         close_thread_db_connections()
 
@@ -379,20 +392,24 @@ async def _drive_with_heartbeat(
     usage = await asyncio.to_thread(_sample_usage_closing_connection, task)
     started_at = time.monotonic()
     breach: list[str] = []
+    lease_lost = False
 
     async with harness.open(options) as session:
 
         async def _heartbeat() -> None:
+            nonlocal lease_lost
             try:
                 while True:
                     await asyncio.sleep(_HEARTBEAT_INTERVAL)
                     try:
                         await asyncio.to_thread(_renew_lease_closing_connection, task)
-                    except LeaseLostError:
-                        # Another worker took over this task's claim (the lease
-                        # lapsed and was reclaimed). Abort THIS run — two workers
-                        # driving the same unit is the double-spend the CAS guards.
-                        breach.append(f"lease lost for task {task.pk}: re-claimed by another worker")
+                    except LeaseLostError as exc:
+                        # Something took over this task's claim (the lease lapsed and was
+                        # reclaimed). Abort THIS run — two drivers on the same unit is the
+                        # double-spend the CAS guards. The reason names the actual
+                        # reclaimer, which is often this very process (#3982).
+                        breach.append(str(exc))
+                        lease_lost = True
                         logger.warning("Task %s lease lost; interrupting duplicate run", task.pk)
                         await session.interrupt()
                         return
@@ -442,6 +459,7 @@ async def _drive_with_heartbeat(
             result_message=outcome.result_message,
             stuck_reason=breach[0],
             rate_limit_info=outcome.rate_limit_info,
+            lease_lost=lease_lost,
         )
     return outcome
 
@@ -498,6 +516,56 @@ def _record_success(
         skills_loaded=list(provenance.skills_loaded),
     )
     return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))
+
+
+def _record_stuck_outcome(task: Task, outcome: HarnessOutcome, *, stuck_reason: str) -> TaskAttempt:
+    """Record an interrupted run: the LANDED outcome where its evidence exists, else the failure.
+
+    Only a LOST LEASE qualifies (#3982) — it says the lease lapsed, not that the work
+    failed. A watchdog runtime/turns breach is a genuine runaway with no such alibi, so it
+    stays a recorded failure however far the ticket has advanced.
+    """
+    evidence = phase_landing_evidence(task) if outcome.lease_lost else ""
+    if evidence:
+        return _record_landed(task, evidence=evidence, lease_loss=stuck_reason)
+    return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}")
+
+
+def _record_landed(task: Task, *, evidence: str, lease_loss: str) -> TaskAttempt:
+    """Record the outcome *task*'s own phase evidence supports, not the lost lease (#3982).
+
+    A lost lease says the LEASE lapsed; it says nothing about the work. When the phase's
+    output demonstrably landed, recording ``failed`` / ``lease_lost`` feeds the auto-repair
+    sweep a "re-do this" signal for completed work and inflates the environmental-failure
+    rate. The attempt is recorded exit-0 carrying both the evidence and the lease loss, so
+    the interruption stays visible without being the verdict.
+
+    The row is landed COMPLETED only while NOTHING holds it — a conditional
+    ``UPDATE ... WHERE status=PENDING``, the same compare-and-swap
+    ``transient_requeue._retire_superseded`` uses. A live successor's claim is therefore
+    never terminated out from under it, and a row nobody took up after the in-process
+    reclaim stops being re-dispatched for work that already shipped. No FSM side effect is
+    needed: the evidence IS that the ticket already reached this phase's target state.
+    """
+    summary = f"phase landed despite a lost lease — {evidence}; {lease_loss}"
+    attempt = TaskAttempt.objects.create(
+        task=task,
+        execution_target=task.execution_target,
+        ended_at=timezone.now(),
+        exit_code=0,
+        error="",
+        result={"summary": summary},
+    )
+    Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).update(
+        status=Task.Status.COMPLETED,
+        claimed_at=None,
+        claimed_by="",
+        claimed_by_session="",
+        lease_expires_at=None,
+        heartbeat_at=None,
+    )
+    logger.warning("Task %s lost its lease but its phase landed: %s", task.pk, evidence)
+    return attempt
 
 
 def _record_failure(
