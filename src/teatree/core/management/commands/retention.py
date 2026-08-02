@@ -24,7 +24,9 @@ rows on SQLite reclaims no disk on its own — the pages move to the free list a
 the file keeps its size — and the control DB is the seed every auto-isolated
 worktree env dir is copied from, so its size is paid once per live checkout. A
 dry run never vacuums: the rebuild rewrites the whole file, which is not
-something a preview may do (#3852).
+something a preview may do (#3852). The reclaim it reports is SQLite's own page
+delta rather than a file-size difference, because a live reader can defer the
+truncation past the rebuild that earned it (#3979).
 """
 
 import logging
@@ -57,7 +59,33 @@ class _TableRow(TypedDict):
 class _VacuumRow(TypedDict):
     ran: bool
     reason: str
+    summary: str
     bytes_reclaimed: int
+    page_size: int
+    pages_before: int
+    pages_after: int
+    free_pages_before: int
+    free_pages_after: int
+    file_bytes_before: int
+    file_bytes_after: int
+    file_caught_up: bool
+
+
+def _vacuum_row(vacuum: VacuumOutcome) -> _VacuumRow:
+    return {
+        "ran": vacuum.ran,
+        "reason": vacuum.reason,
+        "summary": vacuum.summary,
+        "bytes_reclaimed": vacuum.bytes_reclaimed,
+        "page_size": vacuum.page_size,
+        "pages_before": vacuum.pages_before,
+        "pages_after": vacuum.pages_after,
+        "free_pages_before": vacuum.free_pages_before,
+        "free_pages_after": vacuum.free_pages_after,
+        "file_bytes_before": vacuum.file_bytes_before,
+        "file_bytes_after": vacuum.file_bytes_after,
+        "file_caught_up": vacuum.file_caught_up,
+    }
 
 
 class RetentionReport(TypedDict):
@@ -114,7 +142,7 @@ class Command(TyperCommand):
                 }
                 for table in plan.tables
             ],
-            "vacuum": {"ran": vacuum.ran, "reason": vacuum.reason, "bytes_reclaimed": vacuum.bytes_reclaimed},
+            "vacuum": _vacuum_row(vacuum),
         }
         verb = "Pruned" if apply else "Would prune"
         logger.info("retention: %s %d row(s) across %d table(s)", verb.lower(), plan.total_rows, len(plan.tables))
@@ -151,9 +179,7 @@ def _detail(table: _TableRow) -> str:
 def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None:
     verb = "Pruned" if applied else "Would prune"
     rows: list[list[str]] = [[table["table"], _detail(table)] for table in payload["tables"]]
-    vacuum = payload["vacuum"]
-    reclaimed = f"{vacuum['bytes_reclaimed'] / 1024**2:.1f} MiB reclaimed" if vacuum["ran"] else vacuum["reason"]
-    rows.append(["VACUUM", reclaimed])
+    rows.append(["VACUUM", payload["vacuum"]["summary"]])
     title = f"Retention — {verb.lower()} {payload['total_rows']} row(s)"
     if not applied:
         title += " (dry run — pass --apply to delete)"

@@ -18,6 +18,13 @@ a transaction; it must follow the prune's commit rather than join it. It also
 needs transient free space of roughly the database's own size while the rebuild
 is in flight.
 
+**The reclaim figure is SQLite's page delta, never a difference of file sizes
+(#3979).** The rebuilt page count is committed by the ``VACUUM`` itself, whereas the
+truncation of the file it lives in waits for a checkpoint that any live reader can
+defer — so a file measured here can still be reporting its pre-vacuum size on a
+rebuild that returned 80% of the database, and did. The page and free-list deltas
+are reported alongside as the direct evidence that the rebuild happened.
+
 **Concurrency is left to SQLite's own exclusive lock — a deliberate choice, not an
 oversight.** A second concurrent vacuum loses the race and surfaces as
 ``sqlite3.Error`` → ``ran=False`` with the reason, which is a correct outcome:
@@ -62,6 +69,23 @@ def _required_headroom_bytes(db_size: int) -> int:
 
 
 @dataclass(frozen=True, slots=True)
+class _PageState:
+    """SQLite's own accounting of the database, read through one connection."""
+
+    size: int
+    count: int
+    free: int
+
+
+def _page_state(connection: sqlite3.Connection) -> _PageState:
+    return _PageState(
+        size=int(connection.execute("PRAGMA page_size").fetchone()[0]),
+        count=int(connection.execute("PRAGMA page_count").fetchone()[0]),
+        free=int(connection.execute("PRAGMA freelist_count").fetchone()[0]),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class VacuumOutcome:
     """What the vacuum did, or the stated reason it did nothing.
 
@@ -72,12 +96,43 @@ class VacuumOutcome:
 
     ran: bool
     reason: str
-    bytes_before: int = 0
-    bytes_after: int = 0
+    file_bytes_before: int = 0
+    file_bytes_after: int = 0
+    page_size: int = 0
+    pages_before: int = 0
+    pages_after: int = 0
+    free_pages_before: int = 0
+    free_pages_after: int = 0
 
     @property
     def bytes_reclaimed(self) -> int:
-        return max(self.bytes_before - self.bytes_after, 0)
+        """The rebuild's own page delta — never a difference of file sizes (#3979)."""
+        return max(self.page_size * (self.pages_before - self.pages_after), 0)
+
+    @property
+    def file_caught_up(self) -> bool:
+        """Is the rebuild's truncation already visible on the filesystem?"""
+        return self.ran and self.file_bytes_after <= self.page_size * self.pages_after
+
+    @property
+    def summary(self) -> str:
+        """The one line every caller reports, so the three outcomes cannot blur."""
+        if not self.ran:
+            return self.reason
+        if not self.bytes_reclaimed:
+            return f"ran — nothing to reclaim ({self.free_pages_before} free page(s) before)"
+        lag = (
+            ""
+            if self.file_caught_up
+            else (
+                f"; file still {self.file_bytes_after / 1024**2:.1f} MiB — the truncation lands at the next checkpoint"
+            )
+        )
+        return (
+            f"{self.bytes_reclaimed / 1024**2:.1f} MiB reclaimed "
+            f"(pages {self.pages_before}→{self.pages_after}, "
+            f"free {self.free_pages_before}→{self.free_pages_after}){lag}"
+        )
 
 
 def vacuum_sqlite(path: Path) -> VacuumOutcome:
@@ -108,19 +163,38 @@ def vacuum_sqlite(path: Path) -> VacuumOutcome:
                 f"{free / 1024**2:.0f} MiB is available on {path.parent} — reclaim space first, "
                 "e.g. `t3 <overlay> workspace reclaim-disk`"
             ),
-            bytes_before=before,
-            bytes_after=before,
+            file_bytes_before=before,
+            file_bytes_after=before,
         )
     try:
         connection = sqlite3.connect(path, isolation_level=None)  # autocommit: VACUUM cannot run in a transaction
         try:
+            start = _page_state(connection)
             connection.execute("VACUUM")
+            end = _page_state(connection)
+            # In WAL the rebuilt pages sit in the -wal until a checkpoint folds them
+            # back, so the file keeps its pre-vacuum size until this runs. Best-effort
+            # by design: a live reader legitimately blocks it, and the pages are
+            # reclaimed either way — this only decides WHEN the filesystem catches up.
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             connection.close()
     except sqlite3.Error as exc:
         logger.warning("db_vacuum: VACUUM on %s failed: %s", path, exc)
-        return VacuumOutcome(ran=False, reason=f"VACUUM failed: {exc}", bytes_before=before, bytes_after=before)
-    return VacuumOutcome(ran=True, reason="rebuilt", bytes_before=before, bytes_after=path.stat().st_size)
+        return VacuumOutcome(
+            ran=False, reason=f"VACUUM failed: {exc}", file_bytes_before=before, file_bytes_after=before
+        )
+    return VacuumOutcome(
+        ran=True,
+        reason="rebuilt",
+        file_bytes_before=before,
+        file_bytes_after=path.stat().st_size,
+        page_size=end.size,
+        pages_before=start.count,
+        pages_after=end.count,
+        free_pages_before=start.free,
+        free_pages_after=end.free,
+    )
 
 
 def vacuum_control_db(*, using: str = DEFAULT_DB_ALIAS) -> VacuumOutcome:
