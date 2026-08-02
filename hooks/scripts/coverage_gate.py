@@ -35,6 +35,16 @@ measured repo, the measurement is about a different repo and is SKIPPED with a
 stderr ``NOTE`` naming the reason and the ``-R`` remedy — never silently
 measured against whatever the cwd happens to be. Resolution stays fail-open
 throughout: uncertainty yields a skip, so the gate never wedges a create (#122).
+
+Fail-open buys one hazard, and :func:`note_gate_skipped` pays it: a decline that
+says nothing is indistinguishable from a clean measurement, so the gate can go
+dark with no tell (#4004). EVERY path that declines without measuring names
+itself on stderr — an unresolvable repo, a different publish target, a repo that
+ships no branch, ``t3`` off PATH, a crashed measurement, an unparsable report.
+A measurement that RAN stays silent, so a ``NOTE`` means exactly "did not
+measure, and here is why". Pinned by
+``tests/test_coverage_gate_never_silently_skips.py``, independently of this
+module's own test file.
 """
 
 import importlib
@@ -117,13 +127,21 @@ _GH_HEAD_BRANCH_FLAGS: Final[tuple[str, ...]] = ("--head", "-H")
 # A git probe that hangs blocks the user; these are local ref/config reads.
 _GIT_PROBE_TIMEOUT_S: Final[int] = 5
 
+# The shelled `t3 tool diff-coverage` walks a whole diff, so it gets a wider
+# budget than the ref reads above — still bounded, since a cold hook blocks the user.
+_MEASUREMENT_TIMEOUT_S: Final[int] = 30
 
-def _note(reason: str) -> None:
+
+def note_gate_skipped(reason: str) -> None:
     """Emit a one-line diagnostic NOTE so a skip is never silent.
 
     Mirrors the banned-terms gate's unknown-slug NOTE (#1657): a gate that
     declines to measure must say WHY, or the next reader cannot tell a
     deliberate out-of-scope skip from a gate that quietly stopped working.
+
+    Public because ``handle_block_uncovered_diff`` owns one fail-open branch of
+    its own — the shelled measurement crashing or timing out — and a second
+    message shape for the same event is how the two drift apart (#4004).
     """
     sys.stderr.write(f"NOTE: coverage gate 12 skipped — {reason}.\n")
 
@@ -212,7 +230,7 @@ def _explicit_target_is_measured_repo(target: str, repo_dir: Path) -> bool:
     except Exception:  # noqa: BLE001 — cold hook must stay crash-proof; keep the established scope
         return True
     if not measured:
-        _note(f"the publish target is {target} but {repo_dir} has no resolvable repo slug")
+        note_gate_skipped(f"the publish target is {target} but {repo_dir} has no resolvable repo slug")
         return False
     return _slugs_name_same_repo(target, measured)
 
@@ -243,21 +261,21 @@ def measured_repo_is_publish_target(command: str, repo_dir: Path | None) -> bool
 
     ``False`` — SKIP the measurement — whenever the target cannot be resolved
     at all (no *repo_dir*, an unknown slug, an unprovable branch), always with
-    a :func:`_note` saying why. Skipping is the right failure here rather than
-    denying: this is a cold PreToolUse hook whose contract is that a broken or
-    ambiguous environment must never wedge a create (#122), and a gate that
+    a :func:`note_gate_skipped` saying why. Skipping is the right failure here
+    rather than denying: this is a cold PreToolUse hook whose contract is that a
+    broken or ambiguous environment must never wedge a create (#122), and a gate that
     denies on evidence from an unrelated codebase gets routed around instead of
     resolved — which protects nothing at all.
     """
     if repo_dir is None:
-        _note("no repo resolved for the command (no leading `cd` target on disk, no usable cwd)")
+        note_gate_skipped("no repo resolved for the command (no leading `cd` target on disk, no usable cwd)")
         return False
     target = extract_mr_target_repo(command)
     if target:
         return _explicit_target_is_measured_repo(target, repo_dir)
     if repo_ships_branch(repo_dir, shipped_branch(command)):
         return True
-    _note(
+    note_gate_skipped(
         f"{repo_dir} does not ship the branch being published, so its diff is a different "
         "repo's work; name the target with `-R <owner>/<repo>` to scope the gate explicitly"
     )
@@ -322,12 +340,15 @@ def coverage_gate_repo_dir(command: str, cwd: str | None) -> Path | None:
 def diff_coverage_argv(repo_dir: Path | None) -> list[str] | None:
     """Return the ``t3 tool diff-coverage --json`` argv keyed to *repo_dir*, or ``None``.
 
-    ``None`` when ``t3`` is not on PATH (the gate then fails open). ``--repo`` is
+    ``None`` when ``t3`` is not on PATH (the gate then fails open), announced —
+    a cold hook inherits a restricted PATH, so this is the shape in which gate 12
+    stops firing for every create on the box at once (#4004). ``--repo`` is
     appended only when *repo_dir* resolved, so a cwd-relative run (the historical
     behaviour) is preserved when no target could be pinned.
     """
     t3_bin = shutil.which("t3")
     if t3_bin is None:
+        note_gate_skipped("`t3` is not on PATH, so the diff cannot be measured")
         return None
     argv = [t3_bin, "tool", "diff-coverage", "--json"]
     if repo_dir is not None:
@@ -346,13 +367,23 @@ def diff_coverage_finding(stdout: str) -> str | None:
     ``passes is False`` is "not a finding" and the caller fails open.
 
     Returns the human-readable finding summary when there IS a genuine finding,
-    else ``None`` (clean, crashed, or unparsable).
+    else ``None`` (clean, crashed, or unparsable). The three no-verdict shapes
+    announce themselves and the two verdict-carrying ones stay silent, so a
+    ``NOTE`` distinguishes "did not measure" from "measured and passed" (#4004).
     """
     try:
         report = json.loads(stdout)
     except (json.JSONDecodeError, ValueError):
+        note_gate_skipped("`t3 tool diff-coverage --json` produced no parseable report")
         return None
-    if not isinstance(report, dict) or report.get("passes") is not False:
+    if not isinstance(report, dict):
+        note_gate_skipped("the diff-coverage report is not a JSON object")
+        return None
+    verdict = report.get("passes")
+    if verdict is True:
+        return None
+    if verdict is not False:
+        note_gate_skipped("the diff-coverage report carries no `passes` verdict")
         return None
     rows = [
         f"  uncovered new lines in {entry.get('path')}: {entry.get('lines')}"
@@ -368,3 +399,32 @@ def diff_coverage_finding(stdout: str) -> str | None:
             )
         )
     return "\n".join(rows)
+
+
+def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
+    """The gate's verdict for an already-triggered *command*: a deny reason, or ``None``.
+
+    Every fail-open branch between the merge-class trigger and the deny lives
+    here, so each one sits next to the :func:`note_gate_skipped` that explains it
+    (#4004) — the router keeps only the trigger and the deny. Scattering these
+    across the two modules is how one of them stayed silent.
+    """
+    repo_dir = coverage_gate_repo_dir(command, cwd)
+    if not measured_repo_is_publish_target(command, repo_dir):
+        return None
+    argv = diff_coverage_argv(repo_dir)
+    if argv is None:
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_MEASUREMENT_TIMEOUT_S,
+            cwd=str(repo_dir) if repo_dir is not None else None,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        note_gate_skipped(f"the diff-coverage measurement did not complete ({type(exc).__name__})")
+        return None
+    return diff_coverage_finding(result.stdout or "")

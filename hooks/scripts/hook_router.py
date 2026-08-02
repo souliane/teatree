@@ -63,11 +63,8 @@ from hooks.scripts.classifier_relax_gate import (
 )
 from hooks.scripts.completion_claim_gate import handle_completion_claim_gate
 from hooks.scripts.config_overwrite_guard import handle_block_config_overwrite
-from hooks.scripts.coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
-from hooks.scripts.coverage_gate import diff_coverage_argv as _diff_coverage_argv
-from hooks.scripts.coverage_gate import diff_coverage_finding as _diff_coverage_finding
+from hooks.scripts.coverage_gate import coverage_finding_for_command as _coverage_finding_for_command
 from hooks.scripts.coverage_gate import is_merge_class_command as _is_merge_class_command
-from hooks.scripts.coverage_gate import measured_repo_is_publish_target as _measured_repo_is_publish_target
 from hooks.scripts.cron_tracking import (
     cron_cadence_seconds as _cron_cadence_seconds,  # noqa: F401 re-export for test access
 )
@@ -1787,7 +1784,7 @@ def _ai_sig_scan_argv() -> list[str] | None:
 # nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
 # exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
 # two apart — keying on the summary line does, mirroring the sibling
-# ``_diff_coverage_finding`` structured-stdout discriminator.
+# ``coverage_gate.diff_coverage_finding`` structured-stdout discriminator.
 _AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
 
 
@@ -2449,39 +2446,9 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     """
     if not _is_merge_class_mutation(data):
         return False
-
-    # Measure the worktree the GATED command targets — its own leading ``cd``,
-    # else the harness cwd — NOT the cold hook's inherited session cwd. A
-    # cross-worktree ship (``cd <other-worktree> && gh pr create``) otherwise
-    # measured the session cwd's diff and flagged uncovered lines from an
-    # unrelated worktree.
-    command = data.get("tool_input", {}).get("command", "")
-    repo_dir = _coverage_gate_repo_dir(command, data.get("cwd"))
-    # A publish to repo X must never be gated on uncommitted symbols in repo Y:
-    # when the command names an explicit target repo that is NOT the measured
-    # repo, skip the measurement entirely (§17.6.3 scope, fail-open #122).
-    if not _measured_repo_is_publish_target(command, repo_dir):
-        return False
-    argv = _diff_coverage_argv(repo_dir)
-    if argv is None:
-        return False
-
-    try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            argv,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-            cwd=str(repo_dir) if repo_dir is not None else None,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-
-    finding = _diff_coverage_finding(result.stdout or "")
+    finding = _coverage_finding_for_command(data.get("tool_input", {}).get("command", ""), data.get("cwd"))
     if finding is None:
         return False
-
     return _fail_open_or_deny(
         data,
         "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). An added production line is uncovered, or a "
