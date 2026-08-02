@@ -21,6 +21,7 @@ from teatree.loop.scanners import (
     DbBackupScanner,
     EvalLocalScanner,
     IdleStackReaperScanner,
+    IntakeConcurrencyScanner,
     LocalStackQueueDrainerScanner,
     MyPrsScanner,
     NotionViewScanner,
@@ -199,6 +200,25 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
         max_worktree_gc_per_tick=settings.max_worktree_gc_per_tick,
         allow_destructive_ram=settings.allow_destructive_ram,
         ram_kill_allowlist=tuple(settings.ram_kill_allowlist),
+    )
+
+
+def _intake_concurrency_scanner() -> IntakeConcurrencyScanner | None:
+    """Wire the global adaptive-intake-concurrency scanner (#3992).
+
+    Returns ``None`` under either kill-switch — its own
+    ``adaptive_intake_concurrency_enabled``, or ``resource_pressure_disabled``, which
+    stands the whole resource loop down. Global (``overlay=""``) for the same reason the
+    pressure scanner is: RAM is a property of the box, not of any one overlay's work.
+    """
+    settings = load_config().user
+    if settings.resource_pressure_disabled or not settings.adaptive_intake_concurrency_enabled:
+        return None
+    return IntakeConcurrencyScanner(
+        static_ceiling=settings.issue_implementer_max_concurrent,
+        reserve_gb=settings.intake_ram_reserve_gb,
+        per_agent_gb=settings.intake_ram_per_agent_gb,
+        cadence_minutes=settings.resource_pressure_cadence_minutes,
     )
 
 

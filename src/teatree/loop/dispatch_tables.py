@@ -119,6 +119,10 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
+    # #3992 The resource loop moved intake concurrency by itself — an observation the
+    # operator should be able to SEE, but never a thing for them to act on, so it
+    # renders in in_flight rather than competing with the pressure advisories above.
+    "resource.intake_concurrency_adapted": "in_flight",
     # #129 task-sweep — an orphaned (unverifiable) teatree task surfaces for
     # operator review; the completion path routes through the mechanical handler below.
     "task.orphaned": "action_needed",

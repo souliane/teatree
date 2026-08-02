@@ -16,6 +16,9 @@
 # 1: #3658 resolves a thread's subject against teatree's own `Ticket` rows — an ORM
 # import that must resolve after the app registry is ready, so it stays call-time.
 "src/teatree/core/owner_dm_sweep.py" = 1
+# 1: the pressure reading (`ResourcePressureMarker`) is an ORM import that must
+# resolve after the app registry is ready, so it stays call-time.
+"src/teatree/core/intake/concurrency.py" = 1
 # 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
 # after the app registry is ready, so it stays call-time.
 "src/teatree/core/admission_governor.py" = 1

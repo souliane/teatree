@@ -20,6 +20,7 @@ from teatree.config import (
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.intake.budget import read_intake_budget
+from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
@@ -386,6 +387,11 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     even at a full budget — with ``can_claim=False`` it claims nothing new but STILL
     runs the per-tick heartbeat sweep, so an in-flight claim can never expire and be
     stolen mid-dispatch.
+
+    The in-flight LIMIT comes from :func:`resolve_intake_concurrency` (#3992), which
+    hands back the resource loop's headroom-derived number, or
+    ``issue_implementer_max_concurrent`` verbatim whenever that number is missing,
+    stale, or switched off.
     """
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
     from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
@@ -401,7 +407,8 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
     # so it strands its slot and the budget gate reads false forever.
     ImplementedIssueMarker.objects.reconcile_stale(backend.name)
-    budget = read_intake_budget(backend.name, settings.issue_implementer_max_concurrent)
+    limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=backend.name)
+    budget = read_intake_budget(backend.name, limit)
     can_claim = not budget.at_budget
     if not can_claim:
         # #3978: without this the tick returns None, does nothing and reports success —
@@ -418,7 +425,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         identities=backend.identities,
         repo_slugs=_owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
-        max_concurrent=settings.issue_implementer_max_concurrent,
+        max_concurrent=limit,
     )
 
 

@@ -42,6 +42,12 @@ class ResourcePressureMarker(models.Model):
     consecutive_critical = models.IntegerField(default=0)
     last_warn_dm_at = models.DateTimeField(null=True, blank=True)
     last_plan = models.TextField(blank=True, default="")
+    # #3992 The resource loop's OUTPUT, not another input: the intake concurrency it
+    # last derived from observed headroom. NULL means never computed, which the reader
+    # resolves to the operator's static setting — as does a value older than the
+    # freshness TTL, so a stopped loop stops being trusted instead of clamping forever.
+    adaptive_intake_concurrency = models.IntegerField(null=True, blank=True)
+    adaptive_intake_recorded_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "teatree_resource_pressure_marker"
@@ -61,3 +67,9 @@ class ResourcePressureMarker(models.Model):
         self.last_disk_free_gb = disk_free_gb
         self.last_ram_avail_gb = ram_avail_gb
         self.save(update_fields=["last_run_at", "last_disk_free_gb", "last_ram_avail_gb"])
+
+    def record_adaptive_concurrency(self, value: int) -> None:
+        """Stamp the derived intake concurrency; the timestamp IS its freshness heartbeat."""
+        self.adaptive_intake_concurrency = value
+        self.adaptive_intake_recorded_at = timezone.now()
+        self.save(update_fields=["adaptive_intake_concurrency", "adaptive_intake_recorded_at"])

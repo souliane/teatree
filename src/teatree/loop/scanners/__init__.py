@@ -23,6 +23,7 @@ from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
+from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
 from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrainerScanner
@@ -92,6 +93,7 @@ __all__ = [
     "GlabGhMrStateClassifier",
     "IdleStackReaperScanner",
     "IncomingEventsScanner",
+    "IntakeConcurrencyScanner",
     "IssueDispositionScanner",
     "IssueIntakeScanner",
     "LocalStackQueueDrainerScanner",

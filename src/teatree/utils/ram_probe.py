@@ -155,6 +155,84 @@ def _macos_total_ram_mib() -> int:
     return max(0, total // (1024 * 1024))
 
 
+def host_available_ram_mib() -> int:
+    """RAM the HOST could hand out right now, in whole MiB, or ``0`` when unreadable.
+
+    Linux reads ``/proc/meminfo``'s ``MemAvailable`` (the kernel's own estimate, which
+    already accounts for reclaimable page cache); macOS sums the reclaimable ``vm_stat``
+    page classes. ``0`` on any failure, so a caller sizing against headroom keeps its
+    fallback rather than sizing off a bogus reading — "can't tell" must never read as
+    "plenty free" any more than it reads as "nothing free".
+    """
+    system = platform.system()
+    if system == "Linux":
+        return _linux_meminfo().get("MemAvailable", 0) // 1024
+    if system == "Darwin":
+        return _macos_available_ram_mib()
+    return 0
+
+
+def _macos_available_ram_mib() -> int:
+    """Reclaimable mac RAM (MiB) from ``vm_stat``'s free + inactive pages; ``0`` on failure."""
+    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415 — deferred: call-time import
+
+    vm_stat = shutil.which("vm_stat")
+    if not vm_stat:
+        return 0
+    try:
+        stat = run_checked([vm_stat], timeout=2).stdout
+    except (CommandFailedError, OSError, TimeoutError):
+        return 0
+    page_size, pages = _macos_page_size(stat), 0
+    for line in stat.splitlines():
+        if line.startswith(("Pages free:", "Pages inactive:")):
+            digits = line.split(":")[1].strip().rstrip(".")
+            if digits.isdigit():
+                pages += int(digits)
+    return max(0, pages * page_size // (1024 * 1024))
+
+
+def _cgroup_v2_memory_mib(filename: str) -> int | None:
+    """A cgroup-v2 memory file as whole MiB, or ``None`` when absent/unlimited/unreadable."""
+    from pathlib import Path  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    try:
+        raw = Path(f"/sys/fs/cgroup/{filename}").read_text(encoding="utf-8").strip()
+        if raw == "max":
+            return None
+        value = int(raw)
+    except (OSError, ValueError):
+        return None
+    return value // (1024 * 1024) if value >= 0 else None
+
+
+def effective_available_ram_mib() -> int | None:
+    """RAM available to THIS process, cgroup-aware — the honest headroom (#3992).
+
+    ``/proc/meminfo`` inside a container reports the HOST's memory, not the cgroup's
+    ``mem_limit`` — so a worker capped well below the box reads headroom it may not
+    touch, and a sizing decision made from it OOMs the cgroup while the host looks fine.
+    The minimum of every signal we can read is the honest answer, mirroring
+    :func:`available_cpu_count`: the host figure, and the cgroup's own
+    ``memory.max - memory.current``.
+
+    ``None`` (unreadable) is a DIFFERENT answer from ``0`` (readable, no headroom left)
+    — a caller that sizes work against this must fall back on the first and tighten on
+    the second, so the two are never collapsed.
+    """
+    candidates: list[int] = []
+    host = host_available_ram_mib()
+    if host > 0:
+        candidates.append(host)
+    limit = _cgroup_v2_memory_mib("memory.max")
+    current = _cgroup_v2_memory_mib("memory.current")
+    if limit is not None and current is not None:
+        candidates.append(max(0, limit - current))
+    return min(candidates) if candidates else None
+
+
 def _cgroup_v2_cpu_quota() -> int | None:
     """Cores permitted by the cgroup-v2 CPU quota, or ``None`` when unlimited/absent.
 
