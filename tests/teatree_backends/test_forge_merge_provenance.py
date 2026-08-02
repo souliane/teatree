@@ -7,9 +7,10 @@ not report it ⇒ the gate fails closed to the author check. GitHub reads
 seam that makes overlay MRs cross the same gate.
 """
 
-import json
+import httpx
 
-from teatree.backends.forge_merge_rpc import GhMergeRpc, GlabMergeRpc
+from teatree.backends.forge_merge_rpc import GhMergeRpc
+from teatree.backends.gitlab.merge_rpc import GitLabApiMergeRpc
 
 _SLUG = "souliane/teatree"
 _PR_ID = 42
@@ -23,11 +24,28 @@ def _gh(answer: str, *, rc: int = 0) -> GhMergeRpc:
     return GhMergeRpc(_run)
 
 
-def _glab(body: object, *, rc: int = 0) -> GlabMergeRpc:
-    def _run(argv: list[str]) -> tuple[int, str, str]:
-        return (rc, json.dumps(body) if rc == 0 else "", "")
+class _StubClient:
+    def __init__(self, body: object, *, failed: bool) -> None:
+        self._body = body
+        self._failed = failed
 
-    return GlabMergeRpc(_run)
+    def get_json(self, endpoint: str) -> object:
+        if self._failed:
+            raise _server_error(endpoint)
+        return self._body
+
+
+def _server_error(endpoint: str) -> httpx.HTTPStatusError:
+    message = "500 Internal Server Error"
+    return httpx.HTTPStatusError(
+        message,
+        request=httpx.Request("GET", f"https://gitlab.example/{endpoint}"),
+        response=httpx.Response(httpx.codes.INTERNAL_SERVER_ERROR),
+    )
+
+
+def _glab(body: object, *, failed: bool = False) -> GitLabApiMergeRpc:
+    return GitLabApiMergeRpc(_StubClient(body, failed=failed))
 
 
 class TestGitHubProvenance:
@@ -58,5 +76,5 @@ class TestGitLabProvenance:
         assert rpc.fetch_pr_same_repo(slug=_SLUG, pr_id=_PR_ID) is None
 
     def test_forge_error_is_unknown(self) -> None:
-        rpc = _glab({}, rc=1)
+        rpc = _glab({}, failed=True)
         assert rpc.fetch_pr_same_repo(slug=_SLUG, pr_id=_PR_ID) is None

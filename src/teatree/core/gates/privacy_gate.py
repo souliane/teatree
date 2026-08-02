@@ -262,17 +262,21 @@ def _db_banned_terms() -> tuple[str, ...] | None:
         (``None``) only when ``banned_terms_required``, else the dev/solo no-op (``()``);
     * any OTHER read failure → fail CLOSED (``None``): an unreadable ban source
         must never silently degrade to "no terms" on a public target.
+
+    The unset-vs-fail-closed choice is :func:`resolve_unset_verdict`, the same disposition the
+    pre-commit scanner reports through, so the two gates cannot drift apart (#4008).
     """
     from teatree.hooks.banned_terms_cli import (  # noqa: PLC0415 — deferred hooks edge
-        banned_terms_required,
+        UnsetVerdict,
         resolve_banned_terms,
+        resolve_unset_verdict,
     )
     from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError  # noqa: PLC0415 — deferred hooks edge
 
     try:
         return resolve_banned_terms()
-    except BannedTermsUnsetError:
-        return None if banned_terms_required() else ()
+    except BannedTermsUnsetError as unset:
+        return () if resolve_unset_verdict(unset) is UnsetVerdict.ALLOW else None
     except Exception as exc:  # noqa: BLE001 — an unreadable ban source fails CLOSED, never scan-less.
         warn_throttled(
             logger,

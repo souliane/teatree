@@ -2,17 +2,16 @@
 
 The overlay fail-closed proof: a GitLab MR whose ``source_project_id`` differs
 from its ``target_project_id`` is a fork, so ``CodeHostQuery.pr_same_repo``
-resolves to ``False`` through the ``glab`` transport and the keystone
+resolves to ``False`` through the GitLab REST transport and the keystone
 ``assert_merge_provenance_trusted`` refuses it — the same gate GitHub PRs cross.
 And per the #3313 hardening a same-project-id (non-fork) MR is NOT trusted
 unconditionally either: it is conjoined with the identity+visibility check, so an
 untrusted author on a PUBLIC repo still holds for a human while an internal repo
 trusts any author — identical to the GitHub same-repo contract.
-Only the ``glab`` subprocess is stubbed; the CodeHostQuery resolution + gate are real.
+Only the GitLab HTTP client is stubbed; the CodeHostQuery resolution + gate are real.
 """
 
-import json
-from collections.abc import Callable
+from contextlib import AbstractContextManager
 from unittest.mock import patch
 
 import pytest
@@ -27,23 +26,28 @@ pytestmark = pytest.mark.django_db  # ast-grep-ignore: ac-django-no-pytest-djang
 _SLUG = "acme/widget"
 _IID = 6264
 
-_Runner = Callable[[list[str]], tuple[int, str, str]]
+
+class _MrClient:
+    """A ``GitLabAPI`` stand-in answering every read with one MR payload."""
+
+    def __init__(self, mr: dict[str, object]) -> None:
+        self._mr = mr
+
+    def get_json(self, endpoint: str) -> object:
+        del endpoint
+        return self._mr
 
 
-def _glab_runner_returning(mr: dict[str, object]) -> _Runner:
-    def _run(_argv: list[str]) -> tuple[int, str, str]:
-        return (0, json.dumps(mr), "")
-
-    return _run
+def _gitlab_client_returning(mr: dict[str, object]) -> AbstractContextManager[object]:
+    return patch("teatree.backends.gitlab.client.get_client", return_value=_MrClient(mr))
 
 
 class TestGitLabOverlayProvenanceGate(TestCase):
     def test_fork_mr_distinct_project_ids_refused(self) -> None:
-        runner = _glab_runner_returning(
-            {"source_project_id": 9, "target_project_id": 7, "author": {"username": "souliane"}},
-        )
         with (
-            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=runner),
+            _gitlab_client_returning(
+                {"source_project_id": 9, "target_project_id": 7, "author": {"username": "souliane"}},
+            ),
             pytest.raises(MergePreconditionError, match="fork / cross-repo"),
         ):
             assert_merge_provenance_trusted(slug=_SLUG, pr_id=_IID, host_kind="gitlab")
@@ -52,11 +56,10 @@ class TestGitLabOverlayProvenanceGate(TestCase):
         # #3313 hardening: a same-project-id (non-fork) MR is NOT trusted
         # unconditionally on a PUBLIC repo — a push-access account not in the trust
         # set (an added collaborator, a compromised token) still holds for a human.
-        runner = _glab_runner_returning(
-            {"source_project_id": 7, "target_project_id": 7, "author": {"username": "any-bot"}},
-        )
         with (
-            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=runner),
+            _gitlab_client_returning(
+                {"source_project_id": 7, "target_project_id": 7, "author": {"username": "any-bot"}},
+            ),
             patch.object(author_trust, "repo_is_internal", return_value=False),
             pytest.raises(MergePreconditionError, match="untrusted author on a public repo"),
         ):
@@ -65,11 +68,10 @@ class TestGitLabOverlayProvenanceGate(TestCase):
     def test_same_project_id_on_internal_repo_passes(self) -> None:
         # On a private/internal overlay repo the operator owns access control, so a
         # same-project-id MR from any author is trusted (the internal-repo branch).
-        runner = _glab_runner_returning(
-            {"source_project_id": 7, "target_project_id": 7, "author": {"username": "any-bot"}},
-        )
         with (
-            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=runner),
+            _gitlab_client_returning(
+                {"source_project_id": 7, "target_project_id": 7, "author": {"username": "any-bot"}},
+            ),
             patch.object(author_trust, "repo_is_internal", return_value=True),
         ):
             assert_merge_provenance_trusted(slug=_SLUG, pr_id=_IID, host_kind="gitlab")

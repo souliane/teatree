@@ -66,6 +66,7 @@ SETTING_HELP: dict[str, str] = {
     "banned_terms": "terms refused in anything published to a public surface",
     "banned_terms_allowlist": "phrases exempted from the banned-term scan despite matching a term",
     "banned_terms_gate_enabled": "run the banned-term scan before a publish",
+    "banned_terms_required": "refuse to scan when no banned-term list is configured, instead of warning",
     "billing_cycle_anchor_day": "day of the month the subscription's usage window resets",
     "boost_concurrency": "extra concurrent units allowed while the box is in boost",
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",

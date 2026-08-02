@@ -22,24 +22,23 @@ import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from teatree.config import value_coercion
 from teatree.config.cold_db import (
     canonical_config_db,
-    canonical_data_dir,
     canonical_projection,
-    fetch_one,
+    fetch_one_confirmed,
     loop_status,
     row_exists,
 )
 
 __all__ = [
+    "SettingRead",
     "bool_setting",
     "canonical_config_db",
-    "canonical_data_dir",
-    "canonical_projection",
     "int_setting",
     "list_setting",
     "loop_status",
@@ -47,6 +46,7 @@ __all__ = [
     "mapping_setting",
     "overlay_then_global",
     "read_setting",
+    "read_setting_confirmed",
     "row_exists",
     "str_setting",
 ]
@@ -54,13 +54,17 @@ __all__ = [
 _GLOBAL_SCOPE = ""
 
 
-def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | None:
-    """Read the `(scope, key)` value row from `teatree_config_setting`, fail-open to `None`."""
-    return fetch_one(
-        db,
-        "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
-        (scope, key),
-    )
+@dataclass(frozen=True)
+class SettingRead:
+    """One cold read's outcome: the decoded `value`, and whether the store could be READ.
+
+    `readable` is `False` only when sqlite itself errored. Confirmed ABSENCE — no DB file, no
+    row, an undecodable value — is `readable=True` with a `None` value: there was nothing to
+    read, which is a legitimate answer rather than a failure.
+    """
+
+    value: object | None
+    readable: bool
 
 
 def read_setting(
@@ -75,30 +79,63 @@ def read_setting(
     Fails open to `None` for every path: missing DB file, absent table (fresh
     install), locked DB (within `busy_timeout`), corrupt JSON, and a missing row.
     The open strategy (and the quiescent-WAL `immutable=1` fallback) lives in
-    `cold_db._execute_readonly`.
+    `cold_db._execute_readonly`. A caller that must NOT fail open reads through
+    `read_setting_confirmed`, of which this is the value half.
+    """
+    return read_setting_confirmed(key, scope=scope, env=env, db_path=db_path).value
 
-    A canonical DB that does not exist is the ORDINARY host case — the database lives
-    in a named volume only the container can open — so the read falls through to the
-    host projection rather than to `None`. An explicitly passed `db_path` never does:
-    that caller named the file it means, and substituting a projection would answer a
-    different question.
+
+def _absent_db_read(key: str, *, scope: str, env: Mapping[str, str], db_path: Path | None) -> "SettingRead":
+    """The read when the canonical database file is not on this side of the volume.
+
+    The ordinary host case: the database lives in a named volume only the container can
+    open, so the value comes from the published projection rather than being None. An
+    explicitly passed db_path never falls through — that caller named the file it means,
+    and substituting a projection would answer a different question.
+    """
+    if db_path is not None:
+        return SettingRead(None, readable=True)
+    projection = canonical_projection(env=env)
+    return SettingRead(projection.setting(key, scope=scope) if projection is not None else None, readable=True)
+
+
+def read_setting_confirmed(
+    key: str,
+    *,
+    scope: str = _GLOBAL_SCOPE,
+    env: Mapping[str, str] = os.environ,
+    db_path: Path | None = None,
+) -> SettingRead:
+    """The `(scope, key)` read as a value PLUS whether the store was readable at all.
+
+    The one read both views share, so a fail-open caller and a fail-closed one can never
+    disagree about what the store said. Readability travels WITH the value rather than being
+    a second probe a caller runs afterwards: under the lock contention that motivated this
+    (#4008), a probe fired microseconds after the failed read can succeed and mask it.
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if not db.exists():
-        if db_path is not None:
-            return None
-        projection = canonical_projection(env=env)
-        return projection.setting(key, scope=scope) if projection is not None else None
-    row = _fetch_value_row(db, scope, key)
+        # The ordinary host case: the database lives in a named volume only the container
+        # can open, so fall through to the published projection rather than to None. An
+        # explicitly passed db_path never does — that caller named the file it means, and
+        # substituting a projection would answer a different question.
+        return _absent_db_read(key, scope=scope, env=env, db_path=db_path)
+    row, ran = fetch_one_confirmed(
+        db,
+        "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
+        (scope, key),
+    )
+    if not ran:
+        return SettingRead(None, readable=False)
     if row is None:
-        return None
+        return SettingRead(None, readable=True)
     raw = row[0]
     if not isinstance(raw, str | bytes | bytearray):
-        return None
+        return SettingRead(None, readable=True)
     try:
-        return json.loads(raw)
+        return SettingRead(json.loads(raw), readable=True)
     except json.JSONDecodeError:
-        return None
+        return SettingRead(None, readable=True)
 
 
 def _read_chain(name: str, scope_chain: Sequence[str], *, db_path: Path | None) -> object | None:

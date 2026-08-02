@@ -117,6 +117,25 @@ class BannedTermsUnsetError(RuntimeError):
         )
 
 
+class BannedTermsUnreadableError(BannedTermsUnsetError):
+    """The term list could not be READ — a locked, corrupt, or table-less config store.
+
+    Distinct from a genuinely-unset list, which a dev/solo box may legitimately warn-and-allow
+    on (#3247): an errored read carries no information about what the operator configured, so
+    it can only fail CLOSED. A SUBCLASS so every existing ``except BannedTermsUnsetError``
+    handler keeps catching it — the two differ only where the warn-and-allow disposition has
+    to choose (#4008).
+    """
+
+    @classmethod
+    def for_store(cls, key: str, env_var: str) -> "BannedTermsUnreadableError":
+        return cls(
+            f"{key} could not be READ from the config store (locked, corrupt, or missing its "
+            f"table) — indistinguishable from an unset list, so the scan fails CLOSED. Retry; "
+            f"if it persists, repair the store or supply ${env_var}."
+        )
+
+
 @dataclass(frozen=True)
 class TreeFinding:
     """A single banned-brand hit in a committed file."""

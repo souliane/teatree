@@ -19,6 +19,9 @@
 # banned_terms row and no env) WARNS loud and exits 0 by default — an unset list
 # is not a banned-term violation on a dev/solo box (#3247); it exits 2 (fail
 # loud) only when banned_terms_required is set (a deployment that MUST scrub).
+# A store that could not be READ (locked, corrupt, table-less) is NOT an unset
+# list and exits 2 whatever banned_terms_required says: an errored read carries
+# no information about what the operator configured (#4008).
 #
 # This is a THIN wrapper: all matching is delegated to
 # ``teatree.hooks.banned_terms_cli`` (which uses ``teatree.hooks.term_match``),
@@ -30,8 +33,8 @@
 #
 # Exit-code contract (consumed by ``teatree.hooks.banned_terms_scanner`` and
 # prek): 0 = clean (incl. an unset list when banned_terms_required is off, #3247),
-# 1 = banned term found, 2 = the scanner COULD NOT RUN (or an unset list when
-# banned_terms_required is on).
+# 1 = banned term found, 2 = the scanner COULD NOT RUN, the term store could not
+# be READ, or an unset list when banned_terms_required is on.
 # A security gate that fails OPEN on a crash is the bug class: the codebase
 # requires Python >= 3.13, so under an old system ``python3`` the matcher
 # import crashes (PEP-604 unions) and exits 1 — colliding with "banned term

@@ -38,6 +38,12 @@ class TestConfigSettingSet(TestCase):
         assert ConfigSetting.objects.filter(key="issue_implementer_enabled").count() == 1
         assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is False
 
+    def test_set_banned_terms_required(self) -> None:
+        # The exact command the banned-terms scanner's unset warning tells the operator to run.
+        # It was refused as an unknown key, so the only available behaviour was the fail-open (#4008).
+        call_command("config_setting", "set", "banned_terms_required", "true")
+        assert ConfigSetting.objects.get_effective("banned_terms_required") is True
+
     def test_set_string_value(self) -> None:
         call_command("config_setting", "set", "issue_implementer_label", '"ready"')
         assert ConfigSetting.objects.get_effective("issue_implementer_label") == "ready"
