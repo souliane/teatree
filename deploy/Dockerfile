@@ -16,8 +16,22 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # route the Anthropic credential through a per-account pass store
 # (anthropic_oauth_pass_paths) instead of a single env token. ttyd backs the
 # admin dashboard's loopback "Debug session" terminal (#3263). The Docker CLI
-# + compose plugin (CLI only, NO engine) let the watchdog role drive the host
-# daemon over the mounted socket. The npm `pyright` package provides the
+# + compose + buildx plugins (CLI only, NO engine) let the WATCHDOG role drive the
+# host daemon over the mounted socket, and the WORKER role run `worktree
+# provision`'s `docker build` and `worktree start`'s `compose up`. buildx is not
+# optional there: an overlay base image whose Dockerfile uses `--mount=type=cache`
+# needs BuildKit, and BuildKit without the buildx component fails outright
+# ("BuildKit is enabled but the buildx component is missing or broken") while the
+# legacy builder rejects the mount syntax — so the build has no working path at
+# all. `postgresql-client` is the third piece of that toolchain: an overlay's
+# DB-import strategy shells out to `createdb` / `pg_restore` by name, so without
+# it provisioning dies on a bare `FileNotFoundError: 'createdb'`. One rule behind
+# all three — a tool a role SHELLS OUT to has to be IN the image, not merely on
+# the host that used to run the same code. `glab` is deliberately absent, and the
+# same rule is why: the GitLab read that gates colleague-visible review-request
+# posts goes over the token-authenticated HTTP API instead (see
+# `backends.gitlab.client.fetch_pr_draft_state`), so that path shells out to
+# nothing. The npm `pyright` package provides the
 # `pyright-langserver` binary the pyright-lsp Claude plugin execs to give factory
 # agents live Python type diagnostics while coding (`t3 setup` enables the plugin).
 #
@@ -40,7 +54,7 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        ca-certificates curl direnv git gnupg jq pass sqlite3 ttyd && \
+        ca-certificates curl direnv git gnupg jq pass postgresql-client sqlite3 ttyd && \
     # Fetch the NodeSource setup script to a FILE, never straight into a shell, so
     # a truncated or error body cannot be executed as a script; and retry, so a
     # transient CDN 403/5xx costs seconds instead of the whole deploy.
@@ -68,7 +82,7 @@ RUN apt-get update -qq && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
         > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin && \
+    apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin docker-buildx-plugin && \
     # Assert the node that landed is the NodeSource one before leaning on npm.
     # `npm: not found` from the line below is the symptom that cost a week of
     # deploys; say what it MEANS at the moment it is provable.
@@ -78,6 +92,36 @@ RUN apt-get update -qq && \
     fi && \
     npm install -g @anthropic-ai/claude-code@2.1.220 pyright@1.1.411 && \
     npm cache clean --force && \
+    rm -rf /var/lib/apt/lists/*
+
+# Chromium's system libraries — the same rule as gh/docker-cli/postgresql-client
+# above, applied to the E2E lane: `t3 <overlay> e2e` shells out to Playwright,
+# which dlopens libgbm, libnss3, libxkbcommon, libasound and ~20 more. Without
+# them every managed run dies in `browserType.launch` with "Host system is
+# missing dependencies to run browsers", which is why the suite had never
+# executed anywhere. It has to be BAKED: the roles run as the non-root teatree
+# user with no sudo, so a runtime `apt-get` is impossible, and would not survive
+# container recreation even if it were.
+#
+# The BROWSER is deliberately NOT baked here — fcf390cc5 provisions it from the
+# managed E2E clone, whose own `@playwright/test` pins the build, precisely so an
+# image-level browser cannot drift from the suite. Only the libraries live here.
+#
+# Resolved by Playwright's own CLI rather than a hand-listed apt set: the list is
+# `playwright-core`'s nativeDeps for this release, so it is whatever the pinned
+# browser actually links, not a list that rots silently. Re-basing on
+# mcr.microsoft.com/playwright buys the same property and costs the ubuntu digest
+# pin and the shared toolchain with dev/Dockerfile.test — the two properties the
+# top of this file exists to protect — while baking a second browser no role runs.
+#
+# THE SEAM, stated rather than left as a trap: the libraries come from HERE, the
+# browser from THERE, and nothing mechanically ties the two. 1.57.0 is what the
+# managed clone's own `package-lock.json` resolves `@playwright/test` to today —
+# read it there before assuming, since it is the clone that decides. Moving that
+# lock onto a release which adds a system dependency leaves this image short of
+# it, and the symptom is the launch failure above naming a missing `.so`; bump
+# this pin in the same change.
+RUN npx --yes playwright@1.57.0 install-deps chromium && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user.
@@ -97,6 +141,7 @@ RUN mkdir -p \
         /home/teatree/.local/share/teatree-worktrees \
         /home/teatree/workspace/t3-workspaces \
         /home/teatree/.claude/projects \
+        /var/lib/teatree/control-db \
         /opt/teatree/uv && \
     # clone_root() resolves clones under ~/workspace, but the runtime clone
     # lives on the teatree_src volume at ~/teatree. Provisioning discovers the
@@ -109,7 +154,7 @@ RUN mkdir -p \
     # layout (~/workspace/souliane/teatree -> the teatree clone).
     mkdir -p /home/teatree/workspace/souliane && \
     ln -s /home/teatree/teatree /home/teatree/workspace/souliane/teatree && \
-    chown -R teatree:teatree /home/teatree /opt/teatree
+    chown -R teatree:teatree /home/teatree /opt/teatree /var/lib/teatree
 
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 
@@ -129,7 +174,7 @@ ARG TEATREE_UID=1001
 RUN userdel -r ubuntu 2>/dev/null || true; \
     usermod -u "${TEATREE_UID}" teatree && \
     groupmod -g "${TEATREE_UID}" teatree && \
-    chown -R teatree:teatree /home/teatree /opt/teatree  # privacy-scan:allow
+    chown -R teatree:teatree /home/teatree /opt/teatree /var/lib/teatree  # privacy-scan:allow
 
 # The deploy-managed default ~/.claude/settings.json template (#3359). The init
 # role generates the container's real settings.json from this (plus env overrides)
@@ -138,6 +183,21 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
 # Baked (not mounted) so a mountless standalone run still has the default; edit
 # this committed, reviewable file to change the loop agent's configuration.
 COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
+
+# The GitLab https credential helper, baked at the SYSTEM level because it holds no
+# secret — only the instruction to read one from `GITLAB_TOKEN` at use time. In the
+# image rather than the entrypoint so it also covers the containers the entrypoint
+# never runs for: `deploy/t3` falls back to a one-off `run --rm --entrypoint t3`
+# whenever the stack is down, and that container must still be able to clone a
+# private repo into its workspace (`core.worktree.clone_provision`).
+#
+# NOT `glab auth git-credential`: it answers with an EMPTY username, which GitLab's
+# basic auth rejects. This is git's own documented shell-helper extension point —
+# the same mechanism `gh auth setup-git` installs — emitting the conventional
+# `oauth2` username with the token as password. With `GITLAB_TOKEN` unset the helper
+# emits nothing and git falls through exactly as if it were not registered.
+RUN git config --system --replace-all "credential.https://gitlab.com.helper" \
+    '!f() { test "$1" = get && printf "username=oauth2\npassword=%s\n" "$GITLAB_TOKEN"; }; f'
 
 USER teatree
 WORKDIR /home/teatree

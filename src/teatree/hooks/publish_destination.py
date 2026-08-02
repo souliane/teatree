@@ -171,17 +171,20 @@ _API_BOOLEAN_FLAGS: Final[frozenset[str]] = frozenset(
 )
 
 # Leading executables a no-destination chained segment may carry and still be
-# provably skip-safe: navigation / local-only / git-transport commands that
-# cannot themselves post a body to a forge issue/PR/MR surface. This is a
-# CLOSED POSITIVE allowlist, not a denylist of "publishing" tools: an
-# UNRECOGNISED leader (``make``, ``npm``, ``python``, ``./release.sh``, an
-# interpreter, an ``ssh``/``xargs`` wrapper) can shell out to ``gh``/``curl``
-# with no literal forge token in its own argv, so it is NOT provably inert and
-# the whole command fails closed (scans). ``git`` is included because a
-# ``git push`` carries commits to a git remote -- the COMMIT gate's surface,
-# not a forge body the destination skip governs -- mirroring the commit
-# chain's treatment of ``git push`` as publish-inert.
-_SKIP_INERT_LEADERS: Final[frozenset[str]] = frozenset({"cd", "pushd", "popd", "echo", "printf", "true", ":", "git"})
+# provably skip-safe: navigation / local-only / git-transport commands, plus the
+# read-only pipe filters agents chain after a forge command to suppress its
+# pager -- none can make a network call or spawn another command. CLOSED
+# POSITIVE allowlist, not a denylist: an UNRECOGNISED leader (``make``,
+# ``python``, ``./release.sh``, an ``ssh``/``xargs`` wrapper -- and deliberately
+# ``sed``/``awk``, whose ``e``/``system()`` execute) can shell out to
+# ``gh``/``curl`` with no forge token in its own argv, so it is NOT provably
+# inert and the whole command fails closed (scans). ``git`` is included because
+# a ``git push`` carries commits to a git remote -- the COMMIT gate's surface,
+# mirroring the commit chain's treatment of ``git push`` as publish-inert.
+_SKIP_INERT_LEADERS: Final[frozenset[str]] = frozenset(
+    {"cd", "pushd", "popd", "cat", "echo", "printf", "true", ":", "git"}
+    | {"head", "tail", "grep", "wc", "sort", "uniq", "cut", "tr", "tee", "jq"}
+)
 
 
 def _forge_for_tool(tool: str) -> str:
@@ -192,11 +195,7 @@ def _forge_for_tool(tool: str) -> str:
     unrecognised leader yields ``""`` (no hint; the probe falls back to the
     slug's own host or the GitHub default).
     """
-    if tool == "gh":
-        return "github"
-    if tool == "glab":
-        return "gitlab"
-    return ""
+    return {"gh": "github", "glab": "gitlab"}.get(tool, "")
 
 
 def _api_url_arg(words: list[str]) -> str | None:

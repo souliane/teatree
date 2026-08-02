@@ -24,6 +24,7 @@ from django.db import connections
 from django.test import override_settings
 
 from teatree.config.db_router import CONFIG_DB_ALIAS, CONFIG_MODEL_LABEL, ConfigSettingRouter, pinned_config_db
+from teatree.config.host_projection import GENERATION_KEY, GLOBAL_SCOPE
 from teatree.core.models import ConfigSetting, Ticket
 from tests.db_alias import register_sqlite_alias, teardown_sqlite_alias
 
@@ -152,7 +153,10 @@ class TestConfigWritesReachCanonicalFromAWorktree:
             ConfigSetting.objects.set_value(_KEY, _VALUE, scope=_SCOPE)
             connections[CONFIG_DB_ALIAS].close()
 
-            assert _stored_rows(canonical_db) == [(_SCOPE, _KEY)]
+            # The write also ratchets the host projection's generation, and that row
+            # must land in the SAME file — a counter written anywhere else would label
+            # a projection built from a database it does not describe.
+            assert sorted(_stored_rows(canonical_db)) == sorted([(_SCOPE, _KEY), (GLOBAL_SCOPE, GENERATION_KEY)])
 
     def test_read_comes_back_from_canonical(
         self,

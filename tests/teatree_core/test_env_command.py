@@ -256,6 +256,7 @@ class TestEnvMigrateSecrets(TestCase):
             with (
                 patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
                 patch("teatree.utils.secrets.write_pass", side_effect=_fake_write_pass),
+                patch("teatree.utils.secrets.read_pass", side_effect=lambda key: stored.get(key, "")),
             ):
                 call_command("env", "migrate-secrets", "--path", str(wt_path))
 

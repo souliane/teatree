@@ -19,6 +19,7 @@ from pathlib import Path
 
 from teatree.config import cold_mode
 from teatree.config.cold_mode import resolve_cold_posture
+from teatree.config.host_projection import ProjectionPublisher
 from teatree.live_presence import PRESENCE_FILENAME
 
 NOW = dt.datetime(2026, 7, 28, 12, 0, tzinfo=dt.UTC)
@@ -35,6 +36,7 @@ CREATE TABLE teatree_loop_schedule (id INTEGER PRIMARY KEY, name TEXT NOT NULL U
     timezone TEXT NOT NULL DEFAULT '');
 CREATE TABLE teatree_loop_schedule_slot (id INTEGER PRIMARY KEY, schedule_id INTEGER NOT NULL,
     days TEXT NOT NULL, start_time TEXT NOT NULL, preset_name TEXT NOT NULL);
+CREATE TABLE teatree_loop_state (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL);
 """
 
 #: The three shipped postures, as the seeded mode rows carry them.
@@ -99,6 +101,42 @@ def _posture(source: str, *, defers: bool = False, pauses: bool = False) -> cold
 
 def _resolve(tmp_path: Path, db: Path, now: dt.datetime = NOW) -> cold_mode.ColdPosture:
     return resolve_cold_posture(now, db_path=db, data_dir=tmp_path)
+
+
+def _host_env(tmp_path: Path) -> dict[str, str]:
+    """A host's view of the world: the control DB inside a volume it cannot open."""
+    return {
+        "T3_CONFIG_DB": str(tmp_path / "control-db-volume" / "db.sqlite3"),
+        "XDG_DATA_HOME": str(tmp_path / "share"),
+    }
+
+
+def _projected(tmp_path: Path, db: Path, now: dt.datetime = NOW) -> cold_mode.ColdPosture:
+    """The posture a HOST resolves for *db*: unopenable there, reached via its projection.
+
+    Publishes *db*'s projection into the data dir the host env resolves to, then resolves
+    with no ``db_path`` at all — exactly what a bare hook does.
+    """
+    data_dir = tmp_path / "share" / "teatree"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    ProjectionPublisher(db, data_dir).publish()
+    return resolve_cold_posture(now, data_dir=tmp_path, env=_host_env(tmp_path))
+
+
+def _unmigrated_db(tmp_path: Path) -> Path:
+    """A control DB from before the mode tables existed — settings and loop state only."""
+    path = tmp_path / "unmigrated.sqlite3"
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            "CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL);"
+            "CREATE TABLE teatree_loop_state (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL);"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return path
 
 
 class TestPrecedenceChain:
@@ -189,6 +227,112 @@ class TestPresenceUpgrade:
         _schedule(db, "unattended")
         (tmp_path / PRESENCE_FILENAME).write_text("{not json", encoding="utf-8")
         assert _resolve(tmp_path, db).defers_questions is True
+
+
+class TestTheHostResolvesTheSamePostureFromTheProjection:
+    """The host case: the control DB lives in a volume no host process can open.
+
+    Every case resolves the SAME control-plane state twice — once off the database, once
+    off its published projection — and asserts one identical posture. Without the mode
+    tables in the projection the projected side answered ``unresolved`` for all of them,
+    so a deferring mode was inert on the host: ``AskUserQuestion`` rendered in-client and
+    the self-pump kept pumping straight through a holiday.
+    """
+
+    def test_an_active_manual_override(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _override(db, "offline")
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("override", defers=True, pauses=True)
+
+    def test_an_unexpired_override_window(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _override(db, "unattended", until=NOW + dt.timedelta(hours=1))
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("override", defers=True, pauses=False)
+
+    def test_an_expired_override_falls_through_to_the_schedule(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _schedule(db, "engaged")
+        _override(db, "offline", until=NOW - dt.timedelta(hours=1))
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("schedule", defers=False, pauses=False)
+
+    def test_an_in_slot_schedule(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _schedule(db, "unattended")
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("schedule", defers=True, pauses=False)
+
+    def test_a_slot_in_a_non_utc_zone(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _schedule(db, "unattended", timezone="Europe/Vienna", start="20:00:00")
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("schedule", defers=True, pauses=False)
+
+    def test_an_out_of_slot_schedule_falls_back_to_the_configured_default(self, tmp_path: Path) -> None:
+        # A slot covering no weekday governs at no instant, so the L2 layer yields nothing
+        # and the L0 default decides — over the schedule/slot join, on both sides.
+        db = _db(tmp_path)
+        _setting(db, "default_mode", "unattended")
+        _exec(db, "INSERT INTO teatree_loop_schedule (id, name, timezone) VALUES (1, 'standard', 'UTC')")
+        _exec(
+            db,
+            "INSERT INTO teatree_loop_schedule_slot (schedule_id, days, start_time, preset_name) "
+            "VALUES (1, '[]', '00:00:00', 'engaged')",
+        )
+        _setting(db, "active_loop_schedule", "standard")
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("default", defers=True, pauses=False)
+
+    def test_the_presence_upgrade(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _schedule(db, "unattended")
+        _keystroke(tmp_path, NOW - dt.timedelta(minutes=1))
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("live", defers=False, pauses=False)
+
+    def test_the_presence_upgrade_target_is_repointable(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _schedule(db, "unattended")
+        _setting(db, "presence_upgrade_mode", "offline")
+        _keystroke(tmp_path, NOW)
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("live", defers=True, pauses=True)
+
+    def test_a_manual_override_is_still_never_upgraded_by_a_keystroke(self, tmp_path: Path) -> None:
+        db = _db(tmp_path)
+        _override(db, "unattended")
+        _keystroke(tmp_path, NOW)
+
+        assert _projected(tmp_path, db) == _resolve(tmp_path, db) == _posture("override", defers=True, pauses=False)
+
+    def test_a_projection_carrying_no_mode_rows_resolves_reachable(self, tmp_path: Path) -> None:
+        # A publisher from before the mode tables were projected still serves its settings,
+        # so `default_mode` is read — but with no mode row to read the posture off, the
+        # resolver falls toward asking rather than inventing the deferral it cannot verify.
+        db = _unmigrated_db(tmp_path)
+        _setting(db, "default_mode", "offline")
+
+        assert _projected(tmp_path, db) == _posture("default", defers=False, pauses=False)
+
+
+class TestAnExplicitDbPathNeverFallsThroughToTheProjection:
+    def test_a_named_absent_database_stays_unresolved_with_a_projection_published(self, tmp_path: Path) -> None:
+        # A caller that names a file means that file: answering from a projection of a
+        # DIFFERENT database would answer a different question. Both the resolver-parity
+        # harness and the reachability guard depend on it.
+        db = _db(tmp_path)
+        _override(db, "offline")
+        data_dir = tmp_path / "share" / "teatree"
+        data_dir.mkdir(parents=True)
+        ProjectionPublisher(db, data_dir).publish()
+
+        posture = resolve_cold_posture(
+            NOW, db_path=tmp_path / "absent.sqlite3", data_dir=tmp_path, env=_host_env(tmp_path)
+        )
+
+        assert posture == cold_mode.UNRESOLVED
 
 
 class TestFailsTowardAsking:

@@ -154,6 +154,14 @@ class _LoopFlagAndCredentialSettings:
     # autonomously (per-item approval via t3:triaging-issues). Flip OFF to make the
     # loop emit nothing.
     triage_assessor_enabled: bool = True
+    # Opt-in, default-OFF gate for the MR-triage surveyor. When False (the default)
+    # no scanner is built, so the loop emits nothing. When on, the scanner walks the
+    # operator's own open MRs, runs each through the pure triage ladder, and SURFACES
+    # the verdict -- it posts nothing and dispatches nothing, so turning it on cannot
+    # produce a colleague-visible action.
+    mr_triage_enabled: bool = False
+    # Upper bound on verdicts surfaced per tick -- keeps one pass reviewable.
+    mr_triage_max_mrs_per_tick: int = 20
     # Min interval between assessment passes (the scanner self-gates on this).
     triage_assessor_cadence_hours: int = 24
     # Upper bound on issues serialized into one queued assessment task — keeps the

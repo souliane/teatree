@@ -27,9 +27,47 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from teatree.config.host_projection import HostProjection, ProjectionReader, warn_once
 from teatree.paths import ControlDb
 
 _RUNNABLE_LOOP_STATUS = "enabled"
+
+
+def canonical_data_dir(env: Mapping[str, str] = os.environ, home: Path | None = None) -> Path:
+    """The PRIMARY teatree DATA dir — the bind-mounted tree, NOT the control DB's parent.
+
+    The control DB moved into a named volume, so `<canonical_config_db>.parent` is a
+    filesystem the host cannot see. Every caller that wanted the data dir (the
+    availability override, the presence heartbeat, backups, the handover mirror)
+    resolves it here instead, and keeps resolving the same host-visible directory it
+    always did.
+    """
+    return ControlDb(env, home).primary_data_dir()
+
+
+def projection_dir_for(db: Path, env: Mapping[str, str] = os.environ) -> Path:
+    """Where *db*'s host projection is published.
+
+    The canonical DB projects into the bind-mounted data dir — the whole point, since
+    that is the only side the host hooks can read. Any other database (a test fixture,
+    a per-worktree isolated copy) has no volume boundary to cross, so its projection
+    sits beside it.
+    """
+    return canonical_data_dir(env=env) if db == canonical_config_db(env=env) else db.parent
+
+
+def canonical_projection(env: Mapping[str, str] = os.environ) -> HostProjection | None:
+    """The published host projection, or `None` with ONE loud advisory when untrustworthy.
+
+    The cold readers' fallback when the canonical DB is unreachable — which, on a host,
+    is the ordinary case now. An absent, malformed, schema-shifted or generation-
+    regressed projection resolves to `None` so the caller takes its compiled-in default
+    exactly as before, but never SILENTLY: the advisory names the file and says the
+    default is what is now in force (#3499's whole failure was that silence).
+    """
+    read = ProjectionReader(canonical_data_dir(env=env)).read()
+    warn_once(read.advisory)
+    return read.projection if read.trustworthy else None
 
 
 def canonical_config_db(env: Mapping[str, str] = os.environ, home: Path | None = None) -> Path:
@@ -135,11 +173,26 @@ def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, .
 def fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> tuple[object, ...] | None:
     """Read-only single-row `query`; fails open to `None` on any error or a missing row.
 
-    The shared single-row fetch: `cold_reader._fetch_value_row` and `loop_status`
-    both read one row through it, collapsing the `_QUERY_ERROR` sentinel to `None`.
+    The shared single-row fetch, collapsing the `_QUERY_ERROR` sentinel to `None`.
+    """
+    return fetch_one_confirmed(db, query, parameters_bindings)[0]
+
+
+def fetch_one_confirmed(
+    db: Path, query: str, parameters_bindings: tuple[object, ...]
+) -> tuple[tuple[object, ...] | None, bool]:
+    """`(row, ran)` — the row, plus whether the read actually RAN.
+
+    `fetch_one`'s confirming sibling, for a caller that must tell a clean "no such row" from a
+    store it could not read at all (a locked DB, a corrupt file, an absent table). `fetch_one`
+    collapses both to `None`, which is right for a fail-open caller and exactly wrong for a
+    security gate: the banned-terms scanner read "no `banned_terms` row" out of a DB that was
+    merely busy, and opened (#4008). `ran` is `False` only when sqlite itself errored.
     """
     row = _execute_readonly(db, query, parameters_bindings)
-    return None if row is _QUERY_ERROR else cast("tuple[object, ...] | None", row)
+    if row is _QUERY_ERROR:
+        return (None, False)
+    return (cast("tuple[object, ...] | None", row), True)
 
 
 def fetch_all(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> list[tuple[object, ...]]:
@@ -174,11 +227,17 @@ def loop_status(
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if not db.exists():
-        return default
+        return _projected_loop_status(name, default=default, env=env) if db_path is None else default
     row = fetch_one(db, "SELECT status FROM teatree_loop_state WHERE name=?", (name,))
     if row is None:
         return default
     status = row[0]
+    return status if isinstance(status, str) and status else default
+
+
+def _projected_loop_status(name: str, *, default: str, env: Mapping[str, str]) -> str:
+    projection = canonical_projection(env=env)
+    status = projection.loop_status(name) if projection is not None else None
     return status if isinstance(status, str) and status else default
 
 

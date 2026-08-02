@@ -20,6 +20,7 @@ from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.types import Service
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
+    OwnerMessagingTransport,
     ci_service_from_overlay,
     code_host_for_repo_from_overlay,
     code_host_from_overlay,
@@ -269,6 +270,37 @@ class TestConfiguredMessagingFromOverlay:
                 Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
             )
         assert client == "real-slack"
+
+
+class TestCredentiallessSlackOverlayCarriesNoTransport:
+    """A declared-``slack`` overlay whose credential reads back empty is NOT configured.
+
+    ``backends.loader.get_messaging`` degrades an empty bot token to a noop on
+    purpose — a Slack credential fault must never wedge merges or CI. Deciding
+    "configured" from the declared ``messaging_backend`` string alone then
+    counted that noop as a real transport, and both consumers acted on it: the
+    owner-DM egress took it as the sole credentialed overlay and handed it to
+    the delivery path, where ``open_dm`` returned ``""`` and the DM was recorded
+    FAILED under a fabricated ``conversations.open ok:false`` for a call that
+    never reached Slack; and the MCP resolver stopped its search on it.
+    """
+
+    def test_seam_returns_none_when_the_slack_credential_reads_back_empty(self) -> None:
+        with _patch_overlay(_SlackOverlay):
+            assert configured_messaging_from_overlay("test") is None
+
+    def test_owner_dm_transport_excludes_the_degraded_noop(self) -> None:
+        with _patch_overlay(_SlackOverlay):
+            assert OwnerMessagingTransport.sole() is None
+
+    def test_resolver_refuses_loudly_instead_of_handing_back_the_degraded_noop(self) -> None:
+        with (
+            _patch_overlay(_SlackOverlay),
+            pytest.raises(RuntimeError, match="No registered overlay declares a configured Slack messaging backend"),
+        ):
+            resolve_declaring_overlay_client(
+                Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
+            )
 
 
 def test_reset_backend_caches_clears_all_caches() -> None:

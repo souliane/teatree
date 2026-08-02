@@ -47,6 +47,7 @@ from teatree.hooks._command_parser import is_publish_command as _is_publish_comm
 from teatree.hooks._command_parser import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
 from teatree.hooks._hook_state import note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError
 from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
@@ -109,6 +110,12 @@ def _banned_terms_configured(config_path: Path | None) -> bool:
     gate must still scan rather than silently no-op. *config_path* overrides the
     DB path (else the canonical DB / ``T3_CONFIG_DB``). A malformed registry
     propagates :class:`BannedTermsUnsetError` (fail-loud), never a silent no-op.
+
+    A legacy row that could not be READ at all (locked, corrupt, or missing its
+    table) raises :class:`BannedTermsUnreadableError` rather than resolving to
+    "not configured": an errored read is indistinguishable from an unset row, and
+    treating it as unset let a busy store open this publish-surface gate the same
+    way it opened the commit-only shell scanner (#4008).
     """
     from teatree.hooks.banned_term_registry import load_registry  # noqa: PLC0415  dual-read cycle
 
@@ -116,7 +123,10 @@ def _banned_terms_configured(config_path: Path | None) -> bool:
         return True
     if load_registry(db_path=config_path) is not None:
         return True
-    return isinstance(cold_reader.read_setting(_TERMS_KEY, db_path=config_path), list)
+    read = cold_reader.read_setting_confirmed(_TERMS_KEY, db_path=config_path)
+    if not read.readable:
+        raise BannedTermsUnreadableError.for_store(_TERMS_KEY, _TERMS_ENV)
+    return isinstance(read.value, list)
 
 
 def _scanner_script() -> Path:
@@ -278,6 +288,28 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     return _run_shell_scanner(text, config_path)
 
 
+def _configured_or_unreadable(config_path: Path | None) -> bool | None:
+    """``_banned_terms_configured``, or ``None`` when the legacy row could not be READ.
+
+    Isolated from :func:`_run_shell_scanner` so its own unreadable-store handling
+    does not add to that function's return-statement count. ``None`` is the
+    FAIL-CLOSED signal — a legacy row that errored on read (locked, corrupt, or
+    missing its table) is indistinguishable from unset, so it must never resolve
+    to ``False`` ("nothing configured"): that collapse is exactly what let a busy
+    store open this publish-surface gate the same way it opened the commit-only
+    shell scanner (#4008).
+    """
+    try:
+        return _banned_terms_configured(config_path)
+    except BannedTermsUnreadableError:
+        sys.stderr.write(
+            "[teatree] NOTE: banned-terms could not be READ from the config store while "
+            "resolving whether the gate is configured. Failing CLOSED rather than reporting "
+            "a clean scan — retry, or repair the store.\n"
+        )
+        return None
+
+
 def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
@@ -286,13 +318,17 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     configured, so there is nothing to scan. Returns
     :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED) when the scanner
     could not run, INCLUDING a MISSING scanner script while banned-terms IS
-    configured (HLG-7): a missing script is a broken install, not a clean scan, so
-    it is failed loud + closed like a crashing interpreter (#1954) rather than
-    silently reporting clean. *config_path* overrides the DB path the shell scanner
-    reads (forwarded as ``T3_CONFIG_DB`` in the subprocess env).
+    configured (HLG-7), OR the legacy row could not be READ at all (#4008): both
+    are a broken install/store, not a clean scan, so both fail loud + closed like
+    a crashing interpreter (#1954) rather than silently reporting clean.
+    *config_path* overrides the DB path the shell scanner reads (forwarded as
+    ``T3_CONFIG_DB`` in the subprocess env).
     """
-    if not _banned_terms_configured(config_path):
-        return None
+    configured = _configured_or_unreadable(config_path)
+    if configured is not True:
+        # ``None`` (store unreadable) fails CLOSED; ``False`` (nothing configured)
+        # is the genuine no-op — one branch, so the return budget stays sane.
+        return SCANNER_UNAVAILABLE_MARKER if configured is None else None
     script = _scanner_script()
     if not script.is_file():
         # banned-terms IS configured (checked above) but the scanner script is
@@ -317,9 +353,10 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     try:
         # check-banned-terms.sh contract: exit 0 = clean, exit 1 = banned term
         # found (with a BANNED TERM report on stdout), exit 2 = the scanner
-        # could not run (an old interpreter / import crash) OR the term list is
-        # genuinely unset. Any other code is also a scanner failure. A failed
-        # scanner fails CLOSED, never ALLOW.
+        # could not run (an old interpreter / import crash), the term store could
+        # not be read, OR the term list is genuinely unset on a deployment that
+        # requires one. Any other code is also a scanner failure. A failed scanner
+        # fails CLOSED, never ALLOW.
         result = run_allowed_to_fail(
             [str(script), str(scan_file)],
             expected_codes=(0, 1),
@@ -448,17 +485,26 @@ def format_unavailable_body_source_message() -> str:
 def format_scanner_unavailable_message() -> str:
     """Render the PreToolUse deny reason when the banned-terms scanner could not run.
 
-    The shell scanner crashed or its interpreter cannot import the matcher
-    (an old system ``python3`` below the repo's >= 3.13 floor). The gate fails
+    The shell scanner could not resolve a runnable interpreter — most often
+    because ``uv`` on PATH is a version-manager shim keyed on the CWD repo's
+    ``.python-version`` and exits 127 before uv runs, and otherwise because the
+    ``python3`` fallback is below the repo's >= 3.13 floor. The gate fails
     CLOSED rather than let an unscanned body through — a security gate that
-    fails open on a crash is the bug class (#1954). The fix the operator needs
-    is a working ``uv`` or a Python >= 3.13 on PATH so the scanner runs.
+    fails open on a crash is the bug class (#1954).
+
+    The message names INTERPRETER RESOLUTION as the cause. The previous wording
+    ("its interpreter cannot import the matcher — install uv") misdirected the
+    operator into reinstalling a uv that was already installed and healthy,
+    while the real fault was the shim in front of it.
     """
     return (
-        "BLOCKED: banned-terms posting gate (#1415/#1954). The scanner could not run "
-        "(its interpreter cannot import the matcher — install uv, or a Python >= 3.13, "
-        "so the scanner runs). Failing closed: an unscanned body is not allowed onto a "
-        "public surface."
+        "BLOCKED: banned-terms posting gate (#1415/#1954). The scanner could not run — this "
+        "is an interpreter/uv RESOLUTION failure, not a matcher problem. Usually 'uv' on PATH "
+        "is a version-manager shim (pyenv/asdf) that picks its interpreter from the CWD repo's "
+        ".python-version and exits 127 before uv runs, so reinstalling uv does not help: point "
+        "T3_UV at a real uv binary, or make uv / a Python >= 3.13 reachable outside the shim. "
+        "Run the hook directly to see the full reason: scripts/hooks/check-banned-terms.sh "
+        "<file>. Failing closed: an unscanned body is not allowed onto a public surface."
     )
 
 

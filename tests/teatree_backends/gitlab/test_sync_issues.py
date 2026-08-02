@@ -1,10 +1,13 @@
-"""#17: the GitLab assigned-issue sync intake classifies Ticket.kind at create time.
+"""The GitLab assigned-issue sync intake — ``fetch_assigned_issues``.
+
+Covers the two obligations of the intake: it classifies ``Ticket.kind`` at create
+time (#17), and it reconciles an already-tracked issue against upstream truth so a
+row created before a field existed still ends up carrying it.
 
 ``fetch_assigned_issues`` is the primary real-defect intake — a board issue
 carrying a ``bug`` label (or a ``fix …`` title) must be created as FIX, not
 FEATURE. Classification is create-only, so a mis-classified sync ticket can never
 be reclassified: S2 would stay blind and the fix-record DoD gate would never fire.
-RED before the ``Ticket.objects.create`` passed ``kind=`` through.
 """
 
 from unittest.mock import MagicMock
@@ -97,3 +100,162 @@ class TestGitLabAssignedIssueSyncHonoursTheLabelGate(TestCase):
         self._sync(labels=["backend"], ready=())
 
         assert Ticket.objects.filter(issue_url=self.URL).exists()
+
+
+class TestGitLabAssignedIssueSyncBackfillsTheIssueTitle(TestCase):
+    """An already-tracked issue is reconciled against upstream truth, not skipped.
+
+    ``extra["issue_title"]`` was written on the create path only, so a row created
+    before the key existed — or by any other intake — never acquired a title and
+    every consumer that summarises from it (the board's card description) had
+    nothing to render, forever. The title is upstream truth, refreshed on every
+    sync the same way :func:`apply_issue_data` refreshes it; local decisions
+    (``state``, ``kind``, and an already-written ``short_description``) are never
+    touched here. Seeding a *blank* ``short_description`` from that title is
+    covered by :class:`TestGitLabAssignedIssueSyncSeedsTheCardLabel`.
+    """
+
+    URL = "https://gitlab.com/o/r/-/issues/730"
+
+    def _sync(self, *, title: str) -> SyncResult:
+        host = MagicMock()
+        host.list_assigned_issues.return_value = [{"web_url": self.URL, "title": title, "labels": []}]
+        result = SyncResult()
+        fetch_assigned_issues(host, "me", result, overlay_name="acme")
+        return result
+
+    def test_existing_ticket_without_a_title_gets_one(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={})
+
+        result = self._sync(title="Login button unresponsive")
+
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "Login button unresponsive"
+        assert result.tickets_updated == 1
+
+    def test_existing_title_is_refreshed_from_upstream(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={"issue_title": "Old wording"})
+
+        self._sync(title="New wording")
+
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "New wording"
+
+    def test_other_extra_keys_survive_the_backfill(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={"tracker_status": "Process::Doing"})
+
+        self._sync(title="Login button unresponsive")
+
+        ticket.refresh_from_db()
+        assert ticket.extra["tracker_status"] == "Process::Doing"
+        assert ticket.extra["issue_title"] == "Login button unresponsive"
+
+    def test_an_unchanged_title_is_not_counted_as_an_update(self) -> None:
+        Ticket.objects.create(
+            issue_url=self.URL,
+            repos=["r"],
+            short_description="Same wording",
+            extra={"issue_title": "Same wording"},
+        )
+
+        result = self._sync(title="Same wording")
+
+        assert result.tickets_updated == 0
+
+    def test_an_empty_upstream_title_does_not_erase_the_stored_one(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={"issue_title": "Known wording"})
+
+        self._sync(title="")
+
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "Known wording"
+
+    def test_a_new_repo_is_still_recorded_alongside_the_title(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["other"], extra={})
+
+        result = self._sync(title="Login button unresponsive")
+
+        ticket.refresh_from_db()
+        assert ticket.repos == ["other", "r"]
+        assert ticket.extra["issue_title"] == "Login button unresponsive"
+        assert result.tickets_updated == 1
+
+
+class TestGitLabAssignedIssueSyncSeedsTheCardLabel(TestCase):
+    """Backfilling the title must also give the card something to render.
+
+    The board renders ``Ticket.short_description``, not ``extra["issue_title"]``
+    — a row with a title and a blank ``short_description`` still shows
+    ``(no description)``. The create path never has that gap
+    (:meth:`Ticket.stamp_issue_title` writes both), so a sync that reconciles an
+    already-tracked issue by writing ``extra`` alone leaves the very cards the
+    backfill exists to fix exactly as blank as it found them.
+
+    A blank ``short_description`` is an absence, not an operator decision, so it
+    is seeded from the forge title; a value the operator (or the summariser)
+    already wrote is never overwritten.
+    """
+
+    URL = "https://gitlab.com/o/r/-/issues/731"
+
+    def _sync(self, *, title: str) -> SyncResult:
+        host = MagicMock()
+        host.list_assigned_issues.return_value = [{"web_url": self.URL, "title": title, "labels": []}]
+        result = SyncResult()
+        fetch_assigned_issues(host, "me", result, overlay_name="acme")
+        return result
+
+    def test_a_backfilled_title_also_seeds_the_card_label(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={})
+
+        self._sync(title="Login button unresponsive")
+
+        ticket.refresh_from_db()
+        assert ticket.short_description == "Login button unresponsive"
+
+    def test_a_blank_card_label_is_seeded_even_when_the_title_is_unchanged(self) -> None:
+        # The rows the earlier title-only backfill already touched: they carry a
+        # title, so the title write is a no-op, yet the card is still blank.
+        ticket = Ticket.objects.create(
+            issue_url=self.URL,
+            repos=["r"],
+            extra={"issue_title": "Login button unresponsive"},
+        )
+
+        result = self._sync(title="Login button unresponsive")
+
+        ticket.refresh_from_db()
+        assert ticket.short_description == "Login button unresponsive"
+        assert result.tickets_updated == 1
+
+    def test_an_operator_edited_card_label_survives_the_sync(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url=self.URL,
+            repos=["r"],
+            short_description="my own words",
+            extra={},
+        )
+
+        self._sync(title="Login button unresponsive")
+
+        ticket.refresh_from_db()
+        assert ticket.short_description == "my own words"
+        assert ticket.extra["issue_title"] == "Login button unresponsive"
+
+    def test_a_long_title_is_truncated_to_the_column_width(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={})
+        max_len = Ticket._meta.get_field("short_description").max_length or 80
+
+        self._sync(title="x" * (max_len + 50))
+
+        ticket.refresh_from_db()
+        assert len(ticket.short_description) == max_len
+        assert ticket.extra["issue_title"] == "x" * (max_len + 50)
+
+    def test_an_empty_upstream_title_seeds_nothing(self) -> None:
+        ticket = Ticket.objects.create(issue_url=self.URL, repos=["r"], extra={})
+
+        self._sync(title="")
+
+        ticket.refresh_from_db()
+        assert ticket.short_description == ""

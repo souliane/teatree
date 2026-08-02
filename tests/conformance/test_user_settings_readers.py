@@ -22,19 +22,22 @@ a bespoke structured table nor a dict-literal ``{"<key>": ...}`` key, both
 coincidental collisions), or the field on a
 non-comment line of a ``hooks/*.sh`` cold-read script. A field read by none is dead config, unless named in
 ``FIELDS_WITHOUT_SRC_READER`` — the reviewable allowlist of fields consumed by
-agent-prose / documentation rather than ``src`` code, or documented reader-less.
+agent-prose / documentation rather than ``src`` code, or documented reader-less -
+or in ``FIELDS_AWAITING_DECLARED_CONSUMER``, declared ahead of the change that
+reads it and forced back out of the allowlist as soon as that reader lands.
 """
 
 import ast
 import dataclasses
 from collections.abc import Callable
-from pathlib import Path
+from functools import cache
 
 from teatree.config import UserSettings
+from tests.conformance._src_tree import REPO_ROOT, SRC_DIR, parsed_modules
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_SETTINGS_DEF = (_REPO_ROOT / "src" / "teatree" / "config" / "settings.py").resolve()
-_PY_ROOTS = (_REPO_ROOT / "src" / "teatree", _REPO_ROOT / "hooks")
+_REPO_ROOT = REPO_ROOT
+_SETTINGS_DEF = (SRC_DIR / "config" / "settings.py").resolve()
+_PY_ROOTS = (SRC_DIR, _REPO_ROOT / "hooks")
 _SH_ROOT = _REPO_ROOT / "hooks"
 
 #: Functions returning a ``UserSettings`` — a call to one is a settings object.
@@ -100,9 +103,21 @@ FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset(
     }
 )
 
+# Fields DECLARED ahead of the change that reads them, every one INERT by default
+# (empty list / false / a bound nothing evaluates yet), so no behaviour depends on
+# the reader not being there yet. Distinct from the allowlist above: those are
+# reader-less by design, these are waiting on a consumer that is being written.
+# NOT a resting place: ``test_allowlisted_fields_genuinely_lack_a_src_reader`` fails the
+# moment an entry gains a real reader, so wiring one forces its removal from here.
+FIELDS_AWAITING_DECLARED_CONSUMER: frozenset[str] = frozenset()
 
-def _field_names() -> set[str]:
-    return {field.name for field in dataclasses.fields(UserSettings)}
+#: Every field the lane excuses, whichever reason it was excused for.
+_ALLOWLISTED_FIELDS: frozenset[str] = FIELDS_WITHOUT_SRC_READER | FIELDS_AWAITING_DECLARED_CONSUMER
+
+
+@cache
+def _field_names() -> frozenset[str]:
+    return frozenset(field.name for field in dataclasses.fields(UserSettings))
 
 
 def _callee_name(node: ast.expr) -> str | None:
@@ -293,10 +308,11 @@ def _file_python_readers(tree: ast.Module, field_names: set[str]) -> set[str]:
     return read
 
 
-def _walk_py_files(reader: Callable[[ast.Module, set[str]], set[str]], field_names: set[str]) -> set[str]:
+@cache
+def _walk_py_files(reader: Callable[[ast.Module, set[str]], set[str]], field_names: frozenset[str]) -> frozenset[str]:
     read: set[str] = set()
     for root in _PY_ROOTS:
-        for path in root.rglob("*.py"):
+        for path, tree in parsed_modules(root):
             if path.resolve() == _SETTINGS_DEF:
                 continue
             # Migration files are FROZEN ORM state, never live settings readers. A
@@ -310,15 +326,11 @@ def _walk_py_files(reader: Callable[[ast.Module, set[str]], set[str]], field_nam
             # ``timezone`` string was ever migration-only).
             if "migrations" in path.parts:
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"), filename=str(path))
-            except SyntaxError:
-                continue
             read |= reader(tree, field_names)
-    return read
+    return frozenset(read)
 
 
-def _python_readers(field_names: set[str]) -> set[str]:
+def _python_readers(field_names: frozenset[str]) -> frozenset[str]:
     """Fields read by a REAL settings read across ``src``/``hooks`` Python.
 
     Introspection, not a hand-list; AST-based so a comment or prose docstring
@@ -329,7 +341,8 @@ def _python_readers(field_names: set[str]) -> set[str]:
     return _walk_py_files(_file_python_readers, field_names)
 
 
-def _shell_readers(field_names: set[str]) -> set[str]:
+@cache
+def _shell_readers(field_names: frozenset[str]) -> frozenset[str]:
     """Fields named on a non-comment line of a ``hooks/*.sh`` script (the cold-read seam).
 
     ``statusline_chain`` is read by ``statusline.sh`` via a direct ``sqlite3`` query
@@ -344,17 +357,17 @@ def _shell_readers(field_names: set[str]) -> set[str]:
             for name in field_names:
                 if name in line:
                     read.add(name)
-    return read
+    return frozenset(read)
 
 
-def _all_readers(field_names: set[str]) -> set[str]:
+def _all_readers(field_names: frozenset[str]) -> frozenset[str]:
     return _python_readers(field_names) | _shell_readers(field_names)
 
 
-def unread_fields() -> set[str]:
+def unread_fields() -> frozenset[str]:
     """Every ``UserSettings`` field with no real reader and no allowlist entry — the lane core."""
     names = _field_names()
-    return names - _all_readers(names) - FIELDS_WITHOUT_SRC_READER
+    return names - _all_readers(names) - _ALLOWLISTED_FIELDS
 
 
 class TestEveryUserSettingsFieldIsRead:
@@ -369,16 +382,16 @@ class TestEveryUserSettingsFieldIsRead:
 
     def test_allowlisted_fields_are_still_real_fields(self) -> None:
         # A stale allowlist entry (a field that was removed) is dead surface.
-        stale = sorted(FIELDS_WITHOUT_SRC_READER - _field_names())
-        assert not stale, f"FIELDS_WITHOUT_SRC_READER entries that are not UserSettings fields: {stale}"
+        stale = sorted(_ALLOWLISTED_FIELDS - _field_names())
+        assert not stale, f"Allowlisted entries that are not UserSettings fields: {stale}"
 
     def test_allowlisted_fields_genuinely_lack_a_src_reader(self) -> None:
         # The teeth of the tightening: each allowlisted field must be UNfound by the
         # REAL-reader matcher (the loose matcher counted privacy/timezone on a
         # coincidental token). An allowlisted field that now has a real reader must
         # be dropped from the allowlist, not left masking coverage.
-        redundant = sorted(FIELDS_WITHOUT_SRC_READER & _all_readers(_field_names()))
-        assert not redundant, f"FIELDS_WITHOUT_SRC_READER entries that now HAVE a real reader (drop them): {redundant}"
+        redundant = sorted(_ALLOWLISTED_FIELDS & _all_readers(_field_names()))
+        assert not redundant, f"Allowlisted entries that now HAVE a real reader (drop them): {redundant}"
 
 
 class TestUserSettingsReadersCardinalityFloors:
@@ -399,7 +412,7 @@ class TestUserSettingsReadersFiresRed:
         # A field name no reader mentions and no allowlist names is exactly the
         # dead-toggle class the lane must flag.
         names = _field_names() | {"synthetic_dead_toggle_nothing_reads"}
-        unread = names - _all_readers(names) - FIELDS_WITHOUT_SRC_READER
+        unread = names - _all_readers(names) - _ALLOWLISTED_FIELDS
         assert "synthetic_dead_toggle_nothing_reads" in unread
 
     def test_tightening_catches_a_coincidentally_matched_dead_field(self) -> None:
@@ -426,20 +439,20 @@ class TestUserSettingsReadersFiresRed:
         assert "max_concurrent_local_stacks" in _all_readers(names)
 
 
-def _loose_readers(field_names: set[str]) -> set[str]:
+def _loose_file(tree: ast.Module, names: set[str]) -> set[str]:
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in names:
+            read.add(node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in names:
+            read.add(node.value)
+    return read
+
+
+def _loose_readers(field_names: frozenset[str]) -> frozenset[str]:
     """The OLD loose matcher (any ``.<field>`` attr OR exact ``"<field>"`` string).
 
     Retained ONLY to prove — in ``TestUserSettingsReadersFiresRed`` — that the
     tightened matcher rejects the coincidental token matches the loose one accepted.
     """
-
-    def _loose_file(tree: ast.Module, names: set[str]) -> set[str]:
-        read: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in names:
-                read.add(node.attr)
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in names:
-                read.add(node.value)
-        return read
-
     return _walk_py_files(_loose_file, field_names)

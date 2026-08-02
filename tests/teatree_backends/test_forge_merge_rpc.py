@@ -1,16 +1,17 @@
-"""F8.4 — the keystone merge RPC runners bound every subprocess with a timeout.
+"""F8.4 — the keystone merge RPC runner bounds every subprocess with a timeout.
 
-An unbounded ``gh``/``glab`` merge call was the one hole left on the KEYSTONE
-merge path: a stalled TLS handshake wedged the single-threaded loop indefinitely.
-Both runners must thread :data:`_FORGE_MERGE_TIMEOUT_SECONDS` into every
-``run_allowed_to_fail`` call.
+An unbounded ``gh`` merge call was the one hole left on the KEYSTONE merge path:
+a stalled TLS handshake wedged the single-threaded loop indefinitely. The runner
+must thread :data:`_FORGE_MERGE_TIMEOUT_SECONDS` into every
+``run_allowed_to_fail`` call. GitLab has no runner to bound since #4007 — it
+speaks httpx, bounded by ``GitLabHTTPClient._timeout``.
 """
 
 import subprocess
 from unittest.mock import patch
 
 from teatree.backends import forge_merge_rpc as rpc
-from teatree.backends.forge_merge_rpc import _FORGE_MERGE_TIMEOUT_SECONDS, gh_runner, glab_runner
+from teatree.backends.forge_merge_rpc import _FORGE_MERGE_TIMEOUT_SECONDS, gh_runner
 
 
 def _completed() -> subprocess.CompletedProcess[str]:
@@ -20,12 +21,6 @@ def _completed() -> subprocess.CompletedProcess[str]:
 def test_gh_runner_threads_the_merge_timeout() -> None:
     with patch.object(rpc, "run_allowed_to_fail", return_value=_completed()) as mock_run:
         gh_runner("tok")(["pr", "view", "9"])
-    assert mock_run.call_args.kwargs["timeout"] == _FORGE_MERGE_TIMEOUT_SECONDS
-
-
-def test_glab_runner_threads_the_merge_timeout() -> None:
-    with patch.object(rpc, "run_allowed_to_fail", return_value=_completed()) as mock_run:
-        glab_runner()(["api", "projects/1/merge_requests/9"])
     assert mock_run.call_args.kwargs["timeout"] == _FORGE_MERGE_TIMEOUT_SECONDS
 
 

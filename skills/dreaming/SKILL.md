@@ -25,7 +25,7 @@ It runs, in order:
 1. replay recent session transcripts + curated `~/.claude` memories
 2. distil drift into the `ConsolidatedMemory` ledger (phases 1-3)
 3. cross-link / re-index / decay the memory files (phases 4-6)
-4. the §4 acceptance gates — a lossy pass is NOT stamped success
+4. the §4 acceptance gates — a lossy pass is NOT stamped success, and it **exits non-zero** so a blocked pass never reads as a healthy one ([#3993](https://github.com/souliane/teatree/issues/3993)). Read the `WARN … acceptance gate(s) FAILED` line: it names the failing gate. `t3 doctor check` hard-FAILs once a once-working pass has withheld the marker for 6 days.
 5. triage each ledger row: keep-as-memory (user-specific) vs core-gap → drive each core gap to a fix-and-merge (§ "promote = fix-and-merge" below)
 6. promote grounded eval candidates to live `under_load` scenarios (anti-vacuity guard) and stage LLM-derived ones for review
 

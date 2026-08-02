@@ -34,6 +34,7 @@ from django.db.models.expressions import Combinable
 from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import (
+    LeaseClaim,
     anchorable_owner_pid,
     lease_is_live,
     live_foreign_owner_session,
@@ -210,9 +211,11 @@ class LoopLeaseQuerySet(models.QuerySet):
         # dead-owned and evict it, re-entering the reclaim path every tick.
         owner_pid = anchorable_owner_pid(owner_pid)
 
-        row = self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at").first()
+        claim = LeaseClaim.from_row(
+            self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at", "acquired_at").first()
+        )
         live_owner = live_foreign_owner_session(
-            row, session_id, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name)
+            claim, session_id, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name)
         )
 
         if not session_id:
@@ -222,7 +225,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             return not live_owner, live_owner
 
         if live_owner:
-            stored_pid = (row or {}).get("owner_pid")
+            stored_pid = claim.owner_pid
             if not pid_is_foreign(stored_pid, owner_pid):
                 # Same-process self-reclaim across a session-id rotation (#2835):
                 # context compaction rotates ``session_id`` but does NOT restart
@@ -248,7 +251,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             # indeterminate null pid within its TTL) blocks the claim — no write.
             return False, live_owner
 
-        prior_session = (row or {}).get("session_id") or ""
+        prior_session = claim.session_id
         won = (
             self.filter(name=name)
             .filter(
@@ -335,11 +338,13 @@ class LoopLeaseQuerySet(models.QuerySet):
         dead/expired owner, or owned by this very process.
         """
         now = timezone.now()
-        row = self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at").first()
-        owner = live_foreign_owner_session(row, session_id, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name))
+        claim = LeaseClaim.from_row(
+            self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at", "acquired_at").first()
+        )
+        owner = live_foreign_owner_session(claim, session_id, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name))
         if not owner:
             return ""
-        return owner if pid_is_foreign((row or {}).get("owner_pid"), current_pid) else ""
+        return owner if pid_is_foreign(claim.owner_pid, current_pid) else ""
 
     def evict_stale_owner(
         self,
@@ -376,15 +381,13 @@ class LoopLeaseQuerySet(models.QuerySet):
         pid_alive = pid_alive_probe()
         now = timezone.now()
         candidates = self.filter(name=name).exclude(session_id=keep_session_id)
-        row = candidates.values("session_id", "owner_pid", "lease_expires_at").first()
+        row = candidates.values("session_id", "owner_pid", "lease_expires_at", "acquired_at").first()
         if not row or not (row["session_id"] or ""):
             return 0
 
-        expires_at = row["lease_expires_at"]
-        stored_pid = row["owner_pid"]
-        is_live = lease_is_live(
-            row["session_id"], stored_pid, expires_at, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name)
-        )
+        claim = LeaseClaim.from_row(row)
+        stored_pid = claim.owner_pid
+        is_live = lease_is_live(claim, now, trust_pid_past_ttl=not is_per_loop_owner_slot(name))
 
         if not is_live:
             # The owner is gone — either an expired TTL with an indeterminate
@@ -460,6 +463,11 @@ class LoopLeaseQuerySet(models.QuerySet):
         """
         now = timezone.now()
         refreshed = self.filter(name=name, session_id=session_id).update(
+            # ``acquired_at`` moves with the TTL because it is the liveness anchor
+            # an unverifiable owner is judged on (:data:`UNVERIFIABLE_OWNER_GRACE`).
+            # A heartbeat that extended only the TTL would leave the owner looking
+            # progressively staler the more diligently it heartbeat.
+            acquired_at=now,
             lease_expires_at=now + timedelta(seconds=ttl_seconds),
         )
         return refreshed == 1
@@ -475,15 +483,16 @@ class LoopLeaseQuerySet(models.QuerySet):
         ``("", None, False)`` — unclaimed.
         """
         row = (
-            self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid", "generation", "driver").first()
+            self.filter(name=name)
+            .values("session_id", "lease_expires_at", "owner_pid", "generation", "driver", "acquired_at")
+            .first()
         )
         if row is None:
             return OwnershipStatus(owner_session="", expires_at=None, is_live=False, generation=0, driver="")
-        session = row["session_id"] or ""
-        expires_at = row["lease_expires_at"]
-        is_live = lease_is_live(
-            session, row["owner_pid"], expires_at, timezone.now(), trust_pid_past_ttl=not is_per_loop_owner_slot(name)
-        )
+        claim = LeaseClaim.from_row(row)
+        session = claim.session_id
+        expires_at = claim.expires_at
+        is_live = lease_is_live(claim, timezone.now(), trust_pid_past_ttl=not is_per_loop_owner_slot(name))
         return OwnershipStatus(
             owner_session=session,
             expires_at=expires_at,

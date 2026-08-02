@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.config import UserSettings
+from teatree.config import PrReviewBackend, UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
@@ -190,15 +190,17 @@ class PrSweepShipDomainTestCase(TestCase):
 
 
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
+_BACKEND_PATCH_TARGET = "teatree.loop.scanner_factories.resolve_pr_review_backend"
 
 
 class ReviewDomainUnifiedIntakeTestCase(TestCase):
     """``Domain.REVIEW`` is the SINGLE review intake — self + colleague (#3569).
 
-    Self-authored PRs are ALWAYS admitted (the ``ClaudeSelfPrReviewScanner``);
-    colleague PRs are admitted only when ``admit_colleague_prs_to_board`` is ON
-    (the ``ReviewerPrsScanner``). Both feed the SAME ``reviewing`` → ``t3:reviewer``
-    gate. There is no separate self_review domain and codex is not wired here.
+    Self-authored PRs are ALWAYS admitted; colleague PRs are admitted only when
+    ``admit_colleague_prs_to_board`` is ON (the ``ReviewerPrsScanner``). WHICH
+    self-PR scanner is admitted follows ``pr_review_backend`` — exactly one of
+    ``self_pr_review`` (Claude) or ``codex_review``, never both and never neither.
+    There is no separate self_review domain.
     """
 
     @staticmethod
@@ -222,7 +224,10 @@ class ReviewDomainUnifiedIntakeTestCase(TestCase):
 
     def test_self_pr_scanner_always_admitted_even_when_colleague_off(self) -> None:
         backend = self._backend()
-        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)):
+        with (
+            patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)),
+            patch(_BACKEND_PATCH_TARGET, return_value=PrReviewBackend.CLAUDE),
+        ):
             names = self._review_names(backend)
         assert "self_pr_review" in names
 
@@ -233,10 +238,17 @@ class ReviewDomainUnifiedIntakeTestCase(TestCase):
         with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)):
             assert "reviewer_prs" not in self._review_names(backend)
 
-    def test_codex_scanner_never_wired_into_review(self) -> None:
+    def test_the_resolved_backend_picks_exactly_one_self_pr_scanner(self) -> None:
+        # Never both (a PR reviewed twice) and never neither (a PR reviewed by
+        # nobody) — the setting chooses the reviewer, not whether one exists.
         backend = self._backend()
         with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=True)):
-            assert "codex_review" not in self._review_names(backend)
+            with patch(_BACKEND_PATCH_TARGET, return_value=PrReviewBackend.CODEX):
+                codex_names = self._review_names(backend)
+            with patch(_BACKEND_PATCH_TARGET, return_value=PrReviewBackend.CLAUDE):
+                claude_names = self._review_names(backend)
+        assert codex_names & {"codex_review", "self_pr_review"} == {"codex_review"}
+        assert claude_names & {"codex_review", "self_pr_review"} == {"self_pr_review"}
 
     def test_no_separate_self_review_domain(self) -> None:
         assert not hasattr(Domain, "SELF_REVIEW")

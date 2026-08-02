@@ -60,8 +60,8 @@ def _check_entrypoint_is_primary_clone() -> bool:
 
     if not paths.DATA_DIR_AUTO_ISOLATED:
         return True
-    # ``teatree.__file__`` is ``<repo>/src/teatree/__init__.py``; the repo root
-    # is its third parent (matches ``paths._code_repo_root``).
+    # ``teatree.__file__`` is ``<source-root>/src/teatree/__init__.py``; the source
+    # root is its third parent (matches ``paths.teatree_source_root``).
     repo_root = Path(teatree.__file__).resolve().parents[2]
     isolated_db = paths.DATA_DIR / "db.sqlite3"
     typer.echo(
@@ -144,7 +144,7 @@ def _check_dangling_editable_pth() -> bool:
 
 
 def _check_t3_shim_receipt(*, repair: bool = False) -> bool:
-    """FAIL when the active ``t3`` shim serves an editable install from the wrong checkout (#3231).
+    """FAIL when the active ``t3`` shim serves an incomplete or wrong editable install (#3231).
 
     A second, unrelated ``uv tool install --editable <other-checkout>`` under the
     same ``teatree`` package/entrypoint name silently steals the global ``t3``
@@ -155,37 +155,68 @@ def _check_t3_shim_receipt(*, repair: bool = False) -> bool:
     check (which fires only when the target is GONE), this catches a target that
     EXISTS but is the wrong clone.
 
+    A RIGHT checkout is not enough on a fork that vendors core: the overlay's
+    ``teatree.overlays`` entry point is built by the fork ROOT, co-installed with
+    ``--with-editable``. A reinstall that drops it leaves a t3 that runs fine and
+    resolves ``t3 <overlay> …`` through the subprocess bridge while every
+    in-process ``get_overlay()`` raises — so the host co-install is verified here
+    too, rather than inferred from the checkout alone.
+
     Only meaningful with a known expected checkout: when ``$T3_REPO`` is unset,
     or the install is not an editable uv-tool install (no receipt editable
     source), the check skips (returns ``True``). On a mismatch it FAILs with the
     remediation; with ``repair=True`` it re-points the install via
-    ``uv tool install --editable <checkout> --force`` and passes. Crash-proof:
-    any inspection failure degrades to a pass so it never aborts the doctor run.
+    ``uv tool install --editable <checkout> [--with-editable <host>] --force``
+    and passes. A ``--repair`` that did not take says so and names the manual
+    command — never the flag the operator just used. Crash-proof: any inspection
+    failure degrades to a pass so it never aborts the doctor run.
     """
     from teatree.utils.editable_pth import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-        expected_checkout,
+        expected_editable_install,
+        host_install_missing,
         receipt_editable_source,
-        repair_receipt_to_checkout,
+        repair_editable_install,
     )
 
     try:
-        expected = expected_checkout()
+        expected = expected_editable_install()
         source = receipt_editable_source()
     except Exception as exc:  # noqa: BLE001 — an inspection failure warns and passes, never blocks doctor
         typer.echo(f"WARN  Could not inspect the t3 shim's uv receipt: {exc}")
         return True
-    if expected is None or source is None or source.resolve() == expected:
+    if expected is None or source is None:
         return True
 
-    if repair and repair_receipt_to_checkout(expected):
-        typer.echo(f"WARN  Re-pointed the t3 editable install at {expected} (uv receipt recorded {source}).")
+    if source.resolve() != expected.checkout:
+        problem = (
+            f"records an editable source {source} that does not match the expected checkout "
+            f"{expected.checkout} — a relocated or same-name-hijacked editable install is serving "
+            f"t3 from the wrong path."
+        )
+    elif host_install_missing(expected):
+        # The checkout is RIGHT and t3 runs, so nothing here looks broken — but the
+        # fork root carrying the ``teatree.overlays`` entry point is not installed,
+        # so every in-process ``get_overlay()`` raises while the subprocess-bridged
+        # ``t3 <overlay> …`` commands keep working. Checking the checkout alone let
+        # that pass green.
+        problem = (
+            f"is missing the co-installed fork root {expected.host} — core is installed without the "
+            f"distribution that registers the `teatree.overlays` entry point, so `t3 <overlay> …` still "
+            f'works while every in-process get_overlay() raises "Overlay not found. Available: t3-teatree" '
+            f"and headless tasks on overlay-owned tickets die at dispatch."
+        )
+    else:
         return True
-    typer.echo(
-        f"FAIL  The active t3 shim's uv receipt records an editable source {source} that does not "
-        f"match the expected checkout {expected} — a relocated or same-name-hijacked editable install "
-        f"is serving t3 from the wrong path. Re-point it: `t3 doctor check --repair` "
-        f"(or `uv tool install --editable {expected} --force`)."
+
+    if repair and repair_editable_install(expected):
+        typer.echo(f"WARN  Re-pointed the t3 editable install at {expected.install_command}.")
+        return True
+    remediation = (
+        f"`--repair` ran but the install did not move — re-point it by hand: `{expected.install_command}`."
+        if repair
+        else f"Re-point it: `t3 doctor check --repair` (or `{expected.install_command}`)."
     )
+    typer.echo(f"FAIL  The active t3 shim's uv receipt {problem} {remediation}")
     return False
 
 
@@ -326,14 +357,17 @@ def _configured_review_skill_gaps() -> list[str]:
     """A FAIL line per configured review skill that resolves to no installed skill (#3352).
 
     Enumerates every registered overlay's effective ``architectural_review_skill``
-    (only when the always-on cadence is not disabled for that overlay) and
-    ``review_skill`` (only when the project opted in by setting it non-empty), then
-    confirms each name resolves to an installed ``SKILL.md`` in the canonical skill
-    set — the same enumeration :mod:`teatree.skill_support.ref_validator` uses for
-    dangling references. A name that will actually be dispatched/gated but resolves
-    to nothing is the exact ``ac-reviewing-skills`` → ``ac-reviewing-codebase``
-    incident class, at the live config site rather than the ``.teatree-skills.yml`` /
-    ``agents/*.md`` sites the reference validator already covers. Empty == clean.
+    (only when the always-on cadence is not disabled for that overlay),
+    ``review_skill`` (only when the project opted in by setting it non-empty), and
+    each ``review_skill_alternates`` entry, then confirms each name resolves to an
+    installed ``SKILL.md`` in the canonical skill set — the same enumeration
+    :mod:`teatree.skill_support.ref_validator` uses for dangling references. A name
+    that will actually be dispatched/gated but resolves to nothing is the exact
+    ``ac-reviewing-skills`` → ``ac-reviewing-codebase`` incident class, at the live
+    config site rather than the ``.teatree-skills.yml`` / ``agents/*.md`` sites the
+    reference validator already covers. Alternates are checked for the same reason
+    the primary is: a dangling one is a reviewer the gate would accept evidence for
+    and nobody could ever run. Empty == clean.
     """
     from teatree.config import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         discover_overlays,
@@ -351,6 +385,7 @@ def _configured_review_skill_gaps() -> list[str]:
     for overlay_name in overlay_names:
         settings = get_effective_settings(overlay_name)
         configured: list[tuple[str, str]] = [("review_skill", settings.review_skill.strip())]
+        configured.extend(("review_skill_alternates", name.strip()) for name in settings.review_skill_alternates)
         if not settings.architectural_review_disabled:
             configured.append(("architectural_review_skill", settings.architectural_review_skill.strip()))
         scope = overlay_name or "(active overlay)"

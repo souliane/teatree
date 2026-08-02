@@ -148,6 +148,30 @@ class CostPerDeliveredTicketTestCase(TestCase):
         with patch.object(recon, "MAX_USD_PER_DELIVERED_TICKET", 50.0):
             assert recon._check_cost_per_delivered_ticket().level == "ok"
 
+    def test_old_spend_still_counted(self) -> None:
+        """This ratio is deliberately unwindowed — windowing it would defang it, not unstick it.
+
+        Only the numerator could be windowed (``Ticket`` carries no timestamp), and
+        windowed spend over lifetime deliveries trends to zero: a check that can
+        never fire is worse than one that fires late.
+        """
+        Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.DELIVERED)
+        billed = Ticket.objects.create()
+        _age_attempt(_attempt(billed, cost=100.0), started_at=timezone.now() - dt.timedelta(days=400))
+        with patch.object(recon, "MAX_USD_PER_DELIVERED_TICKET", 50.0):
+            assert recon._check_cost_per_delivered_ticket().is_alarm
+
+    def test_alarm_clears_as_deliveries_accumulate(self) -> None:
+        """Not a ratchet: the denominator grows too, so cheap deliveries drag the average back under."""
+        runaway = Ticket.objects.create()
+        _attempt(runaway, cost=300.0)
+        Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.DELIVERED)
+        with patch.object(recon, "MAX_USD_PER_DELIVERED_TICKET", 50.0):
+            assert recon._check_cost_per_delivered_ticket().is_alarm
+            for _ in range(6):
+                _attempt(Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.DELIVERED), cost=1.0)
+            assert recon._check_cost_per_delivered_ticket().level == "ok"
+
 
 class DeadTicketSpendTestCase(TestCase):
     def test_no_dead_spend_is_ok(self) -> None:
@@ -167,6 +191,39 @@ class DeadTicketSpendTestCase(TestCase):
         _attempt(delivered, cost=500.0)
         with patch.object(recon, "MAX_USD_ON_DEAD_TICKETS", 50.0):
             assert recon._check_dead_ticket_spend().level == "ok"
+
+    def test_spend_older_than_the_window_excluded(self) -> None:
+        """Sunk history must age out, or the alarm is a ratchet that can never clear.
+
+        Summing every attempt ever means one past runaway pins the check red
+        permanently — no action clears it, and a doctor with a stuck red light
+        trains the operator to ignore the ones that are still actionable.
+        """
+        ignored = Ticket.objects.create(state=Ticket.State.IGNORED)
+        _age_attempt(
+            _attempt(ignored, cost=100.0),
+            started_at=timezone.now() - recon._DEAD_SPEND_WINDOW - dt.timedelta(hours=1),
+        )
+        with patch.object(recon, "MAX_USD_ON_DEAD_TICKETS", 50.0):
+            assert recon._check_dead_ticket_spend().level == "ok"
+
+    def test_spend_inside_the_window_still_alarms(self) -> None:
+        """The window must not defang the check — recent waste still has to fire."""
+        ignored = Ticket.objects.create(state=Ticket.State.IGNORED)
+        _age_attempt(
+            _attempt(ignored, cost=100.0),
+            started_at=timezone.now() - recon._DEAD_SPEND_WINDOW + dt.timedelta(hours=1),
+        )
+        with patch.object(recon, "MAX_USD_ON_DEAD_TICKETS", 50.0):
+            assert recon._check_dead_ticket_spend().is_alarm
+
+    def test_window_is_anchored_on_the_injected_now(self) -> None:
+        """``now`` is the dispatcher's clock — a check that ignores it cannot be tested deterministically."""
+        ignored = Ticket.objects.create(state=Ticket.State.IGNORED)
+        _age_attempt(_attempt(ignored, cost=100.0), started_at=timezone.now() - dt.timedelta(days=2))
+        with patch.object(recon, "MAX_USD_ON_DEAD_TICKETS", 50.0):
+            future = timezone.now() + recon._DEAD_SPEND_WINDOW
+            assert recon._check_dead_ticket_spend(now=future).level == "ok"
 
 
 class EnabledLoopsTickedTestCase(TestCase):

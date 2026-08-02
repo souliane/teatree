@@ -10,7 +10,10 @@ channel and applies it:
 - a digit body ``N`` with ``1 ≤ N ≤ len(options)`` maps to
 ``options[N-1].label`` only when the row's ``options_hash`` still matches
 the options the digit refers to (a changed option set leaves the reply
-stale, no wrong label); any other body is applied verbatim.
+stale, no wrong label); any other body is READ
+(:func:`~teatree.loop.inbound_reading.read_inbound`) and applied
+verbatim UNLESS it is itself a question, which is left for the reactive
+cycle to answer or dispatch rather than consumed as an answer.
 - ``apply_answer(resolved_via="slack")`` is the single-use CAS that
 resolves exactly the live row.
 - the reply's ``loop_replied_at`` is claimed with kind ``question_reply``
@@ -35,6 +38,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.loop.inbound_reading import InboundIntent, InboundReader, read_inbound
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -58,6 +62,7 @@ class AskUserQuestionReplyScanner:
     backend: MessagingBackend
     overlay: str = ""
     name: str = "askuserquestion_reply"
+    reader: "InboundReader | None" = None
 
     def scan(self) -> list[ScanSignal]:
         egress = OnBehalfSlackEgress(self.backend)
@@ -72,7 +77,7 @@ class AskUserQuestionReplyScanner:
         question = DeferredQuestion.live_for_reply(channel=reply.channel, after_ts=reply.slack_ts)
         if question is None:
             return
-        answer = _resolve_answer(reply.text, question)
+        answer = _resolve_answer(reply.text, question, reader=self.reader or read_inbound)
         if answer is None:
             return
         if not reply.mark_loop_replied(PendingChatInjection.AnswerKind.QUESTION_REPLY):
@@ -108,19 +113,26 @@ class AskUserQuestionReplyScanner:
         return bool(self.backend.get_permalink(channel=reply.channel, ts=reply.slack_ts))
 
 
-def _resolve_answer(text: str, question: DeferredQuestion) -> str | None:
-    """Map a reply body to the answer to apply, or ``None`` when it is stale.
+def _resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundReader) -> str | None:
+    """Map a reply body to the answer to apply, or ``None`` when it is not one.
 
-    A non-digit body is applied verbatim. A digit ``N`` requires the
-    question's ``options_hash`` to still match the live option set: a
-    mismatch returns ``None`` (stale — no wrong-label application) so the
-    reply is left for the ordinary DM path; a matching hash with ``N`` in
-    range maps to ``options[N-1].label``, and an out-of-range ``N`` is
-    applied verbatim.
+    A digit ``N`` requires the question's ``options_hash`` to still match the
+    live option set: a mismatch returns ``None`` (stale — no wrong-label
+    application) so the reply is left for the ordinary DM path; a matching hash
+    with ``N`` in range maps to ``options[N-1].label``, and an out-of-range ``N``
+    is applied verbatim. A digit is unambiguous, so it never costs a model turn.
+
+    A free-text body used to be applied verbatim, which meant a message that was
+    itself a QUESTION got consumed as the answer to the pending one, claimed, and
+    reacted ✅ — the owner's question answered by nobody and marked handled. So a
+    non-digit body is READ first, and an interrogative one returns ``None``: it is
+    left to the reactive cycle, which answers it or dispatches it. The asymmetry
+    is deliberate — mistaking a question for an answer destroys the question,
+    while mistaking an answer for a question costs one extra round trip.
     """
     match = _DIGIT_RE.match(text)
     if match is None:
-        return text
+        return None if reader(text).intent is InboundIntent.QUESTION else text
     options = _live_options(question)
     if options is None:
         return None

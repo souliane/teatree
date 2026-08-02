@@ -87,6 +87,11 @@ class NotionPageClient(Protocol):
     ``core.sync`` reads a page's status (and, gated by ``notion_write_back``,
     writes it back) without importing the concrete ``teatree.backends.notion``
     client — the same core → backends inversion as the other provider builders.
+
+    ``page_is_live`` is a BOOLEAN rather than a raised refusal precisely so core
+    can honour the archived-page rule without importing the backend's exception
+    across that inversion. ``False`` covers both "archived" and "could not be
+    established", because a status read off either is not this ticket's status.
     """
 
     def get_page_status(self, page_id: str, *, property_name: str = "Status") -> str | None: ...  # pragma: no branch
@@ -94,6 +99,8 @@ class NotionPageClient(Protocol):
     def update_page_status(
         self, page_id: str, *, property_name: str, value: str
     ) -> "RawAPIDict": ...  # pragma: no branch
+
+    def page_is_live(self, page_id: str) -> bool: ...  # pragma: no branch
 
 
 class SentryReadClient(Protocol):

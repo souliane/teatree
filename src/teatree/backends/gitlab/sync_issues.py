@@ -67,9 +67,7 @@ def fetch_assigned_issues(
 
         existing = Ticket.objects.matching_issue(issue_url).first()
         if existing is not None:
-            if repo_short and isinstance(existing.repos, list) and repo_short not in existing.repos:
-                existing.repos = [*existing.repos, repo_short]
-                existing.save(update_fields=["repos"])
+            if reconcile_tracked_issue(existing, issue, repo_short):
                 result.tickets_updated += 1
             continue
 
@@ -87,6 +85,39 @@ def fetch_assigned_issues(
             kind=classify_ticket_kind(labels=labels, title=issue_title),
         )
         result.tickets_created += 1
+
+
+def reconcile_tracked_issue(ticket: Ticket, issue: dict, repo_short: str) -> bool:
+    """Refresh an already-tracked ticket from upstream truth; report whether it changed.
+
+    Only what the forge owns is written: the issue title and the repo the issue
+    lives in. ``extra["issue_title"]`` is what every consumer summarises the
+    ticket from, so a row that reached this loop without one — created before the
+    key existed, or through another intake — acquires it here instead of staying
+    blank for the rest of its life. A blank ``short_description`` is seeded from
+    the same title (:meth:`Ticket.short_description_seed`), because that is the
+    field the board actually renders — stamping the title alone leaves the card
+    showing ``(no description)`` and repairs nothing a reader can see. An
+    operator-written label, like ``state`` and ``kind``, is a local decision and
+    survives the sync untouched. The write goes through the canonical locked
+    ``merge_extra`` RMW, one atomic ``UPDATE`` for ``extra`` plus its siblings.
+    """
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    set_keys: TicketExtra = {}
+    issue_title = str(issue.get("title", ""))
+    if issue_title and extra.get("issue_title") != issue_title:
+        set_keys["issue_title"] = issue_title
+
+    also_set: TicketSiblingFields = {}
+    if seed := ticket.short_description_seed(issue_title):
+        also_set["short_description"] = seed
+    if repo_short and isinstance(ticket.repos, list) and repo_short not in ticket.repos:
+        also_set["repos"] = [*ticket.repos, repo_short]
+
+    if not set_keys and not also_set:
+        return False
+    ticket.merge_extra(set_keys=set_keys or None, also_set=also_set or None)
+    return True
 
 
 def extract_issue_repo_path(issue_url: str) -> str:
@@ -147,6 +178,8 @@ def apply_issue_data(client: "GitLabAPI", ticket: Ticket, issue: dict, project_p
         set_keys["issue_title"] = issue_title
 
     also_set: TicketSiblingFields = {}
+    if seed := ticket.short_description_seed(issue_title):
+        also_set["short_description"] = seed
     variant = extract_variant(list(labels)) if isinstance(labels, list) else ""
     if variant and ticket.variant != variant:
         also_set["variant"] = variant

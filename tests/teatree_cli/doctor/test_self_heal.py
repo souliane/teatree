@@ -83,6 +83,7 @@ class ComposeStackCheckTest(TestCase):
             ("teatree-init", "exited", "Exited (0)"),
             ("teatree-worker", "running", "Up 3 hours"),
             ("teatree-admin", "running", "Up 3 hours"),
+            ("teatree-watchdog", "running", "Up 3 hours"),
         ]
         with (
             mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
@@ -90,6 +91,30 @@ class ComposeStackCheckTest(TestCase):
         ):
             ok, _out = _echoes(self_heal._check_compose_stack)
         assert ok is True
+
+    def test_watchdog_stuck_created_fails(self) -> None:
+        # The supervisor is the one container nothing else restarts, so a watchdog
+        # that never started (an unmountable bind source, say) silently removes the
+        # alerting for every other finding in this module. Leaving it off the
+        # long-running set is what made that blind spot unreportable.
+        states = [
+            ("teatree-worker", "running", "Up 3 hours"),
+            ("teatree-watchdog", "created", "Created"),
+        ]
+        with (
+            mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
+            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+        ):
+            ok, out = _echoes(self_heal._check_compose_stack)
+        assert ok is False
+        assert "teatree-watchdog" in out
+
+    def test_every_long_running_service_is_watched(self) -> None:
+        assert set(self_heal._LONG_RUNNING_SERVICES) == {
+            "teatree-worker",
+            "teatree-admin",
+            "teatree-watchdog",
+        }
 
 
 class ComposeStackWatchdogHandoffTest(TestCase):

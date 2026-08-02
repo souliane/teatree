@@ -18,12 +18,16 @@ DB (the DB row stays authoritative, so a TOML write would be a dead, shadowed ro
 import json
 import os
 import sqlite3
+import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
+from teatree.config.cold_db import projection_dir_for
 from teatree.config.cold_reader import canonical_config_db
+from teatree.config.host_projection import GENERATION_KEY, ProjectionPublisher, ProjectionPublishError, next_generation
+from teatree.db.boundary import ControlDbBoundary, DbBoundaryError
 
 _GLOBAL_SCOPE = ""
 _BUSY_TIMEOUT_MS = 2000
@@ -83,12 +87,21 @@ def write_setting(
     stored JSON-encoded (matching the ORM ``JSONField`` and the ``JSON_VALID`` check
     constraint), populating the NOT-NULL ``created_at``/``updated_at`` columns on insert.
 
-    Returns a :class:`WriteResult` (never raises): ``NO_DB_TIER`` when there is no usable
-    canonical DB to write (absent file, unmigrated/corrupt, no table) so the caller writes
-    TOML; ``WRITE_FAILED`` when the table is present but the write was blocked by a lock so the
-    caller must NOT mask the live DB row with a dead TOML write; ``WROTE`` on a committed write.
+    Returns a :class:`WriteResult` for every DATA condition (never raises on one):
+    ``NO_DB_TIER`` when there is no usable canonical DB to write (absent file,
+    unmigrated/corrupt, no table) so the caller writes TOML; ``WRITE_FAILED`` when the table
+    is present but the write was blocked by a lock so the caller must NOT mask the live DB
+    row with a dead TOML write; ``WROTE`` on a committed write.
+
+    The one TOPOLOGY fault does raise :class:`DbBoundaryError`: this is the only writer in
+    the project that reaches the canonical DB outside Django, so the guarded backend cannot
+    cover it, and degrading a cross-VM-boundary write to a ``WriteResult`` would hand the
+    caller a silent fallback exactly where a silent fallback corrupts pages.
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
+    boundary = ControlDbBoundary(db)
+    if not boundary.read_write_allowed:
+        raise DbBoundaryError(boundary.refusal())
     if not db.exists():
         return WriteResult.NO_DB_TIER
     try:
@@ -96,9 +109,46 @@ def write_setting(
     except sqlite3.Error:
         return WriteResult.NO_DB_TIER
     try:
-        return _upsert_classified(conn, scope, key, value)
+        result = _upsert_classified(conn, scope, key, value)
+        if result is WriteResult.WROTE and key != GENERATION_KEY:
+            _bump_generation(conn)
     finally:
         conn.close()
+    if result is WriteResult.WROTE:
+        _publish_projection(db, env)
+    return result
+
+
+def _bump_generation(conn: sqlite3.Connection) -> None:
+    """Ratchet the projection generation on the SAME connection that just wrote.
+
+    Same connection, so the counter can never disagree with the write it labels, and
+    no second handle is opened on a database whose whole point is one writer.
+    """
+    row = conn.execute(
+        "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
+        (_GLOBAL_SCOPE, GENERATION_KEY),
+    ).fetchone()
+    try:
+        current = json.loads(row[0]) if row is not None else None
+    except (TypeError, ValueError):
+        current = None
+    _upsert_classified(conn, _GLOBAL_SCOPE, GENERATION_KEY, next_generation(current))
+
+
+def _publish_projection(db: Path, env: Mapping[str, str]) -> None:
+    """Republish the host projection — the write seam IS the regeneration trigger.
+
+    Loud on failure and never fatal: the settings write has already committed, so
+    raising here would report a write that landed as a write that did not. The
+    stderr line is what keeps a failed publication from becoming a silently stale
+    projection, and ``t3 doctor check`` compares source to projection from inside the
+    container where both are visible.
+    """
+    try:
+        ProjectionPublisher(db, projection_dir_for(db, env)).publish()
+    except (ProjectionPublishError, sqlite3.Error, OSError) as error:
+        sys.stderr.write(f"WARNING: the host projection was not republished after a config write: {error}\n")
 
 
 def _upsert_classified(conn: sqlite3.Connection, scope: str, key: str, value: object) -> WriteResult:

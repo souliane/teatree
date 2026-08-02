@@ -53,6 +53,17 @@ diff --git a/src/teatree/core/models/ticket.py b/src/teatree/core/models/ticket.
 +        ARCHIVED = "archived", "Archived"
 """
 
+_DIFF_TICKET_STATE_RELABELLED = """\
+diff --git a/src/teatree/core/models/ticket.py b/src/teatree/core/models/ticket.py
+--- a/src/teatree/core/models/ticket.py
++++ b/src/teatree/core/models/ticket.py
+@@ -47,2 +47,2 @@ class State(models.TextChoices):
+-        STARTED = "started", "Started"
+-        REVIEWED = "reviewed", "Reviewed"
++        STARTED = "started", "Work started"
++        REVIEWED = "reviewed", "Self-reviewed"
+"""
+
 _DIFF_TICKET_NON_STATE_LINE = """\
 diff --git a/src/teatree/core/models/ticket.py b/src/teatree/core/models/ticket.py
 --- a/src/teatree/core/models/ticket.py
@@ -115,6 +126,15 @@ class TestDetectTicketStateAdded:
 
     def test_skips_non_textchoice_change_in_ticket_file(self) -> None:
         assert detect_ticket_state_added(_DIFF_TICKET_NON_STATE_LINE) is False
+
+    def test_skips_a_relabelled_state_whose_value_already_existed(self) -> None:
+        """A new LABEL on an existing value is a rename — the soft case this gate disclaims.
+
+        The stored value is what BLUEPRINT.md documents and what the FSM branches on;
+        editing only the human-readable half changes neither, so demanding a doc edit
+        for it is the false positive the module docstring promises not to raise.
+        """
+        assert detect_ticket_state_added(_DIFF_TICKET_STATE_RELABELLED) is False
 
     def test_skips_unrelated_file(self) -> None:
         assert detect_ticket_state_added(_DIFF_LOOP_LEASE_ADDED) is False

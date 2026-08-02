@@ -11,6 +11,7 @@ from pathlib import Path
 
 from teatree.core.models import Worktree
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
+from teatree.utils import git
 
 logger = logging.getLogger(__name__)
 
@@ -75,18 +76,79 @@ def stored_clone_path(worktree: Worktree) -> Path | None:
     return Path(stored) if probe_checkout(Path(stored)) is CheckoutState.CHECKOUT else None
 
 
+def clone_path_from_checkout(wt_path: str) -> Path | None:
+    """The clone backing an on-disk worktree, asked of GIT rather than guessed by name.
+
+    ``git rev-parse --git-common-dir`` answers with the MAIN clone's git directory
+    (``<clone>/.git`` from a linked worktree), so its parent is the clone's working
+    tree. This is the only authoritative answer available: a worktree created by a
+    bare ``git worktree add`` has no recorded ``clone_path`` and its directory
+    basename need not match the repo, so every name-based resolution misses it —
+    and a miss is not benign. It renders as "source clone missing", which the
+    redundancy layers then report as an empty unique-commit list, indistinguishable
+    from a branch proven to hold nothing.
+
+    Returns ``None`` when *wt_path* is not a git worktree or the clone it names is
+    not a live checkout, so callers fall through to the name scan exactly as before.
+    """
+    clone = git_common_clone_dir(wt_path)
+    if clone is None:
+        return None
+    return clone if probe_checkout(clone) is CheckoutState.CHECKOUT else None
+
+
+def git_common_clone_dir(wt_path: str) -> Path | None:
+    """The working tree of the main clone *wt_path* belongs to, per ``--git-common-dir``.
+
+    The raw, UNVALIDATED probe — it reports where git says the clone is without
+    asking whether that path is currently a healthy checkout. Callers that need the
+    stricter answer use :func:`clone_path_from_checkout`; the adopt path in
+    provisioning wants the raw one, because it is establishing what the checkout
+    belongs to rather than deciding whether to trust it.
+
+    An EMPTY *wt_path* is rejected before anything else: ``Path("")`` is ``.``,
+    which is a directory, so a blank path would run ``git`` in the CALLING
+    process's cwd and confidently report that repo as the answer — a row with no
+    recorded worktree path would resolve to whatever clone the CLI happened to be
+    invoked from.
+    """
+    if not wt_path.strip() or not Path(wt_path).is_dir():
+        return None
+    common = git.run(repo=wt_path, args=["rev-parse", "--git-common-dir"])
+    if not common:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        common_path = (Path(wt_path) / common_path).resolve()
+    return common_path.parent
+
+
 def resolve_clone_path(workspace: Path, worktree: Worktree) -> Path | None:
     """Return the source clone path for *worktree*, with namespace fallback.
 
-    Prefers a :func:`stored_clone_path` that is still a live checkout; a stale or
-    unverifiable stored value falls through to a fresh :func:`find_clone_path`
-    scan, exactly like a row that never carried the field. ``None`` means no clone
-    exists anywhere — callers read that as unverifiable and keep, never as
-    "nothing here to lose".
+    Three tiers, most authoritative first:
+
+    1. a :func:`stored_clone_path` that is still a live checkout;
+    2. :func:`clone_path_from_checkout` — what GIT says the worktree belongs to;
+    3. a :func:`find_clone_path` name scan under *workspace*.
+
+    Tier 2 exists because tiers 1 and 3 both go by NAME, and a worktree created by
+    a bare ``git worktree add`` satisfies neither: it carries no recorded
+    ``clone_path``, and its directory basename is whatever the operator typed, not
+    the repo. Such a worktree resolved to ``workspace / <basename>`` — a path that
+    does not exist — so teardown reported "source repo missing" and removed
+    nothing, and the redundancy probes reported it unverifiable. Git knows the
+    answer; asking it is both cheaper and correct.
+
+    ``None`` means no clone exists anywhere — callers read that as unverifiable and
+    keep, never as "nothing here to lose".
     """
     stored = stored_clone_path(worktree)
     if stored is not None:
         return stored
+    from_git = clone_path_from_checkout((worktree.extra or {}).get("worktree_path", "") or "")
+    if from_git is not None:
+        return from_git
     return find_clone_path(workspace, worktree.repo_path)
 
 

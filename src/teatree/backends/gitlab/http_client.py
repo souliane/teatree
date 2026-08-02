@@ -186,14 +186,16 @@ class GitLabHTTPClient(BoundedRetryTransport):
 
         return self._run(attempt, idempotent=idempotent)
 
-    def _put(self, endpoint: str, *, json: object) -> httpx.Response:
+    def _put(self, endpoint: str, *, json: object, idempotent: bool = True) -> httpx.Response:
         url = self._url(endpoint)
 
         def attempt() -> httpx.Response:
             return httpx.put(url, headers=self._headers(), json=json, timeout=self._timeout)
 
-        # PUT is idempotent by HTTP semantics — safe to replay on a response-phase failure.
-        return self._run(attempt, idempotent=True)
+        # PUT is idempotent by HTTP semantics — safe to replay on a response-phase
+        # failure — but a caller that reconciles a possibly-landed write ITSELF (the
+        # §17.4.3 bound merge) opts out, so the replay never races its own recovery.
+        return self._run(attempt, idempotent=idempotent)
 
     def _delete(self, endpoint: str) -> httpx.Response:
         url = self._url(endpoint)
@@ -289,10 +291,26 @@ class GitLabHTTPClient(BoundedRetryTransport):
         response.raise_for_status()
         return cast("RawMR", response.json())
 
-    def put_status(self, endpoint: str, payload: Mapping[str, object] | None = None) -> int:
+    def put_response(
+        self,
+        endpoint: str,
+        payload: Mapping[str, object] | None = None,
+        *,
+        idempotent: bool = True,
+    ) -> httpx.Response:
+        """The raw PUT response — status AND body, never ``raise_for_status``-ed.
+
+        ``put_json`` raises on a non-2xx and ``put_status`` discards the body; the
+        §17.4.3 bound merge needs BOTH, because core classifies a merge failure
+        (head-moved / policy refusal / transient) from the status code and the
+        response body together. Pass ``idempotent=False`` for a write whose caller
+        reconciles a possibly-landed attempt itself.
+        """
         self._require_token()
-        response = self._put(endpoint, json=dict(payload) if payload else {})
-        return self._log_write_failure("PUT", endpoint, response.status_code)
+        return self._put(endpoint, json=dict(payload) if payload else {}, idempotent=idempotent)
+
+    def put_status(self, endpoint: str, payload: Mapping[str, object] | None = None) -> int:
+        return self._log_write_failure("PUT", endpoint, self.put_response(endpoint, payload).status_code)
 
     def delete(self, endpoint: str) -> int:
         self._require_token()

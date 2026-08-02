@@ -77,6 +77,13 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # tests/teatree_cli/doctor/test_root_disk_headroom_check.py; pin it to a pass
     # here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_root_disk_headroom", lambda: True)
+    # The dream-pass staleness escalation gate (#3993) reads the real DreamRunMarker
+    # row — on this runner's own control DB it is genuinely stale, so it FAILs
+    # deterministically off-box for a reason unrelated to the doctor's dispatch under
+    # test. Its bands are exercised against a seeded marker in
+    # tests/teatree_cli/doctor/test_dream_blocked_check.py; pin it to a pass here so
+    # this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_dream_consolidation_blocked", lambda: True)
     # The config-tier health gate (#3873) reports whether a ConfigSetting override read
     # recently FAILED. These CLI-dispatch cases run with no Django DB, so the doctor's own
     # settings read is blocked by pytest-django and legitimately records a degradation —

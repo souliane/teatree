@@ -126,10 +126,11 @@ class TestCanonicalConfigDb:
 
     def test_pinned_equal_to_paths_true_canonical_db(self) -> None:
         # The duplicated path computation must never drift from teatree.paths.
-        # paths.py froze TRUE_CANONICAL_DB from Path.home() at import; the test
-        # harness rebinds Path.home() per-test, so pin against the home it used
-        # (home/.local/share/teatree/db.sqlite3 → parents[3] is that home).
-        paths_home = teatree.paths.TRUE_CANONICAL_DB.parents[3]
+        # paths.py froze both constants from Path.home() at import and the test
+        # harness rebinds Path.home() per-test, so the home is recovered from the
+        # DATA dir — TRUE_CANONICAL_DB now resolves into the control-DB volume and
+        # carries no home segment at all.
+        paths_home = teatree.paths._TRUE_CANONICAL_DATA_DIR.parents[2]
         assert canonical_config_db(env={}, home=paths_home) == teatree.paths.TRUE_CANONICAL_DB
 
     def test_worktree_cwd_does_not_isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

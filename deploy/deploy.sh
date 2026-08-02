@@ -5,8 +5,15 @@
 # Reads NO secrets — compose's env_file (deploy/teatree.env) supplies them.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# PHYSICAL resolution (`pwd -P`), matching the sibling `t3`. A fork commonly exposes
+# this directory through a repo-root `deploy -> vendor/teatree/deploy` symlink, and
+# bash resolves `..` LOGICALLY: invoked as `deploy/deploy.sh`, plain `pwd` yields
+# `<fork>/deploy`, whose `..` is the FORK ROOT rather than `<fork>/vendor/teatree`.
+# The `git fetch --prune origin` + `git pull --ff-only` below would then run against
+# the fork on whatever branch is checked out. With no symlink involved `pwd -P` is
+# identical to `pwd`, so a standalone clone is unaffected.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 ENV_FILE="$SCRIPT_DIR/teatree.env"
 
@@ -105,6 +112,44 @@ echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(g
 #
 # The credential plane (pass store + its GPG home) is mode 700; the data and
 # session planes take the default mode.
+#
+# `$HOME` here IS the compose sources' host root: the mounts read it as
+# `${TEATREE_HOST_HOME:-/home/teatree}`, exported below so the dirs created here
+# and the dirs mounted are the same ones by construction. On the box the deploy
+# user's home is `/home/teatree`, so this equals the compose default and every
+# mount keeps path identity with the container's `/home/teatree/...` targets.
+export TEATREE_HOST_HOME="$HOME"
+
+# The checkout this deploy runs out of — the directory holding `deploy/`. The
+# watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
+# `$TEATREE_DEPLOY_CHECKOUT/deploy/watchdog.sh` from it, so both sides read this
+# one value. On the box `$REPO_ROOT` IS `/home/teatree/teatree-deploy`, the
+# compose default, so the box is byte-identical to before.
+export TEATREE_DEPLOY_CHECKOUT="$REPO_ROOT"
+
+# TEATREE_DOCKER_SOCKET_GID — the group owning the docker socket AS THE CONTAINER
+# SEES IT, which is what docker-compose.yml's `group_add` on teatree-worker reads.
+# The worker runs as the non-root TEATREE_UID and needs the daemon for `worktree
+# provision` (docker build) and `worktree start` (compose up); the socket is mode
+# 0660 root-owned, so without a matching group the mount grants nothing.
+#
+# NOT always a `stat` of the host socket. On Linux — the box — the daemon shares
+# the host kernel, so the host's socket IS the container's and its gid transfers
+# (on Debian and Ubuntu the `docker` group, not 0). Under Docker Desktop the
+# socket is served from the product's own Linux VM where it is root:root — gid 0 —
+# while the host-side node is an ordinary user-owned file whose gid means nothing
+# inside the container, so reading the host there would export a group the
+# container does not have. Duplicated verbatim in deploy/t3, which is copied and
+# run standalone; tests/test_deploy_docker_socket_access.py pins them in sync.
+# An operator-set value always wins.
+if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
+    TEATREE_DOCKER_SOCKET_GID=0
+    if [ "$(uname -s)" = Linux ] && [ -S /var/run/docker.sock ]; then
+        TEATREE_DOCKER_SOCKET_GID="$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)"
+    fi
+fi
+export TEATREE_DOCKER_SOCKET_GID
+
 install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg"
 install -d \
     "$HOME/.local/share/teatree" \

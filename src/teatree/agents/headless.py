@@ -30,7 +30,13 @@ from django.utils import timezone
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
 from teatree.agents._headless_options import SpawnOverrides, _build_options, resolve_headless_max_turns
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
+from teatree.agents.harness import (
+    Harness,
+    HarnessSession,
+    pydantic_ai_thread,
+    resolve_dispatch_provider,
+    resolve_harness,
+)
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_failure_taxonomy import error_result_reason as _error_result_reason
@@ -54,7 +60,7 @@ from teatree.agents.usage_window import (
     park_or_rotate_on_limit,
     park_task_on_all_exhausted,
 )
-from teatree.config import AgentHarnessProvider, get_effective_settings
+from teatree.config import AgentHarnessProvider
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import AllTokensExhaustedError
@@ -97,13 +103,7 @@ _PROSE_SUMMARY_CHARS = 1000
 
 @dataclass(frozen=True)
 class HarnessOutcome:
-    """The captured result of one in-process harness-driven agent run.
-
-    Exactly one of *stuck_reason* / *result* is meaningful: a watchdog breach
-    sets *stuck_reason* and the run is recorded FAILED; otherwise the
-    :class:`~claude_agent_sdk.ResultMessage` and the agent's final text drive a
-    completed (or evidence-gated FAILED) attempt.
-    """
+    """The captured result of one in-process harness-driven agent run."""
 
     agent_text: str
     result_message: ResultMessage | None
@@ -123,7 +123,17 @@ def run_headless(
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
-    """Run a headless task in-process via ``claude-agent-sdk``."""
+    """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
+    return _run_headless_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+
+
+def _run_headless_agent(
+    task: Task,
+    *,
+    phase: str,
+    overlay_skill_metadata: SkillMetadata,
+) -> TaskAttempt:
+    """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
 
     # Checked BEFORE resolving the harness (souliane/teatree#2916): for a
@@ -151,7 +161,10 @@ def run_headless(
         stage_skills=stage_skills,
     )
 
-    provider = get_effective_settings().agent_harness_provider
+    # Resolved through the SAME task-overlay settings scope and the SAME phase pin the
+    # harness above came from, so the transport and the credential can never disagree
+    # about which harness this dispatch is running.
+    provider = resolve_dispatch_provider(task, phase=phase)
     lane = _resolve_dispatch_lane(harness, provider)
 
     child_env_result = _admission_park_or_child_env(task, harness, provider, lane=lane, phase=phase)
@@ -221,50 +234,19 @@ def run_headless(
 
 
 def _turn_ceiling(harness: Harness) -> int:
-    """The per-run turn cap for THIS dispatch's backend — the ``claude_sdk`` lane's, or none.
-
-    ``headless_max_turns`` bounds the ``claude`` CLI child's ``--max-turns``. Every other
-    backend carries its own per-run limit (the ``pydantic_ai`` lane's
-    ``pydantic_ai_request_limit``), and the neutral ``HarnessOptions`` adapter reads a
-    positive ``max_turns`` as the CALLER's explicit cap, which WINS over that limit — so
-    passing this lane's ceiling to another backend would silently replace its cap with a
-    number chosen for a different lane. ``0`` leaves such a backend on its own ceiling.
-    """
+    """The per-run turn cap for THIS dispatch's backend — the ``claude_sdk`` lane's, or none."""
     return resolve_headless_max_turns() if harness.capabilities.spawns_cli_child else 0
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:
-    """Re-persist a resume thread popped but never actually driven (souliane/teatree#2916).
-
-    ``resolve_harness`` pops a resumed task's parked thread as a side effect of BUILDING the
-    harness — before ``harness.open()`` ever runs, the only point the credential resolves.
-    When ``open()`` then fails, the popped thread would otherwise be silently and irrecoverably
-    lost even though the run never happened. Polymorphic (#3157 E1): the harness's own restore
-    hook does the re-persist, so the driver never ``isinstance``-branches on the backend class.
-    A no-op for every harness with no client-side resume thread (and a 3rd-party one without
-    the hook).
-    """
+    """Re-persist a resume thread popped but never actually driven (souliane/teatree#2916)."""
     restore = getattr(harness, "restore_unconsumed_resume_thread", None)
     if callable(restore):
         restore()
 
 
 def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | TaskAttempt:
-    """Resolve the headless transport, or a recorded failure for an unimplemented backend.
-
-    ``agent_harness`` selection itself (:func:`~teatree.agents.harness.resolve_harness`)
-    never fails here — both the ``claude_sdk`` and ``pydantic_ai`` backends
-    ([#2885](https://github.com/souliane/teatree/issues/2885)) are shipped;
-    ``NotImplementedError`` is still caught below as a forward-compatible guard
-    for a FUTURE reserved backend value. An :class:`InvalidHarnessProviderError`
-    (#3157 AH-6 — the configured ``agent_harness_provider`` is not valid under the
-    configured ``agent_harness``) is a misconfiguration that surfaces as a recorded
-    dispatch failure here, never an uncaught crash.
-
-    *phase* opts a ``pydantic_ai`` dispatch into the Lane-B tool layer (PR-03,
-    souliane/teatree#2512): the resolved harness wires the phase-scoped, gated
-    toolsets. Ignored for the ``claude_sdk`` backend.
-    """
+    """Resolve the headless transport, or a recorded failure for an unimplemented backend."""
     try:
         return resolve_harness(task, phase=phase or None)
     except (NotImplementedError, UnknownHarnessError, InvalidHarnessProviderError) as exc:
@@ -274,15 +256,7 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
 def _admission_park_or_child_env(
     task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, lane: str, phase: str = ""
 ) -> dict[str, str] | TaskAttempt | None:
-    """Directive #3 admission guard, then the child-env resolution — one early-return seam.
-
-    While an uncleared usage window covers this dispatch's *lane*, park the task rather than
-    burn an attempt that will 429 (a no-op when the flag is off or no window covers the
-    lane). A park restores any resume thread ``resolve_harness`` popped, since the run never
-    opened (mirrors the ``CredentialError`` path). Otherwise defers to
-    :func:`_resolve_child_env_or_failure`. Returns a ``TaskAttempt`` (parked or failed) for
-    an early return, or the child env (``dict``/``None``) to proceed.
-    """
+    """Directive #3 admission guard, then the child-env resolution — one early-return seam."""
     admission_park = maybe_park_for_active_window(task, lane=lane)
     if admission_park is not None:
         _restore_unconsumed_resume_thread(harness)
@@ -293,24 +267,7 @@ def _admission_park_or_child_env(
 def _resolve_child_env_or_failure(
     task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, lane: str = "", phase: str = ""
 ) -> dict[str, str] | TaskAttempt | None:
-    """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch.
-
-    Only the ``ClaudeSdkHarness`` spawns the bundled ``claude`` CLI child and
-    needs its Anthropic credential env — the ``claude`` binary provisioning
-    check and the Layer-2 ``agent_harness_provider``-keyed credential resolution
-    are both scoped to it. Any OTHER harness (e.g. ``PydanticAiHarness``,
-    [#2885](https://github.com/souliane/teatree/issues/2885)) resolves its OWN
-    credential lazily inside ``harness.open`` — this returns ``None``
-    unconditionally for it (no CLI child, no child env), and that harness's
-    ``CredentialError`` is caught by the broad guard around the drive call in
-    ``run_headless``.
-
-    For the #116 quarantined reader phase, the resolved env is filtered through
-    :func:`~teatree.agents.reader_profile.reader_child_env` so ``options.env`` carries
-    ONLY the inference credential + minimal runtime — never the full ambient env the
-    provider base is built from (which would re-introduce every secret over the
-    ``os.environ`` scrub). This is the suspenders to :func:`reader_env_hermetic`'s belt.
-    """
+    """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
     if not harness.capabilities.spawns_cli_child:
         return None
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
@@ -338,33 +295,12 @@ def _resolve_child_env_or_failure(
 
 
 def _active_agent_count() -> int:
-    """Live headless agents in flight — the divisor for the test-worker budget (#3644/F9).
-
-    ``live_headless_agent_count`` counts EVERY claimed live-lease headless agent,
-    including the free-form phases (``architectural_review`` …) that go through
-    this very cap. The prior ``in_flight_claimed_count(dispatchable_q())`` counted
-    only registered-phase tasks, so it undercounted this set and handed each agent
-    too many pytest workers — the melt direction.
-    """
+    """Live headless agents in flight — the divisor for the test-worker budget (#3644/F9)."""
     return max(1, Task.objects.live_headless_agent_count())
 
 
 def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt | None:
-    """Fold a non-success drive outcome into a recorded failure (or park), or ``None``.
-
-    Collapses the stuck-loop / usage-limit / error-result terminal cases into a
-    single return so ``run_headless`` stays within its early-return budget. A usage-limit
-    hit is PARKED not FAILED when Directive #3 auto-recovery is enabled (the flag-off
-    default records the terminal FAILED exactly as before). A park keeps the run's
-    conversation so the resume continues it rather than restarting (#3605). A max-tokens
-    truncation is a failed run that ALSO escalates to the owner
-    (:func:`~teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so a
-    silently-amputated envelope surfaces loud, not just as one more failed attempt. A run
-    stopped at the per-run TURN ceiling gets the same treatment through its own branch
-    (:func:`~teatree.agents.headless_truncation.is_max_turns_truncation`), taken BEFORE the
-    generic error-result branch so the cap is recorded under a reason that names the
-    ceiling and the setting that moves it rather than as an anonymous ``result_error``.
-    """
+    """Fold a non-success drive outcome into a recorded failure (or park), or ``None``."""
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
@@ -402,17 +338,7 @@ _LANE_BY_PROVIDER: dict[AgentHarnessProvider, str] = {
 
 
 def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | None) -> str:
-    """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
-
-    A :class:`~teatree.agents.harness.PydanticAiHarness` run always rides
-    the configured OpenAI-compatible credential — the only Layer-2 provider valid
-    under ``agent_harness=pydantic_ai`` — so it is unconditionally METERED. A
-    :class:`ClaudeSdkHarness` run is attributable only when an explicit
-    Layer-2 pin (*provider*) was configured: the ambient-credential default
-    (#2887, *provider* is ``None``) authenticates however the ``claude`` CLI's
-    own login state resolves, which is unobservable here, so it stays
-    unattributed (``""``) rather than guessing.
-    """
+    """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through."""
     if harness.capabilities.metered_lane:
         return TaskAttempt.Lane.METERED
     if provider is None:
@@ -425,13 +351,7 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
 
 
 def _renew_lease_closing_connection(task: Task) -> None:
-    """Renew *task*'s lease and close THIS thread's DB connection.
-
-    The :func:`asyncio.to_thread` sibling of
-    :func:`~teatree.agents.headless_watchdog._sample_usage_closing_connection`:
-    the lease write opens a Django connection bound to the offload worker
-    thread, which never closes itself — see :mod:`teatree.utils.thread_db`.
-    """
+    """Renew *task*'s lease and close THIS thread's DB connection."""
     try:
         task.renew_lease(lease_seconds=_LEASE_SECONDS)
     finally:
@@ -446,18 +366,7 @@ async def _drive_with_heartbeat(
     *,
     watchdog: LoopWatchdog | None = None,
 ) -> HarnessOutcome:
-    """Run the agent in-process while sending lease heartbeats (#882, #997).
-
-    The *harness* opens the in-flight session (``harness.open(options)``); the
-    driver talks to it through the narrow :class:`~teatree.agents.harness.HarnessSession`
-    surface, so the transport backend is swappable behind the seam. A concurrent
-    heartbeat coroutine renews the task lease each tick and, on a turn/cost
-    ceiling breach, interrupts the session so the in-flight agent can flush its
-    final status before the run unwinds. The wall-clock ceiling is enforced with
-    :func:`asyncio.wait_for`; a timeout interrupts the session and is reported as
-    a runtime breach. DB reads/writes run in a worker thread so the event loop is
-    never blocked.
-    """
+    """Run the agent in-process while sending lease heartbeats (#882, #997)."""
     if watchdog is None:
         watchdog = LoopWatchdog.from_settings()
 
@@ -538,13 +447,7 @@ async def _drive_with_heartbeat(
 
 
 async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
-    """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window.
-
-    A ``RateLimitEvent`` with ``status == "rejected"`` carries the SDK's typed
-    ``rate_limit_type`` window — the unambiguous source the limit classifier
-    prefers over prose-grep. The LAST rejected one is kept so a hard limit hit at
-    the end of the stream classifies the failure precisely.
-    """
+    """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window."""
     await session.query(prompt)
     text_parts: list[str] = []
     result_message: ResultMessage | None = None
@@ -573,32 +476,7 @@ def _record_success(
     lane: str = "",
     provenance: DispatchProvenance | None = None,
 ) -> TaskAttempt:
-    """Record a successful SDK run via the shared recorder.
-
-    The schema-key check, the #1284 phase-evidence gate, and the
-    complete/fail decision live once in ``attempt_recorder`` so the headless
-    SDK path and the in-session ``record-attempt`` path can never drift on the
-    result-envelope contract. *lane* is the resolved Layer-2 lane
-    (souliane/teatree#657) this dispatch authenticated through.
-
-    A run that returned NO envelope at all is refused HERE, before the recorder,
-    on every phase that requires one
-    (:meth:`~teatree.agents.result_schema.ProseSummaryPolicy.allowed`). ``prompt.py``
-    demands a final JSON object from every phase, so prose-only output is a
-    contract violation, and the ``{"summary": agent_text}`` fallback below is the
-    vacuous-success hole: it manufactures an envelope the agent never produced,
-    and on a phase with no
-    :data:`~teatree.agents.result_schema.PHASE_REQUIRED_EVIDENCE` entry every
-    recorder gate then passes, so a run that did nothing completes and advances
-    the ticket FSM. Lane-agnostic on purpose — both harness backends funnel
-    through here, so the refusal is shared (the ``pydantic_ai`` lane merely makes
-    it likelier: no built-in tools, so the model stops early). The exempt phases
-    (``scoping``, ``retro``) keep the fallback byte-identically, and a phase that
-    carries its own evidence requirement is still handed on so the #3263 coding
-    salvage gets its turn — with ``envelope_parsed=False``, so a refusal past the
-    salvage is diagnosed as the omitted ENVELOPE it is rather than as an omitted
-    key (#3905).
-    """
+    """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
     from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
 
@@ -625,15 +503,7 @@ def _record_success(
 def _record_failure(
     task: Task, *, exit_code: int = 1, error: str = "", result: AgentResultBlob | None = None
 ) -> TaskAttempt:
-    """Record a FAILED attempt carrying *error*, and fail the task.
-
-    ``exit_code=1`` (the default) is a crash — the run never produced a usable
-    outcome. An ENVELOPE refusal passes ``exit_code=0``: the agent ran cleanly and
-    the recording was refused on its content, which
-    :meth:`~teatree.core.models.TaskAttempt._classify_outcome` reads as
-    ``REFUSAL`` rather than ``CRASH``, matching the sibling refusals in
-    ``attempt_recorder``. *result* persists the offending payload for diagnosis.
-    """
+    """Record a FAILED attempt carrying *error*, and fail the task."""
     attempt = TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,

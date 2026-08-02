@@ -17,7 +17,7 @@ from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, Dire
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.directive_loop import guards
-from teatree.loops.directive_loop.tick import TickSeams, run_tick
+from teatree.loops.directive_loop.tick import MAX_OPEN_RATIFY_QUESTIONS, TickSeams, run_tick
 from teatree.loops.directive_loop.verify import VerifySeams
 from teatree.loops.outer_loop.guards import CriticLiveness, GuardSeams
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
@@ -378,11 +378,124 @@ class TestNoProgressStepsNeverSpendTheIntakeBudget(TestCase):
         assert result.advanced == 1
 
 
+class TestRatifyBackpressure(TestCase):
+    """Interpreting is cheap and silent; ASKING costs the owner a DM each time.
+
+    ``directive_intake_per_tick`` bounds the drain RATE, not how many decisions sit
+    on the owner at once — so a 25-deep backlog reaching INTERPRETED would open 25
+    ratify questions and DM all of them. The cap is on OUTSTANDING questions, so it
+    self-clears as the owner answers instead of merely spreading the burst.
+    """
+
+    def _interpreted(self, text: str) -> Directive:
+        directive = Directive.objects.capture(text, source=Directive.Source.CLI)
+        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
+        return directive
+
+    def test_a_backlog_of_interpreted_directives_does_not_ask_them_all_at_once(self) -> None:
+        for n in range(10):
+            self._interpreted(f"do {n}")
+        run_tick(settings=_open_settings(), seams=_seams())
+        assert Directive.objects.filter(state=Directive.State.RATIFY_PENDING).count() == MAX_OPEN_RATIFY_QUESTIONS
+
+    def test_the_cap_counts_outstanding_questions_not_this_tick_s_asks(self) -> None:
+        for n in range(10):
+            self._interpreted(f"do {n}")
+        run_tick(settings=_open_settings(), seams=_seams())
+        run_tick(settings=_open_settings(), seams=_seams())
+        # The second tick adds nothing: the first tick's questions are still unanswered.
+        assert Directive.objects.filter(state=Directive.State.RATIFY_PENDING).count() == MAX_OPEN_RATIFY_QUESTIONS
+
+    def test_answering_a_question_frees_a_slot_for_the_next_directive(self) -> None:
+        for n in range(10):
+            self._interpreted(f"do {n}")
+        run_tick(settings=_open_settings(), seams=_seams())
+        pending = Directive.objects.filter(state=Directive.State.RATIFY_PENDING).order_by("pk")
+        question = pending.first().ratify_question
+        assert question is not None
+        DeferredQuestion.consume(question.pk, answer="approve")
+        run_tick(settings=_open_settings(), seams=_seams())
+        # The answered one admitted, freeing exactly one slot for a fresh ask.
+        assert Directive.objects.filter(state=Directive.State.RATIFY_PENDING).count() == MAX_OPEN_RATIFY_QUESTIONS
+
+    def test_the_cap_never_blocks_the_silent_interpret_step(self) -> None:
+        for n in range(4):
+            self._interpreted(f"ask {n}")
+        captured = [Directive.objects.capture(f"do {n}", source=Directive.Source.CLI) for n in range(4)]
+        run_tick(settings=_open_settings(), seams=_seams())
+        for directive in captured:
+            assert DirectiveDispatch.objects.filter(directive=directive).exists()
+
+
 class TestIdle(TestCase):
     def test_no_active_directive_is_idle(self) -> None:
         result = run_tick(settings=_open_settings(), seams=_seams())
         assert result.action == "idle"
         assert result.reason == "no_active_directive"
+
+
+class TestSignalTrustGateScopedToTheExecutionArc(TestCase):
+    """An `instrumentation_gap` on any factory signal no longer blocks owner intake.
+
+    Reproduces the shipped state that stranded 25 captured directives: S1
+    ``first_try_green`` reports ``instrumentation_gap`` (its redness ledger is a
+    dispatch side effect that never fired), so G3 refused every tick. Intake reads no
+    signal and has already dropped G1b, so the gap must not gate it — while the
+    execution arc, which measures a keep/revert decision against that very score, keeps
+    refusing.
+    """
+
+    def _gap_seams(self) -> TickSeams:
+        gap = SignalRow(
+            provider_id="first_try_green",
+            kind="quant",
+            reading=SignalReading(value=1.0, sample_size=86, window_days=28, status=SignalStatus.INSTRUMENTATION_GAP),
+            direction=Direction.HIGHER_IS_BETTER,
+            red_when=0.5,
+            baseline_value=None,
+            delta=None,
+            tripped=False,
+            verdict=SignalVerdict.INSTRUMENTATION_GAP,
+        )
+        report = FactorySignalsReport(
+            window_days=28,
+            generated_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            signals=[gap],
+            verdict=SignalVerdict.RED,
+        )
+        return TickSeams(
+            guards=GuardSeams(critic_probe=_live_critic, signal_report=report, budget=BudgetVerdict.allow())
+        )
+
+    def test_captured_advances_while_a_signal_reports_an_instrumentation_gap(self) -> None:
+        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        result = run_tick(settings=_open_settings(), seams=self._gap_seams())
+        assert result.action == "interpret_dispatched"
+        assert DirectiveDispatch.objects.filter(directive=directive).exists()
+
+    def test_intake_reaches_the_ratify_gate_while_a_signal_reports_a_gap(self) -> None:
+        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
+        assert run_tick(settings=_open_settings(), seams=self._gap_seams()).action == "ratify_asked"
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.RATIFY_PENDING
+        assert directive.ratify_question is not None
+
+    def test_admission_still_requires_a_consumed_answered_ratify_question(self) -> None:
+        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
+        question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
+        directive.attach_ratification(question)
+        assert run_tick(settings=_open_settings(), seams=self._gap_seams()).action == "pending"
+        assert Directive.objects.get(pk=directive.pk).state == Directive.State.RATIFY_PENDING
+
+    def test_execution_arc_still_refuses_on_the_untrusted_signal(self) -> None:
+        directive = _admitted(kind="activation_only", acceptance_tests=[])
+        result = run_tick(settings=_open_settings(), seams=self._gap_seams())
+        assert result.action == "refused"
+        assert result.reason == guards.SIGNAL_UNTRUSTED
+        assert Directive.objects.get(pk=directive.pk).state == Directive.State.ADMITTED
+        assert ConfigSetting.objects.get_effective(_KEY, scope=_SCOPE) is None
 
 
 class TestScoreGateScopedToTheExecutionArc(TestCase):

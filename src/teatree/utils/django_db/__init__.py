@@ -22,7 +22,7 @@ from teatree.utils.django_db.dslr_prune import prune_dslr_snapshots, stale_dslr_
 from teatree.utils.django_db.helpers import is_loopback_host, rewrite_url_host, url_host
 from teatree.utils.django_db.importer import DjangoDbImporter, django_db_import
 from teatree.utils.django_db.restore import validate_dump
-from teatree.utils.django_db.runner import runner_prefix
+from teatree.utils.django_db.runner import project_env_is_drivable, runner_prefix
 from teatree.utils.django_db.testdb_clone import (
     TestDbCloneResult,
     clone_app_db_to_test_db,
@@ -39,6 +39,7 @@ __all__ = [
     "is_loopback_host",
     "migrations_drifted",
     "prepare_test_db",
+    "project_env_is_drivable",
     "prune_dslr_snapshots",
     "rewrite_url_host",
     "runner_prefix",

@@ -100,6 +100,7 @@ from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproE
 from teatree.core.models.repro_waiver import ReproWaiver, ReproWaiverError
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
+from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.review_verdict import (
@@ -280,6 +281,7 @@ __all__ = [
     "ReproWaiverError",
     "ResourcePressureMarker",
     "ReviewAssignment",
+    "ReviewBackendCooldown",
     "ReviewEvidence",
     "ReviewEvidenceError",
     "ReviewIntent",

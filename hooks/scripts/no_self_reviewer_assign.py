@@ -91,8 +91,9 @@ _REASON = (
     "`glab mr create/update --reviewer`, `gh pr create --reviewer`/`-r`, "
     "`gh pr edit --add-reviewer`, do not set `reviewer_ids`/`requested_reviewers` "
     "via a write API call, and do not pass a reviewer arg to the MR-create/update "
-    "MCP tool. If this is a vetted one-off on a COLLEAGUE's MR, append "
-    "`[reviewer-ok: <reason>]` to the command."
+    "MCP tool. If this is a vetted one-off on a COLLEAGUE's MR, put "
+    "`[reviewer-ok: <reason>]` in the Bash `command` string, or in any string "
+    "argument of the MCP call (the Bash `description` field is NOT scanned)."
 )
 
 
@@ -173,6 +174,22 @@ def _mcp_assigns_reviewer(data: dict) -> bool:
     return any(tool_input.get(key) for key in _MCP_REVIEWER_KEYS)
 
 
+def _mcp_reviewer_ok_token(tool_input: dict) -> str | None:
+    """The ``[reviewer-ok: <reason>]`` reason from any string arg of an MCP call.
+
+    An MCP tool call carries no ``command``, so the Bash-only scanner left this
+    branch advertising an escape that could not be placed anywhere the gate reads
+    — a never-lockout contract the gate did not actually honour. Every string
+    argument is scanned because the MCP schema fixes no field for free text.
+    """
+    for value in tool_input.values():
+        if not isinstance(value, str):
+            continue
+        if reason := _reviewer_ok_token(value):
+            return reason
+    return None
+
+
 def handle_block_self_reviewer_assign(data: dict) -> bool:
     """Block any direct reviewer-assignment surface — review is requested, never assigned.
 
@@ -191,16 +208,19 @@ def handle_block_self_reviewer_assign(data: dict) -> bool:
     if not _gate_enabled():
         return False
 
-    tool_name = data.get("tool_name", "")
-    if tool_name == "Bash":
+    if data.get("tool_name", "") == "Bash":
         command = data.get("tool_input", {}).get("command", "")
         if not command or not _bash_assigns_reviewer(command):
             return False
-        if reason := _reviewer_ok_token(command):
-            sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
-            return False
-        return _fail_open_or_deny(data, _REASON)
+        reason = _reviewer_ok_token(command)
+    elif _mcp_assigns_reviewer(data):
+        reason = _mcp_reviewer_ok_token(data.get("tool_input", {}))
+    else:
+        return False
 
-    if _mcp_assigns_reviewer(data):
-        return _fail_open_or_deny(data, _REASON)
-    return False
+    # Both surfaces waive on the same token and deny the same way; resolving the surface
+    # first keeps that decision in one place instead of once per branch.
+    if reason:
+        sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
+        return False
+    return _fail_open_or_deny(data, _REASON)

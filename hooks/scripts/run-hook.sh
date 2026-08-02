@@ -107,4 +107,15 @@ for requirement in django ""; do
 done
 IFS="$old_ifs"
 
+case " $* " in
+    *" TaskCreated "*) ;;
+    *)
+        printf '%s\n' \
+            "WARNING: teatree hooks are DISABLED — no Python >= 3.11 found on PATH" \
+            "         (tried python3.13, python3.12, python3.11, python3). Every gate," \
+            "         the skill suggester and the loop bootstrap are inert this session." \
+            "         Install a Python >= 3.11 on PATH, then run \`t3 doctor check\`." >&2
+        ;;
+esac
+
 exit 0

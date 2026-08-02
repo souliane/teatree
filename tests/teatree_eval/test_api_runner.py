@@ -2070,7 +2070,13 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
             yield ephemeral
 
         spec = self._spawning_spec(tmp_path / "spec-dir")
-        with patch("teatree.eval.api_runner.provision_ephemeral_checkout", _fake_provision):
+        # Pin the plain-clone source-root offset: this asserts the api_runner WIRING,
+        # so it must not shift meaning with the layout teatree itself runs from (a
+        # vendoring fork puts the package at ``<checkout>/vendor/teatree/src``).
+        with (
+            patch("teatree.eval.api_runner.provision_ephemeral_checkout", _fake_provision),
+            patch("teatree.eval.ephemeral_checkout.source_root_offset", Path),
+        ):
             captured = self._run(spec)
 
         env = captured["options"].env

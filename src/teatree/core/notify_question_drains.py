@@ -36,6 +36,13 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify import NotifyKind, notify_user
 
+# How many deferred questions one tick may mirror. The backlog accumulates silently
+# while the owner is away, so an unbounded drain delivers it all in one burst the
+# moment they return — the owner reads that as spam and mutes the channel, which
+# costs the next genuine question too. Nothing is dropped: the remainder is re-read
+# on the next tick, so a question that already waited hours waits one more cadence.
+_MAX_MIRRORS_PER_TICK = 3
+
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
 
@@ -158,14 +165,20 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     ``resurface-deferred-question:<stable-ref>`` key — the row's
     :attr:`~teatree.core.models.deferred_question.DeferredQuestion.stable_notify_ref`,
     never its local pk), so re-running on a later tick or after a manual
-    ``resurface`` never double-posts. Fails open: a delivery
+    ``resurface`` never double-posts. **Capped per call** for the same reason the
+    mirror drain is: an away→present transition after a long absence would otherwise
+    deliver the whole accumulated backlog as one burst of DMs. Returning to present is
+    precisely when the backlog is largest, so this is the path that actually fires.
+    Fails open: a delivery
     failure for one question is recorded on its ``BotPing`` row by
     :func:`notify_user` and never aborts the drain or raises. Returns
     ``(delivered, total)``.
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
-    rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL]
+    rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL][
+        :_MAX_MIRRORS_PER_TICK
+    ]
     if not rows:
         return 0, 0
 
@@ -204,8 +217,17 @@ def drain_unmirrored_deferred_questions(
     bind a reply (verify-by-re-read). A row that does not deliver (no backend
     resolved in this context) is left un-mirrored — the durable row IS the
     fallback — and retried next tick. Returns ``(mirrored, total)``.
+
+    **The batch is CAPPED per tick.** The backlog grows silently whenever the
+    owner is away (an `unattended` preset defers every question), so draining it
+    unbounded turns the moment they come back into one DM per accumulated
+    question, seconds apart — 52 in one burst is what this fix was written for.
+    The owner reads that as spam and mutes the channel, which loses the next
+    genuine question too. The remainder is not dropped: `unmirrored_pending()`
+    is re-read every tick, so the backlog drains steadily instead of at once,
+    and a question that has waited hours can wait one more cadence.
     """
-    rows = list(DeferredQuestion.unmirrored_pending())
+    rows = list(DeferredQuestion.unmirrored_pending())[:_MAX_MIRRORS_PER_TICK]
     if not rows:
         return 0, 0
 

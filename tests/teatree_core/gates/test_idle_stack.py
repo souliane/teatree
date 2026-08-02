@@ -3,24 +3,24 @@
 A locally-running worktree (``services_up``/``ready``) is REAPABLE when there
 is no live Session and no active/claimed Task on its ticket, AND
 ``last_used_at`` is older than the idle threshold, AND it is not the
-currently-active worktree (the CWD), AND its docker stack is real OR a db-only
-partial stack (the wt595 leak class).
+currently-active worktree (the CWD), AND its own docker stack is PROVEN QUIET.
 
 Fail-safe: any uncertainty ⇒ KEEP (never reaped). The anti-vacuous core of
-the suite — reverting the active-session / active-task / CWD guard must turn an
-``active-stack-NOT-reaped`` test RED.
+the suite — reverting the active-session / active-task / CWD guard, or the
+stack-activity guard, must turn an ``active-stack-NOT-reaped`` test RED.
 """
 
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.gates import idle_stack as idle_mod
-from teatree.core.gates.idle_stack import classify_running_worktrees, reapable_worktrees
+from teatree.core.gates.idle_stack import StackActivity, classify_running_worktrees, reapable_worktrees
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 
@@ -52,18 +52,49 @@ def _running_worktree(
     )
 
 
-class _StackLiveBase(TestCase):
-    """Default every stack to a real (running) docker stack.
+def _fake_docker(
+    *,
+    container_ids: Sequence[str] = ("app-1",),
+    logs: dict[str, tuple[str, str]] | None = None,
+    ps_returncode: int = 0,
+    logs_returncode: int = 0,
+    raises: BaseException | None = None,
+) -> "Callable[..., CompletedProcess[str]]":
+    """A stand-in docker CLI: ``ps`` lists *container_ids*, ``logs`` replays their output.
 
-    Keeps the partial-stack reconcile from interfering with the idle-predicate
-    behaviour tests.
+    *logs* maps a container id to its ``(stdout, stderr)`` — both, because a dev
+    app server logs its requests on stderr and ``docker logs`` keeps the streams
+    apart. Patched over ``run_allowed_to_fail`` — the real subprocess boundary —
+    so the whole probe chain (``stack_activity`` → ``_project_container_ids`` →
+    ``_emitted_within_window``) runs for real against a scripted daemon.
+    """
+    streams = logs or {}
+
+    def _run(cmd: Sequence[str], **_: object) -> "CompletedProcess[str]":
+        argv = list(cmd)
+        if raises is not None:
+            raise raises
+        if argv[1] == "ps":
+            return CompletedProcess(argv, ps_returncode, "".join(f"{cid}\n" for cid in container_ids), "")
+        out, err = streams.get(argv[-1], ("", ""))
+        return CompletedProcess(argv, logs_returncode, out, err)
+
+    return _run
+
+
+class _StackLiveBase(TestCase):
+    """Default every stack to a PROVEN-QUIET docker stack.
+
+    Isolates the DB-authored guards from the docker probe (which is exercised
+    on its own in ``TestStackActivityProbe`` / ``TestOutOfBandRunNotReaped``),
+    and keeps the suite hermetic on a host with no docker daemon.
     """
 
     def setUp(self) -> None:
         super().setUp()
-        running = patch.object(idle_mod, "_running_container_count", return_value=1)
-        running.start()
-        self.addCleanup(running.stop)
+        quiet = patch.object(idle_mod, "stack_activity", return_value=StackActivity.QUIET)
+        quiet.start()
+        self.addCleanup(quiet.stop)
 
 
 class TestReapableHappyPath(_StackLiveBase):
@@ -239,44 +270,142 @@ class TestCrossOverlayScope(_StackLiveBase):
         assert all(w.overlay == "t3-heavy" for w in reapable)
 
 
-class TestPartialStackReconcile(TestCase):
-    """A db-only partial stack (app tier down, db lingering) is reapable.
+class TestOutOfBandRunNotReaped(TestCase):
+    """A stack driven OUT OF BAND must never be reaped — the #2190/#2227 blind spot.
 
-    The wt595 leak class: ``docker ps`` (running) shows the app tier down but a
-    stray ``db-1`` survives. The reaper must treat that as reapable (stop the
-    WHOLE project), NOT as a healthy stack to keep.
+    Every other guard is authored by the control plane: an FSM transition
+    (``last_used_at``), a ``Session``/``Task`` row, a delivery lease, a
+    post-hoc ``lifecycle record-e2e-run`` stamp. A live Playwright run drives
+    the stack over HTTP and writes NONE of them — so a stack under an in-flight
+    run presents to the reaper exactly like an abandoned one and gets stopped
+    mid-run.
+
+    The anti-vacuous core: delete the stack-activity guard from
+    ``preserve_reason`` and ``test_in_flight_run_keeps_stack`` goes RED, while
+    ``test_silent_stack_is_still_reaped`` stays GREEN — a reaper that never
+    reaps is as broken as one that reaps everything.
     """
 
-    def test_db_only_partial_stack_is_reapable(self) -> None:
+    def test_in_flight_run_keeps_stack(self) -> None:
+        """The bug: every control-plane signal is stale, yet the stack is serving traffic."""
+        wt = _running_worktree(ticket_number="500")
+        serving = _fake_docker(
+            container_ids=("web-1", "frontend-1"),
+            logs={"frontend-1": ('192.168.65.1 - - "GET /loan-request/12 HTTP/1.1" 200 65488\n', "")},
+        )
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=serving):
+            assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_app_server_stderr_counts_as_traffic(self) -> None:
+        """A dev app server logs requests on stderr — ``docker logs`` keeps the streams apart."""
+        wt = _running_worktree(ticket_number="501")
+        serving = _fake_docker(
+            container_ids=("web-1",),
+            logs={"web-1": ("", 'WARNING basehttp "GET /api/ HTTP/1.1" 401 58\n')},
+        )
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=serving):
+            assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_silent_stack_is_still_reaped(self) -> None:
+        """The control: a genuinely idle stack emits nothing and is still reaped."""
+        wt = _running_worktree(ticket_number="502")
+        silent = _fake_docker(container_ids=("web-1", "frontend-1", "db-1"))
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=silent):
+            assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_preserve_reason_names_the_traffic(self) -> None:
+        wt = _running_worktree(ticket_number="503")
+        serving = _fake_docker(container_ids=("web-1",), logs={"web-1": ("GET /\n", "")})
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=serving):
+            classified = dict(classify_running_worktrees(overlay="t3-heavy", idle_minutes=30))
+        assert classified[wt] is not None
+        assert "something is driving it" in classified[wt]
+
+
+class TestUnprovableStackIsKept(TestCase):
+    """FAIL CLOSED: a stack the reaper cannot PROVE quiet is kept, never reaped."""
+
+    def _kept(self, wt: Worktree, runner: object) -> bool:
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=runner):
+            return wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_docker_ps_failure_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="510")
+        assert self._kept(wt, _fake_docker(ps_returncode=1))
+
+    def test_docker_logs_failure_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="511")
+        assert self._kept(wt, _fake_docker(container_ids=("web-1",), logs_returncode=1))
+
+    def test_missing_docker_binary_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="512")
+        assert self._kept(wt, _fake_docker(raises=FileNotFoundError("docker")))
+
+    def test_wedged_daemon_timeout_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="513")
+        assert self._kept(wt, _fake_docker(raises=TimeoutExpired(["docker", "ps"], 10.0)))
+
+    def test_preserve_reason_names_the_unprovable_stack(self) -> None:
+        wt = _running_worktree(ticket_number="514")
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=_fake_docker(ps_returncode=1)):
+            classified = dict(classify_running_worktrees(overlay="t3-heavy", idle_minutes=30))
+        assert classified[wt] is not None
+        assert "fail-closed KEEP" in classified[wt]
+
+
+class TestPartialStackReconcile(TestCase):
+    """A db-only partial stack (app tier down, db lingering) is reapable once quiet.
+
+    The wt595 leak class: the app tier is down but a stray ``db-1`` survives.
+    The reaper must treat a quiet one as reapable (stop the WHOLE project), NOT
+    as a healthy stack to keep.
+    """
+
+    def test_quiet_db_only_partial_stack_is_reapable(self) -> None:
         wt = _running_worktree(ticket_number="400")
-        # One stray container (the leaked db) still running.
-        with patch.object(idle_mod, "_running_container_count", return_value=1):
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=_fake_docker(container_ids=("db-1",))):
             assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
 
     def test_zero_container_stack_is_still_reapable(self) -> None:
-        """A fully-gone stack is also reapable (idempotent stop is a no-op)."""
+        """A fully-gone stack is also reapable — nobody can drive it, and the stop is a no-op."""
         wt = _running_worktree(ticket_number="401")
-        with patch.object(idle_mod, "_running_container_count", return_value=0):
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=_fake_docker(container_ids=())):
             assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
 
 
-class TestRunningContainerCountHelper(TestCase):
-    """``_running_container_count`` maps docker output → count (advisory only)."""
+class TestStackActivityProbe(TestCase):
+    """``stack_activity`` maps the docker seam → BUSY / QUIET / UNKNOWN."""
 
-    @staticmethod
-    def _result(returncode: int, stdout: str) -> "CompletedProcess[str]":
-        return CompletedProcess(["docker", "ps"], returncode, stdout, "")
+    def _activity(self, runner: object, project: str = "backend-wt1") -> StackActivity:
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=runner):
+            return idle_mod.stack_activity(project, window_minutes=30)
 
-    def test_blank_project_is_minus_one(self) -> None:
-        assert idle_mod._running_container_count("") == -1
+    def test_blank_project_is_unknown(self) -> None:
+        assert self._activity(_fake_docker(), project="") is StackActivity.UNKNOWN
 
-    def test_docker_failure_is_minus_one(self) -> None:
-        with patch.object(idle_mod, "run_allowed_to_fail", return_value=self._result(1, "")):
-            assert idle_mod._running_container_count("p") == -1
+    def test_no_containers_is_quiet(self) -> None:
+        assert self._activity(_fake_docker(container_ids=())) is StackActivity.QUIET
 
-    def test_counts_nonblank_names(self) -> None:
-        with patch.object(idle_mod, "run_allowed_to_fail", return_value=self._result(0, "c1\n\nc2\n")):
-            assert idle_mod._running_container_count("p") == 2
+    def test_any_emitting_container_is_busy(self) -> None:
+        runner = _fake_docker(container_ids=("db-1", "web-1"), logs={"web-1": ("GET /\n", "")})
+        assert self._activity(runner) is StackActivity.BUSY
+
+    def test_whitespace_only_output_is_quiet(self) -> None:
+        runner = _fake_docker(container_ids=("web-1",), logs={"web-1": ("\n  \n", "")})
+        assert self._activity(runner) is StackActivity.QUIET
+
+    def test_window_is_a_relative_duration_floored_at_one_minute(self) -> None:
+        """The daemon resolves ``--since Nm`` on its own clock — skew cannot fake quiet."""
+        seen: list[list[str]] = []
+
+        def _record(cmd: Sequence[str], **_: object) -> "CompletedProcess[str]":
+            seen.append(list(cmd))
+            argv = list(cmd)
+            return CompletedProcess(argv, 0, "web-1\n" if argv[1] == "ps" else "", "")
+
+        with patch.object(idle_mod, "run_allowed_to_fail", side_effect=_record):
+            idle_mod.stack_activity("backend-wt1", window_minutes=0)
+        assert [seen[-1][2], seen[-1][3]] == ["--since", "1m"]
 
 
 class TestActiveWorktreePathHelper(TestCase):
@@ -315,17 +444,22 @@ class TestPreserveReasonFailSafeGuards(TestCase):
     def _e2e_cutoff(self) -> object:
         return timezone.now() - timedelta(minutes=60)
 
+    def _reason(self, wt: Worktree) -> str | None:
+        return idle_mod.preserve_reason(
+            wt,
+            cutoff=self._cutoff(),
+            e2e_cutoff=self._e2e_cutoff(),
+            active_path=None,
+            activity_window_minutes=30,
+        )
+
     def test_non_running_state_cannot_proceed_is_kept(self) -> None:
         """A PROVISIONED row can't ``stop_services`` → kept (the can_proceed guard)."""
         wt = _running_worktree(ticket_number="910", state=Worktree.State.PROVISIONED)
-        reason = idle_mod.preserve_reason(wt, cutoff=self._cutoff(), e2e_cutoff=self._e2e_cutoff(), active_path=None)
-        assert reason is not None
+        assert self._reason(wt) is not None
 
     def test_null_last_used_at_is_kept(self) -> None:
         wt = _running_worktree(ticket_number="911")
         wt.last_used_at = None
-        with patch.object(idle_mod, "_running_container_count", return_value=1):
-            reason = idle_mod.preserve_reason(
-                wt, cutoff=self._cutoff(), e2e_cutoff=self._e2e_cutoff(), active_path=None
-            )
-        assert reason is not None
+        with patch.object(idle_mod, "stack_activity", return_value=StackActivity.QUIET):
+            assert self._reason(wt) is not None

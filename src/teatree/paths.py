@@ -26,12 +26,50 @@ from pathlib import Path
 from typing import NamedTuple
 
 _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
+
+DB_FILENAME = "db.sqlite3"
+
+#: Env name carrying the DIRECTORY holding the canonical control DB. The
+#: containerized stack points it at a named-volume mount; the ``-wal``/``-shm``
+#: sidecars must land beside the file, which is why the volume is the directory
+#: and not the file.
+CONTROL_DB_DIR_ENV = "T3_CONTROL_DB_DIR"
+
+#: Where the canonical control DB lives when the env names nothing. Deliberately
+#: NOT derived from ``home``: the path must be IDENTICAL inside and outside the
+#: container while existing only inside it, so a host process resolves a
+#: directory it cannot create and fails loudly instead of quietly opening a
+#: second database. That is the enforcement — ``t3`` runs in the container.
+DEFAULT_CONTROL_DB_DIR = Path("/var/lib/teatree/control-db")
+
+
+def control_db_dir(env: Mapping[str, str]) -> Path:
+    """The directory holding the canonical control DB — the named-volume mount."""
+    override = env.get(CONTROL_DB_DIR_ENV, "").strip()
+    return Path(override) if override else DEFAULT_CONTROL_DB_DIR
+
+
+def canonical_db_in(data_dir: Path, *, env: Mapping[str, str]) -> Path:
+    """The control DB file for *data_dir* — the named volume for the REAL install only.
+
+    A data dir that IS the machine's canonical one resolves into the control-DB
+    volume, taking the database off the host bind mount that host processes
+    contend for. Every other data dir — a per-worktree isolated dir, an explicit
+    ``XDG_DATA_HOME`` sandbox, a test's ``tmp_path`` home — keeps its database
+    beside itself, because those are private copies with no second writer and no
+    volume to reach.
+    """
+    if data_dir == _TRUE_CANONICAL_DATA_DIR:
+        return control_db_dir(env) / DB_FILENAME
+    return data_dir / DB_FILENAME
+
+
 #: The one control DB the installed ``t3`` and the live loop operate on. Every
 #: ``t3 <ov> <cmd>`` proxies through the main clone (a ``.git`` *dir*), which
 #: resolves here. Worktree-resident ``uv run manage.py`` resolves to an
 #: isolated sibling DB instead — the #779 cross-DB mismatch. Public so the
 #: lifecycle/ship guard can name it in the refusal message.
-TRUE_CANONICAL_DB = _TRUE_CANONICAL_DATA_DIR / "db.sqlite3"
+TRUE_CANONICAL_DB = canonical_db_in(_TRUE_CANONICAL_DATA_DIR, env=os.environ)
 
 # A repo root that is definitionally NOT a worktree (no ``.git`` file), so
 # ``ControlDb.for_repo`` takes its primary branch. Lets ``ControlDb.primary``
@@ -82,9 +120,28 @@ class CanonicalDBFromWorktreeError(RuntimeError):
         super().__init__(message)
 
 
+def _nearest_git_entry(repo_root: Path) -> Path | None:
+    """The first ``.git`` entry at *repo_root* or up its parent chain, if any."""
+    for candidate in (repo_root, *repo_root.parents):
+        git = candidate / ".git"
+        if git.is_file() or git.is_dir():
+            return git
+    return None
+
+
 def running_from_worktree(repo_root: Path) -> bool:
-    """A git worktree has a ``.git`` *file*; a primary clone has a ``.git`` *dir*."""
-    return (repo_root / ".git").is_file()
+    """A git worktree has a ``.git`` *file*; a primary clone has a ``.git`` *dir*.
+
+    Resolved against the NEAREST ``.git`` entry walking up from *repo_root*: a
+    vendored core tree (``<fork>/vendor/teatree``) has no ``.git`` of its own,
+    so the fork checkout that CONTAINS it decides. Without the walk-up, a git
+    worktree of a vendoring fork read as "not a worktree" and its resident code
+    resolved onto the true canonical DB — exactly the unmerged-migration
+    corruption this module exists to prevent. No ``.git`` anywhere up the chain
+    (an installed site-packages tree) stays "not a worktree".
+    """
+    git = _nearest_git_entry(repo_root)
+    return git is not None and git.is_file()
 
 
 def resolve_main_clone(repo_root: Path) -> Path | None:
@@ -116,7 +173,17 @@ def resolve_main_clone(repo_root: Path) -> Path | None:
     return None
 
 
-def _code_repo_root() -> Path:
+def teatree_source_root() -> Path:
+    """The directory holding teatree's own ``src/teatree`` package tree.
+
+    Derived from this module's own on-disk location, so it is layout-independent:
+    the repo root in a plain clone, and ``<repo>/vendor/teatree`` in a fork that
+    vendors core. Deliberately NOT resolved through ``git rev-parse
+    --show-toplevel`` — a vendored subtree has no ``.git`` of its own, so git
+    reports the OUTER repo and the two layouts become indistinguishable. Any
+    caller that needs "where does the teatree package live" must use this;
+    callers that need the surrounding git working tree resolve it from here.
+    """
     return Path(__file__).resolve().parents[2]
 
 
@@ -283,7 +350,25 @@ class ControlDb:
             if resolved.auto_isolated
             else "the primary data dir"
         )
-        return ControlDbResolution(resolved.path / "db.sqlite3", isolated=resolved.auto_isolated, reason=reason)
+        db = canonical_db_in(resolved.path, env=self.env)
+        return ControlDbResolution(db, isolated=resolved.auto_isolated, reason=reason)
+
+    def primary_data_dir(self) -> Path:
+        """The PRIMARY data dir — the bind-mounted tree the DB no longer lives in.
+
+        Backups, the handover mirror, the mode override and every other
+        host-visible artifact resolve here, NOT from the control DB's parent: the
+        two are different filesystems now, so a caller that wanted the data dir
+        and reached for ``<db>.parent`` would silently address the volume.
+
+        Resolved against the primary-clone sentinel, so it is also deliberately NOT
+        the auto-isolated per-worktree :data:`DATA_DIR`: an artifact describing the
+        *operator* rather than a checkout (the live-presence heartbeat) has exactly
+        one instance, and giving one keyboard two heartbeats is how a fast path and
+        a Django path come to disagree about the same fact.
+        """
+        home = self.home if self.home is not None else Path.home()
+        return resolve_data_dir(env=dict(self.env), home=home, repo_root=_PRIMARY_CLONE_SENTINEL).path
 
     def primary(self) -> Path:
         """The PRIMARY control DB — the same answer a main clone resolves to.
@@ -295,16 +380,6 @@ class ControlDb:
         has ONE implementation, never a second copy that can drift.
         """
         return self.for_repo(_PRIMARY_CLONE_SENTINEL).path
-
-    def primary_data_dir(self) -> Path:
-        """The dir the PRIMARY control DB lives in — home to every INSTALL-WIDE artifact.
-
-        Deliberately NOT the auto-isolated per-worktree :data:`DATA_DIR`: an artifact
-        describing the *operator* rather than a checkout (the live-presence heartbeat)
-        has exactly one instance, and giving one keyboard two heartbeats is how a fast
-        path and a Django path come to disagree about the same fact.
-        """
-        return self.primary().parent
 
     def divergence_message(self, repo_root: Path) -> str | None:
         """The message naming both DBs when *repo_root*'s answer is not the primary.
@@ -338,15 +413,38 @@ def _exclusive_lock(lock_path: Path) -> Iterator[None]:
 
 
 def _sqlite_snapshot(src: Path, dst: Path) -> None:
-    """Consistent point-in-time copy even if a live writer holds ``src``.
+    """Consistent point-in-time copy INCLUDING commits still living in the ``-wal``.
 
-    ``?immutable=1`` (not ``?mode=ro``) opens the source: a WAL-mode DB whose
-    ``-shm``/``-wal`` sidecar files are absent needs to (re)create the ``-shm``
-    shared-memory file, which a ``mode=ro`` open cannot do — it fails with
-    ``OperationalError: unable to open database file``. ``immutable=1`` opens
-    without a ``-shm`` and snapshots correctly.
+    ``?mode=ro`` is tried first because it is the case that matters. A live
+    WAL-mode DB keeps every commit in its ``-wal`` until a checkpoint folds it
+    back into the main file, and only a connection that READS the WAL sees
+    them. ``?immutable=1`` does not: it promises SQLite the file cannot change,
+    so SQLite skips locking *and* ignores the ``-wal`` entirely. Snapshotting a
+    live DB that way silently drops every transaction since the last checkpoint
+    and can tear pages under a concurrent writer — which is how an
+    unrestorable "backup" gets produced. ``mode=ro`` also takes real read
+    locks, so the snapshot is a consistent point in time rather than a smear.
+
+    ``immutable=1`` stays as the FALLBACK, for the case it was actually added
+    for: a cold artifact whose ``-shm`` is absent and cannot be created (a
+    read-only file or directory), where ``mode=ro`` fails with
+    ``OperationalError: unable to open database file``. A cold artifact has no
+    uncheckpointed WAL to lose, so the fallback is lossless exactly where it
+    applies. The probe query is what forces the real open — ``connect`` alone
+    is lazy, so a missing ``-shm`` would otherwise surface later, mid-backup.
+
+    The source is never opened read-write, so this stays legal on a host whose
+    control DB the containerized stack owns (:mod:`teatree.db.boundary`).
     """
-    source = sqlite3.connect(f"file:{src}?immutable=1", uri=True)
+    # ``as_uri`` percent-encodes a path holding a URI-special character (space,
+    # ``%``, ``?``, ``#``) instead of malforming the URI into a different open.
+    base_uri = src.absolute().as_uri()
+    source = sqlite3.connect(f"{base_uri}?mode=ro", uri=True)
+    try:
+        source.execute("SELECT 1").fetchone()
+    except sqlite3.OperationalError:
+        source.close()
+        source = sqlite3.connect(f"{base_uri}?immutable=1", uri=True)
     try:
         dest = sqlite3.connect(dst)
         try:
@@ -375,7 +473,7 @@ def _seed_isolated_db(data_dir: Path, *, canonical_db: Path, isolation_root: Pat
         return
     if not canonical_db.exists():
         return
-    target = data_dir / "db.sqlite3"
+    target = data_dir / DB_FILENAME
     if target.exists():
         return
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -402,57 +500,85 @@ def seed_isolated_db(data_dir: Path) -> None:
 
 
 #: The repo root the running teatree code lives in — the checkout that owns its
-#: env dir, and so the value stamped into it.
-CODE_REPO_ROOT = _code_repo_root()
+#: env dir, and so the value stamped into it. Resolved through
+#: :func:`teatree_source_root`, the one layout-independent spelling of this rule, so a
+#: vendored core and a plain clone answer it the same way.
+CODE_REPO_ROOT = teatree_source_root()
 
 _RESOLVED = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=CODE_REPO_ROOT)
 DATA_DIR = _RESOLVED.path
 DATA_DIR_AUTO_ISOLATED = _RESOLVED.auto_isolated
-CANONICAL_DB = DATA_DIR / "db.sqlite3"
+CANONICAL_DB = canonical_db_in(DATA_DIR, env=os.environ)
 
 
-def get_data_dir(namespace: str) -> Path:
-    data_dir = DATA_DIR / namespace
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+def data_dir_root() -> Path:
+    """The single root for teatree's on-disk data.
 
+    ``T3_DATA_DIR`` wins — the explicit override every gate already honours — and
+    otherwise :data:`DATA_DIR`, the XDG-resolved (and possibly worktree-isolated)
+    canonical dir. :data:`DATA_DIR` deliberately does NOT read ``T3_DATA_DIR``
+    (:func:`resolve_data_dir` keys on ``XDG_DATA_HOME``), so a caller that must honour
+    the override needs this two-step and must not reach for :data:`DATA_DIR` directly.
 
-def expected_db_for_repo(repo_root: Path, *, env: dict[str, str], home: Path) -> Path:
-    """The control-DB path that code resident in *repo_root* resolves to.
-
-    Deterministic from the on-disk location alone — the same function the
-    process uses at import time (:func:`resolve_data_dir`), just parameterised
-    by an explicit ``repo_root`` instead of ``_code_repo_root()``. A primary
-    clone yields the canonical DB; a git worktree yields its sibling
-    auto-isolated DB; an explicit ``XDG_DATA_HOME`` sandbox yields that
-    sandbox's DB. This is the anchor for the cross-DB guard (#779): a
-    ticket's lifecycle/ship state lives in exactly one DB — the one its
-    worktree's resident code would resolve to — regardless of the CWD the
-    ``t3`` command happens to run from.
+    Resolved per call rather than at import, so a process that sets ``T3_DATA_DIR``
+    after teatree is imported still gets the override.
     """
-    return resolve_data_dir(env=env, home=home, repo_root=repo_root).path / "db.sqlite3"
+    override = os.environ.get("T3_DATA_DIR")
+    return Path(override) if override else DATA_DIR
 
 
-def find_overlay_db(name: str, project_path: str) -> Path | None:
-    for candidate in (Path(project_path).expanduser() / "db.sqlite3", DATA_DIR / name / "db.sqlite3"):
-        if candidate.is_file():
-            return candidate
-    return None
+class PathHelpers:
+    """Module-level helpers grouped so the module keeps a readable public surface."""
+
+    @staticmethod
+    def get_data_dir(namespace: str) -> Path:
+        data_dir = DATA_DIR / namespace
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
+    @staticmethod
+    def expected_db_for_repo(repo_root: Path, *, env: dict[str, str], home: Path) -> Path:
+        """The control-DB path that code resident in *repo_root* resolves to.
+
+        Deterministic from the on-disk location alone — the same function the
+        process uses at import time (:func:`resolve_data_dir`), just parameterised
+        by an explicit ``repo_root`` instead of ``teatree_source_root()``. A primary
+        clone yields the canonical DB; a git worktree yields its sibling
+        auto-isolated DB; an explicit ``XDG_DATA_HOME`` sandbox yields that
+        sandbox's DB. This is the anchor for the cross-DB guard (#779): a
+        ticket's lifecycle/ship state lives in exactly one DB — the one its
+        worktree's resident code would resolve to — regardless of the CWD the
+        ``t3`` command happens to run from.
+        """
+        return canonical_db_in(resolve_data_dir(env=env, home=home, repo_root=repo_root).path, env=env)
+
+    @staticmethod
+    def find_overlay_db(name: str, project_path: str) -> Path | None:
+        for candidate in (Path(project_path).expanduser() / DB_FILENAME, DATA_DIR / name / DB_FILENAME):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
+        """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
+
+        Walks recursively under ``data_dir`` so any legacy namespaced layout
+        (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
+        Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
+        root, never under ``data_dir``, so they are structurally excluded here.
+        Used by both the settings warning and the ``t3 doctor`` check.
+        """
+        if not data_dir.is_dir():
+            return
+        canonical = canonical.resolve()
+        for candidate in data_dir.glob("**/db.sqlite3"):
+            if candidate.resolve() == canonical:
+                continue
+            yield candidate
 
 
-def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
-    """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
-
-    Walks recursively under ``data_dir`` so any legacy namespaced layout
-    (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
-    Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
-    root, never under ``data_dir``, so they are structurally excluded here.
-    Used by both the settings warning and the ``t3 doctor`` check.
-    """
-    if not data_dir.is_dir():
-        return
-    canonical = canonical.resolve()
-    for candidate in data_dir.glob("**/db.sqlite3"):
-        if candidate.resolve() == canonical:
-            continue
-        yield candidate
+get_data_dir = PathHelpers.get_data_dir
+expected_db_for_repo = PathHelpers.expected_db_for_repo
+find_overlay_db = PathHelpers.find_overlay_db
+find_stale_dbs = PathHelpers.find_stale_dbs

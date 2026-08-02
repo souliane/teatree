@@ -127,6 +127,13 @@ class TestManifestAutoFix:
         assert outcome.ok is False
 
     def test_no_config_token_degrades_manifest_to_action(self) -> None:
+        """With no config token stored, the actionable line must be what the operator sees.
+
+        The export authenticates with that very token, so it has to be guarded
+        BEFORE the call: previously the export ran first, Slack answered
+        ``not_authed``, and the operator got a generic API error while this
+        message — the one naming the `pass` key to add — was unreachable.
+        """
         _seed_t3()
         stale = build_manifest(overlay_name="t3")
         stale["settings"]["socket_mode_enabled"] = False
@@ -134,10 +141,11 @@ class TestManifestAutoFix:
         with (
             patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
             patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
-            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale) as export,
             patch("teatree.cli.slack.socket_doctor.update_manifest") as upd,
         ):
             outcome = check_slack_socket_mode()
+        export.assert_not_called()
         upd.assert_not_called()
         assert any(f.level is Level.ACTION and _CONFIG_TOKEN_REF in f.message for f in outcome.findings)
 
@@ -282,17 +290,17 @@ class TestFindingMessages:
         assert "im:history" in message
         assert "install-on-team" in message
 
-    def test_no_config_token_message_lists_every_gap_kind(self) -> None:
-        gaps = ManifestSocketGaps(
-            socket_mode_disabled=True,
-            missing_events=frozenset({"app_mention"}),
-            missing_bot_scopes=frozenset({"reactions:read"}),
-        )
-        message = _no_config_token_message("A1", gaps)
-        assert "Socket Mode disabled" in message
-        assert "app_mention" in message
-        assert "reactions:read" in message
+    def test_no_config_token_message_names_the_slot_and_the_manual_route(self) -> None:
+        """It cannot list the gaps: reading the manifest is what the missing token authorises.
+
+        The message therefore says what the operator can act on — the `pass` slot
+        to fill and the manifest editor to use — rather than inventing a gap list
+        nobody measured.
+        """
+        message = _no_config_token_message("A1")
+
         assert _CONFIG_TOKEN_REF in message
+        assert "https://api.slack.com/apps/A1/app-manifest" in message
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

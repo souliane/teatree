@@ -1,12 +1,18 @@
-"""Shared helpers for tests that migrate a private, file-backed SQLite alias.
+"""Shared helpers for tests that drive a private, file-backed SQLite alias.
 
 Migrates to HEAD without touching the shared ``default`` test database
 (#2915). ``tests/`` is a package and sits on ``pythonpath`` (see
 ``pyproject.toml``), so both ``tests/teatree_core/conftest.py`` (not itself
 a package) and top-level test modules can import from here without
 duplicating the router or the alias register/teardown boilerplate.
+
+:func:`run_racing_threads` serves the alias tests that race the real locking
+primitive from real threads — see its docstring.
 """
 
+import logging
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from django.db import connections
@@ -55,3 +61,44 @@ def teardown_sqlite_alias(alias: str) -> None:
         if conn.alias == alias:
             conn.close()
     connections.databases.pop(alias, None)
+
+
+def run_racing_threads[T](work: Callable[[int], T], count: int, *, timeout: float = 15.0) -> list[T]:
+    """Run ``work(idx)`` in ``count`` real threads and return the results in index order.
+
+    A worker's exception is re-raised to the caller rather than left as a
+    missing entry. The runners this replaces collected into a dict and read
+    misses back through a default, so two threads dying on a schema gap returned
+    ``['', '']`` — which reads as a decision the code under test made, and was
+    filed as a mutual-exclusion regression against what was a stale test fixture
+    (souliane/teatree#4010). Only the lowest-indexed failure can be re-raised, so
+    each worker's traceback is logged before that choice discards the rest.
+
+    Ordering between the workers is the caller's business: each site builds its
+    own ``threading.Barrier`` inside ``work``, because where the barrier sits
+    relative to a stale read is the very thing some of them are pinning.
+    """
+    results: dict[int, T] = {}
+    errors: dict[int, Exception] = {}
+
+    def runner(idx: int) -> None:
+        try:
+            results[idx] = work(idx)
+        except Exception as exc:
+            logging.getLogger(__name__).debug("racing worker %d failed", idx, exc_info=exc)
+            errors[idx] = exc
+        finally:
+            connections.close_all()
+
+    threads = [threading.Thread(target=runner, args=(idx,)) for idx in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=timeout)
+    if errors:
+        raise errors[min(errors)]
+    missing = [idx for idx in range(count) if idx not in results]
+    if missing:
+        msg = f"worker {missing[0]} did not finish within {timeout}s"
+        raise TimeoutError(msg)
+    return [results[idx] for idx in range(count)]

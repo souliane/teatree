@@ -46,6 +46,28 @@ The user should be able to type "review <one URL>" and have the agent assemble:
 
 Asking the user for additional URLs they've already cross-linked is a retro-worthy failure.
 
+#### An Archived Page Is Not a Source (Non-Negotiable)
+
+**An archived, trashed or superseded page means: do not read it, ignore it entirely, and go find the more recent version.** It is not a weaker source, not a dated-but-usable one — it is not a source at all.
+
+An archived Notion page renders as **completely current**: full requirements, acceptance criteria, Gherkin, a `Status` still reading "In Progress", live comment threads. Nothing a reader naturally looks at says it is dead, and a work item's `Source:` trailer keeps pointing at it long after the page was superseded. The damage is not lost time: an acceptance criterion only the dead page states ("when the flag is off, the tooltip is absent") sends you to build the very thing the current spec declines to ask for — **wrong work, not merely wasted work**.
+
+`t3 notion` refuses such a page with its own exit code (**14**) rather than returning the body, and the refusal names the current version when it can resolve it. When you hit that refusal, do X — never Y:
+
+1. **Do** go read the version the refusal names, or resolve the current one yourself (the same title in the live database, the work item's own newer link, the person who superseded it) before writing a line of code, a spec, or a test.
+2. **Never** proceed on content you already hold from that page — the copy in your context, an earlier connector read, a cached fetch, or a quote in the work item. Its age is invisible; that is the whole failure.
+3. **Never** re-read it to "just check" (`t3 notion audit-fetch` exists for a genuine postmortem, not for getting the content back), and never treat it as a tie-breaker against a live source that disagrees.
+
+```bash
+# refused as archived → resolve and read the CURRENT page, do not fall back to the dead one
+t3 notion fetch <current-page-url>      # the page the refusal named
+t3 notion doctor <page>                 # token / sharing / LIVE, reported separately
+# never Y — proceeding on the dead page's content:
+# t3 notion audit-fetch <dead-page> --reason 'need the AC'   # FORBIDDEN as a way to get the spec back
+```
+
+**The connector is not exempt.** The interactive claude.ai Notion connector (`notion-search` / `notion-fetch`) renders an archived page with no liveness signal at all and has no gate behind it, so when a page arrives through that path the rule is yours to apply: confirm it with `t3 notion doctor <page>` before treating any of it as requirements.
+
 #### One Ticket At A Time — Never Conflate (Non-Negotiable)
 
 Under load — a polluted prior-session context, a coordinator brief, several tickets discussed in one breath — the failure is to fetch the **wrong** ticket, or to blend two tickets' details into one. Do this, never that:

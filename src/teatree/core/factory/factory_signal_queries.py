@@ -226,13 +226,17 @@ def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]
     Considers rows at any head (any ``dispatched_at``) — a PR's redness record
     is not window-bound. Also returns the distinct red head SHAs per PR for the
     ``re_ci_count`` companion.
+
+    Scoped to the CI-red kind: the ledger also records merge-conflict fixes, and
+    a PR that only ever conflicted with main was first-try-green on CI.
     """
     keys: set[tuple[str, int]] = set()
     heads: dict[tuple[str, int], set[str]] = defaultdict(set)
     # ``.iterator()`` streams the scan: this ledger is deliberately unbounded (a
     # PR's redness record is not window-bound, so every row is considered), and
     # streaming caps peak memory instead of materialising the whole table.
-    for row in RedMrFixAttempt.objects.only("pr_url", "head_sha").iterator():
+    ci_red = RedMrFixAttempt.objects.filter(kind=RedMrFixAttempt.Kind.CI_RED)
+    for row in ci_red.only("pr_url", "head_sha").iterator():
         ref = pr_ref_from_url(row.pr_url)
         if ref is None:
             continue

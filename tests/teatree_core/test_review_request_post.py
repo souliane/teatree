@@ -8,6 +8,7 @@ import datetime as dt
 
 import pytest
 from django.db import IntegrityError
+from django.db.models import F
 from django.test import TestCase
 from django.utils import timezone
 
@@ -57,6 +58,43 @@ class TestReviewRequestPostModel(TestCase):
             done_at=when,
         )
         assert post.done_at == when
+
+    def test_new_row_has_never_been_nagged_or_resumed(self) -> None:
+        post = ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/5",
+            slack_channel_id="C0DEMOCHAN1",
+            slack_thread_ts="1700000005.000600",
+        )
+        post.refresh_from_db()
+        assert post.nag_count == 0
+        assert post.resumed_at is None
+
+    def test_nag_count_increments_atomically(self) -> None:
+        post = ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/6",
+            slack_channel_id="C0DEMOCHAN1",
+            slack_thread_ts="1700000006.000700",
+        )
+        ReviewRequestPost.objects.filter(pk=post.pk).update(nag_count=F("nag_count") + 1)
+        ReviewRequestPost.objects.filter(pk=post.pk).update(nag_count=F("nag_count") + 1)
+        post.refresh_from_db()
+        assert post.nag_count == 2
+
+    def test_conditional_resume_claim_wins_exactly_once(self) -> None:
+        post = ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/7",
+            slack_channel_id="C0DEMOCHAN1",
+            slack_thread_ts="1700000007.000800",
+        )
+        unclaimed = ReviewRequestPost.objects.filter(pk=post.pk, resumed_at__isnull=True)
+
+        first_claim = unclaimed.update(resumed_at=timezone.now())
+        second_claim = unclaimed.update(resumed_at=timezone.now())
+
+        assert first_claim == 1
+        assert second_claim == 0
+        post.refresh_from_db()
+        assert post.resumed_at is not None
 
     def test_default_ordering_is_recent_first(self) -> None:
         old = ReviewRequestPost.objects.create(

@@ -522,7 +522,11 @@ class Command(TyperCommand):
             return {"exit_code": "1", "routing_error": refusal}
 
         # A non-agentic phase (``short_describe``) runs its own implementation, not a
-        # generic ticket-work brief its least-privilege toolset cannot satisfy.
+        # generic ticket-work brief its least-privilege toolset cannot satisfy (#3570).
+        # ``run_headless`` drives an agent unconditionally, so the short-circuit belongs
+        # at each ENTRY POINT: this one and ``core.tasks.execute_headless_task``, both
+        # consulting the single ``teatree.core.deterministic_phases`` registry so the two
+        # lanes cannot drift.
         if (deterministic := run_deterministic_phase(task)) is not None:
             return deterministic
 

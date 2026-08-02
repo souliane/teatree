@@ -143,18 +143,17 @@ def _fixed_message(gaps: ManifestSocketGaps, app_id: str) -> str:
     return f"Fixed manifest — {'; '.join(parts)}. Reinstall to consent: {app_install_url(app_id)}."
 
 
-def _no_config_token_message(app_id: str, gaps: ManifestSocketGaps) -> str:
-    missing: list[str] = []
-    if gaps.socket_mode_disabled:
-        missing.append("Socket Mode disabled")
-    if gaps.missing_events:
-        missing.append(f"events {', '.join(sorted(gaps.missing_events))}")
-    if gaps.missing_bot_scopes:
-        missing.append(f"bot scopes {', '.join(sorted(gaps.missing_bot_scopes))}")
+def _no_config_token_message(app_id: str) -> str:
+    """The actionable line for a box with no app-config token stored.
+
+    It cannot name the specific manifest gaps, because reading the manifest is
+    itself what the missing token authorises — listing them would be inventing
+    detail nobody measured.
+    """
     docs_url = "https://api.slack.com/reference/manifests#config_tokens"
     return (
-        f"manifest Socket Mode gaps ({'; '.join(missing)}) but no app-config token in "
-        f"`pass {_CONFIG_TOKEN_REF}` to auto-fix. Add one (create at {docs_url}): "
+        f"no app-config token in `pass {_CONFIG_TOKEN_REF}` — the Socket Mode manifest can be "
+        f"neither inspected nor auto-fixed. Add one (create at {docs_url}): "
         f"`pass insert {_CONFIG_TOKEN_REF}`, or edit the manifest manually at {app_manifest_editor_url(app_id)}."
     )
 
@@ -180,6 +179,12 @@ def _check_manifest(overlay: str) -> list[SocketModeFinding]:
     if not app_id:
         message = "no slack_app_id — cannot inspect the manifest; run `t3 setup slack-bot`."
         return [SocketModeFinding(overlay, Level.WARN, message)]
+    # Guard BEFORE the export, not after it. ``apps.manifest.export`` authenticates
+    # with this very token, so with none stored the call went out bearing an empty
+    # credential and Slack answered ``not_authed`` — the operator saw a generic API
+    # error while the actionable line naming the `pass` key to add was unreachable.
+    if not read_pass(_CONFIG_TOKEN_REF):
+        return [SocketModeFinding(overlay, Level.ACTION, _no_config_token_message(app_id))]
     try:
         current = _export_with_rotation(app_id=app_id)
     except SlackManifestError as exc:
@@ -194,8 +199,6 @@ def _check_manifest(overlay: str) -> list[SocketModeFinding]:
     if gaps.ok:
         message = "manifest Socket Mode config current (socket mode on, events + scopes present)."
         return [SocketModeFinding(overlay, Level.OK, message)]
-    if not read_pass(_CONFIG_TOKEN_REF):
-        return [SocketModeFinding(overlay, Level.ACTION, _no_config_token_message(app_id, gaps))]
     desired = build_manifest(overlay_name=overlay, scope_profile=profile)
     try:
         update_manifest(app_id=app_id, manifest=desired, config_token=read_pass(_CONFIG_TOKEN_REF))

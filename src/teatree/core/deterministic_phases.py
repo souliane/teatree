@@ -1,6 +1,6 @@
-"""Phases the headless worker executes deterministically, never as a generic agent spawn.
+"""Phases executed deterministically, never as a generic agent spawn.
 
-Most headless phases are agentic: the worker builds a ticket-work brief and drives a
+Most headless phases are agentic: the runner builds a ticket-work brief and drives a
 model through it. A few are not — they are fixed data transformations that happen to be
 scheduled as ``Task`` rows so a loop scanner does not have to run an LLM inline
 (``no synchronous LLM in scan()``). Dispatching one of those through the agentic path

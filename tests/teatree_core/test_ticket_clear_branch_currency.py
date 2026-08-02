@@ -13,12 +13,15 @@ the actual ``merge-tree`` prediction — no mocks on the git layer.
 import subprocess
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import Ticket, Worktree
+from teatree.core.management.commands import _clear_branch_currency
+from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
+from teatree.core.models import ConfigSetting, Ticket, Worktree
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -216,3 +219,59 @@ class TestTicketClearBranchCurrency(TestCase):
         # not block on conflict grounds.
         error = str(result.get("error", ""))
         assert "conflict" not in error.lower()
+
+
+class TestCheckClearBranchCurrencyTargetResolution(TestCase):
+    """The CLEAR pre-flight predicts against the SAME target the ship path uses.
+
+    The ``target_branch`` setting (#940) stacks a whole line of work onto one
+    long-lived integration branch. A CLEAR gate still comparing against
+    ``origin/main`` certifies a SHA nobody is going to merge into ``main``.
+    """
+
+    _INTEGRATION = "chore/long-lived-integration"
+
+    def _ticket_with_worktree(self, **extra: object) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra=dict(extra))
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/repo",
+            branch="feat/x",
+            extra={"worktree_path": "/repo"},
+        )
+        return ticket
+
+    def _observed_target(self, ticket: Ticket) -> str:
+        seen: dict[str, str] = {}
+
+        def _fake_probe(repo: str, reviewed_sha: str, target: str) -> None:
+            _ = repo, reviewed_sha
+            seen["target"] = target
+
+        with mock.patch.object(_clear_branch_currency, "sha_conflicts_with_target", _fake_probe):
+            assert check_clear_branch_currency("a" * 40, ticket) is None
+        return seen["target"]
+
+    def test_configured_setting_is_the_clear_target(self) -> None:
+        ConfigSetting.objects.set_value("target_branch", self._INTEGRATION)
+        assert self._observed_target(self._ticket_with_worktree()) == f"origin/{self._INTEGRATION}"
+
+    def test_a_prefixed_explicit_target_is_remote_qualified(self) -> None:
+        # Returned bare, the fetch step becomes ``git fetch release`` — it fails,
+        # and the probe then fails OPEN with no conflict prediction at all.
+        ticket = self._ticket_with_worktree(target_branch="release/1.2")
+        assert self._observed_target(ticket) == "origin/release/1.2"
+
+    def test_the_integration_branch_itself_falls_back_to_the_repo_default(self) -> None:
+        ConfigSetting.objects.set_value("target_branch", self._INTEGRATION)
+        ticket = self._ticket_with_worktree(ship_invoking_branch=self._INTEGRATION)
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/repo",
+            branch=self._INTEGRATION,
+            extra={"worktree_path": "/repo"},
+        )
+        with mock.patch("teatree.core.worktree.target_branch.git.default_branch", return_value="main"):
+            assert self._observed_target(ticket) == "origin/main"

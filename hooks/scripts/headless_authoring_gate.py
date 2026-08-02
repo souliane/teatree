@@ -10,7 +10,9 @@ The line: **the main session monitors and dogfoods; the factory implements.** Re
 searching, diagnosing, reviewing, merging, answering questions, filing issues, and every
 host operation the factory cannot do (disk reclaim, DB prune, killing a stuck process)
 stay ALLOWED — that is the session's actual job, and dogfooding requires running ``t3``
-commands that mutate host state. What is refused is authoring the repo's own source.
+commands that mutate host state. What is refused is authoring the repo's own source, judged
+for a ``Bash`` write by the repo the command LANDS in (:func:`_bash_repo_probe`) rather than by
+wherever the session happens to sit.
 
 WHO IS ACTING, NOT WHAT IS TOUCHED
 ----------------------------------
@@ -41,6 +43,7 @@ import time
 from pathlib import Path
 
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed, resolve_branch_and_root, teatree_src_on_path
+from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
 
 # Alias both identities so the handler the router registers and a test patching a helper
 # here operate on the SAME module object — the pattern every sibling uses.
@@ -74,7 +77,12 @@ _IMPLEMENTATION_SUBAGENTS: frozenset[str] = frozenset(
 _FILE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit"})
 
 #: A ``Bash`` command that WRITES history into the repo. ``git commit`` / ``git push`` only —
-#: never a read-only git, never a ``t3`` command (the dogfooding surface).
+#: never a read-only git, never a ``t3`` command (the dogfooding surface). Matched against the
+#: quote/heredoc-stripped skeleton, as in every sibling gate: the same words inside a ``-m``
+#: message, a ``--grep`` pattern or a heredoc body are text, not an invocation, and the
+#: separator anchor is satisfied by any ``&&`` that happens to precede them there. The
+#: residual — a real push fed THROUGH a stripped span (``bash -c "git push"``) — is the
+#: false-negative every sibling accepts, and the right one for a gate that fails OPEN.
 _AUTHORING_BASH_RE = re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?git\s+(?:-C\s+\S+\s+)?(?:commit|push)\b")
 
 # ``session_lane`` vocabulary.
@@ -87,13 +95,19 @@ _REFUSAL = (
     "means implementation of teatree runs through the factory, not by hand here. This session's "
     "job is to monitor and dogfood — read, search, diagnose, review, merge, answer questions, "
     "run `t3`, and FILE what it finds.\n"
-    "Do this instead: find or file the issue (`gh issue create --repo souliane/teatree ...`), then "
-    "let intake pick it up; check progress with `t3 teatree followup sync`.\n"
-    "Already-started work is exempt — an edit OR a commit inside a live t3 worktree for the "
-    "ticket is allowed. "
-    "For a genuine emergency (the factory itself is down), add "
-    "`[headless-authoring-ok: <reason>]` to this call; it unblocks exactly this one action and is "
-    "recorded. To turn the gate off entirely: "
+    "Refused: an edit, a `git commit`, or a `git push` — push included — whose resolved target "
+    "is a teatree-managed repo. A leading `cd <dir> &&` or a `git -C <dir>` decides which repo "
+    "that is, so only the repo you are actually writing to is gated.\n"
+    "Do this instead: find or file the issue on THAT repo (`gh issue create --repo <owner>/<repo> "
+    "...`), then let intake pick it up; check progress with `t3 <overlay> followup sync`.\n"
+    "Already-started work is exempt — an edit, a commit OR a push inside a live t3 worktree for "
+    "the ticket is allowed.\n"
+    "For a genuine emergency (the factory itself is down), put `[headless-authoring-ok: <reason>]` "
+    "INSIDE the call's own text: the `command` string for Bash (a trailing "
+    "`# [headless-authoring-ok: <reason>]` comment works, and the first 64 KiB is read, so a "
+    "commit message carries it), or `new_string`/`content` for a file edit. The `description` "
+    "field is NOT scanned. It unblocks exactly this one action and is recorded.\n"
+    "To turn the gate off entirely: "
     "`t3 <overlay> config_setting set headless_authoring_gate_enabled false`."
 )
 
@@ -192,15 +206,29 @@ def _path_is_in_live_worktree(file_path: str) -> bool:
         return True
 
 
-def _bash_repo_probe(cwd: str) -> str:
+def _bash_repo_probe(command: str, cwd: str) -> str:
     """The stand-in path a ``Bash`` call is judged by, since it names no file.
+
+    Built from the dir the git command's write LANDS in (``resolve_commit_dir`` — a leading
+    ``cd <dir> &&`` and ``git -C <dir>`` both move it), never from the ambient hook cwd on its
+    own. The cwd is where the SESSION sits, and a session sits in one repo while committing to
+    another all day; keying on it refused every commit and push a session made, to any
+    repository, purely because the session's own directory was managed.
 
     Both repo questions the file branch asks of a real ``file_path`` — is this teatree's
     authored source (:func:`_targets_teatree_repo`), and is it already a live checkout
     (:func:`_path_is_in_live_worktree`) — are asked of this ONE probe, so the two can never
     resolve to different repos for the same command.
+
+    ``""`` when the target cannot be resolved statically (an unexpanded ``$VAR``, a ``cd``
+    onto no real directory): an unknown target is not evidence of authoring, and this gate
+    allows on unknown.
     """
-    return str(Path(cwd) / "src" / "_")
+    with teatree_src_on_path():
+        from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415, PLC2701 — cold-hook import
+
+        landing = resolve_commit_dir(command, Path(cwd) if cwd else None)
+    return str(landing / "src" / "_") if isinstance(landing, Path) else ""
 
 
 def _call_text(data: dict) -> str:
@@ -250,12 +278,12 @@ def _is_authoring_call(data: dict) -> bool:
         return str(tool_input.get("subagent_type", "")).strip() in _IMPLEMENTATION_SUBAGENTS
     if tool == "Bash":
         command = str(tool_input.get("command", "") or "")
-        if not _AUTHORING_BASH_RE.search(command):
+        if not _AUTHORING_BASH_RE.search(strip_quoted_and_heredoc(command)):
             return False
         # Same two questions, same order, same carve-out as the file branch above. Without
         # the second, an agent could author a change inside a live worktree and then not
         # commit it — the edit allowed, the commit refused, for one piece of work.
-        probe = _bash_repo_probe(str(data.get("cwd", "") or Path.cwd()))
+        probe = _bash_repo_probe(command, str(data.get("cwd", "") or Path.cwd()))
         return _targets_teatree_repo(probe) and not _path_is_in_live_worktree(probe)
     return False
 

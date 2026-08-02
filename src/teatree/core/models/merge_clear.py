@@ -26,6 +26,7 @@ from django.utils import timezone
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
+from teatree.utils.forge import FORGES, normalize_forge
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -181,6 +182,13 @@ class ClearRequest:
     ticket: "Ticket | None" = None
     human_authorizer: str = ""
     executing_loop_identity: str = "merge-loop"
+    # The forge the merge transport must bind to ("github" / "gitlab"), resolved
+    # by ``teatree.core.merge.host_kind.resolve_host_kind`` at issuance and
+    # persisted, so a ticketless CLEAR — a managed-repo MR with no teatree Ticket
+    # — still names its forge unambiguously across the orchestrator → loop
+    # handoff. An unknown token is refused by ``issue``; blank is only ever
+    # written by a caller that bypasses ``ticket clear``.
+    host_kind: str = ""
     # The human-authorized PENDING-checks expedite waiver (§17.4.3 / PR-07). Both
     # are empty for a normal CLEAR. When set, ``issue()`` accepts a ``pending``
     # snapshot ONLY when the linked ticket is flagged expedited, a human authoriser
@@ -220,6 +228,13 @@ class MergeClear(models.Model):
     )
     pr_id = models.IntegerField()
     slug = models.CharField(max_length=255)
+    # The forge hosting ``slug`` — the transport ``PrRef.host_kind`` the merge
+    # binds to. A bare ``owner/repo`` slug carries no host, so without this a
+    # CLEAR with no ticket had nothing to resolve the forge from and silently
+    # fell back to ``gh``. Resolved and stamped at issuance
+    # (:func:`teatree.core.merge.host_kind.resolve_host_kind`); blank only on
+    # rows written outside that path, which resolve at merge time or fail loud.
+    host_kind = models.CharField(max_length=16, blank=True, default="")
     reviewed_sha = models.CharField(max_length=64)
     reviewer_identity = models.CharField(max_length=255)
     gh_verify_result = models.CharField(max_length=32, choices=VerifyResult.choices)
@@ -343,6 +358,15 @@ class MergeClear(models.Model):
             )
             raise ClearIssuanceError(msg)
 
+        normalized_host_kind = normalize_forge(request.host_kind)
+        if request.host_kind.strip() and not normalized_host_kind:
+            msg = (
+                f"Unknown host_kind {request.host_kind!r}; valid: {sorted(FORGES)}. It names the "
+                f"forge the merge transport binds to — an unrecognised value would silently "
+                f"resolve to the wrong forge"
+            )
+            raise ClearIssuanceError(msg)
+
         authorizer = request.human_authorizer.strip()
         if authorizer and normalized_blast != cls.BlastClass.SUBSTRATE:
             msg = (
@@ -360,6 +384,7 @@ class MergeClear(models.Model):
                     ticket=request.ticket,
                     pr_id=request.pr_id,
                     slug=request.slug.strip(),
+                    host_kind=normalized_host_kind,
                     reviewed_sha=normalized_sha,
                     reviewer_identity=reviewer,
                     gh_verify_result=normalized_verify,

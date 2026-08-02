@@ -13,8 +13,9 @@ from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
-from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.models import ConfigSetting, PullRequest, Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME
 from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY
@@ -525,3 +526,134 @@ class TestEnsurePrResolutionError:
 
         assert "error" in result
         assert "gitlab" in result["error"]
+
+
+class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
+    """``ensure-pr`` opens its PR against the configured integration branch (#940).
+
+    The orphan-branch lane has no owning ticket to carry an override, so the
+    ``target_branch`` SETTING is the only tier that can apply — and if the spec
+    does not carry it, the PR silently targets the repo default instead.
+    """
+
+    _INTEGRATION = "chore/long-lived-integration"
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def _created_spec(self) -> PullRequestSpec:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/940"}
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-q",
+                    status=BranchStatus.PUSHED_ORPHAN,
+                    ahead_count=5,
+                ),
+            ),
+        ):
+            call_command("pr", "ensure-pr")
+        (spec,) = host.create_pr.call_args.args
+        return cast("PullRequestSpec", spec)
+
+    def test_the_spec_carries_the_configured_target(self) -> None:
+        ConfigSetting.objects.set_value("target_branch", self._INTEGRATION)
+        assert self._created_spec().target_branch == self._INTEGRATION
+
+    def test_an_unset_setting_leaves_the_forge_default_in_charge(self) -> None:
+        assert self._created_spec().target_branch == ""
+
+
+class TestEnsurePrReadsTheControlDbTopologyFirst(TestCase):
+    """``ensure-pr`` states an unreachable control DB instead of dying on it.
+
+    Every path past the classification needs the ORM — ``create_or_defer_pr``
+    resolves the owning ``Worktree``, the PR budget and the forge credentials
+    through it — so a host process aimed at the container-only control DB used to
+    reach the classification and then die on a raw ``OperationalError``. That is not
+    a ``DbBoundaryError``, so it escaped every classifier and wedged the pre-push
+    hook ``ensure-pr`` runs inside.
+
+    Anti-vacuous by construction: the guard fires only when the process is aimed at
+    the canonical control DB, so the second test proves an ordinary run (a test
+    database, a per-worktree copy) still reaches the classification and gets the
+    real answer. A guard that always fired would fail it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    _CONTAINER_ONLY = Path("/nonexistent/container-only/control-db")
+
+    def _open_pr_report(self, branch: str) -> BranchReport:
+        return BranchReport(
+            repo=".",
+            branch=branch,
+            status=BranchStatus.OPEN_PR,
+            ahead_count=3,
+            open_pr_url="https://gitlab.com/org/repo/-/merge_requests/1",
+        )
+
+    def test_skips_with_the_topology_reason_when_the_control_db_is_container_only(self) -> None:
+        self._monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(self._CONTAINER_ONLY))
+        self._monkeypatch.setattr(pr_command, "_configured_db_path", lambda: self._CONTAINER_ONLY / DB_FILENAME)
+        classify = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-topology"),
+            patch.object(pr_command, "classify_branch", classify),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert str(self._CONTAINER_ONLY) in str(result["skipped"])
+        assert result["branch"] == "feat-topology"
+        # Read BEFORE the classification: it is a statement about where this code runs,
+        # not an exception to recover from once the branch has already been classified.
+        classify.assert_not_called()
+
+    def test_a_reachable_database_still_gets_the_real_classification(self) -> None:
+        self._monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(self._CONTAINER_ONLY))
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-reachable"),
+            patch.object(pr_command, "classify_branch", return_value=self._open_pr_report("feat-reachable")),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert result["skipped"] == "open PR exists"
+
+    def test_an_open_pr_is_the_answer_the_guard_must_not_mask(self) -> None:
+        """The invariant MR !1 demonstrates: an open PR exists, so ensure-pr is a no-op.
+
+        Pinned separately from the reachable-DB case because the two failures look
+        alike from the outside and mean opposite things: masking this answer is what
+        would let ``ensure-pr`` try to open a SECOND PR for a branch that already has
+        one.
+        """
+        host = MagicMock()
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-open-pr"),
+            patch.object(pr_command, "classify_branch", return_value=self._open_pr_report("feat-open-pr")),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "/merge_requests/1" in str(result["url"])
+        host.create_pr.assert_not_called()

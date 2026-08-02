@@ -23,6 +23,7 @@ from teatree.backends.github.pr_create import create_pr as _create_pr
 from teatree.backends.github.pr_reads import PR_URL_RE
 from teatree.core.backend_protocols import (
     ApprovalState,
+    DraftState,
     ForgeMergeResult,
     PrMergeState,
     PrOpenState,
@@ -512,8 +513,8 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
         return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        return self._merge_rpc().fetch_pr_is_draft(slug=slug, pr_id=pr_id)
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        return self._merge_rpc().fetch_pr_draft_state(slug=slug, pr_id=pr_id)
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)

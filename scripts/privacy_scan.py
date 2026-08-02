@@ -27,7 +27,7 @@ from rich.table import Table
 
 from teatree.hooks.banned_term_registry import allowlist_terms
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
 from teatree.hooks.term_match import matched_term
@@ -57,8 +57,11 @@ _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
 # Every branch must yield a FOUR-octet address. The ``10`` branch carries its own
 # second octet because ``10`` alone left it three-wide, so a three-component string
 # like a doc section reference or a three-part version string matched as a private
-# IP — and a real four-octet address matched only its first three octets.
-_IP_RE = re.compile(r"\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
+# IP — and a real four-octet address matched only its first three octets. The two
+# guards bound the quad against a LONGER dotted run on either side: a preceding dot
+# would let a five-part build train donate an inner quad, and a following ``.<digit>``
+# the same from the right. A trailing sentence period is not one of them.
+_IP_RE = re.compile(r"\b(?<![\d.])(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b(?!\.\d)")
 _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
 _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")
@@ -102,9 +105,26 @@ def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
     detector is reported INERT on stderr — the other detectors still run, so the
     pre-push gate is never wedged — instead of going silently inert.
     ``banned_terms = []`` is the deliberate, silent opt-out.
+
+    A store that could not be READ at all (:class:`BannedTermsUnreadableError`,
+    locked/corrupt/table-less) is reported with its OWN distinct message rather
+    than the plain-unset wording — an errored read says nothing about whether the
+    operator configured a list, so conflating the two hid the real cause (#4008).
+    Both still leave this detector INERT: the sibling in-process
+    ``fast_push._banned_terms`` core-gate scan runs the same term list on the
+    same push and fails CLOSED on this exact exception, so a push is never
+    silently unscanned end to end.
     """
     try:
         return resolve_banned_terms(env_value=env_value)
+    except BannedTermsUnreadableError:
+        print(
+            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_terms` "
+            "list could not be READ (locked, corrupt, or missing its table) — indistinguishable "
+            "from unset, so this detector sits out (the other detectors still run).",
+            file=sys.stderr,
+        )
+        return ()
     except BannedTermsUnsetError:
         print(
             "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_terms` "

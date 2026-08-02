@@ -152,6 +152,41 @@ def _check_dream_staleness() -> bool:
     return False
 
 
+def _check_dream_consolidation_blocked() -> bool:
+    """Hard-FAIL when a once-working dream pass has been unable to stamp success (#3993).
+
+    The escalation tier over :func:`_check_dream_staleness`'s advisory WARN, whose
+    verdict is surfacing-only: a pass can run nightly, fail an acceptance gate and
+    withhold the marker indefinitely without any operator-visible signal. A pass that
+    once succeeded and has not for ``CRITICAL_STALE_MULTIPLE`` staleness windows is
+    structurally blocked, not merely behind, so it gates the doctor exit code.
+    Bootstrap (never succeeded) is excluded — see
+    :meth:`DreamRunMarkerManager.is_critically_stale`.
+
+    Crash-proof: any error degrades to OK, the same posture as every other DB-reading
+    doctor check.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    try:
+        blocked = DreamRunMarker.objects.is_critically_stale(timezone.now())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first() if blocked else None
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-blocked check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not blocked:
+        return True
+    succeeded = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "never"
+    typer.echo(
+        f"FAIL  Dream consolidation has not stamped success since {succeeded} — every pass is being "
+        "withheld, so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
+        "gate verdict it now exits non-zero on (#3993).",
+    )
+    return False
+
+
 def _check_dream_transcript_visibility() -> bool:
     """Warn when the dream pass can see NO session transcripts at any age.
 

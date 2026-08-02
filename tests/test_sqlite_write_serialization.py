@@ -82,6 +82,9 @@ def _teardown_alias(alias: str) -> None:
     connections.databases.pop(alias, None)
 
 
+# SQLite's rollback journal modes — the ones that keep no ``-wal``/``-shm``.
+_ROLLBACK_JOURNAL_MODES = frozenset({"delete", "truncate", "persist", "memory", "off"})
+
 # Per-worker outcomes of the Task.claim-shaped RMW.
 _CLAIMED = "claimed"  # locked read saw row free, UPDATE+commit succeeded
 _SAW_TAKEN = "saw-taken"  # locked read saw row already claimed
@@ -234,15 +237,48 @@ class TestSqliteWriteSerialization:
         """The prod DATABASES['default'] carries the serialization OPTIONS.
 
         Guards against a silent revert of the settings hunk: the engine
-        is SQLite and the OPTIONS must contain IMMEDIATE transaction
-        mode, a busy_timeout, and WAL journal mode.
+        is teatree's boundary-guarded SQLite backend (Django's own SQLite
+        backend plus the one-read-write-domain rule, teatree/db/boundary.py)
+        and the OPTIONS must contain IMMEDIATE transaction mode, a
+        busy_timeout, and a rollback journal mode.
         """
         from teatree import settings as prod_settings  # noqa: PLC0415
 
         default = prod_settings.DATABASES["default"]
-        assert default["ENGINE"] == "django.db.backends.sqlite3"
+        assert default["ENGINE"] == "teatree.db.sqlite3_boundary"
         opts = default["OPTIONS"]
         assert opts is SQLITE_WRITE_SERIALIZATION_OPTIONS
         assert opts["transaction_mode"] == "IMMEDIATE"
         assert opts["timeout"] == 30
-        assert "journal_mode=WAL" in opts["init_command"]
+        assert "journal_mode=TRUNCATE" in opts["init_command"]
+
+    def test_production_options_map_no_shared_memory_sidecar(self, tmp_path: Path) -> None:
+        """A live connection on the production OPTIONS maps no ``-shm``.
+
+        WAL coordinates its writers through a ``-shm`` file every writer
+        mmaps shared-writable. Over Docker Desktop's macOS bind-mount layer
+        that mapping loses its backing under the process and the kernel
+        delivers SIGBUS — the containerized worker crash-looped at ~2
+        restarts/minute on exactly that. A rollback journal mode has no
+        ``-shm`` and no ``-wal`` at all, so there is nothing to map.
+
+        Asserted while the connection is OPEN: SQLite checkpoints and
+        unlinks both sidecars on last-connection close, so a post-teardown
+        check would pass under WAL too.
+        """
+        alias = _make_alias(tmp_path, SQLITE_WRITE_SERIALIZATION_OPTIONS)
+        try:
+            with connections[alias].cursor() as cur:
+                cur.execute("PRAGMA journal_mode")
+                row = cur.fetchone()
+                assert row is not None, "PRAGMA journal_mode returned no row"
+                mode = str(row[0])
+                cur.execute("INSERT INTO claimable (id, claimed_by) VALUES (2, 'writer')")
+            db_file = Path(connections[alias].settings_dict["NAME"])
+            sidecars = [db_file.with_name(db_file.name + suffix) for suffix in ("-shm", "-wal")]
+            present = [path.name for path in sidecars if path.exists()]
+        finally:
+            _teardown_alias(alias)
+
+        assert mode in _ROLLBACK_JOURNAL_MODES, f"production OPTIONS left the DB in {mode!r}"
+        assert not present, f"production OPTIONS created mmap-backed sidecars: {present}"

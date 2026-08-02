@@ -27,6 +27,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.utils.editable_pth import host_root_for_checkout
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 from teatree.utils.uv_overrides import uv_overrides_args
 
@@ -60,6 +61,24 @@ def current_editable_source(uv_bin: str) -> Path | None:
     return None
 
 
+def _reinstall_argv(uv_bin: str, source: Path) -> list[str]:
+    """``uv tool install --editable <source> --reinstall`` [+ the vendored fork's host root].
+
+    ``--reinstall`` rebuilds the tool env from the requirements ON THIS COMMAND
+    LINE, so omitting the ``--with-editable`` host DROPS it — receipt entry,
+    dist-info and all. When core is vendored inside a fork, the host root is what
+    carries the ``teatree.overlays`` entry point, so a host-less reinstall
+    silently de-registers every overlay: the next in-process
+    ``get_overlay("<name>")`` dies with ``Overlay '<name>' not found. Available:
+    t3-teatree`` and every headless task on an overlay-owned ticket halts at
+    dispatch. Redeclaring the host here keeps ``t3 update`` and the loop's
+    deferred-reinstall drain from disarming the install they are refreshing.
+    """
+    argv = [uv_bin, "tool", "install", "--editable", str(source), *uv_overrides_args(source), "--reinstall"]
+    host = host_root_for_checkout(source)
+    return [*argv, "--with-editable", str(host)] if host is not None else argv
+
+
 @dataclass
 class ReinstallResult:
     """Outcome of re-anchoring the running editable install + re-running setup.
@@ -91,7 +110,7 @@ def reinstall_running_editable(*, runner: SubprocessRunner = run_allowed_to_fail
         source = current_editable_source(uv_bin)
         if source is not None and source.is_dir():
             result = runner(
-                [uv_bin, "tool", "install", "--editable", str(source), *uv_overrides_args(source), "--reinstall"],
+                _reinstall_argv(uv_bin, source),
                 expected_codes=None,
             )
             if result.returncode != 0:

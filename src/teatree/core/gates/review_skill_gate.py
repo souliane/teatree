@@ -14,9 +14,18 @@ Opt-in default
     ``reviewing`` unchanged.
 
 Satisfying evidence
-    ``ticket.extra['review_skill_run']`` whose ``skill`` equals the currently
-    configured ``review_skill``. Evidence for a different (e.g. stale) skill
-    does not satisfy the gate — the artifact must attest the skill in force.
+    ``ticket.extra['review_skill_run']`` whose ``skill`` is one of the currently
+    ACCEPTED skills — the configured ``review_skill`` plus any
+    ``review_skill_alternates``. Evidence for a skill outside that set (e.g. a
+    stale one) does not satisfy the gate; the artifact must attest a review the
+    project actually recognises.
+
+    Alternates are SUBSTITUTES, never a bypass. An overlay that runs one deep
+    reviewer by default but accepts a second — a different model's reviewer, say —
+    declares it here so either recorded run passes, while a run of NEITHER stays
+    refused. The gate's teeth are unchanged; only the set of reviewers that can
+    satisfy it widens. With ``review_skill`` unset the gate stays a NO-OP whatever
+    the alternates say: alternates alone never arm it.
 
 Repo scoping
     The gate only applies to a ticket whose issue lives in its overlay's OWN
@@ -52,27 +61,38 @@ def configured_review_skill() -> str:
     return get_effective_settings().review_skill.strip()
 
 
+def configured_review_skill_alternates() -> tuple[str, ...]:
+    """The effective ``review_skill_alternates``, stripped, deduped, order-preserving."""
+    declared = get_effective_settings().review_skill_alternates
+    return tuple(dict.fromkeys(name.strip() for name in declared if name.strip()))
+
+
 #: The per-PR review tier a single ship's `reviewing` attestation is evidence of.
 PER_PR_REVIEW_SKILL = "t3:review"
 
 
-def per_pr_review_skill() -> str:
-    """The review skill a per-PR ship must show evidence of (souliane/teatree#3530).
+def accepted_per_pr_review_skills() -> frozenset[str]:
+    """Every skill whose recorded run satisfies a per-PR ship (souliane/teatree#3530).
 
     ``review_skill`` set to the periodic architectural tier
     (``architectural_review_skill``) is a tier mismatch: that skill is a
     whole-tree sweep dispatched by ``ArchitecturalReviewScanner`` on a cadence,
     so its findings speak to the tree rather than to the diff being shipped, and
     demanding it per PR creates pressure to record a run that did not happen.
-    The gate is scoped to the per-PR tier instead — still evidence-backed, just
+    The primary is scoped to the per-PR tier instead — still evidence-backed, just
     of the review a single ship actually performs.
+
+    The alternates join that primary, so a project can accept more than one
+    reviewer without dropping the requirement. An empty return means the gate is
+    unarmed: only an unset ``review_skill`` produces it, so declaring alternates
+    can never turn the gate off.
     """
     configured = configured_review_skill()
     if not configured:
-        return ""
-    if configured == get_effective_settings().architectural_review_skill.strip():
-        return PER_PR_REVIEW_SKILL
-    return configured
+        return frozenset()
+    architectural = get_effective_settings().architectural_review_skill.strip()
+    primary = PER_PR_REVIEW_SKILL if configured == architectural else configured
+    return frozenset({primary, *configured_review_skill_alternates()})
 
 
 def recorded_review_skill(ticket: "Ticket") -> str:
@@ -82,24 +102,28 @@ def recorded_review_skill(ticket: "Ticket") -> str:
 
 
 def check_review_skill_evidence(ticket: "Ticket") -> None:
-    """Refuse a ``reviewing`` attestation that no review-skill run backs.
+    """Refuse a ``reviewing`` attestation that no accepted review-skill run backs.
 
     NO-OP when ``review_skill`` is unset (the opt-in default) or when
     *ticket* isn't in its overlay's own repo (see "Repo scoping" above).
-    Otherwise the durable ``review_skill_run`` artifact must name the per-PR
-    review tier (:func:`per_pr_review_skill`).
+    Otherwise the durable ``review_skill_run`` artifact must name one of the
+    accepted per-PR review skills (:func:`accepted_per_pr_review_skills`). The
+    refusal names every one of them, so the operator can see which reviewers
+    would satisfy it rather than guessing at a single expected string.
     """
-    expected = per_pr_review_skill()
-    if not expected:
+    accepted = accepted_per_pr_review_skills()
+    if not accepted:
         return
     if not ticket_repo_is_overlay_own(ticket):
         return
-    if recorded_review_skill(ticket) == expected:
+    if recorded_review_skill(ticket) in accepted:
         return
+    names = sorted(accepted)
     msg = (
-        f"`lifecycle visit-phase {ticket.pk} reviewing` requires evidence that "
-        f"the per-PR review skill {expected!r} ran (T3_REVIEW_SKILL / "
-        f"review_skill). Run `/{expected}`, then record it with "
-        f"`lifecycle record-review-skill-run {ticket.pk} {expected}` and retry."
+        f"`lifecycle visit-phase {ticket.pk} reviewing` requires evidence that one of "
+        f"the accepted per-PR review skills ran (review_skill / review_skill_alternates): "
+        f"{', '.join(repr(name) for name in names)}. Run `/{names[0]}` (or any of the "
+        f"others), then record it with `lifecycle record-review-skill-run {ticket.pk} "
+        f"<skill>` and retry."
     )
     raise ReviewSkillEvidenceError(msg)

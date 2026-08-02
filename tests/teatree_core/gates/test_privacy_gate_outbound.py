@@ -101,7 +101,10 @@ def test_classification_error_fails_closed_to_scanning(monkeypatch: pytest.Monke
     assert result.refused
 
 
-def test_overlay_redact_rules_empty_when_overlay_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_overlay_redact_rules_empty_when_no_overlay_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An EMPTY registry is the only case with genuinely no overlay rules to lose:
+    # the built-in quote anchors stay the floor. An AMBIGUOUS registry is NOT this
+    # case — see tests/teatree_core/gates/test_privacy_gate_multi_overlay.py.
     def _raise(*_args: object, **_kwargs: object) -> object:
         raise ImproperlyConfigured
 

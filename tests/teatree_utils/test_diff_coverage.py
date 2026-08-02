@@ -294,6 +294,31 @@ class TestSymbolScopeRules:
         # as `from typing import Protocol`.
         assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
 
+    def test_django_migration_not_required_to_be_referenced(self, git_repo: Path) -> None:
+        migrations = git_repo / "shared" / "migrations"
+        migrations.mkdir(parents=True)
+        (migrations / "0406_add_flag.py").write_text(
+            "from django.db import migrations\n\n\n"
+            "class Migration(migrations.Migration):\n"
+            "    dependencies = [('shared', '0405_previous')]\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shared/migrations/0406_add_flag.py")
+        # A numbered migration module name is not a Python identifier, so the
+        # import this check asks for (`from shared.migrations.0406_add_flag
+        # import Migration`) is a SyntaxError. The class is exercised through
+        # `migrate` and through tests that invoke its RunPython callables.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_non_migration_symbol_beside_migrations_still_required(self, git_repo: Path) -> None:
+        (git_repo / "migrationsupport.py").write_text(
+            "class Thing:\n    def one(self) -> None:\n        return None\n", encoding="utf-8"
+        )
+        diff = _worktree_diff(git_repo, "migrationsupport.py")
+        # The exemption keys on the `migrations/` package, not on the substring
+        # — a module merely named like one is still held to the rule.
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
     def test_non_protocol_class_still_required_to_be_referenced(self, git_repo: Path) -> None:
         (git_repo / "shipped.py").write_text(
             "class Thing:\n    def one(self) -> None:\n        return None\n", encoding="utf-8"

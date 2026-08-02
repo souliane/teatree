@@ -24,7 +24,7 @@ from teatree.core.backend_protocols import (
     MessagingBackend,
     PrOpenState,
 )
-from teatree.core.messaging_tokens import resolve_messaging_tokens
+from teatree.core.messaging_tokens import diagnose_configured_ref, resolve_messaging_tokens
 from teatree.utils import git, git_remote
 from teatree.utils.forge import forge_from_remote
 
@@ -328,7 +328,14 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
 
     This is a loop construction path, so a malformed user token degrades to
     bot-only (``degrade_bad_user_token=True``) instead of raising: a
-    Slack-only credential typo must never wedge merges, CI, or PR sweeps.
+    Slack-only credential typo must never wedge merges, CI, or PR sweeps. An
+    EMPTY bot token degrades the whole backend to noop for the same reason and
+    one more: ``SlackBotBackend`` short-circuits every call to ``{}`` before any
+    HTTP when it has no token, and the notify layer reads that empty body as a
+    Slack refusal — reporting ``conversations.open ok:false`` and "no message ts"
+    for a credential fault that never reached Slack. Noop is the truthful
+    degradation, and it lets ``resolve_owner_dm_backend`` park the notification
+    as recoverable instead of burning it on a fabricated API error.
     """
     choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
@@ -337,6 +344,14 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
             user_token_ref=overlay.config.user_token_ref,
             bot_fallback=overlay.config.get_slack_token(),
         )
+        if not tokens.bot:
+            logger.warning(
+                "messaging backend 'slack' resolved an EMPTY bot token (%s) — degrading to noop. %s",
+                diagnose_configured_ref("slack_token_ref", overlay.config.slack_token_ref, suffix="-bot")
+                or "no slack_token_ref configured; the overlay's get_slack_token() returned empty",
+                "A DM cannot be delivered until the credential store resolves again.",
+            )
+            return NoopMessagingBackend()
         return SlackBotBackend(
             bot_token=tokens.bot,
             app_token=tokens.app,

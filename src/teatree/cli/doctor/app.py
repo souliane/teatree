@@ -18,7 +18,12 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_provision_concurrency_from_host,
     run_bootstrap_checks,
 )
-from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable, _check_config_override_tier_healthy
+from teatree.cli.doctor.checks_cold_hooks import (
+    _check_autoload_engages_platform_skill,
+    _check_cold_hook_settings_readable,
+    _check_config_override_tier_healthy,
+)
+from teatree.cli.doctor.checks_db_integrity import _check_database_health
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
@@ -37,6 +42,7 @@ from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
     _check_compose_output_root_pinned,
+    _check_dream_consolidation_blocked,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
     _check_intake_budget_deadlock,
@@ -99,7 +105,11 @@ from teatree.cli.doctor.service import (
     agent_skill_dirs,
 )
 from teatree.cli.doctor.statusline import check_statusline, check_statusline_freshness
-from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
+from teatree.cli.recommended_authorizations import (
+    authorizations,
+    report_missing_authorizations,
+    verify_shipped_template,
+)
 from teatree.cli.slack.dm_doctor import check_and_render_dm_ready
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -124,9 +134,11 @@ __all__ = (
     "_check_connector_manifest",
     "_check_control_db_agreement",
     "_check_dangling_editable_pth",
+    "_check_database_health",
     "_check_declared_dependencies_provisioned",
     "_check_dispatched_overlay_skills",
     "_check_docker_workflow_wired",
+    "_check_dream_consolidation_blocked",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
@@ -348,6 +360,14 @@ def _run_daily_advisories() -> None:
     _check_reconciliation_ledger()
 
 
+def _run_advisory_finalisers() -> None:
+    """Surfacing-only passes that never gate the exit code."""
+    _check_singletons()
+    _check_legacy_overlay_alias()
+    report_missing_authorizations(typer.echo)
+    _ensure_plugin_registered()
+
+
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
     """Run every doctor check; return ``False`` if any hard-FAILs.
 
@@ -371,6 +391,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # Must precede _check_editable_sanity: under contribute=true that check can
     # auto-make-editable against the cwd worktree, creating the exact stale
     # worktree-anchored install this guard exists to catch (#1507).
+    # First, and exit-code gating: a database that fails quick_check cannot record work,
+    # so every green result below it would be reporting on a box that persists nothing.
+    ok = _check_database_health() and ok
     ok = _check_entrypoint_is_primary_clone() and ok
     # Detect/repair a dangling editable .pth (or uv-receipt source) pointing at a
     # reaped worktree before it wedges t3 machine-wide with ModuleNotFoundError.
@@ -390,6 +413,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # Configure Django before any check that reads the ConfigSetting store.
     ensure_django()
     ok = _check_editable_sanity() and ok
+    # The host's own settings stay advisory (they are the operator's), but teatree's
+    # SHIPPED template is teatree's to get right: a recommendation absent from it
+    # seeds every container starved of the rule the advisory below is about to nag for.
+    ok = verify_shipped_template(typer.echo) and ok
     ok = _check_skills() and ok
     # #3352: the configured review skills (review_skill / architectural_review_skill)
     # must resolve to an installed SKILL.md. Runs after ensure_django() above — it
@@ -400,21 +427,23 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
     # ensure_django() above: the review-skill check reads the ConfigSetting store.
     ok = _check_enabled_but_unprovisioned() and ok
-    # Two hard FAILs over teatree's own durable rows — a registered worktree that is
-    # no longer a checkout, and a PR owed since a deferral the drain cannot discharge.
-    # The third is advisory and always passes: the capture pass records what a
+    # Three hard FAILs over teatree's own durable rows — a registered worktree that is
+    # no longer a checkout, a PR owed since a deferral the drain cannot discharge, and a
+    # dream pass whose success marker has been withheld for weeks (#3993: it says so in
+    # a WARN line the daily advisories discard, so nothing else makes it visible). The
+    # last two are advisory and always pass: the capture pass records what a
     # checkout held that exists nowhere else, and this is the surface that makes
-    # those rows visible with an age (#3891). Nothing reaps them, so without a
-    # surface nobody looks. The tuple calls all three before ``all`` short-circuits,
-    # so no finding masks another.
-    # The fourth is advisory for the same reason as the third and reads a cache rather
-    # than a row: a pre-commit stash whose restore failed leaves the tree clean, so
-    # nothing but the saved patch records that the work ever existed.
+    # those rows visible with an age (#3891); the prek-patch one reads a cache rather
+    # than a row, because a pre-commit stash whose restore failed leaves the tree clean,
+    # so nothing but the saved patch records that the work ever existed. Nothing reaps
+    # either, so without a surface nobody looks. The tuple calls all five before ``all``
+    # short-circuits, so no finding masks another.
     ok = (
         all(
             (
                 check_worktree_health(),
                 check_pending_pull_requests(),
+                _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
                 check_stranded_prek_patches(),
             )
@@ -435,6 +464,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # before ``all`` short-circuits, so an unreadable-store FAIL never masks a degraded-tier
     # FAIL — they are different faults with different remedies.
     ok = all((_check_cold_hook_settings_readable(), _check_config_override_tier_healthy())) and ok
+    # The other half of the same blind spot: a flag that READS back correctly still
+    # buys nothing if the engagement it drives never materialises. Walks the live hook
+    # path end to end and FAILs when a stored `autoload = true` engages no platform
+    # skill — the recurring, silently-hand-diagnosed failure this turns into one line.
+    ok = _check_autoload_engages_platform_skill() and ok
     # Verify the Claude Code statusLine block (PR-17: present, absolute path, executable
     # target — a missing block WARNs, a relative/non-executable one hard-FAILs) AND its
     # freshness. The freshness backstop hard-FAILs a pre-rendered statusline gone stale past
@@ -567,10 +601,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # connectivity gate — it reuses the same live `claude mcp list` probe.
     _check_teatree_mcp_registration()
 
-    _check_singletons()
-    _check_legacy_overlay_alias()
-    report_missing_authorizations(typer.echo)
-    _ensure_plugin_registered()
+    _run_advisory_finalisers()
 
     if ok:
         typer.echo("All checks passed")

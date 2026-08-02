@@ -16,10 +16,10 @@ table cannot enforce itself — this walk does.
 import re
 from pathlib import Path
 
+from hooks.scripts.engagement import PLATFORM_SKILL as ENGAGEMENT_SKILL
 from teatree.skill_support.requires_parser import parse_requires
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
-ENGAGEMENT_SKILL = "interactive"
 
 _TABLE_ROW = re.compile(r"^\|\s*`/([\w:-]+)`\s*\|")
 

@@ -319,10 +319,32 @@ def configured_messaging_from_overlay(overlay_name: str | None = None) -> Messag
     to the resolver so the noop declarer is skipped, restoring the resolver's
     documented "``None`` when unconfigured" contract at the source. Every other
     caller keeps the no-``None``-guard :func:`messaging_from_overlay`.
+
+    The verdict is taken from the BUILT backend, not from the declared
+    ``messaging_backend`` string alone. An overlay declaring ``"slack"`` whose
+    credential read comes back empty is degraded to a noop by
+    :func:`teatree.backends.loader.get_messaging` (deliberately — a Slack
+    credential fault must never wedge merges or CI), and a string-only verdict
+    called that noop "configured". It then flowed to both consumers as if it
+    were a transport: :meth:`OwnerMessagingTransport.credentialed_backends`
+    counted it as the sole credentialed overlay, so
+    :func:`teatree.core.notify.resolve_owner_dm_backend` — whose tier-one noop
+    guard the fallback bypasses — handed it to the delivery path, where
+    ``open_dm`` returned ``""`` and every owner DM was recorded FAILED with a
+    fabricated ``conversations.open ok:false`` for a call that never reached
+    Slack; and the MCP resolver stopped its search on it. Reading the marker off
+    the built object keeps one rule for "carries a real transport" and lets the
+    DM park as a recoverable no-transport row instead.
     """
     if _resolved_messaging_backend(overlay_name) in {"", "noop"}:
         return None
-    return messaging_from_overlay(overlay_name)
+    backend = messaging_from_overlay(overlay_name)
+    # The marker is read off the TYPE (a ClassVar on the noop backend) for the
+    # same reason ``resolve_owner_dm_backend`` does: an instance-level getattr
+    # misreads a MagicMock stub's truthy auto-attribute as "noop".
+    if backend is None or getattr(type(backend), "is_noop", False):
+        return None
+    return backend
 
 
 def _resolved_messaging_backend(overlay_name: str | None) -> str:
