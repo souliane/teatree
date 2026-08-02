@@ -153,6 +153,24 @@ class TestEveryUnmeasuredDeclineAnnouncesItself:
             assert handle_block_uncovered_diff(data) is False
         assert _SKIP_MARKER in capsys.readouterr().err
 
+    def test_proven_different_target_notes_the_skip(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """The most common decline of all — an explicit ``-R`` naming a different repo.
+
+        This is the exact regression this file exists to catch: the rebuild onto
+        #4001 imported ``_explicit_target_is_measured_repo`` verbatim and its
+        own-repo decline came back with no ``note_gate_skipped`` call.
+        """
+        data = {
+            "session_id": "sess-4004",
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -R other-org/other-repo --title t --description d"},
+            "cwd": str(_shipping_repo(tmp_path)),
+        }
+        assert handle_block_uncovered_diff(data) is False
+        err = capsys.readouterr().err
+        assert _SKIP_MARKER in err
+        assert "other-org/other-repo" in err
+
 
 class TestReportShapesThatCarryNoVerdict:
     """``diff_coverage_finding`` returns ``None`` for four reasons; three are skips."""
@@ -227,4 +245,69 @@ class TestDeclinePathCountIsPinned:
             f"handle_block_uncovered_diff now declines on {len(declines)} paths (lines {declines}), not "
             f"{_HANDLER_DECLINE_PATHS}. Fail-open branches belong in `coverage_finding_for_command`, beside "
             "the `note_gate_skipped` that explains them — splitting them across modules is how one went silent."
+        )
+
+
+def _unnoted_false_returns(module: ModuleType, function: str) -> list[int]:
+    """Line numbers of a literal ``return False`` with no note immediately before it.
+
+    Flags a ``return False`` in *function* not immediately preceded by a
+    ``note_gate_skipped(...)`` call in the SAME block. A secondary guard,
+    narrower than the behavioral test above: it only sees a LITERAL ``False``
+    return, not ``return <call-that-may-evaluate-False>`` (the exact shape the
+    #4004 regression actually took, and why the regression test is the
+    behavioral one — this AST check passes vacuously against it). What it DOES
+    catch: the count guards above only reach `coverage_finding_for_command`
+    and `handle_block_uncovered_diff`, which CALL the target-resolution
+    functions but do not inline their bodies — so a future literal-``False``
+    decline added inside ``_explicit_target_is_measured_repo`` or
+    ``measured_repo_is_publish_target`` moves neither count and needs its own pin.
+    """
+    source = Path(str(module.__file__)).read_text(encoding="utf-8")
+    node = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name == function)
+    unnoted: list[int] = []
+    for parent in ast.walk(node):
+        body = getattr(parent, "body", None)
+        if not isinstance(body, list):
+            continue
+        for i, stmt in enumerate(body):
+            if not (
+                isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Constant) and stmt.value.value is False
+            ):
+                continue
+            prev = body[i - 1] if i > 0 else None
+            noted = (
+                isinstance(prev, ast.Expr)
+                and isinstance(prev.value, ast.Call)
+                and isinstance(prev.value.func, ast.Name)
+                and prev.value.func.id == "note_gate_skipped"
+            )
+            if not noted:
+                unnoted.append(stmt.lineno)
+    return unnoted
+
+
+class TestEveryDeclineIsImmediatelyPrecededByANote:
+    """A structural pin reaching functions the count guard above cannot see.
+
+    ``coverage_finding_for_command`` CALLS the two target-resolution functions
+    below but does not inline their bodies, so its own count guard is blind to
+    them. Catches a future literal ``return False`` decline with no adjacent
+    note; the shape-agnostic regression pin is
+    ``test_proven_different_target_notes_the_skip`` above, which drives the
+    real handler end to end and fails on ANY silent-skip shape.
+    """
+
+    def test_explicit_target_resolution_has_no_unnoted_decline(self) -> None:
+        unnoted = _unnoted_false_returns(coverage_gate, "_explicit_target_is_measured_repo")
+        assert unnoted == [], (
+            f"_explicit_target_is_measured_repo declines at line(s) {unnoted} with no preceding "
+            "note_gate_skipped(...) call — a decline that says nothing is the #4004 regression shape."
+        )
+
+    def test_target_resolution_has_no_unnoted_decline(self) -> None:
+        unnoted = _unnoted_false_returns(coverage_gate, "measured_repo_is_publish_target")
+        assert unnoted == [], (
+            f"measured_repo_is_publish_target declines at line(s) {unnoted} with no preceding "
+            "note_gate_skipped(...) call — a decline that says nothing is the #4004 regression shape."
         )

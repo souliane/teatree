@@ -232,7 +232,10 @@ def _explicit_target_is_measured_repo(target: str, repo_dir: Path) -> bool:
     if not measured:
         note_gate_skipped(f"the publish target is {target} but {repo_dir} has no resolvable repo slug")
         return False
-    return _slugs_name_same_repo(target, measured)
+    if _slugs_name_same_repo(target, measured):
+        return True
+    note_gate_skipped(f"the publish target is {target}, not the measured repo {measured}")
+    return False
 
 
 def measured_repo_is_publish_target(command: str, repo_dir: Path | None) -> bool:
