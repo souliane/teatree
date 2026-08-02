@@ -40,3 +40,18 @@ class RegressionReport:
     @property
     def failures(self) -> tuple[CheckResult, ...]:
         return tuple(r for r in self.results if not r.ok and not r.skipped)
+
+    @property
+    def skipped(self) -> tuple[CheckResult, ...]:
+        return tuple(r for r in self.results if r.skipped)
+
+    @property
+    def validated(self) -> bool:
+        """Every check actually ran — the axis ``ok`` deliberately cannot carry (#4005).
+
+        A skipped check reports ``ok=True`` so a topology fault never reddens the lane
+        (#4001), which leaves an all-skipped run indistinguishable from a real green to
+        anything reading ``ok`` alone. A caller that needs the pins to have asserted
+        something reads this instead.
+        """
+        return not self.skipped
