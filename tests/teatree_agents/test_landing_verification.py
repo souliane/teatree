@@ -41,6 +41,24 @@ class TestLandingVerification(TestCase):
         )
         return repo_dir
 
+    def _attach_unverifiable_worktree(self, ticket: Ticket) -> Path:
+        """Attach a checkout PRESENT on disk whose commit-count probe cannot answer.
+
+        A real directory that is not a git repository reproduces the venue-split
+        condition without a mock: ``git rev-list`` exits 128 there exactly as it
+        does for a checkout whose admin dir was written by another execution
+        context and is unreachable from this one.
+        """
+        repo_dir = self._tmp_path / f"unverifiable-{ticket.pk}"
+        repo_dir.mkdir()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch=f"unverifiable-{ticket.pk}",
+            extra={"worktree_path": str(repo_dir)},
+        )
+        return repo_dir
+
     def test_commit_landed_and_clean_is_verified(self) -> None:
         task = self._task()
         self._attach_worktree(task.ticket, commits_ahead=1)
@@ -73,4 +91,23 @@ class TestLandingVerification(TestCase):
 
     def test_no_worktree_fails_open(self) -> None:
         task = self._task()
+        assert landing_verification_error(task) == ""
+
+    def test_unverifiable_probe_fails_open(self) -> None:
+        task = self._task()
+        self._attach_unverifiable_worktree(task.ticket)
+        assert landing_verification_error(task) == ""
+
+    def test_unverifiable_sibling_suppresses_the_no_commit_refusal(self) -> None:
+        # One worktree is verifiably commit-less, the other cannot be probed at
+        # all — so "nothing landed" is not proved and the gate must not refuse.
+        task = self._task()
+        self._attach_worktree(task.ticket, commits_ahead=0)
+        self._attach_unverifiable_worktree(task.ticket)
+        assert landing_verification_error(task) == ""
+
+    def test_unverifiable_sibling_does_not_mask_a_landed_commit(self) -> None:
+        task = self._task()
+        self._attach_unverifiable_worktree(task.ticket)
+        self._attach_worktree(task.ticket, commits_ahead=1)
         assert landing_verification_error(task) == ""
