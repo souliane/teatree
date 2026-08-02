@@ -463,6 +463,19 @@ class TestPrivacyScanBannedTermsSource:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "inert" not in result.stderr.lower()
 
+    def test_unreadable_store_reports_could_not_be_read_not_present_but_unset(self, tmp_path: Path) -> None:
+        # A store that could not be READ (locked/corrupt/table-less) is a DISTINCT
+        # cause from a genuinely-unset row — the message must say so, not reuse the
+        # plain-unset wording, else an operator debugging a busy DB is told the
+        # wrong thing (#4008). Still INERT (not a hard failure): the sibling
+        # in-process fast_push core-gate scan covers the same push.
+        corrupt_db = tmp_path / "corrupt.sqlite3"
+        corrupt_db.write_bytes(b"this is not a sqlite database")
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(corrupt_db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not be read" in result.stderr.lower()
+        assert "present-but-unset" not in result.stderr.lower()
+
 
 class TestPrivacyScanAllowlistFromRegistry:
     """The company-identifier carve-out resolves through the registry ``allow`` class."""

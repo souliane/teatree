@@ -30,7 +30,11 @@ from tests._git_repo import make_git_repo, run_git
 #: The env an INTERACTIVE Claude Code CLI session presents. The SDK transport sets
 #: ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` and strips ``CLAUDECODE`` from the child env, so these
 #: two keys are what separate a human-driven session from every SDK embedding.
-_INTERACTIVE_ENV = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"}
+#: ``CLAUDE_AGENT_SDK_VERSION`` is pinned EMPTY rather than left absent: these patches merge
+#: into the real environment, and when the suite itself runs under an SDK agent that marker
+#: is already set — ``_lane`` would read SDK, and every refuse-case here would go green-by-
+#: allowing. The fixture must state the whole interactive contract, not inherit half of it.
+_INTERACTIVE_ENV = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1", "CLAUDE_AGENT_SDK_VERSION": ""}
 _SDK_ENV = {"CLAUDE_CODE_ENTRYPOINT": "sdk-py", "CLAUDE_AGENT_SDK_VERSION": "0.2.95"}
 
 

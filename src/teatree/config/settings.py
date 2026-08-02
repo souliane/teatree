@@ -1037,7 +1037,7 @@ class _ProvisioningSettings:
     # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
     # pre-governor static behaviour. Per-overlay overridable.
     admission_governor_enabled: bool = True
-    # Repos that are ONE branch wide for now — ``<repo-slug>=<branch>`` entries.
+    # Repos that are ONE branch wide while listed — ``<repo-slug>=<branch>`` entries.
     # While a repo is listed, provisioning a worktree on any OTHER branch is
     # refused, as are the raw ``git worktree add`` / ``checkout -b`` / ``switch
     # -c`` / ``branch <name>`` / non-pinned ``push`` forms

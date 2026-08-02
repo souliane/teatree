@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import TypedDict, cast
 from urllib.parse import urlparse
 
-from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.gitlab import api as _gitlab_api
 from teatree.backends.gitlab import issue_notes as _issue_notes
 from teatree.backends.gitlab import issue_ops as _issue_ops
+from teatree.backends.gitlab import merge_rpc as _gitlab_merge_rpc
 from teatree.backends.gitlab import pr_reads as _pr_reads
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab import uploads as _uploads
@@ -486,8 +486,8 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return self._client.resolve_project(repo)
         return self._client.resolve_project_from_remote(".")
 
-    def _merge_rpc(self) -> _forge_merge.GlabMergeRpc:  # noqa: PLR6301 — runner needs no instance state; on the host for the Protocol.
-        return _forge_merge.GlabMergeRpc(_forge_merge.glab_runner())
+    def _merge_rpc(self) -> _gitlab_merge_rpc.GitLabApiMergeRpc:
+        return _gitlab_merge_rpc.GitLabApiMergeRpc(self._client)
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)

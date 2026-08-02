@@ -15,6 +15,7 @@ the environment — not by patching the detector.
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -23,15 +24,26 @@ from django.db.utils import ConnectionHandler
 from pytest_django.plugin import DjangoDbBlocker
 
 from teatree.config import cold_writer
+from teatree.db import boundary
 from teatree.db.boundary import CLAIM_FILENAME, ControlDbBoundary, DbBoundaryError, control_db_unreachable_reason
+from teatree.docker.workflow import is_running_in_container
 from teatree.paths import CONTROL_DB_DIR_ENV
 from teatree.settings import SQLITE_BOUNDARY_ENGINE, SQLITE_WRITE_SERIALIZATION_OPTIONS
+
+# The suite itself runs inside a container in CI, so the real ``/.dockerenv`` is
+# present and would make EVERY process read as containerized. Pointing the marker
+# probe at an absent path is what lets the host domain be simulated at all; the
+# role env var stays the live signal, so the container fixture below is untouched.
+_ABSENT_DOCKERENV = Path("/nonexistent/teatree-test/.dockerenv")
 
 
 @pytest.fixture
 def host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the test as a host process — the domain production detects by an absent role."""
     monkeypatch.delenv("TEATREE_ROLE", raising=False)
+    monkeypatch.setattr(
+        boundary, "is_running_in_container", partial(is_running_in_container, dockerenv=_ABSENT_DOCKERENV)
+    )
 
 
 @pytest.fixture
@@ -238,7 +250,7 @@ class TestTheGuardedDjangoBackend:
 class TestTheDjangoFreeColdWriter:
     """The one canonical-DB writer the Django backend cannot cover."""
 
-    def test_it_refuses_a_claimed_database_from_the_host(self, tmp_path: Path) -> None:
+    def test_it_refuses_a_claimed_database_from_the_host(self, host: None, tmp_path: Path) -> None:
         db = _config_db(tmp_path / "db.sqlite3")
         ControlDbBoundary(db, containerized=True).claim_for_container()
 

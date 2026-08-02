@@ -48,7 +48,7 @@ def repo(tmp_path: Path) -> Path:
     """A real git repo with an ``origin`` remote and no ``glab-base``."""
     work = tmp_path / "clone"
     work.mkdir()
-    _git(work, "init", "-q")
+    _git(work, "init", "-q", "-b", "main")
     _git(work, "remote", "add", "origin", f"git@gitlab.com:{_TARGET}.git")
     return work
 

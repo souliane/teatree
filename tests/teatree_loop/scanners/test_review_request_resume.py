@@ -33,6 +33,7 @@ from teatree.loop.scanners.review_request_resume import (
 )
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.types import RawAPIDict
+from tests.db_alias import run_racing_threads
 from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
 
 _MR_URL = "https://github.com/o/r/pull/7"
@@ -357,24 +358,20 @@ def _teardown_alias(alias: str) -> None:
 
 
 def _race_the_claim(post_pk: int) -> list[bool]:
-    """Two real threads, two connections, one conditional UPDATE each."""
+    """Two real threads, two connections, one conditional UPDATE each.
+
+    The read is deliberately BEFORE the barrier: both ticks hold a row snapshot
+    taken while ``resumed_at`` was still null, which is the stale state the
+    conditional UPDATE has to arbitrate.
+    """
     barrier = threading.Barrier(2)
-    claimed: dict[int, bool] = {}
 
-    def tick(index: int) -> None:
-        try:
-            post = ReviewRequestPost.objects.get(pk=post_pk)
-            barrier.wait(timeout=10)
-            claimed[index] = _claim_resume(post, timezone.now())
-        finally:
-            connections.close_all()
+    def tick(_index: int) -> bool:
+        post = ReviewRequestPost.objects.get(pk=post_pk)
+        barrier.wait(timeout=10)
+        return _claim_resume(post, timezone.now())
 
-    threads = [threading.Thread(target=tick, args=(index,)) for index in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=15)
-    return [claimed.get(0, False), claimed.get(1, False)]
+    return run_racing_threads(tick, 2)
 
 
 @pytest.fixture

@@ -1377,6 +1377,46 @@ class TestScanTextScannerCrashFailsClosed:
         assert banned_terms_scanner.scan_text("ship to acmecorp", config_path=config) == "acmecorp"
 
 
+class TestUnreadableStoreFailsClosedOnThePublishSurface:
+    """A legacy row that could not be READ fails CLOSED here too, not just in the shell hook (#4008).
+
+    ``_banned_terms_configured`` used to read the legacy row through the fail-open
+    ``read_setting`` and collapse "sqlite errored" into "nothing configured" — a
+    corrupt/locked/table-less store made ``scan_text`` return ``None`` (the clean
+    no-op) instead of the ``SCANNER_UNAVAILABLE_MARKER``, on the exact surface
+    (``gh``/``glab`` posting) the shell-only fix in #4008 does not reach.
+    """
+
+    def _corrupt_db(self, tmp_path: Path) -> Path:
+        db = tmp_path / "corrupt.sqlite3"
+        db.write_bytes(b"this is not a sqlite database")
+        return db
+
+    def test_configured_check_raises_unreadable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        with pytest.raises(banned_terms_scanner.BannedTermsUnreadableError):
+            banned_terms_scanner._banned_terms_configured(self._corrupt_db(tmp_path))
+
+    def test_scan_text_fails_closed_not_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        assert (
+            banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=self._corrupt_db(tmp_path))
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
+
+    def test_table_less_store_also_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        db = tmp_path / "notable.sqlite3"
+        sqlite3.connect(str(db)).close()
+        assert (
+            banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=db)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
+
+
 class TestMatchedTerm:
     def test_term_in_flagged_line_is_reported(self) -> None:
         report = "BANNED TERM in /tmp/x.txt:\n  1:ship to acmecorp\n\nBanned terms: acmecorp, widgetco\n"

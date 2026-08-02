@@ -604,7 +604,7 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 
   Do X — never Y: DO issue the CLEAR with `--reviewer-identity <independent-reviewer>`. NEVER cite `--reviewer-identity self` / `maker` / `me`. DO complete a substrate merge with `--human-authorized <owner-id>`; NEVER auto-merge a `blast_class=substrate` CLEAR without it. NEVER reach for `gh pr merge` / `glab mr merge` / `t3 <overlay> pr merge` — all three are blocked.
 
-  **A PR/MR with no teatree Ticket still merges through the keystone — name its forge.** `--ticket-id` is optional; a bare `owner/repo` slug carries no host, so a ticketless CLEAR must say which forge hosts the MR. Do X — never Y: DO pass `--forge`; NEVER conclude the sanctioned path is closed and reach for a raw merge or a gate flip (`glab mr merge` and `out_of_band_merge_gate_enabled` are both off-limits). Issuance REFUSES — writing no row — when nothing names the forge, so a CLEAR that could not execute never lingers as an orphan.
+  **A PR/MR with no teatree Ticket still merges through the keystone — name its forge.** `--ticket-id` is optional; a bare `owner/repo` slug carries no host, so a ticketless CLEAR must say which forge hosts the MR. Do X — never Y: DO pass `--forge`; NEVER conclude the sanctioned path is closed and reach for a raw merge or a gate flip (`glab mr merge` and `out_of_band_merge_gate_enabled` are both off-limits). Issuance REFUSES — writing no row — when nothing names the forge, so a CLEAR that could not execute never lingers as an orphan.  <!-- mcp-ratchet: allow — names the raw merge as forbidden, it is not a fallback the agent may run -->
 
   ```bash
   # Ticketless: a managed-repo MR reviewed and merged outside the ticket FSM.

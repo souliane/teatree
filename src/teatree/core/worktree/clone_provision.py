@@ -49,7 +49,7 @@ def ensure_clone(clone_root: Path, repo_name: str, overlay: OverlayBase | None =
     if found is not None:
         return found
 
-    url = overlay.get_repo_clone_url(repo_name) if overlay is not None else ""
+    url = overlay.provisioning.repo_clone_url(repo_name) if overlay is not None else ""
     if not url:
         return None
 

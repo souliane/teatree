@@ -101,6 +101,66 @@ class TestReadSettingFailsOpen:
             writer.close()
 
 
+class TestReadSettingConfirmed:
+    """`read_setting_confirmed` separates an ABSENT value from an UNREADABLE store (#4008).
+
+    `read_setting` collapses both to `None`, which is right for a caller that fails open — and
+    exactly wrong for a security gate, which read "no banned_terms row" out of a DB that was
+    merely locked and opened itself.
+    """
+
+    def test_present_value_is_readable(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        read = cold_reader.read_setting_confirmed("mode", db_path=db)
+        assert (read.value, read.readable) == ("auto", True)
+
+    def test_missing_db_file_is_readable_absence(self, tmp_path: Path) -> None:
+        # Nothing to read is CONFIRMED absence (a fresh/solo box), not a read failure.
+        read = cold_reader.read_setting_confirmed("mode", db_path=tmp_path / "nope.sqlite3")
+        assert (read.value, read.readable) == (None, True)
+
+    def test_missing_row_is_readable_absence(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        read = cold_reader.read_setting_confirmed("absent_key", db_path=db)
+        assert (read.value, read.readable) == (None, True)
+
+    def test_invalid_json_is_readable_absence(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'mode', '{not json')")
+        conn.commit()
+        conn.close()
+        read = cold_reader.read_setting_confirmed("mode", db_path=db)
+        assert (read.value, read.readable) == (None, True)
+
+    def test_missing_table_is_unreadable(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.sqlite3"
+        sqlite3.connect(db).close()  # exists but has no teatree_config_setting table
+        assert cold_reader.read_setting_confirmed("mode", db_path=db).readable is False
+
+    def test_corrupt_file_is_unreadable(self, tmp_path: Path) -> None:
+        db = tmp_path / "corrupt.sqlite3"
+        db.write_bytes(b"this is not a sqlite database")
+        assert cold_reader.read_setting_confirmed("mode", db_path=db).readable is False
+
+    def test_locked_db_is_unreadable(self, tmp_path: Path) -> None:
+        # The #4008 field report: a busy writer makes a CONFIGURED list read as absent.
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "banned_terms", ["acme"])])
+        writer = sqlite3.connect(db)
+        writer.isolation_level = None
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            read = cold_reader.read_setting_confirmed("banned_terms", db_path=db)
+            assert (read.value, read.readable) == (None, False)
+        finally:
+            writer.rollback()
+            writer.close()
+
+
 class TestTypedWrappers:
     @pytest.fixture
     def db(self, tmp_path: Path) -> Path:

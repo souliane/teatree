@@ -21,6 +21,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.worktree.worktree_env import _declared_core_keys, render_env_cache
 from teatree.types import DbImportStrategy
+from teatree.utils import secrets as secrets_mod
 from teatree.utils.compose_contract import ComposeVarRef, check_contract, extract_refs, unproduced_declared_keys
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -168,7 +169,9 @@ class TestProducerContract(TestCase):
     of the failure going silent (the #390 ``POSTGRES_HOST`` / ``rd:`` class).
     """
 
-    def _render_keys(self, overlays: dict[str, OverlayBase], *, slug: str) -> set[str]:
+    def _render_keys(
+        self, overlays: dict[str, OverlayBase], *, slug: str, pass_entry_resolves: bool = False
+    ) -> set[str]:
         with tempfile.TemporaryDirectory() as tmp:
             ticket_dir = Path(tmp) / "ticket"
             ticket_dir.mkdir()
@@ -186,17 +189,22 @@ class TestProducerContract(TestCase):
                 db_name="wt_1",
                 extra={"worktree_path": str(wt_path)},
             )
-            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlays):
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlays),
+                patch.object(secrets_mod, "pass_entry_exists", return_value=pass_entry_resolves),
+            ):
                 spec = render_env_cache(wt)
             assert spec is not None
             return set(spec.keys)
 
     def test_every_declared_core_key_is_produced_by_the_generator(self) -> None:
-        # POSTGRES_HOST is only emitted on the shared-postgres branch; the
-        # union across both branches must still cover every declared key.
+        # Each declared key has its own branch: POSTGRES_HOST only on shared-postgres,
+        # POSTGRES_PASSWORD_PASS_KEY only when the entry behind it resolves (the cache
+        # never names a dead one). The union across the branches must still cover them all.
         renders = [
             self._render_keys(_DEDICATED_PG, slug="dedicated"),
             self._render_keys(_SHARED_PG, slug="shared"),
+            self._render_keys(_DEDICATED_PG, slug="stored-secret", pass_entry_resolves=True),
         ]
         missing = unproduced_declared_keys(_declared_core_keys(), renders)
         if missing:

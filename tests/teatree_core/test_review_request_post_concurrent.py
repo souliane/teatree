@@ -38,6 +38,7 @@ from django.db import connections
 from teatree.core.models import OnBehalfApproval
 from teatree.core.models.on_behalf_approval import canonical_on_behalf_target
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import run_racing_threads
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _ACTION = "review_request_post"
@@ -106,22 +107,12 @@ def _teardown_alias(alias: str) -> None:
 def _run_two_posts(alias: str, target: str, action: str) -> list[OnBehalfApproval | None]:
     """Two real threads race the post command's approval-consume step."""
     barrier = threading.Barrier(2)
-    results: dict[int, OnBehalfApproval | None] = {}
 
-    def runner(idx: int) -> None:
-        try:
-            barrier.wait(timeout=10)
-            results[idx] = OnBehalfApproval.consume(target, action, using=alias)
-        finally:
-            connections[alias].close()
+    def consume(_idx: int) -> OnBehalfApproval | None:
+        barrier.wait(timeout=10)
+        return OnBehalfApproval.consume(target, action, using=alias)
 
-    threads = [threading.Thread(target=runner, args=(i,)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=15)
-
-    return [results.get(0), results.get(1)]
+    return run_racing_threads(consume, 2)
 
 
 @pytest.fixture

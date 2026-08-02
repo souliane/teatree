@@ -34,6 +34,7 @@ from django.db import connections
 
 from teatree.core.models import BotPing, DeliveryClaim
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import run_racing_threads
 
 _KEY = "concurrent-claim-key"
 
@@ -86,21 +87,12 @@ def _teardown_alias(alias: str) -> None:
 
 def _run_two_claims(alias: str) -> list[DeliveryClaim | None]:
     barrier = threading.Barrier(2)
-    results: dict[int, DeliveryClaim] = {}
 
-    def runner(idx: int) -> None:
-        try:
-            barrier.wait(timeout=10)
-            results[idx] = BotPing.claim_delivery(_KEY, kind="info", text="tests are green", using=alias)
-        finally:
-            connections[alias].close()
+    def claim(_idx: int) -> DeliveryClaim:
+        barrier.wait(timeout=10)
+        return BotPing.claim_delivery(_KEY, kind="info", text="tests are green", using=alias)
 
-    threads = [threading.Thread(target=runner, args=(i,)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=15)
-    return [results.get(0), results.get(1)]
+    return run_racing_threads(claim, 2)
 
 
 @pytest.fixture
