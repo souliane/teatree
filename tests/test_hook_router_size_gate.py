@@ -46,7 +46,10 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # (tool-suffix + destination lookup) into the self_dm_destinations sibling.
 # Lowered to the measured LOC of the vendored tree after the upstream sync,
 # which carries both sides' extractions and so sits below either side's ceiling.
-_CEILING_LOC = 4186
+# Lowered by #4004, which moved gate 12's whole measurement chain (repo scope,
+# argv, the shelled run and its fail-open branches) into the coverage_gate
+# sibling, leaving the router the trigger and the deny.
+_CEILING_LOC = 4165
 
 
 def _count_loc(text: str) -> int:
