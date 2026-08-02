@@ -19,13 +19,14 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from django.core.exceptions import AppRegistryNotReady
+from django.core.exceptions import AppRegistryNotReady, SynchronousOnlyOperation
 from django.db.utils import OperationalError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.override_read_health import (
+    MAX_RECORDED_CALLERS,
     SAFETY_FAIL_CLOSED_STORED_VALUES,
     ConfigOverrideReadError,
     clear_degraded_read,
@@ -171,6 +172,75 @@ class TestATransientLockIsRetriedRatherThanDegradedStraightAway(TestCase):
             layers = read_setting_layers("")
         assert _GLOBAL in layers.degraded_scopes
         assert manager.calls < 10, "the retry budget is unbounded"
+
+
+class TestADeterministicFaultIsNotSpentOnTheContentionBudget(TestCase):
+    """#3980: the retry exists for CONTENTION; a deterministic fault must skip it entirely.
+
+    ``SynchronousOnlyOperation`` is a property of WHERE the read was called from, so it fails
+    identically on every attempt. Retrying it adds the full backoff to a failure that was
+    certain, and makes a programming error read like a flaky one.
+    """
+
+    def test_a_synchronous_only_operation_is_attempted_exactly_once(self) -> None:
+        patcher, manager = _with_failing_reads(SynchronousOnlyOperation("You cannot call this from an async context"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert manager.calls == 1, "a deterministic fault was retried under the contention budget"
+        assert _GLOBAL in layers.degraded_scopes
+
+    def test_a_contended_read_still_spends_the_budget(self) -> None:
+        # The foil: narrowing the retry must not disarm it for the fault it was built for.
+        patcher, manager = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            read_setting_layers("")
+        assert manager.calls > 1, "the contention retry was disarmed"
+
+
+class TestTheRecordedFailureNamesTheCallingContext(TestCase):
+    """#3980: the traceback holds only the ORM frames, which is the same for every fault.
+
+    The one fact that makes the failure actionable — which call site read the config tier — is
+    ABOVE this module in the stack, so it has to be captured deliberately and recorded where an
+    operator reads it, not only in a log line nobody tails.
+    """
+
+    def test_the_marker_records_the_frame_that_asked_for_the_read(self) -> None:
+        patcher, _ = _with_failing_reads(SynchronousOnlyOperation("You cannot call this from an async context"))
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=self._tmp_marker()), patcher:
+            read_setting_layers("")
+            report = degraded_read_report()
+        assert report is not None
+        assert any(__name__.rsplit(".", 1)[-1] in caller for caller in report.callers), report.callers
+
+    def test_the_loud_log_names_the_caller_and_says_it_was_not_retried(self) -> None:
+        patcher, _ = _with_failing_reads(SynchronousOnlyOperation("You cannot call this from an async context"))
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=self._tmp_marker()),
+            patcher,
+            self.assertLogs("teatree.config", level="ERROR") as logs,
+        ):
+            read_setting_layers("")
+        message = "\n".join(logs.output)
+        assert __name__.rsplit(".", 1)[-1] in message
+        assert "not retried" in message.lower()
+
+    def test_the_recorded_callers_are_bounded(self) -> None:
+        # A degraded read repeats at whatever rate its caller runs at, so an unbounded record
+        # would grow the marker file for as long as the fault lasts.
+        tmp = self._tmp_marker()
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp):
+            for index in range(MAX_RECORDED_CALLERS + 4):
+                record_degraded_read("global", caller=f"caller_{index}.py:1 in f")
+            report = degraded_read_report()
+        assert report is not None
+        assert len(report.callers) == MAX_RECORDED_CALLERS
+        assert report.occurrences == MAX_RECORDED_CALLERS + 4
+
+    def _tmp_marker(self) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return tmp
 
 
 class TestTheDivergenceIsObservable(TestCase):

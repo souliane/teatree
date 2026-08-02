@@ -10,8 +10,9 @@ code. Consumed at the harness / eval boundary
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
-from teatree.config import get_effective_settings
+from teatree.config import UserSettings, get_effective_settings
 
 
 def is_regulated_path_eligible(model_id: str, allowlist: Sequence[str]) -> bool:
@@ -72,3 +73,39 @@ def assert_model_allowed_on_regulated_path(
             "`t3 <overlay> config_setting set enforce_regulated_path false --overlay <name>`"
         )
         raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class RegulatedPathPolicy:
+    """The gate's two settings, carried as a value so the read happens where it is legal (#3980).
+
+    A harness builds its model inside an ``async open``, and Django refuses a synchronous ORM
+    read to a thread that owns a running event loop; the config resolver catches that refusal
+    and resolves the whole DB override tier as unreadable. Read there, ``enforce_regulated_path``
+    would fall back to its shipped ``False`` and the lane would silently stop being restricted —
+    a gate that fails OPEN under an exception nothing raises. Resolving the policy where the
+    harness is BUILT (synchronously) is what keeps the operator's stored values load-bearing.
+    """
+
+    enforce: bool = False
+    allowlist: tuple[str, ...] = ()
+
+    @classmethod
+    def from_settings(cls, settings: UserSettings | None = None) -> "RegulatedPathPolicy":
+        """Resolve the policy from *settings*, or from the active scope's resolved settings."""
+        resolved = settings if settings is not None else get_effective_settings()
+        return cls(enforce=resolved.enforce_regulated_path, allowlist=tuple(resolved.regulated_path_model_allowlist))
+
+    @classmethod
+    def resolve(cls, policy: "RegulatedPathPolicy | None") -> "RegulatedPathPolicy":
+        """*policy* when a caller resolved one already, else a fresh read of the stored settings.
+
+        The fallback is what keeps the gate from silently narrowing: a harness built without an
+        explicit policy still enforces what the operator stored. Only the caller that resolves
+        the policy SYNCHRONOUSLY buys immunity from the async-frame read.
+        """
+        return policy if policy is not None else cls.from_settings()
+
+    def assert_allowed(self, model_id: str) -> None:
+        """Raise ``ValueError`` when *model_id* is ineligible under THIS resolved policy."""
+        assert_model_allowed_on_regulated_path(model_id, enforce_regulated_path=self.enforce, allowlist=self.allowlist)
