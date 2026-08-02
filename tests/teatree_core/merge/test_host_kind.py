@@ -8,8 +8,9 @@ no ticket, which made a managed-repo MR with no teatree Ticket unmergeable
 through the sanctioned path while still leaving an unconsumed ``MergeClear``
 orphan behind.
 
-Only the unstoppable externals — the ``glab``/``gh`` subprocess and the local
-clone's git remote — are stubbed; every teatree model / FSM / DB write is real.
+Only the unstoppable externals — the forge HTTP/subprocess transport and the
+local clone's git remote — are stubbed; every teatree model / FSM / DB write is
+real.
 """
 
 import json
@@ -17,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.test import TestCase
 
@@ -60,23 +62,42 @@ def _ticketless_clear(**overrides: object) -> MergeClear:
     return MergeClear.objects.create(**defaults)
 
 
-class _GlabStub:
-    """Scripted ``glab`` responses for the MR under test; records argv per call."""
+class _GitLabApiStub:
+    """A ``GitLabAPI`` stand-in: scripted REST payloads, records the endpoint per call.
 
-    def __init__(self, *, merge_sha: str = "glab-merged-sha") -> None:
+    The GitLab merge surface speaks httpx, not the ``glab`` binary (#4007), so the
+    stub sits under :class:`GitLabApiMergeRpc` — the transport this test asserts is
+    reached stays real.
+    """
+
+    def __init__(self, *, merge_sha: str = "gitlab-merged-sha") -> None:
         self.merge_sha = merge_sha
-        self.calls: list[list[str]] = []
+        self.calls: list[str] = []
 
-    def __call__(self, argv: list[str]) -> tuple[int, str, str]:
-        self.calls.append(argv)
-        joined = " ".join(argv)
-        if "/merge" in joined and "PUT" in argv:
-            return (0, json.dumps({"state": "merged", "merge_commit_sha": self.merge_sha}), "")
-        if "/pipelines" in joined:
-            return (0, json.dumps([{"id": 1, "status": "success", "sha": _SHA}]), "")
-        if "/merge_requests/" in joined:
-            return (0, json.dumps({"iid": _MR_IID, "sha": _SHA, "draft": False, "state": "opened"}), "")
-        return (0, "", "")
+    def get_json(self, endpoint: str) -> object:
+        self.calls.append(endpoint)
+        if "/pipelines" in endpoint:
+            return [{"id": 1, "status": "success", "sha": _SHA}]
+        return {"iid": _MR_IID, "sha": _SHA, "draft": False, "state": "opened"}
+
+    def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
+        self.calls.append(endpoint)
+        return []
+
+    def put_response(
+        self,
+        endpoint: str,
+        payload: dict[str, object] | None = None,
+        *,
+        idempotent: bool = True,
+    ) -> httpx.Response:
+        del payload, idempotent
+        self.calls.append(endpoint)
+        return httpx.Response(
+            200,
+            text=json.dumps({"state": "merged", "merge_commit_sha": self.merge_sha}),
+            request=httpx.Request("PUT", f"https://gitlab.example/api/v4/{endpoint}"),
+        )
 
 
 class TestResolveHostKind(TestCase):
@@ -188,17 +209,17 @@ class TestDeclaredScopeForge(TestCase):
 class TestTicketlessGitLabKeystone(TestCase):
     """A managed-repo MR with no teatree Ticket merges through the sanctioned path."""
 
-    def test_ticketless_gitlab_clear_drives_the_glab_transport(self) -> None:
+    def test_ticketless_gitlab_clear_drives_the_gitlab_transport(self) -> None:
         clear = _ticketless_clear(host_kind="gitlab")
         seed_merge_safe_verdict(slug=_GITLAB_SLUG, pr_id=_MR_IID, sha=_SHA)
-        stub = _GlabStub()
+        stub = _GitLabApiStub()
 
         with (
             # The §17.4.3 draft floor probes the live forge, which has no credential
             # here and refuses on UNKNOWN. That floor is pinned in
             # test_authorization_gates.py; this case is about the TRANSPORT.
             patch(_DRAFT_PROBE, return_value=DraftState.NOT_DRAFT),
-            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub),
+            patch("teatree.backends.gitlab.client.get_client", return_value=stub),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
@@ -207,7 +228,7 @@ class TestTicketlessGitLabKeystone(TestCase):
         assert outcome.ticket_state == ""
         assert clear.consumed_at is not None
         assert MergeAudit.objects.filter(clear=clear).exists()
-        assert any("merge_requests" in " ".join(call) for call in stub.calls), (
+        assert any("merge_requests" in call for call in stub.calls), (
             f"the GitLab transport was never reached: {stub.calls}"
         )
 

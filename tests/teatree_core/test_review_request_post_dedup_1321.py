@@ -104,6 +104,11 @@ class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
             with (
                 patch(f"{_CMD_MOD}.resolve_guard_target", return_value=_TARGET),
                 patch(f"{_CMD_MOD}.messaging_from_overlay", return_value=backend),
+                # The draft gate runs BEFORE the dedup scan and fails closed on an
+                # unreadable forge, so leaving it live refuses the URL under test at
+                # ``draft_state_unknown`` and the scan being pinned is never reached.
+                # That floor has its own suite (gates/test_review_request_draft_gate.py).
+                patch(f"{_CMD_MOD}.draft_refusal_reason", return_value=""),
             ):
                 code, payload = _run_post()
 
