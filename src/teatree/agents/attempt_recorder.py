@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, cast
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.agents.landing_verification import landing_verification_error
+from teatree.agents.landing_verification import commits_ahead_or_unknown, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, ReviewVerdictEnvelope, check_evidence
@@ -30,7 +30,6 @@ from teatree.core.gates.directive_interpret_gate import record_returned_directiv
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Task, TaskAttempt, Worktree
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
-from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -366,9 +365,14 @@ def _salvage_coding_result(task: Task, result: AgentResultBlob, *, phase: str) -
 
 
 def _committed_file_changes(task: Task) -> list[dict[str, str]]:
-    """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``."""
+    """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``.
+
+    A worktree whose probe cannot answer is one nothing can be salvaged FROM, so
+    it is skipped like a commit-less one — never allowed to abort the scan before
+    it reaches the sibling that did land the work.
+    """
     for worktree in Worktree.objects.for_ticket(task.ticket):
-        if not worktree_has_commits_ahead(worktree):
+        if commits_ahead_or_unknown(worktree) is not True:
             continue
         paths = _committed_paths(worktree)
         if paths:
@@ -377,7 +381,7 @@ def _committed_file_changes(task: Task) -> list[dict[str, str]]:
 
 
 def _committed_paths(worktree: Worktree) -> list[str]:
-    # Reached only after ``worktree_has_commits_ahead`` proved a valid path + branch.
+    # Reached only after ``commits_ahead_or_unknown`` proved a valid path + branch.
     repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
     base = _base_ref(repo_path)
     try:

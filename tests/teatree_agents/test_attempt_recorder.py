@@ -193,6 +193,46 @@ class TestLandingVerifiedCompletion(TestCase):
         )
         return repo_dir
 
+    def _attach_unverifiable_worktree(self, ticket: Ticket) -> Path:
+        """Attach a checkout PRESENT on disk whose commit-count probe cannot answer.
+
+        A real directory that is not a git repository reproduces the venue-split
+        condition without a mock: ``git rev-list`` exits 128 there exactly as it
+        does for a checkout whose admin dir was written by another execution
+        context and is unreachable from this one.
+        """
+        repo_dir = self._tmp_path / f"unverifiable-{ticket.pk}"
+        repo_dir.mkdir()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch=f"unverifiable-{ticket.pk}",
+            extra={"worktree_path": str(repo_dir)},
+        )
+        return repo_dir
+
+    def test_unverifiable_sibling_worktree_still_completes_a_landed_run(self) -> None:
+        # The recorder runs after the agent finished, so there is no tick left to
+        # hold: an unprobeable sibling must not crash it and discard the run.
+        task = self._claimed()
+        self._attach_unverifiable_worktree(task.ticket)
+        self._attach_worktree(task.ticket, commits_ahead=1)
+        record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "f0.txt", "action": "created"}]},
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_salvage_skips_an_unverifiable_worktree(self) -> None:
+        task = self._claimed()
+        self._attach_unverifiable_worktree(task.ticket)
+        self._attach_worktree(task.ticket, commits_ahead=1)
+        attempt = record_result_envelope(task, {"summary": "committed in one repo, no envelope"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert attempt.result.get("files_modified") == [{"path": "f0.txt", "action": "modified"}]
+
     def test_files_modified_without_commit_is_refused(self) -> None:
         task = self._claimed()
         self._attach_worktree(task.ticket, commits_ahead=0)
