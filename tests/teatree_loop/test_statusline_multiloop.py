@@ -27,8 +27,10 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from teatree.core.managers import OwnershipStatus
 from teatree.core.models.loop_lease import LoopLease
-from teatree.loop.statusline import StatuslineZones, live_loops_anchor
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from teatree.loop.statusline import StatuslineZones, live_loops_anchor, loop_owner_anchor
 
 
 def _make_lease(name: str, *, expires_in: timedelta, session_id: str = "sess-A") -> LoopLease:
@@ -135,3 +137,23 @@ class TestPopulateLoopsAnchorIntegration:
         assert "t3-master=unclaimed" not in joined, repr(joined)
         # Per-loop dump form also gone.
         assert "loop:tick" not in joined, repr(joined)
+
+
+class TestLoopRunnerOwnerIsNotAHijack:
+    """The worker owning ``t3-master`` is the driver, not a hijack (#3968).
+
+    Once ``t3 worker`` claims the slot, EVERY interactive session reads a foreign
+    owner. Painting that RED would put a permanent false hijack alarm on the
+    statusline of a perfectly healthy box.
+    """
+
+    def test_loop_runner_owner_is_not_red(self) -> None:
+        status = OwnershipStatus(
+            owner_session=LOOP_RUNNER_SESSION_ID,
+            expires_at=None,
+            is_live=True,
+            driver="loop_runner",
+        )
+        zone, line = loop_owner_anchor(status, "this-session")
+
+        assert (zone, line) == ("anchors", "")

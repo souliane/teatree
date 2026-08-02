@@ -4068,23 +4068,22 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
 def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     """Return the session id of a genuinely LIVE foreign ``t3-master`` DB lease, or ``""``.
 
-    #1604: called when the file registry has no entry for the tick-owner
-    (empty after prune / fail-safe) to detect registry/DB desync. The
-    foreign-and-live decision is the manager's single liveness predicate
-    (:meth:`LoopLease.objects.live_foreign_owner`, the same CAS-shape READ the
-    eviction path routes through): a live claim by a *different* session that is
-    also a *different alive process* keeps the new session idle (INV1). This
-    helper is only the disabled / bootstrap / fail-open envelope — any DB/import
-    error returns ``""`` so a hiccup never blocks the SessionStart directive.
+    #1604: called when the file registry has no entry for the tick-owner (empty
+    after prune / fail-safe) to detect registry/DB desync. Both the
+    foreign-and-live decision and the #3968 exemption for the ``t3 worker`` that
+    DRIVES the ticks belong to
+    :func:`teatree.core.t3_master_gate.live_foreign_owner_session`. This helper is
+    only the disabled / bootstrap / fail-open envelope — any DB/import error
+    returns ``""`` so a hiccup never blocks the SessionStart directive.
     """
     if _db_lease_consult_disabled():
         return ""
     if not bootstrap_teatree_django():
         return ""
     try:
-        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.t3_master_gate import live_foreign_owner_session  # noqa: PLC0415 — needs Django
 
-        return LoopLease.objects.live_foreign_owner("t3-master", session_id=session_id, current_pid=current_pid)
+        return live_foreign_owner_session(session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return ""
 

@@ -10,6 +10,7 @@ from teatree.loop.loop_cadences import (
     slack_answer_cadence_seconds,
 )
 from teatree.loop.loop_scoping import current_session_owned_per_loop_slots
+from teatree.loop.session_identity import is_loop_runner_session
 from teatree.loop.statusline_loop_chunks import (
     LeaseRenderContext,
     _colorize_chunk,
@@ -336,9 +337,13 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     never ticks (PR-26). This session owns it WITH a driver, or no live owner →
     ``("anchors", "")``. Callers suppress empty lines.
 
+    The ``t3 worker`` holding the slot (#3968) is NEVER the hijack: it is the
+    machine-wide driver rather than a competing session, so every interactive
+    session reads it as foreign and would otherwise carry a permanent false RED.
+
     ``short8`` is the first 8 chars of the owner session id.
     """
-    if not status.is_live:
+    if not status.is_live or is_loop_runner_session(status.owner_session):
         return "anchors", ""
     if this_session and status.owner_session == this_session:
         if not status.driver:

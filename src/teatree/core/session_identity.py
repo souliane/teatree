@@ -44,17 +44,16 @@ tick-shell pid (#1722):
     ``T3_LOOP_SESSION_PID`` → loop-registry → ``None``
 
 The registry fallback is correct-not-hack: ``loop-registry.json``'s
-``t3-loop-tick-owner`` record IS the durable owner-identity source that
-``_session_owns_loop`` (the gate consumers) already trust; making the
-claim path read the same source removes an inconsistency rather than
-inventing a new identity. The path resolution mirrors
-``loop_slack_answer._session_owns_loop`` exactly (and
-``hook_router`` which writes the record). The module-boundary graph
-forbids ``teatree.core`` importing ``teatree.loop``/hooks, so the
-registry key constant is deliberately redeclared here (same accepted
-value-duplication rationale as ``loop_slack_answer``'s ``"t3-loop-tick
--owner"`` literal); it is read with only ``os``/``pathlib`` + ``json``
-and fails open (any OSError/JSON error → ``""``).
+``t3-loop-tick-owner`` record IS the durable owner-identity the
+``hook_router`` writes at ``SessionStart``, so the claim path resolving
+its principal from it removes an inconsistency rather than inventing a
+new identity. It is an identity SOURCE only — the t3-master gate itself
+reads the DB lease (:mod:`teatree.core.t3_master_gate`, #3968), because
+nothing prunes this file and a stale record locked the reactive loops out
+permanently. The module-boundary graph forbids ``teatree.core`` importing
+``teatree.loop``/hooks, so the registry key constant is deliberately
+redeclared here; it is read with only ``os``/``pathlib`` + ``json`` and
+fails open (any OSError/JSON error → ``""``).
 """
 
 import json
@@ -277,6 +276,18 @@ def loop_principal() -> tuple[str, int | None]:
     return current_session_id(), current_session_pid()
 
 
+def is_loop_runner_session(session_id: str) -> bool:
+    """Whether *session_id* is the ``t3 worker``'s durable principal (#3968).
+
+    Every boundary that asks "is a COMPETING session holding this?" routes here,
+    because the worker is the machine-wide driver rather than a competitor: it owns
+    ``t3-master`` while it drives ticks, so a boundary that reads it as a rival
+    locks every interactive session out — of the reactive-loop cycles, of the
+    tick-owner election, and of a clean statusline.
+    """
+    return session_id == LOOP_RUNNER_SESSION_ID
+
+
 __all__ = [
     "LOOP_RUNNER_SESSION_ID",
     "RUNNER_PID_ENV",
@@ -284,6 +295,7 @@ __all__ = [
     "SESSION_ID_ENV_VARS",
     "current_session_id",
     "current_session_pid",
+    "is_loop_runner_session",
     "loop_principal",
     "owner_record",
     "runner_identity_env",
