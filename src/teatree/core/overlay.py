@@ -601,10 +601,6 @@ class OverlayBase(ABC):
             return list(self.config.workspace_repos)
         return self.get_repos()
 
-    def get_repo_clone_url(self, repo_name: str) -> str:
-        """The remote to clone *repo_name* from when no local clone exists yet."""
-        return ""
-
     # ── Statusline contribution ──────────────────────────────────────
 
     def get_statusline_segments(self) -> list[StatuslineSegment]:
