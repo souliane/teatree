@@ -10,6 +10,7 @@ wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -93,8 +94,6 @@ def phase_output_reached(ticket: Ticket, phase: str) -> bool:
     off-ladder state (REVIEW_POSTED / IGNORED) and a free-form phase both hold no
     position to compare, so both answer ``False``.
     """
-    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: import cycle
-
     target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
     if target is None or ticket.state not in _STATE_ORDER:
         return False

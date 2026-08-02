@@ -9,8 +9,10 @@ only while this worker still owns the claim generation.
 """
 
 from datetime import timedelta
+from unittest import mock
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -156,3 +158,17 @@ class TestDescribeLeaseLoss(TestCase):
         Task.objects.filter(pk=task.pk).delete()
 
         assert "no longer exists" in describe_lease_loss(task)
+
+    def test_an_unreadable_row_degrades_instead_of_raising(self) -> None:
+        # The read-back contends with the very writer that reclaimed the row, so a lock
+        # error here is the EXPECTED failure. Raising it would escape the caller's
+        # `except LeaseLostError`, the heartbeat's generic handler would log and keep
+        # driving, and the abort would be lost — two drivers on one unit.
+        task = self._claimed_task()
+        locked = OperationalError("database table is locked: teatree_task")
+        with mock.patch.object(Task.objects, "filter", side_effect=locked):
+            reason = describe_lease_loss(task)
+
+        assert reason.startswith(f"lease lost for task {task.pk}:")
+        assert "could not be read back" in reason
+        assert "OperationalError" in reason

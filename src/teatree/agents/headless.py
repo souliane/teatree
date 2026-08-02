@@ -62,9 +62,9 @@ from teatree.agents.usage_window import (
 )
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
+from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.task_claim import describe_lease_loss
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.phase_landing import phase_landing_evidence
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
@@ -413,8 +413,8 @@ async def _drive_with_heartbeat(
                         logger.warning("Task %s lease lost; interrupting duplicate run", task.pk)
                         await session.interrupt()
                         return
-                    except Exception:  # noqa: BLE001 — a transient heartbeat failure is logged, never breaks the watchdog loop
-                        logger.warning("Heartbeat failed for task %s", task.pk)
+                    except Exception:
+                        logger.warning("Heartbeat failed for task %s", task.pk, exc_info=True)
                     # Re-sample the accumulated turn/cost deltas each tick (F9.3) so the
                     # turn/cost ceilings observe the CURRENT run's spend, not the pre-run
                     # static snapshot — the "cost spike DURING the heartbeat loop" the

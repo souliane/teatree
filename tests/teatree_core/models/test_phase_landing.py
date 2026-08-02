@@ -10,7 +10,7 @@ shipping artifact (an attached pull request) the issue names as evidence.
 from django.test import TestCase
 
 from teatree.core.models import PullRequest, Session, Task, Ticket
-from teatree.core.phase_landing import phase_landing_evidence
+from teatree.core.models.phase_landing import phase_landing_evidence
 
 
 def _task(*, phase: str, state: str, role: str = Ticket.Role.AUTHOR) -> Task:

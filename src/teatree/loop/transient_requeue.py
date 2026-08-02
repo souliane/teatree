@@ -48,7 +48,7 @@ the flag OFF the branch is inert — an exhaustion failure follows the determini
 exactly as before, so the flag-off behaviour is byte-identical.
 
 A SUPERSEDED FAILED task — one whose phase output demonstrably landed
-(:func:`~teatree.core.phase_landing.phase_landing_evidence`, the FULL author ladder plus the
+(:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder plus the
 shipping artifact) — is NOT escalated at all: it is a dead artifact of an earlier interrupted
 run while the ticket advanced on its own, so it is retired COMPLETED silently. This is the
 fix for the redispatch flood on already-done tickets (3366/3336/3352) and for the shipping
@@ -99,8 +99,8 @@ from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.task_repair import phase_attempts
-from teatree.core.phase_landing import phase_landing_evidence
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
@@ -424,7 +424,7 @@ def _retire_if_dead_artifact(task: Task) -> bool:
     reopen or escalate:
 
     * SUPERSEDED — the phase's output demonstrably landed
-        (:func:`~teatree.core.phase_landing.phase_landing_evidence`, the FULL author ladder
+        (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder
         plus the shipping artifact, so a shipped ticket already in peer review no longer
         reads as though shipping never happened — #3982).
     * DEAD REVIEW TARGET — a review/codex-review phase whose linked PR is

@@ -11,6 +11,7 @@ class through the instance, so this module needs no runtime import of ``Task`` a
 stays cycle-free (task.py imports it at module level).
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,8 @@ from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+
+logger = logging.getLogger(__name__)
 
 
 def window_parked(task: "Task", now: datetime | None = None) -> bool:
@@ -153,9 +156,21 @@ def describe_lease_loss(task: "Task") -> str:
     Every reason keeps the ``lease lost for task <pk>:`` opening, which is what
     :func:`~teatree.core.modelkit.task_failure_taxonomy.classify_failure` keys
     ``FailureKind.LEASE_LOST`` on once the caller prefixes ``stuck_loop: ``.
+
+    Best-effort by contract, so it NEVER raises. The loss is already proven by the CAS;
+    only the attribution can fail here — and it fails exactly when the reclaimer's own
+    write still holds the row (``OperationalError: database table is locked``). Letting
+    that escape would slip past the caller's ``except LeaseLostError``, the heartbeat's
+    generic handler would log it and keep driving, and the abort this diagnosis merely
+    annotates would be lost — two drivers on one unit, the double-spend the CAS exists to
+    prevent. An unreadable row degrades to a reason that says so.
     """
     opening = f"lease lost for task {task.pk}:"
-    current = type(task).objects.filter(pk=task.pk).values("status", "claimed_by").first()
+    try:
+        current = type(task).objects.filter(pk=task.pk).values("status", "claimed_by").first()
+    except Exception as exc:
+        logger.warning("Could not read back task %s's reclaimer", task.pk, exc_info=True)
+        return f"{opening} the reclaimer could not be read back ({type(exc).__name__})"
     if current is None:
         return f"{opening} the row no longer exists"
     status, owner = str(current["status"]), current["claimed_by"]

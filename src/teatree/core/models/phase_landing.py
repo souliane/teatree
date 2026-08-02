@@ -19,8 +19,15 @@ Everything else answers ``""``. A reviewer-role ticket, an off-ladder state
 and a conservative "no evidence" leaves the caller's existing failure path untouched.
 """
 
-from teatree.core.models import PullRequest, Task, Ticket
+from typing import TYPE_CHECKING
+
+from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task_phase_disposition import phase_output_reached
+from teatree.core.models.ticket import Ticket
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
 
 #: Pull-request states whose row proves the shipping phase produced its artifact. CLOSED is
 #: excluded: an abandoned pull request is the one case where shipping genuinely must re-run.
@@ -34,7 +41,7 @@ _LANDED_PR_STATES = frozenset(
 )
 
 
-def phase_landing_evidence(task: Task) -> str:
+def phase_landing_evidence(task: "Task") -> str:
     """Describe the evidence that *task*'s phase already landed, or ``""`` when there is none."""
     ticket = task.ticket
     if ticket.role != Ticket.Role.AUTHOR:
@@ -46,15 +53,13 @@ def phase_landing_evidence(task: Task) -> str:
     return _shipping_artifact_evidence(task)
 
 
-def _shipping_artifact_evidence(task: Task) -> str:
+def _shipping_artifact_evidence(task: "Task") -> str:
     """The open/merged pull request proving shipping landed, or ``""`` — shipping only.
 
     The FSM check above misses the case where the phase's work landed but its transition
     did not: the branch is pushed and the pull request is open while the ticket still reads
     ``reviewed``. That is precisely the state a re-dispatch would duplicate.
     """
-    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: import cycle
-
     if normalize_phase(task.phase) != "shipping":
         return ""
     url = (

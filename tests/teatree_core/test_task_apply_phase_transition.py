@@ -393,7 +393,7 @@ class TestPhaseOutputReached(TestCase):
 
     ``Ticket.has_completed_phase`` stops at SHIPPED by design, so it cannot answer for a
     shipped ticket already in peer review. This runs the FULL author ladder, which is what
-    lets ``core.phase_landing`` tell a landed phase from an unfinished one.
+    lets ``core.models.phase_landing`` tell a landed phase from an unfinished one.
     """
 
     def _ticket(self, state: str) -> Ticket:
