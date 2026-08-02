@@ -269,7 +269,7 @@ class OverlayAppBuilder:
                 with singleton(WORKER_SINGLETON):
                     _run_workers(project_path, overlay_name, count, interval)
             except AlreadyRunningError as exc:
-                typer.echo(f"WARN  {exc}. Stop it before starting another.")
+                typer.echo(f"WARN  {exc} Stop it before starting another.")
                 raise typer.Exit(code=1) from None
 
     def _register_shortcut_commands(self) -> None:

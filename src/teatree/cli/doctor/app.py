@@ -69,7 +69,12 @@ from teatree.cli.doctor.checks_resources import (
     _check_worker_memory_cap,
     _check_worker_skills_present,
 )
-from teatree.cli.doctor.checks_runtime import _check_singletons, _check_ttyd_for_dashboard, _check_worker_running
+from teatree.cli.doctor.checks_runtime import (
+    _check_singletons,
+    _check_ttyd_for_dashboard,
+    _check_worker_running,
+    _check_worker_singleton_holder,
+)
 from teatree.cli.doctor.checks_session import (
     _check_account_switch,
     _check_agent_session_pins,
@@ -172,6 +177,7 @@ __all__ = (
     "_check_ttyd_for_dashboard",
     "_check_worker_memory_cap",
     "_check_worker_running",
+    "_check_worker_singleton_holder",
     "_check_worker_skills_present",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
@@ -261,13 +267,17 @@ def _run_worker_gates() -> bool:
     the flock. ``_check_worker_skills_present`` / ``_check_worker_memory_cap`` are the
     role-aware HARD FAILs (worker only, else OK) that refuse to let a skill-less or
     OOM-prone worker read as healthy — mirroring the entrypoint's worker startup
-    precondition. Each runs independently (no short-circuit) so every finding is emitted;
+    precondition. ``_check_worker_singleton_holder`` (#3976) is the third HARD FAIL and
+    the one a HELD flock hides: the loops tick, the flock is held and the service is Up,
+    yet the holder is a process outside the deployment and the deployed worker has never
+    run. Each runs independently (no short-circuit) so every finding is emitted;
     returns their AND for the caller's ``ok`` aggregation.
     """
     running = _check_worker_running()
+    holder = _check_worker_singleton_holder()
     skills = _check_worker_skills_present()
     memory = _check_worker_memory_cap()
-    return running and skills and memory
+    return running and holder and skills and memory
 
 
 def _run_loop_intent_gates() -> bool:
