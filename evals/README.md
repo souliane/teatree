@@ -206,6 +206,7 @@ t3 eval label nominate                        # audit records nominated for grou
 t3 eval label add <session-id>                # scaffold a corpus entry from an audited session (redaction-guarded)
 t3 eval label review                          # validate every label loads + every matcher oracle is independent (non-zero on failure)
 t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario names a PR's STDIN diff touched (selective-PR gate); exit --skip-code when none
+t3 eval changed-scenarios --diff-file changed.diff < changed-files.txt  # …plus the same range's `git diff --unified=0`, so a spec pinned to `agent_sections` is selected only when ITS section moved
 t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
 t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
 t3 eval verify-benchmark-publish <dir>        # CI primitive: refuse the weekly dashboard publish when any collected eval-benchmark-*.html shard records graded verdicts at $0.0000 (an exhausted OAuth window); exit 1 naming the shard + zero-cost models
@@ -220,7 +221,11 @@ t3 eval ci-heal advance                       # CI heal loop: run ONE advance pa
 
 `changed-scenarios`, `merged-prs-since`, `merge-summaries`, and
 `verify-benchmark-publish` are the reusable CI primitives an overlay's eval
-workflow consumes (`changed-scenarios` selects a PR's scenarios,
+workflow consumes (`changed-scenarios` selects a PR's scenarios — by changed
+scenario YAML **and** by changed `agent_path` skill prose, narrowed to the
+touched `agent_sections` when `--diff-file` is given, so editing the exact
+section a scenario grades can no longer select zero and pass vacuously,
+[#3944](https://github.com/souliane/teatree/issues/3944);
 `merged-prs-since` guards the weekly cron, `merge-summaries` builds the public
 dashboard, `verify-benchmark-publish` gates the benchmark dashboard commit on
 real metered spend) — the same logic the host's `scripts/eval/*.py`
