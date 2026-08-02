@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
+from teatree.core.models import LoopLease
 from teatree.core.session_identity import is_loop_runner_session, loop_principal
 
 
@@ -71,8 +72,6 @@ def t3_master_verdict(caller_session: str | None = None) -> T3MasterVerdict:
     seam ``t3 loop claim``/``release`` and the per-loop tick already share — so the
     principal a claim binds is exactly the one this gate matches.
     """
-    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
     status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
     if not status.is_live:
         return T3MasterVerdict(outcome=T3MasterGate.UNCLAIMED, owner_session="")
@@ -92,8 +91,6 @@ def live_foreign_owner_session(session_id: str, *, current_pid: int | None) -> s
     re-break one layer up. Only the DB CAS treats the runner as an ordinary owner,
     so a live lease is still never evicted.
     """
-    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
     owner = LoopLease.objects.live_foreign_owner(T3_MASTER_SLOT, session_id=session_id, current_pid=current_pid)
     return "" if is_loop_runner_session(owner) else owner
 

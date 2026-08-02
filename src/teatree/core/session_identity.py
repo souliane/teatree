@@ -48,7 +48,7 @@ The registry fallback is correct-not-hack: ``loop-registry.json``'s
 ``hook_router`` writes at ``SessionStart``, so the claim path resolving
 its principal from it removes an inconsistency rather than inventing a
 new identity. It is an identity SOURCE only — the t3-master gate itself
-reads the DB lease (:mod:`teatree.core.t3_master_gate`, #3968), because
+reads the DB lease (:mod:`teatree.core.gates.t3_master_gate`, #3968), because
 nothing prunes this file and a stale record locked the reactive loops out
 permanently. The module-boundary graph forbids ``teatree.core`` importing
 ``teatree.loop``/hooks, so the registry key constant is deliberately

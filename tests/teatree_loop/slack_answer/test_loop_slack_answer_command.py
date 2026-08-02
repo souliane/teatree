@@ -16,9 +16,9 @@ from django.core.management import call_command
 from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
+from teatree.core.gates.t3_master_gate import T3MasterGate
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease, PendingChatInjection
-from teatree.core.t3_master_gate import T3MasterGate
 from teatree.types import RawAPIDict
 from tests._loop_principal_env import pinned_loop_principal
 from tests._t3_master_env import worker_owns_t3_master

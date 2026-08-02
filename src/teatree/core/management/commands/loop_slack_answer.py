@@ -3,7 +3,7 @@
 Structural clone of ``loop_self_improve``: acquires a dedicated
 ``LoopLease`` (``loop-slack-answer``) so a long answer cycle never blocks
 a fast regular tick or a self-improve cycle, defers when it does not hold
-the t3-master gate (:mod:`teatree.core.t3_master_gate`), runs
+the t3-master gate (:mod:`teatree.core.gates.t3_master_gate`), runs
 :func:`run_slack_answer_cycle`, and prints a one-line summary (or the JSON
 report when ``--json`` is passed).
 
@@ -21,8 +21,8 @@ from typing import IO, Annotated, cast
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
-from teatree.core.t3_master_gate import t3_master_verdict
 
 
 class Command(TyperCommand):

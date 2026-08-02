@@ -1,4 +1,4 @@
-"""teatree.core.t3_master_gate — the shared t3-master gate the reactive loops consult (#3968).
+"""teatree.core.gates.t3_master_gate — the shared t3-master gate the reactive loops consult (#3968).
 
 Every arc of the three-outcome verdict, plus the two skip messages that must be
 distinguishable: "nothing owns this" and "another live session owns this" call for
@@ -10,10 +10,10 @@ import os
 
 import pytest
 
+from teatree.core.gates.t3_master_gate import T3MasterGate, live_foreign_owner_session, t3_master_verdict
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
-from teatree.core.t3_master_gate import T3MasterGate, live_foreign_owner_session, t3_master_verdict
 from tests._loop_principal_env import pinned_loop_principal
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

@@ -4072,7 +4072,7 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     after prune / fail-safe) to detect registry/DB desync. Both the
     foreign-and-live decision and the #3968 exemption for the ``t3 worker`` that
     DRIVES the ticks belong to
-    :func:`teatree.core.t3_master_gate.live_foreign_owner_session`. This helper is
+    :func:`teatree.core.gates.t3_master_gate.live_foreign_owner_session`. This helper is
     only the disabled / bootstrap / fail-open envelope — any DB/import error
     returns ``""`` so a hiccup never blocks the SessionStart directive.
     """
@@ -4081,7 +4081,7 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     if not bootstrap_teatree_django():
         return ""
     try:
-        from teatree.core.t3_master_gate import live_foreign_owner_session  # noqa: PLC0415 — needs Django
+        from teatree.core.gates.t3_master_gate import live_foreign_owner_session  # noqa: PLC0415 — needs Django
 
         return live_foreign_owner_session(session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call

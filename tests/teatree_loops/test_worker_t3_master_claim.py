@@ -15,10 +15,10 @@ from typing import Any
 
 import pytest
 
+from teatree.core.gates.t3_master_gate import T3MasterGate, t3_master_verdict
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopDriver, LoopLease
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
-from teatree.core.t3_master_gate import T3MasterGate, t3_master_verdict
 from teatree.loops import worker as worker_mod
 from teatree.loops.timer_chains import LoopRunnerState
 from teatree.loops.worker import LoopWorker, WorkerSeams

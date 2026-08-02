@@ -3,7 +3,7 @@
 Mirrors the shape of ``loops_tick``: acquires a dedicated ``LoopLease``
 (``loop-self-improve``) so a long self-improve cycle never blocks a fast
 regular tick, defers when it does not hold the t3-master gate
-(:mod:`teatree.core.t3_master_gate`), runs the tier dispatcher, and prints
+(:mod:`teatree.core.gates.t3_master_gate`), runs the tier dispatcher, and prints
 a one-line summary (or the JSON report when ``--json`` is passed).
 """
 
@@ -15,8 +15,8 @@ from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
-from teatree.core.t3_master_gate import t3_master_verdict
 
 if TYPE_CHECKING:
     from teatree.loop.self_improve.schedule import TierResult
