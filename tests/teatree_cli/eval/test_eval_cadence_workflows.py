@@ -22,6 +22,15 @@ class TestPerPrLane:
         assert "scenarios_for_changed.py" in text
         assert "if: needs.detect.outputs.run == 'true'" in text
 
+    def test_both_pr_lanes_feed_the_selector_the_section_granularity(self) -> None:
+        # The selector can only narrow a section-scoped scenario when the lane hands it the
+        # unified diff; dropping either half of that wiring silently restores #3944's
+        # vacuous green, where a graded-section edit selected zero and the lane passed.
+        for path in (_PR, _PR_REUSABLE):
+            text = path.read_text(encoding="utf-8")
+            assert "git diff --unified=0" in text, path.name
+            assert "--diff-file changed.diff" in text, path.name
+
     def test_pr_lane_is_zero_is_red_on_a_run_that_executed_nothing(self) -> None:
         # detect promised >=1 scenario (run=true); the eval loop asserts it executed
         # at least one — a run that was supposed to execute scenarios but executed

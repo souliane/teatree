@@ -127,3 +127,52 @@ class TestChangedScenariosOverlayFacingFlags:
             app, ["eval", "changed-scenarios", "--scenarios-dir", str(tmp_path)], input=f"{rel}\n"
         )
         assert result.exit_code == 1
+
+
+RULES_SKILL = "skills/rules/SKILL.md"
+GRADED_SECTION = "Background Long Operations (Non-Negotiable)"
+UNGRADED_SECTION = "Temp File Safety"
+
+
+def _hunk_inside(section: str) -> str:
+    """A ``-U0`` hunk touching one line of *section* in the REAL rules skill."""
+    lines = (_REPO_ROOT / RULES_SKILL).read_text(encoding="utf-8").splitlines()
+    heading = next(n for n, line in enumerate(lines, start=1) if line.startswith("## ") and line[3:].strip() == section)
+    body = heading + 1
+    return f"--- a/{RULES_SKILL}\n+++ b/{RULES_SKILL}\n@@ -{body} +{body} @@\n-was\n+now\n"
+
+
+def _graded_by(section: str) -> list[str]:
+    return sorted(s.name for s in discover_specs() if s.agent_path == RULES_SKILL and section in s.agent_sections)
+
+
+class TestDiffFileNarrowsProseSelection:
+    """``--diff-file`` gives the section granularity a path list cannot carry (#3944)."""
+
+    def _run(self, diff_file: Path | None) -> list[str]:
+        argv = ["eval", "changed-scenarios"]
+        if diff_file is not None:
+            argv += ["--diff-file", str(diff_file)]
+        result = CliRunner().invoke(app, argv, input=f"{RULES_SKILL}\n")
+        assert result.exit_code == 0, result.output
+        return [line for line in result.stdout.splitlines() if line]
+
+    def test_graded_section_edit_selects_its_scenarios_first(self, tmp_path: Path) -> None:
+        diff = tmp_path / "changed.diff"
+        diff.write_text(_hunk_inside(GRADED_SECTION), encoding="utf-8")
+        graded = _graded_by(GRADED_SECTION)
+        assert graded, "the motivating section must still be graded by at least one scenario"
+        assert self._run(diff)[: len(graded)] == graded
+
+    def test_ungraded_section_edit_selects_no_scenario_that_grades_elsewhere(self, tmp_path: Path) -> None:
+        diff = tmp_path / "changed.diff"
+        diff.write_text(_hunk_inside(UNGRADED_SECTION), encoding="utf-8")
+        selected = set(self._run(diff))
+        # Only whole-file scenarios may appear; a scenario pinned to a DIFFERENT section
+        # must not be dragged in by an edit that never touched what it grades.
+        assert not selected & set(_graded_by(GRADED_SECTION))
+
+    def test_without_the_diff_every_scenario_grading_the_file_is_eligible(self) -> None:
+        # The unchanged STDIN-only contract stays fail-safe: unknown granularity selects
+        # more, never the pre-#3944 zero.
+        assert self._run(None)

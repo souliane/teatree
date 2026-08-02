@@ -1974,6 +1974,9 @@ Usage: t3 eval changed-scenarios [OPTIONS]
 │ --require-specs                 Fail loud (exit 2) when the filtered catalog │
 │                                 is empty, instead of skipping like 'nothing  │
 │                                 changed'.                                    │
+│ --diff-file            PATH     Unified diff (git diff --unified=0) for the  │
+│                                 same range, to narrow section-scoped         │
+│                                 scenarios.                                   │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
