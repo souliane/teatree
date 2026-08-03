@@ -2,7 +2,8 @@
 
 ``t3 loops list`` prints the loops from the DB (read-only). ``t3 loops audit`` answers the
 question the DB alone cannot (#3842): which shipped loops, presets and schedules are
-missing, disabled, or not ticking — sourced from the shipped seed tables, so a deleted row
+missing, disabled, not ticking, or running a value that no longer matches the one
+``defaults.toml`` ships (#4096) — sourced from the shipped seed tables, so a deleted row
 is visible at all. ``t3 loops delete`` is the audited removal seam its typed confirm gates.
 ``t3 loops tick --loop <name>`` runs ONE enabled, due loop — the per-loop primitive the
 self-rescheduling loop-timer chain drives (:mod:`teatree.loops.timer_chains`, the
@@ -55,11 +56,12 @@ def audit_command(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit the findings as JSON."),
 ) -> None:
-    """Report every shipped loop/preset/schedule that is missing, disabled, or not ticking.
+    """Report every shipped loop/preset/schedule missing, disabled, not ticking, or diverged.
 
     Sources the expected set from the shipped seed tables rather than the DB, so a row
     somebody deleted is visible at all. Exits NON-ZERO when any finding is a fault; a
-    deliberate operator choice (a shipped-off loop, an inactive calendar) is a note.
+    deliberate operator choice (a shipped-off loop, an inactive calendar, a mask or calendar
+    edited away from what ships) is a note, reported and never rewritten.
     """
     ensure_django()
 

@@ -6,6 +6,7 @@ swallowed, so the process exits 0 and CI reports green on a real failure. These 
 assert ``SystemExit`` with its code, which is the only shape that survives the call chain.
 """
 
+import datetime as dt
 import io
 import json
 from unittest import mock
@@ -16,8 +17,9 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from teatree.cli.doctor.app import _check_shipped_seed_inertness
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops.mode_shape import INTAKE_LOOPS
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.shipped_guard import shipped_delete_phrase
@@ -74,6 +76,35 @@ class TestAuditExitCode(django.test.TestCase):
         call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
 
         assert "always-unattended" in err.getvalue(), "the note is still reported"
+
+    def test_an_operator_override_is_reported_under_the_notes_block_and_exits_zero(self) -> None:
+        """The report distinguishes never-seeded from deliberately overridden (#4096)."""
+        ModeScheduleSlot.objects.create(
+            schedule=ModeSchedule.objects.get(name="standard"),
+            days=[0, 1, 2, 3, 4],
+            start_time=dt.time(19, 0),
+            preset_name="maintenance",
+        )
+        err = io.StringIO()
+
+        call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
+
+        report = err.getvalue()
+        assert "NOTES (deliberate — not failures)" in report
+        assert "slots_overridden" in report
+        assert "adds Mon,Tue,Wed,Thu,Fri 19:00 -> maintenance" in report
+
+    def test_a_mode_that_masks_delivery_while_admitting_intake_exits_non_zero(self) -> None:
+        """The 13h-a-night stall the audit used to report as OK (#4096)."""
+        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=True)
+        Mode.objects.filter(name="maintenance").update(entries={"ship": False, "tickets": False})
+        err = io.StringIO()
+
+        with pytest.raises(SystemExit) as caught:
+            call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
+
+        assert caught.value.code == 1
+        assert "intake_without_delivery" in err.getvalue()
 
 
 class TestDeleteVerbs(django.test.TestCase):
