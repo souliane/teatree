@@ -143,56 +143,72 @@ class TestReviewVerdictEvidence(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
-    def _verdict(self, *, reviewed_sha: str, ticket: Ticket | None = None, pr_id: int = 7) -> ReviewVerdict:
+    def _verdict(self, *, reviewed_sha: str, pr_id: int = 7) -> ReviewVerdict:
+        # No ``ticket=``: every production path that records a reviewer ticket's verdict
+        # leaves the FK unset (`review record` defaults it away), so a test that stamps it
+        # would certify a lookup nothing can reach.
         return ReviewVerdict.record(
             pr_id=pr_id,
             slug="o/r",
             reviewed_sha=reviewed_sha,
             verdict=ReviewVerdict.Verdict.MERGE_SAFE,
             reviewer_identity="cold-reviewer",
-            ticket=ticket,
         )
 
     def test_a_verdict_at_the_reviewed_head_is_evidence_the_review_landed(self) -> None:
         task = self._reviewing_task()
-        self._verdict(reviewed_sha=_HEAD, ticket=task.ticket)
+        self._verdict(reviewed_sha=_HEAD)
 
         assert _HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
 
     def test_a_verdict_at_another_head_is_not_evidence(self) -> None:
         task = self._reviewing_task()
-        self._verdict(reviewed_sha=_OTHER_HEAD, ticket=task.ticket)
+        self._verdict(reviewed_sha=_OTHER_HEAD)
 
         assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
 
     def test_the_dispatch_contract_supplies_the_head_and_the_pr(self) -> None:
-        # The #68 auto-review path binds the task to (slug, pr_id, head_sha); the verdict
-        # it produces carries no ticket, so the dispatch row is what ties the two together.
+        # The #68 auto-review path binds the task to (slug, pr_id, head_sha), which is the
+        # per-task head the ticket's own reviewed_sha cannot promise once a push moves it.
         task = self._reviewing_task(reviewed_sha="")
         AutoReviewDispatch.objects.create(slug="o/r", pr_id=7, head_sha=_HEAD, task=task)
         self._verdict(reviewed_sha=_HEAD)
 
         assert _HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
 
+    def test_a_verdict_on_another_pr_at_the_same_head_is_not_evidence(self) -> None:
+        task = self._reviewing_task(pr_id=7)
+        self._verdict(reviewed_sha=_HEAD, pr_id=8)
+
+        assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
+
     def test_a_reviewing_task_with_no_verdict_is_not_evidence(self) -> None:
         assert phase_landing_evidence(self._reviewing_task(), trust_phase_artifact=True) == ""
 
     def test_an_unresolvable_reviewed_head_is_not_evidence(self) -> None:
         task = self._reviewing_task(reviewed_sha="")
-        self._verdict(reviewed_sha=_HEAD, ticket=task.ticket)
+        self._verdict(reviewed_sha=_HEAD)
+
+        assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
+
+    def test_a_ticket_whose_url_names_no_pr_is_not_evidence(self) -> None:
+        task = self._reviewing_task()
+        Ticket.objects.filter(pk=task.ticket_id).update(issue_url="https://example.com/not-a-pr")
+        task.refresh_from_db()
+        self._verdict(reviewed_sha=_HEAD)
 
         assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
 
     def test_the_codex_review_variants_carry_the_same_signal(self) -> None:
         for pr_id, phase in enumerate(("codex_reviewing", "codex_adversarial_reviewing"), start=20):
             task = self._reviewing_task(phase=phase, pr_id=pr_id)
-            self._verdict(reviewed_sha=_HEAD, ticket=task.ticket, pr_id=pr_id)
+            self._verdict(reviewed_sha=_HEAD, pr_id=pr_id)
 
             assert phase_landing_evidence(task, trust_phase_artifact=True), phase
 
     def test_a_non_review_phase_on_a_reviewer_ticket_is_not_evidence(self) -> None:
         task = self._reviewing_task(phase="bughunt")
-        self._verdict(reviewed_sha=_HEAD, ticket=task.ticket)
+        self._verdict(reviewed_sha=_HEAD)
 
         assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
 
@@ -200,6 +216,6 @@ class TestReviewVerdictEvidence(TestCase):
         # Same scope as the shipping artifact: only a caller that attributed the failure to
         # the LEASE may let an artifact excuse it — a deterministic reviewing failure stays one.
         task = self._reviewing_task()
-        self._verdict(reviewed_sha=_HEAD, ticket=task.ticket)
+        self._verdict(reviewed_sha=_HEAD)
 
         assert phase_landing_evidence(task, trust_phase_artifact=False) == ""

@@ -27,14 +27,13 @@ caller's existing failure path untouched.
 
 from typing import TYPE_CHECKING
 
-from django.db.models import Q
-
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.task_phase_disposition import phase_output_reached
 from teatree.core.models.ticket import Ticket
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -100,19 +99,38 @@ def _shipping_artifact_evidence(task: "Task") -> str:
 def _review_verdict_evidence(task: "Task") -> str:
     """The recorded verdict proving *task*'s review landed, or ``""`` — review phases only.
 
-    A verdict binds to the exact tree it judged, so it is evidence only at the head THIS
-    task was dispatched against: the #68 auto-review contract carries that head on the
-    linked :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row, and
-    the external-review path stores it on the ticket as ``reviewed_sha``. A head that
-    cannot be resolved leaves the verdict unattributable, which is no evidence at all.
+    A verdict binds to the exact tree it judged, so it counts only at the head this review
+    is answerable for. The #68 auto-review contract carries both the PR and that head on
+    the linked :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row.
+    Without one, the PR is the one the reviewer ticket IS (its ``issue_url``) and the head
+    is the ticket's ``reviewed_sha`` — which a later push REWRITES, so after a head move
+    the lookup finds no verdict at the new head and answers "no evidence", or finds the
+    verdict for the revision that superseded this one. Either way the answer is about a
+    head some reviewer actually judged, never a stale one this task left behind.
+
+    The verdict is keyed by ``(slug, pr_id, reviewed_sha)`` alone: its ``ticket`` FK is
+    unset on every production path that records one for a reviewer ticket (the shell
+    ``review record`` defaults it away, and the envelope path records nothing at all
+    without a dispatch), so keying on it would answer "" for the whole population.
     """
     if normalize_phase(task.phase) not in VERDICT_REVIEW_PHASES:
         return ""
     dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
-    reviewed_sha = dispatch.head_sha if dispatch is not None else str((task.ticket.extra or {}).get("reviewed_sha", ""))
-    head = reviewed_sha.strip().lower()
-    if not head:
+    if dispatch is not None:
+        return _verdict_at(slug=dispatch.slug, pr_id=dispatch.pr_id, head=dispatch.head_sha)
+    reviewed_pr = pr_ref_from_url(task.ticket.issue_url)
+    if reviewed_pr is None:
         return ""
-    bound_to_the_pr = Q(slug=dispatch.slug, pr_id=dispatch.pr_id) if dispatch is not None else Q(ticket=task.ticket)
-    verdict = ReviewVerdict.objects.filter(bound_to_the_pr, reviewed_sha=head).first()
-    return f"the review verdict {str(verdict.verdict)!r} is recorded at the reviewed head {head[:8]}" if verdict else ""
+    head = str((task.ticket.extra or {}).get("reviewed_sha", ""))
+    return _verdict_at(slug=reviewed_pr.slug, pr_id=reviewed_pr.pr_id, head=head)
+
+
+def _verdict_at(*, slug: str, pr_id: int, head: str) -> str:
+    """The verdict recorded for this PR at *head*, described, or ``""`` — the shared lookup."""
+    reviewed = head.strip().lower()
+    if not reviewed:
+        return ""
+    verdict = ReviewVerdict.objects.filter(slug=slug, pr_id=pr_id, reviewed_sha=reviewed).first()
+    if verdict is None:
+        return ""
+    return f"the review verdict {str(verdict.verdict)!r} is recorded at the reviewed head {reviewed[:8]}"
