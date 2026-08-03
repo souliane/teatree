@@ -16,6 +16,16 @@ paths, bare numbers) does not defeat the "identical failure" check. Two
 consecutive identical fingerprints is a stall: :func:`requeue_verdict` raises
 :class:`IterationStalled` so the caller escalates to the user instead of
 re-running the identical failure.
+
+Named-cause stall (#3958) — a fingerprint compares FREE TEXT, so one deterministic
+defect whose message carries a varying detail (a differing sha, a differing spec
+name) produces two different fingerprints and never trips the check. A caller that
+re-dispatches straight back into a live failure needs a coarser comparison, so
+:func:`is_kind_stalled` applies the same two-consecutive-identical rule to the
+recorded ``FailureKind`` names (#3957) instead. It is the caller's job to pass only
+the DETERMINISTIC kinds — an environmental fault is the environment's, not the
+work's, and stays retryable — which is what keeps this module a dependency-free leaf
+with no import of the failure taxonomy.
 """
 
 import hashlib
@@ -101,26 +111,46 @@ def is_stalled(last_two_fingerprints: list[str]) -> bool:
     return len(last_two_fingerprints) == STALL_REPEAT_THRESHOLD and len(set(last_two_fingerprints)) == 1
 
 
+def is_kind_stalled(last_two_deterministic_kinds: list[str]) -> bool:
+    """True iff the last two DETERMINISTIC failure kinds are identical (a named-cause stall).
+
+    The same rule as :func:`is_stalled` over a coarser key — see the module docstring
+    on why a fingerprint alone under-detects a repeating deterministic defect.
+    """
+    return len(last_two_deterministic_kinds) == STALL_REPEAT_THRESHOLD and len(set(last_two_deterministic_kinds)) == 1
+
+
 def requeue_verdict(
     *,
     ticket_id: int,
     phase: str,
     iteration_count: int,
     last_two_fingerprints: list[str],
+    last_two_deterministic_kinds: list[str] | None = None,
 ) -> None:
     """Raise if a ticket-phase may NOT be re-queued; a no-op when it may.
 
-    The pure decision over primitives the model layer supplies. The stall check
-    is evaluated FIRST so an identical double-failure escalates even before the
+    The pure decision over primitives the model layer supplies. Both stall checks
+    are evaluated FIRST so an identical double-failure escalates even before the
     raw cap is reached:
 
     * **Stall** — two consecutive identical fingerprints → :class:`IterationStalled`.
+    * **Named-cause stall** — two consecutive identical deterministic kinds →
+        :class:`IterationStalled`. Opt-in: the default ``None`` leaves a caller's
+        verdict identical to the fingerprint-only one.
     * **Cap** — at or over :func:`max_phase_iterations` → :class:`MaxIterationsExceeded`.
     """
     if is_stalled(last_two_fingerprints):
         msg = (
             f"phase {phase!r} on ticket {ticket_id} stalled: two consecutive "
             f"identical failures (fingerprint {last_two_fingerprints[0][:12]})."
+        )
+        raise IterationStalled(msg, ticket_id=ticket_id, phase=phase)
+    kinds = last_two_deterministic_kinds or []
+    if is_kind_stalled(kinds):
+        msg = (
+            f"phase {phase!r} on ticket {ticket_id} stalled: two consecutive "
+            f"{kinds[0]!r} failures, a deterministic cause re-dispatch would reproduce."
         )
         raise IterationStalled(msg, ticket_id=ticket_id, phase=phase)
     cap = max_phase_iterations()
