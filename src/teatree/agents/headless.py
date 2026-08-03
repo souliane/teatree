@@ -529,7 +529,7 @@ def _record_stuck_outcome(task: Task, outcome: HarnessOutcome, *, stuck_reason: 
     failed. A watchdog runtime/turns breach is a genuine runaway with no such alibi, so it
     stays a recorded failure however far the ticket has advanced.
     """
-    evidence = phase_landing_evidence(task) if outcome.lease_lost else ""
+    evidence = phase_landing_evidence(task, trust_shipping_artifact=True) if outcome.lease_lost else ""
     if evidence:
         return _record_landed(task, evidence=evidence, lease_loss=stuck_reason)
     return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}")
