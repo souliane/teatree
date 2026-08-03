@@ -34,7 +34,7 @@ from teatree.credential_config import (
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
-from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
+from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitSnapshot
 from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 
 _OAUTH_SETTING = "anthropic_oauth_pass_paths"
@@ -202,16 +202,13 @@ class TestSelectorRouting(TestCase):
         # An out-of-credits metered key must not be routed to — routing collapses the
         # credit signal onto the same exhaustion refusal the selector already enforces.
         ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/metered/api"])
-        with (
-            _pass_echoes_path(),
-            patch("teatree.credential_config.read_api_key_status", return_value=_metered(out_of_credits=True)),
-        ):
-            selector = PassPathSelector()
-            # The refresh is what writes the out-of-credits verdict down; the refusal below
-            # is selection reading it, not re-probing the key.
-            selector.refresh_all()
-            with pytest.raises(AllTokensExhaustedError):
-                selector.select(TokenKind.API_KEY)
+        AnthropicTokenUsage.objects.record(
+            "anthropic/metered/api", reading_from_metered(_metered(out_of_credits=True)), now=timezone.now()
+        )
+        reader = _FakeReader({})
+        with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
+            PassPathSelector(reader=reader).select(TokenKind.API_KEY)
+        assert reader.calls == [], "selection reads the store, never the network"
 
     def test_funded_api_key_is_routed(self) -> None:
         ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/a/api", "anthropic/b/api"])
@@ -292,7 +289,8 @@ class TestSelectionNeverProbes(TestCase):
     The old selector probed LIVE whenever a row was missing or stale, so the decision
     "can work start" depended on the rate-limit API being reachable and quick. When it
     was not, selection returned nothing and the factory idled with capacity to spare.
-    `refresh_all` now owns every probe; these pin that the selection path performs none.
+    Nothing probes on the selection path at all; a spent account records itself reactively
+    after one refused call, and these pin that selection adds no probe of its own.
     """
 
     def test_absent_rows_are_offered_without_a_probe(self) -> None:
@@ -337,19 +335,6 @@ class TestSelectionNeverProbes(TestCase):
         with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError):
             PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert reader.calls == [], "selection reads the store, never the network"
-
-
-class TestRefreshAllIsTheOneWriter(TestCase):
-    """`refresh_all` is where the probes live, so a slow API costs a stale row."""
-
-    def test_it_probes_every_configured_account_and_stores_the_verdicts(self) -> None:
-        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
-        reader = _FakeReader({"anthropic/a/oauth": _snapshot(), "anthropic/b/oauth": _snapshot()})
-        with _pass_echoes_path():
-            written = PassPathSelector(reader=reader).refresh_all()
-        assert written == 2
-        assert sorted(reader.calls) == ["anthropic/a/oauth", "anthropic/b/oauth"], "every account is probed"
-        assert AnthropicTokenUsage.objects.count() == 2, "each probe leaves a row selection can read"
 
 
 class TestSelectorCrossScopeFallback(TestCase):
@@ -429,28 +414,6 @@ class TestSelectorSkipsUnusableCandidates(TestCase):
         assert chosen == "anthropic/b/oauth"
         assert reader.calls == [], "selection reads the store, never the network"
 
-    def test_candidate_whose_credential_cannot_resolve_is_skipped(self) -> None:
-        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
-        reader = _FakeReader({"anthropic/b/oauth": _snapshot()})
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch(
-                "teatree.llm.credentials.read_pass",
-                side_effect=lambda path: "" if path == "anthropic/a/oauth" else path,
-            ),
-        ):
-            selector = PassPathSelector(reader=reader)
-            # The writer is what learns an account is unusable; selection only reads what it
-            # left. Refreshing first is the whole contract, so this exercises both halves
-            # rather than asserting a skip selection could not make on its own.
-            selector.refresh_all()
-            after_refresh = list(reader.calls)
-            chosen = selector.select(TokenKind.OAUTH)
-        assert chosen == "anthropic/b/oauth", "an unresolvable credential is skipped for the next candidate"
-        # The refresh probes — that is its job. What must hold is that SELECTION adds
-        # nothing to that list: it decided purely from what the refresh wrote down.
-        assert reader.calls == after_refresh, "selection reads the store, never the network"
-
     def test_cached_fresh_healthy_candidate_is_returned_without_a_probe(self) -> None:
         ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
         _seed_fresh_healthy_row("anthropic/a/oauth")
@@ -459,31 +422,6 @@ class TestSelectorSkipsUnusableCandidates(TestCase):
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
         assert chosen == "anthropic/a/oauth"
         assert reader.calls == [], "selection reads the store, never the network"
-
-    def test_candidate_whose_probe_transport_fails_is_skipped(self) -> None:
-        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
-
-        class _RaisingReader:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def __call__(self, token: str, *, is_oauth: bool) -> RateLimitSnapshot:
-                self.calls.append(token)
-                if token == "anthropic/a/oauth":
-                    msg = "probe failed"
-                    raise RateLimitProbeError(msg)
-                return _snapshot()
-
-        reader = _RaisingReader()
-        with _pass_echoes_path():
-            selector = PassPathSelector(reader=reader)
-            selector.refresh_all()
-            after_refresh = list(reader.calls)
-            chosen = selector.select(TokenKind.OAUTH)
-        assert chosen == "anthropic/b/oauth", "a probe transport failure makes the candidate unusable, not fatal"
-        # The refresh is where the dead transport is discovered and written down; selection
-        # only reads that verdict, so it must add no call of its own.
-        assert reader.calls == after_refresh, "selection reads the store, never the network"
 
 
 class TestSelectorStickiness(TestCase):
