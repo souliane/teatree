@@ -229,7 +229,7 @@ def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> tomlkit_items.Tab
     return table
 
 
-def _comment_text(key: str) -> str:
+def setting_comment(key: str) -> str:
     """What *key* ACCEPTS, then what it means — the two halves of its one-line comment.
 
     Without the first half a reader of the dump can see that ``wip`` is ``"full"`` but not
@@ -237,6 +237,11 @@ def _comment_text(key: str) -> str:
     export exists to answer away from the dashboard. It is DERIVED from the schema
     (:func:`~teatree.config.setting_annotation.setting_annotation`), the same answer the
     dashboard's selects are built from, so the two surfaces cannot come to disagree.
+
+    PUBLIC because a test asserting a rendered TOML line must compose its expectation from
+    the same renderer the file is written by. Spelling the comment out a second time in a
+    test is what let this join drift: the annotation half shipped while two export snapshots
+    still expected the help sentence alone, and both surfaces claimed to be right.
     """
     # Deferred (PLC0415): `setting_annotation` reaches `schema`, whose ~110ms pydantic
     # import this module otherwise never pays for.
@@ -255,7 +260,7 @@ def _commented(key: str, value: object) -> tomlkit_items.Item:
     splits ``key = value`` out of the file — sees the same key it always did.
     """
     item: tomlkit_items.Item = value if isinstance(value, tomlkit_items.Item) else tomlkit.item(value)
-    comment = _comment_text(key)
+    comment = setting_comment(key)
     return item.comment(comment) if comment else item
 
 
@@ -318,5 +323,6 @@ __all__ = [
     "grouped_key_order",
     "grouped_settings_table",
     "nested_value_table",
+    "setting_comment",
     "setting_group_path",
 ]
