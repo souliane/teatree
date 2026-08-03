@@ -9,10 +9,21 @@ and emits ``resource.*`` signals; a paired mechanical handler
 ABSOLUTE BYTES, NEVER PERCENT. Disk is measured as ``os.statvfs("/").f_bavail
 * f_frsize`` (true free bytes) — a percent-of-nominal-total would misread an
 APFS shared container (a 460 G nominal total with 7 G free reads as "69 %
-full = fine" and the scanner never fires). RAM is measured as the sum of the
-genuinely-reclaimable ``vm_stat`` page classes (free + inactive + purgeable +
-speculative) — macOS keeps RAM ~99 % "used" by design (compressor + inactive
-cache), so a naive percent fires constantly and means nothing.
+full = fine" and the scanner never fires). RAM is read per platform: on Linux
+``/proc/meminfo``'s ``MemAvailable``, the kernel's own estimate of what it can
+hand out without swapping; on macOS the sum of the genuinely-reclaimable
+``vm_stat`` page classes (free + inactive + purgeable + speculative), which
+approximates the same quantity — macOS keeps RAM ~99 % "used" by design
+(compressor + inactive cache), so a naive percent fires constantly and means
+nothing.
+
+A PROBE THAT CANNOT ANSWER SAYS SO (#4104). ``vm_stat`` is macOS-only, so the
+single-reader version returned ``None`` on every Linux pass and the caller
+silently skipped the whole RAM ladder — a scanner reporting "0 signals" on a
+box with 2 GB of 30 available, indistinguishable from a healthy one. When no
+reader can answer, the tick now emits ``resource.probe_inert`` instead of
+nothing. An unreadable resource is still treated as *unbounded* free (never
+0 GB) for the thresholds, so "can't tell" never fires a freeing pass either.
 
 Decision ladder per tick. L0 OBSERVE — both resources above WARN: measure +
 upsert marker, emit nothing (silent tick). L1 WARN — disk OR ram in the WARN
@@ -30,25 +41,45 @@ returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
 
 import logging
 import os
+import platform
 import shutil
 from dataclasses import dataclass, field
 
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
+from teatree.utils.ram_probe import linux_mem_available_kb
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
 _GIB = 1024 * 1024 * 1024
+_MEMINFO_PATH = "/proc/meminfo"
 
 
 @dataclass(frozen=True, slots=True)
 class ResourceReading:
-    """One absolute-bytes snapshot of free disk + reclaimable RAM."""
+    """One absolute-bytes snapshot of free disk + reclaimable RAM.
 
-    disk_free_gb: float
-    ram_avail_gb: float
+    ``None`` is "this host could not be asked", which is a different answer from
+    a low number and must never be compared against a threshold as if it were one
+    — the ``*_ladder_gb`` properties resolve it to unbounded free instead.
+    """
+
+    disk_free_gb: float | None
+    ram_avail_gb: float | None
+
+    @property
+    def disk_ladder_gb(self) -> float:
+        return self.disk_free_gb if self.disk_free_gb is not None else float("inf")
+
+    @property
+    def ram_ladder_gb(self) -> float:
+        return self.ram_avail_gb if self.ram_avail_gb is not None else float("inf")
+
+    @property
+    def ram_probe_inert(self) -> bool:
+        return self.ram_avail_gb is None
 
 
 def read_disk_free_gb(path: str = "/") -> float | None:
@@ -69,13 +100,37 @@ def read_disk_free_gb(path: str = "/") -> float | None:
 
 
 def read_ram_avail_gb() -> float | None:
-    """Absolute reclaimable RAM in GB from ``vm_stat`` (never raw percent-used).
+    """Absolute reclaimable RAM in GB, read per platform (never raw percent-used).
+
+    Linux reads ``/proc/meminfo``'s ``MemAvailable``; macOS sums the reclaimable
+    ``vm_stat`` page classes. ``None`` means this host has no reader that could
+    answer — the caller reports the RAM ladder INERT rather than skipping it
+    silently, which is what hid the ladder being dead on Linux (#4104).
+    """
+    system = platform.system()
+    if system == "Linux":
+        return _read_meminfo_avail_gb()
+    if system == "Darwin":
+        return _read_vm_stat_avail_gb()
+    logger.warning("resource_pressure: no RAM reader for platform %s — the RAM ladder is inert", system)
+    return None
+
+
+def _read_meminfo_avail_gb() -> float | None:
+    """``MemAvailable`` in GB — the kernel's own reclaimable-without-swapping estimate."""
+    available_kb = linux_mem_available_kb(_MEMINFO_PATH)
+    if available_kb is None:
+        logger.warning("resource_pressure: %s unreadable — the RAM ladder is inert", _MEMINFO_PATH)
+        return None
+    return available_kb * 1024 / _GIB
+
+
+def _read_vm_stat_avail_gb() -> float | None:
+    """Reclaimable macOS RAM in GB from ``vm_stat``, ``None`` when it cannot be read.
 
     The honest "available" figure on macOS is the sum of the page classes the
     OS can hand back without swapping: free + inactive + purgeable +
     speculative. Wired/active/compressed pages are genuinely committed.
-    Returns ``None`` when ``vm_stat`` is unavailable (non-macOS host) or its
-    output cannot be parsed — the caller then skips the RAM ladder.
     """
     vm_stat = shutil.which("vm_stat")
     if vm_stat is None:
@@ -133,19 +188,18 @@ def _vm_stat_pages_for(output: str, label: str) -> int | None:
     return None
 
 
-def _measure() -> ResourceReading | None:
-    """Read both resources; ``None`` when neither could be measured.
+def _measure() -> ResourceReading:
+    """Read both resources, recording an unmeasurable one as ``None``."""
+    return ResourceReading(disk_free_gb=read_disk_free_gb(), ram_avail_gb=read_ram_avail_gb())
 
-    A resource that could not be read is treated as "above WARN" (infinity)
-    so a missing measurement never spuriously trips a CRITICAL freeing pass.
-    """
-    disk = read_disk_free_gb()
-    ram = read_ram_avail_gb()
-    if disk is None and ram is None:
-        return None
-    return ResourceReading(
-        disk_free_gb=disk if disk is not None else float("inf"),
-        ram_avail_gb=ram if ram is not None else float("inf"),
+
+def _ram_probe_inert_signal() -> ScanSignal:
+    """Say the RAM ladder is not protecting this host, so it reads differently from a healthy one."""
+    system = platform.system()
+    return ScanSignal(
+        kind="resource.probe_inert",
+        summary=f"ram probe INERT on {system} — no reader available, the RAM ladder is not guarding this host",
+        payload={"resource": "ram", "level": "inert", "platform": system},
     )
 
 
@@ -201,8 +255,6 @@ class ResourcePressureScanner:
         if self._cadence_blocks(marker):
             return []
         reading = _measure()
-        if reading is None:
-            return []
         try:
             marker.record_measurement(
                 disk_free_gb=reading.disk_free_gb,
@@ -221,16 +273,22 @@ class ResourcePressureScanner:
         return elapsed_minutes < self.cadence_minutes
 
     def _classify(self, *, reading: ResourceReading, marker: object) -> list[ScanSignal]:
-        disk_crit = reading.disk_free_gb < self.disk_crit_free_gb
-        ram_crit = reading.ram_avail_gb < self.ram_crit_avail_gb
+        inert = [_ram_probe_inert_signal()] if reading.ram_probe_inert else []
+        disk_crit = reading.disk_ladder_gb < self.disk_crit_free_gb
+        ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
         _track_consecutive_critical(marker=marker, ram_crit=ram_crit)
         if disk_crit or ram_crit:
-            return self._critical_signals(reading=reading, marker=marker, disk_crit=disk_crit, ram_crit=ram_crit)
-        disk_warn = reading.disk_free_gb < self.disk_warn_free_gb
-        ram_warn = reading.ram_avail_gb < self.ram_warn_avail_gb
+            return inert + self._critical_signals(
+                reading=reading,
+                marker=marker,
+                disk_crit=disk_crit,
+                ram_crit=ram_crit,
+            )
+        disk_warn = reading.disk_ladder_gb < self.disk_warn_free_gb
+        ram_warn = reading.ram_ladder_gb < self.ram_warn_avail_gb
         if disk_warn or ram_warn:
-            return self._warn_signals(reading=reading, disk_warn=disk_warn, ram_warn=ram_warn)
-        return []
+            return inert + self._warn_signals(reading=reading, disk_warn=disk_warn, ram_warn=ram_warn)
+        return inert
 
     def _warn_signals(self, *, reading: ResourceReading, disk_warn: bool, ram_warn: bool) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
@@ -238,16 +296,16 @@ class ResourcePressureScanner:
             signals.append(
                 ScanSignal(
                     kind="resource.pressure_warn",
-                    summary=f"disk {reading.disk_free_gb:.1f} GB free (warn < {self.disk_warn_free_gb:.0f} GB)",
-                    payload={"resource": "disk", "free_gb": reading.disk_free_gb, "level": "warn"},
+                    summary=f"disk {reading.disk_ladder_gb:.1f} GB free (warn < {self.disk_warn_free_gb:.0f} GB)",
+                    payload={"resource": "disk", "free_gb": reading.disk_ladder_gb, "level": "warn"},
                 ),
             )
         if ram_warn:
             signals.append(
                 ScanSignal(
                     kind="resource.pressure_warn",
-                    summary=f"ram {reading.ram_avail_gb:.1f} GB avail (warn < {self.ram_warn_avail_gb:.0f} GB)",
-                    payload={"resource": "ram", "avail_gb": reading.ram_avail_gb, "level": "warn"},
+                    summary=f"ram {reading.ram_ladder_gb:.1f} GB avail (warn < {self.ram_warn_avail_gb:.0f} GB)",
+                    payload={"resource": "ram", "avail_gb": reading.ram_ladder_gb, "level": "warn"},
                 ),
             )
         return signals
@@ -284,7 +342,7 @@ class ResourcePressureScanner:
         return elapsed_minutes < self.min_free_interval_minutes
 
     def _cleanup_needed_signal(self, *, resource: str, reading: ResourceReading, marker: object) -> ScanSignal:
-        free_gb = reading.disk_free_gb if resource == "disk" else reading.ram_avail_gb
+        free_gb = reading.disk_ladder_gb if resource == "disk" else reading.ram_ladder_gb
         crit_gb = self.disk_crit_free_gb if resource == "disk" else self.ram_crit_avail_gb
         return ScanSignal(
             kind="resource.cleanup_needed",

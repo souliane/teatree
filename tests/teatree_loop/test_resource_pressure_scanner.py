@@ -1,20 +1,25 @@
 """Tests for :class:`ResourcePressureScanner` — disk/RAM auto-free scanner (#128).
 
 The scanner measures *absolute* free disk (``os.statvfs``) and reclaimable
-RAM (``vm_stat``) every cadence window, classifies a pressure level, and
-emits ``resource.*`` signals. The freeing itself is the mechanical handler's
-job (tested in ``test_resource_pressure_mechanical``); these tests pin the
-measurement parsing, the absolute-bytes classification (the APFS / "99 % RAM
-used" traps), the cadence + freeing-rate-limit gates, and the consecutive-
-CRITICAL counter.
+RAM (``/proc/meminfo`` on Linux, ``vm_stat`` on macOS) every cadence window,
+classifies a pressure level, and emits ``resource.*`` signals. The freeing
+itself is the mechanical handler's job (tested in
+``test_resource_pressure_mechanical``); these tests pin the measurement
+parsing, the per-platform RAM reader dispatch and its INERT signal (#4104),
+the absolute-bytes classification (the APFS / "99 % RAM used" traps), the
+cadence + freeing-rate-limit gates, and the consecutive-CRITICAL counter.
 
 Only the unstoppable externals are mocked: ``os.statvfs`` (a real fill-up
-can't be staged on the CI disk), ``vm_stat`` output (host-dependent), and
-the clock via marker timestamps. The marker, signals, and classification
-are exercised against the real Django ORM + the real scanner code.
+can't be staged on the CI disk), ``vm_stat`` output and ``platform.system``
+(host-dependent), and the clock via marker timestamps. The Linux reader is
+exercised against a REAL ``/proc/meminfo``-shaped file on disk. The marker,
+signals, and classification run against the real Django ORM + real scanner.
 """
 
 import datetime as _dt
+import platform
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from django.test import TestCase
@@ -32,6 +37,7 @@ from teatree.loop.scanners.resource_pressure import (
 pytestmark = pytest.mark.django_db
 
 _GIB = 1024 * 1024 * 1024
+_MODULE = "teatree.loop.scanners.resource_pressure"
 
 # A representative ``vm_stat`` capture (16 KB pages). free=13407, inactive=288140,
 # purgeable=10000, speculative=5000 → 316547 reclaimable pages * 16384 bytes.
@@ -43,6 +49,27 @@ Pages speculative:                         5000.
 Pages throttled:                              0.
 Pages wired down:                        313028.
 Pages purgeable:                          10000.
+"""
+
+# A real ``/proc/meminfo`` head from a 30 GiB Linux box under the pressure that
+# OOM-killed the worker three times (#4104): 1 GiB MemAvailable, below the 1.5 GB
+# CRITICAL threshold. MemFree is deliberately far lower than MemAvailable — the
+# kernel's MemAvailable already credits reclaimable page cache, which is exactly
+# why it, not MemFree, is the honest figure.
+_MEMINFO_CRITICAL = """MemTotal:       31457280 kB
+MemFree:          204800 kB
+MemAvailable:    1048576 kB
+Buffers:           81920 kB
+Cached:          1130496 kB
+SwapTotal:             0 kB
+"""
+
+# The same box with room to breathe: 20 GiB MemAvailable.
+_MEMINFO_HEALTHY = """MemTotal:       31457280 kB
+MemFree:        18874368 kB
+MemAvailable:   20971520 kB
+Buffers:          409600 kB
+Cached:          2097152 kB
 """
 
 
@@ -109,13 +136,19 @@ class DiskMeasurementTests(TestCase):
             assert read_disk_free_gb("/") is None
 
 
-class RamMeasurementTests(TestCase):
-    """RAM available is the reclaimable ``vm_stat`` sum — never raw percent-used."""
+class MacosRamMeasurementTests(TestCase):
+    """On macOS, RAM available is the reclaimable ``vm_stat`` sum — never raw percent-used."""
 
-    def test_non_macos_host_returns_none(self) -> None:
+    def setUp(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loop.scanners.resource_pressure.shutil.which", return_value=None):
+        super().setUp()
+        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Darwin"))
+
+    def test_vm_stat_absent_returns_none(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch(f"{_MODULE}.shutil.which", return_value=None):
             assert read_ram_avail_gb() is None
 
     def test_vm_stat_nonzero_exit_returns_none(self) -> None:
@@ -123,9 +156,9 @@ class RamMeasurementTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with (
-            patch("teatree.loop.scanners.resource_pressure.shutil.which", return_value="/usr/bin/vm_stat"),
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/vm_stat"),
             patch(
-                "teatree.loop.scanners.resource_pressure.run_allowed_to_fail",
+                f"{_MODULE}.run_allowed_to_fail",
                 return_value=CompletedProcess(args=["vm_stat"], returncode=1, stdout="", stderr="boom"),
             ),
         ):
@@ -135,8 +168,8 @@ class RamMeasurementTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with (
-            patch("teatree.loop.scanners.resource_pressure.shutil.which", return_value="/usr/bin/vm_stat"),
-            patch("teatree.loop.scanners.resource_pressure.run_allowed_to_fail", side_effect=OSError),
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/vm_stat"),
+            patch(f"{_MODULE}.run_allowed_to_fail", side_effect=OSError),
         ):
             assert read_ram_avail_gb() is None
 
@@ -145,15 +178,82 @@ class RamMeasurementTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with (
-            patch("teatree.loop.scanners.resource_pressure.shutil.which", return_value="/usr/bin/vm_stat"),
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/vm_stat"),
             patch(
-                "teatree.loop.scanners.resource_pressure.run_allowed_to_fail",
+                f"{_MODULE}.run_allowed_to_fail",
                 return_value=CompletedProcess(args=["vm_stat"], returncode=0, stdout=_VM_STAT_SAMPLE, stderr=""),
             ),
         ):
             avail = read_ram_avail_gb()
         assert avail is not None
         assert avail == pytest.approx((13407 + 288140 + 10000 + 5000) * 16384 / _GIB)
+
+
+class LinuxRamMeasurementTests(TestCase):
+    """#4104 — on Linux the reader is ``/proc/meminfo``'s ``MemAvailable``, not ``vm_stat``.
+
+    ``vm_stat`` does not exist on Linux, so the pre-#4104 reader returned ``None``
+    on every pass and the whole RAM ladder was skipped on the platform this
+    deployment actually runs on.
+    """
+
+    def setUp(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        super().setUp()
+        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
+
+    def _meminfo_file(self, body: str) -> str:
+        path = Path(self.enterContext(TemporaryDirectory())) / "meminfo"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def _read_with(self, body: str) -> float | None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch(f"{_MODULE}._MEMINFO_PATH", self._meminfo_file(body)):
+            return read_ram_avail_gb()
+
+    def test_reads_mem_available_not_mem_free(self) -> None:
+        """MemAvailable already credits reclaimable page cache — MemFree understates by 4x here."""
+        assert self._read_with(_MEMINFO_HEALTHY) == pytest.approx(20971520 * 1024 / _GIB)
+
+    def test_reads_critical_figure(self) -> None:
+        assert self._read_with(_MEMINFO_CRITICAL) == pytest.approx(1.0, abs=0.001)
+
+    def test_meminfo_without_mem_available_returns_none(self) -> None:
+        assert self._read_with("MemTotal:       31457280 kB\nMemFree:          204800 kB\n") is None
+
+    def test_unreadable_meminfo_returns_none(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch(f"{_MODULE}._MEMINFO_PATH", "/nonexistent/meminfo"):
+            assert read_ram_avail_gb() is None
+
+    def test_never_shells_out_to_vm_stat_on_linux(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}._MEMINFO_PATH", self._meminfo_file(_MEMINFO_HEALTHY)),
+            patch(f"{_MODULE}.run_allowed_to_fail") as run,
+        ):
+            read_ram_avail_gb()
+        run.assert_not_called()
+
+
+class UnknownPlatformRamMeasurementTests(TestCase):
+    """A platform with neither reader yields ``None`` — which the scanner must SAY, not swallow."""
+
+    def test_returns_none(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch(f"{_MODULE}.platform.system", return_value="SunOS"):
+            assert read_ram_avail_gb() is None
+
+    def test_this_host_can_answer(self) -> None:
+        """A probe that cannot answer on the host it runs on is the #4104 defect itself."""
+        assert platform.system() in {"Linux", "Darwin"}, "test host is neither supported platform"
+        assert read_ram_avail_gb() is not None, "the RAM ladder is inert on this host"
 
 
 class _ScannerHarness(TestCase):
@@ -211,6 +311,101 @@ class ClassificationTests(_ScannerHarness):
         signals = self._scan_with(disk_gb=5.0, ram_gb=1.0)
         resources = sorted(s.payload["resource"] for s in signals if s.kind == "resource.cleanup_needed")
         assert resources == ["disk", "ram"]
+
+
+class LinuxRamLadderTests(TestCase):
+    """#4104 — the RAM ladder fires end-to-end on a Linux host below its thresholds.
+
+    The disk reader is stubbed (a real fill-up can't be staged); the RAM figure
+    comes through the REAL reader off a real ``/proc/meminfo``-shaped file, so
+    this covers the reader, the dispatch, and the classification together.
+    """
+
+    def _scan_at(self, body: str) -> list:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        path = Path(self.enterContext(TemporaryDirectory())) / "meminfo"
+        path.write_text(body, encoding="utf-8")
+        with (
+            patch(f"{_MODULE}.platform.system", return_value="Linux"),
+            patch(f"{_MODULE}._MEMINFO_PATH", str(path)),
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
+        ):
+            return ResourcePressureScanner().scan()
+
+    def test_below_critical_mem_available_emits_ram_cleanup(self) -> None:
+        signals = self._scan_at(_MEMINFO_CRITICAL)
+        ram = [s for s in signals if s.payload.get("resource") == "ram"]
+        assert ram, f"no RAM signal at 1 GB available — the ladder is inert; got {[s.kind for s in signals]}"
+        assert ram[0].kind == "resource.cleanup_needed"
+        assert ram[0].payload["level"] == "critical"
+        assert ram[0].payload["free_gb"] == pytest.approx(1.0, abs=0.001)
+
+    def test_warn_band_mem_available_emits_ram_advisory(self) -> None:
+        warn_band = _MEMINFO_CRITICAL.replace("MemAvailable:    1048576 kB", "MemAvailable:    2097152 kB")
+        signals = self._scan_at(warn_band)
+        ram = [s for s in signals if s.payload.get("resource") == "ram"]
+        assert ram, "no RAM signal at 2 GB available — the WARN ladder is inert"
+        assert ram[0].kind == "resource.pressure_warn"
+
+    def test_healthy_mem_available_stays_silent(self) -> None:
+        assert self._scan_at(_MEMINFO_HEALTHY) == []
+
+    def test_measured_figure_reaches_the_marker(self) -> None:
+        self._scan_at(_MEMINFO_HEALTHY)
+        assert ResourcePressureMarker.load().last_ram_avail_gb == pytest.approx(20971520 * 1024 / _GIB)
+
+
+class RamProbeInertTests(TestCase):
+    """#4104 — a probe that cannot answer on this host must SAY so, never report nothing.
+
+    An unprotected box has to be distinguishable from a healthy one: silently
+    returning zero signals is what let a Linux deployment run for months with the
+    RAM half of the scanner structurally switched off.
+    """
+
+    def _scan_without_ram_reader(self, *, disk_gb: float | None = 100.0) -> list:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.platform.system", return_value="SunOS"),
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=disk_gb),
+        ):
+            return ResourcePressureScanner().scan()
+
+    def test_no_ram_reader_emits_probe_inert(self) -> None:
+        signals = self._scan_without_ram_reader()
+        assert [s.kind for s in signals] == ["resource.probe_inert"], (
+            f"an inert RAM ladder must be reported, got {[s.kind for s in signals]}"
+        )
+        assert signals[0].payload["resource"] == "ram"
+        assert signals[0].payload["platform"] == "SunOS"
+
+    def test_probe_inert_when_no_resource_is_readable(self) -> None:
+        """Even with the disk read also failing, the inert RAM ladder is still reported."""
+        signals = self._scan_without_ram_reader(disk_gb=None)
+        assert [s.kind for s in signals] == ["resource.probe_inert"]
+
+    def test_inert_probe_never_reads_as_zero_available(self) -> None:
+        """An unanswerable probe must never trip a CRITICAL freeing pass — that is the opposite of fail-safe."""
+        signals = self._scan_without_ram_reader()
+        assert all(s.kind != "resource.cleanup_needed" for s in signals)
+        assert ResourcePressureMarker.load().consecutive_critical == 0
+
+    def test_unreadable_ram_is_recorded_as_null_not_infinity(self) -> None:
+        self._scan_without_ram_reader()
+        marker = ResourcePressureMarker.load()
+        assert marker.last_ram_avail_gb is None
+        assert marker.last_disk_free_gb == pytest.approx(100.0)
+
+    def test_readable_ram_emits_no_inert_signal(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=10.0),
+        ):
+            assert ResourcePressureScanner().scan() == []
 
 
 class ThresholdBoundaryTests(_ScannerHarness):
@@ -320,28 +515,29 @@ class ConsecutiveCriticalTests(_ScannerHarness):
 
 
 class MeasurementUnavailableTests(TestCase):
-    """When neither resource can be measured, the scan is a silent no-op."""
+    """An unmeasurable resource never trips CRITICAL — but the RAM half is no longer silent (#4104)."""
 
-    def test_both_measurements_none_emits_nothing(self) -> None:
+    def _scan_with_reads(self, *, disk: float | None, ram: float | None) -> list:
         from unittest.mock import patch  # noqa: PLC0415
 
-        scanner = ResourcePressureScanner()
         with (
-            patch("teatree.loop.scanners.resource_pressure.read_disk_free_gb", return_value=None),
-            patch("teatree.loop.scanners.resource_pressure.read_ram_avail_gb", return_value=None),
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=disk),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=ram),
         ):
-            assert scanner.scan() == []
+            return ResourcePressureScanner().scan()
 
-    def test_one_measurement_none_does_not_trip_critical(self) -> None:
+    def test_both_measurements_none_reports_the_ram_ladder_inert(self) -> None:
+        assert [s.kind for s in self._scan_with_reads(disk=None, ram=None)] == ["resource.probe_inert"]
+
+    def test_missing_ram_read_does_not_trip_critical(self) -> None:
         """A missing RAM read must not spuriously trip a CRITICAL freeing pass."""
-        from unittest.mock import patch  # noqa: PLC0415
+        signals = self._scan_with_reads(disk=100.0, ram=None)
+        assert all(s.kind != "resource.cleanup_needed" for s in signals)
 
-        scanner = ResourcePressureScanner()
-        with (
-            patch("teatree.loop.scanners.resource_pressure.read_disk_free_gb", return_value=100.0),
-            patch("teatree.loop.scanners.resource_pressure.read_ram_avail_gb", return_value=None),
-        ):
-            assert scanner.scan() == []
+    def test_missing_disk_read_still_classifies_ram(self) -> None:
+        signals = self._scan_with_reads(disk=None, ram=1.0)
+        assert [s.payload["resource"] for s in signals] == ["ram"]
+        assert signals[0].kind == "resource.cleanup_needed"
 
 
 class CleanupPayloadTests(_ScannerHarness):

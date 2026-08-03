@@ -119,6 +119,11 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
+    # #4104 The RAM half of the ladder ran dead on Linux for as long as it existed,
+    # because a probe that could not answer returned nothing and a box with no guard
+    # rendered exactly like a healthy one. An inert probe is the operator's problem to
+    # fix, not background noise, so it sits in action_needed next to real pressure.
+    "resource.probe_inert": "action_needed",
     # #3992 The resource loop moved intake concurrency by itself — an observation the
     # operator should be able to SEE, but never a thing for them to act on, so it
     # renders in in_flight rather than competing with the pressure advisories above.

@@ -23,6 +23,7 @@ from teatree.utils.ram_probe import (
     effective_available_ram_mib,
     host_available_ram_mib,
     host_total_ram_mib,
+    linux_mem_available_kb,
     read_ram_used_percent,
 )
 
@@ -348,6 +349,32 @@ class TestEffectiveAvailableRamMib:
             patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", return_value=None),
         ):
             assert effective_available_ram_mib() is None
+
+
+class TestLinuxMemAvailableKb:
+    """#4104 — a pressure ladder must tell "unreadable" apart from "no memory left".
+
+    :func:`host_available_ram_mib` collapses both to ``0``, which reads as CRITICAL
+    to a threshold comparison. This reader keeps them distinct.
+    """
+
+    def _meminfo(self, tmp_path: Path, body: str) -> str:
+        path = tmp_path / "meminfo"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def test_reads_mem_available_from_a_real_file(self, tmp_path: Path) -> None:
+        body = "MemTotal:       31457280 kB\nMemFree:          204800 kB\nMemAvailable:    1048576 kB\n"
+        assert linux_mem_available_kb(self._meminfo(tmp_path, body)) == 1048576
+
+    def test_zero_available_is_a_reading_not_a_failure(self, tmp_path: Path) -> None:
+        assert linux_mem_available_kb(self._meminfo(tmp_path, "MemAvailable:          0 kB\n")) == 0
+
+    def test_missing_key_is_none(self, tmp_path: Path) -> None:
+        assert linux_mem_available_kb(self._meminfo(tmp_path, "MemTotal:       31457280 kB\n")) is None
+
+    def test_unreadable_path_is_none(self) -> None:
+        assert linux_mem_available_kb("/nonexistent/meminfo") is None
 
 
 class TestCgroupV2MemoryMib:

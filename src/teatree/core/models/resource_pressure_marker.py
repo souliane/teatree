@@ -62,7 +62,8 @@ class ResourcePressureMarker(models.Model):
         marker, _ = cls.objects.get_or_create(singleton=True)
         return marker
 
-    def record_measurement(self, *, disk_free_gb: float, ram_avail_gb: float) -> None:
+    def record_measurement(self, *, disk_free_gb: float | None, ram_avail_gb: float | None) -> None:
+        """Stamp the pass. ``None`` for a resource this host could not measure at all (#4104)."""
         self.last_run_at = timezone.now()
         self.last_disk_free_gb = disk_free_gb
         self.last_ram_avail_gb = ram_avail_gb

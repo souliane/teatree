@@ -34,6 +34,7 @@ _WORKER_MIN_MIB = 2048
 # Intel-era 4 KiB when that line cannot be read (see :func:`_macos_page_size`).
 _VM_STAT_PAGE_SIZE_RE = re.compile(r"page size of (\d+) bytes")
 _DEFAULT_PAGE_SIZE = 4096
+_MEMINFO_PATH = "/proc/meminfo"
 
 
 def _macos_page_size(vm_stat_output: str) -> int:
@@ -93,10 +94,10 @@ def _linux_ram_used_percent() -> float:
     return max(0.0, min(100.0, used * 100.0 / total))
 
 
-def _linux_meminfo() -> dict[str, int]:
+def _linux_meminfo(path: str = _MEMINFO_PATH) -> dict[str, int]:
     """Parse ``/proc/meminfo`` into ``{key: kB}``; empty on any read failure."""
     try:
-        with open("/proc/meminfo", encoding="utf-8") as handle:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
+        with open(path, encoding="utf-8") as handle:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
             lines = handle.readlines()
     except OSError:
         return {}
@@ -107,6 +108,21 @@ def _linux_meminfo() -> dict[str, int]:
         if value.isdigit():
             info[key.strip()] = int(value)
     return info
+
+
+def linux_mem_available_kb(path: str = _MEMINFO_PATH) -> int | None:
+    """``MemAvailable`` (kB) from ``/proc/meminfo``, or ``None`` when it cannot be read.
+
+    The kernel's own estimate of what it can hand out without swapping — it already
+    credits reclaimable page cache, so it is the honest "available" figure where
+    ``MemFree`` badly understates it.
+
+    ``None`` rather than :func:`host_available_ram_mib`'s ``0``: a pressure ladder
+    compares this against a low-water threshold, where ``0`` is the most alarming
+    reading there is. Collapsing "could not read" into it would make an unreadable
+    probe fire a CRITICAL freeing pass — the opposite of fail-safe (#4104).
+    """
+    return _linux_meminfo(path).get("MemAvailable")
 
 
 def read_ram_used_percent() -> float:
@@ -352,6 +368,7 @@ __all__ = [
     "derive_worker_cpus",
     "derive_worker_mem_limit_mib",
     "host_total_ram_mib",
+    "linux_mem_available_kb",
     "read_ram_used_percent",
 ]
 
