@@ -240,13 +240,13 @@ class Command(MachineOutputCommand):
         delivered, total = drain_deferred_questions(user_id=user_id, overlay=overlay)
         if total == 0:
             return "no pending questions to resurface."
+        if delivered == 0:
+            return (
+                f"resurfaced nothing new — {total} question(s) still pending. Either none was newly "
+                f"selected, or no attempted send landed; check the BotPing ledger for which."
+            )
         # Name what is left, not just what went out. `resurfaced 3/3` was read as an empty
         # queue while 69 were outstanding — the number that matters to the reader is the
         # remainder (#4064).
         remaining = max(0, total - delivered)
-        if delivered == 0:
-            return (
-                f"resurfaced nothing new — {total} question(s) still pending. Either none was newly "
-                f"selected, or every attempted send failed; check the BotPing ledger for which."
-            )
         return f"resurfaced {delivered} new question(s); {remaining} of {total} still pending."

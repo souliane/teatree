@@ -45,28 +45,31 @@ _MAX_MIRRORS_PER_TICK = 3
 
 #: Prefix of the ``BotPing`` idempotency key :func:`drain_deferred_questions` writes.
 #: The cap must bound NEW deliveries, so the selection reads this ledger back and skips
-#: what it already sent — a slice taken straight off the oldest-first queue would
-#: re-select the same delivered head every call and never advance (#4064).
+#: what a fresh send would not re-deliver — a slice taken straight off the oldest-first
+#: queue would re-select the same settled head every call and never advance (#4064).
 _RESURFACE_KEY_PREFIX = "resurface-deferred-question:"
 
 
-def _already_resurfaced_refs() -> set[str]:
-    """Every ``stable_notify_ref`` this drain has already delivered.
+def _refs_the_send_will_not_redeliver() -> set[str]:
+    """Every ``stable_notify_ref`` a fresh send would decline to re-deliver.
 
     Read from the ``BotPing`` ledger rather than tracked on the question row: the
     ledger is what :func:`notify_user` dedupes against, so reading it back is what
     makes the selection agree with the send instead of racing it.
 
-    Scoped to ``SENT`` because that is the only status ``notify_user`` treats as
-    already-delivered. A FAILED or NOOP row is a delivery that did NOT land and which
-    the send path will retry, so counting it as delivered would skip the question
-    permanently — strictly worse than the head-blocking this replaces, where a
-    transient failure self-healed on the next call.
+    The predicate is the complement of :meth:`~teatree.core.models.BotPing.redeliverable_q`
+    — every status whose claim returns ``ALREADY_SENT`` or ``IN_FLIGHT``, not ``SENT``
+    alone. A SENT_UNVERIFIED, EXPIRED, LOGGED or fresh-SENDING row is one the send path
+    stands down on, so leaving it in the window lets it hold a cap slot forever with
+    nothing to free it. FAILED, NOOP and a stale SENDING claim stay in the window because
+    the send path really does re-deliver them; counting those as handled would skip the
+    question permanently.
     """
-    keys = BotPing.objects.filter(
-        idempotency_key__startswith=_RESURFACE_KEY_PREFIX,
-        status=BotPing.Status.SENT,
-    ).values_list("idempotency_key", flat=True)
+    keys = (
+        BotPing.objects.filter(idempotency_key__startswith=_RESURFACE_KEY_PREFIX)
+        .exclude(BotPing.redeliverable_q())
+        .values_list("idempotency_key", flat=True)
+    )
     return {key.removeprefix(_RESURFACE_KEY_PREFIX) for key in keys}
 
 
@@ -206,12 +209,12 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
     owner_rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL]
-    # Skip what a previous call already delivered BEFORE applying the cap. The queue is
-    # oldest-first, so capping it directly hands the same delivered head back every time:
-    # each call deduped to a no-op and every row behind it stayed unreachable, on a tick,
-    # on an away->present transition and on a manual resurface alike (#4064).
-    already = _already_resurfaced_refs()
-    rows = [r for r in owner_rows if r.stable_notify_ref not in already][:_MAX_MIRRORS_PER_TICK]
+    # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
+    # is oldest-first, so capping it directly hands the same stood-down head back every
+    # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
+    # tick, on an away->present transition and on a manual resurface alike (#4064).
+    settled = _refs_the_send_will_not_redeliver()
+    rows = [r for r in owner_rows if r.stable_notify_ref not in settled][:_MAX_MIRRORS_PER_TICK]
     if not rows:
         # Nothing NEW to send. The backlog total is still reported so a caller cannot read
         # "0 delivered" as "queue empty" — the distinction this drain previously erased.

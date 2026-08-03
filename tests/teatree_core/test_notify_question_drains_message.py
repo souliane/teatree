@@ -7,9 +7,11 @@ thread and the reply scanner binds the answer.
 """
 
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _resurface_text, drain_deferred_questions
@@ -149,4 +151,53 @@ class TestOnlyASentPingCountsAsDelivered(TestCase):
             delivered, _total = drain_deferred_questions()
 
         assert delivered == 1
+        assert row.question in str(notify.call_args.args[0])
+
+
+class TestARowTheSendPathWillNotRedeliverFreesItsCapSlot(TestCase):
+    """A ping whose next claim stands down must be skipped by the read-back too (#4064).
+
+    ``BotPing.claim_delivery`` returns ``IN_FLIGHT`` — no DM — for SENT_UNVERIFIED, EXPIRED,
+    LOGGED and a FRESH SENDING. A read-back scoped to SENT leaves such a row in the selection
+    window, where it is neither skipped by the selection nor re-delivered by the send, so it
+    permanently occupies one of the three cap slots and the drain stays head-blocked. The
+    predicate is "will the send actually re-deliver this?", not "is it SENT?".
+    """
+
+    def _ping(self, row: DeferredQuestion, status: str, *, age: timedelta = timedelta(0)) -> None:
+        BotPing.objects.create(
+            idempotency_key=f"resurface-deferred-question:{row.stable_notify_ref}",
+            kind=BotPing.Kind.QUESTION,
+            status=status,
+            text="attempted",
+            posted_at=timezone.now() - age,
+        )
+
+    def test_a_stood_down_head_does_not_re_occupy_a_cap_slot(self) -> None:
+        for status in (BotPing.Status.SENT_UNVERIFIED, BotPing.Status.EXPIRED, BotPing.Status.SENDING):
+            # ``str(status)``: xdist serialises subTest kwargs across the worker channel and
+            # cannot dump a TextChoices member, which fails the node under `-n auto` only.
+            with self.subTest(status=str(status)):
+                DeferredQuestion.objects.all().delete()
+                BotPing.objects.all().delete()
+                rows = [DeferredQuestion.record(f"Q{i}") for i in range(5)]
+                self._ping(rows[0], status)
+
+                with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+                    delivered, total = drain_deferred_questions()
+
+                posted = " ".join(str(call.args[0]) for call in notify.call_args_list)
+                assert "Q0" not in posted, "a row the send stands down on must not hold a cap slot"
+                assert [q for q in ("Q1", "Q2", "Q3") if q in posted] == ["Q1", "Q2", "Q3"]
+                assert (delivered, total) == (3, 5)
+
+    def test_a_stale_sending_claim_stays_redeliverable(self) -> None:
+        row = DeferredQuestion.record("Should I merge PR #7?")
+        self._ping(row, BotPing.Status.SENDING, age=BotPing.SENDING_STALE_AFTER + timedelta(seconds=1))
+
+        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+            delivered, total = drain_deferred_questions()
+
+        # A crashed claim is recoverable — claim_delivery replaces it and the DM goes out.
+        assert (delivered, total) == (1, 1)
         assert row.question in str(notify.call_args.args[0])
