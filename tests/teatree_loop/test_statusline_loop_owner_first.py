@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from teatree.loop.statusline import live_loops_anchor
+from teatree.loop.statusline_loop_chunks import MiniLoopSchedule
 
 
 class TestLoopRunningTokenDropped:
@@ -44,7 +45,7 @@ class TestLoopRunningTokenDropped:
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch(
                 "teatree.loop.statusline_loops._mini_loop_schedules",
-                return_value=[("dispatch", now + timedelta(seconds=120), 600)],
+                return_value=[MiniLoopSchedule("dispatch", now + timedelta(seconds=120), 600)],
             ),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):

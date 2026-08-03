@@ -20,13 +20,12 @@ table's ``last_run_at`` cadence anchor — so the statusline countdown,
 one source of truth: a loop reads ``due`` exactly when the gate would fire it.
 """
 
-import datetime as dt
-
+from teatree.loop.statusline import MiniLoopSchedule
 from teatree.loops.live import build_report
 
 
-def mini_loop_schedules() -> list[tuple[str, dt.datetime | None, int]]:
-    """Return ``(loop_name, next_fire_at, cadence_seconds)`` per enabled mini-loop.
+def mini_loop_schedules() -> list[MiniLoopSchedule]:
+    """Return one :class:`MiniLoopSchedule` per admitted mini-loop.
 
     ``next_fire_at`` is the cadence-ledger ``last_fired_at`` plus the loop's
     resolved cadence; ``None`` when the loop has never fired (no marker row) —
@@ -38,9 +37,19 @@ def mini_loop_schedules() -> list[tuple[str, dt.datetime | None, int]]:
     base-disabled loop appears (the tick will fire it) — the statusline stays in
     lockstep with what actually runs. The snapshot already returns mini-loops sorted
     by name for a deterministic render.
+
+    ``enabled`` carries the row's OWN ``Loop.enabled`` alongside that verdict, because the
+    two answer different questions and the overdue predicate needs the second (#4066).
+    ``admitted`` says "the tick would fire this now"; ``enabled`` says "the operator asked
+    for this to run at all". A base-disabled loop the preset forces on is admitted, so it
+    keeps its due-soon countdown — but it is not something anyone is waiting for, so it can
+    never be reported LATE. Collapsing the two is what left ``snapshot_warmer`` and
+    ``triage_assessor`` overdue forever.
     """
     return [
-        (entry.name, entry.next_fire_at, entry.cadence_seconds) for entry in build_report().mini_loops if entry.admitted
+        MiniLoopSchedule(entry.name, entry.next_fire_at, entry.cadence_seconds, enabled=entry.enabled)
+        for entry in build_report().mini_loops
+        if entry.admitted
     ]
 
 
