@@ -706,6 +706,22 @@ jobs:
       # --clean-durations` records THIS shard's fresh, tests-that-ran durations
       # (each group's clean slice) for the `refresh-durations` merge job below;
       # PR/push runs never pay the store write.
+      #
+      # `-o timeout=180` is the lane's OWN ceiling, not a global raise (#4048).
+      # Twelve shards each at `-n auto` on one runner cost a test roughly 3x what it
+      # costs alone — #4035 measured 20.15s on an idle tree against a 60s ceiling the
+      # same test then exceeded under this matrix, twice, on a PR whose diff could not
+      # touch it. 60s x that measured factor is 180s: the same real-time budget the
+      # tight ceiling expresses, translated through the contention this lane actually
+      # pays. Raising `[tool.pytest.ini_options] timeout` instead would buy the same
+      # thing here and lose the fast hang signal in `dev/ci-parity-fast.sh`,
+      # `dev/ci-shard.sh` and every bare `uv run pytest`, which inherit it. A
+      # `@pytest.mark.timeout` still wins over this (`pytest_timeout._get_item_settings`),
+      # so a test with its own stated ceiling is unaffected either way. What the raise
+      # must not do is hide a test drifting toward the new ceiling: the shard-stats
+      # plugin records each test's seconds against the ceiling that applied to it, and
+      # `scripts/ci/report_timeout_headroom.py` prints the suite-wide worst to the run
+      # summary below. `tests/test_ci_timeout_ceilings.py` pins the raise to this job.
       - name: Test shard ${{ matrix.group }}/12 (coverage, no floor — partial data)
         run: >
           docker run --rm
@@ -716,6 +732,7 @@ jobs:
           ${{ needs.build-image.outputs.image }}
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -o cache_dir=/tmp/.pytest_cache
+          -o timeout=180
           --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
           --splits 12 --group ${{ matrix.group }} --durations-path dev/.test_durations
           --splitting-algorithm least_duration
@@ -901,6 +918,20 @@ jobs:
           shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
           shard-stats.5.json shard-stats.6.json shard-stats.7.json shard-stats.8.json
           shard-stats.9.json shard-stats.10.json shard-stats.11.json shard-stats.12.json
+      # What the shard lane's raised `-o timeout=180` bought, on every run (#4048).
+      # The raise stops contention from reddening a PR whose diff cannot have caused
+      # it; left unmeasured it would only move the cliff, so the same shard-stats
+      # artifacts carry each test's seconds against the ceiling that applied to it and
+      # this names whatever is running out of room, into the run summary. Deliberately
+      # NOT a gate — it exits 0 on an over-run too, because the required context
+      # reddening for a slow test nobody caused is the failure being fixed.
+      - name: Report per-test timeout headroom (report only, never gates)
+        run: >
+          uv run -p ${{ matrix.python-version }} python scripts/ci/report_timeout_headroom.py
+          shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
+          shard-stats.5.json shard-stats.6.json shard-stats.7.json shard-stats.8.json
+          shard-stats.9.json shard-stats.10.json shard-stats.11.json shard-stats.12.json
+          >> "$GITHUB_STEP_SUMMARY"
       # Combine the twelve shards' data and enforce the whole-tree 93% branch floor
       # ONCE — same data, same floor as the old single-process lane. `coverage
       # report --fail-under=93` is the explicit invocation-site floor

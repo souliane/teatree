@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.quality.durations_coverage import MIN_FILE_COVERAGE, DurationsUnreadableError, measure_durations_coverage
+from teatree.quality.durations_coverage import MIN_FILE_COVERAGE, measure_durations_coverage
+from teatree.quality.durations_file import DurationsUnreadableError
 
 
 def _repo(tmp_path: Path, *, test_files: list[str], durations: dict[str, float] | None) -> Path:

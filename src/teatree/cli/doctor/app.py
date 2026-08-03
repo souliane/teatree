@@ -86,7 +86,7 @@ from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_ski
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
 from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
-from teatree.cli.doctor.checks_test_durations import check_test_durations_coverage
+from teatree.cli.doctor.checks_test_durations import check_test_durations_coverage, check_test_timeout_headroom
 from teatree.cli.doctor.checks_unshipped_work import check_unshipped_work
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
@@ -200,6 +200,7 @@ __all__ = (
     "check_statusline_freshness",
     "check_stranded_prek_patches",
     "check_test_durations_coverage",
+    "check_test_timeout_headroom",
     "check_unshipped_work",
     "doctor_app",
 )
@@ -469,12 +470,13 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # those rows visible with an age (#3891); the prek-patch one reads a cache rather
     # than a row, because a pre-commit stash whose restore failed leaves the tree clean,
     # so nothing but the saved patch records that the work ever existed. Nothing reaps
-    # either, so without a surface nobody looks. The last is the same shape one level
-    # out — a committed artifact rather than a row: a `dev/.test_durations` the daily
-    # refresh stopped updating still splits the shard matrix, just blindly, so the
-    # operator learns of it here rather than from a shard timeout reddening a PR whose
-    # diff could not have caused it (#4048). The tuple calls all six before ``all``
-    # short-circuits, so no finding masks another.
+    # either, so without a surface nobody looks. The last two are the same shape one
+    # level out — a committed artifact rather than a row: a `dev/.test_durations` the
+    # daily refresh stopped updating still splits the shard matrix, just blindly, and
+    # its recordings are also what say whether a test is living off the sharded lane's
+    # raised ceiling. Both surface here rather than as a shard timeout reddening a PR
+    # whose diff could not have caused it (#4048). The tuple calls all seven before
+    # ``all`` short-circuits, so no finding masks another.
     ok = (
         all(
             (
@@ -484,6 +486,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_unshipped_work(),
                 check_stranded_prek_patches(),
                 check_test_durations_coverage(),
+                check_test_timeout_headroom(),
             )
         )
         and ok

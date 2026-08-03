@@ -18,8 +18,9 @@ count is exact rather than sampled.
 """
 
 import dataclasses
-import json
 from pathlib import Path
+
+from teatree.quality.durations_file import DURATIONS_PATH, read_durations
 
 # A refreshed file records every test that ran, so healthy coverage is ~100%; a
 # day of churn between daily refreshes moves it by a handful of files out of
@@ -27,16 +28,7 @@ from pathlib import Path
 # and only a refresh pipeline that has stopped producing does.
 MIN_FILE_COVERAGE = 0.80
 
-_DURATIONS_PATH = Path("dev") / ".test_durations"
 _TESTS_DIR = "tests"
-
-
-class DurationsUnreadableError(RuntimeError):
-    """The durations file exists but does not parse — a read failure, not an empty file.
-
-    Degrading this to "no durations recorded" would report a parse error as a
-    coverage figure, which is the one reading an operator cannot act on.
-    """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,24 +61,10 @@ def measure_durations_coverage(repo: Path) -> DurationsCoverage | None:
     if not test_files:
         return None
 
-    recorded = _load_recorded_node_ids(repo / _DURATIONS_PATH)
+    recorded = read_durations(repo / DURATIONS_PATH)
     recorded_files = {node_id.split("::", 1)[0] for node_id in recorded}
     return DurationsCoverage(
         covered_files=len(recorded_files & test_files),
         test_files=len(test_files),
         orphan_keys=sum(1 for node_id in recorded if not (repo / node_id.split("::", 1)[0]).is_file()),
     )
-
-
-def _load_recorded_node_ids(path: Path) -> list[str]:
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        message = f"{path} exists but could not be read as durations JSON: {exc}"
-        raise DurationsUnreadableError(message) from exc
-    if not isinstance(data, dict):
-        message = f"{path} is not a durations mapping (got {type(data).__name__})"
-        raise DurationsUnreadableError(message)
-    return [str(key) for key in data]
