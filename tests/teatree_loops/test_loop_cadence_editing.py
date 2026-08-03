@@ -5,14 +5,16 @@ import datetime as dt
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, Prompt
 from teatree.loops.live import build_report
 from teatree.loops.loop_cadence_editing import (
     ABSOLUTE_MIN_INTERVAL_SECONDS,
     CadenceEditError,
     cadence_bounds_for,
+    off_grid_cadences,
     set_loop_cadence,
 )
+from teatree.loops.timer_chains import IDLE_POLL_FLOOR_SECONDS
 
 
 def _loop(name: str = "inbox", **kwargs: object) -> Loop:
@@ -124,3 +126,96 @@ class CadenceFloorTestCase(TestCase):
     def test_at_the_floor_is_accepted(self) -> None:
         set_loop_cadence("resource_pressure", delay_seconds=60)
         assert Loop.objects.get(name="resource_pressure").delay_seconds == 60
+
+
+class TheFloorIsDerivedFromTheTickTestCase(TestCase):
+    """#4079: the minimum interval is the timer chain's own poll floor, not an invented number.
+
+    A loop rides a self-rescheduling timer chain whose successor is held at
+    ``now + IDLE_POLL_FLOOR_SECONDS`` on every path that does not complete a clean tick
+    (a held/not-due loop, a faulted tick whose anchor never moved, a cadence-less loop).
+    So a cadence below that floor is honoured only while nothing goes wrong, and the
+    number in the editor is not the number the operator observes.
+    """
+
+    def test_the_floor_is_the_timer_chains_poll_floor(self) -> None:
+        # Derived, not re-typed: this fails the moment the two drift apart, which is the
+        # whole point — the old 30 was a sanity gate that matched nothing in the machinery.
+        assert ABSOLUTE_MIN_INTERVAL_SECONDS == IDLE_POLL_FLOOR_SECONDS
+
+    def test_an_interval_below_the_floor_is_refused(self) -> None:
+        _loop("inbox")
+        with pytest.raises(CadenceEditError):
+            set_loop_cadence("inbox", delay_seconds=IDLE_POLL_FLOOR_SECONDS - 1)
+
+    def test_a_non_multiple_of_the_floor_is_refused(self) -> None:
+        # 90s reads as 90s but behaves as 60s or 120s depending on whether the last tick
+        # completed. Refusing it is what makes the configured number equal the observed one.
+        _loop("inbox")
+        with pytest.raises(CadenceEditError):
+            set_loop_cadence("inbox", delay_seconds=90)
+
+    def test_the_refusal_names_the_admissible_values_on_either_side(self) -> None:
+        _loop("inbox")
+        with pytest.raises(CadenceEditError) as exc:
+            set_loop_cadence("inbox", delay_seconds=90)
+        assert "60" in str(exc.value)
+        assert "120" in str(exc.value)
+
+    def test_a_multiple_of_the_floor_is_accepted(self) -> None:
+        _loop("inbox")
+        set_loop_cadence("inbox", delay_seconds=300)
+        assert Loop.objects.get(name="inbox").delay_seconds == 300
+
+    def test_a_refused_write_does_not_persist(self) -> None:
+        _loop("inbox", delay_seconds=60)
+        with pytest.raises(CadenceEditError):
+            set_loop_cadence("inbox", delay_seconds=90)
+        assert Loop.objects.get(name="inbox").delay_seconds == 60
+
+
+class ExistingNonMultipleRowsAreReportedNotRewrittenTestCase(TestCase):
+    """#4079: an operator who typed 45 meant something — report it, never silently round it."""
+
+    def test_a_stored_non_multiple_row_is_reported(self) -> None:
+        _loop("inbox", delay_seconds=45)
+        reported = dict(off_grid_cadences())
+        assert reported["inbox"] == 45
+
+    def test_a_stored_multiple_row_is_not_reported(self) -> None:
+        Loop.objects.all().delete()
+        _loop("inbox", delay_seconds=300)
+        assert off_grid_cadences() == ()
+
+    def test_reporting_does_not_rewrite_the_row(self) -> None:
+        # The guarantee that makes this safe to run anywhere: it is a read.
+        _loop("inbox", delay_seconds=45)
+        off_grid_cadences()
+        assert Loop.objects.get(name="inbox").delay_seconds == 45
+
+    def test_a_daily_row_carries_no_interval_and_is_not_reported(self) -> None:
+        # A wall-clock row has no interval at all, so it is outside the grid's scope rather
+        # than off the grid. (It is a PROMPT loop: `loop_script_requires_delay` refuses a
+        # script loop with no interval.)
+        Loop.objects.all().delete()
+        prompt, _ = Prompt.objects.get_or_create(name="daily-demo", defaults={"body": "x"})
+        Loop.objects.create(name="dream", prompt=prompt, script="", delay_seconds=None, daily_at=dt.time(3, 0))
+        assert off_grid_cadences() == ()
+
+
+class TheBoundsNoteIsNotRepeatedPerRowTestCase(TestCase):
+    """#4079: the global floor is a legend, not a sentence on every line.
+
+    Owner: "don't repeat this message on each row it's useless". The floor is the same for
+    every ordinary loop, so a per-row note carrying it says nothing about that row. Only a
+    ``cadence_is_floor`` loop's registry MAXIMUM is genuinely row-specific.
+    """
+
+    def test_an_ordinary_loop_carries_no_per_row_note(self) -> None:
+        assert cadence_bounds_for("inbox").note == ""
+
+    def test_a_cadence_is_floor_loop_still_explains_its_own_maximum(self) -> None:
+        bounds = cadence_bounds_for("resource_pressure")
+        assert bounds.max_interval_seconds is not None
+        assert bounds.note != ""
+        assert str(bounds.max_interval_seconds) in bounds.note

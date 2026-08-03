@@ -20,7 +20,7 @@ from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
 from teatree.loops.live import LoopStatusEntry, build_report
-from teatree.loops.loop_cadence_editing import CadenceBounds, cadence_bounds_for
+from teatree.loops.loop_cadence_editing import CADENCE_STEP_SECONDS, CadenceBounds, cadence_bounds_for, is_off_grid
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 from teatree.loops.registry import iter_loops
 
@@ -83,19 +83,33 @@ class LoopControlView:
     mode_posture: str
     gate_fail_open: bool
     runner_enabled: bool
+    #: The global cadence grid, stated ONCE as the table's legend (#4079). It is the same for
+    #: every ordinary loop, so repeating it per row said nothing about any particular row.
+    cadence_step_seconds: int = CADENCE_STEP_SECONDS
+    #: Stored intervals that predate the grid — reported so the operator decides, never
+    #: rewritten. Empty on a box whose rows are all on the grid, which is the normal case.
+    off_grid: tuple[tuple[str, int], ...] = ()
 
 
 def build_loop_control() -> LoopControlView:
     """The whole loop-control page read model: loop rows + infra slots + header state."""
     resolved = resolve_active_mode()
+    loops = build_loop_rows()
     return LoopControlView(
-        loops=build_loop_rows(),
+        loops=loops,
         infra_slots=_infra_slots(),
         mode_name=resolved.name,
         mode_source=resolved.source,
         mode_posture=posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump),
         gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
+        # Derived from the rows already loaded above rather than re-queried: the page's query
+        # count is a pinned budget, and this listing is a property of rows it already holds.
+        off_grid=tuple(
+            (row.name, row.delay_seconds)
+            for row in loops
+            if row.delay_seconds is not None and is_off_grid(row.delay_seconds)
+        ),
     )
 
 
