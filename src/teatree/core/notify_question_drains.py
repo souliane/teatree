@@ -43,6 +43,26 @@ from teatree.core.notify import NotifyKind, notify_user
 # on the next tick, so a question that already waited hours waits one more cadence.
 _MAX_MIRRORS_PER_TICK = 3
 
+#: Prefix of the ``BotPing`` idempotency key :func:`drain_deferred_questions` writes.
+#: The cap must bound NEW deliveries, so the selection reads this ledger back and skips
+#: what it already sent — a slice taken straight off the oldest-first queue would
+#: re-select the same delivered head every call and never advance (#4064).
+_RESURFACE_KEY_PREFIX = "resurface-deferred-question:"
+
+
+def _already_resurfaced_refs() -> set[str]:
+    """Every ``stable_notify_ref`` this drain has already delivered.
+
+    Read from the ``BotPing`` ledger rather than tracked on the question row: the
+    ledger is what :func:`notify_user` dedupes against, so reading it back is what
+    makes the selection agree with the send instead of racing it.
+    """
+    keys = BotPing.objects.filter(idempotency_key__startswith=_RESURFACE_KEY_PREFIX).values_list(
+        "idempotency_key", flat=True
+    )
+    return {key.removeprefix(_RESURFACE_KEY_PREFIX) for key in keys}
+
+
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
 
@@ -165,7 +185,9 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     ``resurface-deferred-question:<stable-ref>`` key — the row's
     :attr:`~teatree.core.models.deferred_question.DeferredQuestion.stable_notify_ref`,
     never its local pk), so re-running on a later tick or after a manual
-    ``resurface`` never double-posts. **Capped per call** for the same reason the
+    ``resurface`` never double-posts. The cap is applied AFTER that ledger is read
+    back, so it bounds NEW deliveries and the window advances every call until the
+    backlog is drained. **Capped per call** for the same reason the
     mirror drain is: an away→present transition after a long absence would otherwise
     deliver the whole accumulated backlog as one burst of DMs. Returning to present is
     precisely when the backlog is largest, so this is the path that actually fires.
@@ -176,11 +198,17 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
-    rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL][
-        :_MAX_MIRRORS_PER_TICK
-    ]
+    owner_rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL]
+    # Skip what a previous call already delivered BEFORE applying the cap. The queue is
+    # oldest-first, so capping it directly hands the same delivered head back every time:
+    # each call deduped to a no-op and every row behind it stayed unreachable, on a tick,
+    # on an away->present transition and on a manual resurface alike (#4064).
+    already = _already_resurfaced_refs()
+    rows = [r for r in owner_rows if r.stable_notify_ref not in already][:_MAX_MIRRORS_PER_TICK]
     if not rows:
-        return 0, 0
+        # Nothing NEW to send. The backlog total is still reported so a caller cannot read
+        # "0 delivered" as "queue empty" — the distinction this drain previously erased.
+        return 0, len(owner_rows)
 
     previous_overlay = _scoped_overlay_env(overlay)
     delivered = 0
@@ -197,7 +225,10 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     finally:
         _restore_overlay_env(overlay, previous_overlay)
 
-    return delivered, len(rows)
+    # The denominator is the BACKLOG, never the capped slice: `3/3` read as "all pending
+    # delivered" while 69 were outstanding, which is how a permanently-stalled queue
+    # looked healthy (#4064).
+    return delivered, len(owner_rows)
 
 
 def drain_unmirrored_deferred_questions(

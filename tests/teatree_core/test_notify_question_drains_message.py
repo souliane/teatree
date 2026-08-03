@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.models import DeferredQuestion
+from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _resurface_text, drain_deferred_questions
 
 
@@ -69,3 +69,46 @@ class TestDrainExcludesInternalAudience(TestCase):
         assert notify.call_count == 1
         assert owner.question in notify.call_args.args[0]
         assert (delivered, total) == (1, 1)
+
+
+class TestDrainAdvancesPastAlreadyDeliveredRows(TestCase):
+    """The per-call cap must bound NEW deliveries, never re-select a delivered head (#4064).
+
+    ``pending()`` is oldest-first and the slice was taken straight off it, so the same
+    three oldest rows filled the window on every call, deduped to no-ops, and every row
+    behind them was unreachable — on a tick, on an away->present transition, or on a
+    manual resurface. The module's own comment promised the opposite ("the remainder is
+    re-read on the next tick"), which is the behaviour these pin.
+    """
+
+    def _delivered(self, row: DeferredQuestion) -> None:
+        """Stand in for an earlier drain that already DM'd *row*."""
+        BotPing.objects.create(
+            idempotency_key=f"resurface-deferred-question:{row.stable_notify_ref}",
+            kind=BotPing.Kind.QUESTION,
+            status=BotPing.Status.SENT,
+            text="already sent",
+        )
+
+    def test_a_delivered_head_does_not_block_the_rest_of_the_backlog(self) -> None:
+        rows = [DeferredQuestion.record(f"Q{i}") for i in range(5)]
+        for row in rows[:3]:
+            self._delivered(row)
+
+        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+            delivered, _total = drain_deferred_questions()
+
+        posted = " ".join(str(call.args[0]) for call in notify.call_args_list)
+        assert "Q3" in posted, "the window must advance past the delivered head"
+        assert "Q4" in posted
+        assert "Q0" not in posted, "an already-delivered row must not re-occupy the cap"
+        assert delivered == 2
+
+    def test_total_reports_the_backlog_not_the_capped_slice(self) -> None:
+        for i in range(5):
+            DeferredQuestion.record(f"Q{i}")
+
+        with patch("teatree.core.notify_question_drains.notify_user", return_value=True):
+            _delivered, total = drain_deferred_questions()
+
+        assert total == 5, "reporting the slice as the denominator hides the backlog"
