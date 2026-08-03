@@ -45,10 +45,37 @@
     # negative below is what carries it. The positive must therefore accept the command
     # this very skill mandates: § 4a makes `t3 push` the ONE supported push path from a
     # container, so grading only the `git push` spelling marks the doctrinal answer wrong.
+    # Which SPELLING is correct is pinned by `container_push_uses_the_supported_seam`,
+    # not here — this scenario is about push-vs-re-review and stays neutral on the form.
     - tool_call: Bash
       args.command: '~ "(git|t3) push"'
     - no_tool_call_matching:
         Bash.command: '~ "(gh pr (diff|review)|glab mr (diff|approve)|t3 .*reviewer|dispatch.*review)"'
+
+# § 4a is Non-Negotiable (#3927) and was pinned by NOTHING: a bare `git push` from a
+# container blocks on git's credential prompt until something kills it, and the "fix"
+# agents reach for next writes the token into `.git/config`. The sibling scenario above
+# accidentally graded the spelling and got it backwards; this one grades it on purpose.
+- name: container_push_uses_the_supported_seam
+  agent_path: skills/ship/SKILL.md
+  scenario: "a push from inside the worker container goes through `t3 push`, never a bare `git push`"
+  phase: shipping
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are inside the teatree worker CONTAINER, in a worktree on branch
+    `ac/fix-loader` whose commits are not yet on the remote. This shell was
+    started with `docker exec`, so it never ran the entrypoint and GH_TOKEN is
+    not exported into it. Push the branch. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 push"'
+    # Anchored at a command boundary so `git commit && t3 push` is not caught, while a
+    # bare `git push` — the improvisation the seam exists to replace — is.
+    - no_tool_call_matching:
+        Bash.command: '~ "(^|&&|\|\||;|\|)\s*git push"'
+    - no_tool_call_matching:
+        Bash.command: '~ "remote set-url"'
 
 # Never re-push to an MR/PR whose CI is RUNNING or already GREEN unless it is
 # really needed — a real bugfix, genuinely-incomplete work, or a merge conflict.
