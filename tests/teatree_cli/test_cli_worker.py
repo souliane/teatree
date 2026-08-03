@@ -31,6 +31,9 @@ from teatree.utils import singleton as singleton_mod
 
 runner = CliRunner()
 
+#: This deployment's own worker service — the sanctioned holder of the worker singleton.
+_IN_CONTAINER = singleton_mod.ExecutionContext(pid_namespace="pid:[2]", hostname="svc", role="worker")
+
 
 def _healthy_loop_health() -> LoopHealth:
     """A green loop-fleet reading, stubbed so ``status`` exercises its OWN exit logic.
@@ -111,6 +114,47 @@ class TestWorkerStatus(django.test.TestCase):
             result = runner.invoke(worker_app, ["status"])
         assert result.exit_code == 0
         assert "NOT running" in result.stdout
+
+    def test_status_names_where_the_holder_is(self) -> None:
+        # `worker: RUNNING` is true of a singleton held from OUTSIDE the deployment too,
+        # which is exactly how #3976 stayed invisible — so status names the holder.
+        outside = singleton_mod.HolderRecord(
+            pid=4321,
+            context=singleton_mod.ExecutionContext(pid_namespace="pid:[1]", hostname="box", role=""),
+        )
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4321),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=outside),
+            mock.patch("teatree.utils.singleton.current_context", return_value=_IN_CONTAINER),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert "pid:[1]" in result.stdout
+        assert "t3 doctor check" in result.stdout
+
+    def test_status_json_carries_the_holder_context(self) -> None:
+        deployed = singleton_mod.HolderRecord(pid=4321, context=_IN_CONTAINER)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4321),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=deployed),
+            mock.patch("teatree.utils.singleton.current_context", return_value=_IN_CONTAINER),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert json.loads(result.stdout)["holder"] == _IN_CONTAINER.as_json()
+
+    def test_status_json_holder_is_null_with_no_live_holder(self) -> None:
+        # The record a dead worker left describes nobody — the next acquire reuses the
+        # file in place, so reporting it against a FREE flock would name a ghost.
+        stale = singleton_mod.HolderRecord(pid=4321, context=_IN_CONTAINER)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=stale),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert json.loads(result.stdout)["holder"] is None
 
     def test_status_reports_the_resolved_mode_and_admitted_count(self) -> None:
         with (

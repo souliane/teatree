@@ -23,6 +23,7 @@ import typer
 if TYPE_CHECKING:
     from teatree.loop.drain import DrainProgress, DrainReport
     from teatree.loop.worker_lifecycle import StopReport
+    from teatree.utils.singleton import HolderRecord
 
 
 class DrainPayload(TypedDict):
@@ -123,6 +124,30 @@ def _timer_counts() -> dict[str, dict[str, int]]:
     return counts
 
 
+def _holder_lines(record: "HolderRecord | None") -> list[str]:
+    """Where the flock holder is, and a pointer to the gate when it should not be there.
+
+    ``worker: RUNNING`` is equally true of a singleton held from OUTSIDE the deployment
+    (#3976), which is how that starvation stayed invisible: the flock genuinely is held
+    and the loops genuinely do tick, driven by a process this service can never become.
+    """
+    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+        DEPLOYMENT_WORKER_ROLE,
+        current_context,
+    )
+
+    if record is None:
+        return []
+    lines = [f"worker holder: PID {record.pid} in {record.context.describe()}"]
+    mine = current_context()
+    if mine.role and record.context.role != DEPLOYMENT_WORKER_ROLE:
+        lines.append(
+            f"WARN  that holder is not this deployment's {DEPLOYMENT_WORKER_ROLE} service — the deployed "
+            "worker cannot start while it lives. Run `t3 doctor check` (#3976)."
+        )
+    return lines
+
+
 @worker_app.command("status")
 def status_command(*, json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON.")) -> None:
     """Report the worker: flock holder, kill-switch + tier, timer counts, and whether loops tick.
@@ -144,6 +169,7 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
         WORKER_SINGLETON,
         default_pid_path,
         flock_is_held,
+        read_holder,
     )
 
     holder = _flock_holder_pid()
@@ -154,6 +180,9 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     enabled, source = _resolve_kill_switch()
     timers = _timer_counts()
     running = holder is not None or flock_held
+    # Only a LIVE holder has a context worth reporting; the record left by a dead worker
+    # is reused in place on the next acquire and describes nobody.
+    record = read_holder(default_pid_path(WORKER_SINGLETON)) if running else None
     health = loop_health(timezone.now())
 
     if json_output:
@@ -162,6 +191,7 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                 {
                     "running": running,
                     "holder_pid": holder,
+                    "holder": record.context.as_json() if record is not None else None,
                     "flock_held": flock_held,
                     "loop_runner_enabled": enabled,
                     "source": source,
@@ -179,6 +209,8 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     else:
         state = "NOT running"
     typer.echo(f"worker: {state}")
+    for line in _holder_lines(record):
+        typer.echo(line)
     typer.echo(f"loop_runner_enabled: {enabled} (from {source})")
     if enabled and not running:
         typer.echo("Worker is enabled but not running — run `t3 worker ensure`.")
