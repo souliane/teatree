@@ -189,3 +189,55 @@ class TestMain:
         code = main([])
         assert code == 1
         assert capsys.readouterr().out.strip() == ""
+
+
+RULES_SKILL = "skills/rules/SKILL.md"
+GRADED_SECTION = "Background Long Operations (Non-Negotiable)"
+
+
+def _hunk_inside(section: str) -> str:
+    """A ``-U0`` hunk touching one line of *section* in the REAL rules skill."""
+    lines = (_REPO_ROOT / RULES_SKILL).read_text(encoding="utf-8").splitlines()
+    heading = next(n for n, line in enumerate(lines, start=1) if line.startswith("## ") and line[3:].strip() == section)
+    body = heading + 1
+    return f"--- a/{RULES_SKILL}\n+++ b/{RULES_SKILL}\n@@ -{body} +{body} @@\n-was\n+now\n"
+
+
+class TestDiffFileNarrowsProseSelection:
+    """A prose-only edit selects the scenarios that GRADE it (#3944).
+
+    #3911 edited this exact section — the graded prompt for ``headless_one_shot_envelope``
+    and its ``background_long_operations_*`` siblings — and the lane selected zero, then
+    reported PASS. These drive the real catalog and the real skill file, so the regression
+    is pinned end to end rather than against a fixture that could drift from either.
+    """
+
+    def _selected(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], argv: list[str]
+    ) -> list[str]:
+        monkeypatch.setattr("sys.stdin", io.StringIO(f"{RULES_SKILL}\n"))
+        assert main(argv) == 0
+        return [line for line in capsys.readouterr().out.splitlines() if line]
+
+    def _graded_by(self, section: str) -> list[str]:
+        return sorted(s.name for s in discover_specs() if s.agent_path == RULES_SKILL and section in s.agent_sections)
+
+    def test_editing_a_graded_section_selects_every_scenario_grading_it(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        diff = tmp_path / "changed.diff"
+        diff.write_text(_hunk_inside(GRADED_SECTION), encoding="utf-8")
+        selected = self._selected(monkeypatch, capsys, ["--diff-file", str(diff)])
+        graded = self._graded_by(GRADED_SECTION)
+        assert graded, "the motivating section must still be graded by at least one scenario"
+        # Every scenario naming the section survives the cap — the band ranks them first, so a
+        # broader whole-file match can never displace the tightest evidence.
+        assert set(graded) <= set(selected)
+        assert selected[: len(graded)] == graded
+
+    def test_a_skill_path_alone_still_selects_without_a_diff(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The unchanged STDIN-only contract: granularity unknown → fail-safe to every
+        # scenario grading the file, never the pre-#3944 zero.
+        assert self._selected(monkeypatch, capsys, [])

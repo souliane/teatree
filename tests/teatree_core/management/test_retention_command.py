@@ -13,6 +13,7 @@ either way) is what is under test.
 
 import datetime as dt
 import json
+from dataclasses import replace
 from io import StringIO
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -21,13 +22,27 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.management.commands.retention import Command, RetentionReport
+from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.utils.django_db.vacuum import VacuumOutcome
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _COMMAND = "teatree.core.management.commands.retention"
-_RECLAIMED = VacuumOutcome(ran=True, reason="rebuilt", bytes_before=1_200_000, bytes_after=600_000)
+_PAGE_SIZE = 4096
+_RECLAIMED = VacuumOutcome(
+    ran=True,
+    reason="rebuilt",
+    file_bytes_before=_PAGE_SIZE * 293,
+    file_bytes_after=_PAGE_SIZE * 146,
+    page_size=_PAGE_SIZE,
+    pages_before=293,
+    pages_after=146,
+    free_pages_before=147,
+    free_pages_after=0,
+)
+#: The rebuild landed but a live reader deferred the truncation, so the file still
+#: reads at its pre-vacuum size — the #3979 shape that reported 0.0 MiB.
+_RECLAIMED_FILE_LAGGING = replace(_RECLAIMED, file_bytes_after=_PAGE_SIZE * 293)
 
 
 def _prune_json(outcome: VacuumOutcome, *args: str) -> tuple[dict[str, Any], MagicMock]:
@@ -64,7 +79,7 @@ class RetentionCommandStructureTestCase(TestCase):
             "applied": False,
             "total_rows": 0,
             "tables": [],
-            "vacuum": {"ran": False, "reason": "dry run", "bytes_reclaimed": 0},
+            "vacuum": _vacuum_row(VacuumOutcome(ran=False, reason="dry run")),
         }
         assert set(report) == {"applied", "total_rows", "tables", "vacuum"}
 
@@ -111,11 +126,42 @@ class RetentionPruneCommandTestCase(TestCase):
 class RetentionPruneVacuumTestCase(TestCase):
     """Rows are only half a prune — the freed pages must reach the filesystem (#3852)."""
 
-    def test_apply_vacuums_and_reports_the_reclaimed_bytes(self) -> None:
+    def test_apply_vacuums_and_reports_the_page_derived_reclaim(self) -> None:
         payload, vacuum = _prune_json(_RECLAIMED, "--apply")
 
         vacuum.assert_called_once_with()
-        assert payload["vacuum"] == {"ran": True, "reason": "rebuilt", "bytes_reclaimed": 600_000}
+        assert payload["vacuum"] == {
+            "ran": True,
+            "reason": "rebuilt",
+            "summary": _RECLAIMED.summary,
+            "bytes_reclaimed": _PAGE_SIZE * 147,
+            "page_size": _PAGE_SIZE,
+            "pages_before": 293,
+            "pages_after": 146,
+            "free_pages_before": 147,
+            "free_pages_after": 0,
+            "file_bytes_before": _PAGE_SIZE * 293,
+            "file_bytes_after": _PAGE_SIZE * 146,
+            "file_caught_up": True,
+        }
+
+    def test_a_reclaim_the_file_has_not_applied_yet_is_still_reported(self) -> None:
+        """The #3979 shape: the rebuild landed, the truncation is still pending."""
+        payload, _ = _prune_json(_RECLAIMED_FILE_LAGGING, "--apply")
+
+        assert payload["vacuum"]["bytes_reclaimed"] == _PAGE_SIZE * 147
+        assert payload["vacuum"]["file_caught_up"] is False
+        assert "next checkpoint" in payload["vacuum"]["summary"]
+
+    def test_the_human_row_carries_the_page_and_freelist_deltas(self) -> None:
+        """The direct evidence the rebuild happened, and it does not depend on a stat."""
+        err = StringIO()
+        with patch(f"{_COMMAND}.vacuum_control_db", return_value=_RECLAIMED):
+            call_command("retention", "prune", "--apply", stderr=err)
+
+        rendered = err.getvalue()
+        assert "pages 293" in rendered
+        assert "free 147" in rendered
 
     def test_dry_run_never_vacuums(self) -> None:
         """VACUUM rewrites the whole file — a preview that mutates 1.12 GB is not a preview."""
@@ -133,3 +179,4 @@ class RetentionPruneVacuumTestCase(TestCase):
         assert payload["vacuum"]["ran"] is False
         assert "not applicable" in payload["vacuum"]["reason"]
         assert payload["vacuum"]["bytes_reclaimed"] == 0
+        assert payload["vacuum"]["summary"] == payload["vacuum"]["reason"]

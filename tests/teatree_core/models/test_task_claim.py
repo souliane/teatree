@@ -9,14 +9,16 @@ only while this worker still owns the claim generation.
 """
 
 from datetime import timedelta
+from unittest import mock
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
-from teatree.core.models.task_claim import claim, renew_lease
+from teatree.core.models.task_claim import claim, describe_lease_loss, renew_lease
 
 
 class TestClaim(TestCase):
@@ -93,3 +95,80 @@ class TestRenewLease(TestCase):
         claim(reclaimed, claimed_by="worker-B", lease_seconds=300)
         with pytest.raises(LeaseLostError):
             renew_lease(worker_a, lease_seconds=600)
+
+
+class TestDescribeLeaseLoss(TestCase):
+    """A lost lease names what ACTUALLY took the claim (#3982).
+
+    "re-claimed by another worker" was recorded unconditionally, so a self-inflicted
+    reclaim — the worker's own ``reclaim_orphaned_claims`` sweep requeueing a task whose
+    starved heartbeat let the lease lapse — sent the operator hunting for a competing
+    worker that does not exist.
+    """
+
+    def _claimed_task(self, *, claimed_by: str = "worker-A") -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="shipping")
+        claim(task, claimed_by=claimed_by, lease_seconds=300)
+        return task
+
+    def test_a_requeued_row_reads_as_an_in_process_reclaim(self) -> None:
+        task = self._claimed_task()
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.PENDING, claimed_by="", claimed_at=None)
+
+        reason = describe_lease_loss(task)
+
+        assert "in-process" in reason
+        assert "re-claimed by a competing worker" not in reason
+
+    def test_a_re_claim_by_the_same_worker_reads_as_in_process(self) -> None:
+        task = self._claimed_task(claimed_by="worker-A")
+        Task.objects.filter(pk=task.pk).update(claimed_at=timezone.now() + timedelta(seconds=1))
+
+        reason = describe_lease_loss(task)
+
+        assert "in-process" in reason
+
+    def test_a_rival_worker_is_named_as_a_competing_worker(self) -> None:
+        task = self._claimed_task(claimed_by="worker-A")
+        Task.objects.filter(pk=task.pk).update(claimed_by="worker-B")
+
+        reason = describe_lease_loss(task)
+
+        assert "competing worker" in reason
+        assert "worker-B" in reason
+
+    def test_a_terminal_row_names_its_terminal_status(self) -> None:
+        task = self._claimed_task()
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED)
+
+        assert "completed" in describe_lease_loss(task)
+
+    def test_every_reason_keeps_the_lease_lost_phrase_the_taxonomy_keys_on(self) -> None:
+        # ``stuck_loop: lease lost`` is what classify_failure() matches on for
+        # FailureKind.LEASE_LOST — a reworded reason must not fall out of the taxonomy.
+        task = self._claimed_task()
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.PENDING, claimed_by="")
+
+        assert describe_lease_loss(task).startswith(f"lease lost for task {task.pk}:")
+
+    def test_a_deleted_row_says_so_rather_than_naming_a_reclaimer(self) -> None:
+        task = self._claimed_task()
+        Task.objects.filter(pk=task.pk).delete()
+
+        assert "no longer exists" in describe_lease_loss(task)
+
+    def test_an_unreadable_row_degrades_instead_of_raising(self) -> None:
+        # The read-back contends with the very writer that reclaimed the row, so a lock
+        # error here is the EXPECTED failure. Raising it would escape the caller's
+        # `except LeaseLostError`, the heartbeat's generic handler would log and keep
+        # driving, and the abort would be lost — two drivers on one unit.
+        task = self._claimed_task()
+        locked = OperationalError("database table is locked: teatree_task")
+        with mock.patch.object(Task.objects, "filter", side_effect=locked):
+            reason = describe_lease_loss(task)
+
+        assert reason.startswith(f"lease lost for task {task.pk}:")
+        assert "could not be read back" in reason
+        assert "OperationalError" in reason

@@ -28,7 +28,7 @@ import re
 # SKILL.md files use ``## `` for every rule/section heading (``# `` is the single
 # file title). Match level-2+ headings so a section is delimited by the next
 # heading of the same-or-shallower depth.
-_HEADING_RE = re.compile(r"^(#{2,6})\s+(.*?)\s*$", re.MULTILINE)
+HEADING_RE = re.compile(r"^(#{2,6})\s+(.*?)\s*$", re.MULTILINE)
 
 
 class MissingSectionError(ValueError):
@@ -46,7 +46,7 @@ def extract_sections(text: str, section_names: tuple[str, ...]) -> str:
     A name with no matching heading raises :class:`MissingSectionError` — never a
     silent empty contribution (that would make the consuming scenario vacuous).
     """
-    headings = list(_HEADING_RE.finditer(text))
+    headings = list(HEADING_RE.finditer(text))
     spans = _section_spans(text, headings)
     preamble = text[: headings[0].start()] if headings else text
     wanted = set(section_names)

@@ -10,6 +10,7 @@ wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -84,6 +85,21 @@ def dispose_unshippable_review(ticket: Ticket) -> None:
     ticket.save()
 
 
+def phase_output_reached(ticket: Ticket, phase: str) -> bool:
+    """Whether *ticket* sits at or past the state *phase*'s completion targets.
+
+    The full author ladder, IN_REVIEW through DELIVERED included — which is what
+    ``Ticket.has_completed_phase`` deliberately does NOT answer (it stops at SHIPPED, so
+    a shipped ticket in peer review reads as though shipping never happened). An
+    off-ladder state (REVIEW_POSTED / IGNORED) and a free-form phase both hold no
+    position to compare, so both answer ``False``.
+    """
+    target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
+    if target is None or ticket.state not in _STATE_ORDER:
+        return False
+    return _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target)
+
+
 def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Ticket) -> None:
     """Escalate a genuine FSM wedge instead of the silent ``return False`` (#10).
 
@@ -102,14 +118,12 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
     target is a wedge. A free-form (non-lifecycle) phase has no target and
     is expected to no-op. A terminal/abandoned ticket is never a wedge.
     """
-    target = _PHASE_TARGET_STATE.get(phase)
     # A terminal ticket is never a wedge. REVIEW_POSTED/IGNORED are off the
-    # author ladder (absent from _STATE_ORDER); the other terminals sit past
-    # every phase target. Short-circuiting on is_terminal keeps the index
-    # lookups below to live author-ladder states, so they cannot raise.
-    if target is None or ticket.is_terminal:
+    # author ladder, where :func:`phase_output_reached` answers False, so the
+    # is_terminal short-circuit is what keeps them out of the escalation.
+    if _PHASE_TARGET_STATE.get(phase) is None or ticket.is_terminal:
         return
-    if _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target):
+    if phase_output_reached(ticket, phase):
         return  # idempotent replay — the ticket already advanced past this phase's target
     record_stuck_transition_question(task, phase=phase, ticket=ticket)
 

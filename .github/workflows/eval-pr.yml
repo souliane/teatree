@@ -4,18 +4,22 @@
 #
 # The metered behavioral-eval suite is expensive (real `claude` SDK trials) and
 # the full catalog runs weekly off the PR path (`.github/workflows/eval.yml`). But
-# when a PR EDITS a scenario file (`evals/scenarios/*.yaml` or an overlay's
-# `eval/scenarios/*.yaml`), waiting a week to learn the new/changed scenario's
-# behavior is too slow. This workflow closes that gap: on every PR it runs ONLY
-# the scenarios that PR's diff defines — never the whole catalog — so the cost is
-# bounded by what changed.
+# when a PR EDITS what a scenario is built from — its YAML (`evals/scenarios/*.yaml`
+# or an overlay's `eval/scenarios/*.yaml`) or the skill prose it grades — waiting a
+# week to learn the changed scenario's behavior is too slow. This workflow closes
+# that gap: on every PR it runs ONLY the scenarios that PR's diff defines — never
+# the whole catalog — so the cost is bounded by what changed.
 #
 # HOW THE SELECTION WORKS
-#   The `detect` job diffs the PR against its base, pipes the changed paths to
-#   `scripts/eval/scenarios_for_changed.py`, and gets the `name` of every spec
-#   whose source file the PR touched. If that list is empty (no scenario file
-#   changed) the `eval` job is skipped entirely — a PR that touches no scenario
-#   spends zero API budget here.
+#   The `detect` job diffs the PR against its base twice: `--name-only` for the
+#   changed paths (piped on STDIN) and `--unified=0` for the same range (passed as
+#   `--diff-file`). `scripts/eval/scenarios_for_changed.py` returns the `name` of
+#   every spec whose scenario YAML the PR touched, PLUS every spec whose `agent_path`
+#   skill file it touched — narrowed, for a spec declaring `agent_sections`, to the
+#   sections that actually moved. Without that second input a graded-section edit
+#   selected ZERO scenarios and the lane passed having proven nothing (#3944). If the
+#   list is empty the `eval` job is skipped entirely — a PR that touches nothing a
+#   scenario is built from spends zero API budget here.
 #
 # AUTH — `agent_harness_provider` selects the eval credential
 #   The eval step wires `T3_AGENT_HARNESS_PROVIDER` (`subscription_oauth`) and both
@@ -115,8 +119,9 @@ jobs:
         run: |
           git fetch --no-tags origin "$BASE_REF"
           git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
+          git diff --unified=0 "origin/$BASE_REF...HEAD" > changed.diff
           rc=0
-          uv run python scripts/eval/scenarios_for_changed.py --skip-code 3 \
+          uv run python scripts/eval/scenarios_for_changed.py --skip-code 3 --diff-file changed.diff \
             < changed-files.txt > names.txt || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
             echo "scenarios_for_changed.py failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
