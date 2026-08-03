@@ -20,13 +20,15 @@ from teatree.core.forge_push import (
     ForgeCredential,
     PushFailure,
     PushOutcome,
+    _local_tip,
     credential_failure_hint,
     push_branch,
     remote_url_embeds_credential,
     resolve_forge_credential,
     scrub_token,
 )
-from teatree.utils.run import TimeoutExpired
+from teatree.utils.git_run import run_with_status
+from teatree.utils.run import CompletedProcess, TimeoutExpired
 from tests._git_repo import make_git_repo, run_git
 
 FAKE_TOKEN = "gh" + "p_" + "x" * 36
@@ -324,14 +326,37 @@ class TestTheRemoteSettlesWhetherThePushLanded:
         assert outcome.failure is PushFailure.UNVERIFIABLE
 
     def test_a_verification_that_times_out_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
+        timed_out = TimeoutExpired("git", 1.0)
+
+        def time_out_only_on_the_remote_read(*, repo: str, args: list[str], **kwargs: object) -> CompletedProcess[str]:
+            if args[0] == "ls-remote":
+                raise timed_out
+            return run_with_status(repo=repo, args=args, **kwargs)
+
         with (
             patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()),
-            patch("teatree.core.forge_push.run_with_status", side_effect=TimeoutExpired("git", 1.0)),
+            patch("teatree.core.forge_push.run_with_status", side_effect=time_out_only_on_the_remote_read),
         ):
             outcome = push_branch(repo=clone_with_origin)
 
         assert not outcome.ok
         assert outcome.failure is PushFailure.UNVERIFIABLE
+
+    def test_a_commit_landing_during_the_push_does_not_falsify_it(self, clone_with_origin: Path) -> None:
+        """The tip is what was ASKED to be pushed, read before the attempt — not after."""
+
+        def push_then_commit_locally(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            done = subprocess.run(cmd, capture_output=True, text=True, check=False, env=kwargs.get("env"))  # type: ignore[arg-type]
+            (clone_with_origin / "later.txt").write_text("later\n")
+            run_git(clone_with_origin, "add", "later.txt")
+            run_git(clone_with_origin, "commit", "-q", "-m", "later")
+            return done
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", side_effect=push_then_commit_locally):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.ok, outcome.detail
+        assert outcome.pushed_sha != run_git(clone_with_origin, "rev-parse", "HEAD")
 
     def test_a_verified_push_carries_the_sha_observed_on_the_remote(self, clone_with_origin: Path) -> None:
         outcome = push_branch(repo=clone_with_origin)
@@ -465,6 +490,40 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert outcome.failure is PushFailure.CONFIG
 
 
+class TestABranchThatDoesNotExistIsNeverTheGatesFault:
+    """git resolves the refspec BEFORE it runs any hook, so the hook cannot be the reason."""
+
+    def test_a_misspelled_branch_is_a_config_refusal_not_a_gate_refusal(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(clone_with_origin, "exit 0\n")
+
+        outcome = push_branch(repo=clone_with_origin, branch="no-such-branch")
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.CONFIG
+        assert outcome.exit_code == PUSH_EXIT_CODES[PushFailure.CONFIG]
+        assert "no-such-branch" in outcome.detail
+
+    def test_the_push_is_never_attempted_for_an_unknown_branch(self, clone_with_origin: Path) -> None:
+        recorder = _RecordingRun()
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", recorder):
+            push_branch(repo=clone_with_origin, branch="no-such-branch")
+
+        assert recorder.commands == []
+
+
+class TestLocalTipReadsTheReturnCode:
+    """`git rev-parse` echoes an unresolvable argument back — rc is the only honest signal."""
+
+    def test_an_unresolvable_branch_yields_no_sha_rather_than_its_own_name(self, clone_with_origin: Path) -> None:
+        assert _local_tip(repo=str(clone_with_origin), branch="refs/heads/no-such-branch") == ""
+
+    def test_a_real_branch_yields_its_sha(self, clone_with_origin: Path) -> None:
+        assert _local_tip(repo=str(clone_with_origin), branch="feature") == run_git(
+            clone_with_origin, "rev-parse", "HEAD"
+        )
+
+
 class TestAPushUrlIsWhereThePushActuallyGoes:
     """`remote.<name>.pushurl` divorces the push target from the fetch url."""
 
@@ -496,6 +555,15 @@ class TestAPushUrlIsWhereThePushActuallyGoes:
             == run_git(clone_with_origin, "ls-remote", str(elsewhere), "refs/heads/feature").split()[0]
         )
         assert not run_git(clone_with_origin, "ls-remote", "--heads", str(tmp_path / "origin.git"))
+
+    def test_without_a_pushurl_the_remotes_own_config_still_applies(self, clone_with_origin: Path) -> None:
+        """Reading a raw url would silently drop the `uploadpack` / `proxy` the push honours."""
+        run_git(clone_with_origin, "config", "remote.origin.uploadpack", "/nonexistent-upload-pack")
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.UNVERIFIABLE
 
 
 class TestEveryFailureKindIsActionable:

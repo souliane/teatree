@@ -62,12 +62,16 @@ def git_env_without_overrides() -> dict[str, str]:
 #: rather than an indefinite block. ``GIT_ASKPASS=""`` neutralises an inherited GUI
 #: askpass helper — git skips an empty program name — which is what leaves
 #: ``GIT_TERMINAL_PROMPT=0`` free to fail the prompt; ``GCM_INTERACTIVE`` is the same
-#: switch for Git Credential Manager.
+#: switch for Git Credential Manager. ``LC_ALL=C`` keeps git's diagnostics in the one
+#: language every caller that CLASSIFIES them was written against — under a translated
+#: locale a marker match silently stops firing, and a classifier degrades to its
+#: catch-all without ever reporting that it could not read the answer.
 NON_INTERACTIVE_GIT_ENV: dict[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "",
     "SSH_ASKPASS": "",
     "GCM_INTERACTIVE": "never",
+    "LC_ALL": "C",
 }
 
 

@@ -282,9 +282,9 @@ Usage: t3 push [OPTIONS]
 
  Success means the remote was read back with `git ls-remote` and holds the
  branch at the local tip. Each way that fails exits with its own code, so a
- caller can branch on the fix it needs: 1 transport, 2 repo config, 3
- credential, 4 pre-push gate refused, 5 non-fast-forward, 6 not delivered,
- 7 unverifiable.
+ caller can branch on the fix it needs: 1 transport, 2 config, 3 credential,
+ 4 gate-refused, 5 non-fast-forward, 6 not-on-remote (and 6 for a
+ remote-sha-mismatch), 7 unverifiable, 8 remote-rejected.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo                    TEXT  Repository to push (defaults to the current  │

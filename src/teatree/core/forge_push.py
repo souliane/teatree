@@ -317,7 +317,11 @@ class ObservedRemoteRef:
 
     @classmethod
     def observe(cls, *, repo: str, remote: str, branch: str, env: dict[str, str]) -> Self:
-        target = RemoteUrls.read(repo=repo, remote=remote).push or remote
+        # The remote NAME carries config `ls-remote <url>` would drop (`uploadpack`,
+        # `proxy`), so it stays the target unless a `pushurl` makes the two endpoints
+        # genuinely different — in which case only the push url proves anything.
+        urls = RemoteUrls.read(repo=repo, remote=remote)
+        target = urls.push if urls.push and urls.push != urls.fetch else remote
         try:
             result = run_with_status(
                 repo=repo,
@@ -474,12 +478,31 @@ def _refusal(verdict: PushVerdict, *, branch: str, remote: str, credential: Forg
     )
 
 
+def _local_tip(*, repo: str, branch: str) -> str:
+    """The sha *branch* points at, or ``""`` when it resolves nothing.
+
+    ``git rev-parse`` ECHOES an unresolvable argument back on stderr and exits 128, so
+    a lenient reader hands back the branch NAME as if it were a sha — the same
+    echoed-answer trap souliane/teatree#4088 is about. The return code is the only
+    honest signal, so this reads it.
+    """
+    result = run_with_status(repo=repo, args=["rev-parse", branch])
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def _config_verdict(*, repo: str, remote: str, branch: str) -> PushVerdict:
     """The repo-config reason this push must not even be attempted; ``NONE`` when there is none."""
     if not branch:
         return PushVerdict(
             PushFailure.CONFIG,
             "refusing to push a detached HEAD — check out a branch first, or pass --branch",
+        )
+    if not _local_tip(repo=repo, branch=f"refs/heads/{branch}"):
+        return PushVerdict(
+            PushFailure.CONFIG,
+            f"no branch '{branch}' in {repo} — check the spelling, or drop --branch to push the "
+            "checked-out one. git resolves the refspec before it runs any hook, so this never "
+            "reached the pre-push gate",
         )
     urls = RemoteUrls.read(repo=repo, remote=remote)
     if not urls.fetch:
@@ -523,7 +546,7 @@ def push_branch(
         env["GH_TOKEN"] = credential.token
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
-    local_tip = git_read(repo=repo_path, args=["rev-parse", resolved_branch])
+    local_tip = _local_tip(repo=repo_path, branch=resolved_branch)
     try:
         result = run_allowed_to_fail(
             _push_argv(repo_path, remote, resolved_branch, force_with_lease=force_with_lease),

@@ -102,6 +102,16 @@ class TestPushCommand:
         assert not run_git(clone, "ls-remote", "--heads", "origin")
         assert result.exit_code != 0, result.output
 
+    def test_the_help_names_every_failure_kind_and_its_exit_code(self) -> None:
+        """The help is what an operator reads WHEN they get the code — docs-drift cannot catch it."""
+        help_text = push.__doc__ or ""
+
+        for failure, code in PUSH_EXIT_CODES.items():
+            if failure is PushFailure.NONE:
+                continue
+            assert failure.value in help_text, failure
+            assert str(code) in help_text, failure
+
     def test_forwards_every_option_to_the_engine(self) -> None:
         with patch("teatree.cli.push.push_branch", return_value=_success()) as pushed:
             runner.invoke(_app, ["--repo", "/tmp/x", "--remote", "upstream", "--branch", "b", "--force-with-lease"])
