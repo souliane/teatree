@@ -17,7 +17,7 @@ from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
+from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, PrSummary
 
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict
@@ -104,18 +104,24 @@ def classify_sweep_ci(
     return None, False, failing
 
 
-def red_required_all_repo_state(failing_required: set[str]) -> bool:
-    """True iff there is ≥1 failing REQUIRED check and EVERY one is repo-state (#2045).
+def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:
+    """True iff ≥1 REQUIRED check is failing against a base that has MOVED (#4063).
 
     *failing_required* is the branch-protection-required set that is currently
-    failing (:func:`teatree.core.merge.failing_required_names`). Repo-state checks
-    (``REPO_STATE_CHECK_NAMES``) diff the head against the base, so a fix already
-    on ``main`` leaves them red on an un-updated branch and a ``gh run rerun``
-    re-tests the stale base — a merge-update is the remedy. A single non-repo-state
-    failing required check (a genuine test failure) makes this ``False`` so the
-    sweep keeps the bare ``ci_red`` skip.
+    failing (:func:`teatree.core.merge.failing_required_names`); *behind_main* is
+    GitHub's ``mergeStateStatus == "BEHIND"``.
+
+    What makes a red verdict unreliable is not WHICH check failed but that the run
+    judged a base the branch has since fallen behind — so this generalises the
+    repo-state-only rule (#2045) it replaces, which is now one instance of it. A
+    repo-state check diffs the head against the base directly; a test check re-runs
+    against the run's pinned OLD base. Either way a fix that landed on ``main``
+    leaves the check red and ``gh run rerun`` cannot clear it, so the PR carries an
+    UNKNOWN verdict and only a merge-update resolves it. An UP-TO-DATE branch's red
+    IS its own verdict: it stays a bare ``ci_red`` skip, which is what stops a
+    genuinely broken PR from being update-looped.
     """
-    return bool(failing_required) and failing_required <= REPO_STATE_CHECK_NAMES
+    return bool(failing_required) and behind_main
 
 
 def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear | None:

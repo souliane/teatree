@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, BotPing, MergeableNotified, Task
+from teatree.core.models import AutoReviewDispatch, BotPing, BranchUpdateAttempt, MergeableNotified, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
@@ -37,6 +37,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     SlackMergeNotifier,
     _decode_pr,
 )
+from teatree.loop.scanners.pr_sweep_branch_update import MAX_BRANCH_UPDATES_PER_TICK
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.types import RawAPIDict
 
@@ -210,6 +211,8 @@ class FakePrApiClient:
     fallback_succeeds: bool = True
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
+    update_branch_calls: list[tuple[str, int, str]] = field(default_factory=list)
+    update_branch_succeeds: bool = True
     #: F5.8: slugs whose ``list_open_prs`` raises a recoverable ScannerError
     #: (auth / rate-limit), used to prove the sweep records-and-continues.
     scanner_error_slugs: frozenset[str] = frozenset()
@@ -226,6 +229,10 @@ class FakePrApiClient:
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
         return self.fallback_succeeds, MAIN_SHA if self.fallback_succeeds else ""
+
+    def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
+        self.update_branch_calls.append((slug, pr_id, expected_head_oid))
+        return self.update_branch_succeeds
 
 
 @dataclass(slots=True)
@@ -638,19 +645,19 @@ class TestUvAuditFallback:
         assert "head moved" in signals[0].payload["reason"]
 
 
-class TestNeedsBranchUpdate:
-    """Repo-state-check red on a behind-main branch → needs_branch_update (#2045).
+class TestStaleBaseMergeUpdate:
+    """A required red at a STALE base is an UNKNOWN verdict, so the sweep updates (#4063).
 
-    ``gh run rerun --failed`` re-tests against the run's pinned merge commit
-    (the OLD base), so a repo-state check (uv-audit, blueprint-cross-pr, …)
-    whose fix already merged to ``main`` can never go green by a rerun. The
-    only remedy is a fresh merge-update minting a new merge ref. The sweep
-    surfaces that remedy as ``needs_branch_update`` instead of a bare
-    ``skip/ci_red`` so it is actionable — and ONLY when the branch is behind
-    main (a repo-state red on an up-to-date branch is a genuine failure).
+    ``gh run rerun --failed`` re-tests the run's pinned merge commit (the OLD
+    base), so a check that went red before a fix landed on ``main`` can never go
+    green by a rerun — whether it is a repo-state check that diffs against the
+    base or a real test. Generalises #2045's repo-state-only rule: what makes the
+    verdict unreliable is the moved base, not which check failed. The sweep
+    applies the merge-update; a branch that is already UP-TO-DATE keeps its own
+    red verdict, which is what stops a broken PR from being update-looped.
     """
 
-    def test_repo_state_red_on_behind_branch_classifies_needs_branch_update(self) -> None:
+    def test_repo_state_red_on_behind_branch_is_merge_updated(self) -> None:
         _issue_clear()
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_blueprint_cross_pr()), behind_main=True)]},
@@ -662,12 +669,13 @@ class TestNeedsBranchUpdate:
             signals = scanner.scan()
 
         assert keystone.calls == []
-        assert signals[0].kind == "pr_sweep.needs_branch_update"
-        assert signals[0].payload["decision"] == "needs_branch_update"
-        assert signals[0].payload["reason"] == "needs_branch_update"
-        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)]
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.branch_updated"
+        assert signals[0].payload["decision"] == "branch_updated"
+        assert signals[0].payload["reason"] == "stale_base_merge_updated"
+        assert notifier.flag_calls == []
 
-    def test_uv_audit_red_on_behind_branch_also_classifies_needs_branch_update(self) -> None:
+    def test_uv_audit_red_on_behind_branch_is_also_merge_updated(self) -> None:
         _issue_clear()
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()), behind_main=True)]},
@@ -680,21 +688,51 @@ class TestNeedsBranchUpdate:
             signals = scanner.scan()
 
         assert keystone.calls == []
-        assert signals[0].payload["decision"] == "needs_branch_update"
+        assert signals[0].payload["decision"] == "branch_updated"
 
-    def test_genuine_test_failure_still_classifies_ci_red_not_branch_update(self) -> None:
+    def test_genuine_test_failure_on_behind_branch_is_merge_updated(self) -> None:
+        """The #4063 defect: this red judged a base the fix may already be on."""
         _issue_clear()
         red_required = _check("test (3.13)", conclusion="FAILURE")
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(red_required, _red_blueprint_cross_pr()), behind_main=True)]},
         )
         keystone = FakeKeystone()
-        scanner, notifier = _scanner(api=api, keystone=keystone)
+        scanner, _ = _scanner(api=api, keystone=keystone)
 
         with _required("test (3.13)", "blueprint-cross-pr"):
             signals = scanner.scan()
 
         assert keystone.calls == []
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.branch_updated"
+
+    def test_non_repo_state_red_on_behind_branch_is_merge_updated(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["decision"] == "branch_updated"
+
+    def test_genuine_test_failure_on_current_base_stays_ci_red(self) -> None:
+        """The anti-update-loop bound: an UP-TO-DATE branch's red is its own verdict."""
+        _issue_clear()
+        red_required = _check("test (3.13)", conclusion="FAILURE")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,), behind_main=False)]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.update_branch_calls == []
         assert signals[0].payload["reason"] == "ci_red"
         assert notifier.flag_calls == []
 
@@ -710,22 +748,126 @@ class TestNeedsBranchUpdate:
             signals = scanner.scan()
 
         assert keystone.calls == []
+        assert api.update_branch_calls == []
         assert signals[0].payload["reason"] == "ci_red"
         assert notifier.flag_calls == []
 
-    def test_non_repo_state_red_on_behind_branch_stays_ci_red(self) -> None:
+    def test_pending_ci_on_behind_branch_is_never_merge_updated(self) -> None:
+        """``ci_pending`` is not a stale-base reason — a running check has no verdict yet."""
         _issue_clear()
-        api = FakePrApiClient(
-            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
-        )
-        keystone = FakeKeystone()
-        scanner, _ = _scanner(api=api, keystone=keystone)
+        pending = _check("test (3.13)", conclusion="", status="IN_PROGRESS")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(pending,), behind_main=True)]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
 
-        with _required("test (3.13)", "lint"):
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].payload["reason"] == "ci_pending"
+        assert notifier.flag_calls == []
+
+
+class TestStaleBaseMergeUpdateBounds:
+    """The three bounds that keep a broken PR from being update-looped (#4063).
+
+    Every refusal degrades to the pre-#4063 ``needs_branch_update`` flag, so a
+    remedy the sweep declines to apply is surfaced for a human rather than
+    dropped.
+    """
+
+    @staticmethod
+    def _behind_red_pr(*, pr_id: int = 6230, head: str = HEAD, author: str = SELF_LOGIN) -> PrSummary:
+        return _open_pr(
+            pr_id=pr_id,
+            head=head,
+            checks=(_check("test (3.13)", conclusion="FAILURE"),),
+            behind_main=True,
+            author=author,
+        )
+
+    def test_colleague_pr_is_flagged_never_pushed_to(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr(author=COLLEAGUE_LOGIN)]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].kind == "pr_sweep.needs_branch_update"
+        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)]
+
+    def test_same_head_is_attempted_once_across_ticks(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        first = scanner.scan()
+        second = scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert first[0].payload["decision"] == "branch_updated"
+        assert second[0].payload["decision"] == "needs_branch_update"
+
+    def test_new_head_re_arms_the_update(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+        scanner.scan()
+
+        api.prs_by_slug[SLUG] = [self._behind_red_pr(head=STALE)]
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD), (SLUG, 6230, STALE)]
+        assert signals[0].payload["decision"] == "branch_updated"
+
+    def test_per_tick_cap_flags_the_overflow(self) -> None:
+        over_cap = MAX_BRANCH_UPDATES_PER_TICK + 1
+        prs = [self._behind_red_pr(pr_id=6230 + i, head=f"{i:040d}") for i in range(over_cap)]
+        api = FakePrApiClient(prs_by_slug={SLUG: prs})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        decisions = [s.payload["decision"] for s in signals]
+        assert decisions == ["branch_updated"] * MAX_BRANCH_UPDATES_PER_TICK + ["needs_branch_update"]
+        assert len(api.update_branch_calls) == MAX_BRANCH_UPDATES_PER_TICK
+
+    def test_budget_resets_between_ticks(self) -> None:
+        prs = [self._behind_red_pr(pr_id=6230 + i, head=f"{i:040d}") for i in range(MAX_BRANCH_UPDATES_PER_TICK)]
+        api = FakePrApiClient(prs_by_slug={SLUG: prs})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+        scanner.scan()
+
+        api.prs_by_slug[SLUG] = [self._behind_red_pr(pr_id=9001, head=f"{9001:040d}")]
+        signals = scanner.scan()
+
+        assert signals[0].payload["decision"] == "branch_updated"
+
+    def test_refused_update_is_flagged_and_not_retried(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]}, update_branch_succeeds=False)
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        first = scanner.scan()
+        scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert first[0].payload["decision"] == "needs_branch_update"
+        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)] * 2
+
+    def test_api_error_degrades_to_the_flag(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with patch.object(FakePrApiClient, "update_pr_branch", side_effect=RuntimeError("boom")):
             signals = scanner.scan()
 
-        assert keystone.calls == []
-        assert signals[0].payload["reason"] == "ci_red"
+        assert signals[0].payload["decision"] == "needs_branch_update"
+
+    def test_ledger_error_degrades_to_the_flag(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [self._behind_red_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with patch.object(BranchUpdateAttempt, "claim", side_effect=RuntimeError("db down")):
+            signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].payload["decision"] == "needs_branch_update"
 
 
 class TestMultiRepo:

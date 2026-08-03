@@ -21,10 +21,10 @@ Decision ladder per open PR:
     head, ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
     #68)
 5. CI ``test(3.13)`` not green AND red checks include something
-    other than ``uv-audit`` → skip, EXCEPT when every red check is a
-    repo-state check (``REPO_STATE_CHECK_NAMES``) AND the branch is BEHIND
-    main → ``needs_branch_update`` flag (#2045): a ``gh run rerun`` re-tests
-    the run's pinned OLD base, so only a fresh merge-update can clear it.
+    other than ``uv-audit`` → skip, EXCEPT when the branch is BEHIND main:
+    that red judged a base the branch has fallen behind, so the verdict is
+    UNKNOWN and the sweep merge-updates the branch (#4063, generalising
+    #2045's repo-state-only rule).
 6. only red check is ``uv-audit`` AND ``main`` is also red on
     ``uv-audit`` → ``--fallback-uv-audit``
 7. all required checks green → merge through the keystone
@@ -35,9 +35,11 @@ keystone transition refuses on the same fallback path (a pre-existing-on-``main`
 failing audit job is a deterministic gate, not an ad-hoc judgement —
 exactly the case §17.4.3 step 7 reserves for the scanner).
 
-Step 5's ``needs_branch_update`` is a surface-only remedy: the sweep operates
-over ``gh`` reads + the keystone merge with no local checkout, so it flags the
-``git merge origin/main`` remedy rather than auto-pushing it.
+Step 5's merge-update is applied through the SHA-bound ``update_pr_branch`` API
+call — no local checkout needed — under the bounds in
+:mod:`teatree.loop.scanners.pr_sweep_branch_update` (one attempt per head, a
+per-tick cap, own PRs only). Any refusal degrades to a flag-level
+``needs_branch_update`` signal, so a declined remedy is surfaced, never dropped.
 
 The scanner posts a Slack DM only on actual merges (acceptance gate) and
 on a flag-level signal; ordinary skips log to the periodic-task log but
@@ -45,10 +47,11 @@ never DM, to keep the DM channel quiet.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from teatree.core.merge import CodeHostQuery
 from teatree.core.models.merge_clear import MergeClear
+from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_decision import (
@@ -58,7 +61,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     own_or_same_repo,
     pr_ticket_under_external_delivery,
     record_mergeable_notified,
-    red_required_all_repo_state,
+    red_required_at_stale_base,
     untrusted_merge_provenance,
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
@@ -67,7 +70,6 @@ from teatree.loop.scanners.pr_sweep_types import (
     GH_CONFLICT_MERGEABLE,
     GREEN_TERMINAL_CONCLUSIONS,
     MERGEABLE_AWAITING_REVIEW_REASON,
-    REPO_STATE_CHECK_NAMES,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
     MergeAttempt,
@@ -80,7 +82,6 @@ __all__ = [
     "GH_CONFLICT_MERGE_STATE",
     "GREEN_TERMINAL_CONCLUSIONS",
     "MERGEABLE_AWAITING_REVIEW_REASON",
-    "REPO_STATE_CHECK_NAMES",
     "REQUIRED_CHECK_NAME",
     "UV_AUDIT_CHECK_NAME",
     "MergeAttempt",
@@ -174,9 +175,13 @@ class PrSweepScanner:
     #: ``solo_overlay_substrate_authorized``, so both merge paths honour the
     #: delegation identically.
     substrate_standing_authorizer: str = ""
+    #: #4063: the per-pass merge-update allowance, reset by :meth:`scan` so a base
+    #: that moves under a whole open-PR set mints a bounded number of CI runs.
+    branch_update_budget: branch_update.TickBudget = field(default_factory=branch_update.TickBudget)
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
+        self.branch_update_budget.reset()
         signals: list[ScanSignal] = []
         errors: list[ScannerError] = []
         for slug in self.repos:
@@ -276,38 +281,29 @@ class PrSweepScanner:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
         return self._merge(pr=pr, clear=clear, fallback=fallback)
 
-    #: Skip reasons whose only failing checks are repo-state checks a rerun
-    #: against the pinned OLD base can never clear — a merge-update is the
-    #: remedy (#2045). ``ci_red`` covers a repo-state ``failed`` rollup (e.g.
-    #: blueprint-cross-pr); ``uv_audit_red_but_clean_on_main`` is the
-    #: uv-audit-only red whose fix already landed on main.
-    _REPO_STATE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
+    #: CI-red skip reasons a merge-update can resolve. ``ci_pending`` (still
+    #: running) and ``required_checks_indeterminate`` (fails closed) are absent.
+    _STALE_BASE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
 
     def _ci_block(self, pr: PrSummary, *, reason: str, failing: set[str]) -> MergeAttempt:
-        """Convert a CI-red block into ``needs_branch_update`` when a rerun can't fix it (#2045).
+        """Merge-update a CI-red block whose verdict judged a STALE base (#4063).
 
-        A block whose only failing REQUIRED checks are repo-state checks (uv-audit,
-        blueprint-cross-pr, …) on a branch that is BEHIND main is the
-        rerun-can't-fix case: those checks diff the head against the base, the
-        fix already merged to main, and ``gh run rerun --failed`` re-tests
-        against the run's pinned OLD base. The only remedy is a fresh
-        merge-update minting a new merge ref — surfaced here as a flag-level
-        ``needs_branch_update`` signal so it is actionable rather than a silent
-        skip. Every other red (a genuine test failure, or a repo-state red on
-        an already-up-to-date branch a rerun CAN clear) stays a plain skip.
+        A required check that went red on a branch BEHIND main judged a base the
+        branch has since fallen behind, so its verdict is UNKNOWN: the fix may
+        already be on main, and ``gh run rerun --failed`` re-tests the run's
+        pinned OLD base, which clears neither a repo-state check nor a test. A
+        red on an already-up-to-date branch is the branch's own verdict and stays
+        a plain skip — that is what keeps a broken PR from being update-looped.
         """
-        if reason in self._REPO_STATE_BLOCK_REASONS and pr.behind_main and red_required_all_repo_state(failing):
-            return self._flag_needs_branch_update(pr)
-        return _skip(pr, reason=reason)
+        if reason not in self._STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
+            failing, behind_main=pr.behind_main
+        ):
+            return _skip(pr, reason=reason)
+        return branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
 
-    def _flag_needs_branch_update(self, pr: PrSummary) -> MergeAttempt:
-        self._flag(slug=pr.slug, pr_id=pr.number, reason="needs_branch_update", url=pr.url)
-        return MergeAttempt(
-            slug=pr.slug,
-            pr_id=pr.number,
-            decision="needs_branch_update",
-            reason="needs_branch_update",
-            url=pr.url,
+    def _remedy_ctx(self) -> branch_update.RemedyContext:
+        return branch_update.RemedyContext(
+            api=self.api, flag=self._flag, self_identities=self.self_identities, overlay=self.overlay
         )
 
     def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
