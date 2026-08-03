@@ -62,10 +62,20 @@ _CREDENTIAL_FAILURE_MARKERS: tuple[str, ...] = (
 #: git's stderr when the remote held the ref and declined the update.
 _NON_FAST_FORWARD_MARKERS: tuple[str, ...] = ("non-fast-forward", "fetch first", "[rejected]")
 
-#: Lines that prove git got as far as talking to the remote. A pre-push hook aborts
-#: BEFORE any of them is printed, which is what makes their absence the discriminator
-#: between a local gate refusal and a failure the remote produced.
+#: git's stderr when the REMOTE's own policy declined the update. Distinct from
+#: ``[rejected]`` as a substring, so the two never cross-match.
+_REMOTE_REJECTION_MARKERS: tuple[str, ...] = ("[remote rejected]", "hook declined")
+
+#: Lines that prove git got as far as talking to the remote.
 _REMOTE_CONTACT_PREFIXES: tuple[str, ...] = ("To ", "remote:")
+
+#: git's summary line after a push it started and could not finish — printed when a
+#: local hook aborts it, absent when git died before that (an unresolvable host).
+_GIT_PUSH_ABORTED = "error: failed to push some refs"
+
+#: git's own exit code when a pre-push hook refuses. A transport failure exits 128,
+#: which is what lets the two be told apart without guessing.
+_GATE_REFUSAL_RC = 1
 
 #: git's own outer commentary on a failed push — true of every push failure and
 #: therefore evidence of none. Dropping it is what leaves the refusing gate's own
@@ -95,6 +105,7 @@ class PushFailure(StrEnum):
     CREDENTIAL = "credential"
     GATE_REFUSED = "gate-refused"
     NON_FAST_FORWARD = "non-fast-forward"
+    REMOTE_REJECTED = "remote-rejected"
     TRANSPORT = "transport"
     NOT_ON_REMOTE = "not-on-remote"
     REMOTE_SHA_MISMATCH = "remote-sha-mismatch"
@@ -113,6 +124,7 @@ PUSH_EXIT_CODES: dict[PushFailure, int] = {
     PushFailure.NOT_ON_REMOTE: 6,
     PushFailure.REMOTE_SHA_MISMATCH: 6,
     PushFailure.UNVERIFIABLE: 7,
+    PushFailure.REMOTE_REJECTED: 8,
 }
 
 
@@ -266,6 +278,30 @@ def credential_failure_hint(git_stderr: str, credential: ForgeCredential) -> str
 
 
 @dataclass(frozen=True)
+class RemoteUrls:
+    """A remote's fetch and push urls, which ``remote.<name>.pushurl`` can divorce.
+
+    Both matter, for different reasons: the PUSH url is where the branch actually
+    goes and therefore the only endpoint whose answer verifies anything, while a
+    credential embedded in EITHER persists in ``.git/config`` and outlives the session.
+    ``get-url --push`` falls back to the fetch url when no ``pushurl`` is set.
+    """
+
+    fetch: str
+    push: str
+
+    @classmethod
+    def read(cls, *, repo: str, remote: str) -> Self:
+        fetch = git_read(repo=repo, args=["remote", "get-url", remote])
+        push = git_read(repo=repo, args=["remote", "get-url", "--push", remote]) if fetch else ""
+        return cls(fetch=fetch, push=push)
+
+    @property
+    def embeds_credential(self) -> bool:
+        return any(remote_url_embeds_credential(url) for url in (self.fetch, self.push))
+
+
+@dataclass(frozen=True)
 class ObservedRemoteRef:
     """What the remote itself answers for one branch — the only evidence a push landed.
 
@@ -281,10 +317,11 @@ class ObservedRemoteRef:
 
     @classmethod
     def observe(cls, *, repo: str, remote: str, branch: str, env: dict[str, str]) -> Self:
+        target = RemoteUrls.read(repo=repo, remote=remote).push or remote
         try:
             result = run_with_status(
                 repo=repo,
-                args=["ls-remote", remote, f"refs/heads/{branch}"],
+                args=["ls-remote", target, f"refs/heads/{branch}"],
                 env=env,
                 timeout=VERIFY_TIMEOUT_SECONDS,
             )
@@ -347,19 +384,36 @@ class GitPushError:
 
     @property
     def reached_the_remote(self) -> bool:
-        return any(
-            line.startswith(_REMOTE_CONTACT_PREFIXES) or "[rejected]" in line for line in self.stderr.splitlines()
+        return any(line.startswith(_REMOTE_CONTACT_PREFIXES) for line in self.stderr.splitlines())
+
+    @property
+    def refused_by_a_gate(self) -> bool:
+        """Positive evidence a LOCAL hook aborted the push — never mere absence of evidence.
+
+        Every teatree checkout has an executable pre-push hook, and an unreachable
+        network produces no remote-contact lines either, so inferring the gate from
+        absence blames it for every transport outage — the same mis-diagnosis
+        souliane/teatree#4076 exists to stop. git prints its aborted-push summary only
+        for a push it started and could not finish, and exits 1 rather than 128.
+        """
+        return (
+            bool(self.pre_push_hook)
+            and self.returncode == _GATE_REFUSAL_RC
+            and any(line.startswith(_GIT_PUSH_ABORTED) for line in self.stderr.splitlines())
+            and not self.reached_the_remote
         )
 
     @property
     def failure(self) -> PushFailure:
         lowered = self.stderr.lower()
+        if self.refused_by_a_gate:
+            return PushFailure.GATE_REFUSED
+        if any(marker in lowered for marker in _REMOTE_REJECTION_MARKERS):
+            return PushFailure.REMOTE_REJECTED
         if any(marker in lowered for marker in _CREDENTIAL_FAILURE_MARKERS):
             return PushFailure.CREDENTIAL
         if any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS):
             return PushFailure.NON_FAST_FORWARD
-        if self.pre_push_hook and not self.reached_the_remote:
-            return PushFailure.GATE_REFUSED
         return PushFailure.TRANSPORT
 
     @property
@@ -375,6 +429,12 @@ class GitPushError:
                 failure,
                 f"the remote branch has commits this clone does not (rc={self.returncode}) — fetch and "
                 f"integrate them, then re-run `t3 push`: {self.stderr}",
+            )
+        if failure is PushFailure.REMOTE_REJECTED:
+            return PushVerdict(
+                failure,
+                f"the remote's own policy declined this update (rc={self.returncode}) — a branch "
+                f"protection rule or a server-side hook, which no retry from here changes: {self.stderr}",
             )
         return PushVerdict(failure, f"git push failed (rc={self.returncode}): {self.stderr}")
 
@@ -421,15 +481,16 @@ def _config_verdict(*, repo: str, remote: str, branch: str) -> PushVerdict:
             PushFailure.CONFIG,
             "refusing to push a detached HEAD — check out a branch first, or pass --branch",
         )
-    url = git_read(repo=repo, args=["remote", "get-url", remote])
-    if not url:
+    urls = RemoteUrls.read(repo=repo, remote=remote)
+    if not urls.fetch:
         return PushVerdict(PushFailure.CONFIG, f"no remote named '{remote}' in {repo} — add it, or pass --remote")
-    if remote_url_embeds_credential(url):
+    if urls.embeds_credential:
         return PushVerdict(
             PushFailure.CONFIG,
             f"remote '{remote}' embeds a credential in its URL — that secret persists in .git/config "
-            f"and outlives the session. Strip it (`git remote set-url {remote} <url-without-credentials>`) "
-            "and re-run `t3 push`, which supplies the credential to git as env only",
+            f"and outlives the session. Strip it (`git remote set-url {remote} <url-without-credentials>`, "
+            "and `--push` too if a pushurl is set) and re-run `t3 push`, which supplies the credential "
+            "to git as env only",
         )
     return PushVerdict(PushFailure.NONE, "")
 
@@ -460,6 +521,9 @@ def push_branch(
     env = git_env_non_interactive()
     if credential.token:
         env["GH_TOKEN"] = credential.token
+    # Read BEFORE the push: a commit landing locally while it runs would otherwise make
+    # a genuinely delivered push look like a mismatch against a tip it never carried.
+    local_tip = git_read(repo=repo_path, args=["rev-parse", resolved_branch])
     try:
         result = run_allowed_to_fail(
             _push_argv(repo_path, remote, resolved_branch, force_with_lease=force_with_lease),
@@ -483,7 +547,7 @@ def push_branch(
         )
 
     observed = ObservedRemoteRef.observe(repo=repo_path, remote=remote, branch=resolved_branch, env=env)
-    landing = observed.verdict(git_read(repo=repo_path, args=["rev-parse", resolved_branch]))
+    landing = observed.verdict(local_tip)
     if landing.failure:
         return _refusal(landing, branch=resolved_branch, remote=remote, credential=credential)
 
@@ -510,6 +574,7 @@ __all__ = [
     "PushOutcome",
     "PushReport",
     "PushVerdict",
+    "RemoteUrls",
     "credential_failure_hint",
     "push_branch",
     "remote_url_embeds_credential",

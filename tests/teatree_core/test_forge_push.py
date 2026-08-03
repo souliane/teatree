@@ -266,6 +266,17 @@ class TestPushBranch:
     def test_timeout_is_bounded(self) -> None:
         assert 0 < PUSH_TIMEOUT_SECONDS <= 600
 
+    def test_a_push_that_timed_out_is_a_transport_refusal(self, clone_with_origin: Path) -> None:
+        with patch(
+            "teatree.core.forge_push.run_allowed_to_fail",
+            side_effect=TimeoutExpired("git", PUSH_TIMEOUT_SECONDS),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.TRANSPORT
+        assert "timed out" in outcome.detail
+
 
 class TestPushOutcome:
     def test_is_json_serialisable_for_the_sub_agent_return_contract(self, clone_with_origin: Path) -> None:
@@ -389,6 +400,42 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert outcome.failure is PushFailure.NON_FAST_FORWARD
         assert "fetch" in outcome.detail
 
+    def test_an_unreachable_remote_is_not_blamed_on_the_gate(self, clone_with_origin: Path) -> None:
+        """Every teatree checkout has a pre-push hook, so absence of remote contact proves nothing."""
+        _install_pre_push_hook(clone_with_origin, "exit 0\n")
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://nonexistent.invalid/acme/app.git")
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.TRANSPORT
+
+    def test_a_remote_side_rejection_is_not_blamed_on_the_gate(self, clone_with_origin: Path) -> None:
+        declined = subprocess.CompletedProcess(
+            args=["git", "push"],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "To ../origin.git\n"
+                " ! [remote rejected] feature -> feature (pre-receive hook declined)\n"
+                "error: failed to push some refs to '../origin.git'\n"
+            ),
+        )
+        _install_pre_push_hook(clone_with_origin, "exit 0\n")
+        with patch("teatree.core.forge_push.run_allowed_to_fail", return_value=declined):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.REMOTE_REJECTED
+        assert "no retry from here" in outcome.detail
+
+    def test_a_gate_that_prints_an_auth_error_is_still_a_gate_refusal(self, clone_with_origin: Path) -> None:
+        """The gate's own words must not be mined for another kind's markers."""
+        _install_pre_push_hook(clone_with_origin, 'echo "leak-gate: authentication failed in fixture" >&2\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_REFUSED
+
     def test_a_credential_failure_is_its_own_kind(self, clone_with_origin: Path) -> None:
         blocked = subprocess.CompletedProcess(
             args=["git", "push"],
@@ -416,6 +463,39 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.failure is PushFailure.CONFIG
+
+
+class TestAPushUrlIsWhereThePushActuallyGoes:
+    """`remote.<name>.pushurl` divorces the push target from the fetch url."""
+
+    def test_a_credential_in_the_push_url_is_refused_too(self, clone_with_origin: Path) -> None:
+        run_git(
+            clone_with_origin,
+            "config",
+            "remote.origin.pushurl",
+            f"https://{FAKE_TOKEN}@github.example.invalid/acme/app.git",
+        )
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.CONFIG
+        assert "embeds a credential" in outcome.detail
+        assert FAKE_TOKEN not in outcome.detail
+
+    def test_the_push_url_is_the_endpoint_read_back(self, clone_with_origin: Path, tmp_path: Path) -> None:
+        """Verifying against the fetch url would confirm a ref the push never touched."""
+        elsewhere = make_git_repo(tmp_path / "elsewhere.git", bare=True)
+        run_git(clone_with_origin, "config", "remote.origin.pushurl", str(elsewhere))
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.ok, outcome.detail
+        assert (
+            outcome.pushed_sha
+            == run_git(clone_with_origin, "ls-remote", str(elsewhere), "refs/heads/feature").split()[0]
+        )
+        assert not run_git(clone_with_origin, "ls-remote", "--heads", str(tmp_path / "origin.git"))
 
 
 class TestEveryFailureKindIsActionable:
