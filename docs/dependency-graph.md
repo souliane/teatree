@@ -261,6 +261,7 @@ graph TD
     teatree.loop.statusline_loops --> teatree.core
     teatree.loop.statusline_loops --> teatree.loop.loop_cadences
     teatree.loop.statusline_loops --> teatree.loop.loop_scoping
+    teatree.loop.statusline_loops --> teatree.loop.session_identity
     teatree.loop.statusline_loops --> teatree.loop.statusline_loop_chunks
     teatree.loop.statusline_loops --> teatree.loop.statusline_palette
     teatree.loop.statusline --> teatree.loop.statusline_loops

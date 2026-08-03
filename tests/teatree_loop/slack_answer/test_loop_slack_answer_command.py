@@ -7,8 +7,8 @@ SKIPs, and the ``--json`` report shape. Only the Slack network is faked.
 
 import io
 import json
+import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -16,9 +16,12 @@ from django.core.management import call_command
 from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
-from teatree.core.management.commands.loop_slack_answer import _session_owns_loop
+from teatree.core.gates.t3_master_gate import T3MasterGate
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease, PendingChatInjection
 from teatree.types import RawAPIDict
+from tests._loop_principal_env import pinned_loop_principal
+from tests._t3_master_env import worker_owns_t3_master
 
 runner = CliRunner()
 
@@ -69,9 +72,9 @@ class TestLoopSlackAnswerCommand:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="thanks!")
         backend = RecordingBackend()
         out = io.StringIO()
-        with patch(
-            "teatree.core.backend_factory.messaging_from_overlay",
-            return_value=backend,
+        with (
+            worker_owns_t3_master(),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
         ):
             call_command("loop_slack_answer", stdout=out, stderr=out)
 
@@ -82,9 +85,9 @@ class TestLoopSlackAnswerCommand:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="thanks!")
         backend = RecordingBackend()
         out = io.StringIO()
-        with patch(
-            "teatree.core.backend_factory.messaging_from_overlay",
-            return_value=backend,
+        with (
+            worker_owns_t3_master(),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
         ):
             call_command("loop_slack_answer", json_output=True, stdout=out)
 
@@ -98,45 +101,48 @@ class TestLoopSlackAnswerCommand:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="thanks!")
         LoopLease.objects.acquire("loop-slack-answer", owner="other-pid")
         out = io.StringIO()
-        call_command("loop_slack_answer", stdout=out, stderr=out)
+        with worker_owns_t3_master():
+            call_command("loop_slack_answer", stdout=out, stderr=out)
 
         assert "SKIP" in out.getvalue()
 
-    def test_non_owner_session_skips(self) -> None:
+    def test_foreign_t3_master_owner_skips(self) -> None:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="thanks!")
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="sess-other", owner_pid=os.getpid())
         out = io.StringIO()
-        with (
-            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "not-the-owner"}),
-            patch(
-                "teatree.core.management.commands.loop_slack_answer._session_owns_loop",
-                return_value=False,
-            ),
-        ):
+        with pinned_loop_principal("sess-mine"):
             call_command("loop_slack_answer", stdout=out, stderr=out)
 
         assert "SKIP" in out.getvalue()
         assert PendingChatInjection.loop_unreplied().count() == 1
 
-    def test_non_owner_session_json_skip_payload(self) -> None:
+    def test_foreign_t3_master_owner_json_skip_payload(self) -> None:
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="sess-other", owner_pid=os.getpid())
         out = io.StringIO()
-        with (
-            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "not-the-owner"}),
-            patch(
-                "teatree.core.management.commands.loop_slack_answer._session_owns_loop",
-                return_value=False,
-            ),
-        ):
+        with pinned_loop_principal("sess-mine"):
             call_command("loop_slack_answer", json_output=True, stdout=out)
 
         payload = json.loads(out.getvalue())
         assert payload["skipped"] is True
-        assert payload["skipped_reason"] == "non-owner session"
+        assert payload["skipped_reason"] == T3MasterGate.FOREIGN_OWNER.value
+        assert payload["owner_session"] == "sess-other"
         assert "started_at" in payload
+
+    def test_unclaimed_t3_master_json_skip_payload(self) -> None:
+        out = io.StringIO()
+        call_command("loop_slack_answer", json_output=True, stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert payload["skipped"] is True
+        # The two conditions are distinguishable — the pre-#3968 message conflated them.
+        assert payload["skipped_reason"] == T3MasterGate.UNCLAIMED.value
+        assert payload["owner_session"] == ""
 
     def test_lease_contention_json_skip_payload(self) -> None:
         LoopLease.objects.acquire("loop-slack-answer", owner="other-pid")
         out = io.StringIO()
-        call_command("loop_slack_answer", json_output=True, stdout=out)
+        with worker_owns_t3_master():
+            call_command("loop_slack_answer", json_output=True, stdout=out)
 
         payload = json.loads(out.getvalue())
         assert payload["skipped"] is True
@@ -166,38 +172,3 @@ class TestSlackAnswerCliStatus:
 
         assert result.exit_code == 0
         assert "2 loop-unreplied" in result.stdout
-
-
-class TestSessionOwnsLoopRegistry:
-    """Direct coverage of the registry-file ``_session_owns_loop`` arcs."""
-
-    def test_none_session_is_owner(self) -> None:
-        assert _session_owns_loop(None) is True
-
-    def test_missing_registry_file_is_owner(self, tmp_path: Path) -> None:
-        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": str(tmp_path)}):
-            assert _session_owns_loop("sess-1") is True
-
-    def test_unreadable_registry_is_owner(self, tmp_path: Path) -> None:
-        (tmp_path / "loop-registry.json").write_text("{not valid json", encoding="utf-8")
-        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": str(tmp_path)}):
-            assert _session_owns_loop("sess-1") is True
-
-    def test_non_dict_owner_record_is_owner(self, tmp_path: Path) -> None:
-        (tmp_path / "loop-registry.json").write_text(json.dumps({"t3-loop-tick-owner": "not-a-dict"}), encoding="utf-8")
-        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": str(tmp_path)}):
-            assert _session_owns_loop("sess-1") is True
-
-    def test_matching_owner_session_is_owner(self, tmp_path: Path) -> None:
-        (tmp_path / "loop-registry.json").write_text(
-            json.dumps({"t3-loop-tick-owner": {"session_id": "sess-1"}}), encoding="utf-8"
-        )
-        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": str(tmp_path)}):
-            assert _session_owns_loop("sess-1") is True
-
-    def test_other_owner_session_is_not_owner(self, tmp_path: Path) -> None:
-        (tmp_path / "loop-registry.json").write_text(
-            json.dumps({"t3-loop-tick-owner": {"session_id": "someone-else"}}), encoding="utf-8"
-        )
-        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": str(tmp_path)}):
-            assert _session_owns_loop("sess-1") is False

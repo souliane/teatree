@@ -631,6 +631,7 @@ depends_on = [
   "teatree.core",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
+  "teatree.loop.session_identity",
   "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette"
 ]
