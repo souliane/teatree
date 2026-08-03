@@ -112,3 +112,41 @@ class TestDrainAdvancesPastAlreadyDeliveredRows(TestCase):
             _delivered, total = drain_deferred_questions()
 
         assert total == 5, "reporting the slice as the denominator hides the backlog"
+
+
+class TestOnlyASentPingCountsAsDelivered(TestCase):
+    """A FAILED or NOOP ping is a delivery that did not land, so it must not skip the row.
+
+    `notify_user` treats only SENT as already-delivered and re-delivers FAILED / NOOP, so a
+    status-blind read-back skips such a question permanently — worse than the head-blocking it
+    replaces, where a transient failure self-healed on the next call.
+    """
+
+    def _ping(self, row: DeferredQuestion, status: str) -> None:
+        BotPing.objects.create(
+            idempotency_key=f"resurface-deferred-question:{row.stable_notify_ref}",
+            kind=BotPing.Kind.QUESTION,
+            status=status,
+            text="attempted",
+        )
+
+    def test_a_failed_ping_does_not_mark_the_question_delivered(self) -> None:
+        row = DeferredQuestion.record("Should I merge PR #7?")
+        self._ping(row, BotPing.Status.FAILED)
+
+        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+            delivered, total = drain_deferred_questions()
+
+        assert delivered == 1
+        assert total == 1
+        assert row.question in str(notify.call_args.args[0])
+
+    def test_a_noop_ping_does_not_mark_the_question_delivered(self) -> None:
+        row = DeferredQuestion.record("Pick a rollout")
+        self._ping(row, BotPing.Status.NOOP)
+
+        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+            delivered, _total = drain_deferred_questions()
+
+        assert delivered == 1
+        assert row.question in str(notify.call_args.args[0])

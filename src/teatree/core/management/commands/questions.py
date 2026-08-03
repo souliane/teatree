@@ -245,5 +245,8 @@ class Command(MachineOutputCommand):
         # remainder (#4064).
         remaining = max(0, total - delivered)
         if delivered == 0:
-            return f"resurfaced nothing new — {total} question(s) still pending, all already delivered."
+            return (
+                f"resurfaced nothing new — {total} question(s) still pending. Either none was newly "
+                f"selected, or every attempted send failed; check the BotPing ledger for which."
+            )
         return f"resurfaced {delivered} new question(s); {remaining} of {total} still pending."

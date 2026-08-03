@@ -56,10 +56,17 @@ def _already_resurfaced_refs() -> set[str]:
     Read from the ``BotPing`` ledger rather than tracked on the question row: the
     ledger is what :func:`notify_user` dedupes against, so reading it back is what
     makes the selection agree with the send instead of racing it.
+
+    Scoped to ``SENT`` because that is the only status ``notify_user`` treats as
+    already-delivered. A FAILED or NOOP row is a delivery that did NOT land and which
+    the send path will retry, so counting it as delivered would skip the question
+    permanently — strictly worse than the head-blocking this replaces, where a
+    transient failure self-healed on the next call.
     """
-    keys = BotPing.objects.filter(idempotency_key__startswith=_RESURFACE_KEY_PREFIX).values_list(
-        "idempotency_key", flat=True
-    )
+    keys = BotPing.objects.filter(
+        idempotency_key__startswith=_RESURFACE_KEY_PREFIX,
+        status=BotPing.Status.SENT,
+    ).values_list("idempotency_key", flat=True)
     return {key.removeprefix(_RESURFACE_KEY_PREFIX) for key in keys}
 
 
