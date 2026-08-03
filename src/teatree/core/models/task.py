@@ -87,6 +87,12 @@ class Task(models.Model):
     # skips it until then, so a parked task never re-dispatches into the same 429. Null
     # (every task that was never limit-parked) leaves the claim path byte-identical.
     not_before = models.DateTimeField(null=True, blank=True)
+    # #4098 When this row was last handed to the task runner. A row is PENDING both
+    # before and after that handoff, so without the stamp an admission a chokepoint has
+    # just made is invisible to the next probe — which is how a burst of cheap rows
+    # outran the lane ceiling. Stamped by ``TaskQuerySet.record_admission`` at every
+    # admission chokepoint; null = never admitted.
+    admitted_at = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
     # #129 TODO-sweep idempotency stamp. The sweep scanner marks a task
     # checked via an atomic conditional UPDATE before verifying its artifact,

@@ -8,17 +8,21 @@ new headless admission with a VISIBLE log instead of silently admitting into
 the measured congestion collapse.
 
 #4098 splits that one verdict per phase COST CLASS. The drain applied a single
-verdict to the whole queue, so a 3-minute read-only ``reviewing`` task was refused
-on the same brake as a 272-turn ``coding`` agent — and reviewing/shipping are what
-RETIRE work, so the brake removed its own relief and held itself on for 3h22m.
-``TestTheDrainDoesNotStarveTheCheapClass`` is the guard that the self-clearing
-property is pinned by a test rather than by argument.
+verdict to the whole queue, so a 3-minute ``reviewing`` task was refused on the same
+brake as a 272-turn ``coding`` agent — and reviewing/shipping are what RETIRE work, so
+the brake removed its own relief and held itself on for 3h22m.
+``TestTheDrainDoesNotStarveTheCheapClass`` is the guard that the self-clearing property
+is pinned by a test rather than by argument, and that the exemption stays BOUNDED: the
+two chokepoints have different shapes (a drain loop, a one-row ``post_save``), so the
+bound they share has to be the durable ``Task.admitted_at`` stamp rather than either
+one's in-memory count.
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from teatree.core import headless_admission as gate_mod
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
@@ -27,6 +31,7 @@ from teatree.core.headless_admission import (
     headless_admission_denied_reason,
     headless_admission_verdict,
 )
+from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.modelkit.phases import PhaseCost
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 
@@ -120,13 +125,13 @@ class TestPhaseAwareVerdict(TestCase):
     #: Past the 5.0-per-core deny watermark on the 8-core ``_machine`` signal.
     _MELTED = 8 * 5.0 + 1
 
-    def _verdict(self, *, load1: float = 1.0, live: int = 0, live_cheap: int = 0) -> HeadlessAdmission:
+    def _verdict(self, *, load1: float = 1.0, live: int = 0, occupancy: int = 0) -> HeadlessAdmission:
         with (
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
             patch.object(Task.objects, "live_headless_agent_count", return_value=live),
-            patch.object(Task.objects, "live_cheap_headless_agent_count", return_value=live_cheap),
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=occupancy),
         ):
             return headless_admission_verdict()
 
@@ -149,7 +154,7 @@ class TestPhaseAwareVerdict(TestCase):
 
     def test_the_cheap_lane_is_bounded_by_its_own_ceiling(self) -> None:
         # The exemption must never become a second unbounded lane (#4097's cost).
-        verdict = self._verdict(load1=self._MELTED, live_cheap=2)
+        verdict = self._verdict(load1=self._MELTED, occupancy=2)
         assert "cheap-phase" in (verdict.denied_for(PhaseCost.CHEAP) or "")
 
     def test_a_spent_token_budget_still_denies_the_cheap_class(self) -> None:
@@ -338,7 +343,7 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         # The exemption is bounded, so a full cheap lane holds cheap rows too — it can
         # never become the second unbounded lane.
         reviewing = self._pending("reviewing")
-        with patch.object(Task.objects, "live_cheap_headless_agent_count", return_value=2):
+        with patch.object(Task.objects, "cheap_lane_occupancy", return_value=2):
             result, _ = self._drain_under_load(self._MELTED)
 
         assert result["enqueued"] == []
@@ -347,16 +352,53 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_the_cheap_lane_bound_binds_within_one_drain(self) -> None:
-        # The lane's ceiling counts CLAIMED agents and a row this drain enqueues is
-        # still PENDING, so a re-probe cannot see it. Without the per-pass headroom a
-        # single braked drain would admit every pending cheap row at once — the second
-        # unbounded lane the exemption must never become.
+        # A verdict is probed once and then walked over N rows, so within a pass the
+        # headroom it carries is what bounds the lane; without it a single braked drain
+        # would admit every pending cheap row at once.
         pending = [self._pending("reviewing") for _ in range(5)]
-        with patch.object(Task.objects, "live_cheap_headless_agent_count", return_value=1):
+        with patch.object(Task.objects, "cheap_lane_occupancy", return_value=1):
             result, _ = self._drain_under_load(self._MELTED)
 
-        # ceiling 2 minus 1 live cheap agent leaves headroom for exactly one more.
+        # ceiling 2 minus 1 occupied seat leaves headroom for exactly one more.
         assert result["enqueued"] == [pending[0].pk]
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_row_refused_for_spent_headroom_says_so(self) -> None:
+        # Spent headroom is the one refusal that can only arise MID-loop, so the
+        # pass-level announcement cannot carry it — and it is the one an operator most
+        # needs, since the rows just sit there PENDING.
+        self._pending("reviewing")
+        self._pending("reviewing")
+        with (
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=1),
+            self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs,
+        ):
+            self._drain_under_load(self._MELTED)
+
+        assert any("headroom spent" in line for line in logs.output)
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_what_a_drain_admits_is_visible_to_the_next_chokepoint(self) -> None:
+        # The property the two chokepoints actually share: the drain's admissions are
+        # STAMPED, so a later probe — the drain's next pass or the post_save receiver,
+        # neither of which can see the other's in-memory headroom — counts them and
+        # stops at the same ceiling.
+        for _ in range(4):
+            self._pending("reviewing")
+
+        result, _ = self._drain_under_load(self._MELTED)
+
+        assert len(result["enqueued"]) == 2
+        assert Task.objects.cheap_lane_occupancy() == 2
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_an_admission_the_runner_never_claimed_releases_its_seat(self) -> None:
+        # The seat is bounded in TIME so a runner that died holding an admission cannot
+        # wedge the lane shut — the failure mode a stamp with no expiry would introduce.
+        stale = self._pending("reviewing")
+        Task.objects.filter(pk=stale.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+
+        assert Task.objects.cheap_lane_occupancy() == 0
 
 
 class TestAutoEnqueueConsultsTheGovernor(TestCase):
@@ -367,7 +409,7 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         with (
-            patch.object(gate_mod, "headless_admission_denied_reason", return_value="load over watermark"),
+            patch.object(gate_mod, "headless_admission_verdict", return_value=_denied("load over watermark")),
             patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
         ):
             enqueue_task.enqueue = MagicMock()
@@ -406,3 +448,23 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
             enqueue_task.enqueue.assert_not_called()
             self._create_pending("reviewing")
             enqueue_task.enqueue.assert_called_once()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_burst_of_cheap_rows_cannot_outrun_the_lane_ceiling(self) -> None:
+        # The bound the two chokepoints SHARE, exercised where it is hardest to hold:
+        # post_save sees one row at a time, so it carries no per-pass headroom, and the
+        # rows a burst admits are still PENDING — invisible to a re-probe that counts
+        # only CLAIMED agents. Six cheap rows created under a firing machine brake with
+        # a ceiling of two must admit two, not six; N-wide review/ship agents let
+        # through a brake is the melt the ceiling exists to stop.
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=8 * 5.0 + 1)),
+            patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            for _ in range(6):
+                self._create_pending("reviewing")
+
+            assert enqueue_task.enqueue.call_count == 2

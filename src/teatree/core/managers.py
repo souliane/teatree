@@ -71,6 +71,14 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+#: How long an admitted-but-unclaimed row keeps its seat in the cheap lane (#4098).
+#: It covers the runner handoff — the seconds between ``enqueue`` and the worker's
+#: claim — and no more: past it the seat is released, so a runner that died holding
+#: an admission cannot wedge the lane shut, and the drain re-admits (and re-stamps)
+#: the row on its next pass. Erring long would trade a melt for a stall; erring short
+#: reopens the burst window this bounds.
+ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
+
 
 class TicketQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
@@ -382,28 +390,52 @@ class TaskQuerySet(models.QuerySet):
             execution_target=task_model.ExecutionTarget.HEADLESS,
         ).count()
 
-    def live_cheap_headless_agent_count(self) -> int:
-        """Live HEADLESS agents on a CHEAP phase — the exemption lane's own bound (#4098).
+    def cheap_lane_occupancy(self) -> int:
+        """How full the CHEAP admission lane is — the bound BOTH chokepoints read (#4098).
 
         Deliberately a sibling of :meth:`live_headless_agent_count` rather than a
         parameter on it: that number is also the per-agent test-worker divisor, and it
         must keep counting EVERY live agent. This one answers a different question —
         how full is the small lane the cheap class is admitted through while the
         expensive class is braked — so the exemption is bounded rather than a second
-        unbounded lane. Filters on stored spellings, so a row written as ``review``
-        counts like ``reviewing``.
+        unbounded lane.
+
+        Occupancy is agents ALREADY RUNNING plus admissions still in the runner's hand:
+        a claimed row and a row a chokepoint enqueued a second ago put the same load on
+        the box, but the second is still PENDING, so counting only CLAIMED made a burst's
+        own admissions invisible to the very next probe. The drain could carry that in
+        memory across its loop; the one-row-at-a-time ``post_save`` cannot, so the bound
+        has to live where both can see it. :data:`ADMITTED_INFLIGHT_WINDOW` bounds how
+        long an unclaimed admission keeps its seat, so a runner that died holding one
+        cannot wedge the lane shut. Filters on stored spellings, so a row written as
+        ``review`` counts like ``reviewing``.
         """
         from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        return self.filter(
-            status=task_model.Status.CLAIMED,
-            lease_expires_at__gt=now,
-            execution_target=task_model.ExecutionTarget.HEADLESS,
-            phase__in=cheap_phase_spellings(),
-        ).count()
+        return (
+            self.filter(
+                execution_target=task_model.ExecutionTarget.HEADLESS,
+                phase__in=cheap_phase_spellings(),
+            )
+            .filter(
+                models.Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
+                | models.Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
+            )
+            .count()
+        )
+
+    def record_admission(self, task_pk: int) -> None:
+        """Stamp one row as handed to the runner — the write that makes an admission countable.
+
+        A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
+        auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
+        inside it would re-enter the receiver, and the stamp must not be able to re-arm
+        the dispatch it is recording.
+        """
+        self.filter(pk=task_pk).update(admitted_at=timezone.now())
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

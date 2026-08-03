@@ -11,7 +11,7 @@ spent, machine load over the watermark, or the live headless-agent count at the
 governor's ceiling) refuses a NEW headless admission with a VISIBLE log.
 
 **The verdict is per phase COST CLASS, never one answer for the whole queue
-(#4098).** A single verdict refused a 3-minute read-only ``reviewing`` task on
+(#4098).** A single verdict refused a 3-minute ``reviewing`` task on
 exactly the brake a 272-turn ``coding`` agent had caused. The starvation order is
 the point: reviewing and shipping are what DRAIN the box — a merged PR retires a
 worktree and its agent — so refusing them alongside the expensive class removed
@@ -57,14 +57,18 @@ class HeadlessAdmission:
     affordable at all — nothing changes between iterations of that loop, so re-probing
     per row would return the same answer N times at N times the cost.
 
-    ``cheap_headroom`` is what keeps the exemption from becoming a second unbounded lane
-    WITHIN one pass. The lane's ceiling counts LIVE (claimed) cheap agents, and a row
-    this drain enqueues is still PENDING, so a re-probe cannot see it — a single pass
-    would otherwise admit every pending cheap row at once however small the ceiling.
-    Callers report each admission through :meth:`record_admitted` and the headroom
-    decrements locally, at no extra probe. ``None`` is UNBOUNDED, reached only where the
-    governor has no opinion at all: the kill-switch, the fail-open path, and the
-    zero-ceiling rollback under which cheap simply follows the expensive verdict.
+    ``cheap_headroom`` is the ceiling minus the lane's occupancy at probe time — what
+    keeps the exemption from becoming a second unbounded lane. Callers book every
+    admission through :meth:`record_admitted`, which BOTH stamps the row
+    (``Task.admitted_at``, so the next probe's occupancy read sees it) and decrements
+    this local headroom (so a caller mid-pass need not re-probe to stay bounded). The
+    two chokepoints have different shapes — the drain is a loop holding one verdict,
+    ``post_save`` is one row with a fresh verdict each time — so the durable stamp is
+    what they actually share; the local headroom only covers the span of a single pass,
+    between the probe that computed it and the stamps it is writing. ``None`` is
+    UNBOUNDED, reached only where the governor has no opinion at all: the kill-switch,
+    the fail-open path, and the zero-ceiling rollback under which cheap simply follows
+    the expensive verdict.
     """
 
     expensive_denied: str | None
@@ -90,8 +94,30 @@ class HeadlessAdmission:
         """
         return self.denied_for(phase_cost(phase))
 
-    def record_admitted(self, phase: str) -> None:
-        """Spend one of the cheap lane's remaining admissions, when *phase* is cheap."""
+    def refuse(self, task_pk: int, phase: str, *, at: str) -> bool:
+        """True when this row must not be admitted now — and say so, at *at*.
+
+        Resolving and announcing are ONE call so a chokepoint cannot skip a row quietly:
+        spent headroom is refused mid-loop, after :meth:`log_denials` has already spoken,
+        and that is the refusal an operator most needs to see against the rows it holds.
+        """
+        denied = self.denied_reason(phase)
+        if denied is None:
+            return False
+        logger.warning("Governor DENIED %s of task %s: %s (staying PENDING)", at, task_pk, denied)
+        return True
+
+    def record_admitted(self, task_pk: int, phase: str) -> None:
+        """Book one admission of *task_pk* against the lane bound — durably, then locally.
+
+        The single seam every chokepoint routes its admission through, so the durable
+        stamp cannot be the step one of them forgets: a chokepoint that enqueued without
+        it would leave its own admission invisible to every later probe, which is exactly
+        how a one-row-at-a-time burst outran the ceiling.
+        """
+        from teatree.core.models import Task  # noqa: PLC0415 — deferred: Django app-registry read at call time
+
+        Task.objects.record_admission(task_pk)
         if phase_cost(phase) is PhaseCost.CHEAP:
             self._cheap_admitted += 1
 
@@ -126,12 +152,12 @@ def _cheap_lane_ceiling() -> int:
     return max(0, int(get_effective_settings().cheap_phase_admission_ceiling))
 
 
-def _ceiling_denial(ceiling: int | None, live: int, *, lane: str = "") -> str | None:
-    if ceiling is None or live < ceiling:
+def _ceiling_denial(ceiling: int | None, occupied: int, *, lane: str = "") -> str | None:
+    if ceiling is None or occupied < ceiling:
         return None
     if lane:
-        return f"live {lane} agents {live} at/over the {lane} ceiling {ceiling}"
-    return f"live headless agents {live} at/over governor ceiling {ceiling}"
+        return f"{lane} lane occupancy {occupied} at/over the {lane} ceiling {ceiling}"
+    return f"live headless agents {occupied} at/over governor ceiling {ceiling}"
 
 
 def headless_admission_verdict() -> HeadlessAdmission:
@@ -141,9 +167,11 @@ def headless_admission_verdict() -> HeadlessAdmission:
     live quota + machine signals, then the live headless-agent count against the
     governor's ceiling. The CHEAP class re-runs the SAME pure decision with the machine
     brake lifted — the token brakes still refuse it, because a review burns quota like
-    anything else — bounded by its own small ceiling over the live cheap agents alone,
-    and by the headroom that ceiling leaves for the rest of the caller's pass. A ceiling
-    of ``0`` collapses cheap onto expensive: the rollback lever.
+    anything else — bounded by its own small ceiling over the lane's OCCUPANCY: the
+    running cheap agents plus the cheap rows already handed to the runner. Counting the
+    latter is what lets a chokepoint see admissions it (or the other chokepoint) just
+    made, so the bound is one number in the database rather than per-caller state. A
+    ceiling of ``0`` collapses cheap onto expensive: the rollback lever.
     """
     if not governor_enabled():
         return _admit_all()
@@ -161,15 +189,17 @@ def headless_admission_verdict() -> HeadlessAdmission:
         exempt = decide_admission(
             quota=quota, machine=machine, static_ceiling=None, load_brake=MachineBrake(applies=False)
         )
-        live_cheap = Task.objects.live_cheap_headless_agent_count()
-        cheap = exempt.reason if not exempt.admit else _ceiling_denial(cheap_ceiling, live_cheap, lane="cheap-phase")
+        cheap_occupancy = Task.objects.cheap_lane_occupancy()
+        cheap = (
+            exempt.reason if not exempt.admit else _ceiling_denial(cheap_ceiling, cheap_occupancy, lane="cheap-phase")
+        )
     except Exception:
         logger.exception("headless admission governor probe failed — admitting (fail-open)")
         return _admit_all()
     return HeadlessAdmission(
         expensive_denied=expensive,
         cheap_denied=cheap,
-        cheap_headroom=max(0, cheap_ceiling - live_cheap),
+        cheap_headroom=max(0, cheap_ceiling - cheap_occupancy),
     )
 
 

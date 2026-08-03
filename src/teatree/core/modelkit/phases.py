@@ -174,27 +174,38 @@ CHAINING_ORCHESTRATOR: str = "t3:orchestrator"
 
 
 class PhaseCost(StrEnum):
-    """How much pressure one dispatched agent of a phase puts on the box (#4098).
+    """Whether a phase's agent mutates source, and how bounded its turn count is (#4098).
 
     The admission governor used to hold ONE verdict for the whole headless queue, so a
-    3-minute read-only review was refused on the same brake as a 272-turn coding agent
+    3-minute review task was refused on the same brake as a 272-turn coding agent
     — and the phases that RETIRE work (a merged PR frees a worktree and its agent) were
     starved by the phases that created the load, so the brake held itself on.
+
+    CHEAP is a comparison, not an absolute: a cheap agent still gets a shell and can
+    still run a suite. It names the class worth admitting a FEW of through a brake,
+    which is why it is paired with a ceiling rather than an exemption.
     """
 
     CHEAP = "cheap"
     EXPENSIVE = "expensive"
 
 
-#: Phases whose agent is short and read-only, or whose whole job is to RETIRE work.
-#: None of them provisions a worktree, runs a test suite, or drives a build, so N of
-#: them is bounded work rather than an open-ended one. Membership is deliberately
-#: harness-owned (beside :data:`SUBAGENT_BY_PHASE`) and NOT operator-configurable: a
-#: per-deployment override could move ``coding`` into the exempt lane, which is the
-#: unbounded-lane failure this exemption must never become.
+#: Phases whose agent does not MUTATE SOURCE, and whose expected turn count is short —
+#: the verdict producers plus the lanes whose whole job is to RETIRE work.
+#: That is the whole of the claim: cheap is not free. ``_TOOLS_BY_PHASE`` grants these
+#: phases ``shell``, the cold-review procedure provisions a detached review checkout, a
+#: reviewer is told to run the suite, and a ``shipping`` agent's push fires the parity
+#: hook — so one of these agents can load the box. What separates them is that their
+#: work CONVERGES: a review ends at a verdict, a ship ends at a merged PR that frees a
+#: worktree and its agent, where a coding agent's turn count is open-ended. Because
+#: cheap still costs, the exemption is a small CEILING rather than a free pass — the
+#: bound is what makes the class safe, not the cost of one member. Membership is
+#: deliberately harness-owned (beside :data:`SUBAGENT_BY_PHASE`) and NOT
+#: operator-configurable: a per-deployment override could move ``coding`` into the
+#: exempt lane, which is the unbounded-lane failure this exemption must never become.
 CHEAP_PHASES: frozenset[str] = frozenset(
     {
-        # Read-only review lanes — the verdict producers that unblock everything else.
+        # Review lanes — the verdict producers that unblock everything else.
         "reviewing",
         "e2e_reviewing",
         "codex_reviewing",
@@ -204,7 +215,7 @@ CHEAP_PHASES: frozenset[str] = frozenset(
         # its agent, so refusing these under load removes the only relief available.
         "shipping",
         "requesting_review",
-        # Short read-only assessors and responders — no repo mutation at all.
+        # Short assessors and responders — shell-denied or read-only by their contract.
         "triage_assessing",
         "answering",
         "directive_interpreting",

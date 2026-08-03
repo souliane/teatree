@@ -236,13 +236,9 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
         .select_related("ticket")
         .only("pk", "phase", "execution_target", "ticket__role", "ticket__overlay")
     )
-    # Consult the admission governor once per drain (F9), then resolve that ONE probe
-    # per row's phase cost class (#4098) — a 3-minute read-only review must not be
-    # refused on the brake a 272-turn coding agent caused, since reviewing and shipping
-    # are what retire a worktree and free the box. A DENY applies backpressure to the
-    # ENQUEUE step only — poison rows are still failed and cleaned this tick; live rows
-    # stay PENDING for the next admitted drain. Fail-open leaves the pre-governor
-    # behaviour byte-for-byte intact.
+    # One probe per drain, resolved per row's phase cost class (#4098). A DENY applies
+    # backpressure to the ENQUEUE step only — poison rows are still failed this tick,
+    # live rows stay PENDING for the next admitted drain.
     admission = headless_admission_verdict()
     admission.log_denials()
     enqueued: list[int] = []
@@ -258,7 +254,7 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
-        if admission.denied_reason(task_obj.phase) is not None:
+        if admission.refuse(task_obj.pk, task_obj.phase, at="headless drain"):
             continue
         if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
             task_obj.route_to_headless(
@@ -266,7 +262,7 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             )
             rerouted.append(task_obj.pk)
         execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
-        admission.record_admitted(task_obj.phase)
+        admission.record_admitted(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
     return {"enqueued": enqueued, "rerouted": rerouted, "failed_unknown_overlay": failed_unknown_overlay}
 
