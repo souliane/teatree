@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk.types import RateLimitType
+from django.db import OperationalError
 from django.test import TestCase, override_settings
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -35,7 +36,7 @@ from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import AgentHarnessProvider
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import ConfigSetting, LeaseLostError, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
 from tests._agent_runtime_env import interactive_runtime
@@ -1271,6 +1272,34 @@ class TestDriveWithHeartbeat(TestCase):
         assert elapsed < 10
         assert outcome.stuck_reason is not None
         assert "lease lost" in outcome.stuck_reason
+
+    def test_an_unreadable_reclaimer_still_aborts_the_duplicate_run(self) -> None:
+        # The reclaimer read-back contends with the very writer that took the claim, so a
+        # lock error there is the EXPECTED failure. It must not escape past
+        # `except LeaseLostError` into the generic handler, which logs and keeps driving —
+        # that turns a lost lease into two drivers on one unit (#3982).
+        def lease_lost_renew(**_kwargs: object) -> None:
+            msg = f"lease lost for task {self.task.pk}"
+            raise LeaseLostError(msg)
+
+        self.task.renew_lease = lease_lost_renew
+        messages = [_assistant_text("step") for _ in range(1000)]
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        start = time.monotonic()
+        with (
+            _fake_sdk(messages, delay=0.05),
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch.object(Task.objects, "filter", side_effect=OperationalError("database table is locked")),
+        ):
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 10
+        assert outcome.stuck_reason is not None
+        assert "lease lost" in outcome.stuck_reason
+        assert outcome.lease_lost is True
 
 
 class TestWatchdogResamplesUsageMidRun(TestCase):

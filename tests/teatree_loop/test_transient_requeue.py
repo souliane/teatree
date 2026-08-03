@@ -293,6 +293,23 @@ class TestTransientRequeue(TestCase):
         assert "[superseded-retired]" in task.execution_reason
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
+    def test_a_landed_shipping_task_is_retired_not_escalated(self) -> None:
+        # 3982: the shipping task pushed its branch, opened its PR and advanced the ticket
+        # to IN_REVIEW — the phase's entire purpose — then lost its lease and landed FAILED.
+        # IN_REVIEW is off the linear work ladder, so has_completed_phase alone answers
+        # False and the sweep escalated a repair question about work that already shipped.
+        task = _failed_task(phase="shipping", state=Ticket.State.IN_REVIEW)
+        _add_failed_attempt(task, error="stuck_loop: lease lost for task 1: re-claimed in-process")
+        _add_failed_attempt(task, error="stuck_loop: lease lost for task 1: re-claimed in-process")
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.COMPLETED
+        assert "[superseded-retired]" in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
     def test_live_phase_not_yet_reached_still_escalates(self) -> None:
         # Boundary guard: a FAILED task for a phase the ticket has NOT reached
         # (state TESTED, phase reviewing ⇒ produces REVIEWED, not yet reached) is a
