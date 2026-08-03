@@ -393,10 +393,12 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     ``issue_implementer_max_concurrent`` verbatim whenever that number is missing,
     stale, or switched off.
     """
-    from teatree.core.admission_governor import MERGE_STUCK_AFTER_TICKS  # noqa: PLC0415 — leaf import
+    from teatree.core.admission_governor import (  # noqa: PLC0415 — leaf import
+        MERGE_STUCK_AFTER_TICKS,
+        read_merge_signal,
+    )
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
     from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
-    from teatree.loop.admission import read_merge_signal  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
