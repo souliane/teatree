@@ -33,8 +33,21 @@ logger = logging.getLogger(__name__)
 WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
 
 #: WRITE concurrency as a function of cores, not a magic number, so a bigger box scales
-#: up automatically. 8 cores → 2, the empirically-sustainable default measured on this box.
-WRITE_CONCURRENCY_PER_CORE = 0.25
+#: up automatically. 8 cores → 4.
+#:
+#: This was 0.25 (8 cores → 2), calibrated against the meltdown recorded on
+#: :data:`TOTAL_TEST_WORKERS_PER_CORE` below — which names its own cause: "the per-agent
+#: expansion is the melt driver, NOT the agent count". That driver is now bounded
+#: independently by :func:`per_agent_test_workers`, which divides a ``cores * 2`` TOTAL
+#: worker budget by the active-agent count, so total workers stay bounded however many
+#: agents run. The old value was set before that guard existed and priced agent count as
+#: if it were the hazard.
+#:
+#: Raising it is safe to attempt rather than safe by assertion: the load brake still denies
+#: above ``BRAKE_LOAD_PER_CORE * cores`` and holds to ``RESUME_LOAD_PER_CORE * cores``, so an
+#: over-aggressive value throttles itself instead of melting the box. Measured at the change:
+#: load 13.4/15.9/16.5 on 8 cores against a deny watermark of 40, 14 GB RAM free.
+WRITE_CONCURRENCY_PER_CORE = 0.5
 
 #: Total test workers across ALL concurrent agents, as a multiple of cores. The measured
 #: meltdown was 12 agents x auto-detected 8 workers ≈ 96 workers at load ~70: the
@@ -296,28 +309,36 @@ def decide_admission(
     )
 
 
-def read_merge_signal(*, stuck_after: int = MERGE_STUCK_AFTER_TICKS) -> MergeSignal:
+def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER_TICKS) -> MergeSignal:
     """Open PRs, and how many of them the merge sweep keeps refusing.
 
-    Reads what the sweep already records rather than probing the forge: a
-    ``SweepSkipStreak`` row IS the sweep's own note that it declined this PR and how
-    many consecutive times, so the whole signal costs two counts and no network. The
-    threshold matches the aged-skip surfacing one, so both agree on the word "stuck".
+    Scoped to *overlay* because the gate it feeds is per-overlay: counting globally lets a
+    stall in one overlay brake intake in another, which is a silent cross-tenant brake that
+    a single-overlay box can never show.
 
-    A read that raises returns ``fresh=False`` — unknown never brakes, because a probe
-    that cannot answer must not be able to halt the factory.
+    A streak only counts when it names a PR that is STILL LIVE. ``SweepSkipStreak.resolve``
+    fires only on a live ``pr_sweep.*`` signal for that exact ``(slug, pr_id)``, so a PR that
+    merged or closed outside the sweep leaves its row behind forever. Counting rows
+    independently of the live set lets those fossils outnumber real PRs and brake a pipeline
+    in which every open PR is healthy.
+
+    A read that raises returns ``fresh=False`` — unknown never brakes, because a probe that
+    cannot answer must not be able to halt the factory.
     """
     from teatree.core.models import PullRequest, SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
 
     try:
-        open_prs = PullRequest.objects.live().count()
-        stuck = SweepSkipStreak.objects.aged(threshold=stuck_after).count()
+        live = PullRequest.objects.live()
+        streaks = SweepSkipStreak.objects.aged(threshold=stuck_after)
+        if overlay:
+            live = live.filter(overlay=overlay)
+            streaks = streaks.filter(overlay=overlay)
+        live_keys = {(str(repo), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()}
+        stuck = sum(1 for slug, pr_id in streaks.values_list("slug", "pr_id") if (str(slug), int(pr_id)) in live_keys)
     except Exception:
         logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
         return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)
-    # A streak can outlive its PR row; clamping keeps `stuck <= open` so the ratio the
-    # ceiling is scaled by stays a fraction.
-    return MergeSignal(fresh=True, open_prs=open_prs, stuck_prs=min(stuck, open_prs))
+    return MergeSignal(fresh=True, open_prs=len(live_keys), stuck_prs=stuck)
 
 
 def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSignal:

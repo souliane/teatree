@@ -361,7 +361,9 @@ class TestReadQuotaSignalUsesTheFreshSubset(TestCase):
         )
 
         assert decision.admit is True
-        assert decision.ceiling == 2
+        # floor(8 cores * WRITE_CONCURRENCY_PER_CORE) at a healthy pace; the subject here is
+        # that a LAPSED peer does not blank the ceiling, not the constant's value.
+        assert decision.ceiling == 4
 
     def test_the_pacing_brake_survives_a_lapsed_peer(self) -> None:
         _usage_row("paced", utilization_7d=0.97, status_7d="allowed", valid_for=dt.timedelta(minutes=5))
@@ -413,3 +415,22 @@ class TestMergeThroughputGatesNewIntake:
     def test_the_generic_governor_is_deliberately_untouched(self) -> None:
         """Ship and review dispatch CLEAR the pile; braking them would deadlock it."""
         assert _decide().admit
+
+
+class TestWriteConcurrencyRaise:
+    """8 cores admit 4, and every brake that makes that safe still holds (#4069)."""
+
+    def test_an_eight_core_box_admits_four(self) -> None:
+        decision = _decide(machine=_machine(cores=8, load1=1.0))
+        assert decision.admit
+        assert decision.ceiling == 4
+
+    def test_the_load_brake_still_denies_at_the_watermark(self) -> None:
+        """The brake is what makes a higher ceiling safe to attempt — it must not have moved."""
+        decision = _decide(machine=_machine(cores=8, load1=40.0))
+        assert not decision.admit
+        assert "load" in decision.reason
+
+    def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
+        """The melt driver the old 0.25 was calibrated against, now bounded independently."""
+        assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2

@@ -426,7 +426,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         # sweep below still runs so no in-flight claim expires, and the ship and review
         # lanes are untouched, so the work that CLEARS the pile keeps going. The brake
         # releases itself as soon as one PR starts moving again.
-        merge = read_merge_signal()
+        merge = read_merge_signal(overlay=backend.name)
         if merge.stalled:
             can_claim = False
             logger.warning(
