@@ -552,6 +552,35 @@ class TestGovernorGate(_LoopDispatchTest):
         ):
             assert loop_dispatch._admit_budget_exhausted() is True
 
+    def test_an_absent_sidecar_budget_still_takes_the_governors_ceiling(self) -> None:
+        # This lane passes ``static_ceiling=budget``, so an absent budget is the same
+        # ``None`` the headless lane passes (#4097): the governor's own ceiling has to
+        # apply, or "no operator cap" would read as "no cap".
+        from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
+        from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
+        from teatree.core.models import Task  # noqa: PLC0415 - deferred: local import
+
+        admit = AdmissionDecision(admit=True, reason="admitting up to 4", ceiling=4, braked=False)
+        with (
+            patch.object(loop_dispatch, "read_admit_budget", return_value=None),
+            patch.object(loop_dispatch, "governor_verdict", return_value=admit),
+            patch.object(Task.objects, "in_flight_claimed_count", return_value=4),
+        ):
+            assert loop_dispatch._admit_budget_exhausted() is True
+
+    def test_no_governor_verdict_leaves_an_absent_budget_unclamped(self) -> None:
+        # The kill-switch / failed-probe path is the ONLY one where absence still
+        # means unclamped — the pre-governor behaviour, byte-for-byte.
+        from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
+        from teatree.core.models import Task  # noqa: PLC0415 - deferred: local import
+
+        with (
+            patch.object(loop_dispatch, "read_admit_budget", return_value=None),
+            patch.object(loop_dispatch, "governor_verdict", return_value=None),
+            patch.object(Task.objects, "in_flight_claimed_count", return_value=999),
+        ):
+            assert loop_dispatch._admit_budget_exhausted() is False
+
 
 class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
     """``pending-spawn --claimable-only`` mirrors what ``claim-next`` would take.

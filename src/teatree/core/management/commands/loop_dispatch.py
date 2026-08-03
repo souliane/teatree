@@ -74,16 +74,18 @@ def _admit_budget_exhausted() -> bool:
     closed. The CAS still serializes the marginal claim; this gate only decides
     *whether* to attempt it.
 
-    **Fail open to UNCLAMPED** (returns ``False``) when the budget is absent
-    (medium / toggle-off — today's throughput), stale (> TTL, a dead loop wrote
-    it), or any read error — a dead loop must never wrongly clamp live dispatch.
+    An absent budget (medium / toggle-off), a stale one (> TTL, a dead loop wrote it),
+    or any read error degrades to NO SIDECAR CLAMP — a dead loop must never wrongly
+    clamp live dispatch. That is not the same as unclamped: the governor still supplies
+    a ceiling of its own below (#4097), so the budget's absence removes the operator's
+    bound, not the bound.
 
     #3644: this is the admission chokepoint, so it is where the adaptive governor is
     ASKED (event-driven, at the decision point). The governor's verdict either denies
     outright — token quota first, machine load second, both logged — or supplies a live
-    ceiling; the sidecar budget becomes the operator's upper BOUND on it. A ``None``
-    verdict (kill-switch off, or a failed probe) leaves the pre-governor behaviour
-    byte-for-byte intact.
+    ceiling; the sidecar budget becomes the operator's upper BOUND on it. Only a ``None``
+    VERDICT (kill-switch off, or a failed probe) leaves the pre-governor behaviour
+    byte-for-byte intact, and then an absent budget really is unclamped.
 
     #6: the in-flight count runs over ``Task.dispatchable_q()`` WITHOUT the
     ``execution_target == INTERACTIVE`` narrowing — the SAME filter set the
@@ -256,9 +258,9 @@ class Command(TyperCommand):
         row?". The Stop-hook self-pump uses it: without the gate the probe
         reports an un-advanceable unit (one held back by a full in-flight
         budget) forever, so the self-pump re-offers a unit ``claim-next``
-        would always refuse — it never advances or stops. The gate
-        fails OPEN (unclamped) on an absent / stale / unreadable budget,
-        identical to the claimer.
+        would always refuse — it never advances or stops. The gate degrades to
+        no SIDECAR clamp on an absent / stale / unreadable budget, identical to
+        the claimer — and identically, the governor's own ceiling still applies.
         """
         if claimable_only and _admit_budget_exhausted():
             payload: list[dict[str, Any]] = []

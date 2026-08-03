@@ -188,7 +188,9 @@ class TestUnreadableProbeNeverManufacturesAClamp:
         assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling == _decide().ceiling
 
     def test_an_unreadable_probe_preserves_the_operators_static_ceiling(self) -> None:
-        assert _decide(quota=_quota(fresh=False), static_ceiling=4).ceiling == 4
+        # 32 cores so the machine ceiling is 16: a static 4 that merely COINCIDED with
+        # the machine answer would pass whether or not it was honoured.
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=32), static_ceiling=4).ceiling == 4
 
     def test_an_unreadable_probe_still_admits(self) -> None:
         assert _decide(quota=_quota(fresh=False), static_ceiling=None).admit
@@ -200,7 +202,6 @@ class TestUnreadableProbeNeverManufacturesAClamp:
             machine=_machine(cores=8),
             static_ceiling=8,
         )
-        assert tightened.ceiling is not None
         assert tightened.ceiling < 8
 
     def test_a_machine_brake_still_denies_even_when_the_quota_probe_is_unreadable(self) -> None:
@@ -226,8 +227,6 @@ class TestAnUnknownQuotaIsBoundedNotUnlimited:
     def test_an_unknown_quota_never_admits_wider_than_a_known_healthy_one(self) -> None:
         unknown = _decide(quota=_quota(fresh=False), static_ceiling=None)
         known_healthy = _decide(quota=_quota(), static_ceiling=None)
-        assert known_healthy.ceiling is not None
-        assert unknown.ceiling is not None
         assert unknown.ceiling <= known_healthy.ceiling
 
     def test_an_operator_ceiling_below_the_machine_one_still_wins(self) -> None:
