@@ -446,6 +446,21 @@ class TestFailingCandidates(TestCase):
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
 
+    def test_a_deterministic_shipping_failure_with_a_stray_pr_is_still_failing(self) -> None:
+        # #3982's opposite direction: a landed PR proves SOME push succeeded, not that
+        # THIS attempt's push gate refusal did. Only a LEASE_LOST failure may trust the
+        # artifact half of the landing evidence; any other failure kind must still surface.
+        ticket = _stuck_ticket(state=Ticket.State.REVIEWED, idle_hours=0)
+        _finished_task(
+            ticket, phase="shipping", status=Task.Status.FAILED, error="result_error: the push gate refused the branch"
+        )
+        ticket.pull_requests.create(
+            url="https://ex.com/o/a/pull/9", repo="o/a", iid="9", state=PullRequest.State.MERGED
+        )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
+
 
 class TestEveryClassPassesTheBudget(TestCase):
     """#3958 acceptance: no re-dispatch path reaches a scheduler without the repair budget.
