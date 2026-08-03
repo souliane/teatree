@@ -10,27 +10,455 @@
 # stack is down, overriding the role-dispatch entrypoint to run the CLI directly.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# PHYSICAL resolution (`pwd -P`), not logical: a fork commonly exposes
+# `<fork>/deploy -> vendor/teatree/deploy`, and bash resolves `..` LOGICALLY —
+# `<fork>/deploy/..` is `<fork>`, which rebases REPO_ROOT onto the fork root and
+# defeats the layout checks below. Resolving both hops physically makes the
+# symlinked and the direct entry point resolve identically. On the box, where no
+# symlink is involved, `pwd -P` is `pwd`.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
+# The container path the source mount always lands on (the compose target is
+# fixed — it is what `teatree.paths` resolves inside the container).
+CONTAINER_SOURCE_DIR=/home/teatree/teatree
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "deploy/t3: docker CLI not found on PATH — the containerized t3 workflow needs Docker. See deploy/README.md" >&2
     exit 127
 fi
 
+# The host home whose tree carries the compose bind-mount SOURCES (see
+# docker-compose.yml's `volumes:`). On the box this is the deploy user's home,
+# `/home/teatree` — identical to the compose default and to what deploy.sh
+# exports — so the box is unaffected. On an operator laptop it is `/Users/<name>`,
+# which is what makes the stack mountable there at all: dockerd refuses a source
+# path that does not exist on the host ("mounts denied: … is not shared").
+export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
+
+# The checkout this wrapper runs out of — the directory holding `deploy/`. The
+# watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
+# `$TEATREE_DEPLOY_CHECKOUT/deploy/watchdog.sh` from it, so both read this one
+# value; hard-coding the box path left the watchdog permanently `Created` with
+# "mounts denied" on every other host. On the box `$REPO_ROOT` IS the compose
+# default, so nothing changes there.
+export TEATREE_DEPLOY_CHECKOUT="${TEATREE_DEPLOY_CHECKOUT:-$REPO_ROOT}"
+
+# TEATREE_DOCKER_SOCKET_GID — the group owning the docker socket AS THE CONTAINER
+# SEES IT, which is what docker-compose.yml's `group_add` on teatree-worker reads.
+# The worker runs as the non-root TEATREE_UID and needs the daemon for `worktree
+# provision` (docker build) and `worktree start` (compose up); the socket is mode
+# 0660 root-owned, so without a matching group the mount grants nothing. Needed in
+# this wrapper too: with the stack down it starts a one-off worker itself.
+#
+# NOT always a `stat` of the host socket. On Linux the daemon shares the host
+# kernel, so the host's socket IS the container's and its gid transfers (on Debian
+# and Ubuntu the `docker` group, not 0). Under Docker Desktop the socket is served
+# from the product's own Linux VM where it is root:root — gid 0 — while the
+# host-side node is an ordinary user-owned file whose gid (`staff`) means nothing
+# inside the container, so reading the host there would export a group the
+# container does not have and leave provisioning as broken as no group at all.
+#
+# Kept INLINE rather than sourced from a sibling: this wrapper is copied and run
+# standalone (deploy/README.md § alias, and the tests that materialize it), so an
+# extra required file is a failure mode the six lines are not worth. deploy.sh
+# carries the identical block; tests/test_deploy_docker_socket_access.py pins them
+# in sync. An operator-set value always wins.
+if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
+    TEATREE_DOCKER_SOCKET_GID=0
+    if [ "$(uname -s)" = Linux ] && [ -S /var/run/docker.sock ]; then
+        TEATREE_DOCKER_SOCKET_GID="$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)"
+    fi
+fi
+export TEATREE_DOCKER_SOCKET_GID
+
+# The sources must PRE-EXIST: dockerd auto-creates a missing bind source, and on
+# the box it creates it ROOT-owned, locking the non-root container out of the
+# mount (deploy.sh pre-creates the same set for the same reason). Credential-plane
+# dirs are mode 700, as pass and gpg require.
+#
+# Named once, because these same host roots are the whole answer to "can the
+# container see this path?" — the reachability check below reads them, so the
+# diagnostic can never drift from what is actually mounted.
+CREDENTIAL_MOUNT_SOURCES=(
+    "$TEATREE_HOST_HOME/.password-store"
+    "$TEATREE_HOST_HOME/.gnupg"
+)
+DATA_MOUNT_SOURCES=(
+    "$TEATREE_HOST_HOME/.local/share/teatree"
+    "$TEATREE_HOST_HOME/.local/share/teatree-worktrees"
+    "$TEATREE_HOST_HOME/workspace/t3-workspaces"
+    "$TEATREE_HOST_HOME/.claude/projects"
+)
+install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
+install -d "${DATA_MOUNT_SOURCES[@]}"
+
+# Run the WORKING TREE the wrapper was invoked from when that tree vendors
+# teatree core — the fork layout `<fork>/vendor/teatree/deploy/t3`. The tree is
+# bind-mounted over the container's source path, so the containerized `t3`
+# executes the code being edited here instead of the `teatree_src` volume's
+# clone. A stock teatree checkout (`<clone>/deploy/t3`, the box) does not match
+# and keeps the volume — the box's self-update path via the entrypoint's origin
+# fast-forward. `TEATREE_SOURCE_MOUNT` set in the environment always wins.
+#
+# What gets mounted is the FORK ROOT, not the vendored core alone. Overlays
+# register through the HOST project's `teatree.overlays` entry point, so the
+# container resolves a downstream overlay only once the fork root is installed
+# alongside core (`--with-editable`, deploy/entrypoint.sh). The entrypoint
+# derives that host root from the layout it can SEE — `$TEATREE_CLONE_DIR`
+# ending in `/vendor/teatree` with a `pyproject.toml` at its parent — so
+# mounting core alone leaves it nothing to find, no overlay registered, and
+# every headless task on an overlay-owned ticket dead at dispatch ("Overlay
+# '<name>' not found. Available: t3-teatree"). Mounting the fork root puts core
+# one level down, which is exactly the shape that detection matches;
+# `TEATREE_CLONE_DIR` follows it there and reaches the container through the
+# compose services' `environment:` (an operator's own value still wins).
+#
+# A vendor parent with no `pyproject.toml` is not a host project — the entrypoint
+# would reject it too — so that layout keeps the core-only mount unchanged.
+if [ -z "${TEATREE_SOURCE_MOUNT:-}" ] &&
+    [ "$(basename "$REPO_ROOT")" = teatree ] &&
+    [ "$(basename "$(dirname "$REPO_ROOT")")" = vendor ]; then
+    FORK_ROOT="$(dirname "$(dirname "$REPO_ROOT")")"
+    if [ -f "$FORK_ROOT/pyproject.toml" ]; then
+        export TEATREE_SOURCE_MOUNT="$FORK_ROOT"
+        export TEATREE_CLONE_DIR="${TEATREE_CLONE_DIR:-$CONTAINER_SOURCE_DIR/vendor/teatree}"
+    else
+        export TEATREE_SOURCE_MOUNT="$REPO_ROOT"
+    fi
+fi
+
+# WHERE THE OPERATOR STANDS. `compose exec`/`run` start the process in the image's
+# own WORKDIR (/home/teatree), so the host cwd never crosses the boundary and the
+# containerized CLI sees the same directory no matter where `t3` was typed. Most
+# commands do not care; a command whose whole contract is "resolve from where I
+# am" is dead on arrival — `t3 overlay install` walks up from cwd to find the
+# teatree workspace and failed identically from the fork root and from /tmp.
+#
+# A `--workdir` cannot carry it: the path must exist INSIDE the container, and the
+# host cwd usually has no container counterpart, so passing it would make docker
+# fail the exec for every invocation from ~, /tmp, or any repo outside the mount —
+# breaking every other containerized command to serve this one. Passing it only
+# when mappable is worse: the CLI would then run under two different cwds
+# depending on where the operator stood, changing behaviour for every cwd-sensitive
+# code path at once.
+#
+# So it crosses as DATA the CLI opts into reading (teatree.core.invocation_cwd),
+# translated HERE — the only layer that knows the mount mapping — into container
+# coordinates. Only a cwd inside the mounted tree is translatable; anywhere else
+# the name stays unset and the CLI keeps its own cwd, exactly as before.
+# EVERY bind-mounted tree is translatable, not just the source mount. The
+# worktree roots are where the operator actually stands when running a
+# worktree-scoped command, and leaving them out made `worktree provision` fail
+# from every worktree with "Cannot auto-detect worktree from /home/teatree" —
+# the image WORKDIR, which is what an untranslated cwd degrades to.
+#
+# The pairs mirror docker-compose.yml's `volumes:` for this service, longest
+# host prefix first so a nested mount wins over the tree containing it.
+#
+# Both sides of every comparison are PHYSICAL. `pwd -P` already resolves the cwd,
+# so a logical `$TEATREE_HOST_HOME` prefix would never match it on a host whose
+# home traverses a symlink (`/home` -> `/usr/home`, an NFS-mounted home, macOS's
+# `/tmp` -> `/private/tmp`): the cwd would silently fall through untranslated and
+# the command would resolve from the image WORKDIR again — the exact failure this
+# block exists to remove, reappearing only on some hosts. `-P` on a path that is
+# already physical is a no-op, so the common case is unchanged.
+# The host roots the container can see. Shared by the invisible-checkout refusal
+# below and the unreachable-argument note further down, so the two can never name
+# different sets — they are answering the same question.
+print_visible_host_roots() {
+    local root
+    for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
+        if [ -n "$root" ]; then
+            echo "             $root" >&2
+        fi
+    done
+}
+
+# The checkout enclosing $1, or nothing when $1 is not inside one. A `.git` entry
+# is what git itself looks for, and it is a FILE in a linked worktree — teatree's
+# own worktrees are exactly that shape. Pure expansion, no `git`: the wrapper's
+# whole contract is that the host needs no teatree toolchain, and a hook subprocess
+# inherits a restricted PATH where shelling out silently yields nothing.
+enclosing_checkout_root() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != / ]; do
+        if [ -e "$dir/.git" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        dir="${dir%/*}"
+    done
+    if [ -e /.git ]; then
+        printf '%s\n' /
+    fi
+    return 0
+}
+
+refuse_invisible_checkout() {
+    echo "deploy/t3: refusing to run — this checkout is not visible inside the container." >&2
+    echo "           cwd:      $1" >&2
+    echo "           checkout: $2" >&2
+    echo "           The container carries its OWN copy of the teatree source (a Docker" >&2
+    echo "           volume, a separate tree from this one), so dispatching from here would" >&2
+    echo "           silently operate on that copy instead of the checkout you are in." >&2
+    echo "           The container sees only these host roots:" >&2
+    print_visible_host_roots
+    echo "           Fix: work from a checkout under one of them — \`t3 <overlay> workspace" >&2
+    echo "           ticket <id>\` creates one — or export TEATREE_INVOCATION_CWD to the" >&2
+    echo "           container-side path when you know this tree is reachable there." >&2
+    exit 1
+}
+
+if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
+    HOST_CWD="$(pwd -P)"
+    PHYSICAL_HOST_HOME="$(cd "$TEATREE_HOST_HOME" 2>/dev/null && pwd -P)" || PHYSICAL_HOST_HOME="$TEATREE_HOST_HOME"
+    : "${PHYSICAL_HOST_HOME:=$TEATREE_HOST_HOME}"
+    MOUNT_PAIRS=(
+        "$PHYSICAL_HOST_HOME/workspace/t3-workspaces:/home/teatree/workspace/t3-workspaces"
+        "$PHYSICAL_HOST_HOME/.local/share/teatree-worktrees:/home/teatree/.local/share/teatree-worktrees"
+    )
+    # The source mount is operator- or layout-derived, so it is appended only when
+    # one was resolved; it can nest under neither of the fixed pairs above.
+    if [ -n "${TEATREE_SOURCE_MOUNT:-}" ]; then
+        MOUNT_PAIRS+=("$TEATREE_SOURCE_MOUNT:$CONTAINER_SOURCE_DIR")
+    fi
+    for PAIR in "${MOUNT_PAIRS[@]}"; do
+        HOST_PREFIX="${PAIR%%:*}"
+        CONTAINER_PREFIX="${PAIR##*:}"
+        if [ "$HOST_CWD" = "$HOST_PREFIX" ]; then
+            export TEATREE_INVOCATION_CWD="$CONTAINER_PREFIX"
+            break
+        fi
+        case "$HOST_CWD" in
+        "$HOST_PREFIX"/*)
+            export TEATREE_INVOCATION_CWD="${CONTAINER_PREFIX}${HOST_CWD#"$HOST_PREFIX"}"
+            break
+            ;;
+        esac
+    done
+
+    # WHEN THE UNTRANSLATED CWD IS A WRONG TREE, NOT MERELY AN UNKNOWN ONE. An
+    # untranslated cwd degrades to the image WORKDIR, and under it sits the
+    # container's own source volume — so a cwd-sensitive command run from a host
+    # checkout outside every mount resolves against that copy and reports success
+    # having touched a different tree. Nothing downstream can detect this: both
+    # trees are real teatree checkouts, so there is no error to surface.
+    #
+    # Scoped to a CHECKOUT because that is the only cwd a tree can be wrong about.
+    # `~`, `/tmp` and the like carry no tree, and every cwd-insensitive command
+    # (`t3 doctor`, `t3 info`, `t3 notify send`) must keep running from them — the
+    # pre-existing degrade-to-container-cwd behaviour, unchanged.
+    #
+    # A refusal, where an unreachable path ARGUMENT below only warns: the wrapper
+    # cannot know whether the CLI will open that argument, but the cwd is read by
+    # the CLI on every invocation, so the wrong-tree resolution is certain.
+    if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
+        CHECKOUT_ROOT="$(enclosing_checkout_root "$HOST_CWD")"
+        if [ -n "$CHECKOUT_ROOT" ]; then
+            refuse_invisible_checkout "$HOST_CWD" "$CHECKOUT_ROOT"
+        fi
+    fi
+fi
+
+# WHEN A HOST PATH CANNOT CROSS THE BOUNDARY. The container sees only the bind
+# mounts above, so an absolute path outside them does not exist there — and the
+# CLI reports it by the name it was given, producing "No such file or directory"
+# against a path the operator can `ls` on the host. That reads as a teatree bug
+# and has cost real debugging time; the cause is never in the message.
+#
+# The wrapper is the only layer that knows the mapping, so it names it here. The
+# test is deliberately narrow: an argument that is ABSOLUTE, EXISTS on the host,
+# and lies under no mount source. Such a path is unreadable inside the container
+# by construction, so the note cannot be wrong about the boundary. It is a note,
+# not a refusal — the wrapper cannot know whether the CLI will actually open the
+# argument, and refusing would break a command that merely passes it through.
+unreachable_host_paths() {
+    local arg root reachable
+    for arg in "$@"; do
+        case "$arg" in
+        /*) ;;
+        *) continue ;;
+        esac
+        if [ ! -e "$arg" ]; then
+            continue
+        fi
+        reachable=0
+        for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
+            if [ -n "$root" ]; then
+                case "$arg" in
+                "$root" | "$root"/*)
+                    reachable=1
+                    break
+                    ;;
+                esac
+            fi
+        done
+        if [ "$reachable" -eq 0 ]; then
+            printf '%s\n' "$arg"
+        fi
+    done
+    return 0
+}
+
+warn_unreachable_host_paths() {
+    local unreachable path
+    unreachable="$(unreachable_host_paths "$@")"
+    if [ -z "$unreachable" ]; then
+        return 0
+    fi
+    echo "deploy/t3: these paths exist on the host but are NOT inside any mount, so the" >&2
+    echo "           containerized t3 cannot see them (expect 'No such file or directory'):" >&2
+    # Read line-wise, never word-split: a host path may legitimately contain spaces.
+    while IFS= read -r path; do
+        echo "             $path" >&2
+    done <<<"$unreachable"
+    echo "           The container sees only these host roots:" >&2
+    print_visible_host_roots
+    echo "           Move the path under one of them." >&2
+    return 0
+}
+
+warn_unreachable_host_paths "$@"
+
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+
+# Operator-settable env the CONTAINERIZED CLI must still see. `compose exec`/`run`
+# start the process from the service's own `environment:`, so a value the operator
+# exported on the host is invisible inside — and teatree reads several of these at
+# the host boundary. `T3_OVERLAY_NAME` is the one whose loss kills a whole surface:
+# on a multi-overlay install the review CLI's token and base-URL reads call
+# `get_overlay()` with no name, raise "Multiple overlays found", and every GitLab
+# review post dies. Only names actually SET are forwarded, so an unset one never
+# shadows the service's own value. `$TEATREE_FORWARD_ENV` (comma-separated) extends
+# the list without editing this script.
+FORWARD_ENV_NAMES=(
+    T3_OVERLAY_NAME
+    TEATREE_INVOCATION_CWD
+    GITLAB_TOKEN
+    GITLAB_URL
+    GITHUB_TOKEN
+)
+if [ -n "${TEATREE_FORWARD_ENV:-}" ]; then
+    IFS=',' read -r -a EXTRA_ENV_NAMES <<<"$TEATREE_FORWARD_ENV"
+    FORWARD_ENV_NAMES+=("${EXTRA_ENV_NAMES[@]}")
+fi
+
+# The container holds NO GitLab credential of its own. `ReviewService.get_gitlab_token()`
+# resolves $GITLAB_TOKEN, then the overlay config, then `glab auth status` — and inside
+# the container all three are empty: the overlay's token lives in the HOST's `pass`
+# store, which is unreadable there (the gpg agent and its keys stay on the host), and
+# the container's `glab` has never been logged in. So every GitLab review write dies on
+# "No GitLab token found. Run: glab auth login" while the operator's host `glab` is
+# authenticated the whole time. Resolving that host login here is the only credential
+# path across the boundary. An EXPORTED GITLAB_TOKEN is the operator's stated choice and
+# is never touched — and skips the `glab` call entirely. An absent or logged-out `glab`
+# resolves empty, so the name is simply not forwarded and the container is left with
+# whatever its own environment holds.
+#
+# The resolved value crosses as a `docker compose --env` argument, so it is visible in
+# the host process table for the life of the call — the SAME exposure the exported
+# GITLAB_TOKEN forwarding above already carries, not a new class, but it is now reached
+# without the operator having typed a token, so name it rather than let it pass silently.
+host_gitlab_token() {
+    command -v glab >/dev/null 2>&1 || return 0
+    # The EXTRACTION RULE mirrors `ReviewService.get_gitlab_token()`: the text after the
+    # LAST colon of the first line naming a token ("Token: <v>", "✓ Token found: <v>").
+    # The STREAM handling is deliberately wider than the service's stderr-only read —
+    # the stream this report lands on varies by glab version (stderr on 1.80.x), and the
+    # wrapper cannot know which glab an operator has, so it merges the two and lets the
+    # rule decide. The value reaches `awk` over a pipe, never as an argument, so the
+    # parse itself adds no process-table exposure.
+    #
+    # No `--all`: glab reports the ONE instance its own context resolves (the repo's git
+    # remote, then $GITLAB_HOST, then its config), which is the instance the review is
+    # about. Asking for every configured host would hand the container a token that has
+    # no relation to the overlay's `gitlab_url` the post is addressed to.
+    local report=""
+    report="$(glab auth status --show-token 2>&1)" || return 0
+    printf '%s\n' "$report" |
+        awk 'index($0, "Token") && index($0, ":") {
+            sub(/^.*:[[:space:]]*/, "")
+            sub(/[[:space:]]+$/, "")
+            if ($0 != "") { print; exit }
+        }'
+    return 0
+}
+
+# Everything from here on either resolves or carries the credential — the resolution,
+# the `--env` assembly, and every `docker compose` hop whose argv holds the assembled
+# `--env NAME=value`. xtrace is therefore switched OFF for the remainder of the script
+# and never restored, so `bash -x t3` cannot print a secret; only the mount/layout
+# wiring above stays traceable, which is the part worth tracing. Restoring it before
+# the dispatch would put the token straight back into the trace.
+set +x
+
+if [ -z "${GITLAB_TOKEN:-}" ]; then
+    GITLAB_TOKEN="$(host_gitlab_token)"
+fi
+
+ENV_ARGS=()
+for ENV_NAME in "${FORWARD_ENV_NAMES[@]}"; do
+    if [ -n "${!ENV_NAME:-}" ]; then
+        ENV_ARGS+=(--env "$ENV_NAME=${!ENV_NAME}")
+    fi
+done
+# `set -u` treats an empty array's plain expansion as an unbound-variable error on
+# bash 3.2 (the macOS default), so every use below takes the empty-safe form.
 
 # A running worker is the cheapest, most consistent runtime — exec into it. `-T`
 # is added when stdin is not a TTY (a script/pipe) so compose does not fail trying
 # to allocate one; an interactive shell keeps the TTY for prompts/pagers.
 if [ -n "$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" ]; then
+    # `compose` is a shell function, not a binary on PATH — `exec` replaces the
+    # process image via a real command lookup and cannot resolve a function
+    # (`exec: compose: not found`), so the final hop inlines `docker compose`
+    # directly instead of calling through the function.
     if [ -t 0 ]; then
-        exec compose exec "$SERVICE" t3 "$@"
+        exec docker compose -f "$COMPOSE_FILE" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" t3 "$@"
     fi
-    exec compose exec -T "$SERVICE" t3 "$@"
+    exec docker compose -f "$COMPOSE_FILE" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" t3 "$@"
 fi
 
-# Nothing running — one-off container on the shared volumes. `--entrypoint t3`
-# bypasses the TEATREE_ROLE dispatcher so we run the CLI directly, not a server.
-exec compose run --rm --no-deps --entrypoint t3 "$SERVICE" "$@"
+# Nothing running. Two different worlds reach this line: a merely STOPPED stack,
+# where the one-off below is the intended path and works, and a stack that was
+# never deployed here (or a dead daemon), where the one-off cannot run at all.
+# Only the second needs saying, and docker says it in its own vocabulary —
+# "Cannot connect to the Docker daemon", or a pull attempt against an image that
+# was only ever built locally — which names nothing an operator can act on. The
+# host `t3` is a shim, so this is the whole of what a stopped deployment can
+# report; leaving it as docker's own text is the traceback-shaped failure the
+# shim exists to remove.
+#
+# Preflighted HERE rather than at the top so the cost lands only on the path that
+# can hit it: a running worker already proved both facts by answering `ps`.
+refuse_absent_stack() {
+    echo "deploy/t3: refusing to run — the teatree stack is not available on this host." >&2
+    echo "           $1" >&2
+    echo "           Start it with: $REPO_ROOT/deploy/deploy.sh" >&2
+    exit 1
+}
+
+if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    refuse_absent_stack "The Docker daemon is not reachable — start Docker first."
+fi
+
+# The image the compose file names for this service, asked of compose rather than
+# assembled here so a renamed or operator-overridden image can never be probed
+# under a stale name. An empty answer means compose could not resolve the service
+# at all, which the one-off is about to report far better than a guess would.
+#
+# The first line is taken by expansion, never `| head`: under `pipefail` the
+# reader closing the pipe early kills the writer with SIGPIPE and the whole
+# assignment fails 141, so a service resolving to more than one image would abort
+# the wrapper instead of dispatching.
+SERVICE_IMAGES="$(compose config --images "$SERVICE" 2>/dev/null || true)"
+SERVICE_IMAGE="${SERVICE_IMAGES%%$'\n'*}"
+if [ -n "$SERVICE_IMAGE" ] && ! docker image inspect "$SERVICE_IMAGE" >/dev/null 2>&1; then
+    refuse_absent_stack "No local image \`$SERVICE_IMAGE\` — this host has never built the stack."
+fi
+
+# `--entrypoint t3` bypasses the TEATREE_ROLE dispatcher so we run the CLI
+# directly, not a server.
+exec docker compose -f "$COMPOSE_FILE" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"

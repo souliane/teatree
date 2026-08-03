@@ -42,12 +42,9 @@ def hook_state_root() -> Path:
     blocklist, ledger, and visibility cache converge instead of scattering across
     ``~/.teatree`` / ``~/.cache`` / the data dir.
     """
-    base = os.environ.get("T3_DATA_DIR")
-    if base:
-        return Path(base)
-    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: paths resolves the data dir at import
+    from teatree.paths import data_dir_root  # noqa: PLC0415 — deferred: paths resolves the data dir at import
 
-    return DATA_DIR
+    return data_dir_root()
 
 
 def note_env_override_once(override_name: str) -> None:

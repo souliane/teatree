@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
@@ -7,8 +8,12 @@ from django_fsm import FSMField, transition
 from teatree.url_classify import repo_and_iid
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import JSONObject
+
+logger = logging.getLogger(__name__)
 
 
 class PullRequestQuerySet(models.QuerySet):
@@ -119,9 +124,12 @@ class PullRequestQuerySet(models.QuerySet):
     def record_forge_merge(self, *, slug: str, pr_id: int) -> int:
         """Transition every non-merged row for *(slug, pr_id)* to MERGED; return the count.
 
-        The merge keystone is the authoritative moment a PR becomes merged — the
+        A landed merge is the authoritative moment a PR becomes merged — the
         open-PR-only scanner that used to be the sole caller of :meth:`PullRequest.mark_merged`
-        can never observe a PR that merged between two of its ticks.
+        can never observe a PR that merged between two of its ticks. Called from
+        :func:`teatree.core.merge.execution._record_pr_landed`, the merge chokepoint
+        every route crosses, so the keystone's own post-hook call finds the rows already
+        settled and marks zero (#3984).
         """
         merged = 0
         for row in self.for_pr(slug=slug, pr_id=pr_id).exclude(state=PullRequest.State.MERGED):
@@ -129,6 +137,41 @@ class PullRequestQuerySet(models.QuerySet):
             row.save(update_fields=["state"])
             merged += 1
         return merged
+
+    def live(self) -> "PullRequestQuerySet":
+        """Rows that still evidence an attempt in flight — neither landed nor abandoned.
+
+        The ONE definition of "this ticket has an open PR", shared by every liveness
+        reader (the #3978 intake-budget release rules and its doctor alarm). MERGED and
+        CLOSED are both settled: the first succeeded, the second was given up on, and
+        neither is a reason to keep holding an in-flight budget slot.
+        """
+        return self.exclude(state__in=(PullRequest.State.MERGED, PullRequest.State.CLOSED))
+
+    def reconcile_forge_states(self, *, read_state: "Callable[[str], str]") -> int:
+        """Settle every live row in this queryset against *read_state*; return the count moved.
+
+        The convergence pass for rows the ledger got wrong. A row only ever learns its
+        PR landed from whoever wrote it, so one merged out of band — by a hand-run
+        merge, or by a route that predates the chokepoint recorder — reads ``open``
+        forever, and the liveness readers built on it (the intake release rule and its
+        doctor alarm) then both answer wrong about the same PR (#3984).
+
+        Scoped by the caller's queryset, so the cost is the caller's to bound. Settled
+        rows are skipped (:meth:`live`), which makes the pass self-limiting: MERGED and
+        CLOSED are terminal, so each run shrinks the set it will probe next time.
+        Per-row isolation — a reader that raises on one row is UNKNOWN for that row
+        alone and never aborts the rest.
+        """
+        settled = 0
+        for row in self.live().order_by("pk"):
+            try:
+                live_state = read_state(row.url)
+            except Exception:
+                logger.exception("could not read the live forge state of %s — leaving the row unsettled", row.url)
+                continue
+            settled += int(self.settle_forge_state(row, live_state))
+        return settled
 
     @staticmethod
     def settle_forge_state(row: "PullRequest", live_state: str) -> bool:

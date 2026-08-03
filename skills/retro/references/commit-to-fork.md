@@ -6,7 +6,7 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 
 1. **Repo is a full clone:** `git -C "$T3_REPO" rev-parse --is-shallow-repository` → `false`
 2. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs BOTH commit- and push-stage hooks (a bare `prek run --all-files` skips the push-stage gates CI re-runs); if it fails, fix first.
-3. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
+3. **Affected tests pass:** `cd "$T3_REPO" && bash dev/test-affected.sh` — must be green. The diff-scoped lane, not the whole suite: it escalates to FULL itself on anything it cannot prove local, and CI's sharded lane is the whole-tree authority ([#3994](https://github.com/souliane/teatree/issues/3994)).
 4. **Privacy scan passes:** see § Privacy Scan.
 
 ## Never Work on Main (Non-Negotiable)

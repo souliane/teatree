@@ -41,6 +41,7 @@ from teatree.config.registries import (
     REGISTRY_SETTINGS,
     REGISTRY_SETTINGS_GROUP_PATH,
 )
+from teatree.config.setting_help import setting_help
 from teatree.config.settings import UserSettings
 
 #: The bucket a key no declaration owns lands in — rendered last, under a visible banner.
@@ -228,6 +229,20 @@ def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> tomlkit_items.Tab
     return table
 
 
+def _commented(key: str, value: object) -> tomlkit_items.Item:
+    """*value* as a TOML item carrying *key*'s help text as a TRAILING comment.
+
+    Trailing rather than a line above: a standalone ``#`` line inside ``[teatree]`` is what
+    the retired comment-banner group headings looked like, and the shipped-file conformance
+    suite still pins that no line there starts with one. On the key's own line the sentence
+    reads as the annotation it is, and every parser of the block — including the one that
+    splits ``key = value`` out of the file — sees the same key it always did.
+    """
+    item: tomlkit_items.Item = value if isinstance(value, tomlkit_items.Item) else tomlkit.item(value)
+    help_text = setting_help(key)
+    return item.comment(help_text) if help_text else item
+
+
 def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
     """One group level as a TOML table — its own keys, then its subsections.
 
@@ -236,7 +251,7 @@ def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, Valu
     """
     table = tomlkit.table(is_super_table=not node.rows)
     for key in node.rows:
-        table[key] = rows[key]
+        table[key] = _commented(key, rows[key])
     for child in node.children:
         table[child.label] = _group_subtable(child, rows)
     return table
@@ -265,7 +280,7 @@ def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> tomlkit_items.
     for node in group_tree(sorted(scalars), key_of=lambda key: key):
         table[node.label] = _group_subtable(node, scalars)
     for key in sorted(set(rows) - set(scalars)):
-        table[key] = nested_value_table(cast("Mapping[str, ValueT]", rows[key]))
+        table[key] = _commented(key, nested_value_table(cast("Mapping[str, ValueT]", rows[key])))
     return table
 
 

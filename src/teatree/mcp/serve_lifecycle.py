@@ -17,6 +17,15 @@ Two complementary levers, both wired into ``t3 mcp serve``:
     ``os.getppid()``; the moment this process is reparented to PID 1 the
     client is gone, and the server hard-exits instead of waiting for an EOF
     that may never arrive.
+
+Both levers read PID 1 as "reparented to init", which is a HOST fact. In a
+container PID 1 is the container's own entrypoint, so a server started by
+``docker compose run --entrypoint t3 … mcp serve`` has ``getppid() == 1`` from
+its first instant: the watchdog fired immediately and the server exited 0
+without answering a single request, and the reaper would SIGTERM every sibling
+server in the same container. :func:`orphan_detection_applies` therefore makes
+both inert there — the container runtime owns that lifecycle, tearing the exec
+down when the client disconnects.
 """
 
 import logging
@@ -28,6 +37,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
+from teatree.docker.workflow import is_running_in_container
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -35,6 +45,16 @@ logger = logging.getLogger(__name__)
 _INIT_PID = 1
 _DEFAULT_POLL_SECONDS = 5.0
 _PS_FIELDS = 3
+
+
+def orphan_detection_applies(*, containerized: bool | None = None) -> bool:
+    """Whether "reparented to PID 1" proves the client is gone.
+
+    Only on a host. In a container PID 1 is the entrypoint, so the proof is
+    vacuously true for every process in there — including a healthy server that
+    has not yet read its first byte.
+    """
+    return not (is_running_in_container() if containerized is None else containerized)
 
 
 class ProcessRecord(NamedTuple):
@@ -113,7 +133,11 @@ def reap_orphaned_servers(*, matcher: Callable[[str], bool] = is_serve_command) 
     Best-effort per pid: a process that exited meanwhile or one we may not
     signal is skipped silently. Called once at ``t3 mcp serve`` startup, so
     every new server spawn is also the garbage collection of its predecessors.
+    Inert in a container, where PID 1 proves nothing (see
+    :func:`orphan_detection_applies`) and this would SIGTERM every sibling.
     """
+    if not orphan_detection_applies():
+        return []
     reaped = []
     for pid in orphaned_serve_pids(process_snapshot(), self_pid=os.getpid(), matcher=matcher):
         try:
@@ -156,13 +180,20 @@ def _hard_exit() -> None:
     os._exit(0)
 
 
-def start_parent_death_watch(*, poll_seconds: float = _DEFAULT_POLL_SECONDS) -> threading.Thread:
+def start_parent_death_watch(*, poll_seconds: float = _DEFAULT_POLL_SECONDS) -> threading.Thread | None:
     """Start the daemon watchdog that exits this process when its parent dies.
 
     Covers the case stdin EOF misses: the parent is gone but a leaked fd keeps
     the pipe open, so the blocking stdio read never returns. Daemon, so it can
     never keep the process alive itself.
+
+    Returns ``None`` in a container, where the watch would fire on the first poll
+    against PID 1 and hard-exit a server that has answered nothing (see
+    :func:`orphan_detection_applies`); the container runtime ends the process when
+    the client's exec session goes away.
     """
+    if not orphan_detection_applies():
+        return None
     thread = threading.Thread(
         target=watch_until_orphaned,
         kwargs={"on_orphaned": _hard_exit, "poll_seconds": poll_seconds},

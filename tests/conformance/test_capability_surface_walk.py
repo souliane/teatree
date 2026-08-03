@@ -55,6 +55,7 @@ INTENTIONALLY_UNREGISTERED_MODULES: frozenset[str] = frozenset(
         "recipe",
         "recover",
         "session",
+        "shipped_seed",
         "standing_goal",
         "waiting",
     }

@@ -60,7 +60,7 @@ def rollup_state(rollup: object) -> str:
 
     ``gh pr view --json statusCheckRollup`` returns a list of ``CheckRun`` and
     ``StatusContext`` nodes, not a single verdict. This collapses them to the
-    vocabulary :func:`teatree.loop.scanners.my_prs._pipeline_status` speaks:
+    vocabulary :func:`teatree.core.review.mr_ci_state.pipeline_status` speaks:
     ``"failure"`` when any required check failed (→ the my_pr.failed lane fires),
     ``"pending"`` when any check is still running, ``"success"`` when every check
     passed, and ``""`` for a PR with no checks at all (a no-CI repo — never

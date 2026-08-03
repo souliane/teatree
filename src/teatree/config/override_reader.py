@@ -19,6 +19,8 @@ call-time import.
 
 import logging
 import time
+import traceback
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from teatree.config.override_read_health import record_degraded_read
@@ -34,6 +36,13 @@ _logger = logging.getLogger("teatree.config")
 #: label carries no overlay NAME (the name goes in the log line instead).
 GLOBAL_SCOPE_LABEL = "global"
 OVERLAY_SCOPE_LABEL = "overlay"
+
+#: Frames of :func:`_calling_context`. One frame is often a memo shim or a settings helper that
+#: merely forwards; three reach the site that actually decided to read the config tier.
+_CALLER_FRAMES_NAMED = 3
+
+#: This package's directory — the frames :func:`_calling_context` walks PAST to find the caller.
+_PACKAGE_DIR = str(Path(__file__).parent)
 
 
 def _app_registry_ready() -> bool:
@@ -71,15 +80,51 @@ def _override_read_degrades_silently(exc: BaseException) -> bool:
     return False
 
 
+def _read_fault_is_deterministic(exc: BaseException) -> bool:
+    """Whether *exc* is settled by WHERE the read was made, so every attempt fails identically.
+
+    ``SynchronousOnlyOperation`` is Django refusing a synchronous ORM read to a thread that owns
+    a running event loop. That is a property of the CALL SITE, not of the database's state, so
+    the contention budget below cannot help: it adds its full backoff to a failure that was
+    certain, and dresses a programming error up as a flaky one.
+    """
+    from django.core.exceptions import SynchronousOnlyOperation  # noqa: PLC0415 — deferred: Django import at call time
+
+    return isinstance(exc, SynchronousOnlyOperation)
+
+
+def _calling_context() -> str:
+    """The nearest frames ABOVE this package — the call site that asked for the read.
+
+    The traceback captured at the read holds only the frames from here inward (the ORM call
+    chain), which is identical for every fault and names nothing an operator can act on. The
+    frame that settles it sits above :mod:`teatree.config`: for a deterministic fault it IS the
+    async frame. Innermost first, so the immediate caller leads.
+    """
+    outside = [frame for frame in traceback.extract_stack() if not frame.filename.startswith(_PACKAGE_DIR)]
+    named = reversed(outside[-_CALLER_FRAMES_NAMED:])
+    return " <- ".join(f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}" for frame in named)
+
+
 # The loud SIGNAL for a non-bootstrap ``ConfigSetting`` read fault. Such a failure is a
 # fail-OPEN of the ENTIRE DB override tier — it drops the ``autonomy`` /
 # ``require_human_approval_to_merge`` safety gates back to the dataclass defaults — so it
 # is logged ``ERROR`` + traceback (the "raise or log-and-signal, not SILENTLY fail-open"
 # contract) rather than swallowed: operator error-monitoring surfaces the real fault.
 _OVERRIDE_READ_FAILURE_MSG = (
-    "ConfigSetting %s-scope override read FAILED unexpectedly — resolving with NO DB override tier for this "
-    "read (safety gates fall back to dataclass defaults). This is a real read fault, not a bootstrap no-op; "
-    "fix the DB/read error."
+    "ConfigSetting %s-scope override read FAILED unexpectedly, called from %s — resolving with NO DB override "
+    "tier for this read (safety gates fall back to dataclass defaults). This is a real read fault, not a "
+    "bootstrap no-op; fix the DB/read error."
+)
+
+# The DETERMINISTIC counterpart. Same consequence, opposite remedy: nothing about the database
+# is wrong, so pointing the operator at the DB wastes the one line they read. The caller is the
+# fault, and naming it is the whole point — the ORM frames in the traceback never do.
+_DETERMINISTIC_READ_FAILURE_MSG = (
+    "ConfigSetting %s-scope override read is UNREACHABLE from its call site, called from %s — resolving with "
+    "NO DB override tier for this read (safety gates fall back to dataclass defaults). This fault is "
+    "deterministic rather than contention, so it was NOT retried: fix the CALLER — hoist the settings read "
+    "out of the async frame, or run it in a worker thread."
 )
 
 
@@ -105,9 +150,11 @@ def _read_scope_rows(
 
     A genuine bootstrap state (:func:`_override_read_degrades_silently`) is neither retried
     nor reported — it is a no-op by construction, and retrying it would put the backoff on
-    every cold-start read. Any other exception is a real fault: retried while the budget
-    lasts, then logged loud (:data:`_OVERRIDE_READ_FAILURE_MSG`) and RECORDED where an
-    operator can see it without reading this log.
+    every cold-start read. A DETERMINISTIC fault (:func:`_read_fault_is_deterministic`) is
+    reported on its FIRST exception, since the budget can only delay it. Any other exception is
+    a real fault: retried while the budget lasts, then logged loud
+    (:data:`_OVERRIDE_READ_FAILURE_MSG`) and RECORDED where an operator can see it without
+    reading this log. Both loud paths name the CALLER (:func:`_calling_context`).
     """
     for attempt in range(_READ_ATTEMPTS):
         try:
@@ -115,9 +162,12 @@ def _read_scope_rows(
         except Exception as exc:
             if _override_read_degrades_silently(exc):
                 return {}, False
-            if attempt + 1 >= _READ_ATTEMPTS:
-                _logger.exception(_OVERRIDE_READ_FAILURE_MSG, log_label or scope_label)
-                record_degraded_read(scope_label)
+            deterministic = _read_fault_is_deterministic(exc)
+            if deterministic or attempt + 1 >= _READ_ATTEMPTS:
+                caller = _calling_context()
+                message = _DETERMINISTIC_READ_FAILURE_MSG if deterministic else _OVERRIDE_READ_FAILURE_MSG
+                _logger.exception(message, log_label or scope_label, caller)
+                record_degraded_read(scope_label, caller=caller)
                 return {}, True
             time.sleep(_READ_RETRY_BACKOFF[min(attempt, len(_READ_RETRY_BACKOFF) - 1)])
     return {}, True  # pragma: no cover — the loop always returns

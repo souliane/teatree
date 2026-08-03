@@ -104,7 +104,13 @@ depends_on = ["teatree.credential_config", "teatree.token_report", "teatree.util
 [[modules]]
 path = "teatree.config"
 layer = "platform"
-depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check"]
+depends_on = [
+  "teatree.db",
+  "teatree.paths",
+  "teatree.types",
+  "teatree.utils",
+  "teatree.update_check"
+]
 
 [[modules]]
 path = "teatree.update_check"
@@ -165,6 +171,7 @@ depends_on = ["teatree.utils"]
 path = "teatree.core"
 layer = "domain"
 depends_on = [
+  "teatree.db",
   "teatree.types",
   "teatree.paths",
   "teatree.pricing",
@@ -579,6 +586,34 @@ layer = "domain"
 depends_on = ["teatree.core.session_identity"]
 
 [[modules]]
+# Guards the control-DB boundary: which venue may open it, and from where.
+path = "teatree.db"
+layer = "platform"
+depends_on = ["teatree.docker", "teatree.paths", "teatree.utils"]
+
+[[modules]]
+# Pure failure-shape vocabulary shared by the reporters; imports nothing internal.
+path = "teatree.failure_signatures"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
+# Pure routing logic (no Django, no ORM, no network), so the domain-layer answer
+# packages may consume it directly — a declared sub-node edge (#2385) rather than a
+# layer violation.
+path = "teatree.loop.inbound_classifier"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+# Reads one inbound message into an intent. Consumed by teatree.loop.slack_answer and
+# teatree.loop.scanners (both domain), so it is declared at domain rather than
+# inheriting orchestration from its package.
+path = "teatree.loop.inbound_reading"
+layer = "domain"
+depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
+
+[[modules]]
 path = "teatree.loop.loop_scoping"
 layer = "domain"
 depends_on = ["teatree.core.loop_lease_manager", "teatree.loop.session_identity"]
@@ -596,6 +631,7 @@ depends_on = [
   "teatree.core",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
+  "teatree.loop.session_identity",
   "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette"
 ]
@@ -660,6 +696,7 @@ depends_on = ["teatree.core.models"]
 path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
+  "teatree.loop.inbound_reading",
   "teatree.types",
   "teatree.paths",
   "teatree.utils",
@@ -785,6 +822,8 @@ depends_on = [
 path = "teatree.loop.slack_answer"
 layer = "domain"
 depends_on = [
+  "teatree.loop.inbound_reading",
+  "teatree.loop.inbound_classifier",
   "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",

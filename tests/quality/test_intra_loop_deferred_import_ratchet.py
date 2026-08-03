@@ -322,6 +322,9 @@ class TestLoopStatuslineLoopsNode:
             "teatree.loop.statusline_loop_chunks",
             "teatree.loop.loop_cadences",
             "teatree.loop.loop_scoping",
+            # #3968: the loop-runner predicate, so the worker owning `t3-master` is
+            # never painted as a hijack. Another eager DOWN edge to a declared leaf.
+            "teatree.loop.session_identity",
         }
         # The severed back-edges: `statusline_loops` NEVER depends on the
         # orchestration-top cadence homes nor the parent node.
@@ -452,7 +455,7 @@ _SLACK_ANSWER_ROOT = _LOOP_ROOT / "slack_answer"
 class TestLoopSlackAnswerNode:
     """``teatree.loop.slack_answer`` is a declared domain node (#2413 slice).
 
-    The reactive Slack-answer subpackage (``classifier`` / ``simple_answer`` /
+    The reactive Slack-answer subpackage (``simple_answer`` /
     ``thread_readback`` / ``cycle``) was already eager-clean — ZERO intra-loop
     deferred imports inside the subpackage, every intra-loop edge pointing DOWN
     to already-declared nodes (``self_improve`` budget seam, ``statusline``) or a
@@ -474,7 +477,12 @@ class TestLoopSlackAnswerNode:
     def test_slack_answer_intra_loop_deps_are_only_declared_leaves(self) -> None:
         deps = _depends_on("teatree.loop.slack_answer")
         loop_deps = {d for d in deps if d.startswith("teatree.loop")}
-        assert loop_deps == {"teatree.loop.self_improve", "teatree.loop.statusline"}
+        assert loop_deps == {
+            "teatree.loop.inbound_classifier",
+            "teatree.loop.inbound_reading",
+            "teatree.loop.self_improve",
+            "teatree.loop.statusline",
+        }
         # The orchestration-top parent is NEVER a slack_answer dep.
         assert "teatree.loop" not in deps
 

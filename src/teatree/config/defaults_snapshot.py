@@ -49,6 +49,7 @@ WORKFLOW_ENGAGEMENT_KEYS: frozenset[str] = frozenset(
         "issue_implementer_enabled",
         "issue_implementer_label",
         "triage_assessor_enabled",
+        "mr_triage_enabled",
         "active_loop_schedule",
     }
 )
@@ -99,7 +100,12 @@ _HEADER = """\
 # the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
 #
 # The seed is `get_or_create` by name: editing a seed table changes what a FRESH install
-# gets and never overwrites a row an operator already edited on a live box.
+# gets and never overwrites a row an operator already edited on a live box. So a DELETED
+# shipped row is the recoverable failure — `t3 setup` puts it back. The one that is not is a
+# row sitting present and INERT: `t3 loops audit` reads the seed tables below as the expected
+# set (the DB cannot answer for a row that is gone) and names every shipped definition that
+# is missing, disabled against its shipped flag, or not ticking. Deleting a shipped
+# definition needs a typed `stop-<name>` naming what stops.
 """
 
 # The scan takes the `"<key> <json-value>"` text and returns the first matched

@@ -282,20 +282,27 @@ def default_branch(repo: Path) -> str | None:
     (``HEAD`` is never a useful checkout target). Returns ``None`` only when
     neither signal resolves — the gate then falls back to the protected set.
     """
-    head = _git_text(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
+    head = git_text(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
     if head:
         return head.rsplit("/", 1)[-1]
-    return _git_text(repo, "symbolic-ref", "--short", "HEAD") or None
+    return git_text(repo, "symbolic-ref", "--short", "HEAD") or None
 
 
-def _git_text(repo: Path, *args: str) -> str:
-    """Run a read-only ``git`` query in *repo*; ``""`` on any failure/timeout."""
-    try:
-        return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            ["git", "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
-            text=True,
-            timeout=3,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return ""
+class ManagedRepoHelpers:
+    """Module-level helpers grouped so the module keeps a readable public surface."""
+
+    @staticmethod
+    def git_text(repo: Path, *args: str) -> str:
+        """Run a read-only ``git`` query in *repo*; ``""`` on any failure/timeout."""
+        try:
+            return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+                ["git", "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
+                text=True,
+                timeout=3,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return ""
+
+
+git_text = ManagedRepoHelpers.git_text

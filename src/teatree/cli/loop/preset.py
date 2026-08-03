@@ -96,10 +96,14 @@ def register(loop_app: typer.Typer) -> None:
     def delete_command(
         name: Annotated[str, typer.Argument()],
         *,
+        confirm: Annotated[
+            str, typer.Option("--confirm", help="Typed phrase `stop-<name>`; required for a shipped preset.")
+        ] = "",
         json_output: Annotated[bool, typer.Option("--json")] = False,
     ) -> None:
-        """Delete a preset (a slot/override still pointing at it fails open to base config)."""
-        _delegate("delete", name, json_output=json_output)
+        """Delete a preset — refused while a slot/override/setting names it; shipped needs ``--confirm``."""
+        args = ["delete", name] + (["--confirm", confirm] if confirm else [])
+        _delegate(*args, json_output=json_output)
 
     loop_app.add_typer(preset_app, name="preset")
 

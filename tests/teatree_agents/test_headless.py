@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk.types import RateLimitType
+from django.db import OperationalError
 from django.test import TestCase, override_settings
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -35,7 +36,7 @@ from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import AgentHarnessProvider
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import ConfigSetting, LeaseLostError, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
 from tests._agent_runtime_env import interactive_runtime
@@ -1272,6 +1273,34 @@ class TestDriveWithHeartbeat(TestCase):
         assert outcome.stuck_reason is not None
         assert "lease lost" in outcome.stuck_reason
 
+    def test_an_unreadable_reclaimer_still_aborts_the_duplicate_run(self) -> None:
+        # The reclaimer read-back contends with the very writer that took the claim, so a
+        # lock error there is the EXPECTED failure. It must not escape past
+        # `except LeaseLostError` into the generic handler, which logs and keeps driving —
+        # that turns a lost lease into two drivers on one unit (#3982).
+        def lease_lost_renew(**_kwargs: object) -> None:
+            msg = f"lease lost for task {self.task.pk}"
+            raise LeaseLostError(msg)
+
+        self.task.renew_lease = lease_lost_renew
+        messages = [_assistant_text("step") for _ in range(1000)]
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        start = time.monotonic()
+        with (
+            _fake_sdk(messages, delay=0.05),
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch.object(Task.objects, "filter", side_effect=OperationalError("database table is locked")),
+        ):
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 10
+        assert outcome.stuck_reason is not None
+        assert "lease lost" in outcome.stuck_reason
+        assert outcome.lease_lost is True
+
 
 class TestWatchdogResamplesUsageMidRun(TestCase):
     """The heartbeat re-samples usage each tick so a mid-run cost spike is caught (F9.3)."""
@@ -1719,6 +1748,87 @@ class TestSystemChildEnv(TestCase):
 
         assert env is None
         assert any("non-claude_sdk lane" in message for message in logs.output)
+
+
+class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
+    """A verification-phase harness pin must not fail a VALID ``pydantic_ai`` config.
+
+    Production reproduction of the recurring factory halt: the deployment configures
+    ``agent_harness=pydantic_ai`` + ``agent_harness_provider=anthropic_api`` — a pair
+    :meth:`~teatree.config.AgentHarnessProvider.valid_for` accepts, the ``ConfigSetting``
+    cross-key write gate admits, and ``resolve_harness`` deliberately passes.
+    ``PHASE_HARNESS`` then pins the verification phases (``reviewing`` /
+    ``requesting_review`` / ``testing``) to ``claude_sdk``, flipping Layer 1 without
+    flipping Layer 2 — so the claude_sdk-scoped child-env resolver saw a provider that
+    is invalid under the harness it was NOW running and refused every verification
+    dispatch, stranding the ticket.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+
+    def _dispatch(self, phase: str) -> TaskAttempt:
+        with _fake_sdk(_success_stream({"summary": "Done", "files_modified": []})):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            return run_headless(task, phase=phase, overlay_skill_metadata={})
+
+    def test_every_pinned_verification_phase_dispatches(self) -> None:
+        for phase in ("reviewing", "requesting_review", "testing"):
+            with self.subTest(phase=phase):
+                attempt = self._dispatch(phase)
+                assert "not valid under agent_harness" not in attempt.error
+                assert attempt.exit_code == 0
+
+    def test_the_flipped_layer_2_pin_is_dropped_loudly(self) -> None:
+        # Never silent: the operator's Layer-2 pin was made for the CONFIGURED
+        # harness, so dropping it for the pinned one is warned, not swallowed.
+        with self.assertLogs("teatree.agents.harness", level="WARNING") as logs:
+            self._dispatch("testing")
+        assert any("anthropic_api" in message and "claude_sdk" in message for message in logs.output)
+
+
+class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
+    """The guard must keep firing on a pair no phase pin explains (the control).
+
+    The ``ConfigSetting`` cross-key write gate (#3688) refuses to STORE an inconsistent
+    pair, so the live route for one is the ``T3_*`` env layer — which is exactly how
+    this control reaches dispatch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+
+    def _dispatch(self, phase: str, *, harness: str, provider: str) -> TaskAttempt:
+        env = {"T3_AGENT_HARNESS": harness, "T3_AGENT_HARNESS_PROVIDER": provider}
+        with _fake_sdk(_success_stream({"summary": "Done", "files_modified": []})), patch.dict(os.environ, env):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            return run_headless(task, phase=phase, overlay_skill_metadata={})
+
+    def test_subscription_oauth_under_pydantic_ai_is_refused(self) -> None:
+        for phase in ("coding", "testing"):
+            with self.subTest(phase=phase):
+                attempt = self._dispatch(phase, harness="pydantic_ai", provider="subscription_oauth")
+                assert "not valid under agent_harness" in attempt.error
+                assert attempt.exit_code != 0
+
+    def test_openai_compatible_under_claude_sdk_is_refused(self) -> None:
+        attempt = self._dispatch("coding", harness="claude_sdk", provider="openai_compatible")
+        assert "not valid under agent_harness" in attempt.error
+        assert attempt.exit_code != 0
 
 
 class TestResolveDispatchLane:

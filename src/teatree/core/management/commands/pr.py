@@ -6,9 +6,12 @@ it runs the deterministic gates, calls ``ticket.ship()`` to enter SHIPPED, and
 returns the PR URL once the worker completes.
 """
 
+import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from django.conf import settings
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
@@ -67,11 +70,13 @@ from teatree.core.provision.worktree_adopt import reopen_ticket_for_followup
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.core.send_proxy import OutboundBlockedError
+from teatree.db.boundary import control_db_unreachable_reason
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
+    from teatree.core.gates.orphan_guard import BranchReport
     from teatree.core.models.types import TicketExtra
 
 # The host create/update-comment response shape returned by the comment commands.
@@ -113,6 +118,17 @@ type CommentResult = dict[str, object]
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
+
+
+def _configured_db_path() -> Path:
+    """The database THIS process would open — the subject of the topology question.
+
+    Read from the resolved settings rather than from the canonical location, so the
+    answer is about the database actually in play: a test database, a per-worktree
+    isolated copy, and the canonical control DB are three different subjects and only
+    the last one sits behind a container-only mount.
+    """
+    return Path(str(settings.DATABASES["default"]["NAME"]))
 
 
 def _run_precheck_ship_gates(
@@ -271,6 +287,21 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
     return branch_name, None
 
 
+def _skip_for_classified_branch(report: "BranchReport", repo_path: str, branch_name: str) -> EnsurePrResult | None:
+    """The answer a classification already carries, or ``None`` when a PR must be created.
+
+    A pure mapping over the classification — three of the four branch states are
+    a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
+    """
+    if report.status is BranchStatus.SYNCED:
+        return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
+    if report.status is BranchStatus.OPEN_PR:
+        return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
+    if report.status is BranchStatus.UNPUSHED_ORPHAN:
+        return defer_unpushed_pr(repo_path, branch_name)
+    return None
+
+
 class Command(PendingPrCommands, TyperCommand):
     @command()
     # PLR0913: this signature IS the CLI contract — django-typer derives
@@ -427,11 +458,25 @@ class Command(PendingPrCommands, TyperCommand):
         ``--repo`` must be a filesystem path to a git checkout, never a forge
         slug (``owner/repo``) — validated up front so that mistake surfaces
         as a clear error instead of a silently misclassified branch (#2937).
+
+        The control-DB topology is read BEFORE the classification, because it is a
+        statement about where this code is running rather than an exception to
+        recover from afterwards. Every path past the classification needs the ORM —
+        ``create_or_defer_pr`` resolves the owning ``Worktree``, the PR budget, and
+        the forge credentials through it — so on a host that cannot reach the
+        container-only control DB this command dies on a raw ``OperationalError``
+        that is neither a ``DbBoundaryError`` nor anything the classifier can
+        report. Skipping with the reason keeps the pre-push hook it runs inside
+        from being wedged by a topology fact.
         """
         repo_path = repo or "."
         branch_name, early_result = _validate_repo_and_resolve_branch(repo, repo_path, branch)
         if early_result is not None:
             return early_result
+
+        unreachable = control_db_unreachable_reason(_configured_db_path(), env=os.environ)
+        if unreachable is not None:
+            return EnsurePrResult(skipped=unreachable, branch=branch_name)
 
         try:
             report = classify_branch(repo_path, branch_name)
@@ -441,12 +486,9 @@ class Command(PendingPrCommands, TyperCommand):
                 error=f"could not determine sync status of {branch_name!r} in {repo_path!r}: {exc}",
             )
 
-        if report.status is BranchStatus.SYNCED:
-            return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
-        if report.status is BranchStatus.OPEN_PR:
-            return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
-        if report.status is BranchStatus.UNPUSHED_ORPHAN:
-            return defer_unpushed_pr(repo_path, branch_name)
+        already_answered = _skip_for_classified_branch(report, repo_path, branch_name)
+        if already_answered is not None:
+            return already_answered
 
         return create_or_defer_pr(repo_path, branch_name)
 

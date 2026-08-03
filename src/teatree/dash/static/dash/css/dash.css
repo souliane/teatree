@@ -558,14 +558,28 @@ a.chip:hover {
   font-size: var(--text-xs);
   color: var(--ink-muted);
 }
+/* The nav's drift count sits under its key count, in the same brown a drifted cell uses. */
+.settings-nav-drift {
+  grid-row: 2;
+  grid-column: 2;
+  justify-self: end;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--warn);
+}
 .settings-detail { min-width: 0; }
 .settings-detail table { width: 100%; }
 .settings-pane { overflow-x: auto; }
-.setting-source {
-  font-size: var(--text-xs);
-  color: var(--ink-muted);
-  white-space: nowrap;
-}
+/* A grid cell tints by drift and stays narrow enough that N scopes fit side by side. The
+tint is a wash of the same two palette tokens the verdict words carry, never the only
+signal — the icon and the words inside the cell say the verdict on their own. */
+.settings-grid .setting-cell { min-width: 10rem; }
+.settings-grid .setting-cell input,
+.settings-grid .setting-cell select { width: 100%; }
+.settings-grid .cell-at-default { background: color-mix(in srgb, var(--ok) 6%, transparent); }
+.settings-grid .cell-drifted { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.settings-grid .setting-name { white-space: nowrap; }
+.settings-grid .setting-help-anchor { border-bottom: 1px dotted currentcolor; cursor: help; }
 
 /* Health verdict as the page lead. */
 .verdict-lead {

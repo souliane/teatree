@@ -13,8 +13,14 @@ Piece B (drain): ``deploy.sh`` drains the running worker before the image swap;
 resumes; the worker gets a stop grace window for a clean shutdown.
 """
 
+import os
+import re
+import signal
+import subprocess
+import time
 from pathlib import Path
 
+import pytest
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +29,56 @@ _DEPLOY_SH = _ROOT / "deploy" / "deploy.sh"
 _FF_CHECKOUT_SH = _ROOT / "deploy" / "fast-forward-checkout.sh"
 _ENTRYPOINT_SH = _ROOT / "deploy" / "entrypoint.sh"
 _COMPOSE_YML = _ROOT / "deploy" / "docker-compose.yml"
+#: The shortest measured drain-to-broken-pipe interval across the three failed deploys
+#: (276.8s / 280.0s), i.e. the idle window the transport is known NOT to outlive.
+_OBSERVED_IDLE_TEARDOWN_SECONDS = 276
+
+#: Anchors bounding deploy.sh's stranded-gate fail-safe, so the signal probe below runs
+#: the SHIPPED code rather than a re-typed copy of it.
+_FAIL_SAFE_START = "_DRAINED=false"
+_FAIL_SAFE_END = "trap _clear_quiescing_if_stranded EXIT"
+
+
+def _fail_safe_block() -> str:
+    """deploy.sh's stranded-gate fail-safe, verbatim, anchors included."""
+    body = _DEPLOY_SH.read_text(encoding="utf-8")
+    start, end = body.find(_FAIL_SAFE_START), body.find(_FAIL_SAFE_END)
+    moved = "deploy.sh's stranded-gate fail-safe moved — re-anchor this probe"
+    assert start != -1, moved
+    assert end > start, moved
+    return body[start : end + len(_FAIL_SAFE_END)] + "\n"
+
+
+def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> list[str]:
+    """Signal a script carrying *fail_safe* mid-drain; return the `docker` calls it made."""
+    docker_log = tmp_path / "docker.log"
+    ready = tmp_path / "ready"
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub = stub_bin / "docker"
+    stub.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{docker_log}"\n', encoding="utf-8")
+    stub.chmod(0o755)
+
+    script = tmp_path / "harness.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\n"
+        f"{fail_safe}"
+        f'_DRAINED=true\ntouch "{ready}"\nsleep 5\n',
+        encoding="utf-8",
+    )
+
+    env = {**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"}
+    proc = subprocess.Popen(["bash", str(script)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S607 — a fixture-authored script under tmp_path
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "the harness never reached its drain"
+        proc.send_signal(sig)
+        proc.wait(timeout=10)
+    finally:
+        proc.kill()
+    return docker_log.read_text(encoding="utf-8").splitlines() if docker_log.exists() else []
 
 
 def _deploy_workflow() -> dict:
@@ -119,3 +175,40 @@ class TestDeployDrain:
             "teatree-worker needs a stop_grace_period so a recreate lets the SIGTERM "
             "handler exit cleanly instead of SIGKILL at the 10s default."
         )
+
+
+class TestDrainSurvivesItsTransport:
+    """The long drain outlives its SSH session, and a torn-down one still frees admission (#3983)."""
+
+    def test_the_ssh_transport_is_kept_alive_while_the_drain_waits(self) -> None:
+        # Three deploys died 276.8s / 280.0s / ~280s into the drain — a 3s spread is a
+        # fixed idle timeout, not a flaky link. Without keepalives the 1800s drain
+        # budget is unreachable: any wait on in-flight agents outlives the connection.
+        body = _DEPLOY_YML.read_text(encoding="utf-8")
+        match = re.search(r"ServerAliveInterval=(\d+)", body)
+        assert match is not None, "deploy.yml's ssh invocation must set ServerAliveInterval"
+        assert int(match.group(1)) * 2 < _OBSERVED_IDLE_TEARDOWN_SECONDS, (
+            "the keepalive cadence must leave room for a missed probe inside the observed idle window"
+        )
+        assert re.search(r"ServerAliveCountMax=(\d+)", body) is not None
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("sig", [signal.SIGHUP, signal.SIGPIPE, signal.SIGTERM, signal.SIGINT])
+    def test_a_torn_down_session_still_clears_the_stranded_gate(self, tmp_path: Path, sig: int) -> None:
+        # A dropped SSH session kills deploy.sh with one of these, mid-drain and long
+        # before the swap. Run deploy.sh's REAL fail-safe under each and prove it
+        # clears the gate — otherwise the still-live old worker admits nothing.
+        calls = _run_fail_safe_under_signal(tmp_path, sig, fail_safe=_fail_safe_block())
+
+        assert any("config_setting set worker_quiescing false" in call for call in calls), (
+            f"a deploy killed by {signal.Signals(sig).name} after its drain must free admission; docker calls={calls}"
+        )
+
+    @pytest.mark.integration
+    def test_the_signal_probe_detects_a_missing_fail_safe(self, tmp_path: Path) -> None:
+        # The control for the parametrised probe above: strip the trap and the same
+        # harness must record NO clear, so a green there is evidence and not an artifact.
+        without_trap = _fail_safe_block().replace(_FAIL_SAFE_END, "")
+        calls = _run_fail_safe_under_signal(tmp_path, signal.SIGHUP, fail_safe=without_trap)
+
+        assert calls == []

@@ -103,8 +103,19 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> str:
-        """Build the frontend app for production/testing."""
-        return ServiceLauncher(resolve_worktree(path), "build-frontend").run().detail
+        """Build the frontend app for production/testing.
+
+        Every ``ok=False`` the launcher reports — no command configured, a build
+        already in flight, a non-zero build exit — means nothing was built, so it
+        stops the caller with exit 1 exactly as ``run tests`` / ``run lint`` do.
+        Discarding ``ok`` here reported a green production-build gate over a build
+        that never ran.
+        """
+        result = ServiceLauncher(resolve_worktree(path), "build-frontend").run()
+        if not result.ok:
+            self.stderr.write(result.detail)
+            raise SystemExit(1)
+        return result.detail
 
     @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
     def tests(

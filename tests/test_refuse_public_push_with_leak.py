@@ -107,7 +107,22 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     # Point the hook at the real privacy_scan script via a known env knob
     # so it does not depend on a globally-installed `t3`.
     env["T3_PRIVACY_SCAN_CMD"] = f"python3 {SCAN}"
+    env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
     return work, env
+
+
+def _isolated_state_dir(tmp_path: Path) -> Path:
+    """Per-test root for the day-cached visibility verdict.
+
+    The gate resolves visibility through the shared, slug-keyed
+    ``repo-visibility-cache.json``. Every test here uses the same ``acme/widget``
+    slug, so without isolation a PUBLIC verdict cached by one test would be served
+    to a test that set up a PRIVATE shim — and the test would pass (or fail) for a
+    reason that has nothing to do with the gate.
+    """
+    state = tmp_path / "hook-state"
+    state.mkdir(parents=True, exist_ok=True)
+    return state
 
 
 def _run_hook(
@@ -656,6 +671,7 @@ def _public_work_clone(tmp_path: Path, origin: Path) -> tuple[Path, dict[str, st
     env = _hermetic_env()
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+    env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
     return work, env
 
 
@@ -1032,6 +1048,7 @@ class TestProbeErrorVisibilityFailsClosed:
         env = _hermetic_env()
         env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin"
         env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+        env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
         # privacy-scan:allow fixture -- a planted FAKE secret the gate-under-test must
         # scan; annotated so this repo's own pre-push gate does not flag the diff line.
         (work / "leak.txt").write_text("token = glpat-XXXXXXXXXXXXXXXX\n", encoding="utf-8")  # privacy-scan:allow
@@ -1044,6 +1061,75 @@ class TestProbeErrorVisibilityFailsClosed:
         combined = (result.stdout + result.stderr).lower()
         assert "privacy" in combined
         assert "fail closed" in combined
+
+
+_GITLAB_REMOTE_URL = "git@gitlab.com:acme-eng/inner/widget.git"
+
+
+def _make_glab_shim(bin_dir: Path, visibility: str) -> None:
+    """Write a fake ``glab`` answering ``api projects/<url-encoded-path>``."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "glab"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"api"* && "$*" == *"projects/"* ]]; then\n'
+        f'  echo \'{{"visibility":"{visibility}"}}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+class TestLeakGateResolvesVisibilityOnTheRemotesOwnForge:
+    """A GitLab remote must be classifiable — asking ``gh`` about it never was.
+
+    The gate shelled ``gh repo view`` for EVERY remote. On a ``gitlab.com``
+    remote ``gh`` errors on the namespace, so visibility was permanently
+    undetermined and the gate fell into its fail-closed branch: it scanned a
+    PRIVATE repo on every push, forever. Visibility now routes by the remote's
+    host (``glab`` for GitLab, ``gh`` for GitHub).
+
+    The PUBLIC row is the anti-vacuity guard: it proves the private row skips
+    because the repo is provably private, not because the gate stopped
+    detecting the planted secret on a GitLab remote.
+    """
+
+    def _gitlab_clone(self, tmp_path: Path, visibility: str) -> tuple[Path, dict[str, str]]:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        work = tmp_path / "work"
+        _git(tmp_path, "clone", str(origin), str(work))
+        _git(work, "config", "user.email", _NOREPLY_EMAIL)
+        _git(work, "config", "user.name", _NOREPLY_NAME)
+        _git(work, "remote", "set-url", "origin", _GITLAB_REMOTE_URL)
+        bin_dir = tmp_path / "bin"
+        _make_glab_shim(bin_dir, visibility)
+        env = _hermetic_env()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+        env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
+        (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+        return work, env
+
+    def test_private_gitlab_remote_skips_the_scan(self, tmp_path: Path) -> None:
+        work, env = self._gitlab_clone(tmp_path, "private")
+
+        result = _run_hook(work, env, _push_stdin(work), remote_url=_GITLAB_REMOTE_URL)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "fail closed" not in (result.stdout + result.stderr).lower()
+
+    def test_public_gitlab_remote_still_blocks_the_same_secret(self, tmp_path: Path) -> None:
+        work, env = self._gitlab_clone(tmp_path, "public")
+
+        result = _run_hook(work, env, _push_stdin(work), remote_url=_GITLAB_REMOTE_URL)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
 
 
 if __name__ == "__main__":

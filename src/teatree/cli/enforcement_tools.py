@@ -60,7 +60,10 @@ def diff_coverage(
     base: str = typer.Option(
         "",
         "--base",
-        help="Ref to diff against (merge-base..HEAD). Default: T3_DIFF_COVERAGE_BASE, else the repo's default branch.",
+        help=(
+            "Ref to diff against (merge-base..HEAD). Default: T3_DIFF_COVERAGE_BASE, "
+            "else the teatree.targetBranch git config, else the repo's default branch."
+        ),
     ),
     coverage_file: Path = typer.Option(Path(".coverage"), "--coverage-file", help="Path to .coverage data file"),
     output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
@@ -70,9 +73,10 @@ def diff_coverage(
     Measures coverage on the *branch's* added production lines — the committed
     diff against its merge-base with ``--base``, NOT the clone's working tree, so
     unrelated uncommitted edits never enter the gate. When ``--base`` is omitted it
-    resolves the configured base branch (``T3_DIFF_COVERAGE_BASE``) or the repo's
-    ACTUAL default branch, never a hardcoded ``origin/main`` — the latter grades a
-    ``master``-default repo or a fork's whole integration branch as new/uncovered.
+    resolves ``T3_DIFF_COVERAGE_BASE``, then the ``teatree.targetBranch`` git config,
+    then the repo's ACTUAL default branch, never a hardcoded ``origin/main`` — the
+    latter grades a ``master``-default repo or a fork's whole integration branch as
+    new/uncovered.
     Requires every new/changed production symbol to be imported by a changed test
     (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
     uncovered or a symbol is unreferenced.

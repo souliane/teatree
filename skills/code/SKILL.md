@@ -268,13 +268,16 @@ When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — 
 - Run linting after each significant change.
 - Run type checking if the project uses it.
 - Run the relevant test suite frequently — don't batch test runs.
-- **Regression suite is GREEN locally before any push (mandatory).** A narrow node run proves your new test; the regression suite proves you broke nothing else. The discipline is do-X-not-Y: do run the suite and confirm it passes in this same response *before* `pr create` / `git push`; do not push to let CI tell you whether you regressed something.
+- **The affected-tests lane is GREEN locally before any push (mandatory) — the lane, never the whole suite.** A narrow node run proves your new test; the affected lane proves you broke nothing else the diff can reach. The discipline is do-X-not-Y: do run the lane and confirm it passes in this same response *before* `pr create` / `git push`; do **not** run the whole suite locally, and do not push to let CI tell you whether you regressed something. A local whole-tree sweep pays for what CI's required sharded lane is about to run anyway — measured, that duplication is most of a 3.5h ticket ([#3994](https://github.com/souliane/teatree/issues/3994)).
 
   ```bash
-  uv run pytest --no-cov -x -q          # teatree core: full regression suite
+  bash dev/test-affected.sh             # teatree core: the diff-scoped lane
+  bash dev/test-affected.sh --full      # opt in to the whole suite for a genuinely cross-cutting change
   # overlay repo: use the overlay's wired runner from its playbook skill, e.g.
   t3 <overlay> test run                 # runs the repo's regression suite under its config
   ```
+
+  Scoping never means under-running: the lane is fail-safe **to FULL**. A migration, a `conftest.py` / `factories.py` / test-settings edit, an unclassifiable executable path, a missing merge-base, or an edit to the selection machinery itself all run the whole suite on their own. The `--full` flag is the exception a cross-cutting change declares, not the default every ticket pays. Pinned by `tests/teatree_quality/test_local_verification.py` (logic in `teatree.quality.local_verification`).
 
 - **Run the language convention skill's review checklist** (if loaded) before declaring implementation complete.
 - **100% test coverage is part of the implementation (Non-Negotiable).** New code ships with tests in the same commit. Never lower coverage thresholds, add files to coverage omit lists, or exclude code from coverage measurement without **explicit user approval**. If you can't reach 100% coverage, the implementation scope is too large — break it into smaller pieces.

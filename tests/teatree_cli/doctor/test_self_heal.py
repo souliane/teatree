@@ -83,6 +83,7 @@ class ComposeStackCheckTest(TestCase):
             ("teatree-init", "exited", "Exited (0)"),
             ("teatree-worker", "running", "Up 3 hours"),
             ("teatree-admin", "running", "Up 3 hours"),
+            ("teatree-watchdog", "running", "Up 3 hours"),
         ]
         with (
             mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
@@ -90,6 +91,30 @@ class ComposeStackCheckTest(TestCase):
         ):
             ok, _out = _echoes(self_heal._check_compose_stack)
         assert ok is True
+
+    def test_watchdog_stuck_created_fails(self) -> None:
+        # The supervisor is the one container nothing else restarts, so a watchdog
+        # that never started (an unmountable bind source, say) silently removes the
+        # alerting for every other finding in this module. Leaving it off the
+        # long-running set is what made that blind spot unreportable.
+        states = [
+            ("teatree-worker", "running", "Up 3 hours"),
+            ("teatree-watchdog", "created", "Created"),
+        ]
+        with (
+            mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
+            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+        ):
+            ok, out = _echoes(self_heal._check_compose_stack)
+        assert ok is False
+        assert "teatree-watchdog" in out
+
+    def test_every_long_running_service_is_watched(self) -> None:
+        assert set(self_heal._LONG_RUNNING_SERVICES) == {
+            "teatree-worker",
+            "teatree-admin",
+            "teatree-watchdog",
+        }
 
 
 class ComposeStackWatchdogHandoffTest(TestCase):
@@ -464,9 +489,22 @@ class DoctorJsonSurfaceTest(TestCase):
         assert captured["repair"] is False
 
     def test_check_without_json_does_not_route_to_json(self) -> None:
+        """The bare subcommand takes the non-JSON branch, so ``check_as_json`` stays untouched.
+
+        ``run_doctor_checks`` is stubbed for the same reason every ``--json`` sibling above
+        stubs it: the assertion is about which branch ``check`` picks, and the real aggregate
+        answers a different question at the price of every check it owns — token-permission
+        probes, the Slack round-trip and a ``claude mcp list`` subprocess among them. Stubbing
+        the nested ``run_self_heal_checks`` alone left the rest of that aggregate live on the
+        one test in this class that does not pass ``--json``, which is how a pure routing
+        assertion came to exceed the global 60s ``pytest-timeout`` under shard contention
+        (#4048).
+        """
+        import teatree.cli.doctor.app as doctor_app_mod  # noqa: PLC0415 — deferred, as its siblings (#4048)
+
         with (
             mock.patch(f"{_MOD}.check_as_json") as spy,
-            mock.patch(f"{_MOD}.run_self_heal_checks", return_value=True),
+            mock.patch.object(doctor_app_mod, "run_doctor_checks", return_value=True),
         ):
             CliRunner().invoke(cli_app, ["doctor", "check"])
         assert not spy.called

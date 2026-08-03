@@ -18,6 +18,7 @@ from teatree.loops.preset_admin import PresetReferrers, preset_referrers
 from teatree.loops.preset_editing import ENTRY_INHERIT, ENTRY_OFF, ENTRY_ON, entry_state_of
 from teatree.loops.preset_status import PresetSummary, active_summary
 from teatree.loops.schedule_editing import active_schedule_name
+from teatree.loops.shipped_guard import is_shipped, shipped_delete_phrase
 
 WEEKDAY_LABELS: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -42,6 +43,8 @@ class PresetCard:
     availability_pin: str
     entries: tuple[PresetEntryRow, ...]
     referrers: PresetReferrers
+    #: A shipped preset deletes only against a typed phrase naming what stops (#3842).
+    delete_phrase: str = ""
 
     def _count(self, state: str) -> int:
         return sum(1 for row in self.entries if row.state == state)
@@ -159,6 +162,7 @@ def _preset_card(preset: Mode, loops: tuple[Loop, ...], *, active_name: str) -> 
             for loop in loops
         ),
         referrers=preset_referrers(preset.name),
+        delete_phrase=shipped_delete_phrase(preset.name) if is_shipped("preset", preset.name) else "",
     )
 
 

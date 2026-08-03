@@ -7,11 +7,14 @@ functions taking the backend's http client or ``get`` / ``post`` callable so
 empty-credential guard, so these assume a usable token/channel.
 """
 
+import logging
 from typing import Protocol, cast
 
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 
 class Getter(Protocol):
@@ -45,9 +48,22 @@ def read_permalink(get: Getter, channel: str, ts: str) -> str:
 
 
 def open_im_channel(post: Poster, user_id: str) -> str:
-    """Open (or resolve) the IM channel id for *user_id* via ``conversations.open``; ``""`` on failure."""
+    """Open (or resolve) the IM channel id for *user_id* via ``conversations.open``; ``""`` on failure.
+
+    The ``""`` collapses several unrelated causes — ``missing_scope``,
+    ``user_not_found``, and a body Slack never saw — and the caller can only report
+    the generic "conversations.open ok:false". Slack's own ``error``/``needed`` are
+    logged here so the distinction survives, instead of being reconstructed by
+    hand from a downstream symptom.
+    """
     data = post("conversations.open", {"users": user_id})
     if not data.get("ok"):
+        logger.warning(
+            "conversations.open failed for user %r: error=%r needed=%r",
+            user_id,
+            data.get("error", "<no error field — the call never reached Slack>"),
+            data.get("needed", ""),
+        )
         return ""
     channel = cast("RawAPIDict", data.get("channel") or {})
     channel_id = channel.get("id")

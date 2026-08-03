@@ -135,7 +135,7 @@ def _cold_db_raw(name: str) -> object | None:
     Unlike :func:`_cold_db_bool` (which collapses a present-but-non-bool value to
     ``None``), this returns the raw decoded value so a caller can tell a genuinely
     ABSENT setting apart from one whose stored value is not a clean boolean. Fails
-    open to ``None`` on any error.
+    open to ``None`` on any error (see :func:`_cold_read`).
     """
     return read_cold_setting_status(name)[0]
 
@@ -170,11 +170,10 @@ def _warn_unknown_setting(name: str, value: object, *, default: bool) -> None:
 def _cold_db_int(name: str) -> int | None:
     """The stored GLOBAL-scope DB int for ``[teatree] <name>``; ``None`` on absence/failure.
 
-    The integer sibling of :func:`_cold_db_bool`. Lazily delegates to the Django-free
-    ``teatree.config.cold_reader`` and fails open to ``None`` on ANY error. REJECTS a
-    ``bool``: a ``bool`` subclasses ``int``, but a stored boolean must never be read
-    as a budget, so it returns ``None`` and the caller's default fires instead
-    (never-lockout).
+    The integer sibling of :func:`_cold_db_bool`. Delegates to :func:`_cold_read`
+    and fails open to ``None`` on ANY error. REJECTS a ``bool``: a ``bool``
+    subclasses ``int``, but a stored boolean must never be read as a budget, so it
+    returns ``None`` and the caller's default fires instead (never-lockout).
     """
     value, _ = read_cold_setting_status(name)
     if isinstance(value, bool) or not isinstance(value, int):

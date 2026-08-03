@@ -72,6 +72,26 @@ class PendingPrDrainScannerTestCase(TestCase):
         assert [signal.kind for signal in signals] == ["pending_pr.drained"]
         assert not PendingPullRequest.objects.filter(branch=branch).exists()
 
+    def test_work_that_reached_the_base_under_a_different_path_discharges(self) -> None:
+        """#3977: the same bytes landed while a refactor moved them — the branch owes nothing.
+
+        Without the content premise re-test the obligation renews on every tick
+        forever, and its remedy opens a PR that reverts the base.
+        """
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        _run_git("checkout", "main", cwd=repo)
+        (repo / "core").mkdir()
+        (repo / "core" / "feature.py").write_text("value = 1\n")
+        _run_git("add", "-A", cwd=repo)
+        _run_git("commit", "-m", "refactor(core): the same fix, under the split module", cwd=repo)
+        _run_git("push", "origin", "main", cwd=repo)
+
+        signals = PendingPrDrainScanner().scan()
+
+        assert [signal.kind for signal in signals] == ["pending_pr.drained"]
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
     def test_repo_gone_from_disk_keeps_the_obligation_rather_than_dropping_it(self) -> None:
         PendingPullRequest.objects.owe(
             repo_path=str(self._tmp_path / "reaped-worktree"),

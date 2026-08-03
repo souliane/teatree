@@ -44,7 +44,10 @@ class _LoopFlagAndCredentialSettings:
     # governs INTAKE only; merge authority is untouched (a substrate PR still
     # needs a recorded human approver).
     trusted_issue_authors: list[str] = field(default_factory=list)
-    # Cap on simultaneously in-flight auto-implement tickets.
+    # The FALLBACK in-flight ceiling when the resource loop has no adaptive
+    # opinion (kill-switch off, no reading yet, or stale) — see #3992's
+    # resolve_intake_concurrency, which otherwise derives the live limit from
+    # observed headroom and may exceed this number.
     issue_implementer_max_concurrent: int = 3
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
@@ -151,6 +154,14 @@ class _LoopFlagAndCredentialSettings:
     # autonomously (per-item approval via t3:triaging-issues). Flip OFF to make the
     # loop emit nothing.
     triage_assessor_enabled: bool = True
+    # Opt-in, default-OFF gate for the MR-triage surveyor. When False (the default)
+    # no scanner is built, so the loop emits nothing. When on, the scanner walks the
+    # operator's own open MRs, runs each through the pure triage ladder, and SURFACES
+    # the verdict -- it posts nothing and dispatches nothing, so turning it on cannot
+    # produce a colleague-visible action.
+    mr_triage_enabled: bool = False
+    # Upper bound on verdicts surfaced per tick -- keeps one pass reviewable.
+    mr_triage_max_mrs_per_tick: int = 20
     # Min interval between assessment passes (the scanner self-gates on this).
     triage_assessor_cadence_hours: int = 24
     # Upper bound on issues serialized into one queued assessment task — keeps the

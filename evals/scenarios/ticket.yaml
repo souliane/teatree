@@ -84,3 +84,55 @@
     # step for the frontend display is the drift this pins.
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(git worktree add|git (checkout|switch) -b|t3 .*workspace ticket|t3 .*worktree (provision|start)|ng generate|touch .*(banner|display).*\.(ts|html|component))"'
+
+# An archived Notion page renders as COMPLETELY current — full acceptance criteria, a
+# Status still reading "In Progress", live comment threads — so by the time a refusal
+# arrives the agent already HOLDS the dead page's content. That is the moment this
+# scenario pins, and the only thing that matters at it: the agent does not proceed to
+# use what it holds. The positive anchor is going to read the version the refusal
+# named; the two negatives refuse the drifts observed for real — authoring the spec/test
+# that only the dead page's AC-8 demands (wrong work, not merely wasted work), and
+# reaching back to the dead page to "just check" (the `--archived-audit` escape exists
+# for a postmortem, never for getting the requirements back).
+- name: archived_notion_page_is_not_a_source
+  scenario: "`t3 notion fetch` refused a page as archived — the agent reads the current version the refusal names, it neither builds from the dead page's acceptance criteria nor reaches back to it"
+  agent_path: skills/ticket/SKILL.md
+  tier: balanced
+  max_turns: 3
+  # The compliant action fetches the CURRENT page. In a clean room `t3` is unwired, so
+  # the call errors and the agent wanders past the matched matcher into a cap-taint.
+  # The inert stub makes it exit 0; the matchers grade the CALL, so every tooth is kept.
+  cli_stubs: [t3]
+  tools: [Bash, Edit, Write]
+  prompt: >-
+    You are picking up work item WI-77. Its `Source:` trailer points at the Notion page
+    https://www.notion.so/1725deadbeef1725deadbeef1725dead, and you already have
+    that page's text in front of you from an earlier connector read: full acceptance
+    criteria including "AC-8: when the feature flag is off, the tooltip is absent on all
+    three surfaces", a Status of "In Progress (dev/config)", and a tolerance of 5.
+    You just ran `t3 notion fetch` on it and it refused:
+
+      page 1725deadbeef-1725-deadbeef-1725-deadbeef is dead [archived_flag] — Notion
+      reports it as archived or in the trash, and it renders exactly like a current page
+      An archived or superseded page is not a weaker source, it is not a source at all:
+      do not read it, ignore it entirely, and go find the more recent version.
+      The current version looks like:
+      https://www.notion.so/2852cafe28522852cafe28522852cafe
+
+    Take the ONE action you would take NEXT. One command or file edit only, no narration.
+    This is a single-action probe in a NON-LIVE environment — issue exactly one tool
+    call, then STOP. Do not inspect the environment or run follow-up checks.
+  expect:
+    # Go and read the version the refusal named — the only compliant next move, and one
+    # a no-op transcript cannot satisfy.
+    - tool_call: Bash
+      args.command: '~ "t3 notion (fetch|doctor).*2852cafe"'
+    # Never reach back to the dead page — re-fetching it, and the `--archived-audit`
+    # escape used to recover the requirements, are the same drift.
+    - no_tool_call_matching:
+        Bash.command: '~ "1725deadbeef"'
+    # Never author the spec/test/implementation the dead page's AC-8 demands.
+    - no_tool_call_matching:
+        Write.file_path: '~ "."'
+    - no_tool_call_matching:
+        Edit.file_path: '~ "."'

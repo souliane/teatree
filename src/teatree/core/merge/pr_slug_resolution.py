@@ -1,9 +1,10 @@
-"""Resolve the GitHub/GitLab ``owner/repo`` + host kind for a CLEAR's PR.
+"""Resolve the ``owner/repo`` a CLEAR's PR/MR lives in.
 
 Maps a ``MergeClear`` (whose ``slug`` is a workstream slug, not a repo) to the
 real ``owner/repo`` the merge transport must target, with the #1335 cross-repo
-recovery probe. Depends DOWN on :mod:`ci_rollup` for the live-head fetch so this
-module and :mod:`execution` both layer above ``ci_rollup`` (no cycle).
+recovery probe. The FORGE hosting that repo is the sibling question, answered by
+:mod:`host_kind`. Depends DOWN on :mod:`ci_rollup` for the live-head fetch so
+this module and :mod:`execution` both layer above ``ci_rollup`` (no cycle).
 """
 
 import logging
@@ -15,33 +16,11 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
-from teatree.utils.forge import forge_from_remote
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_host_kind(clear: object) -> str:
-    """Return ``"github"`` or ``"gitlab"`` for *clear*'s PR transport.
-
-    Resolution order:
-
-    (1) the CLEAR's ``ticket.issue_url`` — ``github.com`` → ``"github"``,
-        any URL whose hostname contains ``gitlab`` (gitlab.com or a
-        self-hosted ``gitlab.<corp>`` host) → ``"gitlab"``.
-    (2) default ``"github"`` — back-compat for CLEAR rows without a
-        ticket / without a recognisable ``issue_url``. Pre-existing
-        GitHub callers keep the legacy ``gh`` transport unchanged.
-
-    The host kind is a transport-only switch; every §17.4.3 guard
-    (substrate refusal, reviewer≠loop, SHA-bind, single-use replay)
-    is identical across forges.
-    """
-    ticket = getattr(clear, "ticket", None)
-    issue_url = str(getattr(ticket, "issue_url", "") or "") if ticket is not None else ""
-    return forge_from_remote(issue_url) or "github"
 
 
 _GIT_BRANCH_PREFIXES = frozenset(

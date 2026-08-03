@@ -5,11 +5,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from teatree.config import clone_root, worktree_root
+from teatree.config import clone_root, cold_reader, get_effective_settings, worktree_root
+from teatree.core.gates.single_branch_repo_guard import (
+    GATE_KEY,
+    check_branch_admitted,
+    deny_reason,
+    resolve_pinned_branch,
+)
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
+from teatree.core.worktree.clone_provision import ensure_clone
+from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
@@ -25,19 +34,12 @@ logger = logging.getLogger(__name__)
 def _clone_dir_from_worktree(worktree_path: str) -> Path | None:
     """The main clone backing an on-disk worktree, via its shared git dir (#2275).
 
-    ``git rev-parse --git-common-dir`` resolves to the main clone's git directory
-    (``<clone>/.git`` for a linked worktree, ``.git`` relative from the clone
-    root); its parent is the clone working tree. Returns ``None`` when
-    *worktree_path* is not a git worktree, so the adopt path falls back to the
-    checkout itself.
+    Delegates to the shared :func:`~teatree.core.worktree.clone_paths.git_common_clone_dir`
+    so this seam and clone RESOLUTION cannot drift on what "the clone behind this
+    worktree" means. Returns ``None`` when *worktree_path* is not a git worktree,
+    so the adopt path falls back to the checkout itself.
     """
-    common = git.run(repo=worktree_path, args=["rev-parse", "--git-common-dir"])
-    if not common:
-        return None
-    common_path = Path(common)
-    if not common_path.is_absolute():
-        common_path = (Path(worktree_path) / common_path).resolve()
-    return common_path.parent
+    return git_common_clone_dir(worktree_path)
 
 
 def _recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
@@ -325,6 +327,10 @@ class WorktreeProvisioner(RunnerBase):
         if recorded and _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
             return recorded
 
+        if refusal := self._single_branch_refusal(repo_name, branch):
+            logger.error("%s", refusal)
+            return None
+
         worktree = existing or Worktree.objects.create(
             ticket=self.ticket,
             repo_path=repo_name,
@@ -348,29 +354,39 @@ class WorktreeProvisioner(RunnerBase):
         worktree.save(update_fields=["branch", "extra"])
         return wt_path
 
+    def _single_branch_refusal(self, repo_name: str, branch: str) -> str:
+        """The deny text when *repo_name* is single-branch and *branch* is not its pinned one.
+
+        Checked BEFORE the ``Worktree`` row is created, so a refusal leaves no
+        half-provisioned state to roll back. Empty string when the repo is not
+        declared single-branch or the branch IS the pinned one — the overwhelming
+        majority of provisions, which pay one config read.
+        """
+        if not cold_reader.bool_setting(GATE_KEY, default=True):
+            return ""
+        settings = get_effective_settings(self.ticket.overlay or None)
+        pinned = resolve_pinned_branch(repo_name, list(settings.single_branch_repos))
+        finding = check_branch_admitted(branch, pinned_branch=pinned)
+        if finding is None:
+            return ""
+        return deny_reason(finding, pinned_branch=pinned, repo=repo_name)
+
     @staticmethod
     def _existing_ticket_dir(ticket: Ticket) -> Path | None:
         """The shared parent dir of this ticket's already-materialised worktrees.
 
-        Returns the common parent of every existing ``Worktree`` whose
-        ``worktree_path`` is on disk, so a repo added later co-locates as a
-        sibling there rather than in a fresh ``<workspace>/<branch>`` dir. A
-        repo worktree lives at ``<ticket_dir>/<repo-basename>``, so its parent
-        IS the ticket dir. Returns ``None`` when the ticket has no materialised
-        worktree yet (first provision) or when the existing ones disagree on a
-        parent (a pre-existing split we don't paper over), leaving the caller's
+        Delegates to :func:`~teatree.core.worktree.ticket_workspace.ticket_workspace_dir`
+        so the provisioner's co-location rule and the refusal the ad-hoc registration
+        seams now enforce are the SAME predicate. They were the same rule expressed
+        twice, which is how the ad-hoc seams came to have no rule at all: a repo added
+        later co-locates as a sibling in the ticket's existing dir, and ``None`` (no
+        materialised worktree yet, or an existing split) leaves the caller's
         ``workspace / branch`` default in force.
         """
-        parents = {
-            Path(path).parent
-            for wt in Worktree.objects.for_ticket(ticket)
-            if (path := (wt.extra or {}).get("worktree_path")) and Path(path).is_dir()
-        }
-        return parents.pop() if len(parents) == 1 else None
+        return ticket_workspace_dir(ticket)
 
-    @staticmethod
     def _create(
-        clones_root: Path, repo_name: str, ticket_dir: Path, branch: str, *, adopt_path: str = ""
+        self, clones_root: Path, repo_name: str, ticket_dir: Path, branch: str, *, adopt_path: str = ""
     ) -> tuple[str, Path] | None:
         """Run ``git worktree add`` for one repo, or record an adopted checkout (#2275).
 
@@ -378,23 +394,31 @@ class WorktreeProvisioner(RunnerBase):
         — where source clones are DISCOVERED — NOT the WORKTREE root the new
         worktree lands under (that is *ticket_dir*). Returns
         ``(worktree_path, clone_path)`` on success or ``None`` on failure (no clone
-        found, or ``git worktree add`` rejected the path). Retries without ``-b`` so
-        partial-failure recovery picks up an existing branch.
+        found or creatable, or ``git worktree add`` rejected the path). Retries
+        without ``-b`` so partial-failure recovery picks up an existing branch.
+
+        A missing clone is CLONED from the remote the ticket's overlay declares,
+        rather than failing outright, so a runtime owning an empty clone root (the
+        containerized stack's own workspace volume) provisions without an operator
+        pre-seeding it. An overlay that declares no remote for the repo keeps the
+        old failure.
 
         *adopt_path* (#2275): when set, the branch's worktree already exists on
         disk (the operator ran ``workspace ticket --adopt`` from inside it), so its
         path is recorded verbatim — never ``git worktree add`` (git would refuse
         the already-checked-out branch and it would create a second dir). The
         backing clone is the discovered clone, or the checkout's own shared git dir
-        when it lives outside *clones_root*.
+        when it lives outside *clones_root*. Adoption never triggers a clone: the
+        checkout is already there, so a network fetch would be pure cost.
         """
-        repo_path = find_clone_path(clones_root, repo_name)
         if adopt_path:
-            clone_path = repo_path or _clone_dir_from_worktree(adopt_path)
+            clone_path = find_clone_path(clones_root, repo_name) or _clone_dir_from_worktree(adopt_path)
             return adopt_path, clone_path or Path(adopt_path)
+
+        repo_path = ensure_clone(clones_root, repo_name, get_overlay_for_ticket(self.ticket))
         if repo_path is None:
             logger.warning(
-                "No git clone found for %s under %s (looked at %s and one-level subdirs)",
+                "No git clone found or creatable for %s under %s (looked at %s and one-level subdirs)",
                 repo_name,
                 clones_root,
                 clones_root / repo_name,

@@ -41,3 +41,31 @@ def runner_prefix(repo: Path) -> list[str]:
     if _is_pipenv_repo(repo):
         return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
     return ["uv", "--directory", str(repo), "run", "python"]
+
+
+def project_env_is_drivable(repo: Path) -> bool:
+    """Whether *repo*'s virtualenv belongs to the interpreter platform running now.
+
+    ``uv run`` — what :func:`runner_prefix` emits — REMOVES and recreates a ``.venv``
+    whose interpreter it cannot use. That is correct for a project whose environment
+    uv owns, and destructive across a container boundary: ``deploy/t3`` bind-mounts
+    the operator's working tree into the container, so the tree the container would
+    drive carries the HOST's ``.venv``. One containerized ``t3 <overlay> tasks …``
+    would delete the environment the host is actively working in (and the host's next
+    ``uv run`` would delete the replacement) — a working tree destroyed by a read-only
+    status command.
+
+    A repo with no ``.venv`` is drivable: uv creates one, destroying nothing. A repo
+    whose ``.venv`` names an interpreter that exists here is ours. A ``.venv`` whose
+    recorded interpreter home is absent belongs to the other side of the boundary, and
+    the caller must reach the code some other way rather than have uv clear it out.
+    """
+    try:
+        lines = (repo / ".venv" / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return True
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key.strip() == "home":
+            return Path(value.strip()).is_dir()
+    return True

@@ -23,7 +23,7 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.loop.dispatch import DispatchAction, dispatch
-from teatree.loop.persistence import persist_agent_actions
+from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
 from tests._agent_runtime_env import interactive_runtime
 
@@ -515,3 +515,21 @@ class TestFullDispatchPersistWire(TestCase):
         actions = [a for s in signals for a in dispatch([s]) if a.kind == "agent"]
         created = persist_agent_actions(actions)
         assert len(created) == len(signals), f"expected one task per revived zone, got {[t.phase for t in created]}"
+
+
+class TestEveryFixKindHasAScheduledRemedy(TestCase):
+    """``_FIX_REASON_BY_KIND`` ↔ ``RedMrFixAttempt.Kind`` parity.
+
+    ``_handle_debug`` indexes the table with the payload's resolved fix kind, which
+    ``fix_kind_of`` guarantees is one of the ledger's kinds — so a kind added to the
+    ledger without a remedy here is a ``KeyError`` at persist time, on the dispatch
+    path, where it surfaces as a dropped fix rather than a failure.
+    """
+
+    def test_the_remedy_table_covers_exactly_the_ledger_kinds(self) -> None:
+        assert set(_FIX_REASON_BY_KIND) == set(RedMrFixAttempt.Kind.values)
+
+    def test_every_remedy_names_the_merge_request_it_is_scheduled_for(self) -> None:
+        # Each reason is formatted with ``pr_url``; one that drops the placeholder
+        # would schedule a task naming no merge request.
+        assert all("{pr_url}" in reason for reason in _FIX_REASON_BY_KIND.values())

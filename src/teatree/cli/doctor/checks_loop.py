@@ -36,8 +36,8 @@ def _check_marker_jam() -> bool:
     The jam signature: non-terminal ``ImplementedIssueMarker`` rows whose ticket
     is already terminal, gone, or stalled — they never left ``dispatched`` /
     ``ticket_created`` (release-on-completion only fires on the live transition),
-    so they permanently consume the ``issue_implementer_max_concurrent`` budget
-    and no new issue is ever claimed. Reads the non-mutating :meth:`find_stale`
+    so they permanently consume the in-flight intake budget and no new issue is
+    ever claimed. Reads the non-mutating :meth:`find_stale`
     preview across every
     overlay. A WARN (never a hard FAIL): the loop self-heals each tick, and the
     operator can force it now with ``t3 loop reclaim-markers``. Crash-proof: any
@@ -58,6 +58,62 @@ def _check_marker_jam() -> bool:
         "run `t3 loop reclaim-markers` to free the issue_implementer budget (#3275)."
     )
     return False
+
+
+def _check_intake_budget_deadlock() -> bool:
+    """FAIL when issue intake sits at a full budget with nothing progressing (#3978).
+
+    Two stalled claims at a budget of two stop the factory admitting any work at all,
+    and nothing surfaces it: a full budget makes the scanner factory return ``None``, so
+    the tick does nothing and reports success while labelled issues pile up unreachable.
+
+    The signature is a full budget held ENTIRELY by claims with no active task and no
+    open PR — busy is normal, going nowhere is not. Unlike ``_check_marker_jam`` (which
+    warns only once a release grace has already expired) this HARD-FAILs, and fires
+    while the graces are still running. Crash-proof: a broken read degrades to OK with a
+    WARN, so a doctor run never reddens on the alarm's own failure.
+
+    Read-only, deliberately: the "is this holder's PR still open?" evidence comes from
+    ``PullRequest.state``, and keeping that field honest belongs to the writers — the
+    merge chokepoint stamps it the instant a merge lands, and the intake tick reconciles
+    the holders' rows against the forge before every budget read (#3984). Probing the
+    forge here instead would let a diagnostic mutate the state it reports on.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.intake.budget import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        IntakeBudget,
+        read_intake_budget,
+    )
+    from teatree.core.intake.concurrency import resolve_intake_concurrency  # noqa: PLC0415 — deferred: same
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        occupied = (
+            ImplementedIssueMarker.objects.exclude(state__in=ImplementedIssueMarker.State.terminal())
+            .values_list("overlay", flat=True)
+            .distinct()
+        )
+        jammed: list[IntakeBudget] = []
+        for overlay in sorted(occupied):
+            settings = get_effective_settings(overlay)
+            if not settings.issue_implementer_enabled:
+                continue
+            # The LIVE limit, never the static setting: the resource loop may have moved
+            # it (#3992), and a doctor reading a different number than the gate is the
+            # second opinion this whole surface exists to prevent.
+            limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=overlay)
+            budget = read_intake_budget(overlay, limit)
+            if budget.deadlocked:
+                jammed.append(budget)
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Intake-budget deadlock check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for budget in jammed:
+        typer.echo(
+            f"FAIL  {budget.report()} — no held slot is progressing, so no new issue can be admitted; "
+            "free the budget with `t3 loop reclaim-markers` (#3978)."
+        )
+    return not jammed
 
 
 def _check_dream_staleness() -> bool:
@@ -92,6 +148,41 @@ def _check_dream_staleness() -> bool:
         "Memories pile up unpromoted; schedule `t3 dream tick` (~04:00 cron) so "
         "the cadence ledger advances, not just a one-off `t3 dream run` (#1933). "
         "If `t3 dream run` reports 0 members, see the transcript-visibility check.",
+    )
+    return False
+
+
+def _check_dream_consolidation_blocked() -> bool:
+    """Hard-FAIL when a once-working dream pass has been unable to stamp success (#3993).
+
+    The escalation tier over :func:`_check_dream_staleness`'s advisory WARN, whose
+    verdict is surfacing-only: a pass can run nightly, fail an acceptance gate and
+    withhold the marker indefinitely without any operator-visible signal. A pass that
+    once succeeded and has not for ``CRITICAL_STALE_MULTIPLE`` staleness windows is
+    structurally blocked, not merely behind, so it gates the doctor exit code.
+    Bootstrap (never succeeded) is excluded — see
+    :meth:`DreamRunMarkerManager.is_critically_stale`.
+
+    Crash-proof: any error degrades to OK, the same posture as every other DB-reading
+    doctor check.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    try:
+        blocked = DreamRunMarker.objects.is_critically_stale(timezone.now())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first() if blocked else None
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-blocked check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not blocked:
+        return True
+    succeeded = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "never"
+    typer.echo(
+        f"FAIL  Dream consolidation has not stamped success since {succeeded} — every pass is being "
+        "withheld, so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
+        "gate verdict it now exits non-zero on (#3993).",
     )
     return False
 
@@ -186,6 +277,29 @@ def _check_loop_classification_drift() -> bool:
     typer.echo(
         "WARN  Run `python -m teatree seed_loops --reconcile-classification` to write the shipped values back.",
     )
+    return False
+
+
+def _check_shipped_seed_inertness() -> bool:
+    """Warn on each shipped loop/preset/schedule that is missing, disabled, or not ticking.
+
+    The expected set is sourced from the shipped seed tables, not the DB, so a row somebody
+    deleted is visible at all. Only FAULTS are echoed — a shipped-off loop or an inactive
+    calendar is a deliberate choice, and a check that reports those every hour is one people
+    learn to ignore. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.seed_inertness import shipped_inertness  # noqa: PLC0415 — deferred: ORM-reading import
+
+    try:
+        faults = [finding for finding in shipped_inertness() if finding.is_fault]
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Shipped-seed inertness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not faults:
+        return True
+    for finding in faults:
+        typer.echo(f"WARN  Shipped seed inert: {finding.label}")
+    typer.echo("WARN  Run `t3 loops audit` for the full report, including the deliberate ones.")
     return False
 
 

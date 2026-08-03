@@ -12,13 +12,27 @@ A bare sibling of ``hook_router`` (the shrink-only god-module owns the state
 directory), it back-imports the router's marker helpers lazily so a test
 monkeypatching ``router.STATE_DIR`` is honoured and there is no import cycle at
 module top.
+
+Engagement also decides what an engaged session must HOLD, not only what it may
+suggest: :func:`autoload_skill_demand` is the hard-demand half of the same seam.
 """
+
+from collections.abc import Iterable
+
+from hooks.scripts.teatree_settings import autoload_enabled
 
 # The lifecycle-core skill set seeded into ``<session>.skills`` when an
 # autoloaded session engages (#3273) — the smaller meaningful set the owner
 # expects to see, so the statusline skills segment is never blank on an engaged
 # session. A subsequent real Skill/InstructionsLoaded load still augments it.
 LIFECYCLE_SEED_SKILLS = ("t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket")
+
+# The platform skill an ``autoload``-engaged session must hold: the engagement
+# skill itself, so holding it and being engaged stay one fact rather than two
+# that can drift. Written bare — the pending writer canonicalizes it up to the
+# plugin namespace, which is the token the agent loads and the token the
+# PreToolUse gate reads back.
+PLATFORM_SKILL = "interactive"
 
 
 def engage(session_id: str, *, seed_skills: bool = False) -> None:
@@ -37,6 +51,32 @@ def engage(session_id: str, *, seed_skills: bool = False) -> None:
     _state_file(session_id, "teatree-active").touch()
     if seed_skills:
         _seed_lifecycle_skills(session_id)
+
+
+def autoload_skill_demand(loaded_skills: Iterable[str]) -> list[str]:
+    """``[PLATFORM_SKILL]`` when ``autoload`` engaged this session and it is not held yet.
+
+    ``autoload`` is the owner's standing "teatree is on for every session"
+    opt-in, so the platform skill is a HARD demand on such a session rather than
+    a suggestion the agent may skip. Engagement by itself only armed the
+    suggester and the loop; nothing put the skill in front of the agent, so the
+    owner-visible contract was implemented nowhere.
+
+    Scoped to the ``autoload`` tier deliberately. A session engaged by loading a
+    lifecycle skill (``.t3-engaged``) made no such standing request, and forcing
+    the platform skill on it would be an over-block.
+
+    Every spelling ``<session>.skills`` can carry — bare, namespaced, or an
+    overlay's path-shaped ``skill_path`` — canonicalizes to one token, so a
+    session that already holds the skill is never asked for it again.
+    """
+    if not autoload_enabled():
+        return []
+    from hooks.scripts.hook_router import normalize_skill_name  # noqa: PLC0415 deferred back-import
+
+    wanted = normalize_skill_name(PLATFORM_SKILL)
+    held = {normalize_skill_name(skill) for skill in loaded_skills}
+    return [] if wanted in held else [PLATFORM_SKILL]
 
 
 def _seed_lifecycle_skills(session_id: str) -> None:

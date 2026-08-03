@@ -11,6 +11,7 @@ this module makes the file actively inhospitable to being treated as
 truth.
 """
 
+import logging
 import os
 import platform
 import stat
@@ -19,12 +20,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
-from teatree.utils.postgres_secret import PASS_KEY_ENV
+from teatree.utils import secrets
+from teatree.utils.postgres_secret import (
+    PASS_KEY_ENV,
+    POSTGRES_PASSWORD_ENV,
+    PostgresPasswordUnavailableError,
+    ensure_postgres_pass_entry,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket, Worktree
     from teatree.core.models.types import WorktreeExtra
     from teatree.core.overlay import OverlayBase
+
+logger = logging.getLogger(__name__)
 
 CACHE_DIRNAME = ".t3-cache"
 CACHE_FILENAME = ".t3-env.cache"
@@ -123,14 +132,65 @@ def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
     ticket_dir = wt_path.parent
     ticket = cast("Ticket", worktree.ticket)
 
-    return [
+    pairs = [
         ("WT_VARIANT", ticket.variant or ""),
         ("TICKET_DIR", str(ticket_dir)),
         ("TICKET_URL", ticket.issue_url),
         ("WT_DB_NAME", worktree.db_name),
         ("COMPOSE_PROJECT_NAME", compose_project(worktree)),
-        (PASS_KEY_ENV, worktree.pass_key),
     ]
+    if pass_key := stored_postgres_pass_key(worktree):
+        pairs.append((PASS_KEY_ENV, pass_key))
+    return pairs
+
+
+def stored_postgres_pass_key(worktree: "Worktree") -> str:
+    """Return *worktree*'s postgres pass key ONLY when the entry behind it resolves.
+
+    ``""`` — omit the reference entirely — when no secret is stored under it. The cache
+    used to advertise ``POSTGRES_PASSWORD_PASS_KEY`` unconditionally while the only
+    writer of that entry was ``env migrate-secrets``, run after the fact and by hand, so
+    on a freshly provisioned worktree every consumer resolving the reference got a
+    ``pass show`` miss: :func:`~teatree.utils.postgres_secret.resolve_postgres_password`
+    logged "resolved to empty value" and fell through to whatever ``POSTGRES_PASSWORD``
+    literal happened to be in the ambient process env — or, for a caller that had none
+    (the provision post-condition's ``psql``), to no password at all. A key present in
+    the cache is now a key that answers.
+    """
+    key = worktree.pass_key
+    return key if key and secrets.pass_entry_exists(key) else ""
+
+
+def store_postgres_secret(worktree: "Worktree", overlay: "OverlayBase") -> str:
+    """Store the overlay's postgres password under *worktree*'s pass key; return the key.
+
+    ``""`` when there is nothing to store (the overlay contributes no password) or
+    ``pass`` cannot hold it — in both cases the cache renders without a
+    ``POSTGRES_PASSWORD_PASS_KEY`` line rather than naming a dead entry, and the
+    literal-in-``env_extra`` path keeps working for subprocess callers.
+
+    Called by :func:`write_env_cache`, so PROVISIONING creates the entry its own cache
+    advertises. Idempotent: an entry that already resolves is left untouched, so a
+    re-provision never rewrites a secret other tooling may have rotated.
+    """
+    key = worktree.pass_key
+    if not key:
+        return ""
+    if secrets.pass_entry_exists(key):
+        return key
+    password = overlay.provisioning.env_extra(worktree).get(POSTGRES_PASSWORD_ENV, "")
+    if not password:
+        return ""
+    try:
+        return ensure_postgres_pass_entry(worktree.ticket_id, password)  # ty: ignore[unresolved-attribute]  # Django FK
+    except PostgresPasswordUnavailableError:
+        logger.warning(
+            "Could not store the postgres password in pass for %s — the env cache will omit %s "
+            "and callers fall back to the env_extra literal.",
+            key,
+            PASS_KEY_ENV,
+        )
+        return ""
 
 
 def _declared_core_keys() -> set[str]:
@@ -222,14 +282,30 @@ def write_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = Non
     ``.envrc`` sources ``../.t3-cache/<repo>/.t3-env.cache`` and
     ``_find_env_cache`` walks up to the same path. Any stale in-worktree copy
     from a pre-#3097 provision is removed here.
+
+    The postgres secret is stored in ``pass`` BEFORE the render, so the
+    ``POSTGRES_PASSWORD_PASS_KEY`` the cache advertises is one that resolves — see
+    :func:`store_postgres_secret`. Order matters: :func:`render_env_cache` emits the
+    reference only for an entry that already answers, and ``detect_drift`` renders
+    without writing, so a cache written before the entry existed would read as
+    permanently drifted.
     """
+    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
+
+    # An unprovisioned worktree has no cache to write, so it must not reach the
+    # overlay resolution or store a secret nothing will ever advertise.
+    extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
+    if not extra.get("worktree_path"):
+        return None
+
+    if overlay is None:
+        overlay = get_overlay_for_worktree(worktree)
+    store_postgres_secret(worktree, overlay)
+
     spec = render_env_cache(worktree, overlay=overlay)
     if spec is None:
         return None
 
-    from teatree.core.models.types import validated_worktree_extra  # noqa: PLC0415 — deferred: needs the app registry
-
-    extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     wt_path = Path(extra["worktree_path"])
 
     spec.path.parent.mkdir(parents=True, exist_ok=True)

@@ -6,14 +6,18 @@ surface the silent-failure classes as loud findings so the in-daemon watchdog
 (the ``deploy/watchdog.sh`` sidecar, kept alive by the Docker daemon independently
 of the stack it watches) can restart the stack and DM the owner:
 
-- a compose init container that exited non-zero / a worker stuck ``Created``,
+- a compose init container that exited non-zero, or any long-running service —
+    worker, admin, or the watchdog itself — stuck ``Created``/``Exited``,
 - a free worker flock while the loop machinery has queued, overdue work,
 - an ``execute_headless_task`` claimed RUNNING with no live worker to finish it,
 - a READY loop timer stale past 2x its cadence (a wedged drain),
 - a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
 - a FAILED task on a still-live ticket (the silent-freeze signature),
 - a runtime clone that has drifted off its default branch,
+- a ``worker_quiescing`` gate outliving any deploy that could explain it,
 - a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain``),
+- a Slack app-config token pair aging toward its 12-hour expiry, past which it is
+    unrecoverable (``self_heal_slack_config_token`` — this one AUTO-ROTATES),
 - a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (this one AUTO-REPAIRS).
 
 Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and so
@@ -32,6 +36,8 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
+from teatree.cli.doctor.self_heal_slack_config_token import check_slack_config_token_fresh
 from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
@@ -43,7 +49,11 @@ _COMPOSE_STATES_ENV = "TEATREE_DOCTOR_COMPOSE_PS"
 #: The one-shot prep service — a non-zero exit is a crash-looping init.
 _INIT_SERVICE = "teatree-init"
 #: The long-running services expected to stay ``running`` while loops are enabled.
-_LONG_RUNNING_SERVICES = ("teatree-worker", "teatree-admin")
+#: ``teatree-watchdog`` belongs here precisely because it is the supervisor: it is
+#: the one container nothing else restarts, so a watchdog stuck ``Created`` (an
+#: unmountable bind source, say) removes the alerting for every other failure in
+#: this module and does it silently. Omitting it left that blind spot unreported.
+_LONG_RUNNING_SERVICES = ("teatree-worker", "teatree-admin", "teatree-watchdog")
 #: A container state that means a long-running service is NOT serving.
 _DOWN_STATES = frozenset({"created", "exited", "dead", "restarting", "paused"})
 #: The tab-separated ``service\tstate\tstatus`` fields the docker probe emits.
@@ -517,7 +527,9 @@ def run_self_heal_checks() -> bool:
         _check_interactive_task_under_headless,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
+        check_stranded_quiescing_gate,
         check_slack_drain_alive,
+        check_slack_config_token_fresh,
         _check_dead_owner_lease,
     )
     ok = True

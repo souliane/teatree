@@ -1,10 +1,14 @@
 {% comment %}
-The right pane: ONE section's rows. Swapped in whole by the left nav's hx-get, so switching
+The right pane: ONE section's grid. Swapped in whole by the left nav's hx-get, so switching
 sections costs one small fragment rather than a re-render of every key in the schema.
+
+One row per setting; the shipped default, then one column per scope — global first, then
+each overlay. A cell is green when it still equals the default and brown when it does not.
 {% endcomment %}
 <section class="settings-pane band"
   data-group-path="{{ group.section.path|join:" / " }}"
-  data-group-slug="{{ group.section.slug }}">
+  data-group-slug="{{ group.section.slug }}"
+  data-drift-count="{{ group.section.drift_count }}">
   <h2>{{ group.section.label|default:"Settings" }}</h2>
   {% if group.section.parent_label %}<p class="muted">{{ group.section.parent_label }}</p>{% endif %}
   {% if group.error %}<div class="banner-red">{{ group.error }}</div>{% endif %}
@@ -12,19 +16,17 @@ sections costs one small fragment rather than a re-render of every key in the sc
     <p class="banner-red">{{ group.settings|length }} key(s) belong to no declared group. They are listed here rather than hidden — give each one a declaration group.</p>
   {% endif %}
   {% if group.settings %}
-    <table class="dash">
+    <table class="dash settings-grid">
       <thead>
         <tr>
           <th>setting</th>
-          <th>value</th>
-          <th title="which tier of the resolution chain the effective value came from">value came from</th>
-          <th>shipped default</th>
-          <th>edit</th>
+          <th>default</th>
+          {% for label in group.scope_labels %}<th class="setting-scope-head">{{ label }}</th>{% endfor %}
         </tr>
       </thead>
       <tbody>
         {% for s in group.settings %}
-          {% include "dash/partials/_settings_row.html" with s=s scope=group.scope %}
+          {% include "dash/partials/_settings_row.html" with s=s %}
         {% endfor %}
       </tbody>
     </table>

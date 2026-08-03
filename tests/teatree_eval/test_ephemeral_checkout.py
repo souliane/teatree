@@ -19,7 +19,9 @@ from teatree.eval.ephemeral_checkout import (
     ephemeral_checkout_env,
     provision_ephemeral_checkout,
     resolve_teatree_repo_root,
+    source_root_offset,
 )
+from teatree.paths import teatree_source_root
 from teatree.utils.run import run_checked
 from tests._git_repo import make_git_repo, run_git
 
@@ -37,6 +39,25 @@ def _init_repo(root: Path) -> None:
     run_git(root, "commit", "-qm", "init")
 
 
+def _init_vendoring_fork(root: Path) -> Path:
+    """A repo laid out like a fork that VENDORS core at ``vendor/teatree``.
+
+    The outer repo's own ``src/`` deliberately holds a non-teatree package, which
+    is what makes the naive ``<repo>/src`` guess silently wrong instead of merely
+    missing: that directory exists, so nothing errors — ``import teatree`` just
+    falls through to the editable install and lands back on the real clone.
+    """
+    make_git_repo(root, initial_commit=False)
+    (root / "src" / "host_package").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "host_package" / "__init__.py").write_text("", encoding="utf-8")
+    source_root = root / "vendor" / "teatree"
+    (source_root / "src" / "teatree").mkdir(parents=True, exist_ok=True)
+    (source_root / "src" / "teatree" / "__init__.py").write_text("VERSION = '0'\n", encoding="utf-8")
+    run_git(root, "add", "-A")
+    run_git(root, "commit", "-qm", "init")
+    return source_root
+
+
 def _chmod_tree(root: Path, mode: int) -> None:
     Path(root).chmod(mode)
     for dirpath, dirnames, filenames in os.walk(root):
@@ -45,17 +66,41 @@ def _chmod_tree(root: Path, mode: int) -> None:
 
 
 class TestResolveTeatreeRepoRoot:
-    def test_resolves_the_running_teatree_clone_to_a_git_toplevel(self) -> None:
+    def test_resolves_to_a_git_toplevel_containing_the_teatree_source(self) -> None:
         root = resolve_teatree_repo_root()
         assert root is not None
-        assert (root / "src" / "teatree" / "__init__.py").is_file()
         assert Path(_git(root, "rev-parse", "--show-toplevel")) == root
+        # The repo root is the CLONE TARGET; the package lives at the source root,
+        # which is the repo root only in a plain clone.
+        source_root = teatree_source_root()
+        assert (source_root / "src" / "teatree" / "__init__.py").is_file()
+        assert source_root.is_relative_to(root)
 
     def test_returns_none_when_not_a_git_checkout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # `git rev-parse --show-toplevel` outside a repo exits non-zero; the lenient
         # runner yields an empty string, which the resolver maps to None.
         monkeypatch.setattr("teatree.eval.ephemeral_checkout.git_run", lambda **_kwargs: "")
         assert resolve_teatree_repo_root() is None
+
+
+class TestSourceRootOffset:
+    def test_is_dot_for_a_plain_clone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.teatree_source_root", lambda: real)
+        assert source_root_offset() == Path()
+
+    def test_is_the_vendor_subdir_for_a_vendoring_fork(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fork = tmp_path / "fork"
+        source_root = _init_vendoring_fork(fork)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: fork)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.teatree_source_root", lambda: source_root)
+        assert source_root_offset() == Path("vendor") / "teatree"
+
+    def test_falls_back_to_dot_when_the_repo_root_is_unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: None)
+        assert source_root_offset() == Path()
 
 
 class TestProvisionEphemeralCheckout:
@@ -177,6 +222,19 @@ class TestProvisionEphemeralCheckout:
 
 
 class TestEphemeralCheckoutEnv:
+    """The env-overlay contract, pinned to an explicit layout.
+
+    These assert the exact ``PYTHONPATH`` string, so they pin the source-root
+    offset rather than inherit whichever layout the suite happens to run under —
+    otherwise the same test means "``<checkout>/src``" in a plain clone and
+    "``<checkout>/vendor/teatree/src``" in a vendoring fork.
+    """
+
+    @pytest.fixture
+    def _plain_clone_layout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.source_root_offset", Path)
+
+    @pytest.mark.usefixtures("_plain_clone_layout")
     def test_prepends_ephemeral_src_to_pythonpath(self) -> None:
         checkout = Path("/tmp/ephem/teatree")
         env = ephemeral_checkout_env({"PYTHONPATH": "/real/src"}, checkout)
@@ -184,10 +242,17 @@ class TestEphemeralCheckoutEnv:
         assert first_entry == str(checkout / "src")
         assert "/real/src" in env["PYTHONPATH"]
 
+    @pytest.mark.usefixtures("_plain_clone_layout")
     def test_sets_pythonpath_when_absent(self) -> None:
         checkout = Path("/tmp/ephem/teatree")
         env = ephemeral_checkout_env({}, checkout)
         assert env["PYTHONPATH"] == str(checkout / "src")
+
+    def test_prepends_the_vendored_src_in_a_vendoring_fork(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.source_root_offset", lambda: Path("vendor") / "teatree")
+        checkout = Path("/tmp/ephem/teatree")
+        env = ephemeral_checkout_env({}, checkout)
+        assert env["PYTHONPATH"] == str(checkout / "vendor" / "teatree" / "src")
 
     def test_clears_inherited_git_pins(self) -> None:
         checkout = Path("/tmp/ephem/teatree")
@@ -223,3 +288,64 @@ class TestEphemeralCheckoutEnv:
             ).stdout.strip()
             assert Path(resolved) == checkout / "src" / "teatree" / "__init__.py"
             assert str(real) not in resolved
+
+
+class TestPythonpathAlwaysHoldsATeatreePackage:
+    """``PYTHONPATH`` must name a directory that REALLY contains ``teatree``.
+
+    Sub-agent isolation rests entirely on ``import teatree`` landing inside the
+    throwaway. If the entry names a directory with no ``teatree`` package the
+    import does not fail — it falls through to the editable install's ``.pth``
+    and resolves to the developer's real clone, so isolation FAILS OPEN and the
+    scenario does destructive git work on the real repo while looking isolated.
+    Proven for both layouts: a plain clone and a fork that vendors core.
+    """
+
+    def _provision(self, monkeypatch: pytest.MonkeyPatch, repo_root: Path, source_root: Path) -> None:
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: repo_root)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.teatree_source_root", lambda: source_root)
+
+    def _assert_pythonpath_holds_teatree(self, checkout: Path) -> Path:
+        entry = Path(ephemeral_checkout_env({}, checkout)["PYTHONPATH"].split(os.pathsep)[0])
+        assert (entry / "teatree" / "__init__.py").is_file(), (
+            f"PYTHONPATH entry {entry} has no teatree package — `import teatree` would fall "
+            "through to the editable install and isolation would fail open"
+        )
+        assert entry.is_relative_to(checkout)
+        return entry
+
+    def test_plain_clone_layout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        self._provision(monkeypatch, real, real)
+        with provision_ephemeral_checkout() as checkout:
+            assert self._assert_pythonpath_holds_teatree(checkout) == checkout / "src"
+
+    def test_vendoring_fork_layout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fork = tmp_path / "fork"
+        source_root = _init_vendoring_fork(fork)
+        self._provision(monkeypatch, fork, source_root)
+        with provision_ephemeral_checkout() as checkout:
+            entry = self._assert_pythonpath_holds_teatree(checkout)
+            assert entry == checkout / "vendor" / "teatree" / "src"
+            # The naive guess is a real directory here, which is exactly why the bug
+            # was silent: it exists, holds a different package, and shadows nothing.
+            assert (checkout / "src").is_dir()
+            assert not (checkout / "src" / "teatree").exists()
+
+    def test_import_teatree_resolves_into_the_vendoring_fork_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fork = tmp_path / "fork"
+        source_root = _init_vendoring_fork(fork)
+        self._provision(monkeypatch, fork, source_root)
+        with provision_ephemeral_checkout() as checkout:
+            env = ephemeral_checkout_env(dict(os.environ), checkout)
+            env.pop("PYTHONSTARTUP", None)
+            resolved = run_checked(
+                [sys.executable, "-c", "import teatree; print(teatree.__file__)"],
+                env=env,
+                cwd=str(checkout),
+            ).stdout.strip()
+            assert Path(resolved) == checkout / "vendor" / "teatree" / "src" / "teatree" / "__init__.py"
+            assert str(fork) not in resolved

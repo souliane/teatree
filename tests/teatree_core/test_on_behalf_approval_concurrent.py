@@ -39,6 +39,7 @@ from django.db import connections
 
 from teatree.core.models import OnBehalfApproval
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests.db_alias import run_racing_threads
 
 
 def _make_alias(tmp_path: Path) -> str:
@@ -110,23 +111,12 @@ def _teardown_alias(alias: str) -> None:
 def _run_two_consumers(alias: str, target: str, action: str) -> list[OnBehalfApproval | None]:
     """Two real threads race consume; return both outcomes (preserving Nones)."""
     barrier = threading.Barrier(2)
-    results: dict[int, OnBehalfApproval | None] = {}
 
-    def runner(idx: int) -> None:
-        try:
-            barrier.wait(timeout=10)
-            results[idx] = OnBehalfApproval.consume(target, action, using=alias)
-        finally:
-            # Close the per-thread connection so the file lock is released.
-            connections[alias].close()
+    def consume(_idx: int) -> OnBehalfApproval | None:
+        barrier.wait(timeout=10)
+        return OnBehalfApproval.consume(target, action, using=alias)
 
-    threads = [threading.Thread(target=runner, args=(i,)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=15)
-
-    return [results.get(0), results.get(1)]
+    return run_racing_threads(consume, 2)
 
 
 @pytest.fixture

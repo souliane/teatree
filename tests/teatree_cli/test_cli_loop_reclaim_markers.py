@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
 from teatree.cli.loop.reclaim_markers import reclaim_markers_command
-from teatree.core.models import ImplementedIssueMarker, Ticket
+from teatree.core.backend_protocols import PrOpenState
+from teatree.core.models import ImplementedIssueMarker, PullRequest, Ticket
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 
 runner = CliRunner()
@@ -86,13 +87,101 @@ class TestReclaimMarkersCommand(TestCase):
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
 
 
+class TestDeadGraceOption(TestCase):
+    """``--dead-grace-hours`` governs a claim with nothing queued and no open PR (#3978)."""
+
+    def setUp(self) -> None:
+        patcher = patch("teatree.cli.loop.reclaim_markers.ensure_django")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_zero_dead_grace_frees_a_pr_less_claim_stranded_moments_ago(self) -> None:
+        url = "https://github.com/o/r/issues/8"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PLANNED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--dead-grace-hours", "0"])
+
+        assert result.exit_code == 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_a_negative_dead_grace_is_refused(self) -> None:
+        url = "https://github.com/o/r/issues/9"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--dead-grace-hours", "-48"])
+
+        assert result.exit_code != 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+
+
+class TestForgeSyncBeforeRelease(TestCase):
+    """The lever converges the ledger first, so no grace override is needed (#3984)."""
+
+    def setUp(self) -> None:
+        patcher = patch("teatree.cli.loop.reclaim_markers.ensure_django")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _claim_with_open_row(self, issue_number: int):
+        url = f"https://github.com/o/r/issues/{issue_number}"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+        row = PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url=f"https://github.com/o/r/pull/{issue_number}",
+            repo="o/r",
+            iid=str(issue_number),
+        )
+        return marker, row
+
+    def test_a_merged_pr_the_ledger_still_calls_open_releases_its_slot(self) -> None:
+        marker, row = self._claim_with_open_row(10)
+
+        with patch("teatree.backends.loader.pr_open_state", return_value=PrOpenState.MERGED):
+            result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme"])
+
+        assert result.exit_code == 0, result.stdout
+        row.refresh_from_db()
+        marker.refresh_from_db()
+        assert row.state == PullRequest.State.MERGED
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert "1 PR row(s) settled from the forge first" in result.stdout
+
+    def test_an_unreachable_forge_degrades_to_the_ledger_as_recorded(self) -> None:
+        """Offline-safe: an unreadable PR settles nothing and the lever still runs."""
+        marker, row = self._claim_with_open_row(11)
+
+        with patch("teatree.backends.loader.pr_open_state", return_value=PrOpenState.UNKNOWN):
+            result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme"])
+
+        assert result.exit_code == 0, result.stdout
+        row.refresh_from_db()
+        marker.refresh_from_db()
+        assert row.state == PullRequest.State.OPEN
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+
+    def test_json_reports_the_settled_row_count(self) -> None:
+        self._claim_with_open_row(12)
+
+        with patch("teatree.backends.loader.pr_open_state", return_value=PrOpenState.MERGED):
+            result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--json"])
+
+        assert result.exit_code == 0, result.stdout
+        assert json.loads(result.stdout)["pr_rows_settled"] == 1
+
+
 class TestNegativeGraceIsRejected(TestCase):
     """A negative grace inverts the cutoff, so this command would abandon LIVE claims.
 
     Freeing the double-dispatch guard is this command's entire job, so a cutoff
     pushed into the FUTURE releases a claim that is still in flight — and the
     issue is then dispatched a second time, which is exactly what the marker
-    exists to prevent. Both graces are bounded at zero so the mistake is a usage
+    exists to prevent. Every grace is bounded at zero so the mistake is a usage
     error, not a silent ``Reclaimed 1``.
     """
 

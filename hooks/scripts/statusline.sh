@@ -81,10 +81,29 @@ fi
 # fallback: `mode=ro` first (live writer, sidecars present), then `immutable=1`
 # (quiescent WAL, no sidecars — `mode=ro` then errors). Fails silent (empty) on no
 # sqlite3, a missing DB, or any read error.
+# The host-visible projection of the container-owned control DB (#3499). Every
+# ConfigSetting read below resolves a HOST sqlite path, but a containerized deploy
+# keeps the control DB in a volume the host cannot open at all, so that path is
+# simply absent and each reader returns empty — which reads as "autoload is off"
+# and silently takes the whole statusline with it. The publisher writes this file
+# for exactly this consumer; `teatree.config.cold_db.canonical_projection()` is the
+# Python half of the same fallback. Fails silent (empty) on no jq, no file, or a
+# shape it does not recognise, so a plain-clone host is unaffected.
+_projection_setting() {
+    command -v jq >/dev/null 2>&1 || return 0
+    local proj="${TEATREE_HOST_PROJECTION:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/host-projection.json}"
+    [ -r "$proj" ] || return 0
+    # `settings` is keyed by SCOPE; "" is global. Values are stored decoded, so a
+    # bool arrives as `true`/`false` — the same text the sqlite read yields.
+    jq -r --arg k "$1" '.settings[""][$k] // empty' "$proj" 2>/dev/null || return 0
+}
+
 _autoload_db_value() {
-    command -v sqlite3 >/dev/null 2>&1 || return 0
     local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
-    [ -f "$db" ] || return 0
+    if ! command -v sqlite3 >/dev/null 2>&1 || [ ! -f "$db" ]; then
+        _projection_setting "autoload"
+        return 0
+    fi
     local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='autoload' LIMIT 1;"
     sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
         || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
@@ -97,9 +116,16 @@ _autoload_db_value() {
 # fallback as `_autoload_db_value`. Empty on no sqlite3, a missing DB, no row, or a
 # non-array value.
 _statusline_chain_db() {
-    command -v sqlite3 >/dev/null 2>&1 || return 0
     local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
-    [ -f "$db" ] || return 0
+    if ! command -v sqlite3 >/dev/null 2>&1 || [ ! -f "$db" ]; then
+        # Same fallback, flattened: the caller wants one pattern per line, and the
+        # projection holds the array whole.
+        command -v jq >/dev/null 2>&1 || return 0
+        local proj="${TEATREE_HOST_PROJECTION:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/host-projection.json}"
+        [ -r "$proj" ] || return 0
+        jq -r '.settings[""].statusline_chain // [] | .[]' "$proj" 2>/dev/null || return 0
+        return 0
+    fi
     local q="SELECT je.value FROM teatree_config_setting t, json_each(t.value) je WHERE t.scope='' AND t.key='statusline_chain';"
     sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
         || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
@@ -130,9 +156,11 @@ autoload_enabled() {
 # (#3502), JSON-decoded: `true` / `false` / empty. Read-only via the sqlite3 CLI
 # with the same WAL fallback and fail-silent-empty contract as `_autoload_db_value`.
 _statusline_engaged_render_db_value() {
-    command -v sqlite3 >/dev/null 2>&1 || return 0
     local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
-    [ -f "$db" ] || return 0
+    if ! command -v sqlite3 >/dev/null 2>&1 || [ ! -f "$db" ]; then
+        _projection_setting "statusline_engaged_render"
+        return 0
+    fi
     local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='statusline_engaged_render' LIMIT 1;"
     sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
         || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \

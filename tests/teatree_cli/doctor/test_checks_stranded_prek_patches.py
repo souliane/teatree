@@ -54,7 +54,7 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A real git checkout as cwd, with a real empty PREK_HOME beside it."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run([_GIT_BIN, "init", "-q"], cwd=repo, check=True)
+    subprocess.run([_GIT_BIN, "init", "-q", "-b", "main"], cwd=repo, check=True)
     (tmp_path / "prek" / "patches").mkdir(parents=True)
     monkeypatch.setenv("PREK_HOME", str(tmp_path / "prek"))
     monkeypatch.chdir(repo)

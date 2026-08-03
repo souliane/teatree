@@ -187,7 +187,7 @@ _MUST_DENY_FOREGROUND_BASH = [
     "make all",
     "sleep 600",
     "find . -name '*.py' -exec grep -l TODO {} ;",
-    "ls -laR /Users/adrien/workspace",
+    "ls -laR /Users/dev/workspace",
 ]
 
 

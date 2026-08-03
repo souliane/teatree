@@ -11,6 +11,7 @@ paths run under a real test DB; no test signals a real process.
 import datetime as dt
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -23,12 +24,15 @@ import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
 from teatree.core.models import ConfigSetting, Loop, Prompt
-from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainReport, set_worker_quiescing
+from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
 from teatree.loops.loop_staleness import Admission, LoopHealth
 from teatree.utils import singleton as singleton_mod
 
 runner = CliRunner()
+
+#: This deployment's own worker service — the sanctioned holder of the worker singleton.
+_IN_CONTAINER = singleton_mod.ExecutionContext(pid_namespace="pid:[2]", hostname="svc", role="worker")
 
 
 def _healthy_loop_health() -> LoopHealth:
@@ -110,6 +114,47 @@ class TestWorkerStatus(django.test.TestCase):
             result = runner.invoke(worker_app, ["status"])
         assert result.exit_code == 0
         assert "NOT running" in result.stdout
+
+    def test_status_names_where_the_holder_is(self) -> None:
+        # `worker: RUNNING` is true of a singleton held from OUTSIDE the deployment too,
+        # which is exactly how #3976 stayed invisible — so status names the holder.
+        outside = singleton_mod.HolderRecord(
+            pid=4321,
+            context=singleton_mod.ExecutionContext(pid_namespace="pid:[1]", hostname="box", role=""),
+        )
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4321),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=outside),
+            mock.patch("teatree.utils.singleton.current_context", return_value=_IN_CONTAINER),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert "pid:[1]" in result.stdout
+        assert "t3 doctor check" in result.stdout
+
+    def test_status_json_carries_the_holder_context(self) -> None:
+        deployed = singleton_mod.HolderRecord(pid=4321, context=_IN_CONTAINER)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4321),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=deployed),
+            mock.patch("teatree.utils.singleton.current_context", return_value=_IN_CONTAINER),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert json.loads(result.stdout)["holder"] == _IN_CONTAINER.as_json()
+
+    def test_status_json_holder_is_null_with_no_live_holder(self) -> None:
+        # The record a dead worker left describes nobody — the next acquire reuses the
+        # file in place, so reporting it against a FREE flock would name a ghost.
+        stale = singleton_mod.HolderRecord(pid=4321, context=_IN_CONTAINER)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=stale),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert json.loads(result.stdout)["holder"] is None
 
     def test_status_reports_the_resolved_mode_and_admitted_count(self) -> None:
         with (
@@ -379,6 +424,49 @@ class TestWorkerDrain(django.test.TestCase):
         result = runner.invoke(worker_app, ["drain", "--help"])
         rendered = " ".join(result.stdout.split())
         assert "config_setting set worker_quiescing false" in rendered
+
+
+class TestWorkerDrainHeartbeat(django.test.TestCase):
+    """The drain speaks while it waits, so its transport never sees an idle session (#3983)."""
+
+    @staticmethod
+    def _drain_emitting(samples: list[DrainProgress]) -> Callable[..., DrainReport]:
+        """A ``drain_worker`` stand-in that replays *samples* through the caller's callback."""
+
+        def _drain(*, on_progress: Callable[[DrainProgress], None] | None = None, **_kwargs: object) -> DrainReport:
+            assert on_progress is not None, "drain_command must hand drain_worker a progress sink"
+            for sample in samples:
+                on_progress(sample)
+            return DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=samples[-1].waited_seconds)
+
+        return _drain
+
+    def test_the_wait_emits_a_heartbeat_naming_the_elapsed_time_and_in_flight_count(self) -> None:
+        samples = [DrainProgress(waited_seconds=5.0, still_claimed=[7, 9])]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain"])
+
+        assert result.exit_code == 0
+        assert "2 task(s) still in flight after 5s" in result.stderr
+
+    def test_heartbeats_are_throttled_but_stay_well_inside_the_idle_window(self) -> None:
+        # Three failed deploys tore down at ~278s of silence; the throttle must keep the
+        # gap between heartbeats far below that, and must not emit one line per 5s poll.
+        samples = [DrainProgress(waited_seconds=float(t), still_claimed=[7]) for t in range(5, 305, 5)]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain"])
+
+        beats = [line for line in result.stderr.splitlines() if "still in flight" in line]
+        assert 1 < len(beats) < len(samples), "every poll must not echo, but the wait must not go silent"
+        assert worker_cli._PROGRESS_ECHO_INTERVAL_SECONDS < worker_cli.OBSERVED_SSH_IDLE_TIMEOUT_SECONDS / 2
+
+    def test_json_output_stays_parseable_while_the_wait_heartbeats(self) -> None:
+        samples = [DrainProgress(waited_seconds=5.0, still_claimed=[7])]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain", "--json"])
+
+        assert json.loads(result.stdout)["outcome"] == "drained"
+        assert "still in flight" in result.stderr
 
 
 class TestWorkerStop(django.test.TestCase):

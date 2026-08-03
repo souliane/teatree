@@ -12,6 +12,7 @@ from teatree.core.merge.ci_rollup import CodeHostQuery, classify_required_rollup
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.execution import MergeOutcome, assert_merge_preconditions, execute_bound_merge, merge_ticket_pr
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
 from teatree.core.merge.pr_slug_resolution import (
     _GIT_BRANCH_PREFIXES,
@@ -41,6 +42,7 @@ __all__ = [
     "merge_ticket_pr",
     "normalize_repo_slug",
     "record_merge_and_advance",
+    "resolve_host_kind",
     "resolve_pr_repo_slug",
     "resolved_repo_slug",
     "restore_caller_branch",

@@ -22,6 +22,7 @@ from teatree.core.mode_resolution import (
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeScheduleSlot
 from teatree.core.models.loop_preset import DEFAULT_LOW_POWER_PRESET, LOW_POWER_PRESET_SETTING, PIN_MODES
 from teatree.loops.preset_editing import PresetEditError, require_preset
+from teatree.loops.shipped_guard import require_shipped_delete_confirm
 
 _SLUG_RE: Final = re.compile(r"^[-a-zA-Z0-9_]+$")
 
@@ -113,13 +114,18 @@ def rename_preset(name: str, new_name: str) -> Mode:
     return preset
 
 
-def delete_preset(name: str) -> None:
-    """Delete a preset, refusing while anything still resolves it by name."""
+def delete_preset(name: str, *, confirm: str = "") -> None:
+    """Delete a preset, refusing while anything still resolves it by name.
+
+    The referrer refusal is checked FIRST and is not overridable: the typed confirm is a
+    speed bump on an otherwise-safe delete, never a way to strand a live by-name reference.
+    """
     require_preset(name)
     referrers = preset_referrers(name)
     if referrers.blocks_delete:
         msg = f"cannot delete preset {name!r} — {referrers.summary}"
         raise PresetEditError(msg)
+    require_shipped_delete_confirm("preset", name, confirm)
     Mode.objects.filter(name=name).delete()
 
 

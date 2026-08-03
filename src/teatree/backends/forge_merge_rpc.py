@@ -1,24 +1,27 @@
-"""Forge merge-RPC argv + payload parsing — canonical home for the merge transport.
+"""GitHub merge-RPC argv + payload parsing — the ``gh`` half of the merge transport.
 
-The 5 §17.4.3 merge-RPC methods on :class:`GitHubCodeHost` /
-:class:`GitLabCodeHost` delegate to :class:`GhMergeRpc` / :class:`GlabMergeRpc`
-here, each holding its forge's allow-to-fail runner. This keeps the gh and glab
-argv in one focused module — the chokepoint home the argv-ban rule (#1890) will
-point at — while the methods stay on the host classes so the ``CodeHostBackend``
-Protocol is satisfied. Raw I/O only: every verdict / transient / head-moved
-classification stays in ``teatree.core.merge.execution`` for byte-for-byte error
-parity on the keystone path.
+The §17.4.3 merge-RPC methods on :class:`GitHubCodeHost` delegate to
+:class:`GhMergeRpc` here, which holds the ``gh`` allow-to-fail runner. This keeps
+the ``gh`` argv in one focused module — the chokepoint home the argv-ban rule
+(#1890) will point at — while the methods stay on the host class so the
+``CodeHostBackend`` Protocol is satisfied. Raw I/O only: every verdict /
+transient / head-moved classification stays in ``teatree.core.merge.execution``
+for byte-for-byte error parity on the keystone path.
+
+GitLab's half is NOT here: it speaks httpx (``backends.gitlab.merge_rpc``)
+because the deploy image installs ``gh`` only, so a ``glab`` subprocess raised
+``FileNotFoundError`` on every call in the container (#4007).
 """
 
 import json
 import os
 import shutil
 from collections.abc import Callable
-from typing import cast
 
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
     ROLLUP_QUERY_FAILED,
+    DraftState,
     ForgeMergeResult,
     PrMergeState,
 )
@@ -52,33 +55,6 @@ def gh_runner(token: str) -> Runner:
         return result.returncode, result.stdout, result.stderr
 
     return run
-
-
-def glab_runner() -> Runner:
-    """A ``glab`` allow-to-fail runner — ambient ``glab`` auth (no token plumbed).
-
-    The §17.4.3 merge path uses the ``glab`` subprocess (not the httpx
-    ``GitLabAPI`` client) so the SHA-bind behaviour and error strings match what
-    the keystone tests pin. Every call is timeout-bounded
-    (:data:`_FORGE_MERGE_TIMEOUT_SECONDS`) so a hung keystone merge never stalls
-    the loop.
-    """
-
-    def run(argv: list[str]) -> tuple[int, str, str]:
-        glab = shutil.which("glab") or "glab"
-        result = run_allowed_to_fail([glab, *argv], expected_codes=None, timeout=_FORGE_MERGE_TIMEOUT_SECONDS)
-        return result.returncode, result.stdout, result.stderr
-
-    return run
-
-
-def glab_project_path(slug: str) -> str:
-    """URL-encode a project slug for ``glab api projects/<encoded>/...``.
-
-    GitLab's REST API requires the project identifier ``group/repo`` (or
-    ``group/subgroup/repo``) to be URL-encoded — the slashes become ``%2F``.
-    """
-    return slug.replace("/", "%2F")
 
 
 def _github_rules_required_contexts(rc: int, out: str, err: str) -> set[str] | None:
@@ -189,6 +165,25 @@ class GhMergeRpc:
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "isDraft", "--jq", ".isDraft"],
         )
         return rc == 0 and out.strip().lower() == "true"
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        """Tri-state draft flag — ``UNKNOWN`` on a non-zero rc or unrecognised payload.
+
+        A failed ``gh`` call and a genuine ``isDraft: false`` are different facts;
+        collapsing them to ``False`` hands every consumer a confident "not a draft"
+        manufactured from a read failure.
+        """
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "isDraft", "--jq", ".isDraft"],
+        )
+        if rc != 0:
+            return DraftState.UNKNOWN
+        answer = out.strip().lower()
+        if answer == "true":
+            return DraftState.DRAFT
+        if answer == "false":
+            return DraftState.NOT_DRAFT
+        return DraftState.UNKNOWN
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The PR author ``login`` — the §17.4.3 author-gate input (#1773).
@@ -324,142 +319,4 @@ class GhMergeRpc:
             except json.JSONDecodeError:
                 merged = {}
             merged_sha = str(merged.get("sha") or "") if isinstance(merged, dict) else ""
-        return ForgeMergeResult(returncode=rc, stdout=out, stderr=err, merged_sha=merged_sha)
-
-
-class GlabMergeRpc:
-    """GitLab ``glab`` merge-RPC argv + payload parsing — raw I/O for one host."""
-
-    def __init__(self, run: Runner) -> None:
-        self._run = run
-
-    def _fetch_mr(self, *, slug: str, pr_id: int) -> RawAPIDict | None:
-        """Fetch and JSON-parse the ``merge_requests/{id}`` object; ``None`` on any error.
-
-        The head-SHA, merge-state, draft-flag, and author reads all pull the
-        same MR object; this centralises the ``glab api`` call plus the
-        ``json.loads`` / dict-shape guard so each reader is just its field
-        extraction. ``None`` covers a non-zero rc, an empty body, a JSON parse
-        failure, or a non-object payload.
-        """
-        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}"])
-        if rc != 0 or not out.strip():
-            return None
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            return None
-        return data if isinstance(data, dict) else None
-
-    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        return str(mr.get("sha") or "") if mr is not None else ""
-
-    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return PrMergeState(state="", merge_commit_oid="")
-        state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
-        oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
-        return PrMergeState(state=state, merge_commit_oid=oid)
-
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return False
-        # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the legacy
-        # field kept for compatibility — accept either.
-        return bool(mr.get("draft") or mr.get("work_in_progress"))
-
-    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
-        """The MR author ``username`` — the §17.4.3 author-gate input (#1773).
-
-        Returns ``""`` on any error; the empty author is fail-closed at the
-        keystone (an author that cannot be proved trusted does not auto-merge
-        on a public repo).
-        """
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return ""
-        author = mr.get("author")
-        if not isinstance(author, dict):
-            return ""
-        return str(cast("RawAPIDict", author).get("username") or "")
-
-    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
-        """Tri-state head-branch provenance — the §17.4.3 fork gate input (#3244).
-
-        A same-repo MR has ``source_project_id == target_project_id``; a fork MR
-        crosses projects. Any forge error or a non-integer project id returns
-        ``None`` so the provenance gate fails closed to the identity+visibility
-        author check. This is what makes GitLab overlay MRs cross the same gate.
-        """
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return None
-        source = mr.get("source_project_id")
-        target = mr.get("target_project_id")
-        if not isinstance(source, int) or not isinstance(target, int):
-            return None
-        return source == target
-
-    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
-        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/pipelines"])
-        if rc != 0:
-            return [ROLLUP_QUERY_FAILED]
-        try:
-            pipelines = json.loads(out) if out.strip() else []
-        except json.JSONDecodeError:
-            return [ROLLUP_QUERY_FAILED]
-        if not isinstance(pipelines, list):
-            return [ROLLUP_QUERY_FAILED]
-        return [entry for entry in pipelines if isinstance(entry, dict)]
-
-    @staticmethod
-    def fetch_required_status_check_contexts(*, slug: str, pr_id: int) -> list[RawAPIDict]:
-        """GitLab has no branch-protection-required-status-checks gate on this path.
-
-        The GitLab §17.4.3 verdict is the head pipeline's overall status (see
-        :func:`core.merge.ci_rollup._classify_gitlab_pipeline`), which already
-        aggregates the required jobs server-side. Core never calls this on the
-        GitLab path; the method exists only to satisfy the ``CodeHostBackend``
-        Protocol surface. Returns ``[]`` (no separate required-context gate).
-        """
-        del slug, pr_id
-        return []
-
-    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
-        """Every changed path on the MR — PAGINATED to completion (§17.4.3, substrate detector).
-
-        The ``merge_requests/<iid>/diffs`` endpoint is paginated; a single un-paginated
-        call truncated a large MR's diff and a substrate change past the first page went
-        undetected. ``--paginate`` with a per-entry ``--jq`` follows every page and emits
-        one path per line (``new_path`` falling back to ``old_path``). A non-zero rc means
-        the diff could not be read to completion → return the ``CHANGED_PATHS_UNAVAILABLE``
-        sentinel so the caller fails CLOSED (holds the merge), never a partial list.
-        """
-        rc, out, _ = self._run(
-            [
-                "api",
-                "--paginate",
-                f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/diffs?per_page=100",
-                "--jq",
-                ".[] | (.new_path // .old_path)",
-            ],
-        )
-        if rc != 0:
-            return [CHANGED_PATHS_UNAVAILABLE]
-        return [line.strip() for line in out.splitlines() if line.strip()]
-
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
-        endpoint = f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/merge"
-        rc, out, err = self._run(["api", "-X", "PUT", endpoint, "-f", f"sha={expected_head_oid}", "-f", "squash=true"])
-        merged_sha = ""
-        if rc == 0:
-            try:
-                merged = json.loads(out) if out.strip() else {}
-            except json.JSONDecodeError:
-                merged = {}
-            if isinstance(merged, dict):
-                merged_sha = str(merged.get("merge_commit_sha") or merged.get("sha") or "")
         return ForgeMergeResult(returncode=rc, stdout=out, stderr=err, merged_sha=merged_sha)

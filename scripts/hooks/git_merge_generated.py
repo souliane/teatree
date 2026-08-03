@@ -29,6 +29,7 @@ See souliane/teatree#3582.
 
 import subprocess
 import sys
+from pathlib import Path
 
 _EXPECTED_ARGC = 4
 
@@ -64,13 +65,39 @@ def _regenerate(generator_argv: list[str], output_path: str) -> bool:
     return result.returncode == 0
 
 
+def teatree_source_root() -> Path:
+    """Teatree's own tree root — the driver ships inside it, so it is the anchor."""
+    return Path(__file__).resolve().parents[2]
+
+
+def teatree_relative_path(pathname: str, *, repo_root: Path | str | None = None) -> str:
+    """Git's ``%P`` re-expressed relative to teatree's root, so it can hit a generator key.
+
+    ``%P`` is relative to the top of the WORKING TREE; the keys below are relative to
+    teatree's own root. A fork that vendors core makes those differ by the vendoring
+    prefix, and every generated doc then missed the lookup and resolved by silently
+    keeping ours — worse than the textual conflict it replaced. A path outside
+    teatree's tree (the fork's own docs) is returned untouched, so it keeps ours by
+    the unknown-path branch rather than being regenerated from the wrong generator.
+    """
+    norm = pathname.replace("\\", "/")
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    try:
+        prefix = teatree_source_root().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return norm
+    if prefix in {"", "."}:
+        return norm
+    return norm.removeprefix(f"{prefix}/") if norm.startswith(f"{prefix}/") else norm
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) < _EXPECTED_ARGC:
         sys.stderr.write("git_merge_generated: expected `%O %A %B %P` arguments\n")
         return 2
     _base, ours_output, _theirs, pathname = args[0], args[1], args[2], args[3]
-    norm = pathname.replace("\\", "/")
+    norm = teatree_relative_path(pathname)
 
     # An unknown path (driver matched by a broad attribute) or a keep-ours entry
     # (generator is None): %A already holds ours, so a clean exit resolves to the

@@ -13,7 +13,7 @@ import pytest
 
 from teatree.core.models import ConfigSetting
 from teatree.core.models.task import Task
-from teatree.loop.drain import DrainOutcome, drain_worker, set_worker_quiescing
+from teatree.loop.drain import DrainOutcome, DrainProgress, drain_worker, set_worker_quiescing
 from tests.factories import TaskFactory
 
 
@@ -84,3 +84,33 @@ class TestDrainWorker(django.test.TestCase):
 
         assert report.outcome is DrainOutcome.DRAINED
         assert sleeps == [5]
+
+
+class TestDrainProgress(django.test.TestCase):
+    """The wait speaks on every poll, so nothing downstream can read it as idle (#3983)."""
+
+    def test_each_poll_reports_the_elapsed_wait_and_the_in_flight_pks(self) -> None:
+        task = TaskFactory(status=Task.Status.PENDING)
+        task.claim(claimed_by="loop", lease_seconds=300)
+
+        samples: list[DrainProgress] = []
+        # monotonic: start=0, two in-budget readings (one progress sample each), then
+        # one past the timeout that ends the wait without a third sample.
+        clock = _FakeClock([0.0, 10.0, 20.0, 90.0])
+        drain_worker(
+            timeout=60,
+            poll_interval=5,
+            sleep=lambda _seconds: None,
+            monotonic=clock,
+            on_progress=samples.append,
+        )
+
+        assert [round(sample.waited_seconds) for sample in samples] == [10, 20]
+        assert all(sample.still_claimed == [task.pk] for sample in samples)
+
+    def test_a_quiet_worker_emits_no_progress(self) -> None:
+        samples: list[DrainProgress] = []
+        report = drain_worker(timeout=1800, sleep=lambda _seconds: None, on_progress=samples.append)
+
+        assert report.outcome is DrainOutcome.DRAINED
+        assert samples == []

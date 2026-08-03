@@ -30,7 +30,11 @@ from tests._git_repo import make_git_repo, run_git
 #: The env an INTERACTIVE Claude Code CLI session presents. The SDK transport sets
 #: ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` and strips ``CLAUDECODE`` from the child env, so these
 #: two keys are what separate a human-driven session from every SDK embedding.
-_INTERACTIVE_ENV = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"}
+#: ``CLAUDE_AGENT_SDK_VERSION`` is pinned EMPTY rather than left absent: these patches merge
+#: into the real environment, and when the suite itself runs under an SDK agent that marker
+#: is already set — ``_lane`` would read SDK, and every refuse-case here would go green-by-
+#: allowing. The fixture must state the whole interactive contract, not inherit half of it.
+_INTERACTIVE_ENV = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1", "CLAUDE_AGENT_SDK_VERSION": ""}
 _SDK_ENV = {"CLAUDE_CODE_ENTRYPOINT": "sdk-py", "CLAUDE_AGENT_SDK_VERSION": "0.2.95"}
 
 
@@ -209,6 +213,19 @@ class TestDefaultOffIsPreserved:
             assert _run_chain(_edit()) is False
 
 
+def _write_config_db(db: Path, rows: dict[str, object]) -> Path:
+    """A minimal control DB carrying *rows* as global-scope ``ConfigSetting`` values."""
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute("CREATE TABLE teatree_config_setting (scope TEXT, key TEXT, value TEXT)")
+        conn.executemany(
+            "INSERT INTO teatree_config_setting VALUES ('', ?, ?)",
+            [(key, json.dumps(value)) for key, value in rows.items()],
+        )
+    conn.close()
+    return db
+
+
 class TestThePostureReadIsRealRatherThanAlwaysUnreadable:
     """The posture reader, exercised for real rather than mocked.
 
@@ -218,25 +235,13 @@ class TestThePostureReadIsRealRatherThanAlwaysUnreadable:
     red instead of passing unnoticed.
     """
 
-    @staticmethod
-    def _control_db(tmp_path: Path, value: str) -> Path:
-        db = tmp_path / "db.sqlite3"
-        conn = sqlite3.connect(db)
-        with conn:
-            conn.execute("CREATE TABLE teatree_config_setting (scope TEXT, key TEXT, value TEXT)")
-            conn.execute(
-                "INSERT INTO teatree_config_setting VALUES (?, ?, ?)", ("", "agent_runtime", json.dumps(value))
-            )
-        conn.close()
-        return db
-
     def test_a_stored_headless_runtime_reads_as_headless(self, tmp_path: Path) -> None:
-        db = self._control_db(tmp_path, "headless")
+        db = _write_config_db(tmp_path / "db.sqlite3", {"agent_runtime": "headless"})
         with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": ""}):
             assert gate._posture_is_headless() is True
 
     def test_a_stored_interactive_runtime_reads_as_not_headless(self, tmp_path: Path) -> None:
-        db = self._control_db(tmp_path, "interactive")
+        db = _write_config_db(tmp_path / "db.sqlite3", {"agent_runtime": "interactive"})
         with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": ""}):
             assert gate._posture_is_headless() is False
 
@@ -339,6 +344,46 @@ class TestACommitCanFollowTheEditThatProducedIt:
         assert _run_gate(_bash("git log --oneline -5", str(clone))) is False
 
 
+class TestTheWorktreeCarveOutIsReachableFromAPrimaryCloneCwd:
+    """The carve-out must fire for the actor it was written for: a dispatched sub-agent.
+
+    Such an agent is launched AT a primary clone and cannot move: a ``cd`` in one call does
+    not persist to the next, and ``EnterWorktree`` only switches a session already inside a
+    worktree. So the two shapes below are the ONLY ones it can commit its in-flight work
+    with, and a probe read off the ambient cwd refused both — leaving the exemption reachable
+    solely by the sessions that never needed it. The cases above split these two dimensions
+    apart: the carve-out is exercised with the cwd already in the worktree, and target
+    resolution between two primary clones. Neither asks for their intersection.
+    """
+
+    def test_a_dash_c_commit_into_a_live_worktree_is_allowed(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"git -C {worktree} commit -m 'fix the thing'", str(clone))) is False
+
+    def test_a_cd_then_commit_into_a_live_worktree_is_allowed(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"cd {worktree} && git commit -m 'fix the thing'", str(clone))) is False
+
+    def test_a_dash_c_commit_into_the_primary_clone_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        # The control, in the mirror direction: resolving the target must be able to pull the
+        # verdict toward a refusal too, or it is a permanently-open carve-out rather than one
+        # that discriminates.
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"git -C {clone} commit -m 'new work'", str(worktree))) is True
+
+    def test_a_cd_then_commit_into_the_primary_clone_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"cd {clone} && git commit -m 'new work'", str(worktree))) is True
+
+
 class TestTheOverrideIsReachableFromACommitMessage:
     """The audited escape must be reachable from the calls most likely to need it.
 
@@ -366,3 +411,119 @@ class TestTheOverrideIsReachableFromACommitMessage:
         clone, _worktree = clone_and_live_worktree
         message = self._long_message("ordinary work, no emergency")
         assert _run_gate(_bash(f"git commit -m '{message}'", str(clone))) is True
+
+
+def _seeded_clone(path: Path) -> Path:
+    """A primary clone carrying a committed ``src/`` dir — the shape the probe is built on."""
+    repo = make_git_repo(path)
+    (repo / "src").mkdir()
+    (repo / "src" / "seed.py").write_text("x = 1\n", encoding="utf-8")
+    run_git(repo, "add", "src/seed.py")
+    run_git(repo, "commit", "-q", "-m", "seed")
+    return repo
+
+
+@pytest.fixture
+def managed_and_unmanaged(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
+    """Two real clones, one teatree-MANAGED, under an engaged interactive headless session.
+
+    Neither the posture nor the managed-repo classification is mocked: the control DB stores
+    ``agent_runtime`` and an overlay registry whose ``path`` covers the managed clone, so both
+    resolve exactly as they do in production. Which of the two the gate judges is the whole
+    question these cases ask, and a mock of that dimension would answer it for them.
+    """
+    managed = _seeded_clone(tmp_path / "managed")
+    unmanaged = _seeded_clone(tmp_path / "unmanaged")
+    db = _write_config_db(
+        tmp_path / "db.sqlite3",
+        {"agent_runtime": "headless", "overlays": {"probe": {"path": str(managed)}}},
+    )
+    with (
+        mock.patch.object(router, "STATE_DIR", tmp_path / "state"),
+        mock.patch.object(router, "_teatree_engaged", return_value=True),
+        mock.patch.object(gate, "_gate_enabled", return_value=True),
+        mock.patch.dict(os.environ, {**_INTERACTIVE_ENV, "T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": ""}),
+    ):
+        yield managed, unmanaged
+
+
+class TestTheBashArmJudgesTheRepoTheCommandTargets:
+    """A ``Bash`` call is judged by the repo its write LANDS in, never by the session's cwd.
+
+    The probe was the raw hook cwd, so a leading ``cd <dir> &&`` and a ``git -C <dir>`` were
+    both discarded — and a session whose cwd happened to sit in a managed repo had every
+    commit and push refused, to any repository at all. That is a session-wide ban, not the
+    stated policy, which is about the repo being written to.
+    """
+
+    def test_a_push_to_an_unmanaged_repo_from_a_managed_cwd_is_allowed(
+        self, managed_and_unmanaged: tuple[Path, Path]
+    ) -> None:
+        managed, unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash(f"cd {unmanaged} && git push origin HEAD", str(managed))) is False
+
+    def test_a_dash_c_push_to_an_unmanaged_repo_from_a_managed_cwd_is_allowed(
+        self, managed_and_unmanaged: tuple[Path, Path]
+    ) -> None:
+        managed, unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash(f"git -C {unmanaged} push origin HEAD", str(managed))) is False
+
+    def test_a_bare_push_from_a_managed_cwd_is_still_refused(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        # The policy this fix must not weaken: with nothing redirecting it, the command does
+        # land in the managed repo, and that is exactly what the gate exists to refuse.
+        managed, _unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash("git push origin HEAD", str(managed))) is True
+
+    def test_a_cd_into_a_managed_repo_from_an_unmanaged_cwd_is_refused(
+        self, managed_and_unmanaged: tuple[Path, Path]
+    ) -> None:
+        # Resolution has to work in both directions, or it is just a differently-placed cwd.
+        managed, unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash(f"cd {managed} && git commit -m 'new work'", str(unmanaged))) is True
+
+    def test_a_cd_that_lands_nowhere_allows(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        # The ``cd`` itself would fail, so the command writes nowhere; an unresolvable target
+        # is not evidence of authoring, and this gate allows on unknown.
+        managed, _unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash(f"cd {managed}/gone && git push origin HEAD", str(managed))) is False
+
+
+class TestAMentionOfAPushIsNotAPush:
+    """The verb is detected on the quote/heredoc-stripped skeleton, as in every sibling gate.
+
+    A read-only ``python - <<'PY'`` probe was refused because a string literal inside the
+    heredoc body contained ``… && git push origin …`` and the ``&&`` satisfied the anchor.
+    """
+
+    def test_a_push_inside_a_heredoc_body_is_not_a_push(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        managed, _unmanaged = managed_and_unmanaged
+        command = "python - <<'PY'\nprint('then run: cd repo && git push origin main')\nPY"
+        assert _run_gate(_bash(command, str(managed))) is False
+
+    def test_a_push_inside_a_quoted_argument_is_not_a_push(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        managed, _unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash("git log --grep 'ran && git push origin main'", str(managed))) is False
+
+    def test_a_real_push_beside_that_text_is_still_refused(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        # The control that proves the strip narrows detection rather than removing it.
+        managed, _unmanaged = managed_and_unmanaged
+        assert _run_gate(_bash("echo 'about to && git push' && git push origin HEAD", str(managed))) is True
+
+
+class TestTheOverrideMustLiveInTheCallsOwnText:
+    """Where the token has to go — the refusal text is the only place an agent learns it.
+
+    ``_call_text`` scans ``command``/``new_string``/``content``/``file_path``/``prompt``/
+    ``new_source``. A ``description`` is not one of them, and two agents spent their attempts
+    putting the token there.
+    """
+
+    def test_a_token_in_the_command_unblocks(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        managed, _unmanaged = managed_and_unmanaged
+        command = "git push origin HEAD  # [headless-authoring-ok: the factory itself is down]"
+        assert _run_gate(_bash(command, str(managed))) is False
+
+    def test_a_token_only_in_the_description_does_not_unblock(self, managed_and_unmanaged: tuple[Path, Path]) -> None:
+        data = _bash("git push origin HEAD", str(managed_and_unmanaged[0]))
+        data["tool_input"]["description"] = "[headless-authoring-ok: the factory itself is down]"
+        assert _run_gate(data) is True

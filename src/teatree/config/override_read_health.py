@@ -61,6 +61,11 @@ MARKER_FILENAME = "config-read-degraded.json"
 #: Sized so a doctor run within the hour still surfaces an overnight degradation.
 MARKER_TTL_SECONDS = 24 * 60 * 60
 
+#: How many DISTINCT calling contexts the marker keeps. A degraded read repeats at whatever rate
+#: its caller runs at, so the record has to be bounded; the callers are what identifies the fault,
+#: and a handful is already more than one fix needs.
+MAX_RECORDED_CALLERS = 5
+
 
 class ConfigOverrideReadError(RuntimeError):
     """Raised where "I could not read the override tier" must NOT resolve to a value.
@@ -81,12 +86,19 @@ class ConfigOverrideReadError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class DegradedReadReport:
-    """A live record that the ``ConfigSetting`` override tier failed to resolve."""
+    """A live record that the ``ConfigSetting`` override tier failed to resolve.
+
+    ``callers`` names the call sites the failing reads came from (#3980). The traceback the
+    reader captures holds only the ORM frames, which are identical for every fault; the caller
+    is the one fact that makes the record actionable, so it travels with it. Empty for a marker
+    written before the field existed.
+    """
 
     scopes: tuple[str, ...]
     occurrences: int
     first_seen: float
     last_seen: float
+    callers: tuple[str, ...] = ()
 
     @property
     def age_seconds(self) -> float:
@@ -106,8 +118,12 @@ def marker_path() -> Path:
     return ControlDb(os.environ).primary().parent / MARKER_FILENAME
 
 
-def record_degraded_read(scope: str) -> None:
+def record_degraded_read(scope: str, *, caller: str = "") -> None:
     """Record that *scope*'s override read failed, merging into any live marker.
+
+    *caller* is the calling context the reader identified (#3980); it merges the same way the
+    scopes do, capped at :data:`MAX_RECORDED_CALLERS` so a caller in a hot loop cannot grow the
+    file without bound.
 
     Never raises: the caller is a settings resolution that must still return a value, and
     a marker that cannot be written must not become a second outage. A write failure is
@@ -117,8 +133,10 @@ def record_degraded_read(scope: str) -> None:
     try:
         existing = _read_marker()
         scopes = tuple(sorted({*(existing.scopes if existing else ()), scope}))
+        seen_callers = {*(existing.callers if existing else ()), *([caller] if caller else [])}
         payload = {
             "scopes": list(scopes),
+            "callers": sorted(seen_callers)[:MAX_RECORDED_CALLERS],
             "occurrences": (existing.occurrences if existing else 0) + 1,
             "first_seen": existing.first_seen if existing else now,
             "last_seen": now,
@@ -166,6 +184,7 @@ def _read_marker() -> DegradedReadReport | None:
     occurrences = raw.get("occurrences")
     first_seen = raw.get("first_seen")
     last_seen = raw.get("last_seen")
+    callers = raw.get("callers")
     if not isinstance(scopes, list) or not isinstance(occurrences, int):
         return None
     if not isinstance(first_seen, int | float) or not isinstance(last_seen, int | float):
@@ -175,12 +194,14 @@ def _read_marker() -> DegradedReadReport | None:
         occurrences=occurrences,
         first_seen=float(first_seen),
         last_seen=float(last_seen),
+        callers=tuple(str(entry) for entry in callers) if isinstance(callers, list) else (),
     )
 
 
 __all__ = [
     "MARKER_FILENAME",
     "MARKER_TTL_SECONDS",
+    "MAX_RECORDED_CALLERS",
     "SAFETY_FAIL_CLOSED_STORED_VALUES",
     "ConfigOverrideReadError",
     "DegradedReadReport",

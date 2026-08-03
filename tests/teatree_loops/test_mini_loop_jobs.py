@@ -146,16 +146,50 @@ class TestResourcePressureLoopBuildJobs:
         from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
 
         fake = ResourcePressureScanner()
-        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=fake):
+        with (
+            patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=fake),
+            patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=None),
+        ):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
 
     def test_omits_scanner_when_disabled(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None):
+        with (
+            patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None),
+            patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=None),
+        ):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
         assert jobs == []
+
+    def test_wires_intake_concurrency_scanner(self) -> None:
+        """#3992: the loop's second job is independently switchable from the first."""
+        from unittest.mock import patch  # noqa: PLC0415 — deferred: mirrors this class's sibling tests
+
+        from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner  # noqa: PLC0415 — deferred: ditto
+
+        fake = IntakeConcurrencyScanner(static_ceiling=2, reserve_gb=4.0, per_agent_gb=6.2)
+        with (
+            patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None),
+            patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=fake),
+        ):
+            jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
+        assert any(j.scanner is fake and j.overlay == "" for j in jobs)
+
+    def test_omits_intake_concurrency_scanner_when_disabled(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415 — deferred: mirrors this class's sibling tests
+
+        from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415 — deferred: same
+
+        pressure = ResourcePressureScanner()
+        with (
+            patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=pressure),
+            patch("teatree.loop.global_scanner_factories._intake_concurrency_scanner", return_value=None),
+        ):
+            jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
+        assert jobs == [jobs[0]]
+        assert jobs[0].scanner is pressure
 
 
 class TestInboxLoopBuildJobs:

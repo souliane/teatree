@@ -25,6 +25,7 @@ from teatree.config import clone_root
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
+from teatree.core.worktree.branch_landed import branch_content_landed_on_base
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -106,6 +107,13 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
             ahead_count=ahead,
             open_pr_url=pr_url,
         )
+
+    # #3977: the last layer, because it is the only content-level one that is
+    # path-independent. Every layer above compares paths, so a fix the base took
+    # under a different path (a module split) reads as an orphan forever — the
+    # obligation renews on every tick and its remedy opens a reverting PR.
+    if branch_content_landed_on_base(repo, branch, target):
+        return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=ahead)
 
     has_remote = bool(git.run(repo=repo, args=["ls-remote", "--heads", "origin", branch]))
     status = BranchStatus.PUSHED_ORPHAN if has_remote else BranchStatus.UNPUSHED_ORPHAN

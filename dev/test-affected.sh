@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opt-in fast-feedback lane: run only the tests a diff affects (#113, #3672).
+# The LOCAL DEFAULT lane: run only the tests a diff affects (#113, #3672, #3994).
 #
 # The impact engine is the tach pytest plugin (`--tach --tach-base origin/main`): it
 # walks the reverse-import graph natively and deselects the tests a diff cannot reach.
@@ -27,7 +27,9 @@
 #
 # NOT a gate. The 12-shard CI run + 93% combined-coverage floor stays the merge gate,
 # and pre-push is untouched (`tests/test_no_full_suite_on_pre_push.py`). Use this while
-# iterating; run `bash dev/test-fast.sh` (or `bash dev/ci-parity.sh`) before pushing.
+# iterating; run `bash dev/ci-parity-fast.sh` before pushing (it calls this lane). The
+# whole-suite runners (`--full`, `dev/test-fast.sh`, `dev/ci-parity.sh`) are the DECLARED
+# exception for a genuinely cross-cutting change, not the per-ticket default (#3994).
 #
 # Usage:
 #   bash dev/test-affected.sh                 # select + run against origin/main
@@ -38,6 +40,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# bash 3.2 (the macOS system bash) treats "${ARR[@]}" on an EMPTY array as an
+# unbound variable under `set -u`, so every no-argument caller -- which is how
+# ci-parity-fast.sh and the push gate invoke this -- died before pytest ran.
+# ${ARR[@]+"${ARR[@]}"} expands to nothing when empty and is byte-identical
+# otherwise, on both 3.2 and 5.x.
 # `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
 # change — so a memory-capped container spawns host-many workers and dies as an opaque
 # xdist crash. Default the pool from the cap instead (an explicit
@@ -59,7 +66,7 @@ done
 
 if [[ "$FULL" == "1" ]]; then
     echo "=== affected-tests: --full — running the whole suite ==="
-    exec uv run pytest --no-cov -n auto --reuse-db "${PYTEST_EXTRA[@]}"
+    exec uv run pytest --no-cov -n auto --reuse-db ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}
 fi
 
 # The selector prints the FULL-vs-scoped report; --pytest-args emits the invocation:
@@ -71,4 +78,4 @@ echo "==="
 
 read -r -a SELECTED <<< "$(t3 tool affected-tests --base "$BASE" --pytest-args)"
 # A FULL verdict emits no --tach flag ⇒ the whole suite runs.
-exec uv run pytest --no-cov -n auto --reuse-db "${SELECTED[@]}" "${PYTEST_EXTRA[@]}"
+exec uv run pytest --no-cov -n auto --reuse-db ${SELECTED[@]+"${SELECTED[@]}"} ${PYTEST_EXTRA[@]+"${PYTEST_EXTRA[@]}"}

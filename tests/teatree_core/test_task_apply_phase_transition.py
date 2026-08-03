@@ -13,6 +13,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.task_phase_disposition import phase_output_reached
 
 
 class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
@@ -385,3 +386,36 @@ class TestTerminalTicketsCannotBeAdvanced(TestCase):
                             f"{phase} advanced a terminal {state} ticket to {ticket.state} — "
                             "the replay sweep's terminal exclusion would now drop a real recovery"
                         )
+
+
+class TestPhaseOutputReached(TestCase):
+    """The at-or-past comparison the wedge check and the landing evidence share (#3982).
+
+    ``Ticket.has_completed_phase`` stops at SHIPPED by design, so it cannot answer for a
+    shipped ticket already in peer review. This runs the FULL author ladder, which is what
+    lets ``core.models.phase_landing`` tell a landed phase from an unfinished one.
+    """
+
+    def _ticket(self, state: str) -> Ticket:
+        return Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+
+    def test_states_past_shipped_have_reached_the_shipping_output(self) -> None:
+        for state in (
+            Ticket.State.SHIPPED,
+            Ticket.State.IN_REVIEW,
+            Ticket.State.MERGED,
+            Ticket.State.RETROSPECTED,
+            Ticket.State.DELIVERED,
+        ):
+            assert phase_output_reached(self._ticket(state), "shipping") is True, state
+
+    def test_a_state_behind_the_target_has_not(self) -> None:
+        assert phase_output_reached(self._ticket(Ticket.State.REVIEWED), "shipping") is False
+
+    def test_the_short_verb_spelling_normalizes(self) -> None:
+        assert phase_output_reached(self._ticket(Ticket.State.IN_REVIEW), "ship") is True
+
+    def test_an_off_ladder_state_and_a_free_form_phase_both_answer_false(self) -> None:
+        assert phase_output_reached(self._ticket(Ticket.State.REVIEW_POSTED), "shipping") is False
+        assert phase_output_reached(self._ticket(Ticket.State.IGNORED), "shipping") is False
+        assert phase_output_reached(self._ticket(Ticket.State.DELIVERED), "bughunt") is False

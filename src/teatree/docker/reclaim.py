@@ -15,9 +15,14 @@ This is THE sanctioned disk-reclaim path. Removing application images or tearing
 down worktrees/DBs stays a separate, explicitly-targeted action (``workspace
 teardown`` / ``clean-all``), never bundled here.
 
-Tolerant of an unavailable docker binary (CI sandboxes, hermetic tests) so the
-command never crashes when there is no daemon to talk to — a missing binary
-yields a zero-reclaim outcome, not an error.
+Absence and failure are different, and the difference is load-bearing. A MISSING
+docker binary (CI sandboxes, hermetic tests) yields a silent zero-reclaim
+outcome so the command never crashes where there is no daemon to talk to. A
+docker that ANSWERS and refuses — daemon down, or the socket simply not mounted
+into the container the CLI runs in — is a FAILURE: it is recorded on the step,
+marked in ``render()``, and exits the command non-zero. Reporting that as a
+clean ``0B`` is indistinguishable from "nothing left to reclaim", and tells an
+operator under disk pressure that the sanctioned path ran when it never did.
 """
 
 import logging
@@ -50,6 +55,7 @@ _HUMAN_UNITS = ("B", "kB", "MB", "GB", "TB", "PB")
 class PruneOutcome:
     reclaimed: str
     bytes_reclaimed: int
+    failure: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +63,14 @@ class ReclaimStep:
     argv: list[str]
     label: str
     outcome: PruneOutcome | None = None
+
+    @property
+    def summary_line(self) -> str:
+        if self.outcome is None:
+            return f"  {self.label}: reclaimed 0B"
+        if self.outcome.failure is not None:
+            return f"  {self.label}: FAILED — {self.outcome.failure}"
+        return f"  {self.label}: reclaimed {self.outcome.reclaimed}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,15 +87,25 @@ class ReclaimReport:
     def total_human(self) -> str:
         return _human_bytes(self.total_bytes)
 
+    @property
+    def failures(self) -> tuple[tuple[str, str], ...]:
+        """Label + reason for every step docker actively refused (never for a missing binary)."""
+        return tuple(
+            (step.label, step.outcome.failure)
+            for step in self.steps
+            if step.outcome is not None and step.outcome.failure is not None
+        )
+
+    def failure_summary(self) -> str:
+        detail = "; ".join(f"{label}: {reason}" for label, reason in self.failures)
+        return f"docker reclaim failed on {len(self.failures)} of {len(self.steps)} steps — {detail}"
+
     def render(self) -> str:
         if self.dry_run:
             lines = ["Dry run — would reclaim (nothing removed):"]
             lines += [f"  {step.label}: {' '.join(step.argv)}" for step in self.planned]
             return "\n".join(lines)
-        lines = [
-            f"  {step.label}: reclaimed {step.outcome.reclaimed if step.outcome is not None else '0B'}"
-            for step in self.steps
-        ]
+        lines = [step.summary_line for step in self.steps]
         lines.append(f"Total reclaimed: {self.total_human}")
         return "\n".join(lines)
 
@@ -119,10 +143,11 @@ def _extract_reclaimed(stdout: str) -> str:
 
 
 def _run_prune(argv: list[str]) -> PruneOutcome:
-    """Run one prune command; return its reclaimed size (mocked in tests).
+    """Run one prune command; return its reclaimed size, or the reason it did not run.
 
-    Never raises on a missing/erroring docker binary — the safe reclaim must
-    not crash the command when there is no daemon. A failure yields ``0B``.
+    Never raises: a step that fails must not forfeit the reclaim the remaining
+    steps can still do. An ABSENT docker binary is tolerated silently; a docker
+    that answers and refuses records a ``failure`` the caller surfaces.
     """
     try:
         result = run_allowed_to_fail(argv, expected_codes=None, timeout=_PRUNE_TIMEOUT)
@@ -131,10 +156,11 @@ def _run_prune(argv: list[str]) -> PruneOutcome:
         return PruneOutcome(reclaimed="0B", bytes_reclaimed=0)
     except TimeoutExpired:
         logger.warning("docker prune timed out: %s", argv[:3])
-        return PruneOutcome(reclaimed="0B", bytes_reclaimed=0)
+        return PruneOutcome(reclaimed="0B", bytes_reclaimed=0, failure=f"timed out after {_PRUNE_TIMEOUT}s")
     if result.returncode != 0:
-        logger.warning("docker %s failed: %s", argv[:3], result.stderr.strip()[:300])
-        return PruneOutcome(reclaimed="0B", bytes_reclaimed=0)
+        reason = result.stderr.strip()[:300] or f"exit status {result.returncode}"
+        logger.warning("docker %s failed: %s", argv[:3], reason)
+        return PruneOutcome(reclaimed="0B", bytes_reclaimed=0, failure=reason)
     reclaimed = _extract_reclaimed(result.stdout)
     return PruneOutcome(reclaimed=reclaimed, bytes_reclaimed=_parse_size(reclaimed))
 

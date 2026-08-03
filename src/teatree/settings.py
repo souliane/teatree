@@ -140,8 +140,21 @@ TEMPLATES = [
 # write lock at transaction start and concurrent writers block instead of
 # racing — restoring the invariant the ``select_for_update()`` calls assume.
 #
-# ``journal_mode=WAL`` lets readers run concurrently with the single writer
-# (avoids needless reader/writer contention) while still serializing writers.
+# ``journal_mode=TRUNCATE`` — rollback journal, not WAL. WAL coordinates its
+# writers through an mmap'd ``-shm`` sidecar; a process that maps it
+# shared-writable on Docker Desktop's ``fakeowner`` filesystem is killed by
+# SIGBUS (measured: the worker and its ``loops_tick`` children restarting twice
+# a minute, ``RestartCount`` 8 -> 131 in one session), and the same incoherence
+# cross-linked pages in ``teatree_outbound_claim``. Rollback-journal mode maps
+# nothing, so there is nothing to go incoherent.
+#
+# The control DB now lives in a named volume — a real Linux filesystem with no
+# VM boundary — which removes that constraint, so restoring WAL for its reader
+# concurrency is available. It is deliberately NOT taken here: it is a separate,
+# measurable change, and nothing in this module may assume the sidecars are
+# absent (the volume is the DB's DIRECTORY precisely so they have somewhere to
+# live). Writer serialization does not depend on the choice either way — it
+# comes from ``transaction_mode`` and ``timeout`` below.
 #
 # ``timeout`` maps to SQLite's ``busy_timeout``: a blocked writer waits this
 # long for the reserved lock before raising ``database is locked`` instead of
@@ -154,13 +167,24 @@ TEMPLATES = [
 # flips that test RED.
 SQLITE_WRITE_SERIALIZATION_OPTIONS = {
     "timeout": 30,
-    "init_command": "PRAGMA journal_mode=WAL;",
+    "init_command": "PRAGMA journal_mode=TRUNCATE;",
     "transaction_mode": "IMMEDIATE",
 }
 
+# ``teatree.db.sqlite3_boundary`` is Django's SQLite backend plus ONE guarantee:
+# a database the containerized stack owns can only be opened read-only from the
+# host. Two writers on opposite sides of Docker Desktop's shared-folder layer
+# have already cross-linked pages in this install's ``teatree_outbound_claim``.
+# Dropping WAL (above) removes the mmap'd ``-shm`` that carried that particular
+# incoherence, but SQLite's remaining cross-process locking is POSIX advisory
+# locking over the same layer, so the boundary stands on its own. Serializing
+# writers is correct WITHIN one coherence domain and does nothing across two —
+# see teatree/db/boundary.py.
+SQLITE_BOUNDARY_ENGINE = "teatree.db.sqlite3_boundary"
+
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
+        "ENGINE": SQLITE_BOUNDARY_ENGINE,
         "NAME": str(CANONICAL_DB),
         "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
     },
@@ -176,7 +200,9 @@ DATABASES = {
 _PINNED_CONFIG_DB = pinned_config_db(default_db=CANONICAL_DB)
 if _PINNED_CONFIG_DB is not None:
     DATABASES[CONFIG_DB_ALIAS] = {
-        "ENGINE": "django.db.backends.sqlite3",
+        # Same guarded engine: from a worktree this alias points AT the primary
+        # canonical DB, so it is the same file and the same boundary.
+        "ENGINE": SQLITE_BOUNDARY_ENGINE,
         "NAME": str(_PINNED_CONFIG_DB),
         "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
     }

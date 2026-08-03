@@ -48,6 +48,13 @@ _DEFAULT_ORPHAN_GRACE = timedelta(hours=6)
 #: whole day of no task activity AND no active task is a dead attempt, not a slow one.
 _DEFAULT_STALL_GRACE = timedelta(hours=24)
 
+#: The stall grace above buys time for an attempt that might still be mid-flight — which
+#: is what an open PR proves. A ticket with nothing queued AND no PR at all has produced
+#: no evidence of an attempt at all, so waiting a day on it is waiting on nothing, and two
+#: such claims close intake for a day at the shipped budget. A live attempt queues its next
+#: task within minutes, so hours of neither is an attempt that is over, not one that is slow.
+_DEFAULT_DEAD_GRACE = timedelta(hours=2)
+
 
 @dataclass(frozen=True, slots=True)
 class MarkerReconcileResult:
@@ -146,21 +153,32 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         *,
         orphan_grace: timedelta | None = None,
         stall_grace: timedelta | None = None,
+        dead_grace: timedelta | None = None,
     ) -> MarkerReconcileResult:
         """Classify — WITHOUT mutating — which non-terminal markers are reconcilable (#3275).
 
-        Three ways a marker stops being legitimately in flight, and each frees its
+        Four ways a marker stops being legitimately in flight, and each frees its
         budget slot:
 
         TERMINAL — its ticket reached a ``Ticket.marker_release_states()`` state → COMPLETED.
+        LANDED — its ticket's PR merged → COMPLETED, on that fact alone and with no grace.
         GONE — no ticket exists for its issue and it outlived ``orphan_grace`` → ABANDONED.
-        STALLED — its ticket exists but died past ``stall_grace`` (:meth:`_ticket_stalled`) → ABANDONED.
+        STALLED — its ticket exists but died past a grace (:meth:`_ticket_stalled`) → ABANDONED.
 
-        The third is the gap between the first two: a dispatch that got as far as
+        LANDED exists because SHIPPED is deliberately NOT a release state (it means
+        "PR open, not yet landed"), so a ticket frozen at SHIPPED after its PR merged
+        satisfies no release condition its own FSM will ever reach, and waits out the
+        stall grace for a step it will never take (#3978).
+
+        STALLED is the gap between TERMINAL and GONE: a dispatch that got as far as
         creating a ticket and then died leaves a non-terminal ticket forever, so
-        neither of the original branches can ever fire and the slot is held for
-        good. Tickets are matched by ``issue_url``, the canonical unique key the
-        release signal also keys on. ``overlay=""`` spans every overlay. The doctor
+        neither of those branches can ever fire and the slot is held for good. Its
+        grace is ``stall_grace`` only while an OPEN PR proves the attempt is genuinely
+        mid-flight; with nothing queued and no PR at all the attempt is over rather
+        than slow, and the much shorter ``dead_grace`` governs.
+
+        Tickets are matched by ``issue_url``, the canonical unique key the release
+        signal also keys on. ``overlay=""`` spans every overlay. The doctor
         jam-signature check reads this preview; the loop and CLI mutate via
         :meth:`reconcile_stale`.
         """
@@ -169,7 +187,12 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         terminal_states = Ticket.marker_release_states()
         now = timezone.now()
         orphan_cutoff = now - (_DEFAULT_ORPHAN_GRACE if orphan_grace is None else orphan_grace)
-        stall_cutoff = now - (_DEFAULT_STALL_GRACE if stall_grace is None else stall_grace)
+        stall = _DEFAULT_STALL_GRACE if stall_grace is None else stall_grace
+        stall_cutoff = now - stall
+        # Capped by the stall grace, never longer than it: the dead branch exists to
+        # release SOONER than a mid-flight attempt, so an operator shortening the stall
+        # grace (`--stall-grace-hours 0`) must not find the PR-less claims held longer.
+        dead_cutoff = now - min(stall, _DEFAULT_DEAD_GRACE if dead_grace is None else dead_grace)
         non_terminal = self.exclude(state__in=ImplementedIssueMarker.State.terminal())
         if overlay:
             non_terminal = non_terminal.filter(overlay=overlay)
@@ -183,11 +206,27 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
             if ticket is None:
                 if marker.dispatched_at <= orphan_cutoff:
                     abandoned.append(marker.pk)
-            elif ticket.state in terminal_states:
+            elif ticket.state in terminal_states or self._pr_landed(ticket):
                 completed.append(marker.pk)
-            elif self._ticket_stalled(ticket, marker, cutoff=stall_cutoff):
+            elif self._ticket_stalled(
+                ticket, marker, cutoff=stall_cutoff if self._has_open_pr(ticket) else dead_cutoff
+            ):
                 abandoned.append(marker.pk)
         return MarkerReconcileResult(completed=tuple(completed), abandoned=tuple(abandoned))
+
+    @staticmethod
+    def _pr_landed(ticket: "Ticket") -> bool:
+        """True when a PR for *ticket* has merged — the work arrived, however the FSM reads."""
+        from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — peer model, deferred
+
+        return PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED).exists()
+
+    @staticmethod
+    def _has_open_pr(ticket: "Ticket") -> bool:
+        """True when *ticket* has a PR that is neither landed nor abandoned."""
+        from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — peer model, deferred
+
+        return PullRequest.objects.live().filter(ticket=ticket).exists()
 
     @staticmethod
     def _ticket_stalled(ticket: "Ticket", marker: "ImplementedIssueMarker", *, cutoff: datetime) -> bool:
@@ -220,17 +259,18 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         *,
         orphan_grace: timedelta | None = None,
         stall_grace: timedelta | None = None,
+        dead_grace: timedelta | None = None,
     ) -> MarkerReconcileResult:
         """Release stale markers so the in-flight budget self-heals (#3275).
 
-        Terminal-ticket markers → COMPLETED; gone-ticket orphans past the grace and
-        stalled-ticket attempts past ``stall_grace`` → ABANDONED (mirroring the
-        give-up semantics ABANDONED already carries, so the issue becomes claimable
+        Terminal-ticket and merged-PR markers → COMPLETED; gone-ticket orphans past
+        the grace and stalled-ticket attempts past their grace → ABANDONED (mirroring
+        the give-up semantics ABANDONED already carries, so the issue becomes claimable
         again through :meth:`claim`'s re-claim path). Idempotent: a second pass
         finds the just-released rows terminal and is a no-op. Returns the same
         :class:`MarkerReconcileResult` :meth:`find_stale` computes.
         """
-        result = self.find_stale(overlay, orphan_grace=orphan_grace, stall_grace=stall_grace)
+        result = self.find_stale(overlay, orphan_grace=orphan_grace, stall_grace=stall_grace, dead_grace=dead_grace)
         if result.completed:
             self.filter(pk__in=result.completed).update(state=ImplementedIssueMarker.State.COMPLETED)
         if result.abandoned:

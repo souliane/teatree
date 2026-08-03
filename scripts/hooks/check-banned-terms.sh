@@ -19,6 +19,9 @@
 # banned_terms row and no env) WARNS loud and exits 0 by default — an unset list
 # is not a banned-term violation on a dev/solo box (#3247); it exits 2 (fail
 # loud) only when banned_terms_required is set (a deployment that MUST scrub).
+# A store that could not be READ (locked, corrupt, table-less) is NOT an unset
+# list and exits 2 whatever banned_terms_required says: an errored read carries
+# no information about what the operator configured (#4008).
 #
 # This is a THIN wrapper: all matching is delegated to
 # ``teatree.hooks.banned_terms_cli`` (which uses ``teatree.hooks.term_match``),
@@ -30,8 +33,8 @@
 #
 # Exit-code contract (consumed by ``teatree.hooks.banned_terms_scanner`` and
 # prek): 0 = clean (incl. an unset list when banned_terms_required is off, #3247),
-# 1 = banned term found, 2 = the scanner COULD NOT RUN (or an unset list when
-# banned_terms_required is on).
+# 1 = banned term found, 2 = the scanner COULD NOT RUN, the term store could not
+# be READ, or an unset list when banned_terms_required is on.
 # A security gate that fails OPEN on a crash is the bug class: the codebase
 # requires Python >= 3.13, so under an old system ``python3`` the matcher
 # import crashes (PEP-604 unions) and exits 1 — colliding with "banned term
@@ -49,16 +52,25 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 scanner_unavailable() {
   echo "ERROR: banned-terms scanner could not run: $1" >&2
-  echo "  Install uv, or a Python >= 3.13, so the scanner can import the matcher." >&2
+  echo "  Interpreter RESOLUTION found nothing that answers: no uv on this box ran" >&2
+  echo "  '--version' (a version-manager SHIM exiting 127 is skipped, never accepted)," >&2
+  echo "  and python3 could not import the matcher." >&2
+  echo "  Point T3_UV at a working uv binary, or install a Python >= 3.13." >&2
   echo "  Failing CLOSED (exit 2): a crash must never be treated as a clean scan." >&2
   exit 2
 }
 
+# shellcheck source=lib/resolve-uv.sh
+. "${script_dir}/lib/resolve-uv.sh"
+
 # Prefer ``uv run`` so the matcher comes from this repo's environment (critical
 # in a worktree, where a bare ``python3`` may import a different editable
-# install). Fall back to ``python3 -m`` when uv is unavailable.
-if command -v uv >/dev/null 2>&1; then
-  exec uv run --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
+# install). ``resolve_uv`` probes rather than trusting PATH, so a broken shim
+# falls through here instead of wedging the gate; ``uv_project_run_prefix`` keeps
+# the run from reconciling an environment on the other side of a bind mount.
+if uv_bin="$(resolve_uv)"; then
+  uv_project_run_prefix "${uv_bin}" "${repo_root}"
+  exec "${UV_PROJECT_RUN[@]}" run --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
 fi
 
 # ``python3`` fallback. Probe-import the matcher BEFORE running the scanner: an

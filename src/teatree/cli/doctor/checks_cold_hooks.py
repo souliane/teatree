@@ -12,6 +12,15 @@ every DB-home flag silently resolved to its compiled-in default, and nothing
 surfaced it — ``t3 <overlay> config_setting get`` cheerfully reported the stored
 value the hooks were not using. This probe closes that blind spot by asking the
 HOOK's interpreter what it actually resolves, and comparing it against the CLI.
+
+:func:`_check_autoload_engages_platform_skill` covers the OTHER half of the same
+blind spot. A flag that reads back correctly still buys the owner nothing if the
+ENGAGEMENT it is supposed to drive never materialises: every link after the read
+— the engagement seam, the demand set, the canonical token, the resolver the
+skill-loading gate consults — fails silently and looks exactly like "the
+operator never opted in". That check walks the whole chain under the hook's own
+interpreter and FAILS when a stored ``autoload = true`` produces no enforceable
+platform-skill demand.
 """
 
 import json
@@ -39,6 +48,25 @@ except Exception as exc:
     print(json.dumps({{"status": "probe_failed", "error": exc.__class__.__name__ + ": " + str(exc)}}))
 """
 
+# Walks the engagement chain the way a live session does, under the interpreter
+# ``run-hook.sh`` picks: the hook-side ``autoload`` read, the demand that read
+# produces at the engagement seam, and whether the canonical token that demand
+# lands in ``<session>.pending`` as still resolves for the skill-loading gate.
+# Every link is a place the owner's opt-in has silently evaporated.
+_ENGAGEMENT_PROBE = """
+import json, sys
+sys.path.insert(0, {plugin_root!r})
+try:
+    from hooks.scripts.engagement import autoload_skill_demand
+    from hooks.scripts.hook_router import _skill_resolves, _skill_search_dirs, normalize_skill_name
+    demand = autoload_skill_demand([])
+    search_dirs = _skill_search_dirs()
+    enforceable = [normalize_skill_name(s) for s in demand if _skill_resolves(normalize_skill_name(s), search_dirs)]
+    print(json.dumps({{"status": "ok", "demand": demand, "enforceable": enforceable}}))
+except Exception as exc:
+    print(json.dumps({{"status": "probe_failed", "error": exc.__class__.__name__ + ": " + str(exc)}}))
+"""
+
 _PROBE_TIMEOUT_SECONDS = 30
 
 # ``HookResolution.status`` vocabulary.
@@ -61,21 +89,23 @@ class HookResolution:
     error: str = ""
 
 
-def _hook_interpreter_resolution(repo_root: Path) -> HookResolution | None:
-    """Ask the hook's own interpreter what it resolves for ``autoload``; ``None`` if unaskable.
+def _run_hook_probe(repo_root: Path, source: str) -> dict | None:
+    """Run *source* under the interpreter ``run-hook.sh`` picks; its JSON, or ``None``.
 
     Routes through ``run-hook.sh`` rather than :data:`sys.executable` on purpose — the
     shim's interpreter SELECTION is half the bug, so probing with the CLI's own Python
     would report a healthy read that the live hook never performs.
+
+    ``None`` means UNASKABLE (no bash, no shim, spawn failure, empty or unparsable
+    output), which every caller must degrade to a WARN rather than a FAIL.
     """
     runner = repo_root / "hooks" / "scripts" / "run-hook.sh"
-    scripts_dir = repo_root / "hooks" / "scripts"
     bash = shutil.which("bash")
     if bash is None or not runner.is_file():
         return None
     try:
         proc = run_allowed_to_fail(
-            [bash, str(runner), "-c", _PROBE.format(scripts_dir=str(scripts_dir))],
+            [bash, str(runner), "-c", source],
             # The shim exits 0 even when it finds no usable interpreter, and a crashing
             # probe still prints its JSON — so ANY exit code is informative here and the
             # stdout parse below is what decides. A raise would defeat the WARN path.
@@ -93,6 +123,15 @@ def _hook_interpreter_resolution(repo_root: Path) -> HookResolution | None:
     except (ValueError, IndexError):
         return None
     if not isinstance(parsed, dict) or not isinstance(parsed.get("status"), str):
+        return None
+    return parsed
+
+
+def _hook_interpreter_resolution(repo_root: Path) -> HookResolution | None:
+    """Ask the hook's own interpreter what it resolves for ``autoload``; ``None`` if unaskable."""
+    scripts_dir = repo_root / "hooks" / "scripts"
+    parsed = _run_hook_probe(repo_root, _PROBE.format(scripts_dir=str(scripts_dir)))
+    if parsed is None:
         return None
     autoload = parsed.get("autoload")
     return HookResolution(
@@ -187,14 +226,80 @@ def _check_config_override_tier_healthy() -> bool:
         return True
     if report is None:
         return True
+    # The caller is what makes the record actionable (#3980): the deterministic fault this tier
+    # actually hit in production — a sync ORM read from inside an event loop — is settled by WHERE
+    # the read was made, and the traceback at the read holds only the ORM frames.
+    called_from = f" Called from: {'; '.join(report.callers)}." if report.callers else ""
     typer.echo(
         f"FAIL  The ConfigSetting override tier FAILED to read {report.occurrences} time(s) "
         f"(scopes: {', '.join(report.scopes)}; most recent {int(report.age_seconds)}s ago). While "
         "degraded, the autonomy/approval gates resolve to their most RESTRICTIVE value rather "
         "than your stored configuration, so the factory is running more conservatively than you "
-        "configured it to. Typical causes are SQLite lock contention against a large control DB, "
-        "an exhausted file-handle budget, or a full disk. Fix the underlying read fault; the "
-        "record clears itself once no further read fails for "
+        f"configured it to.{called_from} Typical causes are a config read reached from an async "
+        "frame (deterministic — fix the caller, not the DB), SQLite lock contention against a "
+        "large control DB, an exhausted file-handle budget, or a full disk. Fix the underlying "
+        "fault; the record clears itself once no further read fails for "
         f"{MARKER_TTL_SECONDS // 3600}h, or delete {marker_path()} to acknowledge it now."
+    )
+    return False
+
+
+def _check_autoload_engages_platform_skill() -> bool:
+    """FAIL when a stored ``autoload = true`` yields no ENFORCEABLE platform-skill demand.
+
+    Reading the flag correctly is not the contract the owner cares about —
+    "teatree is loaded on every new session" is. Between the stored ``True`` and
+    that outcome sit the engagement seam, the demand set, the canonical token
+    the demand is written as, and the resolver the skill-loading gate consults.
+    Every one of them degrades SILENTLY and to the same observable state as a
+    session where autoload was never switched on, which is why this failure has
+    to be hand-diagnosed each time it recurs.
+
+    So the check does not compare a flag to a flag. It reads ``autoload`` from
+    the DB (the CLI's answer), asks the LIVE hook path — the same modules, under
+    the interpreter ``run-hook.sh`` selects — what an engaged session would
+    actually be made to load, and FAILS when the two disagree.
+
+    Off when ``autoload`` is off: nothing was claimed, so there is nothing to
+    contradict.
+
+    An UNASKABLE probe (no bash, no shim, spawn failure, unparsable output) is a
+    WARN — an undiagnosable environment must not turn a doctor run red on this
+    check alone. A probe that RAN and crashed is a FAIL, not a WARN: the live
+    hook path could not compute the demand, which settles the question rather
+    than leaving it open.
+    """
+    import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    if not get_effective_settings().autoload:
+        return True
+
+    repo_root = Path(teatree.__file__).resolve().parents[2]
+    parsed = _run_hook_probe(repo_root, _ENGAGEMENT_PROBE.format(plugin_root=str(repo_root)))
+    if parsed is None:
+        typer.echo(
+            "WARN  Could not ask the hook's interpreter what an autoloaded session engages "
+            "(probe did not run). Autoload engagement is unverified.",
+        )
+        return True
+    if parsed["status"] != _STATUS_OK:
+        typer.echo(
+            f"FAIL  `autoload` is true in the settings store, but the LIVE hook path cannot "
+            f"even compute what an engaged session must load: {parsed.get('error', '')}. Every "
+            f"new session therefore starts without the teatree skill and behaves exactly as if "
+            f"you had never opted in. Re-run `t3 setup`, then re-run `t3 doctor check`.",
+        )
+        return False
+
+    enforceable = parsed.get("enforceable")
+    if isinstance(enforceable, list) and enforceable:
+        return True
+    typer.echo(
+        f"FAIL  `autoload` is true in the settings store, but the LIVE hook path engages no "
+        f"platform skill: it resolved demand={parsed.get('demand')!r} and "
+        f"enforceable={enforceable!r}. Every new session therefore starts without the teatree "
+        f"skill and behaves exactly as if you had never opted in — the symptom is that you "
+        f"keep loading it by hand. Re-run `t3 setup`, then re-run `t3 doctor check`.",
     )
     return False

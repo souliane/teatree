@@ -4,19 +4,13 @@
 {% block content %}
   <section class="band">
     <h2>Settings</h2>
-    <p class="muted">Everything this box is configured to do: the resolved model / credential / self-repair readouts below, then every config key from the schema. Sections are on the left, the selected section's rows on the right — one section is fetched at a time, so the page stays small. Edits write to the DB store; a secret value is never shown (<span class="mono">***</span>) and its input is write-only. Restore-to-default deletes the row. <em>Value came from</em> names the tier of the resolution chain that supplied the effective value (env &rarr; DB overlay scope &rarr; DB global scope &rarr; overlay code default &rarr; shipped file); <em>shipped default</em> shows what <span class="mono">config/defaults.toml</span> ships, with <span class="default-match">&#10003; same as default</span> or <span class="default-differs">&#9679; differs from default</span> next to it.</p>
-    <form class="toolbar" method="get" action="{% url 'dash:settings' %}">
-      <label for="scope-picker">Scope</label>
-      <select id="scope-picker" name="scope" onchange="this.form.submit()">
-        {% for name in editor.available_scopes %}
-          <option value="{{ name }}" {% if name == editor.scope %}selected{% endif %}>{{ name|default:"global (every overlay)" }}</option>
-        {% endfor %}
-      </select>
-      <input type="hidden" name="section" value="{{ editor.group.section.slug }}">
-      <button class="dash-btn" type="submit">Show</button>
-    </form>
-    <p class="muted">A row in an overlay scope beats the global row for that overlay. The picker lists
-      every registered overlay plus any scope that already holds rows.</p>
+    <p class="muted">Everything this box is configured to do: the resolved model / credential / self-repair readouts below, then every config key from the schema. Sections are on the left, the selected section's grid on the right — one section is fetched at a time, so the page stays small. One row per setting, with the shipped default and then every scope side by side: <span class="mono">global</span> first, then one column per overlay. A cell reads green while it still equals the default and brown once someone has changed it; the count beside each section in the nav is how many of its settings have been changed, counting each setting once however many scopes override it.</p>
+    <p class="muted">Editing is in place and there is no save button — pick a value or type one and it is written as
+      you leave the cell. Emptying a cell deletes that scope's row, so the setting resolves its default again.
+      An invalid value is refused and the cell says why rather than keeping the text that failed. Hover a
+      setting's name for what it does, and a cell for which tier of the resolution chain supplied it
+      (env &rarr; DB overlay scope &rarr; DB global scope &rarr; overlay code default &rarr; shipped file).
+      A secret value is never shown (<span class="mono">***</span>) and its input is write-only.</p>
   </section>
 
   <div id="settings-readouts"
@@ -38,11 +32,14 @@
             <button type="button"
               class="settings-nav-item{% if section.slug == editor.group.section.slug %} active{% endif %}"
               aria-current="{% if section.slug == editor.group.section.slug %}true{% else %}false{% endif %}"
-              hx-get="{% url 'dash:settings_group' section.slug %}{% if editor.scope %}?scope={{ editor.scope|urlencode }}{% endif %}"
+              hx-get="{% url 'dash:settings_group' section.slug %}"
               hx-target="#settings-pane" hx-swap="innerHTML">
               <span class="settings-nav-label">{{ section.label }}</span>
               {% if section.parent_label %}<span class="settings-nav-parent">{{ section.parent_label }}</span>{% endif %}
               <span class="settings-nav-count">{{ section.key_count }}</span>
+              {% if section.drift_count %}
+                <span class="settings-nav-drift" title="{{ section.drift_count }} setting(s) here differ from their default">{{ section.drift_count }}</span>
+              {% endif %}
             </button>
           </li>
         {% endfor %}
@@ -72,7 +69,6 @@
     <form method="post" action="{% url 'dash:settings_import' %}" enctype="multipart/form-data">
       {% csrf_token %}
       <input type="file" name="toml_file" accept=".toml,text/plain" aria-label="TOML file to import" required>
-      <input type="hidden" name="scope" value="{{ editor.scope }}">
       <p class="toolbar">
         <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
           aria-label="safety-posture confirm phrase">
@@ -82,7 +78,7 @@
       <p class="muted">Upload a <span class="mono">config_setting export</span> dump. A file carrying a safety-posture
         key needs the confirm phrase, exactly as editing one above does. Each row lands in the scope its own table
         names (<span class="mono">[teatree]</span> is global, <span class="mono">[overlays.&lt;name&gt;]</span> is that
-        overlay) — the picker above chooses what you are looking at, never where an imported row goes.</p>
+        overlay).</p>
     </form>
     {% if import_error %}<p class="banner-red">{{ import_error }}</p>{% endif %}
     {% if import_result %}

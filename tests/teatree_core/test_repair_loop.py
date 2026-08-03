@@ -17,7 +17,9 @@ from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import (
     IterationStalled,
     MaxIterationsExceeded,
+    is_kind_stalled,
     max_phase_iterations,
+    requeue_verdict,
     terminal_reason_fingerprint,
 )
 
@@ -281,3 +283,46 @@ class TestReclaimEnforcesRepairLoop(TestCase):
         Task.objects.reclaim_orphaned_claims()
         task.refresh_from_db()
         assert task.status != Task.Status.PENDING
+
+
+class TestKindStall:
+    """The named-cause circuit-breaker (#3958): a repeated DETERMINISTIC cause is a stall.
+
+    The fingerprint stall compares free text, so two runs of one deterministic defect
+    whose message carries a varying detail never match. The recorded ``FailureKind``
+    (#3957) is the comparable name that closes it.
+    """
+
+    def test_two_identical_kinds_are_a_stall(self) -> None:
+        assert is_kind_stalled(["no_result_envelope", "no_result_envelope"]) is True
+
+    def test_distinct_kinds_are_not_a_stall(self) -> None:
+        assert is_kind_stalled(["no_result_envelope", "evidence_missing"]) is False
+
+    def test_a_single_kind_is_not_a_stall(self) -> None:
+        assert is_kind_stalled(["no_result_envelope"]) is False
+
+    def test_no_kinds_is_not_a_stall(self) -> None:
+        assert is_kind_stalled([]) is False
+
+
+class TestRequeueVerdictKindStall:
+    def _verdict(self, kinds: list[str] | None = None) -> None:
+        requeue_verdict(
+            ticket_id=1,
+            phase="reviewing",
+            iteration_count=1,
+            last_two_fingerprints=["fp-a", "fp-b"],
+            last_two_deterministic_kinds=kinds,
+        )
+
+    def test_repeated_deterministic_kind_stalls_despite_distinct_fingerprints(self) -> None:
+        with pytest.raises(IterationStalled):
+            self._verdict(["no_result_envelope", "no_result_envelope"])
+
+    def test_omitting_the_kinds_preserves_the_fingerprint_only_verdict(self) -> None:
+        # The default keeps every existing caller byte-identical.
+        self._verdict()
+
+    def test_distinct_deterministic_kinds_do_not_stall(self) -> None:
+        self._verdict(["no_result_envelope", "evidence_missing"])

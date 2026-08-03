@@ -31,7 +31,10 @@ unset list is not a banned-term violation on a dev/solo box (#3247).
 value) AND ``banned_terms_required`` is True — a deployment that MUST scrub
 customer names keeps the fail-LOUD behaviour (an unset list is indistinguishable
 from a load bug). An explicit ``banned_terms = []`` is the deliberate no-op
-(exit 0), not an unset.
+(exit 0), not an unset. Also exit 2, whatever ``banned_terms_required`` says,
+when the store could not be READ at all (``BannedTermsUnreadableError``): a
+locked or corrupt DB says nothing about what the operator configured, and reading
+that silence as "unset" is what let a busy DB open the gate (#4008).
 
 The email carve-out lives in ``term_match`` so it, too, is shared rather than
 duplicated.
@@ -50,10 +53,11 @@ term is still caught before it leaves the machine.
 import argparse
 import os
 import sys
+from enum import StrEnum
 from pathlib import Path
 
 from teatree.config import cold_reader
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
 from teatree.hooks.term_match import line_matches, matched_term, strip_emails
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
@@ -82,6 +86,14 @@ _TERMS_REQUIRED_ENV = "T3_BANNED_TERMS_REQUIRED"
 _TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 
+class UnsetVerdict(StrEnum):
+    """What a term list that did not resolve means for the gate."""
+
+    ALLOW = "allow"
+    REQUIRED = "required"
+    UNREADABLE = "unreadable"
+
+
 def _db_array(key: str, db_path: Path | None) -> tuple[str, ...] | None:
     """Return the DB-home ``key`` list, or ``None`` when the row is genuinely UNSET.
 
@@ -92,11 +104,18 @@ def _db_array(key: str, db_path: Path | None) -> tuple[str, ...] | None:
     never ``None``. Reads the canonical ``ConfigSetting`` store via the
     Django-free :mod:`teatree.config.cold_reader`; *db_path* overrides the DB
     path (else the canonical DB / ``T3_CONFIG_DB``).
+
+    A store that could not be READ at all raises
+    :class:`BannedTermsUnreadableError` rather than returning the unset ``None``:
+    an errored read says nothing about what the operator configured, and reading
+    it as "unset" is what let a busy DB open the gate (#4008).
     """
-    raw = cold_reader.read_setting(key, db_path=db_path)
-    if not isinstance(raw, list):
+    read = cold_reader.read_setting_confirmed(key, db_path=db_path)
+    if not read.readable:
+        raise BannedTermsUnreadableError.for_store(key, _TERMS_ENV)
+    if not isinstance(read.value, list):
         return None
-    return tuple(str(e).strip() for e in raw if str(e).strip())
+    return tuple(str(e).strip() for e in read.value if str(e).strip())
 
 
 def resolve_banned_terms(
@@ -165,20 +184,34 @@ def _unset_warning() -> str:
     )
 
 
+def resolve_unset_verdict(exc: BannedTermsUnsetError, *, db_path: Path | None = None) -> UnsetVerdict:
+    """Why a term list that did not resolve allows or fails closed — the ONE shared disposition.
+
+    Both no-list gates read it — the pre-commit scanner (:func:`report_unset`) and the
+    publication gate (``privacy_gate._db_banned_terms``) — so they cannot drift into
+    disagreeing about when a missing list is safe. ``UNREADABLE`` is decided by the
+    exception's own type, since readability travelled with the failed read.
+    """
+    if isinstance(exc, BannedTermsUnreadableError):
+        return UnsetVerdict.UNREADABLE
+    return UnsetVerdict.REQUIRED if banned_terms_required(db_path=db_path) else UnsetVerdict.ALLOW
+
+
 def report_unset(exc: BannedTermsUnsetError, *, db_path: Path | None = None) -> int:
-    """Write the unset-list message and return the process exit code (#3247).
+    """Write the unresolved-list message and return the process exit code (#3247, #4008).
 
     An unset ``banned_terms`` list warns LOUD and returns 0 (the clean diff
     proceeds) UNLESS :func:`banned_terms_required` — then it keeps the fail-loud
     exit 2 (the ``exc`` message, indistinguishable from a load bug on a
-    deployment that must scrub). A CONFIGURED list is never routed here; it always
-    enforces (a real term still exits 1).
+    deployment that must scrub). A store that could not be READ fails closed the
+    same way whatever ``banned_terms_required`` says. A CONFIGURED list is never
+    routed here; it always enforces (a real term still exits 1).
     """
-    if banned_terms_required(db_path=db_path):
-        sys.stderr.write(f"{exc}\n")
-        return 2
-    sys.stderr.write(_unset_warning())
-    return 0
+    if resolve_unset_verdict(exc, db_path=db_path) is UnsetVerdict.ALLOW:
+        sys.stderr.write(_unset_warning())
+        return 0
+    sys.stderr.write(f"{exc}\n")
+    return 2
 
 
 def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
@@ -362,11 +395,13 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     try:
         terms = resolve_banned_terms()
     except BannedTermsUnsetError as exc:
-        # The term list is genuinely UNSET (no banned_terms row AND no env). By
-        # default this WARNS loud and allows the commit (exit 0) — an unset list
-        # is not a banned-term violation on a dev/solo box (#3247). Only a
-        # deployment that set ``banned_terms_required`` keeps the fail-loud exit
-        # 2. An explicit ``banned_terms = []`` does not raise and is a no-op.
+        # A genuinely UNSET list (no banned_terms row AND no env) WARNS loud and
+        # allows the commit (exit 0) by default — an unset list is not a
+        # banned-term violation on a dev/solo box (#3247), unless the deployment
+        # set ``banned_terms_required``. A store that could not be READ at all
+        # (``BannedTermsUnreadableError``) fails CLOSED (exit 2) regardless of
+        # ``banned_terms_required`` (#4008) — see ``report_unset``. An explicit
+        # ``banned_terms = []`` does not raise and is a no-op.
         return report_unset(exc)
     if not terms:
         return 0  # explicit empty list ⇒ deliberate no-op

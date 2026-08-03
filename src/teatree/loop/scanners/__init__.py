@@ -23,9 +23,12 @@ from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
+from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
 from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrainerScanner
+from teatree.loop.scanners.mr_conflict import MrConflictScanner
+from teatree.loop.scanners.mr_triage_scan import MrTriageScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
@@ -48,6 +51,7 @@ from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
 from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
+from teatree.loop.scanners.review_request_resume import ReviewRequestResumeScanner
 from teatree.loop.scanners.reviewed_pr_head import ReviewedPrHeadScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
@@ -89,9 +93,12 @@ __all__ = [
     "GlabGhMrStateClassifier",
     "IdleStackReaperScanner",
     "IncomingEventsScanner",
+    "IntakeConcurrencyScanner",
     "IssueDispositionScanner",
     "IssueIntakeScanner",
     "LocalStackQueueDrainerScanner",
+    "MrConflictScanner",
+    "MrTriageScanner",
     "MyPrsScanner",
     "NotionViewScanner",
     "NullMergeNotifier",
@@ -108,6 +115,7 @@ __all__ = [
     "ReviewDoneAckScanner",
     "ReviewNagScanner",
     "ReviewRequestMergeReactScanner",
+    "ReviewRequestResumeScanner",
     "ReviewedPrHeadScanner",
     "ReviewerPrsScanner",
     "ScanSignal",

@@ -9,10 +9,21 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import Autonomy, UserSettings, clone_root, effective_trusted_issue_authors, get_effective_settings
+from teatree.config import (
+    Autonomy,
+    PrReviewBackend,
+    UserSettings,
+    clone_root,
+    effective_trusted_issue_authors,
+    get_effective_settings,
+)
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.intake.budget import read_intake_budget
+from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
+from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR
 from teatree.loop.scanner_host_fanout import _competing_url_prefixes, _jobs_for_backend_hosts
@@ -22,11 +33,14 @@ from teatree.loop.scanners import (
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
     ClaudeSelfPrReviewScanner,
+    CodexReviewScanner,
     GhCodexPrApi,
     GhPrApiClient,
     GlabGhMrStateClassifier,
     IssueDispositionScanner,
     IssueIntakeScanner,
+    MrConflictScanner,
+    MrTriageScanner,
     NullMergeNotifier,
     PrSweepScanner,
     PullMainCloneScanner,
@@ -35,7 +49,9 @@ from teatree.loop.scanners import (
     TaskSweepScanner,
     TriageAssessorScanner,
 )
+from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
+from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -227,15 +243,19 @@ def _admit_colleague_prs_to_board(overlay_name: str) -> bool:
     return settings.admit_colleague_prs_to_board
 
 
-def _self_pr_review_scanner_for(backend: OverlayBackends) -> ClaudeSelfPrReviewScanner | None:
+def _self_pr_review_scanner_for(backend: OverlayBackends) -> "ClaudeSelfPrReviewScanner | CodexReviewScanner | None":
     """Build the per-overlay SELF-authored-PR review scanner (#1254, #3569).
 
     Self-authored open PRs are ALWAYS admitted to the review board: this sweeps
-    the owner's own open PRs and enqueues one Claude ``reviewing`` → ``t3:reviewer``
-    task per un-reviewed head SHA (per-SHA dedup = "since last review"). It is the
-    SAME quality gate colleague PRs get — the review execution is blind to author.
-    Codex is no longer the self-review mechanism (retired #3569); the ``t3:reviewer``
-    Claude reviewer is the sole gate. Repo list comes from
+    the owner's own open PRs and enqueues one review task per un-reviewed head SHA
+    (per-SHA dedup = "since last review"). It is the SAME quality gate colleague
+    PRs get — the review execution is blind to author.
+
+    WHICH reviewer runs is ``pr_review_backend``
+    (:func:`~teatree.core.review.pr_review_backend.resolve_pr_review_backend`): the
+    Claude scanner routes to ``reviewing`` → ``t3:reviewer``, the codex one to
+    ``codex_reviewing`` → ``/codex:review``. The setting picks the reviewer; it can
+    never pick "nobody", so a self-PR is reviewed either way. Repo list comes from
     ``overlay.metadata.get_followup_repos()`` (same source as
     :class:`PrSweepScanner`). Returns ``None`` when the overlay has no Python class
     or no followup repos.
@@ -246,11 +266,10 @@ def _self_pr_review_scanner_for(backend: OverlayBackends) -> ClaudeSelfPrReviewS
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    return ClaudeSelfPrReviewScanner(
-        repos=repos,
-        api=GhCodexPrApi(token=overlay.config.get_github_token()),
-        overlay=backend.name,
-    )
+    api = GhCodexPrApi(token=overlay.config.get_github_token())
+    if resolve_pr_review_backend(backend.name) is PrReviewBackend.CODEX:
+        return CodexReviewScanner(repos=repos, api=api, overlay=backend.name)
+    return ClaudeSelfPrReviewScanner(repos=repos, api=api, overlay=backend.name)
 
 
 def _task_sweep_scanner_for(backend: OverlayBackends) -> TaskSweepScanner | None:
@@ -326,6 +345,26 @@ def _owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
     return tuple(slugs)
 
 
+def _reconcile_holder_pr_rows(overlay_name: str) -> None:
+    """Ask the forge about each budget holder's PR before the budget is read (#3984).
+
+    Both intake readings — the release rule and the deadlock alarm — are drawn from
+    ``PullRequest.state``, so a row nobody advanced after its PR merged holds the slot
+    AND silences the alarm about it. Best-effort: an unreadable forge leaves rows
+    unsettled (the reader collapses every error to UNKNOWN, which never settles), and a
+    failure here must not stop the tick claiming.
+    """
+    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.intake.budget import reconcile_holder_pr_rows  # noqa: PLC0415 — leaf import
+
+    try:
+        reconcile_holder_pr_rows(overlay_name, read_state=pr_open_state)
+    except Exception:
+        logger.exception(
+            "intake: could not reconcile held PR rows for %s — reading the budget as recorded", overlay_name
+        )
+
+
 def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | None:
     """Build the per-overlay unified intake scanner behind the triple gate (#3634).
 
@@ -348,6 +387,11 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     even at a full budget — with ``can_claim=False`` it claims nothing new but STILL
     runs the per-tick heartbeat sweep, so an in-flight claim can never expire and be
     stolen mid-dispatch.
+
+    The in-flight LIMIT comes from :func:`resolve_intake_concurrency` (#3992), which
+    hands back the resource loop's headroom-derived number, or
+    ``issue_implementer_max_concurrent`` verbatim whenever that number is missing,
+    stale, or switched off.
     """
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
     from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
@@ -358,11 +402,19 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     code_host = backend.host
     if code_host is None:
         return None
+    _reconcile_holder_pr_rows(backend.name)
     # #3275: self-heal the in-flight budget BEFORE reading it. A marker orphaned
     # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
     # so it strands its slot and the budget gate reads false forever.
     ImplementedIssueMarker.objects.reconcile_stale(backend.name)
-    can_claim = ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
+    limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=backend.name)
+    budget = read_intake_budget(backend.name, limit)
+    can_claim = not budget.at_budget
+    if not can_claim:
+        # #3978: without this the tick returns None, does nothing and reports success —
+        # enabled loop, advancing last-run stamp, no error, and no surface anywhere
+        # saying intake is at budget and claiming nothing.
+        logger.warning("%s", budget.report())
     if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueIntakeScanner(
@@ -373,7 +425,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         identities=backend.identities,
         repo_slugs=_owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
-        max_concurrent=settings.issue_implementer_max_concurrent,
+        max_concurrent=limit,
     )
 
 
@@ -442,6 +494,56 @@ def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScan
         identities=backend.identities,
         cadence_hours=settings.triage_assessor_cadence_hours,
         max_issues_per_tick=settings.triage_assessor_max_issues_per_tick,
+    )
+
+
+def _mr_triage_scanner_for(backend: OverlayBackends) -> MrTriageScanner | None:
+    """Build a per-overlay MR-triage surveyor behind the default-OFF gate.
+
+    Returns a scanner ONLY when ``mr_triage_enabled`` is flipped on for this overlay.
+    With the default-OFF config no scanner is built, so neither ``build_loop_table_jobs``
+    nor ``build_default_jobs`` emits anything for this domain — the fan-out stays
+    byte-for-byte unchanged until an overlay opts in.
+
+    ``None`` also when the overlay has no code host (no MRs to read). The nag-patience
+    inputs are resolved from the same overlay hook the review nag uses, so the two can
+    never disagree about how long a repo waits.
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.mr_triage_enabled:
+        return None
+    code_host = backend.host
+    if code_host is None:
+        return None
+    overlay = backend.overlay
+    return MrTriageScanner(
+        host=code_host,
+        overlay_name=backend.name,
+        identities=backend.identities,
+        repo_owner=overlay.review.repo_owner_for_slug if overlay is not None else default_repo_owner,
+        max_mrs_per_tick=settings.mr_triage_max_mrs_per_tick,
+    )
+
+
+def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBackend) -> MrConflictScanner | None:
+    """Build the per-host merge-conflict sweep behind the default-OFF gate.
+
+    Returns a scanner ONLY when ``mr_conflict_scan_enabled`` is flipped on for this
+    overlay. With the default-OFF config none is built, so the fan-out is
+    byte-for-byte what it was before the sweep existed — it ships inert.
+
+    Per HOST rather than per overlay because the conflict probe is a forge call:
+    it must go to the host that lists the merge request, and an overlay with both
+    a GitHub and a GitLab credential lists on both.
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.mr_conflict_scan_enabled:
+        return None
+    return MrConflictScanner(
+        host=code_host,
+        identities=backend.identities,
+        allowed_url_prefixes=_allowed_url_prefixes_for_host(backend, code_host),
+        overlay_name=backend.name,
     )
 
 

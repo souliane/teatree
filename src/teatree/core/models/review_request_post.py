@@ -22,9 +22,19 @@ class ReviewRequestPost(models.Model):
     slack_channel_id = models.CharField(max_length=64)
     slack_thread_ts = models.CharField(max_length=64)
     bot_id = models.CharField(max_length=64, blank=True)
-    # When the 2-day ``@engineers :pray:`` re-ping last fired (#1084 follow-up).
-    # Null ⇒ never re-pinged; the scanner reads it to enforce no double-ping within 2 days.
+    # When the ``@engineers :pray:`` re-ping last fired (#1084 follow-up).
+    # Null ⇒ never re-pinged; the scanner reads it to enforce no double-ping within
+    # the current window. Claimed together with ``nag_count`` in one conditional UPDATE.
     last_nag_at = models.DateTimeField(null=True, blank=True)
+    # How many times this MR has been re-asked. Drives the Fibonacci re-ask backoff:
+    # each nag is due ``base_interval * fib(nag_count)`` after ``last_nag_at``, so the
+    # interval widens as the count grows.
+    nag_count = models.PositiveIntegerField(default=0)
+    # Single-use idempotency stamp for the "now ready for review" reply posted into the
+    # EXISTING Slack thread once the user lifts a pause reaction. Null ⇒ not yet resumed;
+    # claimed by a conditional ``UPDATE ... WHERE resumed_at IS NULL``, which is why it
+    # stays nullable with no default.
+    resumed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     done_at = models.DateTimeField(null=True, blank=True)
 

@@ -1,12 +1,15 @@
-"""Resource-pressure mini-loop — host disk/RAM auto-free (#128).
+"""Resource-pressure mini-loop — host disk/RAM auto-free (#128) + intake sizing (#3992).
 
-The scanner is time-sensitive: it carries its own ~5-minute internal
-cadence (``ResourcePressureScanner.cadence_minutes``) plus a
-``ResourcePressureMarker``, and the legacy fan-out constructed it on
-every tick. The loop's outer cadence is therefore the registry floor so
-the registry gate never throttles below the scanner's own cadence —
-matching the legacy per-tick construction rather than the hourly
-housekeeping cadence.
+Both scanners are time-sensitive: each carries its own ~5-minute internal
+cadence plus a stamp on the shared ``ResourcePressureMarker``, and the
+legacy fan-out constructed them on every tick. The loop's outer cadence is
+therefore the registry floor so the registry gate never throttles below
+either scanner's own cadence — matching the legacy per-tick construction
+rather than the hourly housekeeping cadence.
+
+The two jobs answer different questions off the same measurements — "is
+the box in trouble" and "how much of the box may intake use" — and each
+is independently switchable, so one can be stood down without the other.
 """
 
 from typing import TYPE_CHECKING
@@ -20,13 +23,14 @@ _REGISTRY_CADENCE_FLOOR = 60
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":
-    from teatree.loop.global_scanner_factories import _resource_pressure_scanner  # noqa: PLC0415 — tick-time import
+    from teatree.loop.global_scanner_factories import (  # noqa: PLC0415 — tick-time import
+        _intake_concurrency_scanner,
+        _resource_pressure_scanner,
+    )
     from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    scanner = _resource_pressure_scanner()
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay="")]
+    built = (_resource_pressure_scanner(), _intake_concurrency_scanner())
+    return [_ScannerJob(scanner=scanner, overlay="") for scanner in built if scanner is not None]
 
 
 MINI_LOOP = MiniLoop(

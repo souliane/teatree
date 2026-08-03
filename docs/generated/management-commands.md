@@ -249,7 +249,7 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | `auto` | Clear the manual override so the active schedule / default mode decides again |
 | `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
 | `edit` | Edit a preset's entries / description / pin / scope in place |
-| `delete` | Delete a preset (a slot/override still pointing at it fails open to base config) |
+| `delete` | Delete a preset — refused while anything still names it; a shipped one needs ``--confirm`` |
 | `list` | List every preset with its pin, scope, entry count, and the ACTIVE marker |
 
 ## `loop_schedule`
@@ -259,6 +259,7 @@ List/show/set-active/clear-active loop schedules (#3159).
 | Subcommand | Description |
 | --- | --- |
 | `show` | Show a schedule's ordered slots (weekdays at a start time, then the preset) |
+| `delete` | Delete a calendar and its slots — the ACTIVE one is refused; a shipped one needs ``--confirm`` |
 | `list` | List every schedule with its timezone, slot count, and the ACTIVE marker |
 | `set-active` | Activate *name* — the single ``active_loop_schedule`` write that switches calendars |
 | `set-timezone` | Set *name*'s slot timezone — the lever that makes its wall-clock slots fire locally |
@@ -381,7 +382,7 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 | Subcommand | Description |
 | --- | --- |
-| `record` | Record a deferred question (called by the PreToolUse away-mode hook) |
+| `record` | Record a deferred question by hand — the agent-facing capture surface |
 | `answer` | Resolve a pending question with a user answer (resumes a parked headless task) |
 | `dismiss` | Dismiss a pending question without answering it |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
@@ -452,6 +453,10 @@ Group root — forces sub-commands to be addressed by name.
 
 Decide POST or SUPPRESS for a review-request message.
 
+## `review_request_groups`
+
+Print each work group's readiness, its blockers, and how to broadcast it.
+
 ## `review_request_post`
 
 Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
@@ -485,6 +490,17 @@ Session-lifecycle operations.
 | `todo-add` | Append an item to this session's durable working list |
 | `todo-list` | List this session's working items, in working order |
 | `todo-set` | Move one working item to *status* |
+
+## `shipped_seed`
+
+Audit the shipped loop/preset/schedule seed set, and delete from it with a typed confirm (#3842).
+
+| Subcommand | Description |
+| --- | --- |
+| `audit` | Report every shipped definition that is missing, disabled, or not ticking |
+| `delete-loop` | Delete a loop row — a shipped one needs ``--confirm stop-<name>`` |
+| `delete-schedule` | Delete a calendar and its slots — a shipped one needs ``--confirm stop-<name>`` |
+| `delete-preset` | Delete a preset — a shipped one needs ``--confirm stop-<name>`` |
 
 ## `signals`
 

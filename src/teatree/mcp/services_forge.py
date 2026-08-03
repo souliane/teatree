@@ -63,7 +63,7 @@ def _pr_snapshot(service: Service, *, repo: str, pr_iid: int, pr_url: str) -> di
         "state": merge_state.state,
         "merged": merge_state.is_merged,
         "merge_commit_oid": merge_state.merge_commit_oid,
-        "draft": client.fetch_pr_is_draft(slug=repo, pr_id=pr_iid),
+        "draft": client.fetch_pr_draft_state(slug=repo, pr_id=pr_iid).value,
         "author": client.get_pr_author(pr_url=pr_url),
         "approvals_left": approvals["approvals_left"],
         "approved_by": approvals["approved_by"],

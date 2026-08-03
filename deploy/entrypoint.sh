@@ -20,20 +20,199 @@ ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-li
 
 # Dispatch the watchdog role FIRST — before the credential/git preamble that the
 # other roles need but the watchdog neither has nor wants (root, no secrets).
+#
+# The script comes from the read-only checkout bind mount, never the image, so
+# the watchdog runs the same revision the stack was deployed from. The path is
+# the SAME variable the compose bind mount uses, defaulting to the box checkout;
+# a hard-coded box path here would exec a file that exists on no other host.
 if [ "$ROLE" = watchdog ]; then
-    exec bash /home/teatree/teatree-deploy/deploy/watchdog.sh --loop
+    exec bash "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/watchdog.sh" --loop
 fi
 
 CLONE_DIR="${TEATREE_CLONE_DIR:-/home/teatree/teatree}"
 REPO_URL="${TEATREE_REPO_URL:-https://github.com/souliane/teatree.git}"
 
+# HOST_ROOT is the fork root when core is VENDORED inside a downstream project
+# (``<fork>/vendor/teatree``), and empty for a standalone core clone.
+#
+# It exists because overlays register through the ``teatree.overlays`` entry point
+# of the HOST project, not of core. Installing core alone leaves that entry point
+# unregistered, so `get_overlay("<overlay>")` raises "not found. Available:
+# t3-teatree" and EVERY headless task on an overlay-owned ticket dies at dispatch —
+# with no partial progress, which reads as a silent freeze rather than an error.
+#
+# Detected from the layout rather than configured, so a fork gets this right without
+# knowing to set anything, and a standalone core clone is untouched (no vendor
+# parent -> empty -> the install below is byte-identical to before).
+#
+# A FUNCTION, not a bare assignment, because `$CLONE_DIR` is the only input: every
+# caller that has `$CLONE_DIR` can derive it, so no code path can reach a reference
+# to an unset HOST_ROOT under `set -u`. `ensure_clone` derives its own copy rather
+# than closing over the global for exactly that reason.
+detect_host_root() {
+    local candidate
+    case "$CLONE_DIR" in
+        */vendor/teatree)
+            candidate="${CLONE_DIR%/vendor/teatree}"
+            if [ -f "$candidate/pyproject.toml" ]; then
+                printf '%s' "$candidate"
+            fi
+            ;;
+    esac
+}
+HOST_ROOT="$(detect_host_root)"
+
 # The loop and gh use GH_TOKEN from the ambient env for GitHub access, so the
 # token never appears in a clone URL, argv, or logs.
 
+# The filesystem type backing $1, resolved from the kernel's mount table by
+# LONGEST matching mount point (a bind mount reports the transport that serves
+# it, not the fs of any parent). Reading /proc/mounts is a pure kernel read — it
+# never touches the directory itself, which is the whole point: the host's GPG
+# home must be probed WITHOUT writing to it (see resolve_gnupg_home).
+# Unresolvable — no mount table, or a mount point whose path the kernel escaped
+# (a space becomes `\040`, which cannot match) — yields the empty string, and the
+# caller treats that as "not socket-capable", the safe direction.
+# `TEATREE_PROC_MOUNTS` relocates the mount table, so the resolver can be driven
+# against a fixture on a host that has no procfs.
+path_fstype() {
+    local target="$1" mounts="${TEATREE_PROC_MOUNTS:-/proc/mounts}" point type best_point="" best_type=""
+    [ -r "$mounts" ] || return 0
+    while read -r _ point type _; do
+        case "$point" in
+            /) ;;
+            *)
+                case "$target" in
+                    "$point" | "$point"/*) ;;
+                    *) continue ;;
+                esac
+                ;;
+        esac
+        if [ "${#point}" -ge "${#best_point}" ]; then
+            best_point="$point"
+            best_type="$type"
+        fi
+    done <"$mounts"
+    printf '%s' "$best_type"
+}
+
+# True when $1 is a filesystem that can host a UNIX-DOMAIN SOCKET — the one
+# capability gpg-agent and keyboxd need inside GNUPGHOME, since both bind their
+# `S.*` sockets there.
+#
+# An ALLOWLIST of real local filesystems, deliberately, not a denylist of the
+# bad ones: the failing set is every desktop/VM file-SHARING transport, and it is
+# open-ended and renamed often (Docker Desktop alone has shipped osxfs,
+# gRPC-FUSE, virtiofs and now `fakeowner`; Colima/Lima/OrbStack/Rancher add 9p,
+# sshfs and more). An unknown name therefore takes the DERIVE path, which works
+# on every filesystem, rather than the in-place path, which fails on exactly the
+# names we could not enumerate.
+fstype_hosts_unix_sockets() {
+    case "$1" in
+        ext2 | ext3 | ext4 | xfs | btrfs | zfs | f2fs | jfs | reiserfs | overlay | overlayfs | tmpfs | ramfs) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Copy the material a container-local GPG home needs to DECRYPT the pass store
+# from the host mount $1 into $2. An explicit ALLOWLIST rather than a
+# copy-everything-then-prune: it cannot accidentally carry over a stale socket or
+# a leaked lock, and it states exactly what the derived home is made of.
+#
+#   common.conf              carries `use-keyboxd`. COPIED, deliberately — on a
+#                            keyboxd host the public keys live ONLY in
+#                            public-keys.d/pubring.db, so DROPPING the directive
+#                            would send gpg looking for a pubring.kbx that does
+#                            not exist and it would find zero keys.
+#   gpg.conf                 the operator's own gpg options (default-key, trust-model).
+#   pubring.kbx / .gpg       the public keyring on a host that predates keyboxd.
+#   trustdb.gpg              ownertrust — without it `pass insert` refuses to encrypt.
+#   private-keys-v1.d/*.key  the secret keys themselves.
+#   public-keys.d/pubring.db the keyboxd public keyring.
+#
+# Deliberately NOT copied: `S.*` (the host's agent/keyboxd sockets — copying the
+# very things that make the mount unusable would defeat the exercise), `*.lock`
+# and `.#lk*` (dotlocks leaked by a process that died holding them), `random_seed`
+# (a per-machine entropy pool gpg regenerates), `openpgp-revocs.d` (revocation
+# certificates, irrelevant to decryption), and gpg-agent.conf / scdaemon.conf /
+# dirmngr.conf — host DAEMON configs that routinely name host-only binaries
+# (`pinentry-program /opt/homebrew/bin/pinentry-mac`) which do not exist in this
+# image; the container's own defaults are the headless-correct ones.
+derive_container_gnupg_home() {
+    local source="$1" derived="$2" name
+    rm -rf "$derived"
+    mkdir -p "$derived" || return 1
+    chmod 700 "$derived"
+    for name in common.conf gpg.conf pubring.kbx pubring.gpg trustdb.gpg; do
+        if [ -f "$source/$name" ]; then
+            cp -p "$source/$name" "$derived/$name"
+        fi
+    done
+    if [ -d "$source/private-keys-v1.d" ]; then
+        mkdir -p "$derived/private-keys-v1.d"
+        chmod 700 "$derived/private-keys-v1.d"
+        find "$source/private-keys-v1.d" -maxdepth 1 -type f -name '*.key' \
+            -exec cp -p {} "$derived/private-keys-v1.d/" \;
+    fi
+    if [ -f "$source/public-keys.d/pubring.db" ]; then
+        mkdir -p "$derived/public-keys.d"
+        chmod 700 "$derived/public-keys.d"
+        cp -p "$source/public-keys.d/pubring.db" "$derived/public-keys.d/pubring.db"
+    fi
+    return 0
+}
+
+# Point GNUPGHOME at a home gpg can actually USE, before any `pass show` below.
+#
+# THE FAILURE. gpg-agent and keyboxd bind their `S.*` sockets INSIDE GNUPGHOME.
+# On the deployment box that home is a bind mount of a real local filesystem and
+# binding works, so nothing here changes. On an operator laptop the same mount is
+# served by a file-sharing transport that cannot host a unix socket at all
+# (Docker Desktop for Mac: `fakeowner`), and a host with `use-keyboxd` in
+# common.conf — the GnuPG 2.4 default on Homebrew — routes the PUBLIC keyring
+# through keyboxd, which then dies with `exit status 2` trying to bind
+# `S.keyboxd`. gpg reports `No Keybox daemon running`, finds zero keys, and every
+# `pass show` fails even though private-keys-v1.d is right there and intact.
+#
+# THE FIX. Copy the key material into a container-local home on the tmpfs that
+# compose mounts for exactly this (see docker-compose.yml), where a socket CAN be
+# bound and keyboxd starts normally.
+#
+# The host home is treated as strictly READ-ONLY throughout: the stale `S.*`
+# sockets sitting in it are left alone, common.conf is never edited, nothing is
+# written back. The switch is decided from /proc/mounts, so even the DETECTION
+# does not touch it.
+#
+# The box keeps its exact current behaviour rather than being switched over
+# wholesale, because the in-place home is shared by every service and therefore
+# shares ONE gpg-agent — which is what makes the gpg-agent-CACHED-passphrase
+# setup deploy/README.md documents work at all. A per-container copy would give
+# each service its own cold agent and break that (a `%no-protection` key, the
+# other documented option, would not care).
+resolve_gnupg_home() {
+    local fstype derived
+    [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] || return 0
+    fstype="$(path_fstype "$GNUPGHOME")"
+    fstype_hosts_unix_sockets "$fstype" && return 0
+    derived="${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg"
+    if ! derive_container_gnupg_home "$GNUPGHOME" "$derived"; then
+        echo "entrypoint: WARN GNUPGHOME $GNUPGHOME is on '$fstype' (cannot host the gpg-agent/keyboxd sockets) but a container-local copy at $derived could not be created - keeping $GNUPGHOME, gpg reads may fail" >&2
+        return 0
+    fi
+    # Absence stays a no-op, not a new failure: a host with no key material
+    # yields an empty derived home, gpg finds no keys exactly as it did before,
+    # and init_preflight reports the SAME message it always did.
+    echo "entrypoint: GNUPGHOME $GNUPGHOME is on '$fstype', which cannot host the gpg-agent/keyboxd sockets - using a container-local copy of the key material at $derived (the host GPG home is left untouched)"
+    export GNUPGHOME="$derived"
+}
+resolve_gnupg_home
+
 # gpg refuses a group/other-readable home, so normalise GNUPGHOME's mode BEFORE
 # the boot-time `pass show` reads below can decrypt — only when the mount is
-# writable (a hardened read-only mount would EROFS here under -e).
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ]; then
+# writable (a hardened read-only mount would EROFS here under -e) AND the mode is
+# not already right, so the common case writes NOTHING to the host's GPG home.
+if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ] &&
+    [ "$(stat -c %a "$GNUPGHOME" 2>/dev/null || echo 700)" != 700 ]; then
     chmod 700 "$GNUPGHOME"
 fi
 
@@ -86,6 +265,24 @@ fi
 # the worker/admin `git push` over https needs it too, not just the init clone.
 if [ -n "${GH_TOKEN:-}" ]; then
     gh auth setup-git
+fi
+
+# The GitLab TOKEN half. The credential HELPER that consumes it is baked into the
+# image (deploy/Dockerfile, `git config --system`) because it carries no secret;
+# only the token is runtime state, and only it belongs here. Without this the
+# container authenticates to GitHub but not to GitLab, so provisioning cannot clone
+# a private overlay repo into its own workspace volume — every clone dies on
+# "HTTP Basic: Access denied" while the operator's host glab is logged in the whole
+# time.
+source_secret_from_pass TEATREE_GITLAB_TOKEN "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}"
+if [ -n "${TEATREE_GITLAB_TOKEN:-}" ]; then
+    export GITLAB_TOKEN="$TEATREE_GITLAB_TOKEN"
+    # `glab` reads GITLAB_TOKEN from the environment, but a `compose exec` process
+    # does not inherit this shell's exports — so persist the login into glab's own
+    # config too, keeping the API surface (MR reads/writes) authenticated for every
+    # process in the container, not just the role's main one.
+    printf '%s\n' "$TEATREE_GITLAB_TOKEN" |
+        glab auth login --hostname "${TEATREE_GITLAB_HOSTNAME:-gitlab.com}" --stdin >/dev/null 2>&1 || true
 fi
 
 # Global git identity fallback — commits and the runtime loop need one.
@@ -529,6 +726,26 @@ network_up() {
 }
 
 ensure_clone() {
+    # VENDORED SUBTREE: core lives inside a downstream fork (`detect_host_root`
+    # non-empty). The source is already on disk and is NOT a git clone —
+    # a subtree directory carries no `.git` of its own — so every branch below is
+    # wrong for it, and dangerously so:
+    #
+    #   * the `-e "$CLONE_DIR/.git"` test fails, so control falls through to
+    #     `git clone "$REPO_URL" "$CLONE_DIR"`, which errors on a non-empty directory.
+    #     That is why `init` has never completed on a fork.
+    #   * worse, were it to succeed it would clone PUBLIC upstream OVER the fork's
+    #     vendored core, silently replacing the deployed code with someone else's.
+    #
+    # A fork's tree is shipped whole by its own deploy (the CI job replaces the
+    # checkout), so there is nothing to fetch or fast-forward here. Upstream is taken
+    # by a deliberate, reviewed vendor bump — never by a boot-time pull.
+    local host_root
+    host_root="$(detect_host_root)"
+    if [ -n "$host_root" ]; then
+        echo "entrypoint: source is a vendored subtree under $host_root - already present, skipping clone/self-update (the fork's own deploy ships the tree)" >&2
+        return 0
+    fi
     if [ -e "$CLONE_DIR/.git" ]; then
         if ! network_up; then
             # OFFLINE: run the baked snapshot as-is. The runtime clone was seeded
@@ -635,7 +852,13 @@ init)
         # `uv tool install` never reads the package's own `[tool.uv] override-dependencies`,
         # so without it the SDK's `mcp` cap makes this reinstall unresolvable and the box
         # cannot boot. See uv-overrides.txt.
-        uv tool install --editable "${CLONE_DIR}[slack]" --reinstall --python 3.13 \
+        # --with-editable registers the HOST project's `teatree.overlays` entry point
+        # alongside core. Without it a vendored fork installs core only, every overlay
+        # resolves to "not found", and each headless task on an overlay ticket dies at
+        # dispatch. Empty for a standalone core clone, where `set --` expands to nothing
+        # and this is the original single-package install.
+        set -- ${HOST_ROOT:+--with-editable "$HOST_ROOT"}
+        uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
             --overrides "${CLONE_DIR}/uv-overrides.txt"
         # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
         # editable tool install above does NOT provide it. Worktree provisioning
@@ -663,9 +886,24 @@ init)
     # every gate was silently bypassed. Idempotent; harden the baked PREK path
     # to a PATH lookup (souliane/teatree#1462) so a torn-down worktree can't
     # leave a stale absolute path in the shared hook.
-    ( cd "$CLONE_DIR" && prek install -f \
-        && sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' \
-            .git/hooks/pre-push .git/hooks/pre-commit .git/hooks/commit-msg 2>/dev/null )
+    #
+    # ASK git where the hooks landed rather than assuming `$CLONE_DIR/.git/hooks`.
+    # When core is VENDORED inside a fork, `$CLONE_DIR` is `<fork>/vendor/teatree`,
+    # which is a plain subdirectory of the FORK's repo — `$CLONE_DIR/.git` does not
+    # exist at all, and `prek install` writes to the fork root's common git dir two
+    # levels up. Assuming the path made `sed` exit non-zero on three missing files
+    # and, with its stderr discarded, aborted the whole init under `set -e` with a
+    # bare `exit 2` and no explanation. Hardening only the hooks that EXIST keeps a
+    # layout carrying a subset of them from failing the same way.
+    (
+        cd "$CLONE_DIR" && prek install -f
+        hooks_dir="$(git rev-parse --git-common-dir)/hooks"
+        for hook in pre-push pre-commit commit-msg; do
+            if [ -f "$hooks_dir/$hook" ]; then
+                sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' "$hooks_dir/$hook"
+            fi
+        done
+    )
     # Provision the agent's ~/.claude/settings.json + `t3 setup` (skill links, the
     # t3@souliane plugin registration, statusLine, MCP). setup's statusLine writer
     # merges into (never clobbers) the file the seed writes (#3359).

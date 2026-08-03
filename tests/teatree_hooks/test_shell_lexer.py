@@ -57,8 +57,8 @@ class TestRawSpanInvariant:
 
 class TestAmpersandSeparator:
     def test_bare_background_ampersand_is_an_operator(self) -> None:
-        # The lexer does no redirect merging, so an ``&`` is always the
-        # command-separator operator the grammar makes it.
+        # A free-standing ``&`` is the command-separator operator the grammar
+        # makes it; only redirect-glued forms (``2>&1``) are word-merged.
         tokens = tokenize("cmd &")
         assert [(t.value, t.kind) for t in tokens] == [("cmd", TokenKind.WORD), ("&", TokenKind.OP)]
 
@@ -67,6 +67,44 @@ class TestAmpersandSeparator:
         # ``&`` (background, then another command) and ``&&`` (logical-and)
         # split into separate command segments.
         assert len(split_commands(tokenize(command))) == 2
+
+
+class TestRedirectGluedAmpersand:
+    """``&`` glued to a redirect is a redirection, never a command separator.
+
+    Bash lexes ``2>&1`` / ``>&2`` / ``1<&0`` (fd duplication) and ``&>file``
+    (both-streams redirect) as single redirection operators. Emitting the ``&``
+    as a separator split the duplication target into a PHANTOM one-word segment
+    (``… 2>&1`` -> ``['1']``) whose unrecognised leader failed every
+    ALL-SEGMENTS proof — the pre-publish leak gates then refused the
+    provably-private skip for any command carrying the ubiquitous ``2>&1``
+    tail (#1415/#1213 live over-block).
+    """
+
+    def test_stderr_duplication_stays_one_word_and_one_segment(self) -> None:
+        segments = split_commands(tokenize("glab issue create -R o/r -d body 2>&1"))
+        assert len(segments) == 1
+        assert [t.value for t in segments[0]][-1] == "2>&1"
+
+    @pytest.mark.parametrize("redirect", [">&2", "1<&0", "2>&1", ">&-"])
+    def test_fd_duplication_forms_do_not_split_segments(self, redirect: str) -> None:
+        assert len(split_commands(tokenize(f"cmd {redirect}"))) == 1
+
+    def test_both_streams_redirect_stays_one_segment(self) -> None:
+        segments = split_commands(tokenize("cmd &>/dev/null"))
+        assert len(segments) == 1
+        assert [t.value for t in segments[0]] == ["cmd", "&>/dev/null"]
+
+    def test_redirect_then_background_still_splits(self) -> None:
+        # ``>out&`` is a redirect to the file ``out`` followed by a REAL
+        # background ``&`` — the char before the ``&`` is not a redirect char,
+        # so the separator stands.
+        assert len(split_commands(tokenize("cmd >out& cmd2"))) == 2
+
+    def test_quoted_redirect_char_before_ampersand_still_splits(self) -> None:
+        # A QUOTED ``">"`` ends with its closing quote in the raw source, so a
+        # following ``&`` is a genuine background separator, not fd glue.
+        assert len(split_commands(tokenize('echo ">"& cmd2'))) == 2
 
 
 class TestHeredocBodyConsumption:

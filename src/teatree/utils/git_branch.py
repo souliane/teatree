@@ -6,12 +6,17 @@ here resolves or mutates a branch/ref by shelling out through the
 """
 
 import os
+import re
 
+from teatree.utils.git_remote_ops import config_value
 from teatree.utils.git_run import check, run, run_strict
 
 DETACHED_HEAD = "HEAD"
 
 DIFF_BASE_ENV = "T3_DIFF_COVERAGE_BASE"
+DIFF_BASE_CONFIG_KEY = "teatree.targetBranch"
+
+_RAW_SHA = re.compile(r"\A[0-9a-f]{7,40}\Z")
 
 
 def resolve_diff_base(repo: str = ".") -> str:
@@ -22,14 +27,20 @@ def resolve_diff_base(repo: str = ".") -> str:
     integration branch is ahead of a stale ``main`` — so the whole history diffs
     as uncovered. Resolution order:
 
-    1. ``T3_DIFF_COVERAGE_BASE`` — the *configured* base branch. A bare name is
-        remote-qualified (``origin/<name>``); an already-qualified ref
-        (``origin/…`` / ``refs/…``) or a SHA passes through untouched.
-    2. the repo's ACTUAL default branch (``origin/HEAD``), so a ``master``-default
+    1. ``T3_DIFF_COVERAGE_BASE`` — the per-invocation override.
+    2. the ``teatree.targetBranch`` git config — the branch every PR in this
+        checkout targets. A fork whose work lands on an integration branch
+        declares it here, and it is the same key the main-clone commit guard
+        reads, so one declaration serves both.
+    3. the repo's ACTUAL default branch (``origin/HEAD``), so a ``master``-default
         repo resolves ``origin/master`` rather than a nonexistent ``origin/main``.
-    3. ``origin/main`` only as the last-resort fallback (default branch unresolvable).
+    4. ``origin/main`` only as the last-resort fallback (default branch unresolvable).
+
+    A configured value from either of the first two rungs is qualified the same
+    way: a bare name becomes ``origin/<name>``; an already-qualified ref
+    (``origin/…`` / ``refs/…``) or a raw SHA passes through untouched.
     """
-    configured = os.environ.get(DIFF_BASE_ENV, "").strip()
+    configured = os.environ.get(DIFF_BASE_ENV, "").strip() or config_value(repo, DIFF_BASE_CONFIG_KEY).strip()
     if configured:
         return _qualify(configured)
     try:
@@ -39,7 +50,7 @@ def resolve_diff_base(repo: str = ".") -> str:
 
 
 def _qualify(ref: str) -> str:
-    if ref.startswith(("origin/", "refs/")):
+    if ref.startswith(("origin/", "refs/")) or _RAW_SHA.match(ref):
         return ref
     return f"origin/{ref}"
 

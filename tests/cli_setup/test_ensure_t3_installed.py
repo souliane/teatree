@@ -129,6 +129,37 @@ class TestEnsureT3Installed:
             assert "--editable" in args
             assert str(repo) in args
 
+    def test_installs_vendored_core_with_the_fork_root_as_host(self, tmp_path: Path) -> None:
+        # Pointing uv at a vendoring fork's ROOT builds the fork's distribution —
+        # no `t3` entry point, and no overlay registered. Core must come from
+        # `vendor/teatree` with the root riding along as `--with-editable`.
+        root = tmp_path / "downstream-fork"
+        vendored = root / "vendor" / "teatree"
+        vendored.mkdir(parents=True)
+        (root / "pyproject.toml").write_text('[project]\nname = "downstream-fork"\n')
+        (vendored / "pyproject.toml").write_text('[project]\nname = "teatree"\n')
+        uv_tools_dir = tmp_path / "uv-tools"
+        uv_tools_dir.mkdir()
+
+        with (
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
+            patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
+        ):
+            mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
+            assert ToolInstaller(root).ensure_installed() is True
+
+        install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
+        assert install_calls[0][0][0] == [
+            "/usr/bin/uv",
+            "tool",
+            "install",
+            "--editable",
+            str(vendored.resolve()),
+            "--with-editable",
+            str(root.resolve()),
+            "--force",
+        ]
+
     def test_returns_false_on_install_failure(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
         repo.mkdir()

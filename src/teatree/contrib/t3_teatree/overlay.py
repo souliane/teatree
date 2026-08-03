@@ -4,6 +4,7 @@ Provides a real overlay that exercises the full overlay API using
 teatree's own repo, skills, and GitHub project as the target.
 """
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 
@@ -103,6 +104,18 @@ class TeatreeConnectors(OverlayConnectors):
 
 
 class TeatreeProvisioning(OverlayProvisioning):
+    @override
+    def repo_clone_url(self, repo_name: str) -> str:
+        """The public GitHub remote for teatree's own repo; ``""`` for anything else.
+
+        ``TEATREE_REPO_URL`` (the same name ``deploy/entrypoint.sh`` reads for the
+        runtime clone) overrides it, so a fork-hosted deployment provisions from
+        its own remote rather than upstream.
+        """
+        if Path(repo_name).name != "teatree":
+            return ""
+        return os.environ.get("TEATREE_REPO_URL") or f"https://github.com/{_DEFAULT_FOLLOWUP_REPOS[0]}.git"
+
     @override
     def reap_external_resources(self, worktree: "Worktree") -> list[str]:
         result = reap_compose_project(compose_project(worktree))

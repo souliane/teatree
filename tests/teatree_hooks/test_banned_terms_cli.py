@@ -19,14 +19,16 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks.banned_terms_cli import (
+    UnsetVerdict,
     _diff_only_report,
     _full_file_report,
     banned_terms_required,
     main,
     report_unset,
     resolve_banned_terms,
+    resolve_unset_verdict,
 )
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 
 _SYNTHETIC_TERMS = ("acme", "widget-margin")
 
@@ -200,6 +202,71 @@ class TestMainUnsetDisposition:
         offender = tmp_path / "leak.txt"
         offender.write_text("the acme deal closes friday\n", encoding="utf-8")
         assert main([str(offender)]) == 1
+
+
+def _corrupt_db(tmp_path: Path) -> Path:
+    """A store that EXISTS but every read of it errors — a locked/corrupt DB's signature."""
+    db = tmp_path / "corrupt.sqlite3"
+    db.write_bytes(b"this is not a sqlite database")
+    return db
+
+
+class TestUnreadableStoreFailsClosed:
+    """A store that could not be READ is not an unset list — it fails CLOSED regardless (#4008).
+
+    The field report: on a box where ``banned_terms`` IS configured, one invocation printed the
+    unset warning and exited 0 while the invocations either side of it read the full list and
+    correctly exited 1. A read that errors is indistinguishable from an absent row, so the
+    warn-and-allow disposition (#3247) opened the gate on a transient DB failure.
+    """
+
+    def _exc(self) -> BannedTermsUnsetError:
+        return BannedTermsUnsetError.for_key("banned_terms", "T3_BANNED_TERMS")
+
+    def test_resolve_raises_unreadable_not_plain_unset(self, tmp_path: Path) -> None:
+        with pytest.raises(BannedTermsUnreadableError):
+            resolve_banned_terms(db_path=_corrupt_db(tmp_path))
+
+    def test_report_unset_fails_closed_without_banned_terms_required(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # banned_terms_required is FALSE here (no row) — an unreadable store still fails closed.
+        exc = BannedTermsUnreadableError.for_store("banned_terms", "T3_BANNED_TERMS")
+        assert report_unset(exc, db_path=_corrupt_db(tmp_path)) == 2
+        assert "could not be READ" in capsys.readouterr().err
+
+    def test_verdict_is_unreadable_not_allow(self, tmp_path: Path) -> None:
+        unreadable = BannedTermsUnreadableError.for_store("banned_terms", "T3_BANNED_TERMS")
+        assert resolve_unset_verdict(unreadable, db_path=_corrupt_db(tmp_path)) is UnsetVerdict.UNREADABLE
+        assert resolve_unset_verdict(self._exc(), db_path=_empty_db(tmp_path)) is UnsetVerdict.ALLOW
+
+    def test_main_fails_closed_exit_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.setenv("T3_CONFIG_DB", str(_corrupt_db(tmp_path)))
+        assert main([]) == 2
+
+    def test_locked_store_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The reported cause verbatim: a busy writer holding the DB while the hook reads.
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        db = _seed(tmp_path, ["acme"])
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        writer = sqlite3.connect(str(db))
+        writer.isolation_level = None
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            assert main([]) == 2
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_absent_store_still_warns_and_allows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The preserved #3247 case: nothing to read is CONFIRMED absence, not a read failure.
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        assert main([]) == 0
+        assert "WARNING" in capsys.readouterr().err
 
 
 class TestOwnRepoUrlCarveOut:

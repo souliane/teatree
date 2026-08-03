@@ -15,6 +15,7 @@ time and the merge-time live-CI re-check still guards correctness.
 
 from teatree.core.models import Ticket
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
+from teatree.core.worktree.target_branch import resolve_target_branch
 
 
 def check_clear_branch_currency(reviewed_sha: str, ticket: Ticket | None) -> str | None:
@@ -42,8 +43,7 @@ def check_clear_branch_currency(reviewed_sha: str, ticket: Ticket | None) -> str
     repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     if not repo:
         return None
-    explicit = str(extra.get("target_branch") or "").strip()
-    target = (explicit if "/" in explicit else f"origin/{explicit}") if explicit else "origin/main"
+    target = resolve_target_branch(ticket, repo, branch=invoking or worktree.branch)
     conflict = sha_conflicts_with_target(repo, reviewed_sha, target)
     if conflict is None:
         return None

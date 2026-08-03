@@ -110,12 +110,12 @@
       <div class="kanban-columns">
 
           <div class="kanban-column" data-state="not_started">
-            <h3><span>Not started</span><span class="count">0</span></h3>
+            <h3 title="Admitted to the board. Nothing claimed it yet."><span>Not started</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="scoped">
-            <h3><span>Scoped</span><span class="count">0</span></h3>
+            <h3 title="Scope agreed — what is in and out is settled."><span>Scoped</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
@@ -127,22 +127,22 @@
       <div class="kanban-columns">
 
           <div class="kanban-column" data-state="started">
-            <h3><span>Started</span><span class="count">0</span></h3>
+            <h3 title="Someone picked it up and a worktree exists. Comes BEFORE the plan: the plan is recorded from the work, not ahead of it."><span>Work started</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="planned">
-            <h3><span>Planned</span><span class="count">0</span></h3>
+            <h3 title="A PlanArtifact is recorded. The plan() transition refuses without one."><span>Plan recorded</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="coded">
-            <h3><span>Coded</span><span class="count">0</span></h3>
+            <h3 title="The change is written and committed on its branch."><span>Coded</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="tested">
-            <h3><span>Tested</span><span class="count">0</span></h3>
+            <h3 title="Its tests pass — the broader CI/QA run, not just the author&#x27;s own."><span>Tested</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
@@ -154,17 +154,17 @@
       <div class="kanban-columns">
 
           <div class="kanban-column" data-state="reviewed">
-            <h3><span>Reviewed</span><span class="count">0</span></h3>
+            <h3 title="The AUTHOR&#x27;s own pre-ship review is done. This is not peer review; that is &#x27;In peer review&#x27;, after shipping."><span>Self-reviewed</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="shipped">
-            <h3><span>Shipped</span><span class="count">0</span></h3>
+            <h3 title="A pull/merge request exists on the target branch."><span>Shipped</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="in_review">
-            <h3><span>In review</span><span class="count">0</span></h3>
+            <h3 title="Review was REQUESTED from someone else and is outstanding."><span>In peer review</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
@@ -176,17 +176,17 @@
       <div class="kanban-columns">
 
           <div class="kanban-column" data-state="merged">
-            <h3><span>Merged</span><span class="count">0</span></h3>
+            <h3 title="The PR is merged into its target branch."><span>Merged</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="retrospected">
-            <h3><span>Retrospected</span><span class="count">0</span></h3>
+            <h3 title="A retro extracted the lessons and turned them into enforcement."><span>Retrospected</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
           <div class="kanban-column" data-state="delivered">
-            <h3><span>Delivered</span><span class="count">0</span></h3>
+            <h3 title="Done and confirmed on the surface that matters."><span>Delivered</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 

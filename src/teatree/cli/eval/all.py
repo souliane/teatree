@@ -93,15 +93,14 @@ REGRESSION_SKIPPED_HINT = (
 
 
 def regression_lane(report: RegressionReport) -> LaneResult:
-    skipped = sum(1 for r in report.results if r.skipped)
-    detail = f"{len(report.results)} checks, {len(report.failures)} failed, {skipped} skipped"
+    detail = f"{len(report.results)} checks, {len(report.failures)} failed, {len(report.skipped)} skipped"
     return LaneResult(
         name="pinned-regressions",
         cost="model-free",
         passed=report.ok,
         skipped=False,
         detail=detail,
-        setup_hint=REGRESSION_SKIPPED_HINT if skipped > 0 else None,
+        setup_hint=None if report.validated else REGRESSION_SKIPPED_HINT,
     )
 
 

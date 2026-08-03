@@ -28,7 +28,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import lru_cache
-from typing import Annotated, Any
+from types import NoneType, UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BeforeValidator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
@@ -43,6 +44,7 @@ from teatree.config.enums import (
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
+    PrReviewBackend,
     SendProxyMode,
     Wip,
 )
@@ -111,6 +113,14 @@ _SECRET_OVERLAY = SettingMeta(Category.SECRET, Registry.OVERLAY)
 _SECRET_COLD = SettingMeta(Category.SECRET, Registry.COLD)
 
 
+# Two closed value sets that have no enum of their own to point at. Declaring them
+# here — rather than as bare ``str`` — is what makes ``setting_choices`` derive them,
+# so the dashboard offers a select instead of a box an invalid value can be typed into.
+# The empty member is a real state in both (auto-detect / unset), never a placeholder.
+_RepoMode = Literal["", "solo", "collaborative"]
+_Privacy = Literal["", "strict", "relaxed"]
+
+
 def _provider_or_none(value: str | None) -> AgentHarnessProvider | None:
     # agent_harness_provider's None default means "inherit the ambient credential";
     # AgentHarnessProvider.parse rejects None, so the None sentinel passes through
@@ -157,6 +167,7 @@ class TeatreeSettingsSchema(BaseSettings):
         return (init_settings, _TeatreeTableTomlSource(settings_cls))
 
     admin_autologin_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    adaptive_intake_concurrency_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admission_governor_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     admit_colleague_prs_to_board: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     agent_harness: Annotated[str, BeforeValidator(parse_harness_name), _DEFAULT_OVERLAY]
@@ -238,6 +249,8 @@ class TeatreeSettingsSchema(BaseSettings):
     idle_stack_reaper_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     incoming_event_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     incremental_push_gate: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    intake_ram_per_agent_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
+    intake_ram_reserve_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     issue_implementer_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     issue_implementer_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     issue_implementer_label: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
@@ -253,7 +266,9 @@ class TeatreeSettingsSchema(BaseSettings):
     merge_wip: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     missing_issue_ref_policy: Annotated[MissingIssuePolicy, BeforeValidator(MissingIssuePolicy.parse), _DEFAULT_OVERLAY]
     mode: Annotated[Mode, BeforeValidator(Mode.parse), _DEFAULT_OVERLAY]
+    mr_conflict_scan_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     mr_reminder: Annotated[dict[str, Any], BeforeValidator(parse_mr_reminder_setting), _DEFAULT_OVERLAY]
+    mr_state_questions_max_per_tick: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     mr_title_regex: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     notify_on_post_on_behalf: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     notify_user_via_bot: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
@@ -270,7 +285,8 @@ class TeatreeSettingsSchema(BaseSettings):
     outer_loop_measure_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_stop_after_consecutive_failures: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     park_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
-    privacy: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    privacy: Annotated[_Privacy, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    pr_review_backend: Annotated[PrReviewBackend, BeforeValidator(PrReviewBackend.parse), _DEFAULT_OVERLAY]
     provision_fast_step_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     provision_max_concurrency: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     provision_ram_ceiling_percent: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -284,7 +300,7 @@ class TeatreeSettingsSchema(BaseSettings):
     ram_kill_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     ram_warn_avail_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     regulated_path_model_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
-    repo_mode: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    repo_mode: Annotated[_RepoMode, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     require_anti_vacuity_attestation: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     require_debt_delta: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     require_executed_repro: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
@@ -298,10 +314,18 @@ class TeatreeSettingsSchema(BaseSettings):
     require_reviewed_state_for_review_request: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     require_rubric_verification: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     require_spec_coverage: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    require_work_group_batch: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     resource_pressure_cadence_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     resource_pressure_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     resource_pressure_min_free_interval_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    review_backend_cooldown_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    review_exempt_repos: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
+    review_exempt_repos_count_toward_group_readiness: Annotated[
+        bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY
+    ]
     review_nag_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    review_nag_max_interval_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    review_pause_reaction_emojis: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     review_request_dedup_max_pages: Annotated[
         int, BeforeValidator(_parse_overridable_positive_int(5)), _DEFAULT_OVERLAY
     ]
@@ -309,7 +333,9 @@ class TeatreeSettingsSchema(BaseSettings):
         int, BeforeValidator(_parse_overridable_positive_int(30)), _DEFAULT_OVERLAY
     ]
     review_request_post_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    review_resume_reply_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     review_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    review_skill_alternates: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     scanning_news_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     scanning_news_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     scanning_news_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
@@ -326,6 +352,7 @@ class TeatreeSettingsSchema(BaseSettings):
     snapshot_baseline_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     snapshot_warmer_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     snapshot_warmer_max_age_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    single_branch_repos: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     solo_repo_url_pattern: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     speak: Annotated[dict[str, Any], BeforeValidator(parse_speak_setting), _DEFAULT_OVERLAY]
     stale_stack_min_age_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -338,9 +365,12 @@ class TeatreeSettingsSchema(BaseSettings):
     task_result_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     task_sweep_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     task_sweep_recheck_interval_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    target_branch: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     ticket_budget_max_cost_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_transition_prune_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     timezone: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    mr_triage_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    mr_triage_max_mrs_per_tick: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     triage_assessor_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     triage_assessor_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     triage_assessor_max_issues_per_tick: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -350,6 +380,8 @@ class TeatreeSettingsSchema(BaseSettings):
     watchdog_max_runtime_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     watchdog_max_turns: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     wip: Annotated[Wip, BeforeValidator(Wip.parse), _DEFAULT_OVERLAY]
+    work_group_generic_scopes: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
+    work_group_max_members: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     worker_quiescing: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     workspace_dir: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
     worktree_stale_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -387,14 +419,17 @@ class TeatreeSettingsSchema(BaseSettings):
 
     # --- COLD_HOOK_SETTINGS (pre-Django hook gate flags) ---
     banned_terms_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    banned_terms_required: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     completion_claim_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     config_overwrite_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     deny_circuit_breaker_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     deny_circuit_breaker_threshold: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     dispatch_quote_gate_on_task_create_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    glab_stale_base_remote_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     hook_validator_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     headless_authoring_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     main_clone_guard_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    single_branch_repo_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     mcp_privacy_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     mcp_slack_write_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     memory_recall_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
@@ -419,6 +454,40 @@ class TeatreeSettingsSchema(BaseSettings):
 def setting_meta(key: str) -> SettingMeta:
     """The :class:`SettingMeta` marker declared on field *key* (every field carries one)."""
     return next(m for m in TeatreeSettingsSchema.model_fields[key].metadata if isinstance(m, SettingMeta))
+
+
+def _enumerated(annotation: object) -> tuple[object, ...]:
+    """The values *annotation* admits, or ``()`` when it admits more than a listable set.
+
+    ``bool`` and every ``StrEnum`` the config declares are closed sets, and a ``Literal`` is
+    one by construction. An optional wrapper (``X | None``) contributes its ``None`` beside
+    the members of ``X``, so a nullable enum still offers every value it accepts.
+    """
+    if annotation is bool:
+        return (True, False)
+    if get_origin(annotation) is Literal:
+        return get_args(annotation)
+    if get_origin(annotation) in {Union, UnionType}:
+        return tuple(v for arg in get_args(annotation) for v in ((None,) if arg is NoneType else _enumerated(arg)))
+    if isinstance(annotation, type) and issubclass(annotation, StrEnum):
+        return tuple(member.value for member in annotation)
+    return ()
+
+
+def setting_choices(key: str) -> tuple[object, ...]:
+    """*key*'s admissible values when the schema constrains it to a listable set.
+
+    The ONE derivation behind every constrained control teatree renders. An option list
+    written out beside a ``Literal`` is a second source that goes stale the first time the
+    ``Literal`` changes; deriving it here also makes an invalid value impossible to ENTER
+    rather than merely rejected after the fact. A key whose type admits open values
+    (``str``, ``int``, a list, a mapping) returns ``()`` — the caller renders free text.
+
+    The values come back RAW, in the schema's own vocabulary; how a surface writes one on
+    the wire and how it labels one on screen are that surface's decisions, not this one's.
+    """
+    field = TeatreeSettingsSchema.model_fields.get(key)
+    return () if field is None else _enumerated(field.annotation)
 
 
 _NO_INIT_OVERRIDES: dict[str, Any] = {}

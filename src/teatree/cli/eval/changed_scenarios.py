@@ -18,6 +18,13 @@ that quiet-skip hole: it fails loud (exit 2) when the filtered catalog is empty,
 because "the catalog is empty" and "nothing changed" are different answers that
 skip identically today.
 
+``--diff-file`` adds the prose granularity STDIN cannot carry (#3944): a skill
+file's path says only THAT it changed, so every scenario grading any of its
+sections would answer alike. Given the same range's ``git diff --unified=0``
+output it narrows a section-scoped scenario to the sections that actually moved.
+Paths still come from STDIN, so a diff the parser cannot read costs precision,
+never a missed scenario.
+
 Exit 0 when at least one scenario matched; exit ``--skip-code`` (default 1) when
 nothing matched, so the caller's eval job skips cleanly with no API spend.
 """
@@ -28,6 +35,7 @@ from pathlib import Path
 import typer
 
 from teatree.eval.changed_scenarios import REPO_ROOT, select_changed_scenarios, specs_under
+from teatree.eval.changed_sections import changed_sections_by_path
 from teatree.eval.discovery import discover_specs
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -51,6 +59,11 @@ def changed_scenarios(
         "--require-specs",
         help="Fail loud (exit 2) when the filtered catalog is empty, instead of skipping like 'nothing changed'.",
     ),
+    diff_file: Path | None = typer.Option(
+        None,
+        "--diff-file",
+        help="Unified diff (git diff --unified=0) for the same range, to narrow section-scoped scenarios.",
+    ),
 ) -> None:
     """Print the scenario names a PR's STDIN diff touched; exit --skip-code when none."""
     ensure_django()
@@ -64,7 +77,11 @@ def changed_scenarios(
             err=True,
         )
         raise SystemExit(_EMPTY_CATALOG_EXIT)
-    selection = select_changed_scenarios(sys.stdin, repo_root=repo_root or REPO_ROOT, specs=specs)
+    root = repo_root or REPO_ROOT
+    sections = None
+    if diff_file is not None:
+        sections = changed_sections_by_path(diff_file.read_text(encoding="utf-8"), repo_root=root)
+    selection = select_changed_scenarios(sys.stdin, repo_root=root, specs=specs, changed_sections=sections)
     # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
     # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
     if note := selection.truncation_note():

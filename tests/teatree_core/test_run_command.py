@@ -1,4 +1,5 @@
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -8,6 +9,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
+import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
@@ -19,6 +21,18 @@ from tests.teatree_core.conftest import CommandOverlay
 COMMAND_SETTINGS: dict[str, object] = {}
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
+
+
+@pytest.fixture(autouse=True)
+def _published_port_host_is_localhost() -> Iterator[None]:
+    """Pin the docker-host name — the suite itself runs containerized in CI.
+
+    ``host_published_port_host`` then answers the bridge gateway rather than
+    ``localhost``, which would make the ``BASE_URL`` assertion below depend on where
+    the suite runs. The resolution itself is pinned in ``tests/teatree_utils``.
+    """
+    with patch.object(e2e_mod, "host_published_port_host", return_value="localhost"):
+        yield
 
 
 def _popen_capturing(commands: list[tuple[object, dict[str, object]]], *, returncode: int = 0) -> MagicMock:

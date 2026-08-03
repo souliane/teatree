@@ -5,8 +5,10 @@ routed to its own runner rather than handed a ticket-work brief its empty toolse
 cannot satisfy. Every other phase resolves to ``None`` (dispatches agentically).
 """
 
+from typing import cast
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.deterministic_phases import deterministic_phase_runner, register_phase_runner, run_deterministic_phase
@@ -87,3 +89,56 @@ class TestRunDeterministicPhase(TestCase):
         assert "kaboom" in result["phase_error"]
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+
+class TestBothHeadlessEntryPointsShortCircuit(TestCase):
+    """The registry is consulted on BOTH lanes, or the parity it promises is prose.
+
+    ``short_describe`` is scheduled as a ``Task`` row only so a scanner need not run
+    an LLM inline. Reaching the agentic runner from either entry point burns a
+    metered agent run on a generic ticket-work brief its least-privilege toolset
+    cannot satisfy, and leaves ``Ticket.short_description`` blank — the one thing
+    the phase exists to write.
+    """
+
+    def _pending_headless_task(self) -> Task:
+        ticket = Ticket.objects.create(extra={"issue_title": "add dark mode toggle"})
+        session = Session.objects.create(ticket=ticket, agent_id="short-describe")
+        task = Task.objects.create(ticket=ticket, session=session, phase="short_describe")
+        task.route_to_headless(reason="forced headless for the regression")
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        return task
+
+    def test_the_worker_lane_never_reaches_the_agentic_runner(self) -> None:
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: Django task registry
+
+        task = self._pending_headless_task()
+
+        with (
+            patch(_SUMMARIZE, return_value="dark mode toggle"),
+            patch("teatree.agents.headless.run_headless", side_effect=AssertionError("agentic runner reached")),
+        ):
+            result = execute_headless_task.func(task.pk, task.phase)
+
+        assert result["exit_code"] == "0"
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.ticket.short_description == "dark mode toggle"
+
+    def test_the_cli_lane_never_reaches_the_agentic_runner(self) -> None:
+        task = self._pending_headless_task()
+
+        with (
+            patch(_SUMMARIZE, return_value="dark mode toggle"),
+            patch("teatree.agents.headless.run_headless", side_effect=AssertionError("agentic runner reached")),
+        ):
+            # ``call_command`` is annotated as returning None upstream; this command
+            # returns its result mapping, so the boundary is stated rather than assumed.
+            result = cast("dict[str, str]", call_command("tasks", "work-next-headless", claimed_by="worker-1"))
+
+        assert result["exit_code"] == "0"
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.ticket.short_description == "dark mode toggle"

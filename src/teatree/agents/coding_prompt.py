@@ -14,6 +14,18 @@ from teatree.agents.skill_injection import _ALWAYS_FULL_SKILLS, _explicit_load_n
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
+_AFFECTED_TESTS_COMMAND = "bash dev/test-affected.sh"
+
+# Without this the builder falls back to the whole suite, so every ticket paid for the
+# run CI is about to make anyway — measured at ~85 minutes of a 3.5h cycle (#3994).
+_TEST_SELECTION_LINES: tuple[str, ...] = (
+    "",
+    f"TEST SELECTION: run the DIFF-SCOPED lane, never the whole suite — `{_AFFECTED_TESTS_COMMAND}`",
+    "(teatree core) or the overlay's wired test runner. The lane is fail-safe TO FULL: a migration,",
+    "a conftest/factories/test-settings edit, an unclassifiable path, or a missing merge-base all run",
+    "the whole suite on their own, so scoping never under-runs. CI's sharded whole-tree lane is the",
+    "merge authority — a local full sweep pays for it twice and is on the critical path.",
+)
 
 # Auto-injected into a long-running maker brief (PR-12): user-visible liveness
 # so a watchdog can tell "stuck" from "still working". The transport half is
@@ -127,5 +139,6 @@ def _coding_phase_directive(
         "commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the push-stage gates",
         "(comment-density, doc-update, ensure-pr, the public-repo leak gate) that CI",
         "re-runs. Report its exit code as the green-proof — not a commit-stage-only run.",
+        *_TEST_SELECTION_LINES,
         *_HEARTBEAT_DM_LINES,
     ]

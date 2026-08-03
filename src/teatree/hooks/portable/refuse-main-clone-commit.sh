@@ -46,7 +46,15 @@ default_ref=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || t
 default_branch=${default_ref#origin/}
 default_branch=${default_branch:-main}
 
-if [ "${current}" != "${default_branch}" ]; then
+# A fork that vendors its upstream re-points work at a long-lived integration
+# branch that every MR targets, while ``origin/HEAD`` still names a default the
+# fork has left far behind. Treating that stale default as the only allowed
+# branch refuses every legitimate commit in such a clone. ``teatree.targetBranch``
+# in git config names the integration branch; it is read from git config rather
+# than the teatree DB so this stays a plain shell hook with no runtime dependency.
+target_branch=$(git config --get teatree.targetBranch 2>/dev/null || true)
+
+if [ "${current}" != "${default_branch}" ] && [ "${current}" != "${target_branch}" ]; then
   echo "✗ refuse: main clone is on '${current}' (default is '${default_branch}') — develop in a worktree."
   echo "  Run: t3 <overlay> workspace ticket <issue_url>"
   echo "  (worktree-first is non-negotiable — see /t3:rules § Worktree-First Work)"
@@ -58,7 +66,12 @@ fi
 # staged in the index against HEAD; a non-empty list is a tracked
 # working-tree change staged directly in the managed main clone. Refuse
 # independent of branch state — the staged state IS the violation.
-if [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
+#
+# Exception: a clone deliberately sitting on its configured
+# ``teatree.targetBranch`` IS the integration checkout for that branch, so
+# staging there is the intended flow rather than the #2614 accident, which
+# was an edit staged onto the *default* branch of a clone nobody develops in.
+if [ "${current}" != "${target_branch}" ] && [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
   echo "✗ refuse: tracked changes are staged directly in the main clone (on '${current}') — develop in a worktree."
   echo "  Run: t3 <overlay> workspace ticket <issue_url>, move the change there, and discard the staged copy here:"
   echo "       git restore --staged --worktree -- <path>"

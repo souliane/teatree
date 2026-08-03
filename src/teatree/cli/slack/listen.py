@@ -86,7 +86,7 @@ def listen_command(
                 typer.echo(f"OK    Listening on {name}")
             run_listener(overlays, queue_path=queue_file, on_event=_signal_slack_answer_wake)
     except AlreadyRunningError as exc:
-        typer.echo(f"WARN  {exc}. Stop it before starting another.")
+        typer.echo(f"WARN  {exc} Stop it before starting another.")
         raise typer.Exit(code=1) from None
 
 

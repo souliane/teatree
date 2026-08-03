@@ -14,13 +14,18 @@ judgment skill reads as safe to delete.
 """
 
 from pathlib import Path
+from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree.branch_classification import effective_default_target, reset_single_branch_cache
 from teatree.core.worktree.clone_paths import (
+    clone_path_from_checkout,
     find_clone_path,
+    git_common_clone_dir,
     repair_stale_clone_path,
     resolve_clone_path,
     stored_clone_path,
@@ -136,3 +141,127 @@ class TestRepairStaleClonePath(_StoredClonePathCase):
         assert repair_stale_clone_path(self.workspace, row) is None
         row.refresh_from_db()
         assert row.extra["clone_path"] == stale, "blanking the row would erase the only record of the clone"
+
+
+class TestGitIsAskedBeforeGuessingByName(_StoredClonePathCase):
+    """A worktree git created is resolvable even when NO name matches it.
+
+    Both name-based tiers miss a worktree made by a bare ``git worktree add``: it
+    carries no recorded ``clone_path``, and its directory basename is whatever the
+    operator typed rather than the repo. The resolution then landed on
+    ``workspace / <basename>`` — a path that does not exist — so teardown reported
+    "source repo missing" and removed nothing while still printing a cleaned line,
+    and the redundancy probes reported the branch unverifiable. Git knows which
+    clone a worktree belongs to; these pin that it is asked.
+    """
+
+    def _adhoc_worktree(self, name: str, branch: str) -> Path:
+        wt = self.tmp_path / name
+        _run_git("worktree", "add", "-q", "-b", branch, str(wt), cwd=self.clone)
+        return wt
+
+    def _row_for(self, wt: Path, *, repo_path: str) -> Worktree:
+        ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{Ticket.objects.count() + 4801}")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path=repo_path,
+            branch="feat-y",
+            extra={"worktree_path": str(wt)},
+        )
+
+    def test_git_common_clone_dir_names_the_clone(self) -> None:
+        wt = self._adhoc_worktree("nothing-like-the-repo", "feat-y")
+
+        assert git_common_clone_dir(str(wt)) == self.clone
+
+    def test_a_non_worktree_path_resolves_to_none(self) -> None:
+        assert git_common_clone_dir(str(self.tmp_path / "not-a-worktree")) is None
+
+    def test_a_blank_path_never_resolves_to_the_calling_cwd(self) -> None:
+        """``Path("")`` is ``.``, so a blank path would answer with the CLI's own repo.
+
+        ``parametrize`` does not reach a ``TestCase`` method, so the two blank
+        spellings are asserted directly rather than as separate cases.
+        """
+        assert git_common_clone_dir("") is None
+        assert git_common_clone_dir("   ") is None
+
+    def test_clone_path_from_checkout_requires_a_live_checkout(self) -> None:
+        wt = self._adhoc_worktree("some-dir", "feat-y")
+
+        assert clone_path_from_checkout(str(wt)) == self.clone
+
+    def test_a_worktree_whose_basename_matches_no_repo_still_resolves(self) -> None:
+        """The exact shape that made teardown a no-op: basename ≠ repo, no stored path."""
+        wt = self._adhoc_worktree("tach-boundary", "feat-y")
+        row = self._row_for(wt, repo_path="tach-boundary")
+
+        assert resolve_clone_path(self.workspace, row) == self.clone
+
+    def test_a_live_stored_path_still_wins_over_the_git_probe(self) -> None:
+        wt = self._adhoc_worktree("some-dir", "feat-y")
+        row = self._row_for(wt, repo_path="tach-boundary")
+        other = _init_clone(self.tmp_path / "elsewhere")
+        row.extra = {**(row.extra or {}), "clone_path": str(other)}
+        row.save(update_fields=["extra"])
+
+        assert resolve_clone_path(self.workspace, row) == other
+
+    def test_a_row_whose_worktree_is_gone_falls_through_to_the_name_scan(self) -> None:
+        row = self._row_for(self.tmp_path / "vanished", repo_path="myrepo")
+
+        assert resolve_clone_path(self.workspace, row) == self.clone
+
+
+class TestSingleBranchRepoRedirectsTheRedundancyTarget(TestCase):
+    """A bootstrap repo's real target is its pinned branch, not the forge default.
+
+    On a fork bootstrap the forge default is still the empty initial commit while
+    every change lands on one long-lived branch behind one open PR. Measured
+    against the default, every branch reads as thousands of commits ahead, so the
+    reaper keeps ALL of them — each for a reason that is an artefact of the wrong
+    base. That is what left 31 worktrees standing over 37 branches.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.repo = _init_clone(tmp_path / "widget-core")
+        _run_git("remote", "add", "origin", "git@example.com:org/group/widget-core.git", cwd=self.repo)
+
+    def _target(self, declared: list[str]) -> str:
+        class _Settings:
+            single_branch_repos = declared
+
+        reset_single_branch_cache()
+        with patch("teatree.config.get_effective_settings", return_value=_Settings()):
+            return effective_default_target(str(self.repo))
+
+    def test_a_declared_repo_targets_its_pinned_branch(self) -> None:
+        assert self._target(["group/widget-core=chore/fork-bootstrap"]) == "origin/chore/fork-bootstrap"
+
+    def test_an_undeclared_repo_keeps_the_forge_default(self) -> None:
+        assert self._target(["group/other=chore/x"]).endswith("/main")
+
+    def test_no_declaration_at_all_keeps_the_forge_default(self) -> None:
+        assert self._target([]).endswith("/main")
+
+    def test_an_unreadable_config_never_blocks_target_resolution(self) -> None:
+        reset_single_branch_cache()
+        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("no db")):
+            assert effective_default_target(str(self.repo)).endswith("/main")
+        reset_single_branch_cache()
+
+    def test_the_declaration_is_read_once_not_per_branch(self) -> None:
+        """The reaper calls this a few hundred times a run; an uncached read timed it out."""
+
+        class _Settings:
+            single_branch_repos: ClassVar[list[str]] = ["group/widget-core=chore/fork-bootstrap"]
+
+        reset_single_branch_cache()
+        with patch("teatree.config.get_effective_settings", return_value=_Settings()) as read:
+            for _ in range(5):
+                effective_default_target(str(self.repo))
+
+        assert read.call_count == 1
+        reset_single_branch_cache()

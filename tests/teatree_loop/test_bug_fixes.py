@@ -200,7 +200,11 @@ class TestM4DraftNotesNoneReturnsStructuredResult:
         assert result.exit_code == 0, (
             f"Expected exit 0 but got {result.exit_code}; output={result.output!r} exc={result.exception!r}"
         )
-        payload = json.loads(result.output.strip())
+        # STDOUT only: `review run` promises JSON there, while unrelated advisories (the
+        # once-per-process host-projection notice) correctly go to stderr. Parsing the
+        # merged stream made this order-dependent — whichever test first triggered that
+        # advisory read it as trailing JSON and failed.
+        payload = json.loads(result.stdout.strip())
         assert payload["existing_review"]["draft_notes"] == 0
 
 

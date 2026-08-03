@@ -12,6 +12,7 @@ import pytest
 from teatree.utils import ram_probe
 from teatree.utils.ram_probe import (
     _cgroup_v2_cpu_quota,
+    _cgroup_v2_memory_mib,
     _emit_compose_sizing,
     _linux_ram_used_percent,
     _macos_ram_used_percent,
@@ -19,6 +20,8 @@ from teatree.utils.ram_probe import (
     default_provision_concurrency,
     derive_worker_cpus,
     derive_worker_mem_limit_mib,
+    effective_available_ram_mib,
+    host_available_ram_mib,
     host_total_ram_mib,
     read_ram_used_percent,
 )
@@ -259,3 +262,107 @@ class TestComposeSizingMain:
             check=True,
         )
         assert "TEATREE_WORKER_CPUS=" in proc.stdout
+
+
+class TestHostAvailableRamMib:
+    def test_linux_reads_memavailable(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
+            patch("teatree.utils.ram_probe._linux_meminfo", return_value={"MemAvailable": 20971520}),
+        ):
+            assert host_available_ram_mib() == 20480
+
+    def test_linux_unreadable_is_zero(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.platform.system", return_value="Linux"),
+            patch("teatree.utils.ram_probe._linux_meminfo", return_value={}),
+        ):
+            assert host_available_ram_mib() == 0
+
+    def test_macos_sums_the_reclaimable_page_classes(self) -> None:
+        stat = (
+            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 32768.\nPages inactive: 32768.\n"
+        )
+        with (
+            patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
+            patch("shutil.which", return_value="/usr/bin/vm_stat"),
+            patch("teatree.utils.run.run_checked", return_value=CompletedProcess([], 0, stat, "")),
+        ):
+            # (32768 + 32768) pages * 16 KiB = 1024 MiB.
+            assert host_available_ram_mib() == 1024
+
+    def test_macos_without_vm_stat_is_zero(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
+            patch("shutil.which", return_value=None),
+        ):
+            assert host_available_ram_mib() == 0
+
+    def test_macos_failing_vm_stat_is_zero(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.platform.system", return_value="Darwin"),
+            patch("shutil.which", return_value="/usr/bin/vm_stat"),
+            patch("teatree.utils.run.run_checked", side_effect=OSError),
+        ):
+            assert host_available_ram_mib() == 0
+
+    def test_unknown_platform_is_zero(self) -> None:
+        with patch("teatree.utils.ram_probe.platform.system", return_value="FreeBSD"):
+            assert host_available_ram_mib() == 0
+
+
+class TestEffectiveAvailableRamMib:
+    """A cgroup-capped worker must not size work against the host's free memory."""
+
+    def test_the_cgroup_headroom_wins_over_a_larger_host_reading(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=20000),
+            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", side_effect=[22000, 16000]),
+        ):
+            assert effective_available_ram_mib() == 6000
+
+    def test_the_host_reading_wins_when_the_cgroup_is_roomier(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000),
+            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", side_effect=[64000, 1000]),
+        ):
+            assert effective_available_ram_mib() == 4000
+
+    def test_an_uncapped_cgroup_leaves_the_host_reading_alone(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000),
+            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", return_value=None),
+        ):
+            assert effective_available_ram_mib() == 4000
+
+    def test_a_cgroup_at_its_limit_reads_zero_not_unreadable(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0),
+            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", side_effect=[16000, 16000]),
+        ):
+            assert effective_available_ram_mib() == 0
+
+    def test_nothing_readable_is_none_not_zero(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0),
+            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", return_value=None),
+        ):
+            assert effective_available_ram_mib() is None
+
+
+class TestCgroupV2MemoryMib:
+    def test_parses_a_byte_count(self) -> None:
+        with patch("pathlib.Path.read_text", return_value="17179869184\n"):
+            assert _cgroup_v2_memory_mib("memory.max") == 16384
+
+    def test_unlimited_is_none(self) -> None:
+        with patch("pathlib.Path.read_text", return_value="max\n"):
+            assert _cgroup_v2_memory_mib("memory.max") is None
+
+    def test_missing_file_is_none(self) -> None:
+        with patch("pathlib.Path.read_text", side_effect=OSError):
+            assert _cgroup_v2_memory_mib("memory.current") is None
+
+    def test_unparsable_value_is_none(self) -> None:
+        with patch("pathlib.Path.read_text", return_value="not-a-number\n"):
+            assert _cgroup_v2_memory_mib("memory.max") is None

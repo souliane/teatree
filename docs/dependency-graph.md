@@ -16,6 +16,7 @@ graph TD
     teatree.ci_oauth_switch --> teatree.credential_config
     teatree.ci_oauth_switch --> teatree.token_report
     teatree.ci_oauth_switch --> teatree.utils
+    teatree.config --> teatree.db
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -34,6 +35,7 @@ graph TD
     teatree.skill_support --> teatree.utils
     teatree.skill_support --> teatree.project
     teatree.provisioning --> teatree.utils
+    teatree.core --> teatree.db
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
     teatree.core --> teatree.pricing
@@ -246,6 +248,11 @@ graph TD
     teatree.loop --> teatree.loop.slack_answer
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loop.session_identity --> teatree.core.session_identity
+    teatree.db --> teatree.docker
+    teatree.db --> teatree.paths
+    teatree.db --> teatree.utils
+    teatree.loop.inbound_reading --> teatree.agents
+    teatree.loop.inbound_reading --> teatree.loop.inbound_classifier
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping
@@ -254,6 +261,7 @@ graph TD
     teatree.loop.statusline_loops --> teatree.core
     teatree.loop.statusline_loops --> teatree.loop.loop_cadences
     teatree.loop.statusline_loops --> teatree.loop.loop_scoping
+    teatree.loop.statusline_loops --> teatree.loop.session_identity
     teatree.loop.statusline_loops --> teatree.loop.statusline_loop_chunks
     teatree.loop.statusline_loops --> teatree.loop.statusline_palette
     teatree.loop.statusline --> teatree.loop.statusline_loops
@@ -272,6 +280,7 @@ graph TD
     teatree.loop.loop_state_db --> teatree.core.models
     teatree.loop.loop_state_db --> teatree.loop.preset_resolution
     teatree.loop.preset_resolution --> teatree.core.models
+    teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.scanners --> teatree.types
     teatree.loop.scanners --> teatree.paths
     teatree.loop.scanners --> teatree.utils
@@ -335,6 +344,8 @@ graph TD
     teatree.loop.rendering --> teatree.loop.rendering_items
     teatree.loop.rendering --> teatree.loop.rendering_permalinks
     teatree.loop.rendering --> teatree.loop.rendering_zones
+    teatree.loop.slack_answer --> teatree.loop.inbound_reading
+    teatree.loop.slack_answer --> teatree.loop.inbound_classifier
     teatree.loop.slack_answer --> teatree.agents
     teatree.loop.slack_answer --> teatree.backends.slack
     teatree.loop.slack_answer --> teatree.core
@@ -400,6 +411,8 @@ graph TD
     teatree.cli._format_opts
     teatree.loop.statusline_palette
     teatree.loop.loop_cadences
+    teatree.failure_signatures
+    teatree.loop.inbound_classifier
     teatree.loop.url_specificity
     teatree.instance_id
     teatree.slack_mrkdwn

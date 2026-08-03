@@ -8,6 +8,13 @@ diff --name-only`` emits) and delegates to
 :func:`teatree.eval.changed_scenarios.select_changed_scenarios`, the shared
 core also exposed as ``t3 eval changed-scenarios`` for overlays to reuse.
 
+``--diff-file`` adds the prose granularity STDIN cannot carry (#3944): a skill
+file's path says only THAT it changed, so every scenario grading any of its ~70
+sections would answer alike. Given the same range's ``git diff --unified=0``
+output it narrows a section-scoped scenario to the sections that actually moved.
+Paths still come from STDIN, so a diff the parser cannot read costs precision,
+never a missed scenario.
+
 Exit 0 when at least one scenario matched (its names were printed) so the eval
 runs; exit ``--skip-code`` (default 1) when nothing matched (no scenario file
 changed) so the ``eval-pr`` workflow's eval job is skipped cleanly, no API spend.
@@ -15,8 +22,10 @@ changed) so the ``eval-pr`` workflow's eval job is skipped cleanly, no API spend
 
 import argparse
 import sys
+from pathlib import Path
 
-from teatree.eval.changed_scenarios import names_for_changed, select_changed_scenarios
+from teatree.eval.changed_scenarios import REPO_ROOT, names_for_changed, select_changed_scenarios
+from teatree.eval.changed_sections import changed_sections_by_path
 
 __all__ = ["main", "names_for_changed"]
 
@@ -24,8 +33,17 @@ __all__ = ["main", "names_for_changed"]
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-code", type=int, default=1, help="Exit code when no scenario file changed.")
+    parser.add_argument(
+        "--diff-file",
+        type=Path,
+        default=None,
+        help="Unified diff (git diff --unified=0) for the same range, to narrow section-scoped scenarios.",
+    )
     args = parser.parse_args(argv)
-    selection = select_changed_scenarios(sys.stdin)
+    sections = None
+    if args.diff_file is not None:
+        sections = changed_sections_by_path(args.diff_file.read_text(encoding="utf-8"), repo_root=REPO_ROOT)
+    selection = select_changed_scenarios(sys.stdin, changed_sections=sections)
     # Surface the cap when it bites (#2737) so the CI log shows a corpus-wide PR's
     # truncated coverage instead of only the scenarios that will run.
     if note := selection.truncation_note():

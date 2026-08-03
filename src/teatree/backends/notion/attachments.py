@@ -1,3 +1,12 @@
+"""Notion file-attachment download — Brave browser cookies for the file CDN.
+
+The one part of Notion the public API cannot serve: a file block's bytes sit
+behind a short-lived S3 signature only a ``notion.so`` web session can mint, so
+this path needs a logged-in browser and is therefore NOT headless. Everything a
+headless run needs — pages, blocks, comments, databases — goes through the
+integration-token client in :mod:`teatree.backends.notion.client`.
+"""
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -5,9 +14,6 @@ from typing import cast
 from urllib.parse import unquote
 
 import httpx
-
-from teatree.backends.http_retry import SimpleRetryTransport
-from teatree.types import RawAPIDict
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 _SIGNED_MARKERS = ("X-Amz-Signature", "expirationTimestamp", "signature=")
@@ -136,92 +142,3 @@ def download_notion_file(
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(resp.content)
     return dest
-
-
-def _property_name_value(prop: object) -> str | None:
-    """Read the option name from a Notion ``status``- or ``select``-typed property."""
-    if not isinstance(prop, dict):
-        return None
-    typed = cast("RawAPIDict", prop)
-    for key in ("status", "select"):
-        value = typed.get(key)
-        if isinstance(value, dict):
-            name = cast("RawAPIDict", value).get("name")
-            if isinstance(name, str):
-                return name
-    return None
-
-
-class NotionClient:
-    """Notion API client — page reads, database queries, status writes.
-
-    Reads (``get_page`` and each ``query_database`` page — a POST, but a read
-    with no side effect) run under the shared bounded-retry transport
-    (:class:`~teatree.backends.http_retry.SimpleRetryTransport`); the
-    ``update_page_status`` PATCH is a non-idempotent write, so it is retried only
-    on a CONNECT-phase failure (never replayed after the request reached Notion).
-    Knobs default from ``T3_NOTION_HTTP_*``.
-    """
-
-    _BASE = "https://api.notion.com/v1"
-
-    def __init__(self, *, token: str, version: str = "2022-06-28") -> None:
-        self.token = token
-        self.version = version
-        self._transport = SimpleRetryTransport(env_prefix="T3_NOTION_HTTP")
-
-    def _client(self) -> httpx.Client:
-        return httpx.Client(
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Notion-Version": self.version,
-            },
-            timeout=10.0,
-        )
-
-    def get_page(self, page_id: str) -> RawAPIDict:
-        with self._client() as client:
-            response = self._transport.run(lambda: client.get(f"{self._BASE}/pages/{page_id}"), idempotent=True)
-            response.raise_for_status()
-            return cast("RawAPIDict", response.json())
-
-    def get_page_status(self, page_id: str, *, property_name: str = "Status") -> str | None:
-        properties = self.get_page(page_id).get("properties")
-        if not isinstance(properties, dict):
-            return None
-        return _property_name_value(cast("RawAPIDict", properties).get(property_name))
-
-    def query_database(
-        self, database_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100
-    ) -> list[RawAPIDict]:
-        results: list[RawAPIDict] = []
-        cursor: str | None = None
-        with self._client() as client:
-            while True:
-                payload: RawAPIDict = {"page_size": page_size}
-                if db_filter is not None:
-                    payload["filter"] = db_filter
-                if cursor:
-                    payload["start_cursor"] = cursor
-                response = self._transport.run(
-                    lambda p=payload: client.post(f"{self._BASE}/databases/{database_id}/query", json=p),
-                    idempotent=True,
-                )
-                response.raise_for_status()
-                body = response.json()
-                results.extend(body.get("results", []))
-                cursor = body.get("next_cursor")
-                if not body.get("has_more") or not cursor:
-                    return results
-
-    def update_page_status(self, page_id: str, *, property_name: str, value: str) -> RawAPIDict:
-        with self._client() as client:
-            response = self._transport.run(
-                lambda: client.patch(
-                    f"{self._BASE}/pages/{page_id}",
-                    json={"properties": {property_name: {"status": {"name": value}}}},
-                ),
-                idempotent=False,
-            )
-            response.raise_for_status()
-            return cast("RawAPIDict", response.json())

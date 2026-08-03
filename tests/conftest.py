@@ -1,5 +1,6 @@
 """Shared fixtures for teatree script tests."""
 
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -8,16 +9,20 @@ import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
+from teatree.core.worktree.branch_classification import reset_single_branch_cache
+from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from tests._db_template import build_or_reuse_template, restore_from_template
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
-# Ensure unit tests use the settings declared in pyproject.toml, not a stale
-# DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
-# pyproject.toml when the env var is absent.
+# Keep a stale shell DJANGO_SETTINGS_MODULE out of any SUBPROCESS a test spawns. The
+# suite's own settings are pinned by ``--ds`` in pyproject's addopts, because this pop
+# lands after pytest-django has already resolved the module and so never stopped an
+# ambient value winning here (#3996).
 os.environ.pop("DJANGO_SETTINGS_MODULE", None)
 # Pin T3_OVERLAY_NAME to the in-repo overlay so tests stay deterministic even
 # when extra overlays are editable-installed for dogfooding (see #120). Tests
@@ -89,6 +94,23 @@ def pg_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POSTGRES_PASSWORD", "testpass")
 
 
+#: A fixed instant, deliberately mid-cycle, for every billing-cycle-scoped assertion.
+#: A cycle-scoped reader filters ``started_at >= cycle_start(localdate())``, so a test
+#: that stamps its attempt from the wall clock and then lets the reader re-read the
+#: clock silently loses the attempt whenever the local date rolls onto a cycle start
+#: between the two reads — the #3996 shuffle-lane red, which hit whichever test was on
+#: the clock at that second. ``test_pinned_clock_sits_well_inside_its_cycle`` keeps this
+#: value away from either boundary.
+CYCLE_MIDPOINT = dt.datetime(2026, 6, 10, 12, 0, tzinfo=dt.UTC)
+
+
+@pytest.fixture
+def pinned_clock() -> Iterator[dt.datetime]:
+    """Pin ``timezone.now`` (and therefore ``localdate``) to :data:`CYCLE_MIDPOINT`."""
+    with patch("django.utils.timezone.now", return_value=CYCLE_MIDPOINT):
+        yield CYCLE_MIDPOINT
+
+
 @pytest.fixture(autouse=True)
 def _clear_backend_caches() -> Iterator[None]:
     """Clear caches and block real token resolution so tests never call gpg/pass.
@@ -119,6 +141,37 @@ def _clear_backend_caches() -> Iterator[None]:
         yield
     reset_backend_caches()
     reset_overlay_cache()
+
+
+@pytest.fixture(autouse=True)
+def _silence_host_projection_advisory() -> Iterator[None]:
+    """Keep the once-per-process host-projection advisory off every test's stderr.
+
+    No projection is published under test, so the cold readers correctly fall back and
+    warn — but that warning is a process-global write emitted on the FIRST call in each
+    xdist worker, so it lands in whichever test happened to run first and is read as
+    trailing output (`json.loads(result.output)` then fails on "Extra data"). That makes
+    the victim a function of shard and shuffle seed rather than of any change.
+
+    Silenced through the env seam the function itself reads, never `mock.patch`:
+    `teatree.config.cold_db` binds `warn_once` directly, so a patched module attribute
+    would not reach the live caller. `tests/teatree_config/test_host_projection.py`
+    unsets it to cover the advisory in both directions.
+    """
+    reset_advisory_memo()
+    with patch.dict(os.environ, {SILENCE_ADVISORY_ENV: "1"}):
+        yield
+    reset_advisory_memo()
+
+
+@pytest.fixture(autouse=True)
+def _reset_declaration_caches() -> Iterator[None]:
+    """Drop the process-memoised repo declarations so one test's config never answers another's."""
+    reset_single_branch_cache()
+    reset_ci_memo()
+    yield
+    reset_single_branch_cache()
+    reset_ci_memo()
 
 
 @pytest.fixture(autouse=True)
@@ -325,6 +378,32 @@ def _clean_registry() -> Iterator[None]:
     clear()
     yield
     clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_aux_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No pytest run may reach a live model through the aux one-shot seam.
+
+    ``evals/README.md`` states the contract — pytest is the deterministic,
+    no-live-model lane; the metered lane is ``t3 eval``. The aux seam
+    (:func:`teatree.agents.one_shot.run_one_shot`) is the one place production
+    code calls a model on an ordinary code path rather than through an agent
+    spawn, and it is reached by the inbound Slack reading, the cheap answer
+    builder, and the ticket short-describer. On a developer machine, where the
+    ``claude`` child EXISTS, an unpatched call would run and bill; in CI it
+    would merely be slow. Neither is a test result.
+
+    Patched at :func:`~teatree.agents.harness.resolve_harness` — the single
+    module attribute every caller funnels through, whichever name they imported
+    ``run_one_shot`` under. A test that wants a turn injects its own ``harness=``
+    (the documented DI parameter), which bypasses this entirely.
+    """
+
+    def _refuse() -> object:
+        msg = "aux one-shot model turns are disabled under pytest; inject harness= or a reader seam"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("teatree.agents.one_shot.resolve_harness", _refuse)
 
 
 def pytest_configure(config: pytest.Config) -> None:

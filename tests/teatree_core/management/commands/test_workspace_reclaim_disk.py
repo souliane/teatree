@@ -10,6 +10,7 @@ boundary at the CLI seam: the command routes through
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -37,6 +38,18 @@ def _stub_report(*, dry_run: bool = False) -> ReclaimReport:
         ),
     )
     return ReclaimReport(steps=steps if not dry_run else (), planned=steps, dry_run=dry_run)
+
+
+def _failed_report() -> ReclaimReport:
+    """Docker answered and refused every step — the socket-less containerized run."""
+    steps = (
+        ReclaimStep(
+            argv=["docker", "builder", "prune", "-af"],
+            label="build cache",
+            outcome=PruneOutcome(reclaimed="0B", bytes_reclaimed=0, failure="daemon down"),
+        ),
+    )
+    return ReclaimReport(steps=steps, planned=steps)
 
 
 class ReclaimDiskCommandTests(TestCase):
@@ -72,3 +85,24 @@ class ReclaimDiskCommandTests(TestCase):
         assert "dangling images" in printed
         assert "unreferenced volumes" in printed
         assert "Total" in printed
+
+    def test_exits_non_zero_when_a_prune_fails(self) -> None:
+        """A reachable-but-erroring docker must not read as success under disk pressure.
+
+        Exiting 0 on "Total reclaimed: 0B" tells an operator the sanctioned path
+        ran when it did not — the caller cannot tell that apart from a clean
+        no-op, and the disk stays full.
+        """
+        stdout, stderr = StringIO(), StringIO()
+        with (
+            patch.object(workspace_mod, "reclaim_disk", return_value=_failed_report()),
+            pytest.raises(SystemExit) as raised,
+        ):
+            call_command("workspace", "reclaim-disk", stdout=stdout, stderr=stderr)
+        assert raised.value.code == 1
+        assert "FAILED" in stdout.getvalue()  # the partial report is still shown
+        assert "daemon down" in stderr.getvalue()
+
+    def test_successful_reclaim_still_exits_zero(self) -> None:
+        with patch.object(workspace_mod, "reclaim_disk", return_value=_stub_report()):
+            call_command("workspace", "reclaim-disk")  # no SystemExit

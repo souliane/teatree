@@ -6,40 +6,17 @@ its ``summary`` or ``user_input_reason`` ("Unable to connect to API", "API
 Error (Connection refused)", ...). The shared recorder chokepoint
 :func:`teatree.agents.attempt_recorder.record_result_envelope` must not let
 such a death advance the ticket FSM as a real completion — it has to land
-FAILED. This module is the pure, side-effect-free classifier that chokepoint
-consults.
+FAILED.
 
-Precision over recall: an outage death is rare relative to legit completions,
-so a false positive (failing a genuine completion that merely *mentions* an API
-error) is worse than a missed one. The verdict therefore keys on connection
-signatures that do not occur in normal phase-completion prose, and treats the
-bare phrase "API Error" as outage ONLY when it co-occurs with a connection
-phrase — a summary like "added API error handling" is not an outage.
+This module is the envelope-shaped face of that decision: it flattens the
+envelope's prose into one haystack and hands it to
+:func:`teatree.failure_signatures.outage_signature_in_text`, the dependency-free
+leaf that carries the phrase tables and the precision-over-recall reasoning
+behind the verdict.
 """
 
 from teatree.agents.result_schema import AgentResultBlob
-
-_CONNECTION_SIGNATURES = (
-    "unable to connect to api",
-    "connectionrefused",
-    "connection refused",
-    "failedtoopensocket",
-    "failed to open socket",
-    "safety classifier unavailable",
-)
-
-_API_ERROR_PHRASE = "api error"
-
-_CONNECTION_COOCCURRENCE_PHRASES = (
-    "connect",
-    "socket",
-    "network",
-    "timed out",
-    "timeout",
-    "unreachable",
-    "refused",
-    "reset by peer",
-)
+from teatree.failure_signatures import outage_signature_in_text
 
 
 def _scan_text(result: AgentResultBlob, error: str) -> str:
@@ -48,7 +25,7 @@ def _scan_text(result: AgentResultBlob, error: str) -> str:
         str(result.get("user_input_reason", "")),
         error,
     ]
-    return " ".join(parts).casefold()
+    return " ".join(parts)
 
 
 def outage_signature(result: AgentResultBlob, *, error: str = "") -> str:
@@ -56,59 +33,7 @@ def outage_signature(result: AgentResultBlob, *, error: str = "") -> str:
 
     The signature is the diagnostic the recorder stamps onto the FAILED attempt
     (``error="outage_death: <sig>"``); an empty return means *result* / *error*
-    are not an outage death. Case-insensitive across ``summary``,
-    ``user_input_reason``, and the explicit ``error`` string. A direct connection
-    signature returns itself; the generic "API Error" phrase counts only when a
-    connection phrase co-occurs (returning that phrase), so a legitimate summary
-    that merely discusses API-error handling is not flagged.
+    are not an outage death. Scans ``summary``, ``user_input_reason``, and the
+    explicit ``error`` string together, so a signature in any one of them counts.
     """
-    haystack = _scan_text(result, error)
-    for signature in _CONNECTION_SIGNATURES:
-        if signature in haystack:
-            return signature
-    if _API_ERROR_PHRASE in haystack:
-        for phrase in _CONNECTION_COOCCURRENCE_PHRASES:
-            if phrase in haystack:
-                return f"{_API_ERROR_PHRASE} + {phrase}"
-    return ""
-
-
-# Namespaced markers a FAILED attempt's ``error`` carries when the death was an
-# infrastructure interruption rather than a deterministic defect. Each is emitted
-# by exactly one recording seam: ``outage_death:`` by the recorder (#1764),
-# ``result_error:`` by the headless driver for the #1764 "genuine FAILED run"
-# class (a missing terminal ResultMessage OR an ``is_error`` result — both
-# transient), ``provision_failed:`` by a worktree/provisioning step, and
-# ``landing_unverified:`` by the completion chokepoint when a coder yielded
-# without committing. A deterministic refusal (evidence gate, schema, review
-# verdict, a real assertion/test failure, a ``stuck_loop`` runaway) matches none.
-_TRANSIENT_MARKERS = (
-    "outage_death:",
-    "result_error:",
-    "provision_failed:",
-    "landing_unverified:",
-)
-
-
-def transient_failure_signature(error: str) -> str:
-    """Return the transient signature of a FAILED attempt's *error*, or ``""``.
-
-    A non-empty return means the failure was an infrastructure interruption the
-    bounded auto-requeue sweep MAY reopen; ``""`` means a deterministic failure
-    that must stay terminal FAILED. Keys on the namespaced markers above, plus a
-    raw connection / "API Error + connection" signature in the error text (an
-    outage death whose envelope was never stamped with the ``outage_death:``
-    prefix). Case-insensitive.
-    """
-    haystack = error.casefold()
-    if not haystack.strip():
-        return ""
-    for marker in _TRANSIENT_MARKERS:
-        if marker in haystack:
-            return marker.rstrip(": ")
-    return outage_signature({}, error=error)
-
-
-def is_transient_failure(error: str) -> bool:
-    """Whether a FAILED attempt's *error* classifies as a transient interruption."""
-    return bool(transient_failure_signature(error))
+    return outage_signature_in_text(_scan_text(result, error))

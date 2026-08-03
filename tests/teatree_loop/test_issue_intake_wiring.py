@@ -8,14 +8,18 @@ The mini-loop wires it into the live tick and routes the emitted
 ``issue_intake.admitted`` signal to ``t3:orchestrator`` (maker-side kickoff).
 """
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
-from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import Task, Ticket
+from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
+from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
+from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -131,6 +135,31 @@ class IssueIntakeGateTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
             assert _issue_intake_scanner_for(_backend()) is None
 
+    def test_full_budget_reports_the_reason_it_claimed_nothing(self) -> None:
+        # #3978: a tick that claims nothing because the budget is full used to return
+        # None silently, so the loop read enabled, errorless and idle while admitting
+        # nothing. The reason must reach the log naming the slots and their holders.
+        url = "https://github.com/o/r/issues/900"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.NOT_STARTED)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
+            self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs,
+        ):
+            assert _issue_intake_scanner_for(_backend()) is None
+        reported = "\n".join(logs.output)
+        assert "at budget" in reported
+        assert "1/1" in reported
+        assert url in reported
+
+    def test_budget_with_room_reports_nothing(self) -> None:
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled()),
+            patch("teatree.loop.scanner_factories.logger") as log,
+        ):
+            assert _issue_intake_scanner_for(_backend()) is not None
+        log.warning.assert_not_called()
+
     def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
         # Fleet-safety Stage 2: at full budget the scanner is STILL emitted when the
         # kill-switch is on (so the per-tick heartbeat runs), but claims nothing new.
@@ -165,6 +194,52 @@ class IssueIntakeGateTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
             scanner = _issue_intake_scanner_for(_backend())
         assert scanner is not None
+
+    def test_a_holder_whose_pr_merged_out_of_band_frees_the_budget(self) -> None:
+        """#3984 jam: nothing advanced the row, so the release rule never saw MERGED.
+
+        The row is the only evidence the rule and its alarm read, so asking the forge
+        for it before the budget is read is what stops one unadvanced field holding a
+        slot AND silencing the alarm about it.
+        """
+        url = "https://github.com/souliane/teatree/issues/3978"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+        row = PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/souliane/teatree/pull/3981",
+            repo="souliane/teatree",
+            iid="3981",
+        )
+
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
+            patch("teatree.backends.loader.pr_open_state", return_value=PrOpenState.MERGED),
+        ):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        row.refresh_from_db()
+        assert row.state == PullRequest.State.MERGED
+        assert scanner is not None
+
+    def test_an_unreadable_forge_never_blocks_the_tick(self) -> None:
+        url = "https://github.com/souliane/teatree/issues/3979"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/souliane/teatree/pull/3982",
+            repo="souliane/teatree",
+            iid="3982",
+        )
+
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)),
+            patch("teatree.backends.loader.pr_open_state", side_effect=RuntimeError("forge down")),
+        ):
+            assert _issue_intake_scanner_for(_backend()) is not None
 
     def test_abandoned_marker_does_not_consume_budget(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme", abandoned=True)
@@ -284,3 +359,54 @@ class IssueIntakeMiniLoopTests(TestCase):
         assert len(first) == 1
         assert second == []
         assert Task.objects.filter(ticket__issue_url=url, phase="coding").count() == 1
+
+
+class IssueIntakeAdaptiveConcurrencyTests(TestCase):
+    """#3992: the in-flight limit comes from the resource loop, not from the setting.
+
+    The acceptance is stated as a difference, not a value: with the adaptation removed
+    the limit is the same number under every reading, which is precisely the failure the
+    ticket describes. So the first case asserts that an idle box and a loaded box do not
+    hand intake the same ceiling.
+    """
+
+    def _record(self, value: int, *, age: timedelta = timedelta()) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.record_adaptive_concurrency(value)
+        ResourcePressureMarker.objects.filter(pk=marker.pk).update(adaptive_intake_recorded_at=timezone.now() - age)
+
+    def _limit(self) -> int:
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        return scanner.max_concurrent
+
+    def test_idle_and_loaded_boxes_do_not_yield_the_same_limit(self) -> None:
+        self._record(4)
+        idle = self._limit()
+        self._record(1)
+        loaded = self._limit()
+
+        assert idle != loaded
+
+    def test_headroom_lifts_the_limit_above_the_static_setting(self) -> None:
+        self._record(4)
+
+        assert self._limit() == 4
+
+    def test_pressure_lowers_the_limit_below_the_static_setting(self) -> None:
+        self._record(1)
+
+        assert self._limit() == 1
+
+    def test_a_stale_reading_leaves_the_static_setting_in_charge(self) -> None:
+        self._record(4, age=ADAPTIVE_FRESHNESS + timedelta(minutes=1))
+
+        assert self._limit() == 2
+
+    def test_the_adapted_limit_is_what_the_budget_gate_enforces(self) -> None:
+        ImplementedIssueMarkerFactory(overlay="acme")
+        self._record(1)
+
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
+            assert _issue_intake_scanner_for(_backend()) is None

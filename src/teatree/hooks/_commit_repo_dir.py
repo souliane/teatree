@@ -21,14 +21,25 @@ workspace root (not the worktree the agent ``cd``'d into), so honouring the
 in-command ``cd`` is what pins a bare ``git commit`` to the repo it actually
 lands in. ``git``'s own ``-C`` is applied ON TOP of that ``cd`` dir.
 
+Every dir token is read the way the SHELL hands it to ``git``: a leading
+``~``/``~user`` is expanded (:func:`_shell_path`), because a tilde kept
+verbatim parses as a RELATIVE path and every anchor and walk below it is then
+computed against the wrong base.
+
 Fail closed: a ``-C`` value the gate cannot resolve statically (e.g. a
-substitution marker) yields :data:`UNRESOLVABLE_REPO_DIR`, and the carve-out
-must then refuse to downgrade rather than guess a target.
+substitution marker), or a leading ``cd`` that lands on no real directory,
+both yield :data:`UNRESOLVABLE_REPO_DIR`, and the carve-out must then refuse to
+downgrade rather than guess a target. A ``cd`` that goes nowhere is not a soft
+case: the ``cd`` itself fails, so the command commits nowhere, while walking UP
+from the nonexistent path resolves the AMBIENT session repo -- a wrong subject
+for the privacy decision that is indistinguishable from a right one.
 
 :func:`git_root_for_dir` walks UP from a resolved dir to the nearest
 enclosing ``.git`` so a commit run from a SUBDIR of a worktree still resolves
 to the worktree's repo (and so the carve-out can tell a genuinely-unresolvable
-commit -- no enclosing repo anywhere -- from a resolvable one).
+commit -- no enclosing repo anywhere -- from a resolvable one). The walk is
+only ever entered from a dir that exists, so it cannot manufacture that wrong
+subject.
 """
 
 from pathlib import Path
@@ -97,9 +108,34 @@ def _cumulative_dash_c(words: list[str]) -> str | None:
             continue
         if token_has_substitution_marker(value):
             return UNRESOLVABLE_REPO_DIR
-        path = Path(value)
-        accumulator = path if path.is_absolute() or accumulator is None else accumulator / value
+        path = _shell_path(value)
+        accumulator = path if path.is_absolute() or accumulator is None else accumulator / path
     return str(accumulator) if accumulator is not None else None
+
+
+def _shell_path(value: str) -> Path:
+    """Return the path ``value`` denotes AFTER the shell's ``~`` expansion.
+
+    The shell expands a leading ``~``/``~user`` before ``cd``/``git`` ever see
+    the argument, so a static parse that keeps the tilde verbatim reads
+    ``~/repo`` as a RELATIVE path and every downstream anchor/walk is then
+    computed against the wrong base. Expanding here is what makes the parse
+    agree with what the command actually does.
+    """
+    return Path(value).expanduser()
+
+
+def anchored_dir(parsed: str, cwd: Path | None) -> Path:
+    """Return ``parsed`` as an absolute dir: ``~`` expanded, a relative value anchored on ``cwd``.
+
+    The one place a parsed dir token becomes a filesystem path, so the ``cd``
+    resolvers in this module and the cold-hook siblings that reuse them
+    (``hooks/scripts/coverage_gate.py``) cannot drift on ``~`` handling or on
+    which base a relative value hangs off. ``cwd`` is the AMBIENT harness cwd,
+    never the cold hook's process cwd.
+    """
+    path = _shell_path(parsed)
+    return path if path.is_absolute() or cwd is None else cwd / path
 
 
 def leading_cd_dir(command: str) -> str | None:
@@ -109,17 +145,43 @@ def leading_cd_dir(command: str) -> str | None:
     ``pushd <path>`` separated by ``&&``/``;``/...), stopping at the first
     non-navigation segment (the ``git commit``). Each subsequent non-absolute
     path joins onto the preceding one; an absolute path resets the accumulator,
-    mirroring shell semantics. ``None`` when no leading ``cd``/``pushd`` is
-    present, so the caller falls back to the ambient cwd.
+    mirroring shell semantics -- including the shell's ``~`` expansion
+    (:func:`_shell_path`), so ``cd ~/repo`` yields an ABSOLUTE dir rather than a
+    relative ``~/repo`` a caller would anchor on the ambient cwd. ``None`` when
+    no leading ``cd``/``pushd`` is present, so the caller falls back to the
+    ambient cwd.
     """
     accumulator: Path | None = None
     for words in command_segments(command):
         if len(words) < _NAV_WITH_PATH_WORD_COUNT or words[0] not in _NAV_VERBS:
             break
-        value = words[1]
-        path = Path(value)
-        accumulator = path if path.is_absolute() or accumulator is None else accumulator / value
+        path = _shell_path(words[1])
+        accumulator = path if path.is_absolute() or accumulator is None else accumulator / path
     return str(accumulator) if accumulator is not None else None
+
+
+def leading_cd_target(command: str, cwd: Path | None) -> Path | str | None:
+    """Return the dir a leading ``cd``/``pushd`` chain LANDS in, three-valued.
+
+    The three states a caller must be able to tell apart -- the distinction
+    :func:`git_root_for_dir`'s walk-up silently erases:
+
+    - ``None`` -- the command carries no leading ``cd``/``pushd``, so the caller
+        falls back to the ambient ``cwd``.
+    - :data:`UNRESOLVABLE_REPO_DIR` -- the command NAMES a dir that is not a real
+        directory (an unexpanded ``$VAR``, a typo, a stale path). The ``cd``
+        itself would fail, so the command runs nowhere; anchoring the
+        nonexistent path on ``cwd`` and walking UP lands on whatever repo the
+        session happens to sit in -- a confident wrong answer that reads exactly
+        like a correct one. Fail closed instead, the same sentinel
+        :func:`_cumulative_dash_c` already returns for an unpinnable ``-C``.
+    - an absolute :class:`~pathlib.Path` -- the dir the ``cd`` lands in.
+    """
+    cd_dir = leading_cd_dir(command)
+    if cd_dir is None:
+        return None
+    target = anchored_dir(cd_dir, cwd)
+    return target if target.is_dir() else UNRESOLVABLE_REPO_DIR
 
 
 def git_root_for_dir(start: Path) -> Path | None:
@@ -156,10 +218,23 @@ def resolve_commit_dir(command: str, cwd: Path | None) -> Path | str | None:
     carve-out (a banned-term leak to the public repo), and a relative private
     target resolved by accident only when the process cwd happened to match.
 
+    A leading ``cd`` that lands on NO REAL DIRECTORY is the fail-closed
+    sentinel, never a walk-up (:func:`leading_cd_target`): the ``cd`` itself
+    fails, so the command commits nowhere, while anchoring the nonexistent path
+    on ``cwd`` and letting :func:`git_root_for_dir` walk UP resolves the AMBIENT
+    session repo and hands the carve-out a wrong subject that is
+    indistinguishable from a right one. The ``~``-prefixed form used to be
+    exactly such a path. ``-C``/``--git-dir`` keep their established
+    existence-free semantics -- a ``-C`` dir inside no repo at all is the
+    documented fail-OPEN case, and a ``--git-dir`` value is normalised as a pure
+    path -- so the guard is scoped to the navigation prefix that produced the
+    walk-up.
+
     Returns:
-    - :data:`UNRESOLVABLE_REPO_DIR` when ``effective_repo_dir`` could not pin
-        the ``-C`` value statically (a substitution marker) -- the caller must
-        then NOT downgrade (fail closed).
+    - :data:`UNRESOLVABLE_REPO_DIR` when a leading ``cd`` lands on no real
+        directory, or when ``effective_repo_dir`` could not pin the ``-C`` value
+        statically (a substitution marker) -- the caller must then NOT downgrade
+        (fail closed).
     - an absolute :class:`~pathlib.Path` of the resolved commit dir when the
         command named one (``cd``/``-C``/``--git-dir``), anchored on ``cwd``
         when the parsed dir is relative and ``cwd`` is given.
@@ -167,15 +242,14 @@ def resolve_commit_dir(command: str, cwd: Path | None) -> Path | str | None:
         the ambient cwd's repo), or ``None`` when neither resolves -- the
         caller reads ``None`` as a genuinely-unresolvable LOCAL commit.
     """
+    if leading_cd_target(command, cwd) == UNRESOLVABLE_REPO_DIR:
+        return UNRESOLVABLE_REPO_DIR
     repo_dir = effective_repo_dir(command)
     if repo_dir == UNRESOLVABLE_REPO_DIR:
         return UNRESOLVABLE_REPO_DIR
     if repo_dir is None:
         return cwd
-    parsed = Path(repo_dir)
-    if parsed.is_absolute() or cwd is None:
-        return parsed
-    return cwd / parsed
+    return anchored_dir(repo_dir, cwd)
 
 
 def effective_repo_dir(command: str) -> str | None:
@@ -206,9 +280,10 @@ def effective_repo_dir(command: str) -> str | None:
     base = _combine_base(cd_dir, dash_c)
     git_dir = _last_flag_value(git_words, "--git-dir")
     if git_dir is not None:
-        if base is not None and not Path(git_dir).is_absolute():
-            return str(Path(base) / git_dir)
-        return git_dir
+        expanded = _shell_path(git_dir)
+        if base is not None and not expanded.is_absolute():
+            return str(Path(base) / expanded)
+        return str(expanded)
     return base
 
 

@@ -39,6 +39,13 @@ AGENT_BY_KIND: dict[str, str] = {
     # MR even when the agent's dispatch is gated by the
     # ``RedMrFixAttempt`` ledger.
     "my_pr.failed": "t3:debug",
+    # A merge request that no longer merges cleanly routes to the same fix agent
+    # as a red one: both are the branch being un-mergeable, and the remedy is a
+    # worktree change (merge the target branch in — never a rebase). The payload's
+    # ``fix_kind`` is what separates the two remedies and their ledger slots.
+    # ``my_pr.conflict_unknown`` deliberately has NO route here: an unread merge
+    # state is not evidence of a conflict, so it surfaces and dispatches nothing.
+    "my_pr.conflicted": "t3:debug",
     # #1047: a Slack reaction/mention on an MR-bearing message routes to the
     # reviewer pipeline. The maker/checker boundary (BLUEPRINT §17.8) is
     # preserved because the reviewer agent runs as a separate dispatch from
@@ -59,9 +66,20 @@ AGENT_BY_KIND: dict[str, str] = {
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
+    # The MR-triage surveyor names what an open MR needs next. Every verdict it
+    # emits is an owner decision it deliberately does not take, so it belongs where
+    # the owner looks for what they owe rather than in the in-flight fallback.
+    "mr_triage.verdict": "action_needed",
     "my_pr.failed": "action_needed",
     "my_pr.draft_notes": "action_needed",
     "my_pr.open": "in_flight",
+    # Both halves of the conflict sweep are owed work the operator must see. The
+    # confirmed conflict is mirrored alongside its agent dispatch (see DUAL_DISPATCH);
+    # the unreadable merge state has no agent at all, so this row IS its whole
+    # visibility — without it an unanswerable probe would be indistinguishable from
+    # a clean merge request, which is the failure the third value exists to prevent.
+    "my_pr.conflicted": "action_needed",
+    "my_pr.conflict_unknown": "action_needed",
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
     "slack.review_intent": "action_needed",
@@ -101,6 +119,10 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
+    # #3992 The resource loop moved intake concurrency by itself — an observation the
+    # operator should be able to SEE, but never a thing for them to act on, so it
+    # renders in in_flight rather than competing with the pressure advisories above.
+    "resource.intake_concurrency_adapted": "in_flight",
     # #129 task-sweep — an orphaned (unverifiable) teatree task surfaces for
     # operator review; the completion path routes through the mechanical handler below.
     "task.orphaned": "action_needed",
@@ -122,6 +144,16 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "self_update.schema_behind": "action_needed",
     # Operator config gap, not per-MR bookkeeping — exempted from the drop below.
     "review_request_merge_react.missing_scope": "action_needed",
+    # R3 resume. The reply tells colleagues a held merge request is reviewable
+    # again, so the owner sees what went out under their name. The other three
+    # are the reasons a resume did NOT go out: an unreadable pause and a blocked
+    # post each need the operator (a Slack scope, a recorded approval) or the
+    # request stays held with nothing on the channel saying so; a transport
+    # failure released its claim and retries, so it is in-flight rather than owed.
+    "review_request.resumed": "action_needed",
+    "review_request.pause_unreadable": "action_needed",
+    "review_request.resume_gated": "action_needed",
+    "review_request.resume_failed": "in_flight",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
     # (see is_pr_sweep_flag): a conflicted open PR (#78), a green
     # solo-overlay PR with no recorded independent cold-review (#68), a PR
@@ -223,6 +255,9 @@ DUAL_DISPATCH: frozenset[str] = frozenset(
         # the ledger idempotency gate suppresses the agent dispatch on
         # a re-tick of the same head_sha.
         "my_pr.failed",
+        # Same shape for a conflicted MR: the fix dispatches once per head, but
+        # the conflict stays on the statusline every tick until it is resolved.
+        "my_pr.conflicted",
     },
 )
 

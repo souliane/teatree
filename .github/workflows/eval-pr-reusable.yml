@@ -10,11 +10,16 @@
 # enforcement, or the Docker summary handling.
 #
 # HOW THE SELECTION WORKS
-#   The `detect` job diffs the PR against its base and pipes the changed paths to
-#   `t3 eval changed-scenarios` (the reusable CLI around the same selector the
-#   host's `scripts/eval/scenarios_for_changed.py` shim uses). It prints the
-#   `name` of every spec whose source file the PR touched. Empty → the `eval` job
-#   is skipped entirely (a PR touching no scenario spends zero API budget).
+#   The `detect` job diffs the PR against its base twice — `--name-only` for the
+#   changed paths (piped on STDIN) and `--unified=0` for the same range (passed as
+#   `--diff-file`) — and hands both to `t3 eval changed-scenarios` (the reusable CLI
+#   around the same selector the host's `scripts/eval/scenarios_for_changed.py` shim
+#   uses). It prints the `name` of every spec whose scenario YAML the PR touched,
+#   PLUS every spec whose `agent_path` skill file it touched — narrowed, for a spec
+#   declaring `agent_sections`, to the sections that actually moved. Without that
+#   second input a graded-section edit selected ZERO scenarios and the lane passed
+#   having proven nothing (#3944). Empty → the `eval` job is skipped entirely (a PR
+#   touching nothing a scenario is built from spends zero API budget).
 #
 # OVERLAY SUPPORT (`teatree-repo` / `teatree-path`)
 #   An overlay's scenarios are discovered by the CORE teatree harness via its
@@ -147,8 +152,10 @@ jobs:
         run: |
           git fetch --no-tags origin "$BASE_REF"
           git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
+          git diff --unified=0 "origin/$BASE_REF...HEAD" > changed.diff
           rc=0
-          uv run t3 eval changed-scenarios --skip-code 3 < changed-files.txt > names.txt || rc=$?
+          uv run t3 eval changed-scenarios --skip-code 3 --diff-file changed.diff \
+            < changed-files.txt > names.txt || rc=$?
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
             echo "t3 eval changed-scenarios failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
             exit "$rc"
@@ -216,6 +223,14 @@ jobs:
         run: |
           npm install -g @anthropic-ai/claude-code@2.1.220
           claude --version
+      # The runner is neither the container that mounts the control-DB volume
+      # nor the operator's host, so it must declare its own sandbox: without
+      # one the DB resolves to the container-only /var/lib/teatree/control-db
+      # and every teatree command below dies with "unable to open database
+      # file". An explicit XDG_DATA_HOME is the seam `paths.canonical_db_in`
+      # names for this — the DB lands beside the data dir settings.py creates.
+      - name: Sandbox the control DB (the runner is not the container)
+        run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
       # Assert the caller's scenarios are actually discovered before spending any

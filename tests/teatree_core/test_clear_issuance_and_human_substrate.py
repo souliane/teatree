@@ -155,6 +155,66 @@ class TestClearIssuanceSeam(TestCase):
         assert clear.blast_class == MergeClear.BlastClass.DOCS
         assert clear.ticket_id == ticket.pk
 
+    def test_ticketless_clear_records_the_named_forge(self) -> None:
+        """A managed-repo MR with no teatree Ticket names its forge and stays mergeable."""
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "6264",
+                "acme-eng/widget-api",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+                forge="gitlab",
+            ),
+        )
+        assert result["issued"]
+        assert result["host_kind"] == "gitlab"
+        assert MergeClear.objects.get(pk=result["clear_id"]).host_kind == "gitlab"
+
+    def test_ticketless_clear_with_an_unresolvable_forge_writes_no_row(self) -> None:
+        """The refusal happens BEFORE issuance, so no orphan ratchets the S4 stale-CLEAR signal."""
+        with patch("teatree.core.merge.host_kind.find_project_root", return_value=None):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "6264",
+                    "acme-eng/widget-api",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                ),
+            )
+        assert result["issued"] is False
+        assert "could not resolve the forge" in str(result["error"])
+        assert not MergeClear.objects.filter(pr_id=6264).exists()
+        assert not ReviewVerdict.objects.filter(pr_id=6264).exists()
+
+    def test_clear_refuses_an_unknown_forge(self) -> None:
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "6265",
+                "acme-eng/widget-api",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+                forge="bitbucket",
+            ),
+        )
+        assert result["issued"] is False
+        assert "unknown forge 'bitbucket'" in str(result["error"])
+        assert not MergeClear.objects.filter(pr_id=6265).exists()
+
     def test_clear_without_ticket_id_adopts_the_prs_owning_ticket(self) -> None:
         # ``--ticket-id`` is optional and no caller passes it, so a CLEAR was born
         # with no FSM for the keystone to advance. The PR knows its own ticket.

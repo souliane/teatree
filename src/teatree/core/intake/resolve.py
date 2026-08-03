@@ -8,8 +8,11 @@ Resolution order:
 2. Match CWD directly against ``Worktree.extra["worktree_path"]``
 3. Detect git worktree from filesystem and auto-register in DB
 
-``T3_ORIG_CWD`` env var (set by the CLI) preserves the user's shell CWD
-across the ``uv --directory`` subprocess chain.
+The CWD itself is resolved by :func:`_get_user_cwd`: the container-translated
+``TEATREE_INVOCATION_CWD`` first (the only value that survives
+``docker compose exec``), then ``T3_ORIG_CWD`` (set by the host-native CLI to
+preserve the user's shell CWD across the ``uv --directory`` subprocess chain),
+then ``PWD``.
 """
 
 import logging
@@ -20,6 +23,7 @@ from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
+from teatree.core.invocation_cwd import declared_invocation_cwd
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
@@ -67,7 +71,22 @@ class WorkspaceOwnerCollisionError(RuntimeError):
 
 
 def _get_user_cwd() -> str:
-    """Return the user's original CWD, surviving ``uv --directory`` and subprocess chains."""
+    """Return the user's original CWD, surviving the container boundary and subprocess chains.
+
+    The DECLARED invocation cwd wins: ``deploy/t3`` translates the operator's host
+    cwd into container coordinates and exports it, and it is the only value that
+    survives ``docker compose exec`` — which starts the process in the image's own
+    WORKDIR, so inside the container ``T3_ORIG_CWD``/``PWD``/``Path.cwd()`` all
+    report ``/home/teatree`` no matter where ``t3`` was typed. Consulting them
+    first made every cwd-based worktree resolution fail identically from every
+    worktree.
+
+    ``T3_ORIG_CWD`` (set by the host-native CLI to survive the ``uv --directory``
+    subprocess chain) then ``PWD`` remain the host-native chain, unchanged.
+    """
+    declared = declared_invocation_cwd()
+    if declared is not None:
+        return str(declared)
     return os.environ.get("T3_ORIG_CWD", os.environ.get("PWD", str(Path.cwd())))
 
 

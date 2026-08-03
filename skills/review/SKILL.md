@@ -269,6 +269,17 @@ Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step ex
 
 **BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it. To enumerate the open MRs you are scanning and move to the next unclaimed candidate, list them with `glab mr list` (GitLab) / `gh pr list` (GitHub), then skip past any that already carry a colleague's :eyes: — there is no `t3` command for advancing to the next MR, so do not invent one.
 
+**Emit only YOUR OWN verdict reaction — never re-add a check a colleague already placed.** When posting your review verdict as a reaction on the review-broadcast message, react with the emoji for YOUR verdict only. If the broadcast already carries a `:white_check_mark:` (or another verdict emoji) from a different reviewer, do not re-add it alongside your own — that duplicates a colleague's already-recorded signal and reads as if you independently re-verified their check. Your own distinct verdict (e.g. `:question:` for blocking) is the only reaction your review adds.
+
+```bash
+# do X — react with only your own verdict, leave the colleague's existing reaction alone:
+t3 slack react C_REVIEW 171.5 question
+# never Y — re-adding a check/verdict emoji someone else already placed:
+t3 slack react C_REVIEW 171.5 white_check_mark   # FORBIDDEN when another reviewer already added it
+```
+
+Pinned by `review_reaction_dedups_existing_reactor` (`evals/scenarios/review.yaml`).
+
 #### The review-DONE Slack signal is `t3 slack react`, with three positional arguments
 
 A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. There is
