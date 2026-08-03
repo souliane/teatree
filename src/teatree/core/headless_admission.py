@@ -37,6 +37,12 @@ def headless_admission_denied_reason() -> str | None:
     ceiling. Returns the DENY ``reason`` when the governor brakes outright or the
     live count is at/over the ceiling; ``None`` when admission is healthy, the
     kill-switch is off, or a signal read raised (fail-open).
+
+    ``static_ceiling=None`` says the operator has configured no cap for THIS lane,
+    which is not the same as no cap at all: the governor always derives one from the
+    signals it has, so a stale quota cache — the steady state, since healthy health
+    rows expire in minutes and are written only reactively — bounds the lane at the
+    machine-derived ceiling rather than leaving it unbounded (#4097).
     """
     if not governor_enabled():
         return None
@@ -54,7 +60,7 @@ def headless_admission_denied_reason() -> str | None:
         return None
     if not decision.admit:
         return decision.reason
-    if decision.ceiling is not None and live >= decision.ceiling:
+    if live >= decision.ceiling:
         return f"live headless agents {live} at/over governor ceiling {decision.ceiling}"
     return None
 

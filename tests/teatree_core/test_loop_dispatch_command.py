@@ -545,7 +545,7 @@ class TestGovernorGate(_LoopDispatchTest):
         from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
         from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
 
-        deny = AdmissionDecision(admit=False, reason="token quota hit", ceiling=None, braked=True)
+        deny = AdmissionDecision(admit=False, reason="token quota hit", ceiling=1, braked=True)
         with (
             patch.object(loop_dispatch, "read_admit_budget", return_value=None),
             patch.object(loop_dispatch, "governor_verdict", return_value=deny),
