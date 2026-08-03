@@ -15,18 +15,20 @@ hand out without swapping; on macOS the sum of the genuinely-reclaimable
 ``vm_stat`` page classes (free + inactive + purgeable + speculative), which
 approximates the same quantity — macOS keeps RAM ~99 % "used" by design
 (compressor + inactive cache), so a naive percent fires constantly and means
-nothing.
+nothing. The machine figure is then floored by this process's own cgroup
+headroom, because a capped container OOMs at its own ceiling while the host
+still looks roomy.
 
 A PROBE THAT CANNOT ANSWER SAYS SO (#4104). ``vm_stat`` is macOS-only, so the
 single-reader version returned ``None`` on every Linux pass and the caller
 silently skipped the whole RAM ladder — a scanner reporting "0 signals" on a
 box with 2 GB of 30 available, indistinguishable from a healthy one. When no
-reader can answer, the tick now emits ``resource.probe_inert`` instead of
+scope can answer, the tick now emits ``resource.probe_inert`` instead of
 nothing. An unreadable resource is still treated as *unbounded* free (never
 0 GB) for the thresholds, so "can't tell" never fires a freeing pass either.
 
-Decision ladder per tick. L0 OBSERVE — both resources above WARN: measure +
-upsert marker, emit nothing (silent tick). L1 WARN — disk OR ram in the WARN
+Decision ladder per tick. L0 OBSERVE — both resources above WARN and both
+readable: measure + upsert marker, emit nothing (silent tick). L1 WARN — disk OR ram in the WARN
 band: advisory ``resource.pressure_warn`` to the statusline, no freeing. L2
 CRITICAL — disk OR ram below the CRIT threshold AND the freeing rate-limit has
 elapsed: ``resource.cleanup_needed`` to the mechanical handler (allow-list
@@ -48,13 +50,12 @@ from dataclasses import dataclass, field
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
-from teatree.utils.ram_probe import linux_mem_available_kb
+from teatree.utils.ram_probe import cgroup_v2_memory_mib, linux_mem_available_kb
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
 _GIB = 1024 * 1024 * 1024
-_MEMINFO_PATH = "/proc/meminfo"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,29 +101,50 @@ def read_disk_free_gb(path: str = "/") -> float | None:
 
 
 def read_ram_avail_gb() -> float | None:
-    """Absolute reclaimable RAM in GB, read per platform (never raw percent-used).
+    """Absolute reclaimable RAM in GB — the tightest scope that can answer.
 
-    Linux reads ``/proc/meminfo``'s ``MemAvailable``; macOS sums the reclaimable
-    ``vm_stat`` page classes. ``None`` means this host has no reader that could
-    answer — the caller reports the RAM ladder INERT rather than skipping it
-    silently, which is what hid the ladder being dead on Linux (#4104).
+    Two scopes can each run out independently, so the honest figure is whichever
+    binds first: the machine (Linux ``/proc/meminfo`` ``MemAvailable``, macOS's
+    reclaimable ``vm_stat`` page classes) and this process's own cgroup. Reading
+    only the machine is how a 23 GB-capped worker was OOM-killed three times while
+    the 30 GB host still reported ~10 GB free, an order of magnitude above every
+    threshold (#4104). Mirrors :func:`ram_probe.effective_available_ram_mib`, which
+    the sibling intake scanner in this same mini-loop already reasons in.
+
+    ``None`` means no scope could answer — the caller reports the RAM ladder INERT
+    rather than skipping it silently.
     """
     system = platform.system()
+    readings = [gb for gb in (_read_machine_ram_avail_gb(system), _read_cgroup_headroom_gb()) if gb is not None]
+    if not readings:
+        logger.warning("resource_pressure: %s — the RAM ladder is inert", _ram_inert_reason(system))
+        return None
+    return min(readings)
+
+
+def _read_machine_ram_avail_gb(system: str) -> float | None:
+    """Machine-wide available RAM in GB, per platform."""
     if system == "Linux":
-        return _read_meminfo_avail_gb()
+        available_kb = linux_mem_available_kb()
+        return None if available_kb is None else available_kb * 1024 / _GIB
     if system == "Darwin":
         return _read_vm_stat_avail_gb()
-    logger.warning("resource_pressure: no RAM reader for platform %s — the RAM ladder is inert", system)
     return None
 
 
-def _read_meminfo_avail_gb() -> float | None:
-    """``MemAvailable`` in GB — the kernel's own reclaimable-without-swapping estimate."""
-    available_kb = linux_mem_available_kb(_MEMINFO_PATH)
-    if available_kb is None:
-        logger.warning("resource_pressure: %s unreadable — the RAM ladder is inert", _MEMINFO_PATH)
+def _read_cgroup_headroom_gb() -> float | None:
+    """What this process's cgroup can still allocate — the scope a container OOMs in."""
+    limit_mib = cgroup_v2_memory_mib("memory.max")
+    current_mib = cgroup_v2_memory_mib("memory.current")
+    if limit_mib is None or current_mib is None:
         return None
-    return available_kb * 1024 / _GIB
+    return max(0, limit_mib - current_mib) / 1024
+
+
+def _ram_inert_reason(system: str) -> str:
+    """Why no reading was possible — an operator chasing a platform gap needs the real cause."""
+    machine_reader = {"Linux": "/proc/meminfo unreadable", "Darwin": "vm_stat unavailable"}
+    return f"{machine_reader.get(system, f'no RAM reader for platform {system}')} and no cgroup memory limit"
 
 
 def _read_vm_stat_avail_gb() -> float | None:
@@ -196,10 +218,11 @@ def _measure() -> ResourceReading:
 def _ram_probe_inert_signal() -> ScanSignal:
     """Say the RAM ladder is not protecting this host, so it reads differently from a healthy one."""
     system = platform.system()
+    reason = _ram_inert_reason(system)
     return ScanSignal(
         kind="resource.probe_inert",
-        summary=f"ram probe INERT on {system} — no reader available, the RAM ladder is not guarding this host",
-        payload={"resource": "ram", "level": "inert", "platform": system},
+        summary=f"ram probe INERT on {system} — {reason}; the RAM ladder is not guarding this host",
+        payload={"resource": "ram", "level": "inert", "platform": system, "reason": reason},
     )
 
 
