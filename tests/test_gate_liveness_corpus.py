@@ -48,6 +48,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
+from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 from tests._git_repo import _GIT, git_identity_env, make_git_repo
@@ -631,6 +632,50 @@ def _dispatch_quote_task_allow(ctx: GateContext) -> dict:
     }
 
 
+# admission governor on dispatch (#4107): the governor had two callers, both
+# factory lanes, so an interactive Agent/Task dispatch was admitted with no
+# ceiling and no load brake. Both arms are arranged over the load-brake
+# watermark (deterministic, no DB read — a brake short-circuits before the live
+# count), so the deny is the governor's own reason and the allow is the per-call
+# `[admission-ok:]` escape that keeps the gate never-lockout.
+_ADMISSION_OK = "[admission-ok: the merge keystone is blocked on this dispatch]"
+
+
+def _arrange_dispatch_admission(ctx: GateContext) -> None:
+    from teatree.core import dispatch_admission  # noqa: PLC0415 — deferred: arranged per-row, not at import
+
+    over_the_watermark = MachineSignal(cores=8, load1=BRAKE_LOAD_PER_CORE * 8 + 1, ram_available_gb=1.0)
+    ctx.monkeypatch.setattr(dispatch_admission, "governor_enabled", lambda: True)
+    ctx.monkeypatch.setattr(dispatch_admission, "read_machine_signal", lambda: over_the_watermark)
+    ctx.monkeypatch.setattr(
+        dispatch_admission,
+        "read_quota_signal",
+        lambda: QuotaSignal(
+            fresh=False,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.0,
+            short_utilization=0.0,
+            seconds_to_weekly_reset=None,
+        ),
+    )
+
+
+def _dispatch_admission_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": "review the diff"}}
+
+
+def _dispatch_admission_allow(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": f"{_ADMISSION_OK} review"}}
+
+
+def _dispatch_admission_task_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "task_subject": "do work", "task_description": "implement the fix"}
+
+
+def _dispatch_admission_task_allow(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "task_subject": "do work", "task_description": _ADMISSION_OK}
+
+
 # banned-terms (PreToolUse Bash arm): a publish body carrying a configured
 # banned term denies; a clean body allows. (No Slack-MCP arm exists.)
 
@@ -1067,6 +1112,24 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_dispatch_quote_task_deny,
         allow_input=_dispatch_quote_task_allow,
         arrange=_arrange_dispatch_quote_on_task,
+    ),
+    GateRow(
+        gate_id="dispatch-admission-governor",
+        handler=router.handle_dispatch_admission,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_dispatch_admission_deny,
+        allow_input=_dispatch_admission_allow,
+        arrange=_arrange_dispatch_admission,
+    ),
+    GateRow(
+        gate_id="dispatch-admission-governor-on-task-create",
+        handler=router.handle_dispatch_admission_on_task_create,
+        event="TaskCreated",
+        matched="Task",
+        deny_input=_dispatch_admission_task_deny,
+        allow_input=_dispatch_admission_task_allow,
+        arrange=_arrange_dispatch_admission,
     ),
     GateRow(
         gate_id="banned-terms-bash",
