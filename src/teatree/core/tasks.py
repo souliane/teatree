@@ -214,7 +214,7 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
     from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
-    from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred: call-time
+    from teatree.core.headless_admission import headless_admission_verdict  # noqa: PLC0415 — deferred: call-time
     from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415 — deferred: call-time import, kept lazy
     from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
@@ -236,13 +236,15 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
         .select_related("ticket")
         .only("pk", "phase", "execution_target", "ticket__role", "ticket__overlay")
     )
-    # Consult the admission governor once per drain (F9). A DENY applies
-    # backpressure to the ENQUEUE step only — poison rows are still failed and
-    # cleaned this tick; live rows stay PENDING for the next admitted drain.
-    # Fail-open (None) leaves the pre-governor behaviour byte-for-byte intact.
-    admission_denied = headless_admission_denied_reason()
-    if admission_denied is not None:
-        logger.warning("Governor DENIED headless drain admission: %s (pending rows stay queued)", admission_denied)
+    # Consult the admission governor once per drain (F9), then resolve that ONE probe
+    # per row's phase cost class (#4098) — a 3-minute read-only review must not be
+    # refused on the brake a 272-turn coding agent caused, since reviewing and shipping
+    # are what retire a worktree and free the box. A DENY applies backpressure to the
+    # ENQUEUE step only — poison rows are still failed and cleaned this tick; live rows
+    # stay PENDING for the next admitted drain. Fail-open leaves the pre-governor
+    # behaviour byte-for-byte intact.
+    admission = headless_admission_verdict()
+    admission.log_denials()
     enqueued: list[int] = []
     rerouted: list[int] = []
     failed_unknown_overlay: list[int] = []
@@ -256,7 +258,7 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
-        if admission_denied is not None:
+        if admission.denied_reason(task_obj.phase) is not None:
             continue
         if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
             task_obj.route_to_headless(
@@ -264,6 +266,7 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             )
             rerouted.append(task_obj.pk)
         execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
+        admission.record_admitted(task_obj.phase)
         enqueued.append(task_obj.pk)
     return {"enqueued": enqueued, "rerouted": rerouted, "failed_unknown_overlay": failed_unknown_overlay}
 

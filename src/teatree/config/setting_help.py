@@ -72,6 +72,7 @@ SETTING_HELP: dict[str, str] = {
     "billing_cycle_anchor_day": "day of the month the subscription's usage window resets",
     "boost_concurrency": "extra concurrent units allowed while the box is in boost",
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",
+    "cheap_phase_admission_ceiling": "how many cheap read-only phase agents still run while the box is braked",
     "check_updates": "check for a newer teatree on startup",
     "chrome_devtools_headless": "run the devtools browser headless",
     "chrome_devtools_mcp_enabled": "expose the Chrome devtools MCP server to agents",

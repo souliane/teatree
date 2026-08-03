@@ -21,6 +21,7 @@ empty string, so dispatch is byte-identical to today.
 """
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -170,6 +171,67 @@ KNOWN_PHASES: frozenset[str] = (
 #: dispatch — that is the shadowing the per-phase restoration removes. A
 #: conformance test asserts no author phase routes here.
 CHAINING_ORCHESTRATOR: str = "t3:orchestrator"
+
+
+class PhaseCost(StrEnum):
+    """How much pressure one dispatched agent of a phase puts on the box (#4098).
+
+    The admission governor used to hold ONE verdict for the whole headless queue, so a
+    3-minute read-only review was refused on the same brake as a 272-turn coding agent
+    — and the phases that RETIRE work (a merged PR frees a worktree and its agent) were
+    starved by the phases that created the load, so the brake held itself on.
+    """
+
+    CHEAP = "cheap"
+    EXPENSIVE = "expensive"
+
+
+#: Phases whose agent is short and read-only, or whose whole job is to RETIRE work.
+#: None of them provisions a worktree, runs a test suite, or drives a build, so N of
+#: them is bounded work rather than an open-ended one. Membership is deliberately
+#: harness-owned (beside :data:`SUBAGENT_BY_PHASE`) and NOT operator-configurable: a
+#: per-deployment override could move ``coding`` into the exempt lane, which is the
+#: unbounded-lane failure this exemption must never become.
+CHEAP_PHASES: frozenset[str] = frozenset(
+    {
+        # Read-only review lanes — the verdict producers that unblock everything else.
+        "reviewing",
+        "e2e_reviewing",
+        "codex_reviewing",
+        "codex_adversarial_reviewing",
+        "critic_reviewing",
+        # Work-retiring lanes: opening/merging the PR is what frees the worktree and
+        # its agent, so refusing these under load removes the only relief available.
+        "shipping",
+        "requesting_review",
+        # Short read-only assessors and responders — no repo mutation at all.
+        "triage_assessing",
+        "answering",
+        "directive_interpreting",
+        "scanning_news",
+        "short_describe",
+    }
+)
+
+
+def phase_cost(phase: str) -> PhaseCost:
+    """Classify *phase* for admission. Anything unrecognised is EXPENSIVE.
+
+    Fail-safe by construction: only an explicitly registered member of
+    :data:`CHEAP_PHASES` is cheap, so a new or misspelled phase inherits the braked
+    class rather than the exemption. ``phase`` is normalized, so a row stored under a
+    short verb (``review``) classifies like its canonical gerund.
+    """
+    return PhaseCost.CHEAP if normalize_phase(phase) in CHEAP_PHASES else PhaseCost.EXPENSIVE
+
+
+def cheap_phase_spellings() -> frozenset[str]:
+    """Every stored spelling of every cheap phase — the DB-side of :func:`phase_cost`.
+
+    Lets ``phase__in=...`` count the live cheap lane without a per-row normalize call,
+    matching a row whichever accepted spelling it was written with.
+    """
+    return frozenset(spelling for phase in CHEAP_PHASES for spelling in phase_spellings(phase))
 
 
 def subagent_for_phase(role: str, phase: str) -> str:

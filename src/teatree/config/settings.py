@@ -1047,6 +1047,16 @@ class _ProvisioningSettings:
     # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
     # pre-governor static behaviour. Per-overlay overridable.
     admission_governor_enabled: bool = True
+    # #4098 How many CHEAP headless phase agents (read-only reviews, review requests,
+    # ship/merge, short assessors — ``teatree.core.modelkit.phases.CHEAP_PHASES``) may
+    # be live while the governor brakes the EXPENSIVE class. Those phases are what
+    # RETIRE work, so refusing them on the load their coding siblings created removed
+    # the only relief available and held the brake on for hours. The exemption is from
+    # the MACHINE brake only — a spent token budget still refuses every class — and it
+    # is BOUNDED by this number, so it can never become a second unbounded lane.
+    # ``0`` disables the exemption entirely (cheap is braked exactly like expensive):
+    # the rollback lever. Per-overlay overridable.
+    cheap_phase_admission_ceiling: int = 2
     # Repos that are ONE branch wide while listed — ``<repo-slug>=<branch>`` entries.
     # While a repo is listed, provisioning a worktree on any OTHER branch is
     # refused, as are the raw ``git worktree add`` / ``checkout -b`` / ``switch

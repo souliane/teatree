@@ -382,6 +382,29 @@ class TaskQuerySet(models.QuerySet):
             execution_target=task_model.ExecutionTarget.HEADLESS,
         ).count()
 
+    def live_cheap_headless_agent_count(self) -> int:
+        """Live HEADLESS agents on a CHEAP phase — the exemption lane's own bound (#4098).
+
+        Deliberately a sibling of :meth:`live_headless_agent_count` rather than a
+        parameter on it: that number is also the per-agent test-worker divisor, and it
+        must keep counting EVERY live agent. This one answers a different question —
+        how full is the small lane the cheap class is admitted through while the
+        expensive class is braked — so the exemption is bounded rather than a second
+        unbounded lane. Filters on stored spellings, so a row written as ``review``
+        counts like ``reviewing``.
+        """
+        from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        now = timezone.now()
+        return self.filter(
+            status=task_model.Status.CLAIMED,
+            lease_expires_at__gt=now,
+            execution_target=task_model.ExecutionTarget.HEADLESS,
+            phase__in=cheap_phase_spellings(),
+        ).count()
+
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).
 
