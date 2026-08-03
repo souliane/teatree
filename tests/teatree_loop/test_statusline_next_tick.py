@@ -27,7 +27,7 @@ from teatree.loop.statusline import (
     set_overridden_loops_reader,
     set_preset_line_reader,
 )
-from teatree.loop.statusline_loop_chunks import _mini_loop_chunk, overdue_mini_loop_names
+from teatree.loop.statusline_loop_chunks import MiniLoopSchedule, _mini_loop_chunk, overdue_mini_loop_names
 from teatree.loop.statusline_loops import PresetLineHandles
 from teatree.loop.statusline_render import _format_duration
 
@@ -143,9 +143,9 @@ class TestMiniLoopsAnchor:
     def test_only_due_soon_loops_appear_each_with_own_countdown(self) -> None:
         now = datetime.now(UTC)
         schedules = [
-            ("dispatch", now + timedelta(seconds=120), 600),
-            ("tickets", now + timedelta(seconds=240), 600),
-            ("news", now + timedelta(seconds=18 * 60), 3600),
+            MiniLoopSchedule("dispatch", now + timedelta(seconds=120), 600),
+            MiniLoopSchedule("tickets", now + timedelta(seconds=240), 600),
+            MiniLoopSchedule("news", now + timedelta(seconds=18 * 60), 3600),
         ]
         with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules):
             chunks = mini_loops_anchor()
@@ -154,12 +154,16 @@ class TestMiniLoopsAnchor:
         assert chunks == ["dispatch 2m", "tickets 4m"], chunks
 
     def test_never_fired_loop_reads_due(self) -> None:
-        with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]):
+        with patch(
+            "teatree.loop.statusline_loops._mini_loop_schedules", return_value=[MiniLoopSchedule("inbox", None, 300)]
+        ):
             assert mini_loops_anchor() == ["inbox due"]
 
     def test_overdue_loop_reads_due(self) -> None:
         past = datetime.now(UTC) - timedelta(minutes=5)
-        with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("review", past, 300)]):
+        with patch(
+            "teatree.loop.statusline_loops._mini_loop_schedules", return_value=[MiniLoopSchedule("review", past, 300)]
+        ):
             assert mini_loops_anchor() == ["review due"]
 
     def test_empty_when_no_mini_loops_enabled(self) -> None:
@@ -177,12 +181,12 @@ class TestMiniLoopsAnchor:
         now = datetime.now(UTC)
         with patch(
             "teatree.loop.statusline_loops._mini_loop_schedules",
-            return_value=[("ship", now + timedelta(seconds=300), 1200)],
+            return_value=[MiniLoopSchedule("ship", now + timedelta(seconds=300), 1200)],
         ):
             far = mini_loops_anchor()
         with patch(
             "teatree.loop.statusline_loops._mini_loop_schedules",
-            return_value=[("ship", now + timedelta(seconds=120), 1200)],
+            return_value=[MiniLoopSchedule("ship", now + timedelta(seconds=120), 1200)],
         ):
             near = mini_loops_anchor()
         assert far == ["ship 5m"], far
@@ -199,7 +203,7 @@ class TestLoopLineComposesLeasesAndMiniLoops:
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch(
                 "teatree.loop.statusline_loops._mini_loop_schedules",
-                return_value=[("dispatch", datetime.now(UTC) + timedelta(seconds=120), 600)],
+                return_value=[MiniLoopSchedule("dispatch", datetime.now(UTC) + timedelta(seconds=120), 600)],
             ),
         ):
             lines = live_loops_anchor(colorize=False)
@@ -214,7 +218,7 @@ class TestLoopLineComposesLeasesAndMiniLoops:
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch(
                 "teatree.loop.statusline_loops._mini_loop_schedules",
-                return_value=[("resource_pressure", datetime.now(UTC) + timedelta(seconds=60), 600)],
+                return_value=[MiniLoopSchedule("resource_pressure", datetime.now(UTC) + timedelta(seconds=60), 600)],
             ),
         ):
             lines = live_loops_anchor(colorize=False)
@@ -325,7 +329,7 @@ class TestMiniLoopOverdueCollapse:
     """
 
     @staticmethod
-    def _render(mode: str, schedules: list[tuple[str, datetime | None, int]]) -> str:
+    def _render(mode: str, schedules: list[MiniLoopSchedule]) -> str:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules),
@@ -342,11 +346,11 @@ class TestMiniLoopOverdueCollapse:
     def test_only_overdue_and_never_fired_surface_under_one_label(self) -> None:
         now = datetime.now(UTC)
         schedules = [
-            ("dispatch", now + timedelta(seconds=60), 600),  # routine due-soon -> folded
-            ("inbox", now + timedelta(seconds=60), 600),  # routine due-soon -> folded
-            ("review", now + timedelta(seconds=180), 600),  # routine due-soon -> folded
-            ("snapshot_warmer", None, 600),  # never-fired -> overdue
-            ("triage_assessor", now - timedelta(seconds=5), 600),  # overdue
+            MiniLoopSchedule("dispatch", now + timedelta(seconds=60), 600),  # routine due-soon -> folded
+            MiniLoopSchedule("inbox", now + timedelta(seconds=60), 600),  # routine due-soon -> folded
+            MiniLoopSchedule("review", now + timedelta(seconds=180), 600),  # routine due-soon -> folded
+            MiniLoopSchedule("snapshot_warmer", None, 600),  # never-fired -> overdue
+            MiniLoopSchedule("triage_assessor", now - timedelta(seconds=5), 600),  # overdue
         ]
         line = self._render("mode: manual", schedules)
         # One ``overdue:`` label, comma-separated names, no per-item "due":
@@ -360,8 +364,8 @@ class TestMiniLoopOverdueCollapse:
     def test_no_overdue_loops_omits_the_overdue_section(self) -> None:
         now = datetime.now(UTC)
         schedules = [
-            ("dispatch", now + timedelta(seconds=60), 600),
-            ("inbox", now + timedelta(seconds=60), 600),
+            MiniLoopSchedule("dispatch", now + timedelta(seconds=60), 600),
+            MiniLoopSchedule("inbox", now + timedelta(seconds=60), 600),
         ]
         line = self._render("mode: manual", schedules)
         assert "overdue:" not in line, line
@@ -372,8 +376,8 @@ class TestMiniLoopOverdueCollapse:
         # countdown list renders (today's behavior) — never over-collapsed.
         now = datetime.now(UTC)
         schedules = [
-            ("dispatch", now + timedelta(seconds=60), 600),
-            ("inbox", now + timedelta(seconds=60), 600),
+            MiniLoopSchedule("dispatch", now + timedelta(seconds=60), 600),
+            MiniLoopSchedule("inbox", now + timedelta(seconds=60), 600),
         ]
         line = self._render("", schedules)  # preset empty -> not governing
         assert "due: dispatch 1m inbox 1m" in line, line
@@ -386,15 +390,34 @@ class TestOverdueMiniLoopNames:
     def test_keeps_only_overdue_and_never_fired_by_name(self) -> None:
         now = datetime.now(UTC)
         schedules = [
-            ("dispatch", now + timedelta(seconds=60), 600),  # due-soon, not overdue -> dropped
-            ("snapshot_warmer", None, 600),  # never fired -> kept
-            ("triage_assessor", now - timedelta(seconds=5), 600),  # overdue -> kept
+            MiniLoopSchedule("dispatch", now + timedelta(seconds=60), 600),  # due-soon, not overdue -> dropped
+            MiniLoopSchedule("snapshot_warmer", None, 600),  # never fired -> kept
+            MiniLoopSchedule("triage_assessor", now - timedelta(seconds=5), 600),  # overdue -> kept
         ]
         assert overdue_mini_loop_names(schedules) == ["snapshot_warmer", "triage_assessor"]
 
     def test_empty_when_nothing_overdue(self) -> None:
         now = datetime.now(UTC)
-        assert overdue_mini_loop_names([("dispatch", now + timedelta(seconds=60), 600)]) == []
+        assert overdue_mini_loop_names([MiniLoopSchedule("dispatch", now + timedelta(seconds=60), 600)]) == []
+
+    def test_a_disabled_loop_is_never_overdue(self) -> None:
+        # #4066: a DISABLED loop has no next-fire instant because nothing scheduled one, not
+        # because it is late. Reading the absence as lateness made `snapshot_warmer` and
+        # `triage_assessor` overdue permanently — an alarm with no state that clears it, which
+        # spends the banner that a genuinely-late loop needs.
+        assert overdue_mini_loop_names([MiniLoopSchedule("snapshot_warmer", None, 86400, enabled=False)]) == []
+
+    def test_an_enabled_never_fired_loop_is_still_overdue(self) -> None:
+        # The other half, and the reason this is a gate rather than a blanket drop of every
+        # `None`: a loop the operator turned ON that has never fired IS late, and is exactly
+        # what the section exists to surface.
+        assert overdue_mini_loop_names([MiniLoopSchedule("inbox", None, 60, enabled=True)]) == ["inbox"]
+
+    def test_a_disabled_loop_that_is_genuinely_past_due_is_still_not_overdue(self) -> None:
+        # A disabled loop can carry a stale next-fire instant from before it was turned off.
+        # That instant is in the past, but nothing intends to fire it, so it is not late either.
+        past = datetime.now(UTC) - timedelta(seconds=5)
+        assert overdue_mini_loop_names([MiniLoopSchedule("triage_assessor", past, 3600, enabled=False)]) == []
 
 
 class TestPresetLineReaderInjection:
@@ -441,7 +464,10 @@ class TestLoopLineSegmentOrder:
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=600),
             patch(
                 "teatree.loop.statusline_loops._mini_loop_schedules",
-                return_value=[("snapshot_warmer", None, 600), ("triage_assessor", now - timedelta(seconds=5), 600)],
+                return_value=[
+                    MiniLoopSchedule("snapshot_warmer", None, 600),
+                    MiniLoopSchedule("triage_assessor", now - timedelta(seconds=5), 600),
+                ],
             ),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=4),
             patch(

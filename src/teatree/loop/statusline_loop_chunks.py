@@ -15,7 +15,7 @@ there is no import cycle and the orchestrator's DB / cadence seams stay the sing
 place tests stub.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -45,6 +45,26 @@ _DUE_SOON_SECONDS = 300
 #: (``statusline_loops._cadence_for_loop``) so this leaf never reads config and the
 #: cadence seam stays the single place tests stub.
 type CadenceResolver = Callable[[str], int]
+
+
+@dataclass(frozen=True, slots=True)
+class MiniLoopSchedule:
+    """One domain mini-loop's cadence row, as the loop line reads it (#4066).
+
+    A record rather than the ``(name, next_fire_at, cadence)`` tuple it replaces, because the
+    tuple could not say whether a missing ``next_fire_at`` meant "late" or "not scheduled at
+    all". Both render as no instant, and the overdue predicate had only the instant to judge
+    by, so it called every DISABLED loop late forever.
+
+    :attr:`enabled` is the ``Loop.enabled`` base config — the same column ``t3 loop list``
+    prints — so "the operator turned this off" is answerable HERE rather than inferred from
+    the absence of a schedule.
+    """
+
+    name: str
+    next_fire_at: datetime | None
+    cadence_seconds: int
+    enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,17 +305,25 @@ def _mini_loop_due_soon(next_fire_at: datetime | None) -> bool:
     return next_fire_at is None or _seconds_until(next_fire_at) <= _DUE_SOON_SECONDS
 
 
-def _mini_loop_overdue(next_fire_at: datetime | None) -> bool:
-    """Whether a mini-loop is GENUINELY late: never fired, or its fire instant is now/past.
+def _mini_loop_overdue(schedule: MiniLoopSchedule) -> bool:
+    """Whether a mini-loop is GENUINELY late: enabled, and never fired or now/past its instant.
 
     The exception the collapsed ``overdue:`` section surfaces by name — a cron
     that has slipped its cadence (or never fired at all), NOT one merely due-soon
     on its normal cadence (which the engaged preset handle already represents).
+
+    A DISABLED loop is never late (#4066). Lateness is a claim about a schedule someone asked
+    for; a loop the operator turned off has none, so its missing fire instant is an ABSENT
+    signal, not a failure signal. Judging it by the instant alone reported ``snapshot_warmer``
+    and ``triage_assessor`` overdue permanently — an alarm with no state that clears it, which
+    is indistinguishable from no alarm and spends the banner a genuinely-late loop needs.
     """
-    return next_fire_at is None or _seconds_until(next_fire_at) <= 0
+    if not schedule.enabled:
+        return False
+    return schedule.next_fire_at is None or _seconds_until(schedule.next_fire_at) <= 0
 
 
-def mini_loop_chunks(schedules: list[tuple[str, datetime | None, int]], *, colorize: bool = False) -> list[str]:
+def mini_loop_chunks(schedules: "Sequence[MiniLoopSchedule]", *, colorize: bool = False) -> list[str]:
     """Return a ``<name> <next-tick>`` chunk per DUE-SOON domain mini-loop (#3248).
 
     Companion to :func:`lease_chunks` and the no-preset ``due:`` path: renders the
@@ -308,23 +336,26 @@ def mini_loop_chunks(schedules: list[tuple[str, datetime | None, int]], *, color
     """
     return [
         _colorize_chunk(
-            _mini_loop_chunk(name, next_fire_at),
-            _loop_recency_color(None if next_fire_at is None else _seconds_until(next_fire_at), cadence),
+            _mini_loop_chunk(schedule.name, schedule.next_fire_at),
+            _loop_recency_color(
+                None if schedule.next_fire_at is None else _seconds_until(schedule.next_fire_at),
+                schedule.cadence_seconds,
+            ),
             colorize=colorize,
         )
-        for name, next_fire_at, cadence in schedules
-        if _mini_loop_due_soon(next_fire_at)
+        for schedule in schedules
+        if _mini_loop_due_soon(schedule.next_fire_at)
     ]
 
 
-def overdue_mini_loop_names(schedules: list[tuple[str, datetime | None, int]]) -> list[str]:
+def overdue_mini_loop_names(schedules: "Sequence[MiniLoopSchedule]") -> list[str]:
     """Return the names of genuinely-overdue / never-fired domain mini-loops (#3494).
 
     The engaged-preset ``overdue:`` path: the domain crons collapse into the
     preset handle and only the exceptions the handle does NOT represent — the ones
     that have slipped their cadence or never fired (:func:`_mini_loop_overdue`) —
-    surface, by bare name (no per-item countdown; they are all past due). The
-    schedule source already returns the crons sorted by name, so the order is
-    deterministic.
+    surface, by bare name (no per-item countdown; they are all past due). A DISABLED
+    loop is never among them (#4066). The schedule source already returns the crons
+    sorted by name, so the order is deterministic.
     """
-    return [name for name, next_fire_at, _cadence in schedules if _mini_loop_overdue(next_fire_at)]
+    return [schedule.name for schedule in schedules if _mini_loop_overdue(schedule)]

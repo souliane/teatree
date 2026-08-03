@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from teatree.loop.statusline import live_loops_anchor
-from teatree.loop.statusline_loop_chunks import _loop_recency_color
+from teatree.loop.statusline_loop_chunks import MiniLoopSchedule, _loop_recency_color
 from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 
@@ -101,8 +101,8 @@ class TestColoredChunksRideTheLoopLine:
         # dispatch: ~full 120s cadence ahead → plenty of time → green;
         # ship: 10s left of a 600s cadence → about to fire → red.
         schedules = [
-            ("dispatch", now + timedelta(seconds=118), 120),
-            ("ship", now + timedelta(seconds=10), 600),
+            MiniLoopSchedule("dispatch", now + timedelta(seconds=118), 120),
+            MiniLoopSchedule("ship", now + timedelta(seconds=10), 600),
         ]
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
@@ -116,7 +116,10 @@ class TestColoredChunksRideTheLoopLine:
     def test_never_fired_mini_loop_is_red(self) -> None:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
-            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]),
+            patch(
+                "teatree.loop.statusline_loops._mini_loop_schedules",
+                return_value=[MiniLoopSchedule("inbox", None, 300)],
+            ),
             patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)

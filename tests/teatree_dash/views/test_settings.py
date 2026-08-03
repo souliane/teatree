@@ -16,7 +16,7 @@ from django.urls import resolve, reverse
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.enums import Autonomy
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
+from teatree.config.setting_groups import UNGROUPED_PATH, setting_comment, setting_group_path
 from teatree.config.setting_help import setting_help
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
@@ -789,8 +789,12 @@ class TestHelpTextIsAuthoredOnceAndRenderedHere(TestCase):
             assert all(row.help_text for row in group.settings), section.slug
 
     def test_the_tooltip_is_the_same_sentence_the_shipped_file_comments_the_key_with(self) -> None:
+        # The file's comment is composed by `setting_comment` — what the key accepts, then what
+        # it means — so the expectation is read from that one renderer rather than re-typed. The
+        # tooltip is the help HALF of it, which is what this class is about.
         shipped = DEFAULTS_TOML.read_text(encoding="utf-8")
-        assert f"merge_wip = 1 # {setting_help('merge_wip')}" in shipped
+        assert f"merge_wip = 1 # {setting_comment('merge_wip')}" in shipped
+        assert setting_help("merge_wip") in setting_comment("merge_wip")
 
 
 class TestConstrainedTypesRenderAsSelects(TestCase):

@@ -2,6 +2,19 @@
   <h2>Loops</h2>
   <p class="muted">Per-loop enable/disable is the emergency handle — the normal one is the
     <a href="{% url 'dash:presets' %}">schedule and preset editor</a>.</p>
+  {% comment %}
+  The cadence rule is GLOBAL, so it is stated once here rather than repeated on every row —
+  a per-row copy of the same sentence says nothing about that row. Only a loop whose OWN
+  bounds differ (a registry maximum) still carries a note beside its field.
+  {% endcomment %}
+  <p class="muted">Cadence runs on a {{ control.cadence_step_seconds }}s grid: every interval is a
+    multiple of {{ control.cadence_step_seconds }}s, and nothing may fire faster. That is the loop
+    timer chain's own poll floor, so a value off the grid would not be the interval you observe.</p>
+  {% if control.off_grid %}
+    <p class="banner-amber">These loops were set before the grid and are left exactly as they are —
+      change one only if you meant to:
+      {% for name, seconds in control.off_grid %}<span class="mono">{{ name }} {{ seconds }}s</span>{% if not forloop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
   <table class="dash">
     <thead>
       <tr>
@@ -37,19 +50,20 @@
                 <input type="time" name="daily_at" value="{{ loop.daily_at }}" aria-label="{{ loop.name }} daily time">
               {% else %}
                 <input type="number" name="delay_seconds" value="{{ loop.delay_seconds|default_if_none:'' }}"
-                  min="{{ loop.bounds.min_interval_seconds }}"
+                  min="{{ loop.bounds.min_interval_seconds }}" step="{{ control.cadence_step_seconds }}"
                   {% if loop.bounds.max_interval_seconds %}max="{{ loop.bounds.max_interval_seconds }}"{% endif %}
                   aria-label="{{ loop.name }} interval seconds">
               {% endif %}
               <button class="dash-btn" type="submit">set</button>
             </form>
-            <div class="muted">{{ loop.bounds.note }}</div>
+            {% if loop.bounds.note %}<div class="muted">{{ loop.bounds.note }}</div>{% endif %}
             {% if loop.bounds.daily_allowed %}
               <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
                 {% csrf_token %}
                 <input type="hidden" name="name" value="{{ loop.name }}">
                 {% if loop.is_daily %}
                   <input type="number" name="delay_seconds" min="{{ loop.bounds.min_interval_seconds }}"
+                    step="{{ control.cadence_step_seconds }}"
                     placeholder="interval s" aria-label="{{ loop.name }} switch to an interval">
                 {% else %}
                   <input type="time" name="daily_at" aria-label="{{ loop.name }} switch to a daily time">

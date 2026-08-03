@@ -15,7 +15,7 @@ from teatree.config.provenance import ValueSource
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
 from teatree.config.setting_help import setting_help
-from teatree.core.config_display import MASKED, render_value
+from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, render_value
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
     build_setting_row,
@@ -272,8 +272,31 @@ class TestShippedDefaultComparison(TestCase):
         row = _row("workspace_dir")
         assert row.is_secret is False
         assert row.has_shipped_default is False
-        assert row.shipped_default == ""
+        assert row.shipped_default == NO_SHIPPED_DEFAULT
         assert row.drifts is False
+
+    def test_no_shipped_default_reads_differently_from_a_default_that_is_empty(self) -> None:
+        # #4078: "the shipped file carries no entry for this key" and "the shipped default IS
+        # an empty value" are different facts, and both used to reach the page as the same
+        # muted word. A reader setting defaults has to be able to tell them apart.
+        absent = _row("workspace_dir")  # no entry in defaults.toml at all
+        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value={"mode": []}):
+            empty = _row("mode")  # an entry that IS present and IS empty
+        assert absent.has_shipped_default is False
+        assert empty.has_shipped_default is True
+        assert absent.shipped_default == NO_SHIPPED_DEFAULT
+        assert absent.shipped_default != empty.shipped_default
+
+    def test_an_unset_cell_does_not_put_the_json_word_null_on_the_page(self) -> None:
+        # The owner's report names `null` first: the control holds the JSON literal it would
+        # POST, so a `None` value was rendered to a human as the four letters `null`. Nobody
+        # setting a default should have to know the wire encoding to read the current state.
+        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value={}):
+            row = _row("agent_harness_provider")  # the one schema key whose default is None
+        assert all(cell.editable != "null" for cell in row.cells), [cell.editable for cell in row.cells]
+        assert all(cell.editable == "" for cell in row.cells), [cell.editable for cell in row.cells]
+        # The select still matches its own `null` option against the real value.
+        assert all(cell.selected == "null" for cell in row.cells), [cell.selected for cell in row.cells]
 
     def test_a_secret_key_offers_no_comparison_and_still_masks(self) -> None:
         row = _row("slack_user_id")

@@ -13,6 +13,7 @@ from teatree.loop.loop_scoping import current_session_owned_per_loop_slots
 from teatree.loop.session_identity import is_loop_runner_session
 from teatree.loop.statusline_loop_chunks import (
     LeaseRenderContext,
+    MiniLoopSchedule,
     _colorize_chunk,
     lease_chunks,
     mini_loop_chunks,
@@ -149,7 +150,9 @@ def _live_lease_drivers() -> dict[str, tuple[str, str]]:
 # :func:`set_mini_loop_schedules_reader`; absent injection (a quiet machine,
 # a unit test) the default reader returns ``[]`` and the mini-loop chunks are
 # simply omitted — never an import-direction violation, never a crash.
-type MiniLoopSchedule = tuple[str, datetime | None, int]
+#: Re-exported from the leaf so the up-stack reader in :mod:`teatree.loops.schedule` builds
+#: the SAME record the renderer reads, without :mod:`teatree.loop` importing
+#: :mod:`teatree.loops` (the tach edge points the other way).
 type MiniLoopSchedulesReader = Callable[[], list[MiniLoopSchedule]]
 
 

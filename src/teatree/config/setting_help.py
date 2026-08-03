@@ -1,8 +1,9 @@
 """One sentence per config key — authored ONCE, rendered by every surface that explains one.
 
 Two consumers today: :func:`~teatree.config.setting_groups.grouped_settings_table` emits each
-entry as the trailing comment beside its key in ``defaults.toml``, and the dashboard settings grid
-renders it as the tooltip on the setting name. Maintaining the two separately is the #3854
+entry as the tail of the trailing comment beside its key in ``defaults.toml`` (behind what the
+key ACCEPTS — :mod:`teatree.config.setting_annotation`), and the dashboard settings grid renders
+it as the tooltip on the setting name. Maintaining the two separately is the #3854
 shape — a second copy that drifts the first time a setting changes meaning.
 
 Deliberately Django-free AND pydantic-free, a plain dict with no imports. ``defaults.toml``

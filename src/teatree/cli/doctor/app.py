@@ -23,6 +23,7 @@ from teatree.cli.doctor.checks_cold_hooks import (
     _check_cold_hook_settings_readable,
     _check_config_override_tier_healthy,
 )
+from teatree.cli.doctor.checks_config_drift import _check_config_rows_shadowing_shipped_defaults
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
@@ -370,6 +371,26 @@ def _run_daily_advisories() -> None:
     _check_reconciliation_ledger()
 
 
+def _run_config_posture_advisories() -> None:
+    """Post-ensure_django advisories over teatree's OWN configuration rows — never gate.
+
+    Two readings of the same question, "is the box configured the way anyone thinks it is":
+
+    *   #3274 — a no-expiry away / autonomous_away mode override that has sat past the
+        staleness threshold, silently suppressing the colleague-facing loops (and pausing
+        the self-pump under holiday-away) the whole time.
+    *   #4074 — every stored ``ConfigSetting`` row whose value differs from the shipped
+        default, i.e. a row still shadowing a default that has since moved underneath it.
+
+    Both read the ORM, so this runs after ``ensure_django``; both are surfacing-only, so
+    their return values are deliberately discarded and neither can redden the exit code.
+    Grouped for the same reason :func:`_run_daily_advisories` is — to keep
+    :func:`run_doctor_checks` inside its statement budget rather than growing a flat list.
+    """
+    _check_mode_override_staleness()
+    _check_config_rows_shadowing_shipped_defaults()
+
+
 def _run_advisory_finalisers() -> None:
     """Surfacing-only passes that never gate the exit code."""
     _check_singletons()
@@ -552,12 +573,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # reconciliation ledger. None gate the exit code.
     _run_daily_advisories()
 
-    # #3274: WARN on a no-expiry away / autonomous_away availability override that
-    # has sat past the staleness threshold — it silently suppresses the
-    # colleague-facing loops (and pauses the self-pump under holiday-away) the
-    # whole time. Surfacing-only (never gates the exit code); reads the Loop table
-    # for the deferred loop names, so it runs post-ensure_django.
-    _check_mode_override_staleness()
+    # Surfacing-only advisories over teatree's own configuration rows: the stale mode
+    # override (#3274) and the stored rows still shadowing a shipped default (#4074).
+    # Both read the ORM, so they run post-ensure_django; neither gates the exit code.
+    _run_config_posture_advisories()
 
     # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
     # auto-management to the app-level (xapp-) token + socket-mode manifest: it
