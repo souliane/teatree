@@ -24,14 +24,15 @@ exhausted:
     ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the env) — it never lands on a dead entry.
 *   A sticky pick whose health-cache row is fresh and non-exhausted is reused with NO
     probe — the hot path reads the CACHED table only, never the network.
-*   On a cache miss / expiry each candidate is probed once (the reader), its health
-    row upserted, and the first non-exhausted one is pinned as the new sticky pick.
+*   A candidate with no row, or one whose verdict has aged out, is OFFERED rather than
+    skipped and pinned as the new sticky pick — a cold or lagging table must never halt
+    dispatch, and a genuinely spent account costs one refused call before
+    :func:`record_reactive_exhaustion_and_reselect` writes that verdict down. That
+    reactive write is the ONLY thing that keeps the stored health current; nothing
+    probes on a cadence.
 *   When the overlay's own accounts are all exhausted the selector falls back to ANY
     other configured account (across overlays); when every account's CACHED verdict still
-    reads exhausted, selection fails loud rather than probing: `refresh_all` is the one
-writer that keeps the stored health current.
-    reset, so a recovered account is rescued rather than stranding the loop. Only when the
-    rescue also finds nothing usable does it raise :class:`AllTokensExhaustedError` (a
+    reads FRESHLY exhausted it raises :class:`AllTokensExhaustedError` (a
     :class:`CredentialError`) naming the earliest reset, halting agent work loudly.
 
 The token that signs a probe is never logged or returned; only its ``pass_path`` and
@@ -59,7 +60,6 @@ from teatree.llm.credentials import (
 from teatree.llm.rate_limits import (
     MeteredKeyReader,
     MeteredKeySnapshot,
-    RateLimitProbeError,
     RateLimitReader,
     RateLimitSnapshot,
     read_api_key_status,
@@ -134,7 +134,7 @@ class PassPathSelector:
         to an overlay-scoped account without a manual env export. An empty union (nothing
         configured anywhere) returns ``None`` so the caller fails loud downstream.
         Selection performs no network I/O: a candidate is ruled out only by a FRESH stored
-        exhausted verdict, and :meth:`refresh_all` is what keeps those rows current. Raises
+        exhausted verdict, and the reactive writer is what keeps those rows current. Raises
         :class:`AllTokensExhaustedError` when every account reads freshly exhausted.
         """
         configured = self._configured_paths(kind, scope)
@@ -170,24 +170,6 @@ class PassPathSelector:
             )
         return chosen
 
-    def refresh_all(self, *, now: dt.datetime | None = None) -> int:
-        """Probe every configured account and upsert its health row — the ONE writer.
-
-        Selection reads what this leaves behind and never opens a socket itself, so this is
-        the only place a slow, throttled or unreachable rate-limit API can cost anything —
-        and it costs a stale row, not the dispatch that was about to start work. Run it on a
-        cadence; a probe that fails leaves the previous row standing.
-
-        Returns how many rows were written.
-        """
-        moment = now or timezone.now()
-        written = 0
-        for kind in TokenKind:
-            for pass_path in self._all_configured_paths(kind):
-                if self._probe(kind, pass_path, moment) is not None:
-                    written += 1
-        return written
-
     @staticmethod
     def _sticky_is_usable(pass_path: str, now: dt.datetime) -> bool:
         row = AnthropicTokenUsage.objects.filter(pass_path=pass_path).first()
@@ -199,12 +181,11 @@ class PassPathSelector:
 
         Selection reads :class:`AnthropicTokenUsage` and nothing else, so picking an account
         costs one query and cannot be stalled by a slow, throttled or unreachable rate-limit
-        API. :func:`refresh_account_health` is the single writer; it probes on a cadence.
+        API.
 
         An account with no row, or one whose row has gone stale, is OFFERED rather than
-        skipped: a cold or lagging table must never be able to halt dispatch, which is the
-        outage this replaces — capacity existed and nothing ran. A genuinely spent account
-        costs one refused call and then records itself through
+        skipped: a cold or lagging table must never be able to halt dispatch. A genuinely
+        spent account costs one refused call and then records itself through
         :func:`record_reactive_exhaustion_and_reselect`, so the mistake is self-correcting
         and bounded. Only a FRESH exhausted verdict rules a candidate out.
         """
@@ -214,46 +195,6 @@ class PassPathSelector:
                 continue
             return pass_path
         return None
-
-    def _probe(self, kind: TokenKind, pass_path: str, now: dt.datetime) -> AnthropicTokenUsage | None:
-        """Resolve *pass_path*'s token, read its live health, and upsert the cache row.
-
-        Returns the upserted row, or ``None`` when the token cannot be resolved
-        (no credential stored) or the probe transport fails — either makes the
-        candidate unusable, so the selector moves on. The token never leaves this scope.
-        """
-        credential = _CREDENTIAL_CLASS[kind](pass_path_override=pass_path)
-        try:
-            token = credential.resolve()
-        except CredentialError:
-            return self._record_unusable(pass_path, now)
-        try:
-            reading = self._health_reading(kind, token)
-        except RateLimitProbeError:
-            return self._record_unusable(pass_path, now)
-        return AnthropicTokenUsage.objects.record(pass_path, reading, now=now)
-
-    @staticmethod
-    def _record_unusable(pass_path: str, now: dt.datetime) -> AnthropicTokenUsage:
-        """Store an account the probe could not use at all as REJECTED.
-
-        An unresolvable credential and a dead probe transport are both "this account cannot
-        serve a request", and selection no longer probes, so the only way it can skip such an
-        account is to find that verdict already written. Recording it as rejected — the status
-        the exhaustion rule already treats as spent — keeps the skip without giving selection
-        back a network call. The verdict expires like any other, so a repaired account
-        recovers on the next refresh rather than being blacklisted.
-        """
-        rejected = TokenHealthReading(
-            organization_id="",
-            utilization_5h=0.0,
-            utilization_7d=0.0,
-            status_5h=REJECTED_STATUS,
-            status_7d=REJECTED_STATUS,
-            reset_5h=None,
-            reset_7d=None,
-        )
-        return AnthropicTokenUsage.objects.record(pass_path, rejected, now=now)
 
     def _health_reading(self, kind: TokenKind, token: str) -> TokenHealthReading:
         """Probe *token* the way its *kind* authenticates and fold it into a cache reading.
