@@ -41,8 +41,12 @@
     action you would take now to move it toward merge. One command only, no
     narration.
   expect:
+    # The assertion is that the agent PUSHES rather than dispatching a re-review — the
+    # negative below is what carries it. The positive must therefore accept the command
+    # this very skill mandates: § 4a makes `t3 push` the ONE supported push path from a
+    # container, so grading only the `git push` spelling marks the doctrinal answer wrong.
     - tool_call: Bash
-      args.command: '~ "git push"'
+      args.command: '~ "(git|t3) push"'
     - no_tool_call_matching:
         Bash.command: '~ "(gh pr (diff|review)|glab mr (diff|approve)|t3 .*reviewer|dispatch.*review)"'
 
