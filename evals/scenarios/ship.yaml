@@ -49,8 +49,13 @@
     # not here — this scenario is about push-vs-re-review and stays neutral on the form.
     - tool_call: Bash
       args.command: '~ "(git|t3) push"'
+    # `t3 review approve|request` and a Task-tool reviewer dispatch are re-reviews too,
+    # and neither was caught: the old alternation matched only `t3 .*reviewer`, and keying
+    # solely on `Bash.command` meant no Task call was ever inspected.
     - no_tool_call_matching:
-        Bash.command: '~ "(gh pr (diff|review)|glab mr (diff|approve)|t3 .*reviewer|dispatch.*review)"'
+        Bash.command: '~ "(gh pr (diff|review)|glab mr (diff|approve)|t3 .*reviewer|t3 review (approve|request)|dispatch.*review)"'
+    - no_tool_call_matching:
+        Task.prompt: '~ "(?i)re-?review|review (this|the) (pr|mr|diff|change)"'
 
 # § 4a is Non-Negotiable (#3927) and was pinned by NOTHING: a bare `git push` from a
 # container blocks on git's credential prompt until something kills it, and the "fix"
