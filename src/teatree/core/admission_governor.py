@@ -206,20 +206,6 @@ def weekly_pace(quota: QuotaSignal) -> float:
     return headroom / runway
 
 
-def merge_pressure(merge: MergeSignal | None) -> float:
-    """Coding-ceiling multiplier from merge throughput — 1.0 clear, 0.0 fully stalled.
-
-    Scales DOWN continuously rather than cutting off, so the factory adapts to a
-    backing-up pipeline instead of flipping between full speed and stopped — and
-    RESTORES itself the moment something lands. There is no operator step in either
-    direction: the brake is applied and released on the same evidence.
-    """
-    if merge is None or not merge.fresh or merge.open_prs < MERGE_STALL_MIN_OPEN_PRS:
-        return 1.0
-    moving = max(0, merge.open_prs - merge.stuck_prs)
-    return min(1.0, moving / merge.open_prs)
-
-
 def per_agent_test_workers(*, cores: int, active_agents: int) -> int:
     """Per-agent pytest worker count, so the TOTAL stays bounded however many agents run.
 
@@ -322,6 +308,13 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
     independently of the live set lets those fossils outnumber real PRs and brake a pipeline
     in which every open PR is healthy.
 
+    Both slugs are folded to lower case before they are compared, the repo-wide rule
+    :meth:`~teatree.core.models.pull_request.PullRequestQuerySet.for_pr` states: a forge slug
+    is case-insensitive, so a streak recorded as ``Owner/Repo`` names the very PR the live
+    set holds as ``owner/repo``. Matching exactly drops every such streak, ``stuck_prs``
+    undercounts and the brake never fires — failing toward MORE claiming, the one direction
+    this gate exists to prevent.
+
     A read that raises returns ``fresh=False`` — unknown never brakes, because a probe that
     cannot answer must not be able to halt the factory.
     """
@@ -333,8 +326,12 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
         if overlay:
             live = live.filter(overlay=overlay)
             streaks = streaks.filter(overlay=overlay)
-        live_keys = {(str(repo), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()}
-        stuck = sum(1 for slug, pr_id in streaks.values_list("slug", "pr_id") if (str(slug), int(pr_id)) in live_keys)
+        live_keys = {
+            (str(repo).lower(), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()
+        }
+        stuck = sum(
+            1 for slug, pr_id in streaks.values_list("slug", "pr_id") if (str(slug).lower(), int(pr_id)) in live_keys
+        )
     except Exception:
         logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
         return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)

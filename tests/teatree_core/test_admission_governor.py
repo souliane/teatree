@@ -22,7 +22,6 @@ from teatree.core.admission_governor import (
     QuotaSignal,
     YieldSignal,
     decide_admission,
-    merge_pressure,
     per_agent_test_workers,
     read_machine_signal,
     weekly_pace,
@@ -400,17 +399,6 @@ class TestMergeThroughputGatesNewIntake:
     def test_one_pr_still_moving_is_not_a_stall(self) -> None:
         """Self-releasing: the brake lifts on evidence, never on an operator re-enabling it."""
         assert not MergeSignal(fresh=True, open_prs=5, stuck_prs=4).stalled
-
-    def test_pressure_eases_the_ceiling_back_rather_than_flipping(self) -> None:
-        draining = merge_pressure(MergeSignal(fresh=True, open_prs=8, stuck_prs=6))
-        clear = merge_pressure(MergeSignal(fresh=True, open_prs=8, stuck_prs=0))
-        assert clear == pytest.approx(1.0)
-        assert 0.0 < draining < clear
-
-    def test_pressure_is_unclamped_when_unknown_or_below_threshold(self) -> None:
-        assert merge_pressure(None) == pytest.approx(1.0)
-        assert merge_pressure(MergeSignal(fresh=False, open_prs=9, stuck_prs=9)) == pytest.approx(1.0)
-        assert merge_pressure(MergeSignal(fresh=True, open_prs=2, stuck_prs=2)) == pytest.approx(1.0)
 
     def test_the_generic_governor_is_deliberately_untouched(self) -> None:
         """Ship and review dispatch CLEAR the pile; braking them would deadlock it."""
