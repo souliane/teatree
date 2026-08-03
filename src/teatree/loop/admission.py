@@ -16,7 +16,9 @@ import logging
 from pathlib import Path
 
 from teatree.core.admission_governor import (
+    MERGE_STUCK_AFTER_TICKS,
     AdmissionDecision,
+    MergeSignal,
     YieldSignal,
     decide_admission,
     governor_enabled,
@@ -86,6 +88,30 @@ def read_yield_signal(now: dt.datetime | None = None) -> YieldSignal:
     )
 
 
+def read_merge_signal(*, stuck_after: int = MERGE_STUCK_AFTER_TICKS) -> MergeSignal:
+    """Open PRs, and how many of them the merge sweep keeps refusing.
+
+    Reads what the sweep already records rather than probing the forge: a
+    ``SweepSkipStreak`` row IS the sweep's own note that it declined this PR and how
+    many consecutive times, so the whole signal costs two counts and no network. The
+    threshold matches the aged-skip surfacing one, so both agree on the word "stuck".
+
+    A read that raises returns ``fresh=False`` — unknown never brakes, because a probe
+    that cannot answer must not be able to halt the factory.
+    """
+    from teatree.core.models import PullRequest, SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    try:
+        open_prs = PullRequest.objects.live().count()
+        stuck = SweepSkipStreak.objects.aged(threshold=stuck_after).count()
+    except Exception:
+        logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
+        return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)
+    # A streak can outlive its PR row; clamping keeps `stuck <= open` so the ratio the
+    # ceiling is scaled by stays a fraction.
+    return MergeSignal(fresh=True, open_prs=open_prs, stuck_prs=min(stuck, open_prs))
+
+
 def governor_verdict(*, statusline_path: Path, static_ceiling: int | None = None) -> AdmissionDecision | None:
     """The live admission verdict, or ``None`` when the governor is off or unavailable.
 
@@ -120,6 +146,7 @@ __all__ = [
     "YIELD_WINDOW",
     "governor_verdict",
     "read_braked",
+    "read_merge_signal",
     "read_yield_signal",
     "write_braked",
 ]

@@ -64,6 +64,14 @@ PACE_DENY = 0.1
 YIELD_COLLAPSE_RATIO = 0.2
 YIELD_MIN_SAMPLES = 5
 
+#: Open unmerged PRs above which a zero-merge window is inventory pile-up rather than a
+#: quiet day. Below it "nothing merged" is unremarkable and must never brake.
+MERGE_STALL_MIN_OPEN_PRS = 3
+
+#: Consecutive merge-sweep refusals before a PR counts as STUCK rather than merely
+#: waiting. Matches the aged-skip surfacing threshold, so the two agree on the word.
+MERGE_STUCK_AFTER_TICKS = 3
+
 
 @dataclass(frozen=True)
 class QuotaSignal:
@@ -112,6 +120,37 @@ class YieldSignal:
 
 
 @dataclass(frozen=True)
+class MergeSignal:
+    """Merge throughput — whether produced work is actually LANDING.
+
+    :class:`YieldSignal` asks "did tasks finish?", and a task that finished by opening a
+    PR nothing can merge answers yes. This asks what that cannot: did anything merge? A
+    factory whose tasks all complete while its PRs pile up is producing inventory, and
+    each further coding admission deepens the pile without making any of it likelier to
+    land — the state that held four PRs for a day while every loop read green.
+
+    Consumed by the ISSUE-INTAKE gate, not by :func:`decide_admission`: it must stop new
+    work being started without touching the ship and review lanes that drain the pile,
+    and intake is the only decision point where that distinction exists.
+
+    ``fresh`` is False when the rows could not be read. Unknown never brakes, the same
+    rule :func:`read_quota_signal` follows and for the same reason: a probe that cannot
+    answer must not be able to halt the factory.
+    """
+
+    fresh: bool
+    open_prs: int
+    stuck_prs: int
+
+    @property
+    def stalled(self) -> bool:
+        """Every open PR is one the sweep keeps refusing — nothing can land at all."""
+        if not self.fresh:
+            return False
+        return self.open_prs >= MERGE_STALL_MIN_OPEN_PRS and self.stuck_prs >= self.open_prs
+
+
+@dataclass(frozen=True)
 class AdmissionDecision:
     """The verdict a dispatcher acts on. ``reason`` is never empty — refusals are visible.
 
@@ -152,6 +191,20 @@ def weekly_pace(quota: QuotaSignal) -> float:
     if runway <= 0:
         return 1.0
     return headroom / runway
+
+
+def merge_pressure(merge: MergeSignal | None) -> float:
+    """Coding-ceiling multiplier from merge throughput — 1.0 clear, 0.0 fully stalled.
+
+    Scales DOWN continuously rather than cutting off, so the factory adapts to a
+    backing-up pipeline instead of flipping between full speed and stopped — and
+    RESTORES itself the moment something lands. There is no operator step in either
+    direction: the brake is applied and released on the same evidence.
+    """
+    if merge is None or not merge.fresh or merge.open_prs < MERGE_STALL_MIN_OPEN_PRS:
+        return 1.0
+    moving = max(0, merge.open_prs - merge.stuck_prs)
+    return min(1.0, moving / merge.open_prs)
 
 
 def per_agent_test_workers(*, cores: int, active_agents: int) -> int:
@@ -208,6 +261,10 @@ def decide_admission(
     """Decide whether to admit new work now, and at what ceiling.
 
     Order is the owner's: token budget first, machine pressure second, yield third.
+    Merge throughput is deliberately NOT here — see :class:`MergeSignal`: it gates new
+    ISSUE INTAKE only, because the ship and review lanes are what CLEAR a backed-up
+    pipeline and braking them on the backlog they exist to drain would deadlock the
+    factory against itself.
     *braked* is the previous decision's brake state and supplies the hysteresis — a
     braked governor is held to the lower watermark so it cannot flap. *static_ceiling*
     is the operator's configured concurrency, applied as an upper BOUND on the adaptive

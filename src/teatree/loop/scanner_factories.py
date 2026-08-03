@@ -393,8 +393,10 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     ``issue_implementer_max_concurrent`` verbatim whenever that number is missing,
     stale, or switched off.
     """
+    from teatree.core.admission_governor import MERGE_STUCK_AFTER_TICKS  # noqa: PLC0415 — leaf import
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
     from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
+    from teatree.loop.admission import read_merge_signal  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
@@ -415,6 +417,23 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         # enabled loop, advancing last-run stamp, no error, and no surface anywhere
         # saying intake is at budget and claiming nothing.
         logger.warning("%s", budget.report())
+    if can_claim:
+        # #4044: do not deepen a pile that cannot land. When every open PR is one the
+        # merge sweep keeps refusing, the constraint is downstream and another claimed
+        # issue cannot help — it only adds inventory. Claiming stops; the heartbeat
+        # sweep below still runs so no in-flight claim expires, and the ship and review
+        # lanes are untouched, so the work that CLEARS the pile keeps going. The brake
+        # releases itself as soon as one PR starts moving again.
+        merge = read_merge_signal()
+        if merge.stalled:
+            can_claim = False
+            logger.warning(
+                "issue intake is claiming nothing new: %d of %d open PR(s) refused by the merge sweep "
+                "%d+ consecutive times — clear the pipeline before adding to it",
+                merge.stuck_prs,
+                merge.open_prs,
+                MERGE_STUCK_AFTER_TICKS,
+            )
     if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueIntakeScanner(

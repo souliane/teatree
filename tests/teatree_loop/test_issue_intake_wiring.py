@@ -18,7 +18,7 @@ from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
-from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models import PullRequest, SweepSkipStreak, Task, Ticket
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
@@ -410,3 +410,58 @@ class IssueIntakeAdaptiveConcurrencyTests(TestCase):
 
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
             assert _issue_intake_scanner_for(_backend()) is None
+
+
+class TestMergeStallGatesNewIntake(TestCase):
+    """Intake claims nothing new while nothing is landing (#4044).
+
+    The constraint that matters is downstream: when every open PR is one the merge
+    sweep keeps refusing, another claimed issue cannot help and only deepens the pile.
+    The gate reads the sweep's OWN streak rows, so it costs two counts and no forge
+    call, and it releases itself the moment one PR starts moving again.
+    """
+
+    def _pile_up(self, *, count: int, stuck: int) -> None:
+        for i in range(count):
+            ticket = TicketFactory(overlay="acme", issue_url=f"https://github.com/o/r/issues/{800 + i}")
+            PullRequest.objects.create(
+                ticket=ticket,
+                overlay="acme",
+                url=f"https://github.com/o/r/pull/{800 + i}",
+                repo="o/r",
+                iid=str(800 + i),
+            )
+            if i < stuck:
+                SweepSkipStreak.objects.create(
+                    slug="o/r",
+                    pr_id=800 + i,
+                    reason="ci red",
+                    tick_count=5,
+                    overlay="acme",
+                )
+
+    def test_a_fully_stuck_pipeline_claims_nothing_new_and_says_why(self) -> None:
+        self._pile_up(count=3, stuck=3)
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled()),
+            self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs,
+        ):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert scanner is None or scanner.can_claim is False
+        reported = "\n".join(logs.output)
+        assert "merge sweep" in reported
+        assert "3 of 3" in reported
+
+    def test_one_pr_still_moving_lets_intake_keep_claiming(self) -> None:
+        self._pile_up(count=3, stuck=2)
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_a_small_pile_never_brakes(self) -> None:
+        self._pile_up(count=2, stuck=2)
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
