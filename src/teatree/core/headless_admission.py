@@ -35,6 +35,7 @@ only seam that returns a DENY reason, and every caller logs it at WARNING.
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from teatree.core.admission_governor import (
     MachineBrake,
@@ -44,6 +45,9 @@ from teatree.core.admission_governor import (
     read_quota_signal,
 )
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
+
+if TYPE_CHECKING:
+    from teatree.core.models import Task
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +119,7 @@ class HeadlessAdmission:
         it would leave its own admission invisible to every later probe, which is exactly
         how a one-row-at-a-time burst outran the ceiling.
         """
-        from teatree.core.models import Task  # noqa: PLC0415 — deferred: Django app-registry read at call time
-
-        Task.objects.record_admission(task_pk)
+        _task_model().objects.record_admission(task_pk)
         if phase_cost(phase) is PhaseCost.CHEAP:
             self._cheap_admitted += 1
 
@@ -132,6 +134,18 @@ class HeadlessAdmission:
             denied = self.denied_for(cost)
             if denied is not None:
                 logger.warning("Governor DENIED headless admission of %s work: %s (rows stay queued)", cost, denied)
+
+
+def _task_model() -> "type[Task]":
+    """The ``Task`` model, resolved at call time — the module's ONE intra-core edge.
+
+    Both the occupancy probe and the admission stamp need it, so the deferred import
+    lives here once rather than being restated in each: one function-scoped edge hidden
+    from tach's acyclic guard, not two.
+    """
+    from teatree.core.models import Task  # noqa: PLC0415 — deferred: Django app-registry read at call time
+
+    return Task
 
 
 def _admit_all() -> HeadlessAdmission:
@@ -175,21 +189,20 @@ def headless_admission_verdict() -> HeadlessAdmission:
     """
     if not governor_enabled():
         return _admit_all()
-    from teatree.core.models import Task  # noqa: PLC0415 — deferred: Django app-registry read at call time
-
+    task_model = _task_model()
     try:
         quota = read_quota_signal()
         machine = read_machine_signal()
         cheap_ceiling = _cheap_lane_ceiling()
         decision = decide_admission(quota=quota, machine=machine, static_ceiling=None)
-        live = Task.objects.live_headless_agent_count()
+        live = task_model.objects.live_headless_agent_count()
         expensive = decision.reason if not decision.admit else _ceiling_denial(decision.ceiling, live)
         if cheap_ceiling <= 0:
             return HeadlessAdmission(expensive_denied=expensive, cheap_denied=expensive)
         exempt = decide_admission(
             quota=quota, machine=machine, static_ceiling=None, load_brake=MachineBrake(applies=False)
         )
-        cheap_occupancy = Task.objects.cheap_lane_occupancy()
+        cheap_occupancy = task_model.objects.cheap_lane_occupancy()
         cheap = (
             exempt.reason if not exempt.admit else _ceiling_denial(cheap_ceiling, cheap_occupancy, lane="cheap-phase")
         )
