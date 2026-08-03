@@ -19,6 +19,7 @@ from django.utils import timezone
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.models.transition import TicketTransition
 from teatree.core.repair_loop import max_phase_iterations
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
@@ -28,6 +29,8 @@ from teatree.loop.stuck_ticket_redispatch import (
     redispatch_stuck_tickets,
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
+
+_REVIEWED_HEAD = "a1b2c3d4" * 5
 
 
 def _stuck_ticket(*, state: str = Ticket.State.STARTED, idle_hours: int = 48) -> Ticket:
@@ -258,7 +261,37 @@ class TestReviewerRoleCandidates(TestCase):
     def _reviewer_ticket(self) -> Ticket:
         # A reviewer ticket is minted at NOT_STARTED and stays there until REVIEW_POSTED,
         # so no author state→phase mapping can name its implied phase.
-        return Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/7")
+        return Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url="https://ex.com/org/app/pull/7",
+            extra={"reviewed_sha": _REVIEWED_HEAD},
+        )
+
+    def test_a_lease_lost_review_that_recorded_its_verdict_is_not_redispatched(self) -> None:
+        # The duplicate-dispatch half of #4100: reviews that had already produced their
+        # verdict read as failed, so the sweep queued three concurrent tasks for one PR.
+        ticket = self._reviewer_ticket()
+        _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error="stuck_loop: lease lost for task 1")
+        ReviewVerdict.record(
+            pr_id=7,
+            slug="org/app",
+            reviewed_sha=_REVIEWED_HEAD,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer",
+            ticket=ticket,
+        )
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_lease_lost_review_that_recorded_nothing_is_still_redispatched(self) -> None:
+        # The control for the guard above: without it, a sweep that skipped every
+        # lease-lost review would pass that test for the wrong reason.
+        ticket = self._reviewer_ticket()
+        _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error="stuck_loop: lease lost for task 1")
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
 
     def test_reviewer_ticket_with_a_failed_review_is_redispatched(self) -> None:
         ticket = self._reviewer_ticket()

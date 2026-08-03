@@ -195,18 +195,17 @@ def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
     (3366/3336/3352), and the failing class is what would reach it: unlike a frozen
     ticket it never has to wait out an idle threshold first.
 
-    The shipping-artifact half of that evidence is trusted only for a LEASE_LOST
-    failure (#3982): a stray attached PR can exist independently of a successful
-    ``ship()``, so trusting it for a genuinely deterministic shipping failure would
-    hide a real, reproducible defect from this same sweep.
+    The phase-artifact half of that evidence — an attached PR for shipping, a recorded
+    verdict at the reviewed head for a review phase — is trusted only for a LEASE_LOST
+    failure (#3982, #4100): either can exist independently of THIS attempt, so trusting
+    one for a genuinely deterministic failure would hide a real, reproducible defect from
+    this same sweep.
     """
     attempts = _phase_attempts(ticket, phase=phase)
     if not attempts or attempts[-1].outcome not in _FAILED_OUTCOMES:
         return False
     latest = attempts[-1]
-    return not phase_landing_evidence(
-        latest.task, trust_shipping_artifact=latest.failure_kind == FailureKind.LEASE_LOST
-    )
+    return not phase_landing_evidence(latest.task, trust_phase_artifact=latest.failure_kind == FailureKind.LEASE_LOST)
 
 
 #: PR states that count as "open" (a merged PR does not keep a ticket alive).
