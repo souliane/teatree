@@ -33,8 +33,21 @@ logger = logging.getLogger(__name__)
 WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
 
 #: WRITE concurrency as a function of cores, not a magic number, so a bigger box scales
-#: up automatically. 8 cores → 2, the empirically-sustainable default measured on this box.
-WRITE_CONCURRENCY_PER_CORE = 0.25
+#: up automatically. 8 cores → 4.
+#:
+#: This was 0.25 (8 cores → 2), calibrated against the meltdown recorded on
+#: :data:`TOTAL_TEST_WORKERS_PER_CORE` below — which names its own cause: "the per-agent
+#: expansion is the melt driver, NOT the agent count". That driver is now bounded
+#: independently by :func:`per_agent_test_workers`, which divides a ``cores * 2`` TOTAL
+#: worker budget by the active-agent count, so total workers stay bounded however many
+#: agents run. The old value was set before that guard existed and priced agent count as
+#: if it were the hazard.
+#:
+#: Raising it is safe to attempt rather than safe by assertion: the load brake still denies
+#: above ``BRAKE_LOAD_PER_CORE * cores`` and holds to ``RESUME_LOAD_PER_CORE * cores``, so an
+#: over-aggressive value throttles itself instead of melting the box. Measured at the change:
+#: load 13.4/15.9/16.5 on 8 cores against a deny watermark of 40, 14 GB RAM free.
+WRITE_CONCURRENCY_PER_CORE = 0.5
 
 #: Total test workers across ALL concurrent agents, as a multiple of cores. The measured
 #: meltdown was 12 agents x auto-detected 8 workers ≈ 96 workers at load ~70: the
