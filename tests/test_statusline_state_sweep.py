@@ -17,6 +17,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _STATE_FILE_MAX_AGE_SECONDS, _ensure_state_dir, _sweep_stale_state_files
+from hooks.scripts.resume_admission import live_restored_agents
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +111,48 @@ class TestSweepProtectsLiveReaderFiles:
             "an unprotected re-armed-on-demand marker of the same age must still be swept "
             "(proves the test is not vacuously protecting everything)"
         )
+
+
+class TestSweepProtectsResumeAdmissionLedgers:
+    """``.agents`` / ``.agents-stopped`` must age out TOGETHER, never independently (#4108).
+
+    ``resume_admission.live_restored_agents`` reads the restored fleet as a SET DIFFERENCE
+    of the two ledgers. A long-running session keeps dispatching (refreshing ``.agents``)
+    while nothing has terminated in over the retention window (``.agents-stopped`` goes
+    stale) — sweeping only the stopped ledger would reinstate the WHOLE append-only
+    dispatch history as 'restored' on the next resume.
+    """
+
+    def test_aged_agents_survives_sweep(self) -> None:
+        agents = _touch("live-session.agents", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        _sweep_stale_state_files()
+        assert agents.exists(), "the dispatch ledger must survive the sweep"
+
+    def test_aged_agents_stopped_survives_sweep(self) -> None:
+        stopped = _touch("live-session.agents-stopped", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        _sweep_stale_state_files()
+        assert stopped.exists(), "the stopped ledger must survive the sweep"
+
+    def test_a_differentially_aged_pair_never_inflates_the_restored_count(self) -> None:
+        """Reproduces the #4108 bug: a fresh dispatch ledger + a stale stopped ledger.
+
+        Before the fix, sweeping deleted only the aged ``.agents-stopped`` file, so the
+        next ``live_restored_agents`` read saw the full dispatch history as still-running.
+        """
+        session = "live-session"
+        agents = router.STATE_DIR / f"{session}.agents"
+        agents.write_text("".join(f"a{i:04d}\tdid a thing\n" for i in range(14)), encoding="utf-8")
+        stopped = _touch(f"{session}.agents-stopped", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        stopped.write_text("".join(f"a{i:04d}\n" for i in range(12)), encoding="utf-8")
+        stopped_mtime = time.time() - (_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        os.utime(stopped, (stopped_mtime, stopped_mtime))
+
+        before = live_restored_agents(session)
+        _sweep_stale_state_files()
+        after = live_restored_agents(session)
+
+        assert before == 2, "sanity: 12 of 14 dispatched agents already terminated"
+        assert after == before, "the sweep must never change the restored count of a live session"
 
 
 class TestEnsureStateDirRunsSweep:

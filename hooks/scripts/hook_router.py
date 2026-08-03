@@ -280,7 +280,16 @@ _SWEEP_SENTINEL = ".last-sweep"
 # long-lived session's statusline silently go blank. The throttle-and-recreate
 # markers (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT
 # listed: their absence is the safe default and they are re-armed on demand.
-_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons", "teatree-active"})
+#
+# ``.agents`` / ``.agents-stopped`` (#4108) are a THIRD reason to protect, distinct
+# from the first two: ``live_restored_agents`` reads them as a SET DIFFERENCE, so
+# the pair must age out together or not at all. A long-running session with agents
+# still in flight keeps dispatching (refreshing ``.agents``) while nothing has
+# terminated in over the retention window (``.agents-stopped`` goes stale) — sweeping
+# only the stopped ledger reinstates the WHOLE append-only dispatch history as
+# "restored" on the next resume, the exact false-positive the design note in
+# ``resume_admission.py`` says the set-difference exists to avoid.
+_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons", "teatree-active", "agents", "agents-stopped"})
 
 
 def _sweep_stale_state_files() -> None:

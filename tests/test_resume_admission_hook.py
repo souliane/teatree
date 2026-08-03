@@ -1,3 +1,7 @@
+# test-path: cross-cutting
+# Exercises the hooks/scripts/resume_admission.py hook leaf together with
+# teatree.core.admission_governor and teatree.config.cold_reader — it spans the
+# hook and both src packages.
 """SessionStart(resume) admission for the restored background fleet (#4108).
 
 A harness restart restores every previously-running background agent at once. The
