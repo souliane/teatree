@@ -71,7 +71,7 @@ class OccupancyCommands(TyperCommand):
             raise SystemExit(1)
         worktree = _worktree_for_path(path)
         try:
-            acquire(
+            claimed = acquire(
                 worktree,
                 holder=holder.strip(),
                 holder_session=holder_session.strip(),
@@ -80,8 +80,7 @@ class OccupancyCommands(TyperCommand):
         except WorktreeOccupiedError as exc:
             self.stderr.write(f"  Refused: {exc}")
             raise SystemExit(1) from exc
-        current = occupancy_holder(worktree)
-        self.stdout.write(f"  claimed {worktree.worktree_path} for {current.describe() if current else holder}")
+        self.stdout.write(f"  claimed {worktree.worktree_path} for {claimed.describe()}")
 
     @command(name="release-occupancy")
     def release_occupancy(self, path: str) -> None:

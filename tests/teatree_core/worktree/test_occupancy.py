@@ -25,7 +25,7 @@ from teatree.core.worktree.occupancy import (
     occupy_ticket_checkout,
     refuse_if_ticket_checkout_occupied,
     release,
-    renew,
+    renew_ticket_checkout,
     task_holder_id,
 )
 from tests.factories import TaskFactory, TicketFactory, WorktreeFactory
@@ -127,26 +127,34 @@ class ReleaseTests(_OccupancyCase):
 
 
 class RenewTests(_OccupancyCase):
-    def test_renew_extends_this_holders_lease(self) -> None:
+    def test_the_heartbeat_extends_this_holders_lease(self) -> None:
         acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
-        held = self.fresh()
-        first = held.occupancy_expires_at
-        renew(held, lease_seconds=600)
+        first = self.fresh().occupancy_expires_at
+        renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1", lease_seconds=600)
+        second = self.fresh().occupancy_expires_at
         assert first is not None
-        assert held.occupancy_expires_at is not None
-        assert held.occupancy_expires_at > first
+        assert second is not None
+        assert second > first
 
-    def test_renew_after_a_takeover_reports_the_loss(self) -> None:
+    def test_the_heartbeat_retakes_a_lease_that_lapsed_while_still_unclaimed(self) -> None:
         acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
-        stale = self.fresh()
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1")
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == "task:1"
+
+    def test_the_heartbeat_reports_the_loss_once_a_rival_took_over(self) -> None:
+        acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
         acquire(self.fresh(), holder="task:2", holder_session="s2")
-        with pytest.raises(WorktreeOccupancyLostError):
-            renew(stale)
+        with pytest.raises(WorktreeOccupancyLostError, match=str(self.checkout)):
+            renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1")
 
-    def test_renew_without_a_claim_reports_the_loss(self) -> None:
-        with pytest.raises(WorktreeOccupancyLostError):
-            renew(self.worktree)
+    def test_the_heartbeat_mints_no_claim_for_a_ticket_with_no_checkout(self) -> None:
+        Worktree.objects.filter(pk=self.worktree.pk).delete()
+        renew_ticket_checkout(self.ticket, holder="task:1", holder_session="s1")
+        assert held_worktrees() == []
 
 
 class TicketCheckoutTests(_OccupancyCase):
@@ -217,6 +225,46 @@ class HeldWorktreeReportTests(_OccupancyCase):
         assert [holder.holder for _, holder in held_worktrees()] == ["task:7"]
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
         assert held_worktrees() == []
+
+
+class LivenessAgreementTests(_OccupancyCase):
+    """``occupancy_holder`` and the CAS ``grantable`` predicate answer one question.
+
+    They must be exact complements on every row state, because they drive opposite
+    halves of the gate: ``grantable`` decides who gets the tree, ``occupancy_holder``
+    decides whom the refusal path and the doctor report as holding it. A state where
+    both say "free" is fine; one where the CAS grants while the reporter still names a
+    holder refuses ``workspace ticket`` forever over a row every acquire would win —
+    the never-lockout failure, reachable from any write that lands one column late.
+    """
+
+    def rival_wins(self) -> bool:
+        try:
+            acquire(self.fresh(), holder="task:rival", holder_session="s-rival")
+        except WorktreeOccupiedError:
+            return False
+        return True
+
+    def assert_complementary(self) -> None:
+        held = occupancy_holder(self.fresh()) is not None
+        assert held is not self.rival_wins()
+
+    def test_an_unheld_row_is_grantable_and_reports_no_holder(self) -> None:
+        self.assert_complementary()
+
+    def test_a_live_claim_is_ungrantable_and_reports_its_holder(self) -> None:
+        acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=600)
+        self.assert_complementary()
+
+    def test_a_lapsed_claim_is_grantable_and_reports_no_holder(self) -> None:
+        acquire(self.worktree, holder="task:1", holder_session="s1", lease_seconds=60)
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
+        self.assert_complementary()
+
+    def test_a_claim_with_no_expiry_is_grantable_and_reports_no_holder(self) -> None:
+        acquire(self.worktree, holder="task:1", holder_session="s1")
+        Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=None)
+        self.assert_complementary()
 
 
 class HolderIdTests(TestCase):

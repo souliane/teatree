@@ -24,8 +24,8 @@ and no other code path is given a deletion signal to read. That constraint is th
 ticket's, and it is not stylistic: this repo has already reaped live work by
 inferring absence from one execution context. A lapsed lease therefore grants the
 NEXT requester without touching the previous holder's process, files or branch —
-the previous holder discovers the loss on its own :func:`renew` and aborts, the
-same shape ``Task.renew_lease`` has today.
+the previous holder discovers the loss on its own :func:`renew_ticket_checkout`
+and aborts, the same shape ``Task.renew_lease`` has today.
 
 Identity is the FULLY-QUALIFIED ``(holder, holder_session)`` pair everywhere —
 CAS predicate, release, renewal, reporting. ``holder`` alone is never matched: two
@@ -69,7 +69,7 @@ class WorktreeOccupiedError(RuntimeError):
 class WorktreeOccupancyLostError(RuntimeError):
     """This holder's claim moved on — the checkout may now be occupied by someone else.
 
-    Raised by :func:`renew` when the claim generation no longer matches. The
+    Raised by :func:`renew_ticket_checkout` when a rival now holds the row. The
     caller must ABORT its work in that checkout rather than keep writing: the
     whole point of the CAS is that two drivers never share one working tree.
     """
@@ -77,18 +77,21 @@ class WorktreeOccupancyLostError(RuntimeError):
 
 @dataclass(frozen=True)
 class OccupancyHolder:
-    """Who holds a checkout, and until when."""
+    """Who holds a checkout, and until when.
+
+    Only ever describes a LIVE claim, so ``expires_at`` is never absent — an
+    unexpiring claim is not held (see :func:`occupancy_holder`).
+    """
 
     holder: str
     holder_session: str
     since: datetime | None
-    expires_at: datetime | None
+    expires_at: datetime
 
     def describe(self) -> str:
         session = f" (session {self.holder_session})" if self.holder_session else ""
         since = f", held since {self.since.isoformat()}" if self.since else ""
-        expiry = f", lease expires {self.expires_at.isoformat()}" if self.expires_at else ""
-        return f"{self.holder}{session}{since}{expiry}"
+        return f"{self.holder}{session}{since}, lease expires {self.expires_at.isoformat()}"
 
 
 def task_holder_id(task: "Task") -> str:
@@ -116,11 +119,16 @@ def _gate_enabled() -> bool:
 
 
 def occupancy_holder(worktree: Worktree) -> OccupancyHolder | None:
-    """Who currently holds *worktree*, or ``None`` when it is unheld or the lease lapsed."""
-    if not worktree.occupied_by:
-        return None
+    """Who currently holds *worktree*, or ``None`` when it is unheld or the lease lapsed.
+
+    The exact complement of :func:`acquire`'s ``grantable`` predicate, including on a
+    row naming a holder with NO expiry: the CAS grants that row, so reporting it as
+    held would refuse ``workspace ticket`` forever over a checkout every acquire wins.
+    Two predicates for one question is how a lockout gets in — they are complements or
+    the gate is incoherent, pinned by ``LivenessAgreementTests``.
+    """
     expires = worktree.occupancy_expires_at
-    if expires is not None and expires <= timezone.now():
+    if not worktree.occupied_by or expires is None or expires <= timezone.now():
         return None
     return OccupancyHolder(
         holder=worktree.occupied_by,
@@ -136,7 +144,7 @@ def acquire(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
-) -> None:
+) -> OccupancyHolder:
     """Claim *worktree* for ``(holder, holder_session)``, or refuse naming the incumbent.
 
     The single conditional ``UPDATE``'s affected-row count is the decision. A row
@@ -146,10 +154,13 @@ def acquire(
     than deadlocks against itself.
 
     On a loss the row is read back ONLY to name the incumbent in the refusal; the
-    decision was already made by the row count, never by the read.
+    decision was already made by the row count, never by the read. On a win the
+    claim just written is returned, so a caller reporting it needs no re-read and
+    no "or nobody" fallback for a row it has this instant proven it holds.
     """
     now = timezone.now()
     ttl = _default_lease_seconds() if lease_seconds is None else lease_seconds
+    expires = now + timedelta(seconds=ttl)
     grantable = (
         Q(occupied_by="")
         | Q(occupancy_expires_at__isnull=True)
@@ -163,43 +174,13 @@ def acquire(
             occupied_by=holder,
             occupied_by_session=holder_session,
             occupied_at=now,
-            occupancy_expires_at=now + timedelta(seconds=ttl),
+            occupancy_expires_at=expires,
         )
     )
     if won != 1:
         raise _occupied_error(worktree)
     worktree.refresh_from_db()
-
-
-def renew(worktree: Worktree, *, lease_seconds: int | None = None) -> None:
-    """Heartbeat this holder's claim — a CAS on the claim generation, not a blind write.
-
-    The predicate is the ``(occupied_by, occupied_by_session, occupied_at)`` the
-    caller took the claim under. ``occupied_at`` is re-stamped on every acquire, so
-    once the lease lapsed and a rival took over, this holder's predicate matches
-    zero rows and must NOT re-stamp the expiry — an unconditional write there
-    resurrects a dead claim and puts two agents back in one tree.
-    """
-    now = timezone.now()
-    ttl = _default_lease_seconds() if lease_seconds is None else lease_seconds
-    expires = now + timedelta(seconds=ttl)
-    renewed = (
-        Worktree.objects.filter(pk=worktree.pk)
-        .filter(
-            occupied_by=worktree.occupied_by,
-            occupied_by_session=worktree.occupied_by_session,
-            occupied_at=worktree.occupied_at,
-        )
-        .exclude(occupied_by="")
-        .update(occupancy_expires_at=expires)
-    )
-    if renewed != 1:
-        msg = (
-            f"occupancy lost for worktree {worktree.pk} at {worktree.worktree_path or '<unprovisioned>'}: "
-            "the claim generation moved on (the lease lapsed and another agent took the checkout)"
-        )
-        raise WorktreeOccupancyLostError(msg)
-    worktree.occupancy_expires_at = expires
+    return OccupancyHolder(holder=holder, holder_session=holder_session, since=now, expires_at=expires)
 
 
 def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> bool:

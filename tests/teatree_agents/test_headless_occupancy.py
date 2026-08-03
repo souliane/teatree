@@ -20,7 +20,7 @@ from django.test import TestCase
 
 from teatree.agents import headless
 from teatree.core.models import Task, TaskAttempt, Worktree
-from teatree.core.worktree.occupancy import WorktreeOccupancyLostError, acquire, occupancy_holder, renew, task_holder_id
+from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
 
 
@@ -146,11 +146,3 @@ class HeartbeatRenewalTests(_DispatchCase):
             headless._renew_lease_closing_connection(Task())
 
         renew_lease.assert_called_once()
-
-
-class OccupancyLostMessageTests(TestCase):
-    def test_the_lost_error_names_the_checkout_that_moved_on(self) -> None:
-        ticket = TicketFactory()
-        worktree = WorktreeFactory(ticket=ticket, extra={"worktree_path": "/tmp/gone"})
-        with pytest.raises(WorktreeOccupancyLostError, match="/tmp/gone"):
-            renew(worktree)
