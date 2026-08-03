@@ -99,6 +99,9 @@ _HEADER = """\
 # `[modes.<name>]` — a curated mode: its availability posture plus an `entries` table
 # masking each loop on/off. A loop ABSENT from `entries` INHERITS its own enabled flag,
 # which is how a destructive-capable loop is never silently re-enabled by a mode switch.
+# That inheritance is why a mode masking DELIVERY off (`ship` / `tickets`) must also name
+# the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
+# delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
 # the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
@@ -108,8 +111,10 @@ _HEADER = """\
 # shipped row is the recoverable failure — `t3 setup` puts it back. The one that is not is a
 # row sitting present and INERT: `t3 loops audit` reads the seed tables below as the expected
 # set (the DB cannot answer for a row that is gone) and names every shipped definition that
-# is missing, disabled against its shipped flag, or not ticking. Deleting a shipped
-# definition needs a typed `stop-<name>` naming what stops.
+# is missing, disabled against its shipped flag, or not ticking. It also names every live
+# mode mask and calendar whose VALUE has diverged from what ships here — reported as a note
+# with both values, never rewritten, because the override may well be deliberate. Deleting a
+# shipped definition needs a typed `stop-<name>` naming what stops.
 """
 
 # The scan takes the `"<key> <json-value>"` text and returns the first matched
