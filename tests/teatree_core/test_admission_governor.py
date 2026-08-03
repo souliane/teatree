@@ -18,6 +18,7 @@ from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
     MachineSignal,
+    MergeSignal,
     QuotaSignal,
     YieldSignal,
     decide_admission,
@@ -373,6 +374,35 @@ class TestReadQuotaSignalUsesTheFreshSubset(TestCase):
 
         assert decision.admit is False
         assert "pace" in decision.reason
+
+
+class TestMergeThroughputGatesNewIntake:
+    """New coding work is paced by whether anything is actually LANDING (#4044).
+
+    :class:`YieldSignal` asks "did tasks finish?" — and a task that finished by opening
+    a PR nothing can merge answers yes. This asks what that cannot: is any of it
+    landing? A factory whose tasks all complete while its PRs pile up is producing
+    inventory, and each further claimed issue deepens the pile without making any of it
+    likelier to land.
+    """
+
+    def test_every_open_pr_refused_by_the_sweep_is_a_stall(self) -> None:
+        assert MergeSignal(fresh=True, open_prs=7, stuck_prs=7).stalled
+
+    def test_unreadable_rows_never_brake(self) -> None:
+        """Unknown never brakes — a probe that cannot answer must not halt the factory."""
+        assert not MergeSignal(fresh=False, open_prs=9, stuck_prs=9).stalled
+
+    def test_a_quiet_day_with_few_open_prs_is_not_a_stall(self) -> None:
+        assert not MergeSignal(fresh=True, open_prs=1, stuck_prs=1).stalled
+
+    def test_one_pr_still_moving_is_not_a_stall(self) -> None:
+        """Self-releasing: the brake lifts on evidence, never on an operator re-enabling it."""
+        assert not MergeSignal(fresh=True, open_prs=5, stuck_prs=4).stalled
+
+    def test_the_generic_governor_is_deliberately_untouched(self) -> None:
+        """Ship and review dispatch CLEAR the pile; braking them would deadlock it."""
+        assert _decide().admit
 
 
 class TestWriteConcurrencyRaise:
