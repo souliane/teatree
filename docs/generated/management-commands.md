@@ -497,7 +497,7 @@ Audit the shipped loop/preset/schedule seed set, and delete from it with a typed
 
 | Subcommand | Description |
 | --- | --- |
-| `audit` | Report every shipped definition that is missing, disabled, or not ticking |
+| `audit` | Report every shipped definition missing, disabled, not ticking, or diverged from shipped |
 | `delete-loop` | Delete a loop row — a shipped one needs ``--confirm stop-<name>`` |
 | `delete-schedule` | Delete a calendar and its slots — a shipped one needs ``--confirm stop-<name>`` |
 | `delete-preset` | Delete a preset — a shipped one needs ``--confirm stop-<name>`` |

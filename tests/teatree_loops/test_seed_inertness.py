@@ -21,7 +21,8 @@ from django.utils import timezone
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from teatree.loops.mode_shape import INTAKE_LOOPS
+from teatree.loops.preset_seed import default_preset_specs, seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.seed_inertness import (
     KIND_DANGLING_SLOT,
@@ -29,8 +30,11 @@ from teatree.loops.seed_inertness import (
     KIND_DISABLED_VS_SHIPPED,
     KIND_EMPTY,
     KIND_EMPTY_MASK,
+    KIND_ENTRIES_OVERRIDDEN,
     KIND_INACTIVE,
+    KIND_INTAKE_WITHOUT_DELIVERY,
     KIND_MISSING,
+    KIND_SLOTS_OVERRIDDEN,
     KIND_STALE,
     KIND_SUPPRESSED,
     shipped_inertness,
@@ -215,6 +219,135 @@ class TestScheduleInertness(django.test.TestCase):
 
         assert [f.kind for f in found] == [KIND_INACTIVE]
         assert not found[0].is_fault
+
+
+class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
+    """Presence was the only question asked, so every divergence was invisible (#4096)."""
+
+    def setUp(self) -> None:
+        seed_default_presets_and_schedules()
+        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
+
+    def test_an_edited_mask_is_reported_with_both_values(self) -> None:
+        assert _named(shipped_inertness(), "preset", "engaged") == [], "control: a seeded mask has not diverged"
+
+        Mode.objects.filter(name="engaged").update(entries={**Mode.objects.get(name="engaged").entries, "dream": False})
+
+        found = _named(shipped_inertness(), "preset", "engaged")
+        assert [f.kind for f in found] == [KIND_ENTRIES_OVERRIDDEN]
+        assert "dream shipped=true live=false" in found[0].detail
+
+    def test_a_dropped_entry_is_reported_as_inheriting_rather_than_as_absent_config(self) -> None:
+        entries = {loop: value for loop, value in Mode.objects.get(name="off").entries.items() if loop != "dream"}
+        Mode.objects.filter(name="off").update(entries=entries)
+
+        detail = _named(shipped_inertness(), "preset", "off")[0].detail
+
+        assert "dream shipped=false live=absent (inherits Loop.enabled)" in detail
+
+    def test_an_operator_override_is_a_note_not_a_fault(self) -> None:
+        """Reporting is the deliverable — the audit must never rewrite an operator's mask."""
+        Mode.objects.filter(name="engaged").update(entries={**Mode.objects.get(name="engaged").entries, "news": False})
+
+        found = _named(shipped_inertness(), "preset", "engaged")
+
+        assert not found[0].is_fault
+        assert "never rewritten" in found[0].detail
+
+    def test_the_slot_that_stalled_the_factory_is_reported(self) -> None:
+        control = _kinds(shipped_inertness(), "schedule", "standard")
+        assert KIND_SLOTS_OVERRIDDEN not in control, "control: the seeded calendar has not diverged"
+
+        ModeScheduleSlot.objects.create(
+            schedule=ModeSchedule.objects.get(name="standard"),
+            days=[0, 1, 2, 3, 4],
+            start_time=dt.time(19, 0),
+            preset_name="maintenance",
+        )
+
+        found = _named(shipped_inertness(), "schedule", "standard")
+        assert [f.kind for f in found] == [KIND_SLOTS_OVERRIDDEN]
+        assert "adds Mon,Tue,Wed,Thu,Fri 19:00 -> maintenance" in found[0].detail
+        assert not found[0].is_fault
+
+    def test_a_deleted_slot_is_reported_too(self) -> None:
+        ModeScheduleSlot.objects.filter(schedule__name="standard", start_time=dt.time(9, 0)).delete()
+
+        found = _named(shipped_inertness(), "schedule", "standard")
+
+        assert [f.kind for f in found] == [KIND_SLOTS_OVERRIDDEN]
+        assert "drops Mon,Tue,Wed,Thu,Fri 09:00 -> engaged" in found[0].detail
+
+    def test_a_retimed_zone_is_reported(self) -> None:
+        ModeSchedule.objects.filter(name="standard").update(timezone="UTC")
+
+        detail = _named(shipped_inertness(), "schedule", "standard")[0].detail
+
+        assert "timezone shipped=Europe/Vienna live=UTC" in detail
+
+    def test_a_diverged_calendar_that_is_not_active_reports_both_facts_on_one_line(self) -> None:
+        """One line per name, so the divergence must not cost the inactive note it replaces."""
+        ModeSchedule.objects.filter(name="always-unattended").update(timezone="UTC")
+
+        found = _named(shipped_inertness(), "schedule", "always-unattended")
+
+        assert [f.kind for f in found] == [KIND_SLOTS_OVERRIDDEN]
+        assert "timezone shipped=unset live=UTC" in found[0].detail
+        assert "not the active calendar (standard governs)" in found[0].detail
+
+
+class TestAMaskThatStopsDeliveryMustNotKeepIntakeOn(django.test.TestCase):
+    """The incident shape, reported against the LIVE row rather than the shipped one (#4096)."""
+
+    def setUp(self) -> None:
+        seed_default_loops_and_prompts()
+        seed_default_presets_and_schedules()
+        # The box the stall happened on: the operator had switched intake ON, which is what
+        # an absent mask entry inherits. It ships OFF, so this is stated, never assumed.
+        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=True)
+
+    def _drop_intake_entry_from_maintenance(self) -> None:
+        shipped = next(spec.entries for spec in default_preset_specs() if spec.name == "maintenance")
+        Mode.objects.filter(name="maintenance").update(
+            entries={loop: value for loop, value in shipped.items() if loop != "issue_implementer"}
+        )
+
+    def test_the_overnight_maintenance_mask_without_the_intake_entry_is_a_fault(self) -> None:
+        assert _named(shipped_inertness(), "preset", "maintenance") == [], "control: the shipped mask is clean"
+
+        self._drop_intake_entry_from_maintenance()
+
+        found = _named(shipped_inertness(), "preset", "maintenance")
+        assert [f.kind for f in found] == [KIND_INTAKE_WITHOUT_DELIVERY]
+        assert found[0].is_fault
+        assert "issue_implementer" in found[0].detail
+
+    def test_the_same_mask_is_no_fault_while_the_inherited_intake_loop_is_off(self) -> None:
+        """Absent means INHERIT — with intake parked the mode fills nothing, so it is clean."""
+        self._drop_intake_entry_from_maintenance()
+        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=False)
+
+        assert _kinds(shipped_inertness(), "preset", "maintenance") != [KIND_INTAKE_WITHOUT_DELIVERY]
+
+    def test_an_operator_written_mode_is_judged_by_the_same_rule(self) -> None:
+        Mode.objects.create(name="nights", description="hand-written", entries={"ship": False})
+
+        found = _named(shipped_inertness(), "preset", "nights")
+
+        assert [f.kind for f in found] == [KIND_INTAKE_WITHOUT_DELIVERY]
+        assert found[0].is_fault
+
+    def test_intake_forced_on_is_a_fault_whatever_its_loop_row_says(self) -> None:
+        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=False)
+        Mode.objects.filter(name="maintenance").update(entries={"ship": False, "issue_implementer": True})
+
+        assert _kinds(shipped_inertness(), "preset", "maintenance") == [KIND_INTAKE_WITHOUT_DELIVERY]
+
+    def test_the_asymmetry_outranks_the_drift_note_it_arrives_with(self) -> None:
+        """One line per name — the actionable fault, not the override that produced it."""
+        Mode.objects.filter(name="maintenance").update(entries={"ship": False, "issue_implementer": True})
+
+        assert _kinds(shipped_inertness(), "preset", "maintenance") == [KIND_INTAKE_WITHOUT_DELIVERY]
 
 
 class TestAFreshlySeededBoxIsClean(django.test.TestCase):
