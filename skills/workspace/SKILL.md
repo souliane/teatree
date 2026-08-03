@@ -63,6 +63,37 @@ Key environment variables used by this skill (see `/t3:setup` for the full confi
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
 | `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
+### One Agent Per Checkout (`worktree_occupancy_gate_enabled`, #3952)
+
+Two agents in one working tree interleave commits and stage each other's
+in-progress files. A dispatched agent therefore CLAIMS its checkout for the
+length of its run, and a second requester is refused with the holder named
+instead of being handed the same tree.
+
+The claim is advisory: it refuses a second requester and never evicts the
+first. Nothing deletes, reaps or kills a checkout on the strength of it, and a
+lapsed lease grants the next requester without touching the previous holder's
+process, files or branch.
+
+```bash
+t3 <overlay> worktree occupancy                     # who holds what right now
+t3 <overlay> worktree claim-occupancy <path> --holder <id>   # take it for a hand-driven lane
+t3 <overlay> worktree release-occupancy <path>      # hand it back, naming whose claim was freed
+```
+
+A dispatched agent needs none of these — `run_headless` takes and releases the
+claim around the run. Use them when you work a branch OUTSIDE the lifecycle
+(raw `git`, a hand-driven fix), so the factory sees the tree as occupied rather
+than walking into it.
+
+When a request is refused, the answer is to wait, work a different ticket, or —
+once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
+the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
+occupied checkout too; `--take-over` is the explicit override. The DB-home
+`worktree_occupancy_gate_enabled` is the kill switch, and
+`worktree_occupancy_lease_seconds` (default 1800) bounds a claim whose holder
+died without releasing.
+
 ### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
 
 A locally-running worktree (state `services_up` or `ready`) holds a

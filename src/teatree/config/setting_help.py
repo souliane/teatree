@@ -284,6 +284,8 @@ SETTING_HELP: dict[str, str] = {
     "work_group_max_members": "members above which a work group is surfaced as a question rather than held",
     "worker_quiescing": "stop claiming new work and let the running units finish",
     "workspace_dir": "directory new worktrees are created under",
+    "worktree_occupancy_gate_enabled": "refuse a second agent the checkout another agent already holds",
+    "worktree_occupancy_lease_seconds": "how long an agent's claim on a checkout stands without a heartbeat",
     "worktree_stale_days": "days after which an untouched worktree counts as stale",
     "write_wip": "how many writing units may be in flight at once",
 }

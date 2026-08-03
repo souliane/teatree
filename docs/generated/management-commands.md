@@ -640,8 +640,11 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 
 ## `worktree`
 
+The checkout-occupancy operator command surface (mixed into the ``worktree`` command).
+
 | Subcommand | Description |
 | --- | --- |
+| `occupancy` | Show every checkout a live agent currently holds (#3952) |
 | `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
 | `start` | Boot ``docker compose up`` for one worktree |
 | `verify` | Run overlay health checks for one worktree |
@@ -650,4 +653,6 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `status` | Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27) |
 | `diagnose` | Print a structured health checklist for one worktree |
 | `diagram` | Print a state diagram as Mermaid. Models: worktree, ticket, task |
+| `claim-occupancy` | Claim a checkout for a hand-driven lane, or refuse naming who already holds it |
+| `release-occupancy` | Hand a checkout back, naming whose claim was freed |
 | `smoke-test` | Quick health check: overlay loads, CLI responds, imports OK |

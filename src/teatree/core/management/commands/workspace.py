@@ -46,6 +46,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
 from teatree.core.worktree.dead_row_release import release_dead_rows
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, refuse_if_ticket_checkout_occupied
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 
@@ -129,6 +130,18 @@ class Command(TyperCommand):
             return 0
         except ForeignIssueWorktreeRefusedError:
             return 0
+
+        # #3952: re-resolving a ticket whose checkout a live agent already holds
+        # would hand a second actor into that working tree. ``--take-over`` is the
+        # operator's explicit override, the same escape the #2217 foreign-worktree
+        # refusal above already uses.
+        if not take_over:
+            try:
+                refuse_if_ticket_checkout_occupied(ticket)
+            except WorktreeOccupiedError as exc:
+                self.stderr.write(f"  Refused: {exc}")
+                self.stderr.write("  Pass --take-over to proceed anyway.")
+                return 0
 
         return finalize_ticket_provision(
             self.stdout.write,

@@ -1316,9 +1316,13 @@
       ]
     },
     {
-      "help": "",
+      "help": "The checkout-occupancy operator command surface (mixed into the ``worktree`` command).",
       "name": "worktree",
       "subcommands": [
+        {
+          "help": "Show every checkout a live agent currently holds (#3952)",
+          "name": "occupancy"
+        },
         {
           "help": "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree",
           "name": "provision"
@@ -1350,6 +1354,14 @@
         {
           "help": "Print a state diagram as Mermaid. Models: worktree, ticket, task",
           "name": "diagram"
+        },
+        {
+          "help": "Claim a checkout for a hand-driven lane, or refuse naming who already holds it",
+          "name": "claim-occupancy"
+        },
+        {
+          "help": "Hand a checkout back, naming whose claim was freed",
+          "name": "release-occupancy"
         },
         {
           "help": "Quick health check: overlay loads, CLI responds, imports OK",

@@ -376,6 +376,8 @@ class TeatreeSettingsSchema(BaseSettings):
     work_group_max_members: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     worker_quiescing: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     workspace_dir: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
+    worktree_occupancy_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    worktree_occupancy_lease_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     worktree_stale_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     write_wip: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
 

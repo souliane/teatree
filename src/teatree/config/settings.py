@@ -963,6 +963,16 @@ class _RetentionSettings:
     # overridable: a heavy overlay can cap to ``1`` while a cheap dogfood
     # overlay stays unbounded (``0``).
     max_concurrent_local_stacks: int = 1
+    # #3952 Advisory occupancy claim over a checkout — one agent in one working
+    # tree at a time. The gate refuses a SECOND requester naming the incumbent;
+    # it never evicts, kills or deletes. ``false`` is the never-lockout kill
+    # switch (every requester is handed the checkout ungated, the pre-#3952
+    # behaviour). The TTL bounds a claim whose holder died without releasing:
+    # 30 minutes is long enough that no live agent's own heartbeat can miss it,
+    # short enough that a crashed operator lane does not hold a checkout for a
+    # working day. Both per-overlay overridable.
+    worktree_occupancy_gate_enabled: bool = True
+    worktree_occupancy_lease_seconds: int = 1800
     # #3693 retention windows for the high-churn control-DB tables. A ``prune``
     # deletes rows OLDER than the window whose owning ticket/task is TERMINAL —
     # never a live/in-flight row, and never within the window. Days, not a byte
