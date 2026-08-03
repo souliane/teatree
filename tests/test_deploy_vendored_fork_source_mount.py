@@ -94,7 +94,14 @@ def _invoke(entry: Path, home: Path, env_overrides: dict[str, str] | None = None
     env["TEATREE_HOST_HOME"] = str(home)
     env.update(env_overrides or {})
 
-    proc = subprocess.run([str(entry), "--help"], capture_output=True, text=True, check=True, env=env)
+    # Stand OUTSIDE any checkout: the subject is the source-mount wiring, and
+    # inheriting pytest's cwd would instead trip the invisible-checkout refusal
+    # (this repo is a checkout, and `TEATREE_HOST_HOME` is redirected above so it
+    # sits under none of the mounts the wrapper computes).
+    elsewhere = home / "elsewhere"
+    elsewhere.mkdir(parents=True, exist_ok=True)
+
+    proc = subprocess.run([str(entry), "--help"], capture_output=True, text=True, check=True, env=env, cwd=elsewhere)
     return dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
 
 

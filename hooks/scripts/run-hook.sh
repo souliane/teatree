@@ -29,11 +29,19 @@
 # acquire it. So the choice has to move up here, to interpreter selection.
 #
 # Pass 1 therefore requires `import django` as well as the version floor, and
-# considers the interpreter teatree is installed into first — discovered next to
-# the resolved `t3` entry point (a uv-tool / venv layout puts `python` beside it),
-# so nothing is hard-coded to one host. `T3_HOOK_PYTHON` short-circuits the whole
-# search on the version floor alone — an operator naming an interpreter outranks
-# the Django preference.
+# considers the venv teatree is installed into first.
+#
+# That venv is NAMED here rather than discovered beside the resolved `t3` entry
+# point (#3964). Host `t3` is a shell shim that dispatches into the worker
+# container — there is no interpreter beside it to find, and the CLI it reaches is
+# the container's, not this host's. The hook runtime is a separate concern from the
+# CLI install and must not be resolved through it. The entry-point probe survives
+# below the named venv, demoted: it is still the only route to a non-uv host
+# install (pipx, a hand-rolled venv), where deleting it would leave no
+# Django-capable interpreter at all.
+#
+# `T3_HOOK_PYTHON` short-circuits the whole search on the version floor alone — an
+# operator naming an interpreter outranks the Django preference.
 #
 # Fail open: pass 2 repeats the search with the version floor ALONE, so a host
 # with no Django-capable interpreter keeps exactly the pre-existing behaviour —
@@ -55,14 +63,23 @@ probe_interpreter() {
 # Interpreter candidates, most-preferred first, one per line. Paths may not
 # exist; the probe filters them.
 interpreter_candidates() {
-    # The venv teatree itself is installed into, found beside the `t3` entry
-    # point. `command -v` is a shell builtin and `${var%/*}` is expansion, so
-    # this needs no external binary — a hook subprocess inherits a restricted
-    # PATH, and shelling out to `dirname` there silently yields no candidate.
-    # `readlink` IS external, so it is strictly best-effort: `~/.local/bin/t3` is
-    # typically a symlink INTO the venv, so try the resolved dir first, but keep
-    # the unresolved dir as a candidate for when `readlink` is unavailable or
-    # non-GNU (BSD/macOS lack `-f`).
+    # The HOOK RUNTIME venv, named directly (#3964). `$UV_TOOL_DIR` is uv's own
+    # knob for where tool venvs live; hard-coding only the default missed every
+    # host that sets it.
+    uv_tools="${UV_TOOL_DIR:-${HOME:-}/.local/share/uv/tools}"
+    if [ "$uv_tools" != "/.local/share/uv/tools" ]; then
+        printf '%s\n' "$uv_tools/teatree/bin/python" "$uv_tools/teatree/bin/python3"
+    fi
+
+    # LEGACY, and last before the bare PATH pythons: the venv found beside the
+    # resolved `t3` entry point. It is what still reaches a non-uv host install
+    # (pipx, a hand-rolled venv), so removing it would narrow those hosts to no
+    # Django-capable interpreter at all. `command -v` is a shell builtin and
+    # `${var%/*}` is expansion, so this needs no external binary — a hook
+    # subprocess inherits a restricted PATH, and shelling out to `dirname` there
+    # silently yields no candidate. `readlink` IS external, so it is strictly
+    # best-effort: try the resolved dir first, but keep the unresolved dir for
+    # when `readlink` is unavailable or non-GNU (BSD/macOS lack `-f`).
     t3_bin="$(command -v t3 2>/dev/null || true)"
     if [ -n "$t3_bin" ]; then
         t3_resolved="$(readlink -f "$t3_bin" 2>/dev/null || true)"
@@ -71,12 +88,6 @@ interpreter_candidates() {
                 */*) printf '%s\n' "${t3_path%/*}/python" "${t3_path%/*}/python3" ;;
             esac
         done
-    fi
-
-    # The default uv-tool layout, so the venv is still found when `readlink` is
-    # unavailable and `t3` is a symlink from elsewhere.
-    if [ -n "${HOME:-}" ]; then
-        printf '%s\n' "$HOME/.local/share/uv/tools/teatree/bin/python"
     fi
 
     for name in python3.13 python3.12 python3.11 python3; do

@@ -60,7 +60,11 @@ def _run(tmp_path: Path, *args: str, source_mount: Path | None = None) -> subpro
     if source_mount is not None:
         env["TEATREE_SOURCE_MOUNT"] = str(source_mount)
 
-    return subprocess.run([str(entry), *args], capture_output=True, text=True, check=True, env=env)
+    # Stand OUTSIDE any checkout: the subject here is an unreachable path ARGUMENT,
+    # and inheriting pytest's cwd would instead trip the invisible-checkout refusal
+    # (this repo is a checkout, and `TEATREE_HOST_HOME` is redirected above so it
+    # sits under none of the mounts the wrapper computes).
+    return subprocess.run([str(entry), *args], capture_output=True, text=True, check=True, env=env, cwd=tmp_path)
 
 
 class TestUnreachablePathDiagnostic:
