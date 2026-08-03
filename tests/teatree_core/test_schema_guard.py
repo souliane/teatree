@@ -194,6 +194,12 @@ class TestSchemaGuardOnPrivateAlias:
         assert MergeClear.objects.using(alias).count() == 0  # healed: the table is now usable
 
 
+# `setUp` unapplies an initial migration and the cleanup reapplies it, so this class
+# pays the same real-migration cost as its self-healing sibling below and needs the same
+# headroom: measured 20s single-core, which the 12-way shard matrix stretches past the
+# global 60s ceiling. Scoped like the sibling (#1189) so the 60s hang-detector keeps its
+# meaning everywhere else — a global raise would hide the next test drifting to the edge.
+@pytest.mark.timeout(240)
 class BehindSelfDbReportingTest(TransactionTestCase):
     """The one surface that cannot move off ``default`` (#2915).
 
