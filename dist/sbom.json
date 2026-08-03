@@ -212,7 +212,7 @@
     },
     {
       "bom-ref": "requirements-L51",
-      "description": "requirements line 51: cryptography==49.0.0",
+      "description": "requirements line 51: cryptography==50.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -221,9 +221,9 @@
         }
       ],
       "name": "cryptography",
-      "purl": "pkg:pypi/cryptography@49.0.0",
+      "purl": "pkg:pypi/cryptography@50.0.0",
       "type": "library",
-      "version": "49.0.0"
+      "version": "50.0.0"
     },
     {
       "bom-ref": "requirements-L53",
