@@ -212,9 +212,9 @@ def _write_targets(command: str):  # noqa: ANN202 — returns a lazily-imported 
 
 def _command_base(command: str, cwd: str) -> Path | None:
     """The dir a relative write target is anchored to (``cd`` / ``-C`` aware)."""
-    from hooks.scripts.main_clone_guard import _effective_command_dir  # noqa: PLC0415 deferred sibling import
-
     try:
+        from hooks.scripts.main_clone_guard import _effective_command_dir  # noqa: PLC0415 deferred sibling import
+
         return _effective_command_dir(command, Path(cwd))
     except Exception:  # noqa: BLE001 — an unresolvable base drops relative targets, never guesses one.
         return None

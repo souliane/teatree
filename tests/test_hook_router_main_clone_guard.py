@@ -396,6 +396,23 @@ class TestBashMediatedWriteIntoMainClone:
         assert router.handle_block_main_clone_mutation(event) is False
         assert _deny(capsys) is None
 
+    @pytest.mark.parametrize(
+        ("command", "session"),
+        [
+            ("grep -rn '>' .", "sess-quoted-gt"),
+            ('git commit -m "> blockquote note"', "sess-quoted-blockquote"),
+            ("rg -n '>>' app.py", "sess-quoted-append"),
+        ],
+    )
+    def test_a_quoted_redirect_character_is_an_argument_not_a_write(
+        self, command: str, session: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Redirection is shell SYNTAX. Classifying it on the quote-DECODED token
+        # read `grep -rn '>' .` as writing the clone root and denied it.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, session)) is False
+        assert _deny(capsys) is None
+
     def test_write_into_a_main_clone_on_a_feature_branch_is_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

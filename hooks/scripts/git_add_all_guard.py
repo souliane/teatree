@@ -42,6 +42,9 @@ sys.modules.setdefault("hooks.scripts.git_add_all_guard", sys.modules[__name__])
 _ADD_ALL_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[add-all-ok:\s*(\S[^\]]*?)\s*\]")
 _TOKEN_SCAN_LIMIT: Final[int] = 512
 _SEGMENT_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r"\|\||&&|[;|&\n]")
+_ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# Prefixes that run the NEXT word rather than being the command themselves.
+_WRAPPER_LEADERS: Final[frozenset[str]] = frozenset({"command", "env", "nohup", "time", "stdbuf", "nice"})
 
 # git's leading global options that consume the NEXT token as their value, so
 # the subcommand scanner skips two tokens for them (``git -C <path> add``).
@@ -53,7 +56,9 @@ _SWEEP_FLAGS: Final[frozenset[str]] = frozenset({"-A", "--all", "--no-ignore-rem
 # Flags that never sweep an untracked file: ``-u`` is tracked-only, ``-p``/``-i``
 # stage hunk by hunk under the author's eye. A ``.`` pathspec alongside one of
 # these is a scope narrowing, not a whole-tree sweep.
-_NO_SWEEP_FLAGS: Final[frozenset[str]] = frozenset({"-u", "--update", "-p", "--patch", "-i", "--interactive"})
+_NO_SWEEP_FLAGS: Final[frozenset[str]] = frozenset(
+    {"-u", "--update", "-p", "--patch", "-i", "--interactive", "-n", "--dry-run"}
+)
 _WHOLE_TREE_PATHSPECS: Final[frozenset[str]] = frozenset({".", "./", ":/", "*"})
 
 
@@ -124,7 +129,7 @@ def _segment_stages_whole_tree(segment: str) -> bool:
         return False
     if any(arg in _SWEEP_FLAGS or _short_cluster_has(arg, "A") for arg in args):
         return True
-    if any(arg in _NO_SWEEP_FLAGS or _short_cluster_has(arg, "upi") for arg in args):
+    if any(arg in _NO_SWEEP_FLAGS or _short_cluster_has(arg, "upin") for arg in args):
         return False
     return any(arg in _WHOLE_TREE_PATHSPECS for arg in _pathspecs(args))
 
@@ -132,11 +137,15 @@ def _segment_stages_whole_tree(segment: str) -> bool:
 def _git_add_args(tokens: list[str]) -> list[str] | None:
     """The arguments of a ``git add`` invocation in *tokens*, else None.
 
+    ``git`` must LEAD the segment (past any env assignment or ``command``-style
+    wrapper), so ``echo git add -A`` prints a string rather than staging one.
     Skips git's leading global options so ``git -C <path> add`` is still an
     ``add``; a path-form executable (``/usr/bin/git``) matches a bare ``git``.
     """
-    index = next((i for i, token in enumerate(tokens) if PurePosixPath(token).name == "git"), None)
-    if index is None:
+    index = 0
+    while index < len(tokens) and (_ENV_ASSIGNMENT_RE.match(tokens[index]) or tokens[index] in _WRAPPER_LEADERS):
+        index += 1
+    if index >= len(tokens) or PurePosixPath(tokens[index]).name != "git":
         return None
     cursor = index + 1
     while cursor < len(tokens) and tokens[cursor].startswith("-"):

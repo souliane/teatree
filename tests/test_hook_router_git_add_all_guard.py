@@ -96,6 +96,9 @@ class TestNarrowlyScoped:
             "grep -rn 'git add -A' docs/",
             'gh pr create --body "we used to git add . here"',
             "echo 'git add -A' >> notes.md",
+            "echo git add -A",
+            "git add -n .",
+            "git add --dry-run .",
         ],
     )
     def test_allowed(self, command: str) -> None:

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
-from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
+from teatree.hooks._shell_lexer import Token, TokenKind, split_commands, tokenize
 
 _MAX_INTERPRETER_DEPTH: Final[int] = 3
 
@@ -40,6 +40,11 @@ _SUBSTITUTION_CHARS: Final[frozenset[str]] = frozenset({"$", "`", "*", "?"})
 _SED_NAMES: Final[frozenset[str]] = frozenset({"sed", "gsed"})
 _COPY_NAMES: Final[frozenset[str]] = frozenset({"cp", "mv", "install"})
 _SHELL_NAMES: Final[frozenset[str]] = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# Prefixes that run the NEXT word rather than being the command themselves.
+# ``command cp`` / ``command mv`` is the alias-safe spelling the house shell
+# rules mandate, so reading the wrapper as the leader would turn the mandated
+# spelling into a blanket bypass of both write gates.
+_WRAPPER_LEADERS: Final[frozenset[str]] = frozenset({"command", "env", "nohup", "time", "stdbuf", "nice"})
 _SED_SCRIPT_FLAGS: Final[frozenset[str]] = frozenset({"-e", "--expression", "-f", "--file"})
 _COPY_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
     {"-t", "--target-directory", "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"}
@@ -111,7 +116,7 @@ def _command_write_targets(command: str, *, depth: int) -> WriteTargets:
     targets: list[str] = []
     unresolved = False
     for segment in split_commands(tokenize(command)):
-        words = [token.value for token in segment if token.kind is TokenKind.WORD]
+        words = [token for token in segment if token.kind is TokenKind.WORD]
         found, missed = _segment_write_targets(words, heredocs, depth=depth)
         targets.extend(found)
         unresolved = unresolved or missed
@@ -124,7 +129,7 @@ def _heredoc_bodies(command: str) -> dict[str, str]:
     return {match.group(1): match.group(2) for match in pattern.finditer(command)}
 
 
-def _segment_write_targets(words: list[str], heredocs: dict[str, str], *, depth: int) -> tuple[list[str], bool]:
+def _segment_write_targets(words: list[Token], heredocs: dict[str, str], *, depth: int) -> tuple[list[str], bool]:
     leader, operands = _leader_and_operands(words)
     if not leader:
         return [], False
@@ -142,14 +147,24 @@ def _segment_write_targets(words: list[str], heredocs: dict[str, str], *, depth:
     return targets + body_targets, unresolved or body_unresolved
 
 
-def _leader_and_operands(words: list[str]) -> tuple[str, list[str]]:
-    """The command's basename leader plus its words, past any env assignments."""
+def _leader_and_operands(words: list[Token]) -> tuple[str, list[Token]]:
+    """The command's basename leader plus its words, past prefixes that do not run it.
+
+    An env assignment is recognised on the VERBATIM span, per the shell's own
+    rule: ``'A'=1`` decodes to ``A=1`` but bash runs a command literally NAMED
+    ``A=1``, so a quoted spelling is not an assignment. The wrapper prefixes are
+    skipped because ``command cp`` / ``command mv`` is the alias-safe spelling
+    the house shell rules mandate — reading the wrapper as the leader would make
+    the mandated spelling a blanket bypass.
+    """
     index = 0
-    while index < len(words) and _ENV_ASSIGNMENT_RE.match(words[index]):
+    while index < len(words) and (
+        _ENV_ASSIGNMENT_RE.match(words[index].raw) or PurePosixPath(words[index].value).name in _WRAPPER_LEADERS
+    ):
         index += 1
     if index >= len(words):
         return "", []
-    return PurePosixPath(words[index]).name, words[index:]
+    return PurePosixPath(words[index].value).name, words[index:]
 
 
 def _classify(raw_targets: list[str]) -> tuple[list[str], bool]:
@@ -158,26 +173,37 @@ def _classify(raw_targets: list[str]) -> tuple[list[str], bool]:
     return targets, len(targets) != len(raw_targets)
 
 
-def _redirect_raw_targets(words: list[str]) -> list[str]:
+def _redirect_is_live(word: Token) -> "re.Match[str] | None":
+    """The redirect operator at the head of ``word``, or None if it is not one.
+
+    Matched on the VERBATIM span: redirection is shell SYNTAX, so a ``>`` the
+    shell never sees as an operator — ``grep -rn '>' src/``, a markdown
+    blockquote in ``-m "> note"`` — is an ordinary argument. Matching the decoded
+    value instead read those as "writes src/" and denied everyday commands.
+    """
+    return _REDIRECT_RE.match(word.raw)
+
+
+def _redirect_raw_targets(words: list[Token]) -> list[str]:
     """Targets of every output redirect in the segment (fd duplication excluded)."""
     raw: list[str] = []
     for index, word in enumerate(words):
-        match = _REDIRECT_RE.match(word)
+        match = _redirect_is_live(word)
         if match is None:
             continue
-        suffix = word[match.end() :]
-        target = suffix or (words[index + 1] if index + 1 < len(words) else "")
+        suffix = word.value[match.end() :]
+        target = suffix or (words[index + 1].value if index + 1 < len(words) else "")
         if target and not target.startswith("&"):
             raw.append(target)
     return raw
 
 
-def _sed_raw_targets(words: list[str]) -> list[str]:
+def _sed_raw_targets(words: list[Token]) -> list[str]:
     """The files a ``sed -i`` rewrites in place; empty for a read-only sed."""
-    flags = words[1:]
+    flags = [word.value for word in words[1:]]
     if not any(_is_sed_in_place(flag) for flag in flags):
         return []
-    positionals = _plain_positionals(flags, value_flags=_SED_SCRIPT_FLAGS)
+    positionals = _plain_positionals(words[1:], value_flags=_SED_SCRIPT_FLAGS)
     if any(flag in _SED_SCRIPT_FLAGS or flag.startswith(("--expression=", "--file=")) for flag in flags):
         return positionals
     return positionals[1:]
@@ -187,59 +213,66 @@ def _is_sed_in_place(flag: str) -> bool:
     return flag.startswith("--in-place") or (flag.startswith("-i") and not flag.startswith("--"))
 
 
-def _copy_raw_destination(words: list[str]) -> list[str]:
+def _copy_raw_destination(words: list[Token]) -> list[str]:
     """The destination of a ``cp``/``mv``/``install`` — the ``-t`` dir or the last operand."""
     for index, word in enumerate(words):
-        if word in {"-t", "--target-directory"} and index + 1 < len(words):
-            return [words[index + 1]]
-        if word.startswith("--target-directory="):
-            return [word.split("=", 1)[1]]
+        if word.value in {"-t", "--target-directory"} and index + 1 < len(words):
+            return [words[index + 1].value]
+        if word.value.startswith("--target-directory="):
+            return [word.value.split("=", 1)[1]]
     positionals = _plain_positionals(words[1:], value_flags=_COPY_VALUE_FLAGS)
     return positionals[-1:] if len(positionals) > 1 else []
 
 
-def _git_mv_raw_destination(words: list[str]) -> list[str]:
+def _git_mv_raw_destination(words: list[Token]) -> list[str]:
     """The destination of a ``git mv``, skipping git's leading global options."""
     cursor = 1
     while cursor < len(words):
-        token = words[cursor]
-        if not token.startswith("-"):
+        if not words[cursor].value.startswith("-"):
             break
-        cursor += 2 if token in _GIT_VALUE_FLAGS else 1
+        cursor += 2 if words[cursor].value in _GIT_VALUE_FLAGS else 1
     else:
         return []
-    if words[cursor] != "mv":
+    if words[cursor].value != "mv":
         return []
     positionals = _plain_positionals(words[cursor + 1 :])
     return positionals[-1:] if len(positionals) > 1 else []
 
 
-def _plain_positionals(words: list[str], value_flags: frozenset[str] = _NO_VALUE_FLAGS) -> list[str]:
-    """Positional operands only — flags, their values, and redirects dropped."""
+def _plain_positionals(words: list[Token], value_flags: frozenset[str] = _NO_VALUE_FLAGS) -> list[str]:
+    """Positional operands only — flags, their values, and redirects dropped.
+
+    Redirects and input redirections are recognised on the verbatim span (shell
+    syntax); flags are recognised on the decoded value, because quoting does not
+    change how the PROGRAM parses its options (``sed '-i'`` is still ``-i``). An
+    empty operand (BSD ``sed -i ''``) is dropped so it cannot shift the slice
+    that picks a script or a destination out of the positionals.
+    """
     positionals: list[str] = []
     skip_next = False
     for word in words:
         if skip_next:
             skip_next = False
             continue
-        match = _REDIRECT_RE.match(word)
+        match = _redirect_is_live(word)
         if match is not None:
-            skip_next = not word[match.end() :]
+            skip_next = not word.value[match.end() :]
             continue
-        if word.startswith("<"):
-            skip_next = word in {"<", "<<", "<<-"}
+        if word.raw.startswith("<"):
+            skip_next = word.value in {"<", "<<", "<<-"}
             continue
-        if word == "--":
+        if word.value == "--":
             continue
-        if word.startswith("-") and word != "-":
-            skip_next = word in value_flags
+        if word.value.startswith("-") and word.value != "-":
+            skip_next = word.value in value_flags
             continue
-        positionals.append(word)
+        if word.value:
+            positionals.append(word.value)
     return positionals
 
 
 def _interpreter_body_targets(
-    leader: str, words: list[str], heredocs: dict[str, str], *, depth: int
+    leader: str, words: list[Token], heredocs: dict[str, str], *, depth: int
 ) -> tuple[list[str], bool]:
     """Write targets named inside an interpreter's heredoc / ``-c`` body."""
     is_shell = leader in _SHELL_NAMES
@@ -260,21 +293,28 @@ def _interpreter_body_targets(
     return targets, unresolved
 
 
-def _interpreter_bodies(words: list[str], heredocs: dict[str, str]) -> list[str]:
-    """The code an interpreter segment runs: its heredoc bodies plus any ``-c`` value."""
+def _interpreter_bodies(words: list[Token], heredocs: dict[str, str]) -> list[str]:
+    """The code an interpreter segment runs: its heredoc bodies plus any ``-c`` value.
+
+    The heredoc operator is recognised on the verbatim span (shell syntax); the
+    delimiter comes from the decoded value, so ``<<'PY'`` and ``<<PY`` name the
+    same body.
+    """
     bodies: list[str] = []
     expect_delimiter = False
     for index, word in enumerate(words):
         if expect_delimiter:
             expect_delimiter = False
-            bodies.extend(_body_for_delimiter(word, heredocs))
+            bodies.extend(_body_for_delimiter(word.value, heredocs))
             continue
-        if word in {"<<", "<<-"}:
+        if not word.raw.startswith("<<"):
+            if word.value == "-c" and index + 1 < len(words):
+                bodies.append(words[index + 1].value)
+            continue
+        if word.value in {"<<", "<<-"}:
             expect_delimiter = True
-        elif word.startswith("<<"):
-            bodies.extend(_body_for_delimiter(word.removeprefix("<<-").removeprefix("<<"), heredocs))
-        elif word == "-c" and index + 1 < len(words):
-            bodies.append(words[index + 1])
+        else:
+            bodies.extend(_body_for_delimiter(word.value.removeprefix("<<-").removeprefix("<<"), heredocs))
     return bodies
 
 
@@ -295,7 +335,5 @@ def _python_body_targets(body: str) -> tuple[list[str], bool]:
     write_opens = [match for match in _PY_OPEN_RE.finditer(body) if _PY_WRITE_MODE_CHARS & set(match.group("mode"))]
     targets.extend(match.group("path") for match in write_opens)
     pinned, unresolved = _classify(targets)
-    if pinned:
-        return pinned, unresolved
     writes = bool(_PY_UNPINNED_OPEN_RE.search(body)) or bool(_PY_WRITE_EVIDENCE_RE.search(body))
-    return [], unresolved or writes
+    return pinned, unresolved or (writes and not pinned)

@@ -10,6 +10,8 @@ posture (the main-clone guard allows, the plan gate warns).
 
 from pathlib import Path
 
+import pytest
+
 from teatree.hooks.write_targets import bash_write_targets
 
 
@@ -98,11 +100,53 @@ class TestInterpreterHeredocs:
         assert bash_write_targets(command).targets == ("src/app/x.py",)
 
 
+class TestQuotedRedirectCharactersAreArguments:
+    """A `>` inside quotes is an ARGUMENT, never a redirect operator.
+
+    Redirection is shell SYNTAX, so it must be recognised on the verbatim source
+    span (``Token.raw``), not on the quote-decoded value. Reading the decoded
+    value turned `grep -rn '>' src/` into "writes src/" — the whole source tree —
+    and both gates denied it. Everyday commands; the guards became unusable.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -rn '>' src/",
+            'rg -n ">>" src/teatree',
+            'git commit -m "> blockquote note"',
+            "grep '>>>' src/app/x.py",
+            'gh pr comment 1 --body "> quoted reply"',
+            'printf "%s" ">"',
+            "grep -n '<' src/app/x.py",
+        ],
+    )
+    def test_quoted_redirect_char_is_not_a_write(self, command: str) -> None:
+        result = bash_write_targets(command)
+        assert result.targets == ()
+        assert result.unresolved is False
+
+    def test_a_real_redirect_alongside_a_quoted_one_still_counts(self) -> None:
+        # The anti-vacuous companion: quoting disarms only the QUOTED `>`.
+        assert bash_write_targets("grep -rn '>' src/ > /tmp/hits.txt").targets == ("/tmp/hits.txt",)
+
+
+class TestLeaderPrefixesAreSkipped:
+    """`command mv` is the shell-alias-safe spelling the house rules mandate."""
+
+    @pytest.mark.parametrize("prefix", ["command", "env", "nohup", "time"])
+    def test_prefixed_writer_is_still_a_write(self, prefix: str) -> None:
+        assert bash_write_targets(f"{prefix} cp /tmp/new.py src/app/x.py").targets == ("src/app/x.py",)
+
+
 class TestReadOnlyCommandsAreNeverWrites:
     def test_grep_and_cat_contribute_nothing(self) -> None:
         result = bash_write_targets("grep -rn 'needle' src/ && cat src/app/x.py")
         assert result.targets == ()
         assert result.unresolved is False
+
+    def test_bsd_sed_empty_suffix_does_not_leak_the_script_as_a_target(self) -> None:
+        assert bash_write_targets("sed -i '' 's/a/b/' src/app/x.py").targets == ("src/app/x.py",)
 
     def test_git_status_and_log_contribute_nothing(self) -> None:
         result = bash_write_targets("git status --short && git log --oneline -5")

@@ -51,6 +51,7 @@ _SURFACE_ACTIONS = {
     "bash-write": "writing `{target}` through a shell command into",
     "git": "`{target}` against",
 }
+_UNKNOWN_SURFACE_ACTION = "`{target}` against"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +118,7 @@ def deny_reason(finding: MainCloneFinding) -> str:
     costs a round trip; the Bash ``description`` is called out as unscanned for the
     same reason — it is where the token gets put when nothing says otherwise.
     """
-    what = _SURFACE_ACTIONS[finding.surface].format(target=finding.target)
+    what = _SURFACE_ACTIONS.get(finding.surface, _UNKNOWN_SURFACE_ACTION).format(target=finding.target)
     where = (
         "the Edit `new_string` / Write `content` / `file_path`"
         if finding.surface == "edit"

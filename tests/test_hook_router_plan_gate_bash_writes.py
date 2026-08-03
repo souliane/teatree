@@ -109,6 +109,17 @@ class TestLegitimateShellWorkIsNotBlocked(TestCase):
         assert blocked is False
         assert payload is None
 
+    def test_a_quoted_redirect_character_is_an_argument_not_a_write(self) -> None:
+        # Redirection is shell SYNTAX. Reading the quote-DECODED token instead of
+        # the verbatim span turned `grep -rn '>' src/` into "writes src/" — the
+        # whole source tree — and denied an everyday command.
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = _started_worktree(Path(tmp))
+            command = "grep -rn '>' src/ && git commit -m \"> blockquote note\""
+            blocked, payload, _ = _run(_bash_event(toplevel, command))
+        assert blocked is False
+        assert payload is None
+
     def test_read_only_python_heredoc_is_allowed_and_silent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _started_worktree(Path(tmp))
