@@ -229,7 +229,7 @@ def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> tomlkit_items.Tab
     return table
 
 
-def _comment_text(key: str) -> str:
+def comment_text(key: str) -> str:
     """What *key* ACCEPTS, then what it means — the two halves of its one-line comment.
 
     Without the first half a reader of the dump can see that ``wip`` is ``"full"`` but not
@@ -237,6 +237,10 @@ def _comment_text(key: str) -> str:
     export exists to answer away from the dashboard. It is DERIVED from the schema
     (:func:`~teatree.config.setting_annotation.setting_annotation`), the same answer the
     dashboard's selects are built from, so the two surfaces cannot come to disagree.
+
+    Public so a test asserting the rendered comment derives its expectation from THIS
+    function rather than re-spelling the shape as a literal — the drift this module exists
+    to prevent, one level up.
     """
     # Deferred (PLC0415): `setting_annotation` reaches `schema`, whose ~110ms pydantic
     # import this module otherwise never pays for.
@@ -255,7 +259,7 @@ def _commented(key: str, value: object) -> tomlkit_items.Item:
     splits ``key = value`` out of the file — sees the same key it always did.
     """
     item: tomlkit_items.Item = value if isinstance(value, tomlkit_items.Item) else tomlkit.item(value)
-    comment = _comment_text(key)
+    comment = comment_text(key)
     return item.comment(comment) if comment else item
 
 
@@ -310,6 +314,7 @@ __all__ = [
     "GroupHeading",
     "GroupSection",
     "SettingGroupNode",
+    "comment_text",
     "group_leaves",
     "group_outline",
     "group_paths",

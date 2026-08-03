@@ -16,7 +16,7 @@ from django.urls import resolve, reverse
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.enums import Autonomy
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
+from teatree.config.setting_groups import UNGROUPED_PATH, comment_text, setting_group_path
 from teatree.config.setting_help import setting_help
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
@@ -790,7 +790,10 @@ class TestHelpTextIsAuthoredOnceAndRenderedHere(TestCase):
 
     def test_the_tooltip_is_the_same_sentence_the_shipped_file_comments_the_key_with(self) -> None:
         shipped = DEFAULTS_TOML.read_text(encoding="utf-8")
-        assert f"merge_wip = 1 # {setting_help('merge_wip')}" in shipped
+        assert f"merge_wip = 1 # {comment_text('merge_wip')}" in shipped
+        # The tooltip carries the help sentence alone (no type/choices prefix), so pin it
+        # is still the TAIL of the shipped comment rather than a coincidentally equal string.
+        assert comment_text("merge_wip").endswith(setting_help("merge_wip"))
 
 
 class TestConstrainedTypesRenderAsSelects(TestCase):
