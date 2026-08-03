@@ -113,6 +113,14 @@ _SECRET_OVERLAY = SettingMeta(Category.SECRET, Registry.OVERLAY)
 _SECRET_COLD = SettingMeta(Category.SECRET, Registry.COLD)
 
 
+# Two closed value sets that have no enum of their own to point at. Declaring them
+# here — rather than as bare ``str`` — is what makes ``setting_choices`` derive them,
+# so the dashboard offers a select instead of a box an invalid value can be typed into.
+# The empty member is a real state in both (auto-detect / unset), never a placeholder.
+_RepoMode = Literal["", "solo", "collaborative"]
+_Privacy = Literal["", "strict", "relaxed"]
+
+
 def _provider_or_none(value: str | None) -> AgentHarnessProvider | None:
     # agent_harness_provider's None default means "inherit the ambient credential";
     # AgentHarnessProvider.parse rejects None, so the None sentinel passes through
@@ -277,7 +285,7 @@ class TeatreeSettingsSchema(BaseSettings):
     outer_loop_measure_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_stop_after_consecutive_failures: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     park_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
-    privacy: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    privacy: Annotated[_Privacy, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     pr_review_backend: Annotated[PrReviewBackend, BeforeValidator(PrReviewBackend.parse), _DEFAULT_OVERLAY]
     provision_fast_step_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     provision_max_concurrency: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -292,7 +300,7 @@ class TeatreeSettingsSchema(BaseSettings):
     ram_kill_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     ram_warn_avail_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     regulated_path_model_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
-    repo_mode: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    repo_mode: Annotated[_RepoMode, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     require_anti_vacuity_attestation: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     require_debt_delta: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     require_executed_repro: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

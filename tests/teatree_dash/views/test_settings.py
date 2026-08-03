@@ -813,6 +813,13 @@ class TestConstrainedTypesRenderAsSelects(TestCase):
         assert "<select" not in row
         assert 'type="text"' in row
 
+    def test_a_closed_str_setting_renders_a_select_of_every_member_including_the_empty_one(self) -> None:
+        row = _row_html(self.client, "repo_mode")
+        assert "<select" in row
+        assert 'type="text"' not in row
+        for member in ("", "solo", "collaborative"):
+            assert f'value="&quot;{member}&quot;"' in row
+
     def test_the_options_come_from_the_schema_rather_than_a_list_kept_beside_it(self) -> None:
         with patch("teatree.dash.settings_editor.setting_choices", return_value=("only-this",)):
             row = build_setting_row("autonomy")
