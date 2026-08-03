@@ -1,17 +1,28 @@
-"""Re-dispatch stuck non-terminal tickets — the drain, hard-bounded (PR-5).
+"""Re-dispatch stuck non-terminal tickets — the drain, hard-bounded (PR-5, #3958).
 
-A ticket can freeze in a non-terminal work-state with ZERO open tasks, no open
-PR, and no recent activity: its FSM reads ``started``/``planned``/… but nothing is
+Two populations freeze the factory, and one sweep drains both.
+
+A **frozen** ticket sits in a non-terminal state with ZERO open tasks, no open PR,
+and no recent activity: its FSM reads ``started``/``planned``/… but nothing is
 scheduled to advance it, and the report-only stale scanner never re-dispatches.
-This tick sweep schedules the phase task the ticket's state implies
-(``started`` → planning, ``planned`` → coding, …), so the frozen ticket resumes.
 
-The re-dispatch is HARD-BOUNDED by the #2009 repair-loop budget: a ticket-phase
-at its iteration cap, or stalled on two consecutive identical failures, is NOT
-re-dispatched and is escalated LOUDLY via a durable :class:`DeferredQuestion`
-(§17.1 invariant 9). Only AUTHOR tickets idle longer than the threshold with no
-work in flight are candidates — a ticket with an open task or open PR is already
-being worked and is left alone.
+A **failing** ticket is not idle at all: its latest attempt for the implied phase
+FAILED and nothing is in flight, so it churns rather than stops and an idle
+threshold can never reach it. Both roles are covered — the failing population is
+dominated by the ``reviewing`` phase, which lives on REVIEWER tickets, and those sit
+at ``not_started`` until ``review_posted``, so their implied phase comes from their
+own most recent task rather than from a state map. A failure whose phase output
+DEMONSTRABLY LANDED is excluded: it is a dead artifact, and re-running it is the
+already-done redispatch flood the ``transient_requeue`` sweep retires it to avoid.
+
+The re-dispatch is HARD-BOUNDED by the #2009 repair-loop budget, on ONE path for
+both classes: a ticket-phase at its iteration cap, stalled on two consecutive
+identical failures, or stalled on two consecutive failures of the same NAMED
+DETERMINISTIC :class:`FailureKind`, is NOT re-dispatched and is escalated LOUDLY via
+a durable :class:`DeferredQuestion` (§17.1 invariant 9). The named-cause stall is
+what stops a repair storm: re-dispatching into a deterministic defect reproduces it,
+while an environmental fault is the environment's and stays retryable up to the cap.
+A ticket with an open task is already being worked and is left alone.
 
 Lives in ``teatree.loop`` (orchestration): it composes the ``core`` ticket-
 scheduling methods with the ``core`` repair-loop budget over a housekeeping sweep.
@@ -19,19 +30,24 @@ scheduling methods with the ``core`` repair-loop budget over a housekeeping swee
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from django.conf import settings
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.phase_landing import phase_landing_evidence
+from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
+from teatree.loop.persistence_phase_task import create_phase_task
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +58,10 @@ _ESCALATION_MARKER = "[stuck-redispatch-halt ticket={pk}]"
 #: skipped without re-running its per-ticket budget query every tick (bounds the sweep).
 _ESCALATION_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
 
-#: The non-terminal work-states a stuck ticket re-dispatches from, mapped to the
+#: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
-#: terminal states have nothing left to do.
+#: terminal states have nothing left to do. A reviewer ticket has no equivalent map
+#: — see :func:`_implied_phase`.
 _STATE_PHASE: dict[str, str] = {
     Ticket.State.STARTED: "planning",
     Ticket.State.PLANNED: "coding",
@@ -52,6 +69,18 @@ _STATE_PHASE: dict[str, str] = {
     Ticket.State.TESTED: "reviewing",
     Ticket.State.REVIEWED: "shipping",
 }
+
+#: Attempt outcomes that mean the phase's last run did not succeed (#16's explicit
+#: discriminator, so an envelope refusal recorded with ``exit_code=0`` still counts).
+_FAILED_OUTCOMES = frozenset({TaskAttempt.Outcome.REFUSAL, TaskAttempt.Outcome.CRASH})
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One ticket-phase the sweep may re-dispatch — the unit both classes reduce to."""
+
+    ticket: Ticket
+    phase: str
 
 
 def redispatch_stuck_tickets() -> int:
@@ -63,33 +92,33 @@ def redispatch_stuck_tickets() -> int:
     threshold = _idle_threshold_hours()
     already_escalated = _already_escalated_ticket_pks()
     scheduled = 0
-    for ticket in _stuck_candidates(now=now, threshold_hours=threshold):
+    for candidate in _stuck_candidates(now=now, threshold_hours=threshold):
         # An already-escalated ticket is parked — skip it BEFORE its budget query, so
         # the dead-letter set never grows the per-tick work (bounded sweep, #8).
-        if ticket.pk in already_escalated:
+        if candidate.ticket.pk in already_escalated:
             continue
         # Per-item fault isolation (#3441): one poison ticket (a budget query that blows
         # up, a scheduling method that raises unexpectedly) must NOT abort the sweep and
         # strand every OTHER stuck ticket. Record it loudly and move on.
         try:
-            scheduled += _redispatch_one(ticket)
+            scheduled += _redispatch_one(candidate)
         except Exception:
-            logger.exception("Stuck-redispatch skipped ticket %s after an unexpected error", ticket.pk)
+            logger.exception("Stuck-redispatch skipped ticket %s after an unexpected error", candidate.ticket.pk)
     return scheduled
 
 
-def _redispatch_one(ticket: Ticket) -> int:
-    """Schedule ONE stuck ticket's implied phase within budget, else escalate. Returns 0/1.
+def _redispatch_one(candidate: _Candidate) -> int:
+    """Schedule ONE candidate's phase within budget, else escalate. Returns 0/1.
 
-    Isolated per ticket so :func:`redispatch_stuck_tickets` can wrap it in a single
-    ``try`` and keep sweeping when one row raises.
+    Isolated per candidate so :func:`redispatch_stuck_tickets` can wrap it in a single
+    ``try`` and keep sweeping when one row raises. The single path both classes take,
+    so no re-dispatch can reach the scheduler without passing the budget.
     """
-    phase = _STATE_PHASE[ticket.state]
-    halt = _budget_halt_reason(ticket, phase=phase)
+    halt = _budget_halt_reason(candidate.ticket, phase=candidate.phase)
     if halt is not None:
-        _escalate_once(ticket, reason=halt)
+        _escalate_once(candidate.ticket, reason=halt)
         return 0
-    return _redispatch(ticket, phase=phase)
+    return _redispatch(candidate)
 
 
 def _already_escalated_ticket_pks() -> set[int]:
@@ -105,21 +134,82 @@ def _already_escalated_ticket_pks() -> set[int]:
     return {int(m.group(1)) for text in texts if (m := _ESCALATION_PK_RE.search(text))}
 
 
-def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[Ticket]:
-    """AUTHOR tickets in a work-state with no open task, no open PR, idle past the threshold."""
-    tickets = (
-        Ticket.objects.filter(state__in=_STATE_PHASE.keys(), role=Ticket.Role.AUTHOR)
+def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate]:
+    """Every ticket-phase with no work in flight that is either frozen or failing.
+
+    One queryset, two admission predicates OR-ed: a ticket idle past *threshold_hours*
+    (frozen) or one whose latest attempt for the implied phase failed (failing).
+    """
+    candidates = []
+    for ticket in _live_tickets_with_nothing_in_flight():
+        phase = _implied_phase(ticket)
+        if phase is None:
+            continue
+        if _phase_is_failing(ticket, phase=phase) or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
+            candidates.append(_Candidate(ticket=ticket, phase=phase))
+    return candidates
+
+
+def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
+    """Non-terminal tickets of either role carrying no active task (and, for an author, no open PR).
+
+    The open-PR exclusion is AUTHOR-only on purpose: an author's open PR means the work
+    is in flight, whereas a reviewer ticket's PR IS its subject — every reviewer ticket
+    has one open by definition, so excluding on it would silently re-narrow the sweep
+    back to author-only.
+    """
+    author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
+    reviewer = Q(role=Ticket.Role.REVIEWER) & ~Q(state__in=tuple(_REVIEWER_DONE_STATES))
+    open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
+    return list(
+        Ticket.objects.filter(author | reviewer)
         .exclude(tasks__status__in=Task.Status.active())
-        .exclude(pull_requests__isnull=False, pull_requests__state__in=_OPEN_PR_STATES)
+        .exclude(open_pr)
         .distinct()
     )
-    return [t for t in tickets if _is_idle(t, now=now, threshold_hours=threshold_hours)]
+
+
+def _implied_phase(ticket: Ticket) -> str | None:
+    """The phase this ticket's next re-dispatch should schedule, or ``None`` to skip it.
+
+    An author ticket's phase follows its FSM state. A reviewer ticket has no such map —
+    it is minted at NOT_STARTED and stays there until REVIEW_POSTED — so its phase is
+    the one its own most recent task ran, which also preserves the codex review variants
+    (``codex_reviewing`` / ``codex_adversarial_reviewing``) a plain ``reviewing`` would
+    collapse. A reviewer ticket that never ran a task has no phase to imply and no
+    failure to repair, so the sweep leaves it alone rather than inventing work.
+    """
+    if ticket.role != Ticket.Role.REVIEWER:
+        return _STATE_PHASE.get(ticket.state)
+    tasks = ticket.tasks.order_by("-pk")  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    return tasks.values_list("phase", flat=True).first() or None
+
+
+def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
+    """Whether the latest recorded WORK attempt of *ticket*'s *phase* failed and left nothing behind.
+
+    A failed attempt whose phase output DEMONSTRABLY LANDED is not a failing phase — it
+    is the dead artifact of an interrupted run the ticket already advanced past, and the
+    same ``transient_requeue`` sweep that runs before this one retires it COMPLETED for
+    exactly that reason. Re-dispatching it is the already-done redispatch flood
+    (3366/3336/3352), and the failing class is what would reach it: unlike a frozen
+    ticket it never has to wait out an idle threshold first.
+    """
+    attempts = _phase_attempts(ticket, phase=phase)
+    if not attempts or attempts[-1].outcome not in _FAILED_OUTCOMES:
+        return False
+    return not phase_landing_evidence(attempts[-1].task)
 
 
 #: PR states that count as "open" (a merged PR does not keep a ticket alive).
 _OPEN_PR_STATES = frozenset(
     {PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED},
 )
+
+#: States a REVIEWER ticket has nothing left to do in. ``marker_release_states()``
+#: carries the reviewer terminal (REVIEW_POSTED); RETROSPECTED is added for the same
+#: reason the failed-task doctor probe adds it — a retrospected ticket is finished.
+_REVIEWER_DONE_STATES = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
@@ -144,14 +234,36 @@ def _last_activity(ticket: Ticket) -> datetime | None:
     return ticket.transitions.aggregate(ts=Max("created_at"))["ts"]  # ty: ignore[unresolved-attribute]  # Django reverse FK
 
 
-def _redispatch(ticket: Ticket, *, phase: str) -> int:
-    """Schedule the phase task *ticket*'s state implies; escalate on a scheduling refusal. Returns 0/1."""
+def _redispatch(candidate: _Candidate) -> int:
+    """Schedule the candidate's phase task; escalate on a scheduling refusal. Returns 0/1."""
+    ticket = candidate.ticket
     try:
-        _schedule_for_state(ticket)
+        _schedule_for_candidate(candidate)
     except InvalidTransitionError as exc:
-        _escalate_once(ticket, reason=f"could not schedule {phase!r}: {exc}")
+        _escalate_once(ticket, reason=f"could not schedule {candidate.phase!r}: {exc}")
         return 0
     return 1
+
+
+def _schedule_for_candidate(candidate: _Candidate) -> Task:
+    """Mint the candidate's phase task through the seam that owns that phase.
+
+    The author FSM mints and :func:`create_phase_task` are CAS-guarded and return an
+    in-flight sibling rather than racing one. :func:`schedule_external_review` is not —
+    it has always leaned on its caller's open-task pre-check, which here is the
+    ``no active task`` admission predicate every candidate already passed.
+    """
+    ticket, phase = candidate.ticket, candidate.phase
+    if ticket.role != Ticket.Role.REVIEWER:
+        return _schedule_for_state(ticket)
+    if normalize_phase(phase) == "reviewing":
+        return schedule_external_review(ticket)
+    return create_phase_task(
+        ticket,
+        phase=phase,
+        agent_id=phase,
+        reason=f"Auto-repair re-dispatch — {phase} on {ticket.issue_url or ticket.pk}",
+    )
 
 
 def _schedule_for_state(ticket: Ticket) -> Task:
@@ -177,10 +289,33 @@ def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
             phase=normalize_phase(phase),
             iteration_count=len(attempts),
             last_two_fingerprints=last_two,
+            last_two_deterministic_kinds=_deterministic_kinds(attempts),
         )
     except (MaxIterationsExceeded, IterationStalled) as exc:
         return str(exc)
     return None
+
+
+#: Kinds that are the ABSENCE of a name rather than a cause, so two of them are not
+#: evidence of one repeating defect — two unrelated failures both land here. They keep
+#: the text-based fingerprint stall, which compares what actually differs between them.
+_UNNAMED_KINDS = frozenset({FailureKind.UNCLASSIFIED, FailureKind.UNRECORDED})
+
+
+def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
+    """The last two attempts' failure kinds, keeping only the NAMED deterministic ones (#3957).
+
+    An environmental kind is dropped rather than compared: a lost lease or an API outage
+    is the environment's fault, so repeating it says nothing about the work and must stay
+    retryable up to the iteration cap. Dropping (rather than substituting a placeholder)
+    also means one environmental failure between two identical deterministic ones breaks
+    the run — only two CONSECUTIVE named deterministic failures halt.
+    """
+    return [
+        a.failure_kind
+        for a in attempts[-2:]
+        if a.failure_kind and a.failure_kind not in _UNNAMED_KINDS and not is_environmental(a.failure_kind)
+    ]
 
 
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:

@@ -164,6 +164,53 @@ fi
 # the command would resolve from the image WORKDIR again — the exact failure this
 # block exists to remove, reappearing only on some hosts. `-P` on a path that is
 # already physical is a no-op, so the common case is unchanged.
+# The host roots the container can see. Shared by the invisible-checkout refusal
+# below and the unreachable-argument note further down, so the two can never name
+# different sets — they are answering the same question.
+print_visible_host_roots() {
+    local root
+    for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
+        if [ -n "$root" ]; then
+            echo "             $root" >&2
+        fi
+    done
+}
+
+# The checkout enclosing $1, or nothing when $1 is not inside one. A `.git` entry
+# is what git itself looks for, and it is a FILE in a linked worktree — teatree's
+# own worktrees are exactly that shape. Pure expansion, no `git`: the wrapper's
+# whole contract is that the host needs no teatree toolchain, and a hook subprocess
+# inherits a restricted PATH where shelling out silently yields nothing.
+enclosing_checkout_root() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != / ]; do
+        if [ -e "$dir/.git" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        dir="${dir%/*}"
+    done
+    if [ -e /.git ]; then
+        printf '%s\n' /
+    fi
+    return 0
+}
+
+refuse_invisible_checkout() {
+    echo "deploy/t3: refusing to run — this checkout is not visible inside the container." >&2
+    echo "           cwd:      $1" >&2
+    echo "           checkout: $2" >&2
+    echo "           The container carries its OWN copy of the teatree source (a Docker" >&2
+    echo "           volume, a separate tree from this one), so dispatching from here would" >&2
+    echo "           silently operate on that copy instead of the checkout you are in." >&2
+    echo "           The container sees only these host roots:" >&2
+    print_visible_host_roots
+    echo "           Fix: work from a checkout under one of them — \`t3 <overlay> workspace" >&2
+    echo "           ticket <id>\` creates one — or export TEATREE_INVOCATION_CWD to the" >&2
+    echo "           container-side path when you know this tree is reachable there." >&2
+    exit 1
+}
+
 if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
     HOST_CWD="$(pwd -P)"
     PHYSICAL_HOST_HOME="$(cd "$TEATREE_HOST_HOME" 2>/dev/null && pwd -P)" || PHYSICAL_HOST_HOME="$TEATREE_HOST_HOME"
@@ -191,6 +238,28 @@ if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
             ;;
         esac
     done
+
+    # WHEN THE UNTRANSLATED CWD IS A WRONG TREE, NOT MERELY AN UNKNOWN ONE. An
+    # untranslated cwd degrades to the image WORKDIR, and under it sits the
+    # container's own source volume — so a cwd-sensitive command run from a host
+    # checkout outside every mount resolves against that copy and reports success
+    # having touched a different tree. Nothing downstream can detect this: both
+    # trees are real teatree checkouts, so there is no error to surface.
+    #
+    # Scoped to a CHECKOUT because that is the only cwd a tree can be wrong about.
+    # `~`, `/tmp` and the like carry no tree, and every cwd-insensitive command
+    # (`t3 doctor`, `t3 info`, `t3 notify send`) must keep running from them — the
+    # pre-existing degrade-to-container-cwd behaviour, unchanged.
+    #
+    # A refusal, where an unreachable path ARGUMENT below only warns: the wrapper
+    # cannot know whether the CLI will open that argument, but the cwd is read by
+    # the CLI on every invocation, so the wrong-tree resolution is certain.
+    if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
+        CHECKOUT_ROOT="$(enclosing_checkout_root "$HOST_CWD")"
+        if [ -n "$CHECKOUT_ROOT" ]; then
+            refuse_invisible_checkout "$HOST_CWD" "$CHECKOUT_ROOT"
+        fi
+    fi
 fi
 
 # WHEN A HOST PATH CANNOT CROSS THE BOUNDARY. The container sees only the bind
@@ -234,7 +303,7 @@ unreachable_host_paths() {
 }
 
 warn_unreachable_host_paths() {
-    local unreachable root path
+    local unreachable path
     unreachable="$(unreachable_host_paths "$@")"
     if [ -z "$unreachable" ]; then
         return 0
@@ -246,12 +315,8 @@ warn_unreachable_host_paths() {
         echo "             $path" >&2
     done <<<"$unreachable"
     echo "           The container sees only these host roots:" >&2
-    for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
-        if [ -n "$root" ]; then
-            echo "             $root" >&2
-        fi
-    done
-    echo "           Move the path under one of them, or run the host t3 (~/.local/bin/t3)." >&2
+    print_visible_host_roots
+    echo "           Move the path under one of them." >&2
     return 0
 }
 
@@ -356,6 +421,44 @@ if [ -n "$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" ]; then
     exec docker compose -f "$COMPOSE_FILE" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" t3 "$@"
 fi
 
-# Nothing running — one-off container on the shared volumes. `--entrypoint t3`
-# bypasses the TEATREE_ROLE dispatcher so we run the CLI directly, not a server.
+# Nothing running. Two different worlds reach this line: a merely STOPPED stack,
+# where the one-off below is the intended path and works, and a stack that was
+# never deployed here (or a dead daemon), where the one-off cannot run at all.
+# Only the second needs saying, and docker says it in its own vocabulary —
+# "Cannot connect to the Docker daemon", or a pull attempt against an image that
+# was only ever built locally — which names nothing an operator can act on. The
+# host `t3` is a shim, so this is the whole of what a stopped deployment can
+# report; leaving it as docker's own text is the traceback-shaped failure the
+# shim exists to remove.
+#
+# Preflighted HERE rather than at the top so the cost lands only on the path that
+# can hit it: a running worker already proved both facts by answering `ps`.
+refuse_absent_stack() {
+    echo "deploy/t3: refusing to run — the teatree stack is not available on this host." >&2
+    echo "           $1" >&2
+    echo "           Start it with: $REPO_ROOT/deploy/deploy.sh" >&2
+    exit 1
+}
+
+if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    refuse_absent_stack "The Docker daemon is not reachable — start Docker first."
+fi
+
+# The image the compose file names for this service, asked of compose rather than
+# assembled here so a renamed or operator-overridden image can never be probed
+# under a stale name. An empty answer means compose could not resolve the service
+# at all, which the one-off is about to report far better than a guess would.
+#
+# The first line is taken by expansion, never `| head`: under `pipefail` the
+# reader closing the pipe early kills the writer with SIGPIPE and the whole
+# assignment fails 141, so a service resolving to more than one image would abort
+# the wrapper instead of dispatching.
+SERVICE_IMAGES="$(compose config --images "$SERVICE" 2>/dev/null || true)"
+SERVICE_IMAGE="${SERVICE_IMAGES%%$'\n'*}"
+if [ -n "$SERVICE_IMAGE" ] && ! docker image inspect "$SERVICE_IMAGE" >/dev/null 2>&1; then
+    refuse_absent_stack "No local image \`$SERVICE_IMAGE\` — this host has never built the stack."
+fi
+
+# `--entrypoint t3` bypasses the TEATREE_ROLE dispatcher so we run the CLI
+# directly, not a server.
 exec docker compose -f "$COMPOSE_FILE" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"
