@@ -146,6 +146,21 @@ t3 eval run --backend api --require-executed
 `--require-executed` makes an all-skipped run exit non-zero, so it can never pass
 green with zero coverage.
 
+The deterministic corpus has the same escape from a vacuous green
+([#4005](https://github.com/souliane/teatree/issues/4005)). A check the lane could not
+run is recorded `skipped` and still carries `ok=True`, so a topology fault (the
+container-owned control DB, unreachable from the host) never reddens the pre-push hook —
+which leaves `ok` alone unable to say whether the pins asserted anything. The report's
+second axis answers that: `validated` is true only when every check ran, the text summary
+says `NOT a validated green` otherwise, `render_json` emits it beside `ok`, and:
+
+```bash
+t3 eval pinned-regressions --strict   # non-zero unless every check actually ran
+```
+
+The default stays lenient for the host pre-push hook; `--strict` (like the suite's own
+`t3 eval --strict`) is for a caller that needs the pins to have asserted something.
+
 ## What CI does
 
 - **Model-free lanes — every PR.** `pinned-regressions` (prek hook)

@@ -43,6 +43,26 @@ def _free_pages(path: Path) -> int:
         con.close()
 
 
+def _page_counts(path: Path) -> tuple[int, int]:
+    con = sqlite3.connect(path)
+    try:
+        return (
+            int(con.execute("PRAGMA page_count").fetchone()[0]),
+            int(con.execute("PRAGMA freelist_count").fetchone()[0]),
+        )
+    finally:
+        con.close()
+
+
+def _wal_journalled(path: Path) -> None:
+    """WAL is a file-header property, so every later connection inherits it."""
+    con = sqlite3.connect(path)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+    finally:
+        con.close()
+
+
 class TestVacuumSqlite:
     def test_control_a_delete_alone_leaves_the_file_size_untouched(self, tmp_path: Path) -> None:
         """The premise this whole item rests on — deleted rows become free pages, not free disk."""
@@ -67,6 +87,65 @@ class TestVacuumSqlite:
         assert db.stat().st_size < before
         assert outcome.bytes_reclaimed == before - db.stat().st_size
         assert _free_pages(db) == 0
+
+    def test_a_live_reader_defers_the_truncation_and_the_reclaim_is_still_reported(self, tmp_path: Path) -> None:
+        """The figure comes from SQLite's accounting, never from a file size (#3979).
+
+        A reader holding an open snapshot blocks the checkpoint that truncates the
+        file, so the rebuilt page count lands while the file keeps its old size —
+        and a stat-derived figure reads zero on a rebuild that reclaimed most of
+        the database.
+        """
+        db = tmp_path / "control.sqlite3"
+        _wal_journalled(db)
+        _bloated_db(db)
+        _delete_most_rows(db)
+        before = db.stat().st_size
+        reader = sqlite3.connect(db, isolation_level=None)
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM attempt").fetchone()
+        try:
+            outcome = vacuum_sqlite(db)
+            size_while_deferred = db.stat().st_size
+        finally:
+            reader.close()
+
+        assert size_while_deferred == before, "control: the file has caught up, so nothing was deferred"
+        assert outcome.ran
+        assert outcome.bytes_reclaimed > 0
+        assert outcome.pages_after < outcome.pages_before
+        assert not outcome.file_caught_up
+        assert "next checkpoint" in outcome.summary
+
+    def test_the_reported_counts_match_an_independent_read_of_the_pragmas(self, tmp_path: Path) -> None:
+        db = tmp_path / "control.sqlite3"
+        _bloated_db(db)
+        _delete_most_rows(db)
+        pages_before, free_before = _page_counts(db)
+
+        outcome = vacuum_sqlite(db)
+
+        pages_after, free_after = _page_counts(db)
+        assert (outcome.pages_before, outcome.free_pages_before) == (pages_before, free_before)
+        assert (outcome.pages_after, outcome.free_pages_after) == (pages_after, free_after)
+        assert outcome.bytes_reclaimed == outcome.page_size * (pages_before - pages_after)
+        assert free_before > 0, "fixture never bloated — the reclaim assertion would be vacuous"
+
+    def test_a_compact_database_reports_ran_with_nothing_to_reclaim(self, tmp_path: Path) -> None:
+        """A vacuum that found nothing must not read like one that never ran — the #3979 ambiguity."""
+        db = tmp_path / "control.sqlite3"
+        _bloated_db(db)
+        _delete_most_rows(db)
+        vacuum_sqlite(db)
+
+        outcome = vacuum_sqlite(db)
+        missing = vacuum_sqlite(tmp_path / "nope.sqlite3")
+
+        assert outcome.ran
+        assert outcome.bytes_reclaimed == 0
+        assert "nothing to reclaim" in outcome.summary
+        assert missing.summary == missing.reason
+        assert outcome.summary != missing.summary
 
     def test_the_surviving_rows_are_still_readable(self, tmp_path: Path) -> None:
         """VACUUM rebuilds the file — the guard that it rebuilt it correctly."""

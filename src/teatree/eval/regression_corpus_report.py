@@ -19,8 +19,10 @@ def render_text(report: RegressionReport) -> str:
             line += f" — {r.detail}"
         lines.append(line)
     passed = sum(1 for r in report.results if r.ok and not r.skipped)
-    skipped = sum(1 for r in report.results if r.skipped)
-    lines.append(f"\nsummary: {passed} passed, {len(report.failures)} failed, {skipped} skipped")
+    summary = f"summary: {passed} passed, {len(report.failures)} failed, {len(report.skipped)} skipped"
+    if not report.validated:
+        summary += " — NOT a validated green: the skipped checks asserted nothing"
+    lines.append(f"\n{summary}")
     return "\n".join(lines)
 
 
@@ -28,6 +30,7 @@ def render_json(report: RegressionReport) -> str:
     return json.dumps(
         {
             "ok": report.ok,
+            "validated": report.validated,
             "checks": [
                 {
                     "failure_class": r.check.failure_class,

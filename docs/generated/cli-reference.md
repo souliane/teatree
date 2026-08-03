@@ -1852,8 +1852,17 @@ Usage: t3 eval pinned-regressions [OPTIONS]
  pid-anchored loop lease, the migration-graph leaf count) on a must-block and
  a must-allow input. Any violated invariant exits non-zero.
 
+ ``--strict`` additionally demands a VALIDATED green (#4005), matching the
+ suite's
+ own ``t3 eval --strict``. The default stays lenient because the pre-push hook
+ runs
+ on the host, where the container-owned control DB is unreachable by design and
+ blocking every push there is the false red the skip exists to end.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
+│ --strict              Also exit non-zero when a check could not run (a green │
+│                       with skips asserted nothing).                          │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1974,6 +1983,9 @@ Usage: t3 eval changed-scenarios [OPTIONS]
 │ --require-specs                 Fail loud (exit 2) when the filtered catalog │
 │                                 is empty, instead of skipping like 'nothing  │
 │                                 changed'.                                    │
+│ --diff-file            PATH     Unified diff (git diff --unified=0) for the  │
+│                                 same range, to narrow section-scoped         │
+│                                 scenarios.                                   │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

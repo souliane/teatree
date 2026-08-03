@@ -32,7 +32,7 @@ import pytest
 
 from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
-from teatree.eval.context_budget import _HEADING_RE, MissingSectionError, extract_sections
+from teatree.eval.context_budget import HEADING_RE, MissingSectionError, extract_sections
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matcher_vacuity import negative_only_specs
 from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
@@ -405,7 +405,7 @@ def _expected_section_body(text: str, name: str) -> str | None:
     headings itself rather than calling the extractor under test, so a regression
     in the extractor cannot move the expectation with it.
     """
-    headings = list(_HEADING_RE.finditer(text))
+    headings = list(HEADING_RE.finditer(text))
     for index, match in enumerate(headings):
         if match.group(2) != name:
             continue

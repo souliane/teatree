@@ -62,7 +62,7 @@ from teatree.agents.pydantic_ai_config import (
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
-from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
+from teatree.agents.regulated_path import RegulatedPathPolicy
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 
 logger = logging.getLogger(__name__)
@@ -188,7 +188,7 @@ class PydanticAiHarness:
     :class:`~pydantic_ai.models.function.FunctionModel` doubles, with no network
     and no :class:`~teatree.llm.credentials.CredentialError` risk. A resolved
     model name is checked against the regulated-path allowlist policy
-    (:func:`~teatree.agents.regulated_path.assert_model_allowed_on_regulated_path`, #2887)
+    (:class:`~teatree.agents.regulated_path.RegulatedPathPolicy`, #2887)
     before it reaches the provider — a no-op unless the lane sets
     ``enforce_regulated_path``.
 
@@ -230,11 +230,12 @@ class PydanticAiHarness:
         self._phase = phase
         # The model-construction bundle (backend knobs + binding), resolved
         # SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults (router
-        # binding, factory lane, uncapped).
+        # binding, factory lane, uncapped, no pre-resolved regulated-path policy).
         cfg = config or PydanticAiModelConfig()
         self._backend = cfg.backend
         self._binding = cfg.binding
         self._max_tokens = cfg.max_tokens
+        self._regulated_path = cfg.regulated_path
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -268,7 +269,7 @@ class PydanticAiHarness:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
-            return resolve_native_anthropic_model(options)
+            return resolve_native_anthropic_model(options, self._regulated_path)
         # Normalise the resolved id to what the configured endpoint actually serves:
         # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
         # (the :data:`TIER_MODELS` form) an OpenAI-compatible provider does NOT carry, so it maps
@@ -281,7 +282,7 @@ class PydanticAiHarness:
         # the backend credential is absent. ``options.model`` catches both a bare
         # ineligible name and an explicit provider-prefixed pin (which passes through
         # normalisation unchanged); an absent pin falls back to the resolved id.
-        assert_model_allowed_on_regulated_path(options.model or model_name)
+        RegulatedPathPolicy.resolve(self._regulated_path).assert_allowed(options.model or model_name)
         return OpenAIChatModel(model_name, provider=build_openai_compatible_provider(self._backend))
 
     @asynccontextmanager
@@ -364,6 +365,7 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
         config=PydanticAiModelConfig(
             binding=binding,
             max_tokens=settings.pydantic_ai_max_tokens,
+            regulated_path=RegulatedPathPolicy.from_settings(settings),
             backend=OpenAICompatibleLaneConfig(
                 lane=settings.openai_compatible_lane,
                 request_limit=settings.pydantic_ai_request_limit,
