@@ -84,6 +84,10 @@ _HEADER = """\
 # `config/cold_defaults.py` flattens the group wrappers back on read. A sub-table named
 # after a declared setting (`speak`, `mr_reminder`) is a setting; any other is a group.
 # Put a new key under its group's table; CI refuses one sitting outside its group.
+# Each key's trailing comment says what it ACCEPTS — the stored type, plus the alternatives
+# where the schema constrains them to a set — then what it means. Both halves are DERIVED
+# (`config/setting_annotation.py`, `config/setting_help.py`), so editing one here is
+# overwritten by the next render.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips

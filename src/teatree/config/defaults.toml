@@ -25,6 +25,10 @@
 # `config/cold_defaults.py` flattens the group wrappers back on read. A sub-table named
 # after a declared setting (`speak`, `mr_reminder`) is a setting; any other is a group.
 # Put a new key under its group's table; CI refuses one sitting outside its group.
+# Each key's trailing comment says what it ACCEPTS — the stored type, plus the alternatives
+# where the schema constrains them to a set — then what it means. Both halves are DERIVED
+# (`config/setting_annotation.py`, `config/setting_help.py`), so editing one here is
+# overwritten by the next render.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
@@ -49,279 +53,279 @@
 # definition needs a typed `stop-<name>` naming what stops.
 
 [teatree.Workspace."Engagement & identity"]
-autoload = false # load the suggested skills automatically at session start
-check_updates = true # check for a newer teatree on startup
-contribute = false # allow a retro to edit teatree's own skills
-excluded_skills = [] # skills never offered to an agent, whatever the loader suggests
-privacy = "" # how strictly commits and posts are scanned for private data
-timezone = "" # timezone every schedule and daily cadence is read in
+autoload = false # bool — load the suggested skills automatically at session start
+check_updates = true # bool — check for a newer teatree on startup
+contribute = false # bool — allow a retro to edit teatree's own skills
+excluded_skills = [] # list — skills never offered to an agent, whatever the loader suggests
+privacy = "" # str, one of: "" | strict | relaxed — how strictly commits and posts are scanned for private data
+timezone = "" # str — timezone every schedule and daily cadence is read in
 
 [teatree.Agents."Mode & harness"]
-agent_harness = "claude_sdk" # which agent CLI teatree drives (claude, codex, ...)
-agent_runtime = "headless" # whether dispatched work runs headless or in an interactive terminal
-autonomy = "full" # how far the factory may act without asking the operator
-enforce_regulated_path = false # route work touching a regulated path through the allowlisted models only
-envelope_stop_gate_refusals = 2 # refuse a turn that ends without the required result envelope
-headless_max_turns = 250 # turn ceiling for one headless run
-mode = "auto" # publishing posture: auto pushes without waiting, interactive asks first
-openai_compatible_lane = "factory" # which work lane routes to the OpenAI-compatible endpoint
-pydantic_ai_max_tokens = 16384 # token ceiling for one pydantic-ai request
-pydantic_ai_request_limit = 40 # requests one pydantic-ai run may make
-regulated_path_model_allowlist = [] # models allowed to touch a regulated path
-subagent_spawn_ceiling = 20 # sub-agents one dispatch may spawn
-ticket_budget_max_cost_usd = 0.0 # dollars one ticket may cost before it is halted
-watchdog_max_cost_usd = 0.0 # dollars a watched run may spend before the watchdog stops it
-watchdog_max_runtime_seconds = 10800 # seconds a watched run may take before the watchdog stops it
-watchdog_max_turns = 0 # turns a watched run may take before the watchdog stops it
+agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
+agent_runtime = "headless" # str, one of: interactive | headless — whether dispatched work runs headless or in an interactive terminal
+autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
+enforce_regulated_path = false # bool — route work touching a regulated path through the allowlisted models only
+envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the required result envelope
+headless_max_turns = 250 # int — turn ceiling for one headless run
+mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
+openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
+pydantic_ai_max_tokens = 16384 # int — token ceiling for one pydantic-ai request
+pydantic_ai_request_limit = 40 # int — requests one pydantic-ai run may make
+regulated_path_model_allowlist = [] # list — models allowed to touch a regulated path
+subagent_spawn_ceiling = 20 # int — sub-agents one dispatch may spawn
+ticket_budget_max_cost_usd = 0.0 # float — dollars one ticket may cost before it is halted
+watchdog_max_cost_usd = 0.0 # float — dollars a watched run may spend before the watchdog stops it
+watchdog_max_runtime_seconds = 10800 # int — seconds a watched run may take before the watchdog stops it
+watchdog_max_turns = 0 # int — turns a watched run may take before the watchdog stops it
 
 [teatree.Loops."Cadence & throughput"]
-loop_cadence_seconds = 720 # default seconds between ticks of a loop that declares none
-loop_runner_enabled = true # run the worker that drives the loop ticks
-merge_wip = 1 # how many merges may be in flight at once
-wip = "full" # how much work may be in progress at once
-worker_quiescing = false # stop claiming new work and let the running units finish
-write_wip = 3 # how many writing units may be in flight at once
+loop_cadence_seconds = 720 # int — default seconds between ticks of a loop that declares none
+loop_runner_enabled = true # bool — run the worker that drives the loop ticks
+merge_wip = 1 # int — how many merges may be in flight at once
+wip = "full" # str, one of: slow | medium | full | boost — how much work may be in progress at once
+worker_quiescing = false # bool — stop claiming new work and let the running units finish
+write_wip = 3 # int — how many writing units may be in flight at once
 
 [teatree.Loops.Scanners]
-ask_before_backlog_sweep_closes = true # ask the operator before a backlog sweep closes an issue
-ask_before_creating_news_tickets = true # ask the operator before the news scanner files a ticket
-auto_update_reinstall = false # reinstall the CLI after an update instead of only pulling
-auto_update_require_green_main = true # only self-update onto a main whose CI is green
-backlog_sweep_cadence_hours = 168 # hours between backlog sweeps
-backlog_sweep_disabled = true # stop scheduling backlog sweeps
-backlog_sweep_skill = "sweeping-tickets" # skill the backlog sweep loop runs
-dogfood_smoke_cadence_hours = 24 # hours between dogfood smoke runs
-dogfood_smoke_disabled = false # stop scheduling dogfood smoke runs
-dogfood_smoke_overlay = "" # overlay the dogfood smoke run exercises
-dogfood_smoke_skill = "dogfood-smoke" # skill the dogfood smoke loop runs
-eval_local_cadence_hours = 168 # hours between local eval runs
-eval_local_disabled = false # stop scheduling local eval runs
-eval_local_skill = "eval" # skill the local eval loop runs
-scanning_news_cadence_hours = 24 # hours between news scans
-scanning_news_disabled = false # stop scheduling news scans
-scanning_news_skill = "scanning-news" # skill the news scanning loop runs
-schema_readiness_gate_enabled = true # refuse work when the database schema is not migrated
-self_update_cadence_hours = 1 # hours between self-update checks
-self_update_disabled = false # stop self-updating
+ask_before_backlog_sweep_closes = true # bool — ask the operator before a backlog sweep closes an issue
+ask_before_creating_news_tickets = true # bool — ask the operator before the news scanner files a ticket
+auto_update_reinstall = false # bool — reinstall the CLI after an update instead of only pulling
+auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
+backlog_sweep_cadence_hours = 168 # int — hours between backlog sweeps
+backlog_sweep_disabled = true # bool — stop scheduling backlog sweeps
+backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
+dogfood_smoke_cadence_hours = 24 # int — hours between dogfood smoke runs
+dogfood_smoke_disabled = false # bool — stop scheduling dogfood smoke runs
+dogfood_smoke_overlay = "" # str — overlay the dogfood smoke run exercises
+dogfood_smoke_skill = "dogfood-smoke" # str — skill the dogfood smoke loop runs
+eval_local_cadence_hours = 168 # int — hours between local eval runs
+eval_local_disabled = false # bool — stop scheduling local eval runs
+eval_local_skill = "eval" # str — skill the local eval loop runs
+scanning_news_cadence_hours = 24 # int — hours between news scans
+scanning_news_disabled = false # bool — stop scheduling news scans
+scanning_news_skill = "scanning-news" # str — skill the news scanning loop runs
+schema_readiness_gate_enabled = true # bool — refuse work when the database schema is not migrated
+self_update_cadence_hours = 1 # int — hours between self-update checks
+self_update_disabled = false # bool — stop self-updating
 
 [teatree.Loops."Kill switches & credentials"]
-approved_recipe_sha = "" # commit of the provisioning recipe the operator reviewed and approved
-auto_disposition_enabled = false # let the loop close or re-label issues it has decided about
-auto_disposition_max_closes_per_tick = 5 # ceiling on issues auto-disposition may close in one tick
-billing_cycle_anchor_day = 0 # day of the month the subscription's usage window resets
-boost_concurrency = 0 # extra concurrent units allowed while the box is in boost
-ci_eval_heal_autofix_enabled = false # let CI propose a fix for a red eval scenario on its own
-contribute_plugin_dir = false # directory holding the plugin a contribute run writes to
-db_backup_cadence_hours = 24 # hours between database backups
-db_backup_disabled = false # stop scheduling database backups
-db_backup_retention_days = 7 # days a database backup is kept before it is pruned
-directive_intake_per_tick = 25 # how many owner directives the directive loop intakes per tick
-directive_loop_enabled = true # run the directive loop that turns owner directives into config
-directive_verify_days = 7 # days a ratified directive is watched before it is considered settled
-dream_propose_evals = false # let the dream loop propose new eval scenarios
-factory_score_enabled = false # compute and record the factory health score each tick
-fleet_claim_enabled = false # let this box claim work from the shared fleet queue
-gitlab_approval_scanner_enabled = false # scan GitLab for approvals that should advance a ticket
-hook_fetch_titles = true # let hooks fetch issue titles, at the cost of a network call per prompt
-issue_implementer_cadence_hours = 1 # hours between issue-implementer runs
-issue_implementer_enabled = true # let the loop claim and implement labelled issues
-issue_implementer_label = "" # label an issue must carry for the implementer to claim it
-issue_implementer_max_concurrent = 3 # fallback in-flight ceiling when the resource loop has no adaptive reading
-limit_autorecovery_enabled = true # resume automatically once a usage limit window reopens
-mr_triage_enabled = false # run the merge-request triage ladder, which surfaces verdicts and never acts
-mr_triage_max_mrs_per_tick = 20 # merge requests the triage ladder may assess in one tick
-orchestrate_claim_enabled = false # let the orchestrator claim work rather than only routing it
-outer_loop_enabled = false # run the outer loop that measures and improves the factory itself
-outer_loop_max_per_week = 1 # outer-loop runs allowed per week
-outer_loop_measure_days = 7 # days of history the outer loop measures over
-outer_loop_stop_after_consecutive_failures = 3 # consecutive failures that stop the outer loop
-sdk_monthly_credit_usd = 200.0 # monthly SDK credit the cost tracker measures spend against
-triage_assessor_cadence_hours = 24 # hours between triage assessor runs
-triage_assessor_enabled = true # run the triage assessor over untriaged issues
-triage_assessor_max_issues_per_tick = 10 # issues the triage assessor may assess in one tick
-trusted_issue_authors = [] # issue authors whose issues may be claimed without extra triage
+approved_recipe_sha = "" # str — commit of the provisioning recipe the operator reviewed and approved
+auto_disposition_enabled = false # bool — let the loop close or re-label issues it has decided about
+auto_disposition_max_closes_per_tick = 5 # int — ceiling on issues auto-disposition may close in one tick
+billing_cycle_anchor_day = 0 # int — day of the month the subscription's usage window resets
+boost_concurrency = 0 # int — extra concurrent units allowed while the box is in boost
+ci_eval_heal_autofix_enabled = false # bool — let CI propose a fix for a red eval scenario on its own
+contribute_plugin_dir = false # bool — directory holding the plugin a contribute run writes to
+db_backup_cadence_hours = 24 # int — hours between database backups
+db_backup_disabled = false # bool — stop scheduling database backups
+db_backup_retention_days = 7 # int — days a database backup is kept before it is pruned
+directive_intake_per_tick = 25 # int — how many owner directives the directive loop intakes per tick
+directive_loop_enabled = true # bool — run the directive loop that turns owner directives into config
+directive_verify_days = 7 # int — days a ratified directive is watched before it is considered settled
+dream_propose_evals = false # bool — let the dream loop propose new eval scenarios
+factory_score_enabled = false # bool — compute and record the factory health score each tick
+fleet_claim_enabled = false # bool — let this box claim work from the shared fleet queue
+gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
+hook_fetch_titles = true # bool — let hooks fetch issue titles, at the cost of a network call per prompt
+issue_implementer_cadence_hours = 1 # int — hours between issue-implementer runs
+issue_implementer_enabled = true # bool — let the loop claim and implement labelled issues
+issue_implementer_label = "" # str — label an issue must carry for the implementer to claim it
+issue_implementer_max_concurrent = 3 # int — fallback in-flight ceiling when the resource loop has no adaptive reading
+limit_autorecovery_enabled = true # bool — resume automatically once a usage limit window reopens
+mr_triage_enabled = false # bool — run the merge-request triage ladder, which surfaces verdicts and never acts
+mr_triage_max_mrs_per_tick = 20 # int — merge requests the triage ladder may assess in one tick
+orchestrate_claim_enabled = false # bool — let the orchestrator claim work rather than only routing it
+outer_loop_enabled = false # bool — run the outer loop that measures and improves the factory itself
+outer_loop_max_per_week = 1 # int — outer-loop runs allowed per week
+outer_loop_measure_days = 7 # int — days of history the outer loop measures over
+outer_loop_stop_after_consecutive_failures = 3 # int — consecutive failures that stop the outer loop
+sdk_monthly_credit_usd = 200.0 # float — monthly SDK credit the cost tracker measures spend against
+triage_assessor_cadence_hours = 24 # int — hours between triage assessor runs
+triage_assessor_enabled = true # bool — run the triage assessor over untriaged issues
+triage_assessor_max_issues_per_tick = 10 # int — issues the triage assessor may assess in one tick
+trusted_issue_authors = [] # list — issue authors whose issues may be claimed without extra triage
 
 [teatree.Communication."Posting on your behalf"]
-admin_autologin_enabled = true # log the loopback operator into Django admin without a password prompt
-agent_signature = false # append an agent signature to artifacts posted under the operator's identity
-claude_chrome = false # drive Chrome through the Claude browser integration
-max_open_prs_per_repo_per_ticket = 1 # open pull requests one ticket may hold in one repo
-notify_on_post_on_behalf = true # DM the operator a receipt after every post made under their identity
-notify_user_via_bot = true # deliver notifications through the overlay bot rather than silently
-on_behalf_auto_actions = ["post_e2e_evidence"] # actions the agent may take under the operator's identity unattended
-on_behalf_post_mode = "draft_or_ask" # whether a colleague-visible post drafts, asks, or publishes immediately
-require_human_approval_to_answer = true # require the operator to approve an answer before it is posted
-require_human_approval_to_merge = true # require a recorded human approver before a merge
-review_request_post_disabled = false # stop posting review requests
-substrate_auto_merge_authorized_by = "" # who authorized substrate changes to auto-merge
-substrate_self_signoff = false # let a substrate change be signed off by its own author
+admin_autologin_enabled = true # bool — log the loopback operator into Django admin without a password prompt
+agent_signature = false # bool — append an agent signature to artifacts posted under the operator's identity
+claude_chrome = false # bool — drive Chrome through the Claude browser integration
+max_open_prs_per_repo_per_ticket = 1 # int — open pull requests one ticket may hold in one repo
+notify_on_post_on_behalf = true # bool — DM the operator a receipt after every post made under their identity
+notify_user_via_bot = true # bool — deliver notifications through the overlay bot rather than silently
+on_behalf_auto_actions = ["post_e2e_evidence"] # list — actions the agent may take under the operator's identity unattended
+on_behalf_post_mode = "draft_or_ask" # str, one of: draft_or_ask | ask | immediate — whether a colleague-visible post drafts, asks, or publishes immediately
+require_human_approval_to_answer = true # bool — require the operator to approve an answer before it is posted
+require_human_approval_to_merge = true # bool — require a recorded human approver before a merge
+review_request_post_disabled = false # bool — stop posting review requests
+substrate_auto_merge_authorized_by = "" # str — who authorized substrate changes to auto-merge
+substrate_self_signoff = false # bool — let a substrate change be signed off by its own author
 
 [teatree.Communication."Identity & routing"]
-missing_issue_ref_policy = "find_existing_then_ask" # what to do with a branch carrying no issue reference
-repo_mode = "" # whether this box works on its own repos, colleagues' repos, or both
-statusline_chain = [] # which statusline segments render, in order
-statusline_engaged_render = false # render the statusline only while the session is engaged
+missing_issue_ref_policy = "find_existing_then_ask" # str, one of: find_existing_then_ask | create | dummy — what to do with a branch carrying no issue reference
+repo_mode = "" # str, one of: "" | solo | collaborative — whether this box works on its own repos, colleagues' repos, or both
+statusline_chain = [] # list — which statusline segments render, in order
+statusline_engaged_render = false # bool — render the statusline only while the session is engaged
 
 [teatree.Gates.Quality."Architectural review"]
-architectural_review_after_merge_count = 25 # merges that must land before another architectural review is due
-architectural_review_cadence_hours = 168 # hours between architectural review runs
-architectural_review_disabled = false # stop scheduling architectural reviews
-architectural_review_retry_backoff_hours = 12 # hours to wait before retrying a failed architectural review
-architectural_review_skill = "ac-reviewing-codebase" # skill the architectural review loop runs
+architectural_review_after_merge_count = 25 # int — merges that must land before another architectural review is due
+architectural_review_cadence_hours = 168 # int — hours between architectural review runs
+architectural_review_disabled = false # bool — stop scheduling architectural reviews
+architectural_review_retry_backoff_hours = 12 # int — hours to wait before retrying a failed architectural review
+architectural_review_skill = "ac-reviewing-codebase" # str — skill the architectural review loop runs
 
 [teatree.Gates.Quality.Review]
-admit_colleague_prs_to_board = true # put pull requests opened by colleagues onto the review board
-pr_review_backend = "auto" # which reviewer runs the self-authored-PR cold review; auto resolves per tick
-require_anti_vacuity_attestation = false # require proof a regression test was observed red before its fix
-require_integration_review = false # require an integration-level review beside the unit one
-require_review_context = false # require the reviewer to record what context they read
-require_reviewed_state_for_review_request = false # require a reviewed ticket before a review is requested
-review_backend_cooldown_hours = 6 # hours a review backend stays parked after its account ran out of quota
-review_skill = "" # skill a review dispatch runs
-review_skill_alternates = [] # extra skills whose recorded run also satisfies the reviewing-phase evidence gate
+admit_colleague_prs_to_board = true # bool — put pull requests opened by colleagues onto the review board
+pr_review_backend = "auto" # str, one of: auto | claude | codex — which reviewer runs the self-authored-PR cold review; auto resolves per tick
+require_anti_vacuity_attestation = false # bool — require proof a regression test was observed red before its fix
+require_integration_review = false # bool — require an integration-level review beside the unit one
+require_review_context = false # bool — require the reviewer to record what context they read
+require_reviewed_state_for_review_request = false # bool — require a reviewed ticket before a review is requested
+review_backend_cooldown_hours = 6 # int — hours a review backend stays parked after its account ran out of quota
+review_skill = "" # str — skill a review dispatch runs
+review_skill_alternates = [] # list — extra skills whose recorded run also satisfies the reviewing-phase evidence gate
 
 [teatree.Gates.Quality."Merge & done"]
-expected_required_contexts = [] # CI check names a pull request must carry before it can merge
-require_debt_delta = false # require a change to state whether it added or removed tech debt
-require_executed_repro = false # require an executed reproduction before a bug fix is accepted
-require_merge_evidence = false # require merge evidence to be recorded before the merge lands
-require_merge_quality_verdict = false # require a quality verdict on the change before it merges
-require_plan_adequacy = false # require the plan to be judged adequate before coding starts
+expected_required_contexts = [] # list — CI check names a pull request must carry before it can merge
+require_debt_delta = false # bool — require a change to state whether it added or removed tech debt
+require_executed_repro = false # bool — require an executed reproduction before a bug fix is accepted
+require_merge_evidence = false # bool — require merge evidence to be recorded before the merge lands
+require_merge_quality_verdict = false # bool — require a quality verdict on the change before it merges
+require_plan_adequacy = false # bool — require the plan to be judged adequate before coding starts
 
 [teatree.Gates.Quality."Critic & send proxy"]
-bulk_close_threshold = 5 # how many closes in one run count as a bulk action needing approval
-critic_gate_mode = "off" # how hard the critic gate blocks work it judges inadequate
-send_proxy_allowlist = [] # destinations the send proxy may deliver to
-send_proxy_mode = "warn" # whether outbound messages go direct, through the proxy, or nowhere
+bulk_close_threshold = 5 # int — how many closes in one run count as a bulk action needing approval
+critic_gate_mode = "off" # str, one of: off | advisory | blocking — how hard the critic gate blocks work it judges inadequate
+send_proxy_allowlist = [] # list — destinations the send proxy may deliver to
+send_proxy_mode = "warn" # str, one of: warn | enforce — whether outbound messages go direct, through the proxy, or nowhere
 
 [teatree.Gates.Quality."Definition of done"]
-e2e_confidence_threshold = 90 # confidence an E2E verdict must reach before it counts as evidence
-require_rubric_verification = false # require the rubric to be verified rather than asserted
-require_spec_coverage = false # require every spec deliverable to carry its own evidence
+e2e_confidence_threshold = 90 # int — confidence an E2E verdict must reach before it counts as evidence
+require_rubric_verification = false # bool — require the rubric to be verified rather than asserted
+require_spec_coverage = false # bool — require every spec deliverable to carry its own evidence
 
 [teatree.Gates.Pre-publish]
-attachment_gate_enabled = true # refuse a post whose attachment was never verified to exist
-ban_close_trailers_on_namespaces = [] # repo namespaces where a commit may not carry a closing trailer
-chrome_devtools_headless = true # run the devtools browser headless
-chrome_devtools_mcp_enabled = true # expose the Chrome devtools MCP server to agents
-colleague_repo_url_pattern = "" # regex matching repo URLs owned by colleagues rather than the operator
-dashboard_instance_label = "" # name shown in the dashboard header, to tell two boxes apart
-e2e_mandatory_gate_enabled = true # require posted E2E evidence before a display-impacting change ships
-gate_relaxation_gate_enabled = true # refuse a change that weakens a safety gate without approval
-incremental_push_gate = true # scope the push gate to the diff instead of running it whole-tree
-mr_conflict_scan_enabled = false # scan open merge requests for conflicts, at the cost of a forge read each
-mr_state_questions_max_per_tick = 2 # merge-request state questions that may be raised in one tick
-mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\\(.+\\))?!?: .+" # regex a pull request title must match
-orchestrator_bash_gate_enabled = true # refuse heavy shell commands run directly by the orchestrator
-pull_main_clone_cadence_hours = 1 # hours between pulls of each main clone
-pull_main_clone_disabled = false # stop pulling the main clones on a cadence
-require_work_group_batch = false # refuse to broadcast one work-group member while a sibling is not review-ready
-review_exempt_repos = [] # repos whose merge requests need no review request
-review_exempt_repos_count_toward_group_readiness = true # let review-exempt merge requests still hold their work group
-review_nag_enabled = false # chase a review request that has gone unanswered
-review_nag_max_interval_days = 30 # ceiling on the review nag's widening re-ask interval
-review_pause_reaction_emojis = ["double_vertical_bar", "pause_button"] # Slack reaction names meaning a review request is deliberately paused
-review_request_dedup_max_pages = 5 # pages of history searched for an existing review request
-review_request_dedup_window_days = 30 # days a prior review request suppresses a duplicate
-review_resume_reply_enabled = false # reply in-thread that a paused review request is ready again
-slack_voice_classifier_mode = "warn" # how a Slack message is classified as the operator's voice
-snapshot_baseline_gate_enabled = true # refuse a snapshot diff taken against a stale baseline
-solo_repo_url_pattern = "" # regex matching repos the operator works on alone
-work_group_generic_scopes = ["build", "chore", "ci", "config", "deps", "docs", "infra", "test", "tooling"] # commit scopes too generic to group merge requests on
-work_group_max_members = 12 # members above which a work group is surfaced as a question rather than held
+attachment_gate_enabled = true # bool — refuse a post whose attachment was never verified to exist
+ban_close_trailers_on_namespaces = [] # list — repo namespaces where a commit may not carry a closing trailer
+chrome_devtools_headless = true # bool — run the devtools browser headless
+chrome_devtools_mcp_enabled = true # bool — expose the Chrome devtools MCP server to agents
+colleague_repo_url_pattern = "" # str — regex matching repo URLs owned by colleagues rather than the operator
+dashboard_instance_label = "" # str — name shown in the dashboard header, to tell two boxes apart
+e2e_mandatory_gate_enabled = true # bool — require posted E2E evidence before a display-impacting change ships
+gate_relaxation_gate_enabled = true # bool — refuse a change that weakens a safety gate without approval
+incremental_push_gate = true # bool — scope the push gate to the diff instead of running it whole-tree
+mr_conflict_scan_enabled = false # bool — scan open merge requests for conflicts, at the cost of a forge read each
+mr_state_questions_max_per_tick = 2 # int — merge-request state questions that may be raised in one tick
+mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\\(.+\\))?!?: .+" # str — regex a pull request title must match
+orchestrator_bash_gate_enabled = true # bool — refuse heavy shell commands run directly by the orchestrator
+pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
+pull_main_clone_disabled = false # bool — stop pulling the main clones on a cadence
+require_work_group_batch = false # bool — refuse to broadcast one work-group member while a sibling is not review-ready
+review_exempt_repos = [] # list — repos whose merge requests need no review request
+review_exempt_repos_count_toward_group_readiness = true # bool — let review-exempt merge requests still hold their work group
+review_nag_enabled = false # bool — chase a review request that has gone unanswered
+review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
+review_pause_reaction_emojis = ["double_vertical_bar", "pause_button"] # list — Slack reaction names meaning a review request is deliberately paused
+review_request_dedup_max_pages = 5 # int — pages of history searched for an existing review request
+review_request_dedup_window_days = 30 # int — days a prior review request suppresses a duplicate
+review_resume_reply_enabled = false # bool — reply in-thread that a paused review request is ready again
+slack_voice_classifier_mode = "warn" # str, one of: strict | warn | off — how a Slack message is classified as the operator's voice
+snapshot_baseline_gate_enabled = true # bool — refuse a snapshot diff taken against a stale baseline
+solo_repo_url_pattern = "" # str — regex matching repos the operator works on alone
+work_group_generic_scopes = ["build", "chore", "ci", "config", "deps", "docs", "infra", "test", "tooling"] # list — commit scopes too generic to group merge requests on
+work_group_max_members = 12 # int — members above which a work group is surfaced as a question rather than held
 
 [teatree.Gates."Pre-Django hooks"]
-banned_terms_gate_enabled = true # run the banned-term scan before a publish
-banned_terms_required = false # refuse to scan when no banned-term list is configured, instead of warning
-completion_claim_gate_enabled = true # refuse a multi-deliverable completion claim carrying no evidence map
-config_overwrite_gate_enabled = true # refuse a blind overwrite of a config file that was not read first
-deny_circuit_breaker_enabled = true # pause dispatch after repeated classifier denials instead of retrying
-deny_circuit_breaker_threshold = 3 # consecutive denials that trip the circuit breaker
-dispatch_quote_gate_on_task_create_enabled = false # check quoting of a dispatch brief when the task is created
-glab_stale_base_remote_gate_enabled = true # refuse a merge-request create on a stale glab-base remote (glab no-ops)
-headless_authoring_gate_enabled = true # refuse headless authoring outside a live worktree
-hook_validator_timeout_seconds = 60 # seconds a hook validator may run before it is abandoned
-main_clone_guard_gate_enabled = true # refuse an edit to the main clone's working tree
-mcp_privacy_gate_enabled = true # scan MCP tool payloads for private data before they leave the box
-mcp_slack_write_gate_enabled = true # gate MCP Slack writes behind the on-behalf rules
-memory_recall_enabled = true # recall durable memories into a session's context
-no_self_reviewer_assign_gate_enabled = true # refuse assigning the author as their own reviewer
-orchestrator_boundary_agent_gate_enabled = true # refuse orchestrator work that belongs in a sub-agent
-orchestrator_investigation_gate_enabled = true # refuse an orchestrator investigation that should be dispatched
-orchestrator_turn_budget = 25 # output-token budget for one orchestrator turn
-orchestrator_turn_wall_clock_seconds = 180 # seconds one orchestrator turn may take
-out_of_band_merge_gate_enabled = true # refuse a merge that skipped the recorded review path
-plan_edit_gate_enabled = true # refuse a source edit made while the session is still planning
-self_dm_gate_enabled = true # classify a self-DM apart from a colleague post, so it is not gated
-single_branch_repo_gate_enabled = true # refuse a second branch in a repo declared single-branch
-skill_loading_gate_enabled = true # refuse a turn that skipped a skill the loader required
-standing_goal_stop_gate_enabled = true # refuse ending a turn as done while a standing goal is unmet
-stop_snapshotter_enabled = true # snapshot session findings before a stop, so context survives
-unknown_repo_push_gate_enabled = true # refuse a push to a repo teatree does not recognise
+banned_terms_gate_enabled = true # bool — run the banned-term scan before a publish
+banned_terms_required = false # bool — refuse to scan when no banned-term list is configured, instead of warning
+completion_claim_gate_enabled = true # bool — refuse a multi-deliverable completion claim carrying no evidence map
+config_overwrite_gate_enabled = true # bool — refuse a blind overwrite of a config file that was not read first
+deny_circuit_breaker_enabled = true # bool — pause dispatch after repeated classifier denials instead of retrying
+deny_circuit_breaker_threshold = 3 # int — consecutive denials that trip the circuit breaker
+dispatch_quote_gate_on_task_create_enabled = false # bool — check quoting of a dispatch brief when the task is created
+glab_stale_base_remote_gate_enabled = true # bool — refuse a merge-request create on a stale glab-base remote (glab no-ops)
+headless_authoring_gate_enabled = true # bool — refuse headless authoring outside a live worktree
+hook_validator_timeout_seconds = 60 # int — seconds a hook validator may run before it is abandoned
+main_clone_guard_gate_enabled = true # bool — refuse an edit to the main clone's working tree
+mcp_privacy_gate_enabled = true # bool — scan MCP tool payloads for private data before they leave the box
+mcp_slack_write_gate_enabled = true # bool — gate MCP Slack writes behind the on-behalf rules
+memory_recall_enabled = true # bool — recall durable memories into a session's context
+no_self_reviewer_assign_gate_enabled = true # bool — refuse assigning the author as their own reviewer
+orchestrator_boundary_agent_gate_enabled = true # bool — refuse orchestrator work that belongs in a sub-agent
+orchestrator_investigation_gate_enabled = true # bool — refuse an orchestrator investigation that should be dispatched
+orchestrator_turn_budget = 25 # int — output-token budget for one orchestrator turn
+orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator turn may take
+out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
+plan_edit_gate_enabled = true # bool — refuse a source edit made while the session is still planning
+self_dm_gate_enabled = true # bool — classify a self-DM apart from a colleague post, so it is not gated
+single_branch_repo_gate_enabled = true # bool — refuse a second branch in a repo declared single-branch
+skill_loading_gate_enabled = true # bool — refuse a turn that skipped a skill the loader required
+standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done while a standing goal is unmet
+stop_snapshotter_enabled = true # bool — snapshot session findings before a stop, so context survives
+unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
-adaptive_intake_concurrency_enabled = true # let the resource loop set intake concurrency from observed headroom
-disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes", "~/.cache/go-build"] # cache directories disk reclamation may empty
-disk_crit_free_gb = 10.0 # free disk below this many GB is critical
-disk_warn_free_gb = 25.0 # free disk below this many GB warns
-intake_ram_per_agent_gb = 6.2 # RAM one admitted ticket is sized at when deriving intake concurrency
-intake_ram_reserve_gb = 4.0 # RAM held back from intake sizing so a burst is absorbed instead of OOMing
-ram_crit_avail_gb = 1.5 # available RAM below this many GB is critical
-ram_warn_avail_gb = 3.0 # available RAM below this many GB warns
-resource_pressure_cadence_minutes = 5 # minutes between resource-pressure checks
-resource_pressure_disabled = false # stop checking resource pressure
-resource_pressure_min_free_interval_minutes = 30 # minutes before the same pressure alarm may fire again
+adaptive_intake_concurrency_enabled = true # bool — let the resource loop set intake concurrency from observed headroom
+disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes", "~/.cache/go-build"] # list — cache directories disk reclamation may empty
+disk_crit_free_gb = 10.0 # float — free disk below this many GB is critical
+disk_warn_free_gb = 25.0 # float — free disk below this many GB warns
+intake_ram_per_agent_gb = 6.2 # float — RAM one admitted ticket is sized at when deriving intake concurrency
+intake_ram_reserve_gb = 4.0 # float — RAM held back from intake sizing so a burst is absorbed instead of OOMing
+ram_crit_avail_gb = 1.5 # float — available RAM below this many GB is critical
+ram_warn_avail_gb = 3.0 # float — available RAM below this many GB warns
+resource_pressure_cadence_minutes = 5 # int — minutes between resource-pressure checks
+resource_pressure_disabled = false # bool — stop checking resource pressure
+resource_pressure_min_free_interval_minutes = 30 # int — minutes before the same pressure alarm may fire again
 
 [teatree.Infrastructure."Resource pressure"."Destructive levers"]
-allow_destructive_disk = false # allow disk reclamation to remove artifacts it cannot prove are rebuildable
-allow_destructive_ram = false # allow the RAM reaper to kill processes outside its allowlist
-max_worktree_gc_per_tick = 3 # worktrees the garbage collector may reap in one tick
-ram_kill_allowlist = [] # processes the RAM reaper may kill under pressure
-worktree_stale_days = 30 # days after which an untouched worktree counts as stale
+allow_destructive_disk = false # bool — allow disk reclamation to remove artifacts it cannot prove are rebuildable
+allow_destructive_ram = false # bool — allow the RAM reaper to kill processes outside its allowlist
+max_worktree_gc_per_tick = 3 # int — worktrees the garbage collector may reap in one tick
+ram_kill_allowlist = [] # list — processes the RAM reaper may kill under pressure
+worktree_stale_days = 30 # int — days after which an untouched worktree counts as stale
 
 [teatree.Infrastructure."Retention & sweeps"]
-incoming_event_retention_days = 30 # days an incoming event row is kept
-max_concurrent_local_stacks = 1 # how many tickets may hold a running local stack at once
-park_attempt_retention_days = 7 # days a parked attempt is kept before it is pruned
-session_stale_after_hours = 12 # hours after which a session with no heartbeat counts as stale
-target_branch = "" # long-lived integration branch every pull request targets instead of the repo default
-task_attempt_retention_days = 30 # days a task attempt row is kept
-task_result_retention_days = 1 # days a task result row is kept
-task_sweep_disabled = false # stop sweeping abandoned tasks back into the queue
-task_sweep_recheck_interval_hours = 1 # hours between rechecks of a swept task
-ticket_transition_prune_disabled = false # stop pruning old ticket transition rows
+incoming_event_retention_days = 30 # int — days an incoming event row is kept
+max_concurrent_local_stacks = 1 # int — how many tickets may hold a running local stack at once
+park_attempt_retention_days = 7 # int — days a parked attempt is kept before it is pruned
+session_stale_after_hours = 12 # int — hours after which a session with no heartbeat counts as stale
+target_branch = "" # str — long-lived integration branch every pull request targets instead of the repo default
+task_attempt_retention_days = 30 # int — days a task attempt row is kept
+task_result_retention_days = 1 # int — days a task result row is kept
+task_sweep_disabled = false # bool — stop sweeping abandoned tasks back into the queue
+task_sweep_recheck_interval_hours = 1 # int — hours between rechecks of a swept task
+ticket_transition_prune_disabled = false # bool — stop pruning old ticket transition rows
 
 [teatree.Infrastructure.Provisioning]
-admission_governor_enabled = true # let the governor refuse new work when the box is already saturated
-clean_ignore = [] # branch globs the cleanup reapers never touch
-idle_stack_e2e_recent_minutes = 60 # minutes an E2E run keeps a stack safe from the idle reaper
-idle_stack_idle_minutes = 30 # minutes of inactivity after which a local stack counts as idle
-idle_stack_reaper_cadence_minutes = 5 # minutes between idle-stack reaper runs
-idle_stack_reaper_disabled = false # stop reaping idle local stacks
-local_stack_queue_disabled = false # stop queueing work that needs a local stack
-local_stack_queue_max_attempts = 13 # attempts a queued local-stack unit gets before it is abandoned
-provision_fast_step_timeout_seconds = 120 # seconds a step declared fast may take before it is failed
-provision_max_concurrency = 0 # provisioning steps that may run at once
-provision_ram_ceiling_percent = 85 # percent of RAM provisioning may consume before it backs off
-provision_slow_threshold_seconds = 600 # seconds after which a provisioning step is reported as slow
-provision_step_timeout_seconds = 1800 # seconds an ordinary provisioning step may take
-single_branch_repos = [] # repos that may carry only one branch at a time
-snapshot_warmer_disabled = false # stop warming the snapshot caches
-snapshot_warmer_max_age_days = 1 # days a warmed snapshot stays usable
-stale_stack_min_age_minutes = 0 # minutes a stack must exist before staleness is judged
+admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated
+clean_ignore = [] # list — branch globs the cleanup reapers never touch
+idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
+idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle
+idle_stack_reaper_cadence_minutes = 5 # int — minutes between idle-stack reaper runs
+idle_stack_reaper_disabled = false # bool — stop reaping idle local stacks
+local_stack_queue_disabled = false # bool — stop queueing work that needs a local stack
+local_stack_queue_max_attempts = 13 # int — attempts a queued local-stack unit gets before it is abandoned
+provision_fast_step_timeout_seconds = 120 # int — seconds a step declared fast may take before it is failed
+provision_max_concurrency = 0 # int — provisioning steps that may run at once
+provision_ram_ceiling_percent = 85 # int — percent of RAM provisioning may consume before it backs off
+provision_slow_threshold_seconds = 600 # int — seconds after which a provisioning step is reported as slow
+provision_step_timeout_seconds = 1800 # int — seconds an ordinary provisioning step may take
+single_branch_repos = [] # list — repos that may carry only one branch at a time
+snapshot_warmer_disabled = false # bool — stop warming the snapshot caches
+snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable
+stale_stack_min_age_minutes = 0 # int — minutes a stack must exist before staleness is judged
 
 [teatree.Registries."Term scanning, agent tables & cold reads"]
-active_loop_schedule = "" # name of the weekly schedule deciding when the autonomous loops may run
-danger_gate_fail_open = false # let the danger gate pass when it cannot evaluate, instead of refusing
-low_power_auto_engage = false # switch to the low-power preset by itself when the box is under pressure
-low_power_preset_name = "" # preset engaged when low power is on
+active_loop_schedule = "" # str — name of the weekly schedule deciding when the autonomous loops may run
+danger_gate_fail_open = false # bool — let the danger gate pass when it cannot evaluate, instead of refusing
+low_power_auto_engage = false # bool — switch to the low-power preset by itself when the box is under pressure
+low_power_preset_name = "" # str — preset engaged when low power is on
 
-[teatree.mr_reminder] # when and how often a stale review request is chased
+[teatree.mr_reminder] # table — when and how often a stale review request is chased
 default_channel = ""
 
 [teatree.mr_reminder.channels]
 
-[teatree.speak] # text-to-speech delivery, and which surfaces are spoken
+[teatree.speak] # table — text-to-speech delivery, and which surfaces are spoken
 local = "off"
 slack = false
 

@@ -18,7 +18,9 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config.cold_defaults import flatten_settings_table
-from teatree.config.schema import TeatreeSettingsSchema
+from teatree.config.schema import TeatreeSettingsSchema, setting_choices
+from teatree.config.setting_annotation import choice_token as _choice_token
+from teatree.config.setting_annotation import setting_type_name
 from teatree.config.setting_groups import (
     UNGROUPED_PATH,
     SettingGroupNode,
@@ -32,6 +34,7 @@ from teatree.config.setting_groups import (
     nested_value_table,
     setting_group_path,
 )
+from teatree.config.setting_help import setting_help
 from teatree.config.settings import UserSettings
 
 
@@ -253,6 +256,80 @@ class TestTheTomlRendererBothSurfacesShare:
     def test_grouped_key_order_places_every_key_exactly_once(self) -> None:
         keys = tuple(TeatreeSettingsSchema.model_fields)
         assert sorted(grouped_key_order(keys)) == sorted(keys)
+
+
+#: A stand-in value per stored type, so a key can be rendered without reaching for its default.
+_PLACEHOLDER: dict[str, object] = {
+    "bool": True,
+    "int": 1,
+    "float": 1.5,
+    "str": "x",
+    "list": ["x"],
+    "table": {"x": "y"},
+}
+
+
+def _comment_for(key: str) -> str:
+    value = _PLACEHOLDER[setting_type_name(key)]
+    rendered = _dumped(grouped_settings_table({key: value}))
+    line = next(line for line in rendered.splitlines() if line.startswith((f"{key} =", f"[teatree.{key}]")))
+    return line.split("#", 1)[1].strip()
+
+
+class TestTheCommentNamesWhatTheKeyAccepts:
+    """The trailing comment says what the key ACCEPTS, not only what it means."""
+
+    @pytest.mark.parametrize(
+        "key", sorted(key for key in TeatreeSettingsSchema.model_fields if setting_choices(key) == ())
+    )
+    def test_an_open_typed_key_names_its_type_and_offers_no_list(self, key: str) -> None:
+        # An open type (str / int / float / list / table) has no listable set, so a list
+        # would be a fiction. Total over the open keys, so a derivation that invented one
+        # for any of them goes red.
+        comment = _comment_for(key)
+        assert comment.startswith(setting_type_name(key))
+        assert "one of:" not in comment
+
+    @pytest.mark.parametrize(
+        "key",
+        sorted(key for key in TeatreeSettingsSchema.model_fields if setting_choices(key) not in {(), (True, False)}),
+    )
+    def test_a_constrained_key_names_every_value_the_schema_admits(self, key: str) -> None:
+        # The drift this guards: the dashboard select and the TOML comment answering
+        # "what may I put here" differently. Both read `setting_choices`, and this asserts
+        # the comment names EVERY value it returns — a subset would be the silent drift.
+        comment = _comment_for(key)
+        assert "one of:" in comment, f"{key} is constrained but its comment offers no list"
+        offered = comment.split("one of:", 1)[1].split("—", 1)[0]
+        for choice in setting_choices(key):
+            assert _choice_token(choice) in offered, f"{key}: {choice!r} missing from {offered!r}"
+
+    @pytest.mark.parametrize(
+        "key", sorted(k for k in TeatreeSettingsSchema.model_fields if setting_choices(k) == (True, False))
+    )
+    def test_a_bool_names_its_type_and_no_list(self, key: str) -> None:
+        # `bool` IS its own two-value list, so spelling `true | false` out beside it on 104
+        # keys is noise the type already carries.
+        comment = _comment_for(key)
+        assert comment.startswith("bool")
+        assert "one of:" not in comment
+
+    def test_the_help_sentence_still_rides_on_the_same_line(self) -> None:
+        assert _comment_for("wip").endswith(setting_help("wip"))
+
+    def test_no_comment_carries_the_toml_key_value_separator(self) -> None:
+        # The shipped-file parsers read keys out of the rendered TOML by splitting on " =";
+        # a comment carrying one would be counted as a settings line.
+        offenders = [key for key in TeatreeSettingsSchema.model_fields if " =" in _comment_for(key)]
+        assert not offenders, f"annotated comment carries the TOML separator: {offenders[:8]}"
+
+    def test_annotating_changed_no_value_and_the_dump_still_flattens(self) -> None:
+        parsed = tomllib.loads(_dumped(grouped_settings_table(_SAMPLE)))["teatree"]
+        assert flatten_settings_table(parsed) == _SAMPLE
+
+    def test_a_key_the_schema_does_not_declare_is_left_uncommented(self) -> None:
+        rendered = _dumped(grouped_settings_table({"a_key_no_declaration_base_carries": 1}))
+        assert "#" not in rendered
 
 
 class TestGroupSlug:
