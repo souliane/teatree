@@ -26,6 +26,7 @@ import dataclasses
 from collections.abc import Callable
 from typing import Literal
 
+from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult
@@ -163,7 +164,9 @@ def escalate_failures(
                 trials=aggregate.trials,
                 passes=aggregate.passes,
                 classification=classification,
-                advisory=is_advisory(result.spec),
+                # A confirmed harness failure measured nothing, so there is no verdict
+                # for the surface to excuse — it stays hard red on any surface (#3922).
+                advisory=is_advisory(result.spec) and not measured_nothing(result.run.terminal_reason),
             )
         )
     return EscalationReport(outcomes=outcomes)

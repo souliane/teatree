@@ -35,6 +35,12 @@ class MatrixRow:
     #: is excluded from the pass-rate so a transient blip never lowers a model's
     #: measured score.
     errored: bool = False
+    #: This cell's run MEASURED NOTHING — the harness itself failed
+    #: (:mod:`teatree.eval.harness_failure`), so the cell's verdict says nothing about
+    #: the scenario. Carried as its own flag rather than read off ``terminal_reason``
+    #: because that field holds only the CAP reason on a multi-trial cell, which would
+    #: silently drop the signal exactly where a lane still has to gate on it.
+    harness_failed: bool = False
     #: This cell's token usage (summed across trials, mirroring ``cost_usd``;
     #: all-zero for a non-metered/subscription run or an errored cell) — the
     #: substrate for the benchmark's honest cache-cost columns.

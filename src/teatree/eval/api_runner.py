@@ -62,6 +62,7 @@ from teatree.eval.cli_stub_fixture import prepend_to_path, provision_cli_stubs
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
 from teatree.eval.git_fixture import provision_fixture
+from teatree.eval.harness_failure import HOOKS_NOT_REGISTERED_REASON
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_spec_model
@@ -452,11 +453,13 @@ class ApiInProcessRunner:
     @staticmethod
     def _grade_success(spec: EvalSpec, messages: list[Message], retries: int) -> EvalRun:
         # A hooked run that captured ZERO hook events means the shipped plugin did
-        # NOT register (the lane silently degraded to raw-model measurement) — fail
-        # loud rather than report a spurious pass. Otherwise grade the trajectory and
+        # NOT register (the lane silently degraded to raw-model measurement). The
+        # reason is the HARNESS axis, not a verdict: every lane reads it through the
+        # unconditional `RunGuards.hooks_registered` guard, so the advisory-surface
+        # exemption can never swallow it (#3922). Otherwise grade the trajectory and
         # carry the retry count for the AIMD governor.
         if spec.production_hooks and not has_hook_events(messages):
-            return EvalRun.terminal(spec.name, terminal_reason="hooks_not_registered")
+            return EvalRun.terminal(spec.name, terminal_reason=HOOKS_NOT_REGISTERED_REASON)
         run = eval_run_from_messages(spec, messages)
         return dataclasses.replace(run, throttle_retries=retries) if retries else run
 

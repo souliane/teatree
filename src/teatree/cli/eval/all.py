@@ -29,7 +29,7 @@ from rich.table import Table
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker
-from teatree.cli.eval.run_modes import build_transcript_manifest, render_transcript_text
+from teatree.cli.eval.run_modes import RunGuards, build_transcript_manifest, render_transcript_text
 from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
 from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
@@ -388,6 +388,10 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     # verdict so the closing line can never print "✅ ALL GOOD" a beat before the
     # process exits 1 on an unmetered lane.
     _assert_metered_api_ai_lane(backend=backend, results=ai_results)
+    # A hooked scenario that captured zero hook events measured the RAW MODEL, not the
+    # system under test — a HARNESS failure with no verdict for the surface exemption to
+    # weigh, so it gates here whatever the scenario's surface (#3922).
+    RunGuards.hooks_registered(ai_results)
     print_verdict(lanes)
     if _suite_should_fail(lanes, strict=strict, metered=metered):
         sys.exit(1)

@@ -1360,15 +1360,26 @@ Fields:
   end-to-end wiring is REPORTED empirically by the `harness_canary_stop_gate_fires`
   canary (a prose-only decision that can pass ONLY via the #807 bounce) — but the
   canary is `surface: interactive` (it can pass only via a captured
-  `AskUserQuestion` call), so its verdict is ADVISORY, not gating. Six of the seven
+  `AskUserQuestion` call), so its VERDICT is ADVISORY, not gating. Six of the seven
   `production_hooks` scenarios are advisory; `done_only_on_deployed_dev_evidence`
-  (the #2665 completion-claim gate) is the one on the blocking headless surface, and
-  it is what still reds a lane on a hook regression or on `hooks_not_registered`
-  (which is a graded FAIL result, not a raised exception, so the surface exemption
-  covers it too on the other six). That scenario is `lane: under_load`, so any leg
-  that does not run it — the nightly's `--lane clean_room` shards, the
-  changed-scenarios PR lane, `--surface interactive`, a `--name` run — reports the
-  degradation without gating on it. See
+  (the #2665 completion-claim gate) is the one on the blocking headless surface.
+  `hooks_not_registered` itself is NOT a verdict and is never advisory: it is the
+  HARNESS axis (`src/teatree/eval/harness_failure.py`), read by the unconditional
+  `RunGuards.hooks_registered` guard every runner-driving lane calls BESIDE its
+  verdict, so it gates whatever the scenario's surface (#3922). The lanes that must
+  call it are NAMED in `HARNESS_FAILURE_GUARD_POINTS` — `single_trial.run_single_trial`,
+  `multi_trial.run_pass_at_k_lane`, `multi_trial.run_model_matrix_lane`,
+  `all.run_full_suite`, `ladder.ladder`, `benchmark.benchmark` — and the two producers
+  of the serialized `advisory` flag (`summary_json._ScenarioRow.as_json`,
+  `escalate.escalate_failures`) never set it for a row that measured nothing, so the
+  combine job's merged-artifact gate cannot bless a shard the lane guard failed. Every
+  `PassAtKResult` → `MatrixRow` fold is NAMED too (`HARNESS_FAILURE_FOLD_POINTS`) and
+  must carry `harness_failed`: the guard reads the ROW's flag, so a fold that drops it
+  makes that lane's guard call vacuous.
+  `tests/conformance/test_advisory_verdict_points.py` resolves every name and asserts
+  each lane actually calls the guard and each fold carries the flag. Before that, the reason rode a terminal `EvalRun`
+  — a failing verdict — so on the nightly `--lane clean_room` shards, which carry only
+  advisory hooked scenarios, the fail-loud could never gate. See
   `teatree.eval.api_runner` (`_t3_plugin`, `hooked_env`, the fail-loud) and
   `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
 - `surface` — optional `headless` (default) or `interactive`. The question/answer

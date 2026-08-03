@@ -15,7 +15,18 @@ Two distinct failure shapes, two guards:
     made zero tool calls, and recorded nothing. A fresh run that records nothing
     never actually executed and must FAIL LOUD, never pass. This guard is
     unconditional for the api backend (it is the fresh-run path's reason to exist).
+
+*   *Hooks not registered*: a ``production_hooks`` scenario ran with the shipped
+    plugin unregistered, so it graded the raw model rather than the model+hook
+    system it exists to measure. Unlike the two above it is detected per scenario,
+    inside the runner, and carried out on the run's ``terminal_reason``
+    (:mod:`teatree.eval.harness_failure`); the guard is what turns that reason into
+    a lane exit. It is deliberately a GUARD rather than a verdict: a verdict can be
+    exempted by the advisory surface, and 6 of the 7 hooked scenarios are advisory
+    (souliane/teatree#3922).
 """
+
+from collections.abc import Sequence
 
 
 class AllSkippedError(RuntimeError):
@@ -28,6 +39,10 @@ class UnmeteredApiRunError(RuntimeError):
 
 class EmptyFreshRunError(RuntimeError):
     """Raised when a fresh-run backend executed scenarios but produced no trajectory."""
+
+
+class HooksNotRegisteredError(RuntimeError):
+    """Raised when a ``production_hooks`` scenario ran with the shipped plugin unregistered."""
 
 
 class UnmeteredJudgeError(RuntimeError):
@@ -124,3 +139,25 @@ def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judg
         "loud instead. Provision `claude` / ANTHROPIC_API_KEY, or drop --judge."
     )
     raise UnmeteredJudgeError(msg)
+
+
+def assert_production_hooks_registered(*, unmeasured: Sequence[str]) -> None:
+    """Fail when any ``production_hooks`` scenario captured zero hook lifecycle events.
+
+    *unmeasured* is the name of every scenario whose run carried a harness-failure
+    terminal reason (:func:`teatree.eval.harness_failure.measured_nothing`). The guard
+    takes NO surface argument on purpose: a run that measured nothing has no verdict for
+    the advisory exemption to weigh, so the exemption must not be reachable from here.
+    """
+    if not unmeasured:
+        return
+    names = ", ".join(sorted(unmeasured))
+    msg = (
+        f"{len(unmeasured)} production_hooks scenario(s) captured ZERO hook events: {names}. "
+        "The shipped plugin never registered, so the lane measured the RAW MODEL rather than "
+        "the model+hook system it exists to measure — the run produced no evidence about these "
+        "scenarios at all. This is a HARNESS failure, not a scenario verdict, so no surface "
+        "exemption applies. Check the repo-root plugin manifest (.claude-plugin/plugin.json + "
+        "hooks/hooks.json) reachable from the eval sandbox, then re-run."
+    )
+    raise HooksNotRegisteredError(msg)

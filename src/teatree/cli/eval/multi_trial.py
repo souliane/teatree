@@ -28,6 +28,7 @@ from teatree.cli.eval.run_modes import (
 from teatree.eval.api_errors import NEVER_RETRY_ERRORS
 from teatree.eval.api_runner import MAX_BUDGET_USD
 from teatree.eval.backends import API_BACKEND, ApiRunnerParams, EvalRunner, make_runner
+from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
@@ -203,6 +204,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     _write_pass_at_k_artifacts(
         results, transcript_html=transcript_html, summary_md=summary_md, summary_json=summary_json
     )
+    RunGuards.hooks_registered(results)
     RunGuards.executed(
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )
@@ -300,6 +302,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     # benchmark still drops the dashboard the weekly workflow uploads/publishes.
     if html_out is not None:
         html_out.write_text(render_matrix_html(rows, model_list, specs), encoding="utf-8")
+    RunGuards.hooks_registered(rows)
     RunGuards.executed(
         executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed
     )
@@ -526,6 +529,7 @@ def _matrix_trial(
             usage=result.usage,
             fell_back=_fell_back(signal=result.fell_back),
             terminal_reason=result.terminal_reason,
+            harness_failed=result.harness_failed,
             main_cost_usd=result.main_cost_usd,
             aux_cost_usd=result.aux_cost_usd,
             main_usage=result.main_usage,
@@ -544,6 +548,7 @@ def _matrix_trial(
         usage=run.usage,
         fell_back=_fell_back(signal=run.fell_back),
         terminal_reason=run.terminal_reason,
+        harness_failed=measured_nothing(run.terminal_reason),
         main_cost_usd=run.main_cost_usd,
         aux_cost_usd=run.aux_cost_usd,
         main_usage=run.main_usage,
