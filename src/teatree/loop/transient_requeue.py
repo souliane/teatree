@@ -48,12 +48,11 @@ the flag OFF the branch is inert — an exhaustion failure follows the determini
 exactly as before, so the flag-off behaviour is byte-identical.
 
 A SUPERSEDED FAILED task — one whose phase output demonstrably landed
-(:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder plus the
-shipping artifact) — is NOT escalated at all: it is a dead artifact of an earlier interrupted
-run while the ticket advanced on its own, so it is retired COMPLETED silently. This is the
-fix for the redispatch flood on already-done tickets (3366/3336/3352) and for the shipping
-task that opened its PR, reached IN_REVIEW, then lost its lease (#3982): the away-mode queue
-is never asked about a phase the ticket's own state already answers.
+(:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder,
+plus the shipping artifact ONLY for a lease-loss failure — an unrelated PR must not excuse a
+deterministic defect) — is NOT escalated: it is a dead artifact of an earlier interrupted run
+while the ticket advanced on its own, retired COMPLETED silently (fixes 3366/3336/3352 and
+the shipping task that opened its PR, reached IN_REVIEW, then lost its lease — #3982).
 
 A FAILED task WITH A LIVE SUCCESSOR — a newer, still-active (PENDING/CLAIMED) sibling
 Task on the same ``(ticket, phase)`` — is PARKED (left FAILED, stamped out of every
@@ -97,6 +96,7 @@ from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.phase_landing import phase_landing_evidence
@@ -424,9 +424,8 @@ def _retire_if_dead_artifact(task: Task) -> bool:
     reopen or escalate:
 
     * SUPERSEDED — the phase's output demonstrably landed
-        (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder
-        plus the shipping artifact, so a shipped ticket already in peer review no longer
-        reads as though shipping never happened — #3982).
+        (:func:`~teatree.core.models.phase_landing.phase_landing_evidence` — the FULL author
+        ladder, plus the artifact half ONLY for a lease-loss failure; see the module docstring).
     * DEAD REVIEW TARGET — a review/codex-review phase whose linked PR is
         merged/closed, so a verdict can never land; re-dispatching only burns a
         session that re-confirms the close (#3556).
@@ -436,7 +435,9 @@ def _retire_if_dead_artifact(task: Task) -> bool:
     finds no matching guard. A live-successor row is NOT one of them: its phase is
     unfinished, so it is parked FAILED by :func:`_park_live_successor` instead.
     """
-    if task.ticket.has_completed_phase(task.phase) or phase_landing_evidence(task):
+    if task.ticket.has_completed_phase(task.phase) or phase_landing_evidence(
+        task, trust_shipping_artifact=task.failure_kind == FailureKind.LEASE_LOST
+    ):
         _retire_superseded(task)
         return True
     if _review_target_dead(task):

@@ -194,11 +194,19 @@ def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
     exactly that reason. Re-dispatching it is the already-done redispatch flood
     (3366/3336/3352), and the failing class is what would reach it: unlike a frozen
     ticket it never has to wait out an idle threshold first.
+
+    The shipping-artifact half of that evidence is trusted only for a LEASE_LOST
+    failure (#3982): a stray attached PR can exist independently of a successful
+    ``ship()``, so trusting it for a genuinely deterministic shipping failure would
+    hide a real, reproducible defect from this same sweep.
     """
     attempts = _phase_attempts(ticket, phase=phase)
     if not attempts or attempts[-1].outcome not in _FAILED_OUTCOMES:
         return False
-    return not phase_landing_evidence(attempts[-1].task)
+    latest = attempts[-1]
+    return not phase_landing_evidence(
+        latest.task, trust_shipping_artifact=latest.failure_kind == FailureKind.LEASE_LOST
+    )
 
 
 #: PR states that count as "open" (a merged PR does not keep a ticket alive).

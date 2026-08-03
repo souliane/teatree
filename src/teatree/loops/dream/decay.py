@@ -33,14 +33,14 @@ ledger row by path membership in ``source_files`` OR by its name appearing in a
 ``durable_destination``.
 
 The SECOND tier — the BUDGET tier (#2723) — exists because the curated corpus has
-~294 must-preserve (user / BINDING) entries, whose rendered index can exceed the ~24 KB
-hot-index session-load BYTE budget, and the ledger home-rail is structurally empty for
-hand-authored memories (it can never archive them). When the hot ``MEMORY.md`` is over
-budget the budget tier scores every file by :func:`_signal_score` (user / BINDING /
-inbound links / recency / type) and archives the LOWEST-signal first — only as many as it
-takes to bring the projected hot index back under the BYTE budget — so the highest-signal
-entries that fit ~24 KB stay HOT and the rest move to a COLD tier: ``archive/`` holds the
-full restorable body and the cold
+~294 must-preserve (user / BINDING) entries, whose rendered index can exceed the
+hot-index session-load budgets (~24 KB of bytes, 200 lines), and the ledger home-rail is
+structurally empty for hand-authored memories (it can never archive them). When the hot
+``MEMORY.md`` is over EITHER budget the tier scores every file by :func:`_signal_score`
+(user / BINDING / inbound links / recency / type) and archives the LOWEST-signal first —
+only as many as it takes to bring the projected hot index back under BOTH — so the
+highest-signal entries that fit stay HOT and the rest move to a COLD tier: ``archive/``
+holds the full restorable body and the cold
 ``MEMORY_ARCHIVE.md`` index holds one signature line per archived entry. The cold index
 lives in the main memory dir (so the gate snapshot still finds the signature — retention
 stays green) but is NEVER re-indexed into the hot ``MEMORY.md``. Referenced entries are
@@ -356,22 +356,27 @@ def _stale_candidates(
         yield memory
 
 
-def _over_budget(byte_size: int) -> bool:
-    """Whether an index of *byte_size* bytes is over the gate-(d) BYTE budget.
+def _over_budget(byte_size: int, line_count: int) -> bool:
+    """Whether an index of *byte_size* bytes / *line_count* lines is over the gate-(d) budget.
 
-    The one place the §4 gate-(d) byte budget is compared, so the decay-pressure
-    trigger and the gate that grades the result agree on "over budget" (#2723). Bytes
-    are the only constraint — the harness truncates ``MEMORY.md`` by BYTES at session
-    load, so line count is irrelevant to what reaches the agent (#2755).
+    The one place the §4 gate-(d) budgets are compared, so the decay-pressure trigger and
+    the gate that grades the result can never disagree on "over budget" (#2723). The
+    loader truncates ``MEMORY.md`` on BOTH axes, so either alone is over: bytes at ~24 KB
+    (#2755) and lines at 200 (#4057). Reading only bytes leaves decay idle under line
+    pressure — precisely the case where a comfortable byte figure certifies a truncated
+    file.
     """
-    from teatree.loops.dream.gates import INDEX_BYTE_BUDGET  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loops.dream.gates import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        INDEX_BYTE_BUDGET,
+        INDEX_LINE_BUDGET,
+    )
 
-    return byte_size > INDEX_BYTE_BUDGET
+    return byte_size > INDEX_BYTE_BUDGET or line_count > INDEX_LINE_BUDGET
 
 
 def _index_over_budget(index_text: str) -> bool:
-    """Whether the rendered ``MEMORY.md`` exceeds the gate-(d) session-load byte budget."""
-    return _over_budget(len(index_text.encode("utf-8")))
+    """Whether the rendered ``MEMORY.md`` exceeds either gate-(d) session-load budget."""
+    return _over_budget(len(index_text.encode("utf-8")), len(index_text.splitlines()))
 
 
 def _resolved_type(memory: _MemoryFile) -> str:
@@ -459,8 +464,8 @@ def _budget_tier_candidates(
     Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so referenced
     entries rank HIGHER and are archived LAST — only when the budget genuinely forces it.
     After each removal the survivor set's PROJECTED index — rendered exactly as the
-    re-index will render it — is re-measured, and the walk STOPS as soon as it is under
-    the BYTE budget, so the MINIMUM number of (lowest-signal) files is
+    re-index will render it — is re-measured on BOTH axes, and the walk STOPS as soon as
+    it is under the byte AND line budgets, so the MINIMUM number of (lowest-signal) files is
     archived and as much high-signal memory as fits stays hot. user / BINDING entries
     score highest and are archived only if the budget forces it. Every archived entry
     stays restorable (full body in ``archive/`` with provenance) and recall-able (its
@@ -480,14 +485,16 @@ def _budget_tier_candidates(
     line_bytes = {m.path: len(reindex.index_line_for(m.path.name).encode("utf-8")) for m in files}
     header = reindex.render_index_lines([])
     header_bytes = len(header.encode("utf-8"))
+    header_lines = len(header.splitlines())
     survivor_count = len(files)
     survivor_bytes = sum(line_bytes.values())
     for memory in ordered:
-        # projected_bytes == len(render_index_lines(survivor lines).encode()) — exact for any
-        # count (the per-line "\n" join + trailing newline total ``survivor_count`` bytes).
+        # Both projections are EXACT against render_index_lines(survivor lines) for any
+        # count: the per-line "\n" join + trailing newline total ``survivor_count`` bytes,
+        # and each survivor contributes exactly one line past the header's own.
         projected_bytes = header_bytes + survivor_bytes + survivor_count
-        if not _over_budget(projected_bytes):
-            break  # projected survivor index is back under the byte budget — archive no more
+        if not _over_budget(projected_bytes, header_lines + survivor_count):
+            break  # projected survivor index fits BOTH budgets — archive no more
         survivor_count -= 1
         survivor_bytes -= line_bytes[memory.path]
         yield memory

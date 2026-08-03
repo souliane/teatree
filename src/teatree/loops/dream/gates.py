@@ -16,8 +16,9 @@ The seven gates (#1933 § 4; gate (g) added by #2663):
     schema/cluster count INCREASED, AND every pruned index line has a confirmed
     durable home. A no-op pass (size unchanged, schema unchanged) fails; a prune
     with no durable home fails.
-*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under its ~24 KB
-    session-load BYTE budget (harness truncates by bytes; line count irrelevant; #2755).
+*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under BOTH session-load
+    budgets, ~24 KB of bytes (#2755) and 200 lines (#4057); the loader truncates on
+    either, so the gate fails on whichever is exceeded first.
 *   (e) **monotonicity** — two passes over a stable corpus must not LOWER the
     retention pass-rate.
 *   (f) **no-loss audit trail** — every archived/pruned entry is recorded with a
@@ -75,16 +76,25 @@ _MEMORY_REF_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
 #: stays unhomed even if its summary name-drops a surviving memory.
 _MEMORY_LINK_TARGET_RE = re.compile(r"\]\(([\w.\-/]+\.md)\)")
 
-#: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one
-#: short line per memory and is read WHOLE at every session load; the harness
-#: truncates it by BYTES at ~24 KB, so past that point the tail of the index never
-#: reaches the agent and the consolidation pass has silently failed to keep memory
-#: loadable. Bytes are the ONLY constraint — line count is irrelevant to what
-#: reaches the agent, so a fixed line cap was a pessimistic proxy that forced
-#: needless archival while byte headroom went unused (#2755). This tracks that real
-#: session-load byte limit — NOT a 10x regression alarm — so an over-budget index
-#: trips gate (d) RED while it is still recoverable (#2723).
+#: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one short
+#: line per memory and is read WHOLE at every session load; the loader truncates it on
+#: TWO independent axes, and past EITHER the tail of the index never reaches the agent
+#: and the dream pass has silently failed to keep memory loadable. Both track a
+#: real session-load limit — NOT a 10x regression alarm — so an over-budget index trips
+#: gate (d) RED while it is still recoverable (#2723).
+#:
+#: BYTES (~24 KB). Not a line cap dressed up as bytes: a fixed line cap was a
+#: pessimistic proxy that forced needless archival while byte headroom went unused
+#: (#2755), so this measures the encoded size and nothing else.
 INDEX_BYTE_BUDGET = 24 * 1024
+#: LINES (200). The measured truncation point (#4057): a 306-line index lost every entry
+#: from line 201 on — ~106 memories invisible to recall — while sitting at 69% of the
+#: byte budget, so the byte-only gate reported healthy throughout. The two measures
+#: DIVERGE as the pass compresses better: terser entries lower bytes and leave line count
+#: untouched, which means the better decay compresses, the more confident a byte-only
+#: gate gets about a file that is more truncated. Both axes are therefore load-bearing;
+#: neither substitutes for the other.
+INDEX_LINE_BUDGET = 200
 
 
 #: How a probe is checked against a snapshot — injectable so a future LLM answerer
@@ -119,7 +129,8 @@ class MemorySnapshot:
 
     @property
     def index_line_count(self) -> int:
-        return sum(1 for line in self.index_text.splitlines() if line.strip())
+        """Every line the loader READS — blanks included, since truncation counts them too."""
+        return len(self.index_text.splitlines())
 
     @property
     def index_lines(self) -> frozenset[str]:
@@ -402,17 +413,25 @@ class Gate:
 
     @staticmethod
     def index_budget(snapshot_after: MemorySnapshot) -> GateResult:
-        """(d) The rendered ``MEMORY.md`` is back under its ~24 KB session-load BYTE budget.
+        """(d) The rendered ``MEMORY.md`` is back under BOTH session-load budgets.
 
-        Bytes are the only constraint — the harness truncates by bytes, so line count is
-        irrelevant; a fixed line cap was a pessimistic proxy that wasted byte headroom (#2755).
+        The loader truncates on bytes AND on lines, so the gate fails on whichever is
+        exceeded — measuring one axis grades a question adjacent to the one that matters
+        and reports PASS on a file a third of which no reader will ever see (#4057). The
+        detail names the axis that is over, so a failure is actionable without re-deriving it.
         """
-        over_bytes = snapshot_after.index_byte_size > INDEX_BYTE_BUDGET
+        over: list[str] = []
+        if snapshot_after.index_byte_size > INDEX_BYTE_BUDGET:
+            over.append("bytes")
+        if snapshot_after.index_line_count > INDEX_LINE_BUDGET:
+            over.append("lines")
         detail = (
             f"index {snapshot_after.index_byte_size} byte(s) / {snapshot_after.index_line_count} line(s) "
-            f"(budget {INDEX_BYTE_BUDGET} bytes)"
+            f"(budget {INDEX_BYTE_BUDGET} bytes / {INDEX_LINE_BUDGET} lines)"
         )
-        return GateResult(name="index_budget", passed=not over_bytes, detail=detail)
+        if over:
+            detail += f" — over on {' and '.join(over)}"
+        return GateResult(name="index_budget", passed=not over, detail=detail)
 
     @staticmethod
     def monotonicity(*, pass_rate_first: float, pass_rate_second: float) -> GateResult:
@@ -502,6 +521,7 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
 
 __all__ = [
     "INDEX_BYTE_BUDGET",
+    "INDEX_LINE_BUDGET",
     "ComplianceRemediationView",
     "DreamQaReport",
     "Gate",

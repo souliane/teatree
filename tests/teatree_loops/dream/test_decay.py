@@ -473,18 +473,19 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert result.archived_count == 0
 
     def test_short_lines_use_byte_headroom_archiving_fewer_than_a_line_cap_would(self) -> None:
-        # #2755 core win: bytes are the only constraint, so FAR more than the retired
-        # 150-line cap fit the 24 KB byte budget — the byte-only tier archives NOTHING
-        # here, where a 150-line cap would have archived (count - 150) files. The byte
-        # headroom is USED, not wasted. Anti-vacuous: reintroduce a 150-line cap and
-        # archived_count goes > 0.
-        count = 250  # > the retired 150-line cap, yet the rendered index stays < 24 KB
+        # #2755's win, preserved under the two-dimensional budget: a corpus that fits BOTH
+        # real loader limits is archived NOT AT ALL, where the retired 150-line proxy cap
+        # would have archived (count - 150) files for nothing. The headroom between the
+        # retired cap and the real limits is USED. Anti-vacuous: reintroduce a 150-line cap
+        # and archived_count goes > 0.
+        count = 190  # > the retired 150-line cap, yet under BOTH real budgets
         self._seed_low_signal(count)
         self._seed_index()
         assert self._rendered_line_count() > 150  # a 150-line cap would breach
         assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET  # ... yet it fits the byte budget
+        assert len(reindex.render_index(self.dir).splitlines()) <= gates.INDEX_LINE_BUDGET  # ... and the line budget
         result = self._decay(budget_tier=True)
-        assert result.archived_count == 0  # byte-only: nothing archived; a line cap would archive ~100
+        assert result.archived_count == 0  # nothing archived; a 150-line cap would archive 40
 
     def test_budget_tier_off_by_default_archives_nothing(self) -> None:
         # Without budget_tier the new tier never fires (no behaviour change to the
@@ -549,7 +550,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         A bare pointer carries only the filename, so the multibyte bytes now live in the
         name (``—`` = 3 bytes/char): each pointer line is ≈145 bytes but only ≈63 chars.
         A char-counting tier would mis-size the index; the tier must measure ENCODED
-        bytes (#2755: bytes are the only constraint). This exercises that byte-exact path.
+        bytes (#2755), so this exercises the byte-exact path of the two-axis budget.
         """
         for i in range(count):
             self._write(_mb_name("feedback_mb", i), f"a niche low-signal note {i:04d}", age_days=age_days)
@@ -570,6 +571,37 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert len(after.encode("utf-8")) <= gates.INDEX_BYTE_BUDGET, "must archive until under the byte budget"
         after_snapshot = gates.MemorySnapshot.build(memories={}, index_text=after)
         assert gates.Gate.index_budget(after_snapshot).passed
+
+    def _seed_short_named(self, count: int, *, age_days: int = 120) -> None:
+        """Seed *count* stale low-signal files under SHORT filenames — line pressure, no byte pressure.
+
+        The mirror of :meth:`_seed_dense_multibyte`: there the filename length drives the
+        index over the BYTE budget with few entries; here it stays so compact that the
+        pointer COUNT runs past the loader's line-truncation point while bytes stay
+        comfortable (#4057). Terser entries lower bytes without lowering lines, so the two
+        measures diverge exactly as decay does its job.
+        """
+        for i in range(count):
+            self._write(f"feedback_s{i:04d}", f"a niche low-signal note {i:04d}", age_days=age_days)
+
+    def test_line_pressure_archives_until_under_the_line_budget(self) -> None:
+        # #4057: the measured shape — 306 short pointer lines at 69% of the byte budget.
+        # Pre-fix the tier never fired (bytes comfortable) so the index kept growing while
+        # every entry past line 200 was dropped at load.
+        self._seed_short_named(306)
+        self._seed_index()
+        before = reindex.render_index(self.dir)
+        assert len(before.encode("utf-8")) < gates.INDEX_BYTE_BUDGET, "the byte budget must NOT be what bites"
+        assert len(before.splitlines()) > gates.INDEX_LINE_BUDGET, "the LINE budget is what is exceeded"
+
+        result = self._decay(budget_tier=True)
+        assert result.archived_count > 0
+
+        after = reindex.render_index(self.dir)
+        assert len(after.splitlines()) <= gates.INDEX_LINE_BUDGET, "must archive until under the line budget"
+        assert gates.Gate.index_budget(gates.MemorySnapshot.build(memories={}, index_text=after)).passed
+        for archived in result.archived:
+            assert (self.dir / "archive" / archived.source.name).is_file()  # moved, not deleted
 
     def test_referenced_files_are_archived_to_converge_when_every_entry_is_linked(self) -> None:
         # #2753 regression: a hub links every filler, so EVERY filler is referenced. Pre-fix
@@ -693,11 +725,12 @@ class SignalScoreTestCase(SimpleTestCase):
         assert counts["mem_b"] == 2  # the index + mem_a
         assert counts.get("mem_a", 0) == 0  # self-link does not count as inbound
 
-    def test_over_budget_by_bytes_only(self) -> None:
-        # #2755: bytes are the ONLY constraint — line count is gone.
-        assert decay._over_budget(gates.INDEX_BYTE_BUDGET + 1)  # over by bytes
-        assert not decay._over_budget(gates.INDEX_BYTE_BUDGET)  # exactly at budget is fine
-        assert not decay._over_budget(1)  # under
+    def test_over_budget_on_either_dimension(self) -> None:
+        # #4057: the loader truncates on BYTES and on LINES, so either alone is over budget.
+        assert decay._over_budget(gates.INDEX_BYTE_BUDGET + 1, 1)  # over by bytes alone
+        assert decay._over_budget(1, gates.INDEX_LINE_BUDGET + 1)  # over by lines alone
+        assert not decay._over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # exactly at both is fine
+        assert not decay._over_budget(1, 1)  # under
 
     def test_strip_provenance_with_without_and_malformed(self) -> None:
         prov = "<!-- archived by dream decay 2026-06-16: x; original mtime 2026-01-01 -->\nthe body\n"
