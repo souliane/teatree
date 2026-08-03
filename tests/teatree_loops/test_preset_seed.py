@@ -18,6 +18,7 @@ from django.core.management import call_command
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.models import ConfigSetting, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING, resolve_active_preset
+from teatree.loops.mode_shape import INTAKE_LOOPS, intake_without_delivery
 from teatree.loops.preset_seed import (
     PresetSpec,
     ScheduleSpec,
@@ -273,7 +274,7 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
                 "resource_pressure",
             }
         ),
-        frozenset({"tickets", "ship", "review", "followup", "audit"}),
+        frozenset({"tickets", "ship", "review", "followup", "audit", "issue_implementer"}),
     ),
     "low-power": (
         frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
@@ -327,6 +328,31 @@ class TestShippedSpecsAreUnchangedByTheMoveIntoTheFile:
         assert [(slot.days, slot.start_time, slot.preset_name) for slot in holiday.slots] == [
             ([0, 1, 2, 3, 4, 5, 6], dt.time(0, 0), "unattended")
         ]
+
+
+class TestNoShippedModeFillsWhatItCannotDrain:
+    """A shipped mode masking delivery off must not leave intake admitted (#4096).
+
+    ``maintenance`` masked ``tickets`` / ``ship`` off but named no opinion on
+    ``issue_implementer``, so it inherited ``Loop.enabled`` and kept claiming issues
+    overnight that nothing could merge — while its own description says "no
+    ticket/colleague/delivery work". ``off`` / ``offline`` / ``low-power`` all name it.
+    """
+
+    def test_no_shipped_mode_masks_delivery_while_admitting_intake(self) -> None:
+        """Judged on a box that RUNS the factory.
+
+        The intake loop's own flag is the operator's switch, so a shipped mask must express
+        the intent rather than lean on that switch happening to be off.
+        """
+        running = dict.fromkeys(INTAKE_LOOPS, True)
+        offenders = {
+            spec.name: found.detail
+            for spec in default_preset_specs()
+            if (found := intake_without_delivery(spec.entries, base_enabled=running)) is not None
+        }
+
+        assert offenders == {}, offenders
 
 
 class TestSpecsAreShippedDataNotCode:
