@@ -393,7 +393,12 @@ def _renew_lease_closing_connection(task: Task) -> None:
         # live working tree to the next requester. A claim this run does not hold
         # (the ticket was unprovisioned at dispatch, or the gate is off) renews
         # nothing — the heartbeat must never manufacture one mid-run.
-        renew_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+        #
+        # Guarded on ``ticket_id`` rather than ``task.ticket``: an unsaved/ticketless
+        # Task raises on the descriptor, and the LEASE renewal above is the
+        # load-bearing half — the occupancy add-on must never be what breaks it.
+        if task.ticket_id is not None:  # ty: ignore[unresolved-attribute]  # Django FK accessor
+            renew_ticket_checkout(task.ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session)
     except LeaseLostError as exc:
         raise LeaseLostError(describe_lease_loss(task)) from exc
     except WorktreeOccupancyLostError as exc:

@@ -138,6 +138,15 @@ class HeartbeatRenewalTests(_DispatchCase):
 
         assert not Worktree.objects.filter(pk=self.worktree.pk).exists()
 
+    def test_a_ticketless_task_still_renews_its_lease(self) -> None:
+        # The LEASE renewal is the load-bearing half; the occupancy add-on must never
+        # be what breaks it. A ticketless Task raises on the ``ticket`` descriptor.
+        renew_lease = mock.Mock()
+        with mock.patch.object(Task, "renew_lease", renew_lease):
+            headless._renew_lease_closing_connection(Task())
+
+        renew_lease.assert_called_once()
+
 
 class OccupancyLostMessageTests(TestCase):
     def test_the_lost_error_names_the_checkout_that_moved_on(self) -> None:

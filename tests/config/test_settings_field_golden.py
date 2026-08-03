@@ -232,6 +232,8 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "work_group_max_members",
         "write_wip",
         "workspace_dir",
+        "worktree_occupancy_gate_enabled",
+        "worktree_occupancy_lease_seconds",
         "worktree_stale_days",
     }
 )

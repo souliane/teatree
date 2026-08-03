@@ -15,6 +15,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands._worktree_occupancy import _worktree_for_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.occupancy import acquire, occupancy_holder
 from tests.factories import TicketFactory, WorktreeFactory
@@ -92,3 +93,14 @@ class ReleaseTests(_CommandCase):
         self.run_cmd("release-occupancy", str(self.checkout))
         assert self.checkout.is_dir()
         assert Worktree.objects.filter(pk=self.worktree.pk).exists()
+
+
+class PathResolutionTests(_CommandCase):
+    """``_worktree_for_path`` — the operator types a path, not a row id."""
+
+    def test_a_trailing_slash_still_resolves_to_the_row(self) -> None:
+        assert _worktree_for_path(f"{self.checkout}/").pk == self.worktree.pk
+
+    def test_an_unregistered_path_refuses_rather_than_guessing(self) -> None:
+        with pytest.raises(SystemExit):
+            _worktree_for_path("/nowhere/at/all")
