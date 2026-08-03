@@ -7,7 +7,8 @@ response. This is the ONE source of truth for all three, so no surface can drift
 divergent render or masking. It sits in ``core`` rather than ``dash`` because the admin
 is a layer BELOW the dashboard and may not import it:
 
-- :func:`render_value` — one value-to-display rule (booleans as on/off, empties as a dash).
+- :func:`render_value` — one value-to-display rule (booleans as on/off, and each empty
+    named as its own kind, so an empty list never reads as an unset value).
 - :func:`is_secret` — the value-masking taxonomy: the full four-class union a secret
     VALUE is withheld by (``Category.SECRET`` field / ``SECRET_SETTINGS`` denylist /
     credential coordinate / personal identifier). A key that is a personal identifier or
@@ -28,13 +29,38 @@ from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS
 #: Rendered in place of a secret VALUE — never the real value.
 MASKED = "***"
 
+#: The shipped-defaults column for a key ``defaults.toml`` carries NO entry for. A distinct
+#: sentence rather than a bare ``none``, which reads as a value and is what let "the file has
+#: no entry for this key" and "the entry is empty" look identical on the page (#4078). The key
+#: still has a code default; what is absent is a shipped one.
+NO_SHIPPED_DEFAULT = "(no shipped default)"
+
+#: What an UNSET value reads as. Kept as the em-dash it has always been — this is the one
+#: empty that genuinely means "no value here".
+UNSET = "—"
+
 
 def render_value(value: object) -> str:
-    """A value as display text — booleans as on/off, empties (None/``""``/``[]``/``{}``) as a dash."""
+    """A value as display text — booleans as on/off, and each EMPTY as its own word.
+
+    The four empties are told apart (#4078). One em-dash for ``None`` / ``""`` / ``[]`` /
+    ``{}`` alike made an empty list read exactly like an unset value, which is the
+    distinction an operator choosing a default actually needs: "nobody set this" and "this is
+    set, to nothing" are different facts about a setting, and only the first is an absence.
+
+    ``None`` keeps the em-dash because it IS the absence; every other empty names its own
+    shape, in the same vocabulary the TOML surfaces use (a mapping is a ``table``).
+    """
     if isinstance(value, bool):
         return "on" if value else "off"
-    if value is None or (isinstance(value, str) and not value) or value in ([], {}):
-        return "—"
+    if value is None:
+        return UNSET
+    if isinstance(value, str) and not value:
+        return "(empty text)"
+    if isinstance(value, list) and not value:
+        return "(empty list)"
+    if isinstance(value, dict) and not value:
+        return "(empty table)"
     return str(value)
 
 
@@ -59,4 +85,4 @@ def masked_display(setting: str, value: object) -> str:
     return MASKED if is_secret(setting) else render_value(value)
 
 
-__all__ = ["MASKED", "is_secret", "masked_display", "render_value"]
+__all__ = ["MASKED", "NO_SHIPPED_DEFAULT", "UNSET", "is_secret", "masked_display", "render_value"]
