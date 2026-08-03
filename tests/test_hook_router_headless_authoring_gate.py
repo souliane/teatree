@@ -344,6 +344,46 @@ class TestACommitCanFollowTheEditThatProducedIt:
         assert _run_gate(_bash("git log --oneline -5", str(clone))) is False
 
 
+class TestTheWorktreeCarveOutIsReachableFromAPrimaryCloneCwd:
+    """The carve-out must fire for the actor it was written for: a dispatched sub-agent.
+
+    Such an agent is launched AT a primary clone and cannot move: a ``cd`` in one call does
+    not persist to the next, and ``EnterWorktree`` only switches a session already inside a
+    worktree. So the two shapes below are the ONLY ones it can commit its in-flight work
+    with, and a probe read off the ambient cwd refused both — leaving the exemption reachable
+    solely by the sessions that never needed it. The cases above split these two dimensions
+    apart: the carve-out is exercised with the cwd already in the worktree, and target
+    resolution between two primary clones. Neither asks for their intersection.
+    """
+
+    def test_a_dash_c_commit_into_a_live_worktree_is_allowed(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"git -C {worktree} commit -m 'fix the thing'", str(clone))) is False
+
+    def test_a_cd_then_commit_into_a_live_worktree_is_allowed(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"cd {worktree} && git commit -m 'fix the thing'", str(clone))) is False
+
+    def test_a_dash_c_commit_into_the_primary_clone_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        # The control, in the mirror direction: resolving the target must be able to pull the
+        # verdict toward a refusal too, or it is a permanently-open carve-out rather than one
+        # that discriminates.
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"git -C {clone} commit -m 'new work'", str(worktree))) is True
+
+    def test_a_cd_then_commit_into_the_primary_clone_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash(f"cd {clone} && git commit -m 'new work'", str(worktree))) is True
+
+
 class TestTheOverrideIsReachableFromACommitMessage:
     """The audited escape must be reachable from the calls most likely to need it.
 
