@@ -9,6 +9,7 @@ module focused on logic and under the module-health LOC cap.
 """
 
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -23,6 +24,8 @@ from teatree.utils.run import run_allowed_to_fail
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
     from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 _GH_NOT_INSTALLED_RC = 127
 
@@ -212,6 +215,29 @@ class GhPrApiClient:
         except MergePreconditionError:
             return False, ""
         return True, merged_sha
+
+    def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
+        """Merge the base into the PR branch, bound to *expected_head_oid* (#4063).
+
+        The SHA-bound sibling of :meth:`merge_pr_squash_bound`: GitHub refuses the
+        update (422) when the live head is no longer *expected_head_oid*, so a
+        force-push in the TOCTOU window between the sweep's snapshot and this call
+        can never merge into a head the sweep did not judge. Returns ``False`` on
+        any non-zero rc (conflict, revoked permission, rate limit) — the caller
+        degrades to the ``needs_branch_update`` flag rather than retrying.
+        """
+        argv = [
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{slug}/pulls/{pr_id}/update-branch",
+            "-f",
+            f"expected_head_sha={expected_head_oid}",
+        ]
+        rc, _out, err = self._run_gh(argv)
+        if rc != 0:
+            logger.warning("pr_sweep update-branch refused for %s#%d rc=%d: %s", slug, pr_id, rc, err.strip()[:200])
+        return rc == 0
 
     def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"

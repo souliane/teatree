@@ -16,24 +16,6 @@ GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 REQUIRED_CHECK_NAME = "test (3.13)"
 UV_AUDIT_CHECK_NAME = "uv-audit"
 
-# Repo-state checks diff the PR head against ``origin/main`` (the base),
-# so a fix that already merged to ``main`` turns them red on a branch that
-# has not been merge-updated. ``gh run rerun --failed`` re-tests against the
-# original run's pinned merge commit (the OLD base), so a rerun can never
-# turn them green — only a fresh merge-update (``git merge origin/main``)
-# minting a new merge ref can. ``uv-audit`` is the same class the step-6
-# fallback already singles out; the cross-PR / doc-gate / tree-scan jobs
-# share the base-diffing property.
-REPO_STATE_CHECK_NAMES = frozenset(
-    {
-        UV_AUDIT_CHECK_NAME,
-        "blueprint-cross-pr",
-        "doc-update-gate",
-        "banned-terms-tree",
-        "overlay-leak-tree",
-    }
-)
-
 # GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
 # and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
 # but-clean branch is ``BEHIND``/``MERGEABLE``, never these). ``UNKNOWN`` /
