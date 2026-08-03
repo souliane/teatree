@@ -77,6 +77,14 @@ PACE_DENY = 0.1
 YIELD_COLLAPSE_RATIO = 0.2
 YIELD_MIN_SAMPLES = 5
 
+#: Open unmerged PRs above which a zero-merge window is inventory pile-up rather than a
+#: quiet day. Below it "nothing merged" is unremarkable and must never brake.
+MERGE_STALL_MIN_OPEN_PRS = 3
+
+#: Consecutive merge-sweep refusals before a PR counts as STUCK rather than merely
+#: waiting. Matches the aged-skip surfacing threshold, so the two agree on the word.
+MERGE_STUCK_AFTER_TICKS = 3
+
 
 @dataclass(frozen=True)
 class QuotaSignal:
@@ -146,6 +154,37 @@ class MachineBrake:
 
 #: The default: the brake applies, with no prior brake state to hold it to the low watermark.
 UNBRAKED = MachineBrake()
+
+
+@dataclass(frozen=True)
+class MergeSignal:
+    """Merge throughput — whether produced work is actually LANDING.
+
+    :class:`YieldSignal` asks "did tasks finish?", and a task that finished by opening a
+    PR nothing can merge answers yes. This asks what that cannot: did anything merge? A
+    factory whose tasks all complete while its PRs pile up is producing inventory, and
+    each further coding admission deepens the pile without making any of it likelier to
+    land — the state that held four PRs for a day while every loop read green.
+
+    Consumed by the ISSUE-INTAKE gate, not by :func:`decide_admission`: it must stop new
+    work being started without touching the ship and review lanes that drain the pile,
+    and intake is the only decision point where that distinction exists.
+
+    ``fresh`` is False when the rows could not be read. Unknown never brakes, the same
+    rule :func:`read_quota_signal` follows and for the same reason: a probe that cannot
+    answer must not be able to halt the factory.
+    """
+
+    fresh: bool
+    open_prs: int
+    stuck_prs: int
+
+    @property
+    def stalled(self) -> bool:
+        """Every open PR is one the sweep keeps refusing — nothing can land at all."""
+        if not self.fresh:
+            return False
+        return self.open_prs >= MERGE_STALL_MIN_OPEN_PRS and self.stuck_prs >= self.open_prs
 
 
 @dataclass(frozen=True)
@@ -245,6 +284,10 @@ def decide_admission(
     """Decide whether to admit new work now, and at what ceiling.
 
     Order is the owner's: token budget first, machine pressure second, yield third.
+    Merge throughput is deliberately NOT here — see :class:`MergeSignal`: it gates new
+    ISSUE INTAKE only, because the ship and review lanes are what CLEAR a backed-up
+    pipeline and braking them on the backlog they exist to drain would deadlock the
+    factory against itself.
     *load_brake* carries the caller's two machine-brake inputs (see :class:`MachineBrake`)
     — the previous decision's brake state, for hysteresis, and whether the brake applies
     to this class at all. *static_ceiling* is the operator's configured concurrency,
@@ -275,6 +318,49 @@ def decide_admission(
     return AdmissionDecision(
         admit=True, reason=f"admitting {headroom} — signals healthy", ceiling=ceiling, braked=False
     )
+
+
+def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER_TICKS) -> MergeSignal:
+    """Open PRs, and how many of them the merge sweep keeps refusing.
+
+    Scoped to *overlay* because the gate it feeds is per-overlay: counting globally lets a
+    stall in one overlay brake intake in another, which is a silent cross-tenant brake that
+    a single-overlay box can never show.
+
+    A streak only counts when it names a PR that is STILL LIVE. ``SweepSkipStreak.resolve``
+    fires only on a live ``pr_sweep.*`` signal for that exact ``(slug, pr_id)``, so a PR that
+    merged or closed outside the sweep leaves its row behind forever. Counting rows
+    independently of the live set lets those fossils outnumber real PRs and brake a pipeline
+    in which every open PR is healthy.
+
+    Both slugs are folded to lower case before they are compared, the repo-wide rule
+    :meth:`~teatree.core.models.pull_request.PullRequestQuerySet.for_pr` states: a forge slug
+    is case-insensitive, so a streak recorded as ``Owner/Repo`` names the very PR the live
+    set holds as ``owner/repo``. Matching exactly drops every such streak, ``stuck_prs``
+    undercounts and the brake never fires — failing toward MORE claiming, the one direction
+    this gate exists to prevent.
+
+    A read that raises returns ``fresh=False`` — unknown never brakes, because a probe that
+    cannot answer must not be able to halt the factory.
+    """
+    from teatree.core.models import PullRequest, SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    try:
+        live = PullRequest.objects.live()
+        streaks = SweepSkipStreak.objects.aged(threshold=stuck_after)
+        if overlay:
+            live = live.filter(overlay=overlay)
+            streaks = streaks.filter(overlay=overlay)
+        live_keys = {
+            (str(repo).lower(), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()
+        }
+        stuck = sum(
+            1 for slug, pr_id in streaks.values_list("slug", "pr_id") if (str(slug).lower(), int(pr_id)) in live_keys
+        )
+    except Exception:
+        logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
+        return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)
+    return MergeSignal(fresh=True, open_prs=len(live_keys), stuck_prs=stuck)
 
 
 def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSignal:

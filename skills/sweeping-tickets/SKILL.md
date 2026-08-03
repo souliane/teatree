@@ -1,6 +1,6 @@
 ---
 name: sweeping-tickets
-description: Evidence-gated ticket/issue consolidation and triage — classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging — never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "shipped by merged PR #X" class), posting a one-line reason on every close. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "merge tickets into epics", "prune the tracker", or "clean up the issue tracker".
+description: Evidence-gated ticket/issue consolidation and triage — classify every open issue against current `main`, then consolidate by merging related tickets INTO AN EXISTING ticket — never by minting a new umbrella row and never by discarding ideas — and close only what is demonstrably shipped or now folded into its host. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "shipped by merged PR #X" class), posting a one-line reason on every close. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "merge tickets into epics", "prune the tracker", or "clean up the issue tracker".
 eval_exempt: evidence-gated ticket-consolidation walkthrough — its one-decision-per-question discipline is pinned in scenarios under the rules skill, and its evidence-gated close/consolidate discipline is pinned by the stale_open_issue_gate scenarios; no standalone agent trajectory beyond those to grade
 compatibility: macOS/Linux, git, gh CLI.
 requires:
@@ -18,14 +18,25 @@ open issues, or would take the codebase *backwards* if implemented now (they
 predate a since-adopted design). Nothing consolidates them, so the tracker's
 signal degrades — the operator can no longer tell what is actually next. This
 skill reads the open issue set, judges each issue against *current `main`*,
-and **consolidates**: it folds related work into a small set of tracking
-**epics** so related pieces get implemented together, and it closes only what
-is genuinely done or now redundant with an epic.
+and **consolidates**: it folds related work into the best-fitting **existing
+ticket** so related pieces get implemented together, and it closes only what is
+genuinely done or now redundant with its host.
+
+**Never mint a new umbrella row.** The merge target is always a ticket that
+already exists. A fresh epic is a container with no history, no discussion and
+no prior context: folding N real tickets into one invents a row strictly thinner
+than what it replaced, while the originals — with their evidence and their
+threads — all become closed and secondary. The count drops and the substance
+degrades, which reads as progress and is not. Reusing an existing ticket keeps
+the thread that already holds the history, and merging the others' content into
+it leaves the survivor RICHER than it was.
 
 **Consolidation is never deletion.** The reduction in open-issue count comes
-from *merging* tickets into epics — never from discarding an idea because it
-didn't make the cut. If a ticket's substance isn't shipped yet, it survives
-inside the owning epic's checklist even after the standalone ticket closes.
+from *merging* tickets into their host — never from discarding an idea because
+it didn't make the cut. If a ticket's substance isn't shipped yet, it survives
+in the host ticket even after the standalone closes — and as its actual
+substance (problem statement, evidence, acceptance criteria), not a bare
+checklist line.
 
 It is a deliberately separate skill from `t3:retro` / dreaming (#2419).
 Dreaming distills transcripts into memory rules — additive, unattended, low
@@ -41,10 +52,14 @@ kept apart on purpose.
    tickets/epics they want left when the sweep is done. Never assume a
    number — a low cap (e.g. 10) is very aggressive and must be the operator's
    explicit choice, not a default this skill picks for them.
-2. **Consolidate by merging, not deleting.** Related tickets are grouped into
-   a small set of tracking epics so the related work gets implemented
-   together. A ticket that isn't shipped yet is never just closed and
-   forgotten — its substance moves into the owning epic's checklist first.
+2. **Consolidate by merging into an EXISTING ticket, never by creating one.**
+   Related tickets are merged into whichever open ticket already covers the
+   most of their scope — prefer the oldest / most-discussed when several fit,
+   because that is where the history lives. Creating a new epic/umbrella row to
+   hold them is forbidden. A ticket that isn't shipped yet is never just closed
+   and forgotten — its substance moves into the host ticket first. If nothing
+   genuinely fits, it STAYS STANDALONE; that is a legitimate outcome and counts
+   toward the operator's cap, never a reason to invent a container.
 3. **Evidence per verdict.** No issue is proposed for close or fold without a
    concrete citation — a merged PR number, a removed code path, the named
    epic it now belongs to, or the named design decision it contradicts. A
@@ -96,11 +111,11 @@ For each open issue, assign exactly one verdict with its evidence:
 | Verdict | Test | Evidence to cite | Action |
 |---------|------|------------------|--------|
 | **Shipped** | The ask is already implemented on `main` | the merged PR / issue that did it | close `--reason completed` (auto-close only if the PR is *merged* and the match is exact — rule 5) |
-| **Consolidate into an epic** | Related to other open tickets that aren't shipped yet | the epic (existing or newly proposed) it now belongs to | fold into the epic's checklist, then close the standalone `--reason "not planned"` (approval-gated — rule 6) |
-| **Regressive** | Implementing it now would contradict a since-adopted design | the conflicting decision, named (e.g. "pre-#2385 single-tach-node assumption") | fold into the relevant epic as a "won't do" note, or close `--reason "not planned"` with the citation (approval-gated) |
-| **Still standalone** | Genuinely distinct scope, no natural epic fit, and the operator's cap has room | — | keep open; it counts toward the operator's max |
+| **Consolidate into an existing ticket** | Related to another OPEN ticket that already covers most of its scope | the existing ticket it now belongs to (never a new one) | merge its substance into that ticket's body, then close the standalone `--reason "not planned"` (approval-gated — rule 6) |
+| **Regressive** | Implementing it now would contradict a since-adopted design | the conflicting decision, named (e.g. "pre-#2385 single-tach-node assumption") | record as a "won't do" note on the host ticket, or close `--reason "not planned"` with the citation (approval-gated) |
+| **Still standalone** | Genuinely distinct scope, no existing ticket fits, and the operator's cap has room | — | keep open; it counts toward the operator's max. Never create a container to absorb it |
 
-Bias toward **keep** (as a standalone, or folded into an epic that stays open)
+Bias toward **keep** (as a standalone, or merged into an existing ticket that stays open)
 when uncertain — a wrong close destroys signal; a kept issue just gets swept
 again next cadence.
 
@@ -117,9 +132,11 @@ gh issue view <N> --repo <owner>/<repo> --json title,body,comments,labels,state
 gh issue list --repo <owner>/<repo> --state open \
   --json number,title,labels,updatedAt --limit 300
 
-# Find existing tracking epics (label `epic`) to consolidate into.
-gh issue list --repo <owner>/<repo> --state open --label epic \
-  --json number,title,body,url
+# Find the MERGE TARGET among tickets that already exist. Never create one:
+# read the open set and pick whichever ticket already covers most of the
+# candidate's scope, preferring the oldest / most-discussed when several fit.
+gh issue list --repo <owner>/<repo> --state open \
+  --json number,title,body,url,comments,createdAt --limit 300
 
 # Check whether a merged PR already shipped the ask (shipped evidence).
 gh pr list --repo <owner>/<repo> --state merged --search "<keywords>" \
@@ -176,16 +193,21 @@ a guess (Non-Negotiable 9).
 
 For every open issue, read it in full and assign one verdict from the table
 with its evidence. For "shipped", search merged PRs for the issue's ask. For
-"consolidate", find or propose the epic it belongs to. For "regressive", test
-the ask against the architecture state from step 3.
+"consolidate", find the EXISTING ticket it belongs to — never propose a new
+one. For "regressive", test the ask against the architecture state from step 3.
 
-### 5. Propose the epic set (bounded by the operator's cap)
+### 5. Choose merge targets from the tickets that already exist
 
-Group the "consolidate" and "regressive" issues into a small set of tracking
-epics — existing epics first, new ones only when nothing existing fits. The
-total open count after the sweep (standalone-kept + epics) must respect the
-cap from step 1; if it doesn't, consolidate further before presenting the
-dry-run.
+Assign each "consolidate" and "regressive" issue to the OPEN ticket that
+already covers most of its scope, preferring the oldest / most-discussed when
+several fit — that is where the history lives. **Creating a new epic or
+umbrella row is not an option here.** An issue nothing fits stays standalone
+and counts toward the cap.
+
+The total open count after the sweep must respect the cap from step 1. If it
+does not, merge further into existing hosts, or say plainly that the cap cannot
+be met without inventing containers and let the operator choose — never close
+the gap by minting rows.
 
 ### 6. Produce the dry-run list
 
@@ -194,7 +216,7 @@ Present a read-only table — **no closes or folds yet** (Non-Negotiable 4):
 | # | Title | Verdict | Evidence | Proposed action |
 |---|-------|---------|----------|-----------------|
 | #1838 | … | Shipped | merged #2204 | auto-close (exact, merged) |
-| #1672 | … | Consolidate | fold into epic #1900 | fold + close (needs approval) |
+| #1672 | … | Consolidate | merge into existing #1900 | merge + close (needs approval) |
 | #97 | … | Still standalone | — | keep |
 
 ### 7. Walk the closes and folds one decision at a time

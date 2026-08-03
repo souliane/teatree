@@ -143,6 +143,21 @@ class BotPing(models.Model):
         return posted_at <= moment - cls.SENDING_STALE_AFTER
 
     @classmethod
+    def redeliverable_q(cls, *, now: datetime | None = None) -> Q:
+        """Rows a fresh :meth:`claim_delivery` would CLAIM rather than stand down on.
+
+        The single source of truth for "will the send path actually re-deliver this?",
+        shared by :meth:`recoverable_info`, :meth:`expire_stale_info` and the resurface
+        drain's ledger read-back. Its complement is every status whose claim returns
+        ``ALREADY_SENT`` or ``IN_FLIGHT`` — SENT, SENT_UNVERIFIED, EXPIRED, LOGGED and a
+        FRESH SENDING. A selection that read only ``status=SENT`` as handled left the
+        other four in its window, where nothing skips them and nothing re-delivers them
+        (#4064).
+        """
+        stale_before = (now or timezone.now()) - cls.SENDING_STALE_AFTER
+        return Q(status__in=tuple(cls._RECOVERABLE)) | Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
+
+    @classmethod
     def recoverable_info(cls, *, limit: int = 50) -> "models.QuerySet[BotPing]":
         """INFO rows that never delivered and can be re-attempted on a later tick.
 
@@ -172,13 +187,10 @@ class BotPing(models.Model):
         rather than surfacing late in the owner's DM.
         """
         moment = timezone.now()
-        stale_before = moment - cls.SENDING_STALE_AFTER
         age_cutoff = moment - cls.REDELIVERY_AGE_CUTOFF
-        terminal = Q(status__in=tuple(cls._RECOVERABLE))
-        stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
         return (
             cls.objects.filter(kind=cls.Kind.INFO, audience__in=OWNER_AUDIENCE_VALUES)
-            .filter(terminal | stale_claim)
+            .filter(cls.redeliverable_q(now=moment))
             .filter(posted_at__gt=age_cutoff, attempts__lt=cls.MAX_REDELIVERY_ATTEMPTS)
             .order_by("posted_at", "pk")[:limit]
         )
@@ -202,16 +214,13 @@ class BotPing(models.Model):
         of rows expired.
         """
         moment = now or timezone.now()
-        stale_before = moment - cls.SENDING_STALE_AFTER
         age_cutoff = moment - cls.REDELIVERY_AGE_CUTOFF
-        terminal = Q(status__in=tuple(cls._RECOVERABLE))
-        stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
         too_old = Q(posted_at__lte=age_cutoff)
         too_many = Q(attempts__gte=cls.MAX_REDELIVERY_ATTEMPTS)
         not_owner = ~Q(audience__in=OWNER_AUDIENCE_VALUES)
         return (
             cls.objects.filter(kind=cls.Kind.INFO)
-            .filter(terminal | stale_claim)
+            .filter(cls.redeliverable_q(now=moment))
             .filter(too_old | too_many | not_owner)
             .update(status=cls.Status.EXPIRED)
         )
