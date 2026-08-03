@@ -489,9 +489,22 @@ class DoctorJsonSurfaceTest(TestCase):
         assert captured["repair"] is False
 
     def test_check_without_json_does_not_route_to_json(self) -> None:
+        """The bare subcommand takes the non-JSON branch, so ``check_as_json`` stays untouched.
+
+        ``run_doctor_checks`` is stubbed for the same reason every ``--json`` sibling above
+        stubs it: the assertion is about which branch ``check`` picks, and the real aggregate
+        answers a different question at the price of every check it owns — token-permission
+        probes, the Slack round-trip and a ``claude mcp list`` subprocess among them. Stubbing
+        the nested ``run_self_heal_checks`` alone left the rest of that aggregate live on the
+        one test in this class that does not pass ``--json``, which is how a pure routing
+        assertion came to exceed the global 60s ``pytest-timeout`` under shard contention
+        (#4048).
+        """
+        import teatree.cli.doctor.app as doctor_app_mod  # noqa: PLC0415 — deferred, as its siblings (#4048)
+
         with (
             mock.patch(f"{_MOD}.check_as_json") as spy,
-            mock.patch(f"{_MOD}.run_self_heal_checks", return_value=True),
+            mock.patch.object(doctor_app_mod, "run_doctor_checks", return_value=True),
         ):
             CliRunner().invoke(cli_app, ["doctor", "check"])
         assert not spy.called
