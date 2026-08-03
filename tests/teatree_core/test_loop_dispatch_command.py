@@ -397,9 +397,11 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     refuses once the standing in-flight CLAIMED WIP hits the ceiling, so
     claimed ≡ spawned and the orphan window is closed.
 
-    Absence of a budget (medium / toggle-off) is UNCLAMPED — today's
-    throughput, byte-identical. A stale budget (> TTL) is ignored, also
-    unclamped, so a dead loop never wrongly throttles live dispatch.
+    Absence of a budget (medium / toggle-off) removes the SIDECAR clamp —
+    today's throughput, byte-identical. A stale budget (> TTL) is ignored the
+    same way, so a dead loop never wrongly throttles live dispatch. That is not
+    the same as unclamped: the governor supplies a ceiling of its own (#4097),
+    which these cases hold at "no opinion" to isolate the sidecar.
     """
 
     def _claim_in_flight(self, n: int) -> list[Task]:
@@ -412,8 +414,16 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         return claimed
 
     def _run_claim_next(self, sl: Path) -> list[dict]:
+        # The governor is pinned to "no opinion" so these cases measure the SIDECAR
+        # ceiling alone. Left live, its machine ceiling is floor(cores * 0.5), so a
+        # budgeted wave claims a different number on a 4-core runner than on an 8-core
+        # one and the assertion would encode the host, not the gate (#4097). The
+        # governor's own clamp is TestGovernorGate's subject.
         stdout = StringIO()
-        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+        with (
+            patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl),
+            patch("teatree.core.management.commands.loop_dispatch.governor_verdict", return_value=None),
+        ):
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         return json.loads(stdout.getvalue())
 

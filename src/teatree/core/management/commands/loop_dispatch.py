@@ -331,8 +331,10 @@ class Command(TyperCommand):
         tick-meta sidecar. When the standing in-flight CLAIMED dispatchable WIP
         has reached the ceiling, refuse with the existing empty no-work payload
         (exactly today's no-work path) so claimed ≡ spawned and the loop never
-        orphans a claim. Absence / staleness of the budget is UNCLAMPED — the
-        default ``medium`` / toggle-off throughput is byte-identical.
+        orphans a claim. Absence / staleness of the budget drops the SIDECAR
+        clamp — the default ``medium`` / toggle-off throughput is byte-identical
+        as far as the sidecar goes — while the governor's own ceiling still
+        applies (#4097).
         """
         from teatree.core.session_identity import current_session_id  # noqa: PLC0415 — deferred: lazy command import
 
