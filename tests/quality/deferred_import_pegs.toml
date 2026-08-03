@@ -19,9 +19,12 @@
 # 1: the pressure reading (`ResourcePressureMarker`) is an ORM import that must
 # resolve after the app registry is ready, so it stays call-time.
 "src/teatree/core/intake/concurrency.py" = 1
-# 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
-# after the app registry is ready, so it stays call-time.
-"src/teatree/core/admission_governor.py" = 1
+# 2: the token-budget read (`AnthropicTokenUsage`) and, since #4044, the merge-throughput
+# read (`PullRequest` + `SweepSkipStreak`) are both ORM imports that must resolve after the
+# app registry is ready, so each stays call-time. The reader sits beside its own signal here
+# rather than in `teatree.loop`, where it would have been an intra-loop deferred edge and
+# hidden from tach's acyclic guard.
+"src/teatree/core/admission_governor.py" = 2
 # 3: every `AppConfig.ready()` registration is call-time by Django's own contract —
 # the app registry is not ready at module import, so these can never be top-level.
 "src/teatree/core/apps.py" = 3
