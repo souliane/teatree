@@ -460,6 +460,19 @@ def _current_branch(repo: str) -> str:
     return "" if branch == "HEAD" else branch
 
 
+def _resolved_branch(repo: str, branch: str) -> str:
+    """The plain branch NAME *branch* denotes — the form the rest of this module assumes.
+
+    ``git push`` accepts ``HEAD`` and a fully-qualified ``refs/heads/x`` as well as a
+    bare name, but the post-condition has to look up ``refs/heads/<name>`` on the remote
+    and would find nothing under either of the other two spellings. Normalising here is
+    what keeps them working rather than being refused or, worse, reported unlanded.
+    """
+    if not branch or branch == "HEAD":
+        return _current_branch(repo)
+    return branch.removeprefix("refs/heads/")
+
+
 def _push_argv(repo: str, remote: str, branch: str, *, force_with_lease: bool) -> list[str]:
     argv = ["git", "-C", repo, "push", "--set-upstream", remote, branch]
     if force_with_lease:
@@ -536,7 +549,7 @@ def push_branch(
     """
     credential = resolve_forge_credential()
     repo_path = str(repo)
-    resolved_branch = branch or _current_branch(repo_path)
+    resolved_branch = _resolved_branch(repo_path, branch)
     config = _config_verdict(repo=repo_path, remote=remote, branch=resolved_branch)
     if config.failure:
         return _refusal(config, branch=resolved_branch, remote=remote, credential=credential)

@@ -503,6 +503,15 @@ class TestABranchThatDoesNotExistIsNeverTheGatesFault:
         assert outcome.exit_code == PUSH_EXIT_CODES[PushFailure.CONFIG]
         assert "no-such-branch" in outcome.detail
 
+    @pytest.mark.parametrize("spelling", ["HEAD", "refs/heads/feature", "feature"])
+    def test_every_spelling_git_push_accepts_still_works(self, clone_with_origin: Path, spelling: str) -> None:
+        """The refusal must catch a typo, never a legal way of naming the same branch."""
+        outcome = push_branch(repo=clone_with_origin, branch=spelling)
+
+        assert outcome.ok, outcome.detail
+        assert outcome.branch == "feature"
+        assert outcome.pushed_sha == run_git(clone_with_origin, "rev-parse", "HEAD")
+
     def test_the_push_is_never_attempted_for_an_unknown_branch(self, clone_with_origin: Path) -> None:
         recorder = _RecordingRun()
 
