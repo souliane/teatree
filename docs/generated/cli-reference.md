@@ -5321,8 +5321,8 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ list    List DB-configured autonomous loops: name, enabled, delay, last run, │
 │         next due.                                                            │
-│ audit   Report every shipped loop/preset/schedule that is missing, disabled, │
-│         or not ticking.                                                      │
+│ audit   Report every shipped loop/preset/schedule missing, disabled, not     │
+│         ticking, or diverged.                                                │
 │ delete  Delete a loop row — a loop that ships by default needs ``--confirm   │
 │         stop-<name>``.                                                       │
 │ tick    Run ONE enabled, due loop by name — the per-loop primitive the       │
@@ -5351,15 +5351,16 @@ Usage: t3 loops list [OPTIONS]
 ```
 Usage: t3 loops audit [OPTIONS]
 
- Report every shipped loop/preset/schedule that is missing, disabled, or not
- ticking.
+ Report every shipped loop/preset/schedule missing, disabled, not ticking, or
+ diverged.
 
  Sources the expected set from the shipped seed tables rather than the DB, so a
  row
  somebody deleted is visible at all. Exits NON-ZERO when any finding is a
  fault; a
- deliberate operator choice (a shipped-off loop, an inactive calendar) is a
- note.
+ deliberate operator choice (a shipped-off loop, an inactive calendar, a mask
+ or calendar
+ edited away from what ships) is a note, reported and never rewritten.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the findings as JSON.                                   │

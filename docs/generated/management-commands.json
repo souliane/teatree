@@ -964,7 +964,7 @@
       "name": "shipped_seed",
       "subcommands": [
         {
-          "help": "Report every shipped definition that is missing, disabled, or not ticking",
+          "help": "Report every shipped definition missing, disabled, not ticking, or diverged from shipped",
           "name": "audit"
         },
         {
