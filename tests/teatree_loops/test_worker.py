@@ -95,6 +95,8 @@ def _make_worker(*, enabled, sleep, **seam_overrides):
         sleep=sleep,
         poll_seconds=0.0,
         reclaim_leases=seam_overrides.get("reclaim_leases") or (lambda: None),
+        claim_master=seam_overrides.get("claim_master") or (lambda: None),
+        release_master=seam_overrides.get("release_master") or (lambda: None),
     )
     return LoopWorker(seams), built, handles
 
