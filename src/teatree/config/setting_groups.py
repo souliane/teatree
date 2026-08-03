@@ -229,8 +229,24 @@ def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> tomlkit_items.Tab
     return table
 
 
+def _comment_text(key: str) -> str:
+    """What *key* ACCEPTS, then what it means — the two halves of its one-line comment.
+
+    Without the first half a reader of the dump can see that ``wip`` is ``"full"`` but not
+    whether it takes any string or one of four words, which is precisely the question the
+    export exists to answer away from the dashboard. It is DERIVED from the schema
+    (:func:`~teatree.config.setting_annotation.setting_annotation`), the same answer the
+    dashboard's selects are built from, so the two surfaces cannot come to disagree.
+    """
+    # Deferred (PLC0415): `setting_annotation` reaches `schema`, whose ~110ms pydantic
+    # import this module otherwise never pays for.
+    from teatree.config.setting_annotation import setting_annotation  # noqa: PLC0415 — deferred: kept lazy
+
+    return " — ".join(part for part in (setting_annotation(key), setting_help(key)) if part)
+
+
 def _commented(key: str, value: object) -> tomlkit_items.Item:
-    """*value* as a TOML item carrying *key*'s help text as a TRAILING comment.
+    """*value* as a TOML item carrying *key*'s type, choices and help as a TRAILING comment.
 
     Trailing rather than a line above: a standalone ``#`` line inside ``[teatree]`` is what
     the retired comment-banner group headings looked like, and the shipped-file conformance
@@ -239,8 +255,8 @@ def _commented(key: str, value: object) -> tomlkit_items.Item:
     splits ``key = value`` out of the file — sees the same key it always did.
     """
     item: tomlkit_items.Item = value if isinstance(value, tomlkit_items.Item) else tomlkit.item(value)
-    help_text = setting_help(key)
-    return item.comment(help_text) if help_text else item
+    comment = _comment_text(key)
+    return item.comment(comment) if comment else item
 
 
 def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, ValueT]) -> tomlkit_items.Table:

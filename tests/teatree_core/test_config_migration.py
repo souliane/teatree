@@ -19,8 +19,9 @@ from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
 from teatree.config.cold_defaults import flatten_settings_table
-from teatree.config.schema import _DEFAULTS_TOML, shipped_defaults
+from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defaults
 from teatree.config.seed_defaults import shipped_seed_table
+from teatree.config.setting_annotation import choice_token
 from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
@@ -81,6 +82,44 @@ class TestExportDbToToml(TestCase):
 
     def test_empty_store_exports_empty_document(self) -> None:
         assert export_db_to_toml(scan_terms=()).toml.strip() == ""
+
+
+class TestTheDumpSaysWhatEachKeyAccepts(TestCase):
+    """A dumped line answers "what may I put here", not only "what is it now".
+
+    The export is where defaults get reviewed away from the dashboard, so a line reading
+    ``wip = "full"`` alone leaves the reader unable to tell an open string from one of four
+    words. The answer is the schema's own (``setting_choices``, which the dashboard's
+    selects are built from) — these pin it reaching the dump intact and still importable.
+    """
+
+    def _line(self, key: str) -> str:
+        return next(line for line in export_db_to_toml(scan_terms=()).toml.splitlines() if line.startswith(f"{key} ="))
+
+    def test_a_constrained_keys_line_names_every_value_the_schema_admits(self) -> None:
+        ConfigSetting.objects.set_value("wip", "full")
+        offered = self._line("wip").split("one of:", 1)[1]
+        for choice in setting_choices("wip"):
+            assert choice_token(choice) in offered, f"{choice!r} missing from {offered!r}"
+
+    def test_an_open_typed_keys_line_names_its_type_and_offers_no_list(self) -> None:
+        ConfigSetting.objects.set_value("headless_max_turns", 400)
+        line = self._line("headless_max_turns")
+        assert "# int" in line
+        assert "one of:" not in line
+
+    def test_the_annotated_dump_still_imports_back_into_the_store(self) -> None:
+        # The annotation lives in a TOML comment, so it must be invisible to the inverse.
+        # Both values diverge from their shipped default, so a row is genuinely rewritten
+        # (import skips a value equal to the default, which would prove nothing here).
+        ConfigSetting.objects.set_value("wip", "slow")
+        ConfigSetting.objects.set_value("headless_max_turns", 400)
+        dumped = export_db_to_toml(scan_terms=()).toml
+        ConfigSetting.objects.all().delete()
+        result = import_toml_to_db(dumped, scan_terms=())
+        assert not result.rejected, result.rejected
+        assert ConfigSetting.objects.get_effective("wip") == "slow"
+        assert ConfigSetting.objects.get_effective("headless_max_turns") == 400
 
 
 class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):

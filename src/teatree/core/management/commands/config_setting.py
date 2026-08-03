@@ -310,6 +310,13 @@ class Command(TyperCommand):
         overlay; omitted, every scope is dumped. ``--output <path>`` writes a file;
         omitted, the TOML goes to stdout.
 
+        Each line carries a trailing comment saying what the key ACCEPTS — its stored
+        type, plus the alternatives where the schema constrains them to a set — then what
+        it means. Reviewing defaults away from the dashboard is exactly where "may this
+        take any string?" gets asked, and the answer is the schema's own
+        (:func:`~teatree.config.schema.setting_choices`, the derivation the dashboard's
+        selects are built from), so the two surfaces cannot come to disagree.
+
         The secret guard withholds private rows by DEFAULT — a known-private key
         (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
         SHARED export (auto-configuring a fresh teatree) cannot leak customer data
