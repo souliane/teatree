@@ -24,6 +24,8 @@ from teatree.core.admission_governor import (
     decide_admission,
     per_agent_test_workers,
     read_machine_signal,
+    resume_agent_ceiling,
+    resume_shed_directive,
     weekly_pace,
 )
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
@@ -422,3 +424,49 @@ class TestWriteConcurrencyRaise:
     def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
         """The melt driver the old 0.25 was calibrated against, now bounded independently."""
         assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+
+
+class TestResumeAgentPopulation:
+    """A session resume restores the whole previously-running fleet in one step (#4108).
+
+    The restore is not a dispatch, so the dispatch-side ceiling never sees it. The
+    population it re-creates is a HOST fact, so the bound is derived from the live
+    machine reading — never from a per-lane concurrency setting, which bounds one lane
+    and says nothing about how many agents the box is carrying in total.
+    """
+
+    def test_an_idle_box_carries_one_agent_per_core(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0)) == 8
+
+    def test_the_ceiling_falls_as_live_load_eats_the_box(self) -> None:
+        idle = resume_agent_ceiling(_machine(cores=8, load1=0.0))
+        busy = resume_agent_ceiling(_machine(cores=8, load1=20.0))
+        assert 1 <= busy < idle
+
+    def test_the_recorded_meltdown_leaves_room_for_nothing_beyond_one(self) -> None:
+        """Load 58 on 8 cores — the reading taken during the simultaneous restore."""
+        assert resume_agent_ceiling(_machine(cores=8, load1=58.0)) == 1
+
+    def test_the_ceiling_never_reaches_zero(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=1, load1=999.0)) == 1
+
+    def test_a_fleet_within_the_ceiling_says_nothing(self) -> None:
+        assert resume_shed_directive(restored=3, machine=_machine(cores=8, load1=0.0)) == ""
+
+    def test_a_fleet_at_the_ceiling_says_nothing(self) -> None:
+        assert resume_shed_directive(restored=8, machine=_machine(cores=8, load1=0.0)) == ""
+
+    def test_an_over_ceiling_restore_names_the_count_and_the_ceiling(self) -> None:
+        directive = resume_shed_directive(restored=12, machine=_machine(cores=8, load1=20.0))
+        assert "12" in directive  # the restored count
+        assert "4" in directive  # the ceiling the live reading leaves
+        assert "shed" in directive.lower()
+
+    def test_the_recorded_meltdown_restore_is_never_silent(self) -> None:
+        assert resume_shed_directive(restored=12, machine=_machine(cores=8, load1=58.0)) != ""
+
+    def test_the_bound_is_the_live_reading_not_a_per_lane_setting(self) -> None:
+        """Same fleet, same cores — only the live load differs, and only one warns."""
+        fleet = 6
+        assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=0.0)) == ""
+        assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=30.0)) != ""

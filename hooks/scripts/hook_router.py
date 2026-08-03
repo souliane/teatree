@@ -165,6 +165,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
@@ -4236,17 +4237,13 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     if handover is not None:
         context = f"{handover}\n\n---\n\n{context}"
 
-    advisory = _autocompact_kill_switch_advisory()
-    if advisory:
-        context = f"{context}\n\n---\n\n{advisory}"
-
-    switch_advisory = _account_switch_advisory()
-    if switch_advisory:
-        context = f"{switch_advisory}\n\n---\n\n{context}"
-
-    mcp_advisory = _mcp_connectivity_advisory()
-    if mcp_advisory:
-        context = f"{mcp_advisory}\n\n---\n\n{context}"
+    autocompact = _autocompact_kill_switch_advisory()
+    leading = (_account_switch_advisory(), _mcp_connectivity_advisory(), resume_admission_advisory(session_id, source))
+    if autocompact:
+        context = f"{context}\n\n---\n\n{autocompact}"
+    for advisory in leading:
+        if advisory:
+            context = f"{advisory}\n\n---\n\n{context}"
     return context
 
 
@@ -5884,7 +5881,7 @@ _HANDLERS: dict[str, list] = {
         handle_stop_snapshot_slot,
         handle_loop_self_pump,
     ],
-    "SubagentStop": [handle_subagent_stop_no_commit],
+    "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent],
 }
 
 # Events whose block/deny is carried by a TOP-LEVEL ``decision`` JSON object on
