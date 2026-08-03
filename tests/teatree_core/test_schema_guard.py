@@ -194,6 +194,15 @@ class TestSchemaGuardOnPrivateAlias:
         assert MergeClear.objects.using(alias).count() == 0  # healed: the table is now usable
 
 
+# Measured idle on an 8-core box: 7.3s in ``setUp`` and 1.5s in the call. The narrow
+# unapply/reapply of the initial migration on the SHARED ``default`` connection dominates
+# — the aggregation the body asserts costs comparatively little in-process — and neither
+# part can be stubbed away, since the migration gap IS the precondition and the aggregate
+# IS the subject. ~9s clears the global 60s ``pytest-timeout`` alone and does not under
+# CI's 12-way shard matrix, where contention has taken it past 60s on four separate PRs.
+# Same scoped bump, same reason, as ``BehindSelfDbSelfHealsTest`` below (#1189); the
+# global 60s stays as the hang-detector everywhere else (#4048).
+@pytest.mark.timeout(240)
 class BehindSelfDbReportingTest(TransactionTestCase):
     """The one surface that cannot move off ``default`` (#2915).
 
