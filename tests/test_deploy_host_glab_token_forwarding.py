@@ -104,7 +104,15 @@ def _run(
     entry = _install_wrapper(tmp_path)
     bash = shutil.which("bash", path=SYSTEM_PATH) or "bash"
     argv = [bash, "-x", str(entry), "--help"] if xtrace else [str(entry), "--help"]
-    return subprocess.run(argv, capture_output=True, text=True, check=True, env=env)
+
+    # Stand OUTSIDE any checkout: the subject is credential forwarding, and
+    # inheriting pytest's cwd would instead trip the invisible-checkout refusal
+    # (this repo is a checkout, and `TEATREE_HOST_HOME` is redirected above so it
+    # sits under none of the mounts the wrapper computes).
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(parents=True, exist_ok=True)
+
+    return subprocess.run(argv, capture_output=True, text=True, check=True, env=env, cwd=elsewhere)
 
 
 def _invoke(tmp_path: Path, *, with_glab: bool, env_overrides: dict[str, str] | None = None) -> dict[str, str]:
