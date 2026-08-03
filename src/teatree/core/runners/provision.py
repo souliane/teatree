@@ -16,6 +16,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.worktree.checkout_disposal import disposal_refusal
 from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
 from teatree.core.worktree.clone_provision import ensure_clone
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
@@ -144,7 +145,7 @@ def _tear_down_worktree(clone: str, wt_path: str, branch: str) -> None:
         git.check(repo=clone, args=["branch", "-d", branch])
 
 
-def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str) -> str | None:
+def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, ticket_id: int | None) -> str | None:
     """Make the scope's worktree slot creatable, or ADOPT what is already there (#3234).
 
     Provisioning must be idempotent. A prior attempt that failed DOWNSTREAM of
@@ -153,16 +154,24 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str) -> str
     out"), so provision failed with "failed to create worktrees for: <repo>" and the
     ticket stayed at ``started`` forever — every retry hitting the identical wall.
 
-    Returns the path to ADOPT (provisioning is then a no-op over an existing
-    checkout), or ``None`` when the slot is now clear for ``git worktree add``:
+    Three outcomes: the path to ADOPT (provisioning is then a no-op over an existing
+    checkout), ``""`` when the slot is now clear for ``git worktree add``, or ``None``
+    when the slot cannot be cleared and provisioning must not proceed.
 
     - a healthy registration at the expected path on the CORRECT branch → adopt it;
     - a registration whose directory is GONE → stale git admin; pruned, then recreate;
     - a leftover holding the branch at ANOTHER path, or one sitting at the expected
         path on the WRONG branch → torn down (guarded) and recreated;
     - a leftover carrying work absent from every remote → NEVER destroyed: adopted in
-        place when it is on the scope's branch, and otherwise left alone so the caller
-        fails loudly rather than silently deleting the only copy of that work.
+        place when it is on the scope's branch, and otherwise refused so nothing
+        silently deletes the only copy of that work;
+    - anything standing in the slot that this context cannot prove disposable →
+        refused (#3967).
+
+    Every step that would REMOVE something asks
+    :func:`~teatree.core.worktree.checkout_disposal.disposal_refusal` first. The
+    registration survey below is scoped to *clone* as THIS context reaches it, so "git
+    does not know about it" is a statement about the vantage point, not about the disk.
     """
     clone_str, wt_str = str(clone), str(wt_path)
 
@@ -207,16 +216,22 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str) -> str
             branch,
             wt_str,
         )
+        if refusal := disposal_refusal(Path(leftover.path), clone=clone, requesting_ticket_id=ticket_id):
+            logger.error("Cannot provision %s at %s: %s", branch, wt_str, refusal)
+            return None
         _tear_down_worktree(clone_str, leftover.path, leftover.branch)
 
-    # A directory git does not know about — a prior ``git worktree add`` that died
-    # mid-checkout — still blocks the add. It holds no git history (git has no
-    # registration for it), so removing it cannot lose committed work.
+    # A directory that never claimed to be a checkout — a prior ``git worktree add``
+    # that died before writing its ``.git`` entry — still blocks the add, and is the
+    # one thing this context can prove holds no history of its own.
     if wt_path.is_dir():
+        if refusal := disposal_refusal(wt_path, clone=clone, requesting_ticket_id=ticket_id):
+            logger.error("Cannot provision %s at %s: %s", branch, wt_str, refusal)
+            return None
         logger.warning("Removing a partial non-worktree directory left at %s before provisioning", wt_str)
         shutil.rmtree(wt_path, ignore_errors=True)
 
-    return None
+    return ""
 
 
 class WorktreeProvisioner(RunnerBase):
@@ -394,8 +409,8 @@ class WorktreeProvisioner(RunnerBase):
         — where source clones are DISCOVERED — NOT the WORKTREE root the new
         worktree lands under (that is *ticket_dir*). Returns
         ``(worktree_path, clone_path)`` on success or ``None`` on failure (no clone
-        found or creatable, or ``git worktree add`` rejected the path). Retries
-        without ``-b`` so partial-failure recovery picks up an existing branch.
+        found or creatable, a slot this context cannot clear, or ``git worktree add``
+        rejected the path).
 
         A missing clone is CLONED from the remote the ticket's overlay declares,
         rather than failing outright, so a runtime owning an empty clone root (the
@@ -440,10 +455,22 @@ class WorktreeProvisioner(RunnerBase):
         # #3234: reconcile whatever a prior failed attempt left behind BEFORE adding.
         # A leftover worktree/branch makes ``git worktree add`` refuse both the path
         # and the branch, which stranded the ticket at ``started`` forever.
-        adopted = _reconcile_leftover_worktree(repo_path, wt_path, branch)
-        if adopted is not None:
-            return adopted, repo_path
+        slot = _reconcile_leftover_worktree(repo_path, wt_path, branch, ticket_id=self.ticket.pk)
+        if slot is None:
+            return None
+        if slot:
+            return slot, repo_path
 
+        return self._materialise(repo_path, wt_path, branch, repo_name)
+
+    @staticmethod
+    def _materialise(repo_path: Path, wt_path: Path, branch: str, repo_name: str) -> tuple[str, Path] | None:
+        """``git worktree add`` into a CLEARED slot, rolled back if a later step fails.
+
+        Retries without ``-b`` so partial-failure recovery picks up an existing branch.
+        Every step that runs after the checkout exists sits behind the one rollback
+        boundary here, so a new step cannot be added without inheriting it (#3234).
+        """
         git.pull_ff_only(str(repo_path))
 
         ok = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=True)
