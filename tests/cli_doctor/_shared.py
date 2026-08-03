@@ -45,9 +45,19 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
         don't leak into ``discover_overlays()`` / ``discover_active_overlay()``.
     - Moves cwd under ``tmp_path`` so ``_discover_from_manage_py`` cannot climb into
         the real teatree checkout.
+    - Reports NO checkout to the shard-durations check. A neutral cwd is not enough:
+        repo resolution falls through to ``T3_REPO`` and then to the installed
+        editable source, so a staged run still judged the developer's own
+        ``dev/.test_durations`` and failed on its real coverage. ``None`` is the
+        check's own "nothing in scope here", so it stays silent rather than
+        reporting a verdict about a repo this run is not about.
     """
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
+    monkeypatch.setattr(
+        "teatree.quality.durations_coverage.measure_durations_coverage",
+        lambda _repo: None,
+    )
     neutral = tmp_path / "_neutral_cwd"
     neutral.mkdir(exist_ok=True)
     monkeypatch.chdir(neutral)

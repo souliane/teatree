@@ -750,9 +750,19 @@ jobs:
   # updated, so an unmerged refresh is UPDATED in place instead of stacking a new
   # dated PR every day (which piled up conflicting PRs — #3160 residual CI-3).
   # Never gates a PR; a merge failure or empty diff is a no-op.
+  #
+  # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
+  # `schedule`, `test-shard` runs anyway because its own `if` says `always()`, and
+  # GitHub then propagates that upstream skip THROUGH it to every dependent whose
+  # `if` does not re-establish `always()` — an explicit condition is evaluated in
+  # addition to the inherited status gate, not instead of it. Without it this job
+  # was skipped on every scheduled run while all twelve shards were green and had
+  # uploaded their durations, so no refresh PR was ever opened and
+  # `dev/.test_durations` decayed to 11% of the test files while pytest-split kept
+  # splitting the matrix from it. The two conditions after it still gate the job.
   refresh-durations:
     needs: test-shard
-    if: github.event_name == 'schedule' && needs.test-shard.result == 'success'
+    if: always() && github.event_name == 'schedule' && needs.test-shard.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
