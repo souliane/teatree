@@ -117,6 +117,7 @@ SETTING_HELP: dict[str, str] = {
     "factory_score_enabled": "compute and record the factory health score each tick",
     "fleet_claim_enabled": "let this box claim work from the shared fleet queue",
     "gate_relaxation_gate_enabled": "refuse a change that weakens a safety gate without approval",
+    "git_add_all_gate_enabled": "refuse a whole-tree `git add -A` / `git add .` stage",
     "gitlab_approval_scanner_enabled": "scan GitLab for approvals that should advance a ticket",
     "glab_stale_base_remote_gate_enabled": "refuse a merge-request create on a stale glab-base remote (glab no-ops)",
     "handover_mirror_path": "path a hand-off document is mirrored to, beside the durable record",

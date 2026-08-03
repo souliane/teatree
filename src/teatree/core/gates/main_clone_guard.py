@@ -45,6 +45,13 @@ _GLOBAL_OPTS_WITH_VALUE = frozenset(
 _CHECKOUT_MOVE_FLAGS = frozenset({"-b", "-B", "--orphan", "--detach"})
 _SWITCH_MOVE_FLAGS = frozenset({"-c", "-C", "--create", "--force-create", "--orphan", "--detach"})
 
+# How the deny message names each surface's offending action.
+_SURFACE_ACTIONS = {
+    "edit": "editing `{target}` in",
+    "bash-write": "writing `{target}` through a shell command into",
+    "git": "`{target}` against",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class MainCloneFinding:
@@ -62,6 +69,17 @@ class MainCloneFinding:
 def edit_finding(file_path: str) -> MainCloneFinding:
     """The finding for an Edit/Write landing on a path inside a managed main clone."""
     return MainCloneFinding(surface="edit", target=file_path)
+
+
+def bash_write_finding(file_path: str) -> MainCloneFinding:
+    """The finding for a Bash command WRITING a path inside a managed main clone (#4092).
+
+    Between the Edit/Write arm and the git-command arm sat a hole: ``sed -i``,
+    ``cat > path <<EOF``, ``tee``, ``cp``, a ``python3`` heredoc — a shell write
+    matched neither, so the clone was dirtied at write time with nothing firing
+    and the guard only spoke up on the git command used to revert.
+    """
+    return MainCloneFinding(surface="bash-write", target=file_path)
 
 
 def find_main_clone_git_mutation(
@@ -99,7 +117,7 @@ def deny_reason(finding: MainCloneFinding) -> str:
     costs a round trip; the Bash ``description`` is called out as unscanned for the
     same reason — it is where the token gets put when nothing says otherwise.
     """
-    what = f"editing `{finding.target}` in" if finding.surface == "edit" else f"`{finding.target}` against"
+    what = _SURFACE_ACTIONS[finding.surface].format(target=finding.target)
     where = (
         "the Edit `new_string` / Write `content` / `file_path`"
         if finding.surface == "edit"

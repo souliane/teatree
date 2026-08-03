@@ -51,6 +51,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "unknown_repo_push_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "no_self_reviewer_assign_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "glab_stale_base_remote_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "git_add_all_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "config_overwrite_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "completion_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "headless_authoring_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
