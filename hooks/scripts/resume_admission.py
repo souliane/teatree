@@ -18,11 +18,17 @@ Fail-open throughout, and ordered so an idle resume is free: the ledgers (two sm
 are consulted first, and the kill-switch — the only sqlite touch on the path — only once the
 count is already over the ceiling. Any unreadable ledger, absent setting store, or import
 failure yields no advisory: a detection bug must never break SessionStart.
+
+Both ``teatree`` imports go through the shared ``managed_repo.teatree_src_on_path`` bootstrap:
+the hook runs in the user's session shell with no guarantee ``teatree`` is importable (#1314),
+and without it the fail-open path would swallow every ImportError and the gate would be silently
+dead in exactly the environment it ships into.
 """
 
 import contextlib
 import sys
 
+from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.state_files import append_line, read_lines
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router registers and a
@@ -76,6 +82,17 @@ def handle_subagent_stop_track_agent(data: dict) -> None:
             append_line(_state_file(session_id, _STOPPED_SUFFIX), agent_id)
 
 
+def _shed_directive(restored: int) -> str:
+    """The governor's verdict on *restored* against the LIVE machine reading."""
+    with _teatree_src_on_path():
+        from teatree.core.admission_governor import (  # noqa: PLC0415 deferred: cold-hook import
+            read_machine_signal,
+            resume_shed_directive,
+        )
+
+        return resume_shed_directive(restored=restored, machine=read_machine_signal())
+
+
 def _governor_enabled() -> bool:
     """The ``admission_governor_enabled`` kill-switch, read Django-free.
 
@@ -83,9 +100,10 @@ def _governor_enabled() -> bool:
     it is an explicit operator row by design, never an accidental default. Every cold read
     fails open to the default, so an absent or locked store leaves the advisory armed.
     """
-    from teatree.config import cold_reader  # noqa: PLC0415 deferred: cold-hook import after sys.path setup
+    with _teatree_src_on_path():
+        from teatree.config import cold_reader  # noqa: PLC0415 deferred: cold-hook import
 
-    return cold_reader.bool_setting("admission_governor_enabled", default=True)
+        return cold_reader.bool_setting("admission_governor_enabled", default=True)
 
 
 def resume_admission_advisory(session_id: str, source: str) -> str:
@@ -101,12 +119,7 @@ def resume_admission_advisory(session_id: str, source: str) -> str:
         restored = live_restored_agents(session_id)
         if restored == 0:
             return ""
-        from teatree.core.admission_governor import (  # noqa: PLC0415 deferred: cold-hook import
-            read_machine_signal,
-            resume_shed_directive,
-        )
-
-        directive = resume_shed_directive(restored=restored, machine=read_machine_signal())
+        directive = _shed_directive(restored)
     except Exception:  # noqa: BLE001 — a detection bug must never break SessionStart
         return ""
     if not directive:

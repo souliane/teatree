@@ -11,6 +11,9 @@ stdout write, and that every degraded read fails open rather than breaking Sessi
 """
 
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -178,3 +181,66 @@ class TestWiring:
         monkeypatch.setattr(router, "_account_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_mcp_connectivity_advisory", lambda: "")
         assert router._merge_session_start_context("orientation", _SESSION, "startup") == "orientation"
+
+
+_COLD_PROBE = textwrap.dedent(
+    """
+    import json, pathlib, sys
+
+    repo = pathlib.Path(sys.argv[1]).resolve()
+    src = (repo / "src").resolve()
+    sys.path.insert(0, str(repo))
+    sys.path[:] = [p for p in sys.path if p and pathlib.Path(p).resolve() != src]
+
+    def purge():
+        for name in [n for n in sys.modules if n == "teatree" or n.startswith("teatree.")]:
+            del sys.modules[name]
+
+    purge()
+    control_failed = False
+    try:
+        import teatree.core.admission_governor
+    except Exception:
+        control_failed = True
+    purge()
+
+    from hooks.scripts.resume_admission import _governor_enabled, _shed_directive
+
+    try:
+        directive = _shed_directive(10000)
+    except Exception as exc:
+        directive = f"RAISED {type(exc).__name__}"
+    probe = {
+        "control_import_failed": control_failed,
+        "directive": directive,
+        "kill_switch_read": _governor_enabled(),
+    }
+    print(json.dumps(probe))
+    """
+)
+
+
+class TestColdHookImports:
+    """The hook runs in the user's session shell with no guarantee `teatree` imports (#1314).
+
+    Without the shared `teatree_src_on_path` bootstrap the fail-open path swallows the
+    ImportError and the gate is silently dead in exactly the environment it ships into —
+    the failure a test run (where `src/` is already importable) cannot see. The probe
+    carries its own CONTROL: it asserts a bare `import teatree...` FAILS under the same
+    `sys.path` it then runs the module's own imports against, so a green here cannot mean
+    "the harness never removed anything".
+    """
+
+    def test_the_teatree_imports_resolve_with_src_off_sys_path(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "-c", _COLD_PROBE, str(repo_root)],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=repo_root,
+        )
+        probe = json.loads(result.stdout)
+        assert probe["control_import_failed"], "control did not reproduce the cold-hook path"
+        assert "10000" in probe["directive"]
+        assert isinstance(probe["kill_switch_read"], bool)
