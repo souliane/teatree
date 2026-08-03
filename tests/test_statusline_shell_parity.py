@@ -35,6 +35,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from teatree.config.host_projection import ProjectionPublisher
 from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool
 from teatree.loop.statusline_render import StatuslineEntry, StatuslineZones, default_path, render
 
@@ -320,3 +321,74 @@ def test_the_consumer_and_its_dependencies_are_present() -> None:
     assert _SCRIPT.is_file()
     assert shutil.which("jq"), "statusline.sh parses its stdin payload with jq"
     assert shutil.which("sqlite3"), "the settings tier under test IS the sqlite3 CLI read"
+
+
+class TestStatuslineReadsTheProjectionWhenTheDbIsNotOnThisHost:
+    """The Django PUBLISHER's projection is read by the Django-free shell CONSUMER.
+
+    The shell tier resolves a HOST sqlite path. Once the control DB moved into a
+    container-only volume (#4001) that path was absent, every ConfigSetting read returned
+    empty, and an ABSENT store is indistinguishable from ``autoload = false`` — so the bar
+    vanished and claimed "autoload disabled", which is a different and untrue statement.
+    The Python tier already had this fallback (``cold_db.canonical_projection``); the shell
+    did not, which is why ``t3 loop status`` kept working while the statusline went dark.
+
+    This is a real both-tier lane: :class:`ProjectionPublisher` WRITES the artifact and the
+    shell READS it, so a change to either side's shape fails here rather than in production.
+    """
+
+    def _publish(self, sandbox: Path, rows: dict[str, object]) -> None:
+        """Write the projection the way production does — through the real publisher."""
+        db = sandbox / "source.sqlite3"
+        _seed_config_db(db, rows)
+        # The publisher projects the loop/mode tables alongside settings, so the source
+        # has to carry them. Empty is honest here: this lane is about the settings tier
+        # reaching the shell, and an empty loop table projects as no loop state.
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS teatree_loop_state (name TEXT, status TEXT)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_loop_preset "
+                "(name TEXT, defers_questions INT, pauses_self_pump INT, presence_sensitive INT)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_loop_preset_override (preset_name TEXT, until TEXT, set_at TEXT)"
+            )
+            conn.execute("CREATE TABLE IF NOT EXISTS teatree_loop_schedule (name TEXT, id INT, timezone TEXT)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_loop_schedule_slot "
+                "(schedule_id INT, days TEXT, start_time TEXT, preset_name TEXT)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        data_dir = sandbox / "xdg" / "teatree"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        ProjectionPublisher(db, data_dir).publish()
+        # The consumer hardcodes this filename, so the name IS part of the seam: rename it
+        # publisher-side and the shell silently reads nothing, which is the failure this
+        # whole lane exists to catch.
+        assert (data_dir / "host-projection.json").is_file(), "the publisher wrote the file the shell reads"
+
+    def _render(self, sandbox: Path) -> str:
+        target = sandbox / "zones" / "statusline.txt"
+        target.parent.mkdir(exist_ok=True)
+        render(StatuslineZones(anchors=["[acme] projection chip"]), target=target, colorize=False)
+        # A path that does NOT exist: exactly the containerized host's situation.
+        result = _run_shell(sandbox, statusline_file=target, autoload_env=None, config_db=sandbox / "absent.sqlite3")
+        assert result.returncode == 0, result.stderr
+        return _strip_ansi(result.stdout)
+
+    def test_a_published_opt_in_opens_the_gate(self, sandbox: Path) -> None:
+        self._publish(sandbox, {"autoload": True})
+        assert "projection chip" in self._render(sandbox), "the publisher's value reached the shell"
+
+    def test_no_projection_still_refuses(self, sandbox: Path) -> None:
+        # Anti-vacuous: a fallback that ignored its input, or opened the gate whenever the
+        # sqlite path was missing, would pass the test above and fail this one.
+        assert "statusline off" in self._render(sandbox)
+
+    def test_a_published_false_still_refuses(self, sandbox: Path) -> None:
+        # The shell must READ the published value, not merely notice the file exists.
+        self._publish(sandbox, {"autoload": False})
+        assert "projection chip" not in self._render(sandbox)
