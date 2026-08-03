@@ -1,10 +1,11 @@
 """``manage.py shipped_seed`` — audit the shipped seed set, and delete from it safely (#3842).
 
 Backs ``t3 loops audit`` and the audited delete verbs. Two halves of one concern: which
-shipped loops/presets/schedules are missing, off, or not ticking
-(:mod:`teatree.loops.seed_inertness`), and the typed confirm that gates removing one
-(:mod:`teatree.loops.shipped_guard`). ORM access lives in a management command (the
-project's "anything touching the ORM is a management command" rule).
+shipped loops/presets/schedules are missing, off, not ticking, or running a value that no
+longer matches what ``defaults.toml`` ships (:mod:`teatree.loops.seed_inertness`), and the
+typed confirm that gates removing one (:mod:`teatree.loops.shipped_guard`). ORM access
+lives in a management command (the project's "anything touching the ORM is a management
+command" rule).
 
 ``audit`` exits NON-ZERO on any fault via ``SystemExit`` — never ``typer.Exit``, which
 ``call_command`` swallows so the process would exit 0 on a real failure.
@@ -25,13 +26,19 @@ from teatree.loops.seed_inertness import InertFinding, shipped_inertness
 
 _FAMILY_WIDTH = 9
 _NAME_WIDTH = 22
-_KIND_WIDTH = 20
+_KIND_WIDTH = 24
 
 
 def _render(findings: tuple[InertFinding, ...]) -> str:
     faults = [f for f in findings if f.is_fault]
     notes = [f for f in findings if not f.is_fault]
-    lines = [_block("FAULTS", faults, empty="every shipped loop, preset and schedule is present and firing.")]
+    lines = [
+        _block(
+            "FAULTS",
+            faults,
+            empty="every shipped loop, preset and schedule is present, firing, and drains what it fills.",
+        )
+    ]
     if notes:
         lines.append(_block("NOTES (deliberate — not failures)", notes, empty=""))
     return "\n\n".join(block for block in lines if block)
@@ -51,10 +58,11 @@ class Command(TyperCommand):
 
     @command(name="audit")
     def audit(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
-        """Report every shipped definition that is missing, disabled, or not ticking.
+        """Report every shipped definition missing, disabled, not ticking, or diverged from shipped.
 
         The expected set is read from the shipped seed tables, not from the DB — a check
-        that reads the DB for both sides cannot see a row that was deleted.
+        that reads the DB for both sides cannot see a row that was deleted, nor a value
+        edited away from the one that ships.
         """
         findings = shipped_inertness()
         faults = [f for f in findings if f.is_fault]
