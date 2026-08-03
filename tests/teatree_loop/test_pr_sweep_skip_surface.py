@@ -15,9 +15,10 @@ import django.test
 from django.utils import timezone
 
 from teatree.cli.doctor.app import _check_aged_sweep_skips
-from teatree.core.models import SweepSkipStreak
+from teatree.core.models import BotPing, SweepSkipStreak
+from teatree.core.notify_ledger import already_sent_noop
 from teatree.loop import pr_sweep_skip_surface
-from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
+from teatree.loop.pr_sweep_skip_surface import REANNOUNCE_COOLDOWN, SURFACE_AFTER_TICKS, record_sweep_outcomes
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -80,22 +81,69 @@ class TestSurfacesOnPersistence(django.test.TestCase):
 
         assert len(notifier.sent) == 1
 
-    def test_a_new_reason_re_arms_one_more_surface(self) -> None:
+    def test_a_new_reason_within_the_cooldown_does_not_re_arm(self) -> None:
         notifier = _Recorder()
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason="ci_pending")], notify=notifier)
         for _ in range(SURFACE_AFTER_TICKS):
             record_sweep_outcomes([_skip(reason="changes_requested")], notify=notifier)
 
+        assert len(notifier.sent) == 1
+
+    def test_a_still_stuck_pr_re_arms_once_the_cooldown_has_elapsed(self) -> None:
+        notifier = _Recorder()
+        start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="ci_pending")], notify=notifier, now=start)
+        later = start + REANNOUNCE_COOLDOWN + dt.timedelta(minutes=1)
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="changes_requested")], notify=notifier, now=later)
+
         assert len(notifier.sent) == 2
         assert "changes_requested" in notifier.sent[1][0]
 
-    def test_the_idempotency_key_pins_the_pr_and_reason(self) -> None:
+    def test_the_idempotency_key_pins_the_pr_and_the_cooldown_window(self) -> None:
         notifier = _Recorder()
+        moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         for _ in range(SURFACE_AFTER_TICKS):
-            record_sweep_outcomes([_skip()], notify=notifier)
+            record_sweep_outcomes([_skip()], notify=notifier, now=moment)
 
-        assert notifier.sent[0][1] == "pr_sweep_aged_skip:o/r#7:ci_pending"
+        assert notifier.sent[0][1] == "pr_sweep_aged_skip:o/r#7:20455"
+
+
+class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
+    """A reminder the notify ledger has already sent under that key is no reminder at all.
+
+    ``already_sent_noop`` no-ops a delivered key forever, so keying the announcement on
+    the skip REASON swallowed the backed-off reminder for the dominant case — a PR stuck
+    on one unchanged reason for days — while a reason wobble sailed through. That is the
+    exact inversion of the intended backoff.
+    """
+
+    def _stuck_on(self, reason: str, notifier: _Recorder, moment: dt.datetime) -> None:
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier, now=moment)
+
+    def test_a_same_reason_reminder_uses_a_key_the_ledger_has_not_already_sent(self) -> None:
+        notifier = _Recorder()
+        start = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        self._stuck_on("ci_red", notifier, start)
+        text, key = notifier.sent[0]
+        BotPing.objects.create(idempotency_key=key, kind=BotPing.Kind.INFO, status=BotPing.Status.SENT, text=text)
+        self._stuck_on("ci_red", notifier, start + REANNOUNCE_COOLDOWN + dt.timedelta(minutes=1))
+
+        assert len(notifier.sent) == 2
+        assert already_sent_noop(notifier.sent[1][1]) is None
+
+    def test_two_announcements_inside_one_window_share_a_key_whatever_the_reason(self) -> None:
+        notifier = _Recorder()
+        moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        self._stuck_on("ci_red", notifier, moment)
+        SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).update(surfaced_at=None)
+        self._stuck_on("draft", notifier, moment)
+
+        assert len(notifier.sent) == 2
+        assert notifier.sent[0][1] == notifier.sent[1][1]
 
 
 class TestNonSkipOutcomesClear(django.test.TestCase):
@@ -170,12 +218,13 @@ class TestDoctorSurface(django.test.TestCase):
 
 class TestProductionNotifyPath(django.test.TestCase):
     def test_the_default_notifier_routes_through_the_notify_egress(self) -> None:
+        moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         with mock.patch("teatree.messaging.notify_with_fallback") as sent:
             for _ in range(SURFACE_AFTER_TICKS):
-                pr_sweep_skip_surface.record_sweep_outcomes([_skip()])
+                pr_sweep_skip_surface.record_sweep_outcomes([_skip()], now=moment)
 
         assert sent.call_count == 1
-        assert sent.call_args.kwargs["idempotency_key"] == "pr_sweep_aged_skip:o/r#7:ci_pending"
+        assert sent.call_args.kwargs["idempotency_key"] == "pr_sweep_aged_skip:o/r#7:20455"
 
     def test_an_erroring_ledger_write_never_aborts_the_tick(self) -> None:
         with mock.patch.object(pr_sweep_skip_surface, "_observe", side_effect=RuntimeError("db down")):

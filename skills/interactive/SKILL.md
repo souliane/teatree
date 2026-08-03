@@ -44,7 +44,7 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 **Session-end check.** Every session end sweeps all five states and names each item with the exact command that advances it. It runs unconditionally — which skills a session loaded says nothing about whether it stranded work — and it fails open, so a probe that cannot answer contributes nothing rather than breaking the session. It lives in `hooks/scripts/session_end_work_check.py`.
 
-**Aged-skip surfacing.** The merge sweep declines to merge on about ten reasons, all of them sound per tick and all of them silent. A reason that repeats for the same PR across consecutive passes is announced once, naming the PR, the reason and how long it has been held; `t3 doctor check` reports every aged hold standing.
+**Aged-skip surfacing.** The merge sweep declines to merge on about ten reasons, all of them sound per tick and all of them silent. A reason that repeats for the same PR across consecutive passes is announced once, naming the PR, the reason and how long it has been held, then re-announced only after a 24h backoff — the backoff is per PR, not per reason, so a stuck PR whose reason wobbles between `ci_red` and `ci_pending` gets a daily reminder rather than a DM per flap; `t3 doctor check` reports every aged hold standing.
 
 ### Using it
 
