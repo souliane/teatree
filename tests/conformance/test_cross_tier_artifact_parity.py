@@ -91,6 +91,7 @@ PARITY_LANE_ROSTER: dict[str, str] = {
     "consolidation-registry.json": "tests/test_consolidation_registry_parity.py",
     "skill-metadata.json": "tests/test_skill_metadata_cache_parity.py",
     "statusline.txt": "tests/test_statusline_shell_parity.py",
+    "host-projection.json": "tests/test_statusline_shell_parity.py",
 }
 
 #: Cross-tier artifacts with NO both-tier pin yet — the ratchet ledger.
