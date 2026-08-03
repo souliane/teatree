@@ -8,10 +8,20 @@ and each is log-only, so a PR that is skipped every tick forever produces no sig
 at all — the shape where a finished branch quietly never merges.
 
 One row per ``(slug, pr_id)`` counts how many CONSECUTIVE sweep passes produced the
-SAME reason. Persistence is what surfaces, not any individual skip: a reason that
-changes restarts the count (a different problem), a non-skip outcome deletes the row
-(the PR moved), and ``surfaced_at`` makes the surfacing single-shot so a PR held for
-days is announced once rather than every tick.
+SAME reason GROUP. Persistence is what surfaces, not any individual skip: a reason
+that changes to a genuinely different GROUP restarts the count (a different
+problem), a non-skip outcome deletes the row (the PR moved), and ``surfaced_at``
+makes the surfacing single-shot so a PR held for days is announced once rather than
+every tick.
+
+``ci_pending``, ``ci_red``, ``required_checks_indeterminate`` and
+``uv_audit_red_but_clean_on_main`` are all transient phases of the SAME CI-verdict
+emitted by ``classify_sweep_ci`` — a PR's checks legitimately flap between pending
+(still running) and red (a check failed, or reran) while it remains the SAME stuck
+PR. Treating each flip as "a different problem" re-armed a fresh announcement every
+time, producing back-to-back near-duplicate DMs for one stuck PR (#4080). These four
+are grouped for the streak-continuity comparison only — the stored ``reason`` still
+reflects the exact latest observation, so the surfaced text stays specific.
 """
 
 import datetime as dt
@@ -23,6 +33,21 @@ from django.utils import timezone
 
 _SECONDS_PER_HOUR = 3600
 _STREAK_FIELDS = ("reason", "url", "overlay", "first_seen_at", "last_seen_at", "tick_count", "surfaced_at")
+
+#: Sub-reasons of ``classify_sweep_ci``'s CI-verdict — transient phases of one
+#: "CI is not clean yet" condition, not distinct problems. See module docstring.
+_CI_VERDICT_REASONS = frozenset(
+    {"ci_pending", "ci_red", "required_checks_indeterminate", "uv_audit_red_but_clean_on_main"},
+)
+
+
+def _reason_group(reason: str) -> str:
+    """The identity used to decide whether a streak continues or restarts.
+
+    Collapses the CI-verdict sub-reasons to one group; every other reason (draft,
+    changes_requested, fork holds, no_clear_for_head, …) is its own group.
+    """
+    return "ci_verdict" if reason in _CI_VERDICT_REASONS else reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +81,13 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         )
         if created:
             return row
-        if row.reason != observation.reason:
+        if _reason_group(row.reason) != _reason_group(observation.reason):
             row.reason = observation.reason
             row.first_seen_at = moment
             row.tick_count = 1
             row.surfaced_at = None
         else:
+            row.reason = observation.reason
             row.tick_count += 1
         row.url = observation.url or row.url
         row.overlay = observation.overlay or row.overlay

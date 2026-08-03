@@ -112,3 +112,46 @@ class TestRendering(django.test.TestCase):
         row = _observe()
 
         assert str(row) == "sweep-skip<o/r#7 ci_pending x1>"
+
+
+class TestCiVerdictContinuity(django.test.TestCase):
+    """A PR's CI verdict flaps between pending/red/indeterminate while it stays blocked.
+
+    Those are transient phases of the SAME "CI is not clean" problem, not a
+    different problem — treating them as different reasons re-armed a fresh
+    announcement on every flip, producing back-to-back near-duplicate DMs for
+    the same stuck PR (souliane/teatree#4080).
+    """
+
+    def test_ci_pending_to_ci_red_continues_the_streak(self) -> None:
+        _observe(reason="ci_pending")
+        _observe(reason="ci_pending")
+        row = _observe(reason="ci_red")
+
+        assert row.tick_count == 3
+        assert row.reason == "ci_red"
+
+    def test_ci_red_to_ci_pending_does_not_re_arm_after_surfacing(self) -> None:
+        for _ in range(3):
+            _observe(reason="ci_red")
+        SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
+
+        row = _observe(reason="ci_pending")
+
+        assert row.surfaced_at is not None
+        assert row.reason == "ci_pending"
+
+    def test_required_checks_indeterminate_and_uv_audit_fallback_share_the_group(self) -> None:
+        _observe(reason="ci_pending")
+        _observe(reason="required_checks_indeterminate")
+        row = _observe(reason="uv_audit_red_but_clean_on_main")
+
+        assert row.tick_count == 3
+
+    def test_a_genuinely_different_reason_still_restarts_the_streak(self) -> None:
+        _observe(reason="ci_red")
+        _observe(reason="ci_red")
+        row = _observe(reason="draft")
+
+        assert row.tick_count == 1
+        assert row.surfaced_at is None

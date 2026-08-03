@@ -97,6 +97,16 @@ class TestSurfacesOnPersistence(django.test.TestCase):
 
         assert notifier.sent[0][1] == "pr_sweep_aged_skip:o/r#7:ci_pending"
 
+    def test_ci_verdict_flapping_surfaces_at_most_once(self) -> None:
+        """A PR whose CI toggles ci_pending <-> ci_red must not re-DM (souliane/teatree#4080)."""
+        notifier = _Recorder()
+        flapping = ["ci_pending", "ci_red", "ci_pending", "ci_red", "ci_red", "ci_pending"]
+
+        for reason in flapping:
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier)
+
+        assert len(notifier.sent) == 1
+
 
 class TestNonSkipOutcomesClear(django.test.TestCase):
     def test_a_merge_clears_the_streak(self) -> None:
