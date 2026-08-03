@@ -101,6 +101,18 @@ on:
     # cannot see a brand name already committed; this catches a pre-existing
     # leak even when no new diff touches it.
     - cron: "17 6 * * *"
+  # The daily cron's durations-refresh path, reachable on demand (#4048). It had
+  # never produced a PR, and one attempt a day is no way to establish that it can:
+  # every downstream fix waits on the refreshed file. Opt-in, so a dispatch run for
+  # any other reason still records nothing and force-pushes no branch.
+  workflow_dispatch:
+    inputs:
+      refresh_durations:
+        description: >-
+          Record fresh per-test durations across the shard lane and open/update the
+          ci/test-durations-refresh PR.
+        type: boolean
+        default: false
 
 # Supersede-cancel a PR's own in-progress wave on re-push; NEVER cancel a
 # push-to-main or scheduled run (unique run_id group) so the full-tree
@@ -739,7 +751,7 @@ jobs:
           -p scripts.ci.shard_stats_plugin
           --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
           -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
-          ${{ github.event_name == 'schedule' && '--store-durations --clean-durations' || '' }}
+          ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations)) && '--store-durations --clean-durations' || '' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
@@ -747,17 +759,20 @@ jobs:
           path: |
             coverage.shard${{ matrix.group }}
             shard-stats.${{ matrix.group }}.json
-      # Scheduled run only: the fresh durations this shard just recorded, so the
+      # Refresh runs only: the fresh durations this shard just recorded, so the
       # `refresh-durations` job can merge the twelve groups into one balanced file.
-      - name: Upload this shard's recorded durations (scheduled refresh source)
-        if: github.event_name == 'schedule'
+      # Same gate as the recording above — an upload that opens without it would
+      # publish the committed file back as if it were freshly measured.
+      - name: Upload this shard's recorded durations (refresh source)
+        if: (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: durations-shard-${{ matrix.group }}
           path: dev/.test_durations
 
-  # MAINTENANCE (scheduled only): keep `dev/.test_durations` from rotting (#3160).
-  # The twelve shards on the daily cron each recorded their group's fresh, clean
+  # MAINTENANCE (daily cron, or an explicit dispatch): keep `dev/.test_durations`
+  # from rotting (#3160).
+  # The twelve shards on a refresh run each recorded their group's fresh, clean
   # durations (`--store-durations --clean-durations` above, including the
   # previously-unrecorded `tests/quality` + doctest items). This job unions them
   # back into one complete file and, ONLY when the drift gate fires (test set
@@ -777,9 +792,17 @@ jobs:
   # uploaded their durations, so no refresh PR was ever opened and
   # `dev/.test_durations` decayed to 11% of the test files while pytest-split kept
   # splitting the matrix from it. The two conditions after it still gate the job.
+  #
+  # `github.ref` is part of the gate because this job force-pushes a branch and opens
+  # a PR against `main`. A cron always runs on the default branch, so it is a no-op
+  # there; a dispatch can name any ref, and one launched from a feature branch would
+  # push that branch's commits over the real refresh branch. The gate is byte-identical
+  # at all three sites on this path (the two `test-shard` steps above and here) —
+  # `tests/test_ci_durations_refresh_gate.py` pins that, because a shard that records
+  # nothing and a merge job that runs anyway is a refresh that reads as a clean no-op.
   refresh-durations:
     needs: test-shard
-    if: always() && github.event_name == 'schedule' && needs.test-shard.result == 'success'
+    if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations)) && needs.test-shard.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
