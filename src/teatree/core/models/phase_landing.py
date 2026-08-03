@@ -41,8 +41,19 @@ _LANDED_PR_STATES = frozenset(
 )
 
 
-def phase_landing_evidence(task: "Task") -> str:
-    """Describe the evidence that *task*'s phase already landed, or ``""`` when there is none."""
+def phase_landing_evidence(task: "Task", *, trust_shipping_artifact: bool) -> str:
+    """Describe the evidence that *task*'s phase already landed, or ``""`` when there is none.
+
+    *trust_shipping_artifact* scopes the weaker of the two signals. An attached
+    non-closed pull request proves a branch was pushed and a PR opened by SOME means —
+    but that means need not be a successful ``ship()``: the no-orphan pre-push gate and
+    the ``PendingPullRequest`` drain both open a PR independently of the FSM transition.
+    Trusting it for a genuinely DETERMINISTIC shipping failure (a push-gate refusal,
+    missing e2e evidence, ...) would silently swallow a real, reproducible defect merely
+    because an unrelated PR happens to be attached. Only a LOST LEASE is evidence about
+    the lease rather than the work, so only that caller may pass ``True`` -- a required
+    keyword rather than a default, so no call site can opt in by omission.
+    """
     ticket = task.ticket
     if ticket.role != Ticket.Role.AUTHOR:
         return ""
@@ -50,6 +61,8 @@ def phase_landing_evidence(task: "Task") -> str:
         # str() before !r: a TextChoices member reprs as ``Ticket.State.IN_REVIEW``,
         # which is not the token the operator reads everywhere else.
         return f"ticket state {str(ticket.state)!r} is at or past the state {task.phase!r} produces"
+    if not trust_shipping_artifact:
+        return ""
     return _shipping_artifact_evidence(task)
 
 

@@ -17,7 +17,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
@@ -309,6 +309,46 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.COMPLETED
         assert "[superseded-retired]" in task.execution_reason
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_a_stray_pr_does_not_mask_a_deterministic_shipping_failure(self) -> None:
+        # A ticket at REVIEWED can carry an OPEN pull request opened independently of
+        # ship() (the no-orphan pre-push gate, the PendingPullRequest drain). A shipping
+        # task that fails for a genuinely DETERMINISTIC reason on that same ticket must
+        # still escalate/retry — the unrelated PR is not evidence THIS failure is moot.
+        task = _failed_task(phase="shipping", state=Ticket.State.REVIEWED)
+        PullRequest.objects.create(
+            ticket=task.ticket,
+            url="https://github.com/o/r/pull/1",
+            repo="o/r",
+            iid="1",
+            state=PullRequest.State.OPEN,
+        )
+        task.fail(reason="result_error: the push gate refused the branch")
+
+        requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.status != Task.Status.COMPLETED
+
+    def test_a_stray_pr_is_still_trusted_for_a_genuine_lease_loss(self) -> None:
+        # The #3982 case itself, reached through the sweep rather than through headless.py
+        # directly: a REVIEWED ticket with an attached OPEN pull request, and THIS row's
+        # own failure genuinely was a lost lease. The artifact is trusted here — the
+        # asymmetry from the sibling test above is exactly the failure_kind gate.
+        task = _failed_task(phase="shipping", state=Ticket.State.REVIEWED)
+        PullRequest.objects.create(
+            ticket=task.ticket,
+            url="https://github.com/o/r/pull/2",
+            repo="o/r",
+            iid="2",
+            state=PullRequest.State.OPEN,
+        )
+        task.fail(reason="stuck_loop: lease lost for task 1: re-claimed in-process")
+
+        requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
 
     def test_live_phase_not_yet_reached_still_escalates(self) -> None:
         # Boundary guard: a FAILED task for a phase the ticket has NOT reached
