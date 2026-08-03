@@ -7,15 +7,18 @@ secrets are assembled at runtime so this file carries no literal token.
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from teatree.core.forge_push import (
+    PUSH_EXIT_CODES,
     PUSH_TIMEOUT_SECONDS,
     CredentialSource,
     ForgeCredential,
+    PushFailure,
     PushOutcome,
     credential_failure_hint,
     push_branch,
@@ -23,9 +26,18 @@ from teatree.core.forge_push import (
     resolve_forge_credential,
     scrub_token,
 )
+from teatree.utils.run import TimeoutExpired
 from tests._git_repo import make_git_repo, run_git
 
 FAKE_TOKEN = "gh" + "p_" + "x" * 36
+
+
+def _install_pre_push_hook(clone: Path, body: str) -> Path:
+    hook = clone / ".git" / "hooks" / "pre-push"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f"#!/bin/sh\n{body}")
+    hook.chmod(0o755)
+    return hook
 
 
 @pytest.fixture
@@ -260,3 +272,156 @@ class TestPushOutcome:
         outcome = push_branch(repo=clone_with_origin)
         assert isinstance(outcome, PushOutcome)
         assert outcome.as_dict()["credential_source"] == outcome.credential_source.value
+
+
+class TestTheRemoteSettlesWhetherThePushLanded:
+    """An rc=0 ``git push`` is a claim; only a read of the remote settles it (#4088)."""
+
+    def test_a_push_that_exited_0_without_landing_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
+        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not run_git(clone_with_origin, "ls-remote", "--heads", "origin")
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.NOT_ON_REMOTE
+        assert outcome.pushed_sha == ""
+        assert "feature" in outcome.detail
+
+    def test_a_remote_ref_left_behind_the_local_tip_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")
+        landed = run_git(clone_with_origin, "rev-parse", "HEAD")
+        (clone_with_origin / "file.txt").write_text("more\n")
+        run_git(clone_with_origin, "add", "file.txt")
+        run_git(clone_with_origin, "commit", "-q", "-m", "more")
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert landed != run_git(clone_with_origin, "rev-parse", "HEAD")
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.REMOTE_SHA_MISMATCH
+        assert landed in outcome.detail
+
+    def test_a_remote_that_cannot_be_read_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
+        """An unreadable remote is an unknown, and an unknown is never a success."""
+        run_git(clone_with_origin, "remote", "set-url", "origin", str(clone_with_origin / "gone.git"))
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.UNVERIFIABLE
+
+    def test_a_verification_that_times_out_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
+        with (
+            patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()),
+            patch("teatree.core.forge_push.run_with_status", side_effect=TimeoutExpired("git", 1.0)),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.UNVERIFIABLE
+
+    def test_a_verified_push_carries_the_sha_observed_on_the_remote(self, clone_with_origin: Path) -> None:
+        outcome = push_branch(repo=clone_with_origin)
+
+        observed = run_git(clone_with_origin, "ls-remote", "origin", "refs/heads/feature").split()[0]
+        assert outcome.ok, outcome.detail
+        assert outcome.failure is PushFailure.NONE
+        assert outcome.exit_code == 0
+        assert outcome.pushed_sha == observed
+
+    def test_a_stale_remote_tracking_ref_cannot_stand_in_for_the_remote(self, clone_with_origin: Path) -> None:
+        """The local `origin/feature` is what this clone last heard, not what origin holds."""
+        run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")
+        run_git(clone_with_origin, "push", "-q", "--delete", "origin", "feature")
+
+        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert run_git(clone_with_origin, "rev-parse", "origin/feature", check=False)
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.NOT_ON_REMOTE
+
+
+class TestAGateRefusalIsToldApartFromATransportFailure:
+    """A refusing pre-push gate and a broken transport are different operator actions (#4076)."""
+
+    def test_a_gate_refusal_surfaces_the_gates_own_output_not_gits_outer_message(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(clone_with_origin, 'echo "push-gate: FULL sweep escalated, killed" >&2\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.GATE_REFUSED
+        assert "push-gate: FULL sweep escalated, killed" in outcome.detail
+        assert "failed to push some refs" not in outcome.detail
+
+    def test_a_gate_that_died_without_output_is_still_named_as_the_refuser(self, clone_with_origin: Path) -> None:
+        """An OOM-killed gate leaves no words, so the seam must supply them."""
+        _install_pre_push_hook(clone_with_origin, "exit 137\n")
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.GATE_REFUSED
+        assert "pre-push" in outcome.detail
+        assert "Run the gate directly" in outcome.detail
+
+    def test_a_non_fast_forward_is_not_blamed_on_the_gate(self, clone_with_origin: Path, tmp_path: Path) -> None:
+        run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")
+        other = make_git_repo(tmp_path / "other", initial_commit=False)
+        run_git(other, "remote", "add", "origin", str(tmp_path / "origin.git"))
+        run_git(other, "fetch", "-q", "origin")
+        run_git(other, "checkout", "-q", "-B", "feature", "origin/feature")
+        (other / "file.txt").write_text("theirs\n")
+        run_git(other, "add", "file.txt")
+        run_git(other, "commit", "-q", "-m", "theirs")
+        run_git(other, "push", "-q", "origin", "feature")
+        (clone_with_origin / "file.txt").write_text("mine\n")
+        run_git(clone_with_origin, "add", "file.txt")
+        run_git(clone_with_origin, "commit", "-q", "-m", "mine")
+        _install_pre_push_hook(clone_with_origin, "exit 0\n")
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.NON_FAST_FORWARD
+        assert "fetch" in outcome.detail
+
+    def test_a_credential_failure_is_its_own_kind(self, clone_with_origin: Path) -> None:
+        blocked = subprocess.CompletedProcess(
+            args=["git", "push"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        )
+        with patch("teatree.core.forge_push.run_allowed_to_fail", return_value=blocked):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.CREDENTIAL
+
+    @pytest.mark.parametrize(
+        "prepare",
+        [
+            pytest.param(lambda clone: run_git(clone, "checkout", "-q", "--detach", "HEAD"), id="detached-head"),
+            pytest.param(lambda clone: run_git(clone, "remote", "remove", "origin"), id="no-such-remote"),
+        ],
+    )
+    def test_a_repo_config_refusal_is_its_own_kind(
+        self, clone_with_origin: Path, prepare: Callable[[Path], object]
+    ) -> None:
+        prepare(clone_with_origin)
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.CONFIG
+
+
+class TestEveryFailureKindIsActionable:
+    def test_every_kind_has_an_exit_code(self) -> None:
+        assert set(PUSH_EXIT_CODES) == set(PushFailure)
+
+    def test_only_success_maps_to_zero(self) -> None:
+        zeros = [failure for failure, code in PUSH_EXIT_CODES.items() if code == 0]
+        assert zeros == [PushFailure.NONE]

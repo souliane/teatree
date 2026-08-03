@@ -235,6 +235,11 @@ git remote set-url origin https://$GH_TOKEN@github.com/<owner>/<repo>.git   # FO
 
 A bare `git push` is fine only in a venue whose credential helper you have already confirmed answers — an interactive host shell. In a container, reach for `t3 push` first; if it refuses, the refusal names the fix.
 
+**"pushed" means the remote was read back, and the exit status names which fix is needed.** `t3 push` succeeds only when `git ls-remote` reports the branch on the remote at the local tip — an rc=0 `git push` is a claim, not delivery ([#4088](https://github.com/souliane/teatree/issues/4088)). Each refusal exits with its own status so a caller branches on it: **1** transport, **2** repo config, **3** credential, **4** a pre-push gate refused (the detail carries the GATE's own output, not git's outer message), **5** non-fast-forward, **6** the push did not land, **7** the remote could not be read back. Do X — never Y:
+
+1. **Do** treat a non-zero `t3 push` as "not pushed" and act on the named kind; `--json` carries the same as `failure` + `exit_code`.
+2. **Never** report a branch as pushed on the strength of an exit code alone, and never treat exit **7** as success — an unverifiable push is not a landed one.
+
 ### 4b. Review Gate (Non-Negotiable)
 
 Before creating a PR, the `pr create` command automatically checks the session gate:

@@ -12,7 +12,7 @@ import contextlib
 import os
 from collections.abc import Iterator
 
-from teatree.utils.run import run_allowed_to_fail, run_checked
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
 
 
 def run(*, repo: str = ".", args: list[str]) -> str:
@@ -27,6 +27,22 @@ def run_strict(*, repo: str = ".", args: list[str]) -> str:
 
 def check(*, repo: str = ".", args: list[str]) -> bool:
     return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None).returncode == 0
+
+
+def run_with_status(
+    *,
+    repo: str = ".",
+    args: list[str],
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> CompletedProcess[str]:
+    """The lenient runner for a caller that must tell a failed command from an empty answer.
+
+    :func:`run` collapses both onto ``""``, which is fatal for a remote probe:
+    "the ref is not there" and "the remote could not be reached" demand opposite
+    conclusions, and only the return code separates them.
+    """
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env, timeout=timeout)
 
 
 def git_env_without_overrides() -> dict[str, str]:
