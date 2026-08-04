@@ -27,7 +27,7 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from django.core.exceptions import ValidationError
@@ -41,10 +41,11 @@ from teatree.config import (
     get_effective_settings,
 )
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
+from teatree.config.retired_settings import retirement_notice
 from teatree.config.setting_groups import group_outline
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 
@@ -82,6 +83,17 @@ def _stored_row_suffix(key: str) -> str:
 
 
 class Command(TyperCommand):
+    def _refuse_unknown_key(self, key: str) -> NoReturn:
+        """Refuse *key*, rendering its retirement record when one is on file (#4094).
+
+        The registry is the single source, so this surface, the resolver's loud
+        warning and the ``list`` marker cannot come to describe a retirement
+        differently. A retired key stays unwritable — the record is the answer, not
+        an admission that would resolve nowhere.
+        """
+        self.stderr.write(f"  refusing: {retirement_notice(key) or f'{key!r} is not a known config setting'}")
+        raise SystemExit(2)
+
     @command()
     def set(
         self,
@@ -107,8 +119,7 @@ class Command(TyperCommand):
         on write is what keeps a bad row from bricking all reads.
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -161,8 +172,7 @@ class Command(TyperCommand):
         from an operator's deliberate pin. Same key/JSON validation as ``set``.
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -255,8 +265,7 @@ class Command(TyperCommand):
         accepts every key ``list`` can display (the unified known-key set).
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
             self.stdout.write(f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]{_flag_suffix(key)}")
@@ -324,6 +333,10 @@ class Command(TyperCommand):
         stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
         backup.
 
+        A stored row that is not a SETTING — internal runtime state sharing the store, a
+        key outliving its declaration — is named on stderr and left out whatever the flags
+        say: ``import`` has no home for such a key and refuses the whole file on one.
+
         Two INDEPENDENT filters widen the dump, both off by default. ``--default-keys-only``
         restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
         ``--include-defaults`` also emits the eligible keys that have no DB row, at their
@@ -341,6 +354,12 @@ class Command(TyperCommand):
         if result.redacted:
             self.stderr.write(
                 f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
+            )
+        for row in result.omitted:
+            self.stderr.write(f"  omitted {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
+        if result.omitted:
+            self.stderr.write(
+                f"  {len(result.omitted)} stored row(s) omitted: not configuration, so import refuses them."
             )
         if output:
             Path(output).expanduser().write_text(result.toml, encoding="utf-8")
@@ -369,7 +388,12 @@ class Command(TyperCommand):
         rows are REJECTED and the WHOLE import is refused (nothing written) so one bad key never
         leaves a partial store; every value is validated through the same registry parser the
         resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
-        ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without writing.
+        ``defaults.toml`` imports to zero rows), and a value the store already holds is reported
+        as unchanged rather than written. What the export could NOT carry cannot become a change
+        either: a row omitted as non-configuration is simply absent, and a registry field the
+        secret guard withheld is merged back from the store rather than deleted. So re-importing
+        this box's own export writes nothing and deletes nothing — an import never removes a
+        value; ``config_setting clear`` does. ``--dry-run`` classifies without writing.
 
         Safety-posture keys import here without a confirm phrase: typing this command IS the
         operator's authorization, exactly as ``config_setting set`` is. The dashboard's import
@@ -390,8 +414,8 @@ class Command(TyperCommand):
             raise SystemExit(2)
         verb = "would import" if dry_run else "imported"
         for row in result.written:
-            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
+            self.stdout.write(f"  {verb} {row.key} = {row.toml_value}  [{scope_label(row.scope)}]")
         self.stdout.write(
-            f"  {verb} {len(result.written)} row(s); "
+            f"  {verb} {len(result.written)} row(s); {len(result.unchanged)} already at that value; "
             f"{len(result.skipped_default)} equal to the shipped default (no row)."
         )

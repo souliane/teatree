@@ -1,14 +1,20 @@
-"""Remote-sync operations: fetch, rebase, merge, pull, push.
+"""Remote-sync operations: fetch, rebase, merge, pull.
 
 The sync partition of :mod:`teatree.utils.git`. Every function moves the local
 ref relative to a remote (or merges/rebases onto a target), all via the
 :mod:`teatree.utils.git_run` runners.
+
+Pushing is deliberately absent: :func:`teatree.core.forge_push.push_branch` is
+the one supported push path, because a push also has to resolve the forge
+credential and read the remote back before it may claim to have landed
+(souliane/teatree#4103, souliane/teatree#4088). A raw ``git push`` helper here
+did neither, and was reached for precisely because it looked like the primitive.
 """
 
 import subprocess
 
 from teatree.utils.git_run import check, git_env_non_interactive, run, run_strict
-from teatree.utils.run import run_allowed_to_fail, run_checked
+from teatree.utils.run import run_allowed_to_fail
 
 FETCH_PRUNE_TIMEOUT_SECONDS = 120.0
 
@@ -84,17 +90,3 @@ def merge_abort(repo: str = ".") -> None:
 
 def pull_ff_only(repo: str = ".") -> bool:
     return check(repo=repo, args=["pull", "--ff-only"])
-
-
-def push(repo: str = ".", remote: str = "origin", branch: str = "") -> None:
-    """``git push --set-upstream`` — raises :class:`~teatree.utils.run.CommandFailedError` on failure.
-
-    Runs under :func:`~teatree.utils.git_run.git_env_non_interactive` so a venue
-    whose credential helper cannot answer (the worker container's ``docker exec``
-    shell, souliane/teatree#3927) raises instead of blocking forever on git's
-    username prompt. ``t3 push`` is the agent-facing seam over the same guarantee.
-    """
-    args = ["push", "--set-upstream", remote]
-    if branch:
-        args.append(branch)
-    run_checked(["git", "-C", repo, *args], env=git_env_non_interactive())

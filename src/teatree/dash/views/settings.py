@@ -36,7 +36,8 @@ from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_display import is_secret
-from teatree.core.config_migration import ConfigImport, import_toml_to_db
+from teatree.core.config_interchange.migration import import_toml_to_db
+from teatree.core.config_interchange.types import ConfigImport
 from teatree.core.models import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.settings_editor import (

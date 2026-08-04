@@ -5,7 +5,7 @@ modes and schedules are too. They ride the SAME override rule as a setting — o
 tuned away from its ``defaults.toml`` seed is exported — but they live in their own models,
 carry no operator secrets, and take the same path in a shared and a private export. That
 is a different concern from the ``ConfigSetting`` store's secret-guarded rows, so it lives
-in its own module; :mod:`teatree.core.config_migration` composes the two.
+in its own module; :mod:`teatree.core.config_interchange.migration` composes the two.
 
 The dependency runs one way: this module knows nothing of the export's row dataclasses. It
 answers in :class:`SeedFieldDisposition`, and the caller maps each one onto its own
@@ -83,6 +83,19 @@ def classify_seed_rows(doc: dict[str, Any]) -> list[SeedFieldDisposition]:
                 kind, reason = classify_seed_field(table, name, field, value)
                 dispositions.append(SeedFieldDisposition(table, name, field, value, kind, reason))
     return dispositions
+
+
+def holds_value(entry: SeedFieldDisposition) -> bool:
+    """Whether the row *entry* targets already holds that value — a write with nothing to write.
+
+    ``classify_seed_field`` compares against what ``defaults.toml`` SHIPS, so a field an
+    operator tuned reads ``write`` on the way back in even when the live row is the very
+    place the exported value came from. The interchange's own round trip is that case
+    (souliane/teatree#4147), so the live value is the second half of the question.
+    """
+    attribute, _type = SEED_ROW_FIELDS[entry.table][entry.field]
+    row = _SEED_MODELS[entry.table].objects.filter(name=entry.name).first()
+    return row is not None and getattr(row, attribute) == entry.value
 
 
 def unseeded_entries(writes: list[SeedFieldDisposition]) -> set[tuple[str, str]]:

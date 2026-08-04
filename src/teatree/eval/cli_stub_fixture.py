@@ -50,6 +50,9 @@ case "$args" in
     *" directive capture "*) echo "captured directive #1 (state=captured)." ;;
     *" lifecycle record-e2e-run "*) echo "recorded e2e run (attestation stored)" ;;
     *" e2e post-test-plan "*) echo "test plan posted to the ticket" ;;
+    *" skill-preamble "*)
+        printf -- '--- SKILL: t3:rules ---\\nCross-cutting agent rules body.\\n'
+        printf -- '--- SKILL: t3:e2e ---\\nEnd-to-end testing skill body.\\n' ;;
     *" review record "*) echo "recorded verdict (bound to the reviewed head sha)" ;;
     *" review post-comment "*) echo "posted review comment (as the user)" ;;
     *" review-request check "*) echo "MR is review-requestable" ;;

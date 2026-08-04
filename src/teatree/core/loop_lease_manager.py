@@ -40,6 +40,7 @@ from teatree.core.loop_lease_liveness import (
     live_foreign_owner_session,
     pid_alive_probe,
     pid_is_foreign,
+    reclaim_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -421,7 +422,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         return 0
 
     def reclaim_dead_owner_leases(self, *, current_pid: int | None = None) -> list[str]:
-        """Orphan every owner-slot lease whose owning SESSION is provably dead (#3571).
+        """Orphan every owner-slot lease whose owner no longer holds it (#3571).
 
         The background reclaim the worker supervisor, ``run_boot_sweeps`` (``t3
         recover``) and the self-heal watchdog run on a cadence so a dead session's
@@ -431,7 +432,8 @@ class LoopLeaseQuerySet(models.QuerySet):
         fires), which routes through the shared discriminator — a busy ``t3-master``
         owner is KEPT (#1604), a per-loop lease past its TTL is reclaimed regardless of
         a reused pid, a fresh-heartbeat owner is never touched. Idempotent and
-        conservative. Returns the reclaimed slot names; every eviction is logged loudly.
+        conservative. Returns the reclaimed slot names; every eviction is logged loudly,
+        under the :func:`reclaim_reason` the pid probe actually supports (#4141).
         """
         reclaimed: list[str] = []
         owned = self.exclude(session_id="").values("name", "session_id", "owner_pid", "lease_expires_at")
@@ -441,12 +443,13 @@ class LoopLeaseQuerySet(models.QuerySet):
                 continue
             reclaimed.append(name)
             logger.warning(
-                "Reclaimed dead-owner loop lease %r (session %r, owner_pid %s, expired at %s): the owning "
-                "session is provably dead past TTL, returning the lease to the pool (#3571).",
+                "Reclaimed stale loop lease %r (session %r, owner_pid %s, expired at %s): %s — returning "
+                "the lease to the pool (#3571).",
                 name,
                 row["session_id"],
                 row["owner_pid"],
                 row["lease_expires_at"],
+                reclaim_reason(row["owner_pid"]),
             )
         return reclaimed
 

@@ -59,11 +59,6 @@ class TestGitRepoDelegation:
             repo.fetch(remote="upstream", ref="main")
         mock.assert_called_once_with("/some/repo", "upstream", "main")
 
-    def test_push_with_branch(self, repo: GitRepo) -> None:
-        with patch.object(git_mod, "push") as mock:
-            repo.push(remote="origin", branch="feat")
-        mock.assert_called_once_with("/some/repo", "origin", "feat")
-
     def test_worktree_add_forwards_create_branch_kwarg(self, repo: GitRepo) -> None:
         with patch.object(git_mod, "worktree_add") as mock:
             repo.worktree_add("/dest", "feat", create_branch=False)

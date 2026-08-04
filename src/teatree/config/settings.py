@@ -1058,6 +1058,14 @@ class _ProvisioningSettings:
     # every class. ``0`` disables the exemption entirely (cheap is braked exactly like
     # expensive): the rollback lever. Per-overlay overridable.
     cheap_phase_admission_ceiling: int = 2
+    # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
+    # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
+    # 2026-07-21..08-04: p50 0.65 GB, p90 1.24 GB, max 23.1 GB. The p90 is the sizing
+    # point — the max is one pathological run, not a budget, and sizing at the p50 is
+    # what put 16 workers x 1.24 GB = 19.8 GB against 19.7 GB usable. A non-positive
+    # value drops the memory term, leaving the cores-derived bound: the rollback lever,
+    # and the same bounded fail-safe an unreadable probe takes. Per-overlay overridable.
+    test_worker_ram_gb: float = 1.25
     # Repos that are ONE branch wide while listed — ``<repo-slug>=<branch>`` entries.
     # While a repo is listed, provisioning a worktree on any OTHER branch is
     # refused, as are the raw ``git worktree add`` / ``checkout -b`` / ``switch

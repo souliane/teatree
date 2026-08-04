@@ -11326,7 +11326,17 @@ Usage: t3 teatree config_setting import [OPTIONS]
  parser the
  resolver applies on read. A value equal to the shipped default writes NO row
  (so a dump of
- ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without
+ ``defaults.toml`` imports to zero rows), and a value the store already holds
+ is reported
+ as unchanged rather than written. What the export could NOT carry cannot
+ become a change
+ either: a row omitted as non-configuration is simply absent, and a registry
+ field the
+ secret guard withheld is merged back from the store rather than deleted. So
+ re-importing
+ this box's own export writes nothing and deletes nothing — an import never
+ removes a
+ value; ``config_setting clear`` does. ``--dry-run`` classifies without
  writing.
 
  Safety-posture keys import here without a confirm phrase: typing this command
@@ -11375,6 +11385,12 @@ Usage: t3 teatree config_setting export [OPTIONS]
  even though the private DB store keeps it. Each withheld row is named on
  stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
  backup.
+
+ A stored row that is not a SETTING — internal runtime state sharing the store,
+ a
+ key outliving its declaration — is named on stderr and left out whatever the
+ flags
+ say: ``import`` has no home for such a key and refuses the whole file on one.
 
  Two INDEPENDENT filters widen the dump, both off by default.
  ``--default-keys-only``

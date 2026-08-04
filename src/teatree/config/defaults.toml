@@ -320,6 +320,7 @@ single_branch_repos = [] # list — repos that may carry only one branch at a ti
 snapshot_warmer_disabled = false # bool — stop warming the snapshot caches
 snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable
 stale_stack_min_age_minutes = 0 # int — minutes a stack must exist before staleness is judged
+test_worker_ram_gb = 1.25 # float — RAM one pytest worker is sized at when the governor caps test parallelism
 
 [teatree.Registries."Term scanning, agent tables & cold reads"]
 active_loop_schedule = "" # str — name of the weekly schedule deciding when the autonomous loops may run

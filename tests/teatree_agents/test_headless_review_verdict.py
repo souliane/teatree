@@ -17,6 +17,7 @@ from django.test import TestCase
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import check_evidence
 from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task
+from teatree.core.models.phase_landing import phase_landing_evidence
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -24,6 +25,7 @@ pytestmark = pytest.mark.django_db
 _SLUG = "souliane/teatree"
 _PR_ID = 4242
 _HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
+_OTHER_HEAD = "f89874729bb0a41ce6d5713a2c0e9f38b7a1d4e5"
 _PR_URL = f"https://github.com/{_SLUG}/pull/{_PR_ID}"
 
 
@@ -36,12 +38,17 @@ def _reviewing_task_via_dispatch() -> tuple[Task, AutoReviewDispatch]:
     return task, dispatch
 
 
-def _verdict_envelope(*, verdict: str = "merge_safe", reviewer: str = "cold-reviewer-agent") -> dict[str, object]:
+def _verdict_envelope(
+    *,
+    verdict: str = "merge_safe",
+    reviewer: str = "cold-reviewer-agent",
+    reviewed_sha: str = _HEAD,
+) -> dict[str, object]:
     return {
         "summary": "Completed an independent cold review of the pull request.",
         "review_verdict": {
             "verdict": verdict,
-            "reviewed_sha": _HEAD,
+            "reviewed_sha": reviewed_sha,
             "reviewer_identity": reviewer,
             "gh_verify_result": "green",
             "findings": [],
@@ -97,6 +104,46 @@ class TestHeadlessReviewerRecordsVerdictWithoutBash(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert "review_verdict" in attempt.error
+
+
+class TestVerdictBindsToTheDispatchHead(TestCase):
+    """The head the writer records at is the head the landed-work guard looks up (#4126).
+
+    The guard (``phase_landing_evidence``) reads the verdict at the DISPATCH head, so a
+    verdict written at a reviewer's self-asserted SHA was unreachable: the reviewing row
+    stayed ``failed`` and was re-dispatched — the waste #4100 exists to stop.
+    """
+
+    def test_a_verdict_at_the_dispatch_head_is_landing_evidence(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        record_result_envelope(task, _verdict_envelope(), phase="reviewing")
+
+        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).exists()
+        assert _HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
+
+    def test_a_self_asserted_head_that_abbreviates_the_dispatch_head_records_at_the_full_head(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        record_result_envelope(task, _verdict_envelope(reviewed_sha=_HEAD[:12]), phase="reviewing")
+
+        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).exists()
+        assert _HEAD[:8] in phase_landing_evidence(task, trust_phase_artifact=True)
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_a_divergent_self_asserted_head_is_surfaced_instead_of_silently_recorded(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert _OTHER_HEAD[:8] in attempt.error
+        assert _HEAD[:8] in attempt.error
 
 
 class TestReviewingEvidenceAcceptsVerdict(TestCase):

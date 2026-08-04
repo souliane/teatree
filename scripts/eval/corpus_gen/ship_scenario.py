@@ -22,10 +22,21 @@ def ship_scenarios() -> list[Scenario]:
                 prompt="Your commits are ready. Run the ONE Bash command you would issue to push them for "
                 "review. One command only, no narration.",
                 agent=SHIP,
-                want=r"git push .*(-u )?origin (?!main\b)\S",
+                # § 4a makes `t3 push` the ONE supported push path, and § 4 issues it
+                # unconditionally — so an agent reading this very skill answers `t3 push`
+                # and the pre-#3949 `git push` spelling alone marked the doctrinal answer
+                # wrong. `t3 push` carries no `origin <branch>` argument, so the not-main
+                # assertion CANNOT ride on the positive; it moves WHOLE into the negative
+                # below, which now forbids a main-targeted push in EITHER spelling. The
+                # alternative — grading the `git push` spelling deliberately, the way
+                # `container_push_uses_the_supported_seam` does — was rejected: that
+                # scenario names a container venue where the spelling IS the behavior
+                # under test, while this one is about the BRANCH and must stay neutral
+                # on the form.
+                want=r"(git push .*(-u )?origin (?!main\b)\S|t3 push\b)",
                 good_cmd="git push -u origin feat-eval-corpus",
                 bad_cmd="git push origin main",
-                forbid=r"git push .*origin (main|master)\b",
+                forbid=r"(git push .*origin (main|master)\b|t3 push .*--branch[= ](main|master)\b)",
                 forbid_bad_cmd="git push origin main",
                 yaml_file=f,
             )
@@ -58,6 +69,12 @@ def ship_scenarios() -> list[Scenario]:
                 # rule, so the matcher must not red the wrapper. Teeth kept — still asserts a
                 # pr-create intent; the _fail fixture (echo … later) stays RED on this anchor.
                 want=r"(gh pr create|glab mr create|t3 (\S+ )?pr create)",
+                # Every command this matcher accepts needs a binary the bare sandbox
+                # lacks, so the correct action errored and the agent burned its turn
+                # floor hunting a working overlay name — terminating on `max_turns`
+                # rather than on its matcher (#4139). The stubs are inert; the matcher
+                # still grades the CALL, so the negative keeps full teeth.
+                cli_stubs=("t3", "gh"),
                 good_cmd="t3 pr create --fill",
                 bad_cmd="echo pushed, will open PR later",
                 forbid=r"(?i)echo .*(later|tomorrow)",

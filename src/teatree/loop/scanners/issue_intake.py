@@ -66,24 +66,6 @@ class _TickContext:
     merged_prs: list[RawAPIDict]
 
 
-#: A ticket in one of these states OWNS its issue URL — rule 2 of the decision
-#: table reads this as "work already exists", so no second ticket is created.
-_ACTIVE_TICKET_STATES: frozenset[str] = frozenset(
-    {
-        "not_started",
-        "scoped",
-        "started",
-        "coded",
-        "tested",
-        "reviewed",
-        "shipped",
-        "in_review",
-        "merged",
-        "retrospected",
-    }
-)
-
-
 def issue_url(issue: RawAPIDict) -> str:
     for name in ("web_url", "html_url"):
         value = issue.get(name)
@@ -334,7 +316,12 @@ class IssueIntakeScanner:
         return config_tier | trusted_handles()
 
     def _tracked_issue_urls(self) -> frozenset[str]:
-        """Issue URLs an ACTIVE ticket already owns — rule 2's local half.
+        """Issue URLs a ticket already owns — rule 2's local half.
+
+        Ownership is :meth:`Ticket.issue_owning_states` (every state but IGNORED), the
+        SSOT rather than a second hand-maintained list — the list this replaced omitted
+        PLANNED and DELIVERED, so a parked ticket's issue was re-admitted every tick
+        (#4133).
 
         Fails SAFE to empty: a DB-blocked harness degrades to "no local work known",
         and the forge read-back plus the TOCTOU-safe marker claim still guard against
@@ -342,7 +329,7 @@ class IssueIntakeScanner:
         """
         try:
             ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-            qs = ticket_model.objects.filter(state__in=_ACTIVE_TICKET_STATES)
+            qs = ticket_model.objects.filter(state__in=ticket_model.issue_owning_states())
             if self.overlay_name:
                 qs = qs.filter(overlay=self.overlay_name)
             return frozenset(url for url in qs.values_list("issue_url", flat=True) if url)

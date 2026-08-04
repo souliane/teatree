@@ -17,7 +17,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
@@ -741,6 +741,66 @@ class TestDeadReviewTargetRetired(TestCase):
         assert reopened == 1
         assert task.status == Task.Status.PENDING
         dead.assert_not_called()
+
+
+class TestLandedReviewRetired(TestCase):
+    """A reviewer ticket whose verdict is recorded at the dispatch head is retired (#4100/#4126).
+
+    The author ladder can say nothing about a REVIEWER-role ticket — it is minted at
+    ``not_started`` and held there until ``review_posted`` — so the recorded verdict is the
+    only evidence the review landed. This sweep is the sibling of ``stuck_ticket_redispatch``
+    and reads it through the same widened predicate; without a pin at this level, only one
+    of the two consumers was covered.
+    """
+
+    _HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
+    _LEASE_LOST = "stuck_loop: lease lost for task 1: re-claimed in-process"
+
+    def _dispatched_review(self) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url="https://github.com/souliane/teatree/pull/4242",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=4242, head_sha=self._HEAD, task=task)
+        task.fail(reason=self._LEASE_LOST)
+        return task
+
+    def test_a_verdict_at_the_dispatch_head_retires_the_lease_lost_review(self) -> None:
+        task = self._dispatched_review()
+        _add_failed_attempt(task, error=self._LEASE_LOST)
+        _add_failed_attempt(task, error=self._LEASE_LOST)
+        ReviewVerdict.record(
+            pr_id=4242,
+            slug="souliane/teatree",
+            reviewed_sha=self._HEAD,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer-agent",
+        )
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 0
+        assert task.status == Task.Status.COMPLETED
+        assert "[superseded-retired]" in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_without_a_verdict_the_same_review_is_escalated_not_retired(self) -> None:
+        # Control: the retirement is gated on the recorded verdict, not on the phase — a
+        # lost lease with nothing recorded is a review that genuinely did not land.
+        task = self._dispatched_review()
+        _add_failed_attempt(task, error=self._LEASE_LOST)
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=False):
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "[superseded-retired]" not in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
 
 class TestSelfRepairInsteadOfPaging(TestCase):
