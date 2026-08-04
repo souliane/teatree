@@ -1,6 +1,10 @@
 {
   "skills": [
     {
+      "name": "ac-reviewing-codebase",
+      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
+    },
+    {
       "name": "answerer",
       "summary": "Draft a reply to an inbound question, DM the user for approval, post on confirmation"
     },
