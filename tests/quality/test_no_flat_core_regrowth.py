@@ -182,7 +182,14 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # the root beside the managers_* leaves it belongs with (managers_overlay, managers_inbound,
 # managers_issue_match, managers_phase_cadence, managers_task_claim); filing it under a
 # subpackage would separate it from its siblings to satisfy a counter.
-PINNED_FLAT_CORE_MODULES = 108
+# 109: +dispatch_admission.py (#4107) — the governor's third admission lane: the harness
+# Agent/Task dispatch, which asked nothing while both factory lanes did. It lands at the
+# root beside the two flat admission leaves it belongs with (admission_governor.py, the
+# pure decision; headless_admission.py, the headless consult); filing it under a
+# subpackage would separate it from its siblings to satisfy a counter. Its callers are
+# the PreToolUse/TaskCreated gates in hooks/scripts, which tach forbids the platform-layer
+# teatree.hooks node from reaching, so it cannot live there either.
+PINNED_FLAT_CORE_MODULES = 109
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
