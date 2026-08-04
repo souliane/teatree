@@ -2,8 +2,10 @@
 
 Reuses the PreCompact durable-state snapshot as the hand-off payload and
 the ``t3-master`` slot for the default target. ``create`` persists a
-:class:`~teatree.core.models.SessionHandover` row (source of truth) and
-mirrors it to the XDG file; ``whoami`` prints this session's id;
+:class:`~teatree.core.models.SessionHandover` row (the delivery surface),
+mirrors it to the XDG file, runs the sub-agent barrier and folds its returns
+into the persisted payload, then re-reads the row and asserts it complete
+before reporting anything; ``whoami`` prints this session's id;
 ``claim-on-start`` is the SessionStart-hook entry point that atomically
 claims an unclaimed hand-off for a starting session and returns its payload.
 

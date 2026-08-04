@@ -19,11 +19,15 @@ equally worth handing over:
     vetted it, so :mod:`teatree.core.management.commands.handover` reports it as
     UNVETTED rather than ``OK``.
 
-The :class:`SessionHandover` DB row is the source of truth. The XDG file
+The :class:`SessionHandover` DB row is the DELIVERY SURFACE. The XDG file
 mirror (``handover_mirror_path``) is for human-readability and for
-bootstrapping a brand-new session whose process predates any DB read; it is
-never read back as a payload, which is why authoring goes through the command
-rather than through the file.
+bootstrapping a session whose process cannot reach the DB; it is read back as a
+payload ONLY in that case (#4194), which is why authoring goes through the
+command rather than through the file.
+
+An author holds at most one unclaimed row and a later hand-off is ABSORBED into
+it behind a fence, so a receiver is handed one row per author carrying
+everything that author said, rather than N partially-contradictory ones.
 
 Target resolution (``create``):
 
