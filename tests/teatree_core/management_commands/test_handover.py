@@ -1,5 +1,6 @@
 """Tests for ``t3 <overlay> handover`` and ``t3 loop whoami`` commands."""
 
+import contextlib
 import json
 import os
 import pathlib
@@ -286,6 +287,39 @@ class TestOneWrapUpSectionPerRow(_PinnedSessionTestCase):
         failures = Command._completeness_failures(pk=row.pk, expected="BODY", drove_subagents=True)
 
         assert any("sub-agent wrap-up sections" in failure for failure in failures)
+
+
+class TestTheBarrierNeverFastPushesTheWorktreeItRunsIn(_PinnedSessionTestCase):
+    """W5's jobs-dir widening made an agent's own job worktree enumerable — exclude it whole."""
+
+    def _excluded_from(self, directory: pathlib.Path) -> tuple[pathlib.Path, ...]:
+        """The ``exclude`` the barrier is called with when ``create`` runs in *directory*."""
+        seen: list[dict] = []
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            lambda *_a, **kwargs: seen.append(kwargs) or [],
+        )
+        with contextlib.chdir(directory):
+            _call("handover", "create", body="BODY", json_output=True)
+        return seen[0]["exclude"]
+
+    def test_the_barrier_excludes_the_whole_worktree_the_command_runs_in(self) -> None:
+        """Real ``git rev-parse``, run from a genuine subdirectory of this checkout."""
+        subdirectory = pathlib.Path(__file__).resolve().parent
+
+        exclude = self._excluded_from(subdirectory)
+
+        assert subdirectory in exclude
+        roots = [path for path in exclude if path != subdirectory]
+        assert roots, "running from a SUBDIRECTORY must not fast-push the agent's own worktree"
+        assert subdirectory.is_relative_to(roots[0])
+        assert (roots[0] / ".git").exists(), "the excluded extra path is the containing checkout's root"
+
+    def test_a_non_repo_cwd_degrades_to_excluding_the_cwd_alone(self) -> None:
+        outside_any_repo = self.tmp_path / "not-a-repo"
+        outside_any_repo.mkdir()
+
+        assert self._excluded_from(outside_any_repo) == (outside_any_repo,)
 
 
 class TestHandoverReportsTheIntegerRowId(_PinnedSessionTestCase):

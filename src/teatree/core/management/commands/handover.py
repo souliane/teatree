@@ -40,6 +40,7 @@ from teatree.core.machine_output import emit
 from teatree.core.models import SessionHandover
 from teatree.core.session_identity import is_loop_runner_session
 from teatree.loop.session_identity import current_session_id
+from teatree.utils.git import run
 
 
 class Command(TyperCommand):
@@ -314,10 +315,26 @@ class Command(TyperCommand):
         """
         cwd = Path.cwd()
         try:
-            return drive_subagents_to_fast_push(str(cwd), exclude=(cwd,))
+            return drive_subagents_to_fast_push(str(cwd), exclude=self._own_worktree_roots(cwd))
         except Exception:  # noqa: BLE001 — the hand-off is already persisted; sub-agent driving must not fail it
             self.stderr.write(f"WARN  could not drive sub-agents to fast-push from {cwd} (hand-off still recorded).")
             return []
+
+    @staticmethod
+    def _own_worktree_roots(cwd: Path) -> tuple[Path, ...]:
+        """*cwd* AND the root of the checkout containing it — the barrier's exclusion set.
+
+        ``in_flight_subagent_worktrees`` matches a worktree by its resolved ROOT, so
+        excluding only *cwd* misses the agent's own worktree whenever ``handover
+        create`` runs from a subdirectory of it — and the barrier then fast-pushes the
+        very checkout it is running in. Latent before the jobs-dir widening made
+        ``.claude/jobs/<session>/**`` enumerable; reachable after it.
+
+        ``git.run`` returns ``""`` on failure, so a cwd inside no repository degrades
+        to excluding *cwd* alone.
+        """
+        toplevel = run(repo=str(cwd), args=["rev-parse", "--show-toplevel"]).strip()
+        return (cwd, Path(toplevel)) if toplevel else (cwd,)
 
     @staticmethod
     def _push_json(push: SubagentPush) -> dict[str, object]:
