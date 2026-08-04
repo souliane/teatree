@@ -75,6 +75,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="always JSON: the machine-readable clean-all handoff",
     ),
     Capability(
+        "teatree workspace branch-verdict",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-branch landed-ness verdict, forge_merged beside the post-merge delta; read-only (#4070)",
+    ),
+    Capability(
         "teatree workspace stamp-owners",
         json_output=True,
         exit_codes=("0",),
