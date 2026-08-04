@@ -22,9 +22,11 @@ from teatree.core.forge_pr_probe import (
     PrProbe,
     PrProbeOutcome,
     find_open_pr_for_branch,
+    forge_cli_env,
     probe_github_open_pr,
     probe_gitlab_open_pr,
 )
+from teatree.core.forge_push import CredentialSource, ForgeCredential
 from tests._git_repo import make_git_repo, run_git
 
 _GH_URL = "https://github.com/acme/widgets/pull/7"
@@ -149,6 +151,30 @@ class TestProbeRunsWithTheWriterCredential:
     caller that reads that as "no PR" refuses the second push to a branch whose
     PR already exists.
     """
+
+    def test_forge_cli_env_is_none_when_nothing_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An ambient ``gh auth login`` is a credential of its own — never overridden."""
+        monkeypatch.setattr(
+            forge_pr_probe,
+            "resolve_forge_credential",
+            lambda: ForgeCredential(token="", source=CredentialSource.AMBIENT),
+        )
+        assert forge_cli_env() is None
+
+    def test_forge_cli_env_extends_rather_than_replaces_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``gh`` still needs PATH, HOME and the rest — the token is added, not substituted."""
+        monkeypatch.setenv("SOME_AMBIENT_VAR", "kept")
+        monkeypatch.setattr(
+            forge_pr_probe,
+            "resolve_forge_credential",
+            lambda: ForgeCredential(token="tok-writer", source=CredentialSource.OVERLAY_PASS_STORE),
+        )
+
+        env = forge_cli_env()
+
+        assert env is not None
+        assert env["GH_TOKEN"] == "tok-writer"
+        assert env["SOME_AMBIENT_VAR"] == "kept"
 
     def test_env_carries_the_resolved_token(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("GH_TOKEN", raising=False)
