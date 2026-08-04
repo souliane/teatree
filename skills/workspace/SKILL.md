@@ -94,6 +94,11 @@ row. Re-firing `start` against an already-running worktree is allowed
 idempotence). The cap is scoped per overlay, so a heavy overlay can
 cap to `1` while a cheap dogfood overlay stays unbounded.
 
+This cap covers docker stacks only. The sibling bound — concurrent
+**test workers**, where each dispatched agent's `-n auto` pool multiplies
+by the number of agents — is `/t3:rules` § "Sub-Agent Limitations", and it
+is set per brief, not per overlay.
+
 ### Data Directory (XDG-Compliant)
 
 Teatree stores runtime data (ticket cache, PR reminders, followup state) in:

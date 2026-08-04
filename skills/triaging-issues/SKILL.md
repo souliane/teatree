@@ -25,7 +25,10 @@ row and, only on your approval, act via `gh`.
 1. **Nothing acts without your per-row approval.** The assessor never closes,
    comments on, or relabels an issue. Only an approval here runs `gh`.
 2. **`close` is conservative.** If a recommendation to close looks wrong,
-   reject it — the `needs-triage` label stays and a human keeps it.
+   reject it — the `needs-triage` label stays and a human keeps it. A
+   close-as-fixed needs the evidence bar in `t3:sweeping-tickets`
+   § Non-Negotiables rule 6: the check the issue describes was executed,
+   never a code read alone.
 3. **No AI signature** on issue comments or edits (per `t3:rules`).
 4. **Stamp every decision.** After acting (or rejecting), record the outcome
    on the row so a re-assessment never re-queues the issue (dedup is by issue
