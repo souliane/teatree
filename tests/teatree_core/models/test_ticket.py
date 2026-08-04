@@ -719,6 +719,11 @@ class TestTicketStateSets(TestCase):
             {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED},
         )
 
+    def test_issue_owning_states_is_every_state_but_ignored(self) -> None:
+        # Derived, not enumerated: a new State joins the owning set by default, so
+        # intake can never re-admit an issue a live ticket already holds (#4133).
+        assert Ticket.issue_owning_states() == frozenset(Ticket.State.values) - {Ticket.State.IGNORED}
+
     def test_every_set_member_is_a_real_state(self) -> None:
         valid = set(Ticket.State.values)
         for name in (
@@ -726,6 +731,7 @@ class TestTicketStateSets(TestCase):
             "in_flight_excluded_states",
             "completable_states",
             "merged_states",
+            "issue_owning_states",
         ):
             states = getattr(Ticket, name)()
             assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"
