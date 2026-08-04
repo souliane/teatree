@@ -77,7 +77,7 @@ def effective_default(key: str) -> object:
     """The value *key* resolves to with NO DB row / env override — the ONE default authority.
 
     The single source the seed-skip (``config_setting seed``), the import-skip
-    (``config_migration``), and the resolver all agree on, so a row equal to it is
+    (``config_interchange.migration``), and the resolver all agree on, so a row equal to it is
     provably redundant: writing it and clearing it resolve to the SAME value.
 
     A ``UserSettings`` scalar field resolves to its ``defaults.toml`` value — the

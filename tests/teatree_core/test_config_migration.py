@@ -22,7 +22,8 @@ from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defaults
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_annotation import choice_token
-from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.secret_guard import resolve_export_scan_terms
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
@@ -221,7 +222,7 @@ class TestExportScanTermsResolveFailsSafe(TestCase):
 
 
 class TestExportScanTermsRoutesThroughRegistry:
-    """``_resolve_export_scan_terms`` resolves through the consolidated registry.
+    """``resolve_export_scan_terms`` resolves through the consolidated registry.
 
     Seeds the canonical config DB directly (via ``T3_CONFIG_DB``) so ``cold_reader``
     reads it, then asserts the export scan set is the union of every ban class,
@@ -251,7 +252,7 @@ class TestExportScanTermsRoutesThroughRegistry:
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        assert set(_resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
+        assert set(resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
 
 
 class TestImportTomlToDb(TestCase):
@@ -317,6 +318,25 @@ class TestImportTomlToDb(TestCase):
         result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=())
         assert result.rejected == ()
         assert [r.key for r in result.skipped_default] == ["autonomy"]
+
+    def test_a_safety_posture_value_the_store_already_holds_is_unchanged_not_rejected(self) -> None:
+        # The `unchanged` disposition is evaluated BEFORE the safety-posture refusal, so a box
+        # re-importing its own export is not refused over a posture it is already running. The
+        # refusal guards a CHANGE of posture, and this row changes nothing there is to authorize.
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        result = import_toml_to_db('[teatree]\nautonomy = "babysit"\nmode = "interactive"\n', scan_terms=())
+        assert result.rejected == ()
+        assert [r.key for r in result.unchanged] == ["autonomy"]
+        assert [r.key for r in result.written] == ["mode"]
+
+    def test_a_safety_posture_change_still_refuses_the_whole_file(self) -> None:
+        # The anti-vacuous half of the pair above: relaxing the UNCHANGED case must not relax
+        # the case the gate exists for. One posture change still costs every clean row.
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        result = import_toml_to_db('[teatree]\nautonomy = "notify"\nmode = "interactive"\n', scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [("autonomy", "safety-posture")]
+        assert result.written == ()
+        assert ConfigSetting.objects.get_effective("mode") != "interactive"
 
     def test_retired_alias_folds_onto_its_replacement(self) -> None:
         # `speed` was renamed to `wip`; the stored value migrates onto the live key.

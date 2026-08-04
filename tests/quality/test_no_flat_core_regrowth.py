@@ -189,7 +189,15 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # subpackage would separate it from its siblings to satisfy a counter. Its callers are
 # the PreToolUse/TaskCreated gates in hooks/scripts, which tach forbids the platform-layer
 # teatree.hooks node from reaching, so it cannot live there either.
-PINNED_FLAT_CORE_MODULES = 109
+# 107: -config_migration.py / -config_seed_tables.py (#4147) — the config-store <-> TOML
+# interchange became the subpackage core/config_interchange/ once the withheld-key data-loss fix
+# needed two more modules beside the hub: secret_guard (what must never be shared) and
+# registry_rows (the merge rule that keeps a redacted export from deleting what it redacted).
+# The hub and the rules its two directions must agree on move together — they are one concern,
+# and letting a shared rule drift from the pair that shares it is how export and import came to
+# disagree at all. Two root leaves collapse to one package entry and the two new modules never
+# land at the root, mirroring retention/.
+PINNED_FLAT_CORE_MODULES = 107
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
