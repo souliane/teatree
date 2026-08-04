@@ -43,12 +43,7 @@ import os
 from django.tasks import task
 from django.utils import timezone
 
-from teatree.loops.timer_chains import (
-    LOOPS_QUEUE,
-    compute_successor_run_after,
-    compute_tick_deadline,
-    enqueue_loop_timer,
-)
+from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
 logger = logging.getLogger(__name__)
 
@@ -94,27 +89,6 @@ def timer_chain_loop_names() -> set[str]:
     return registered & enabled
 
 
-def _loop_timers_by_name(status: str) -> dict[str, list]:
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-
-    from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    grouped: dict[str, list] = {}
-    for row in DBTaskResult.objects.filter(task_path=_loop_timer_path(), status=status):
-        args = row.args_kwargs.get("args") or []
-        if args:
-            grouped.setdefault(args[0], []).append(row)
-    return grouped
-
-
-def _is_stranded(result, loop_row, now: dt.datetime) -> bool:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
-    """Whether a RUNNING timer has outlived its tick deadline + grace (a dead worker)."""
-    if result.started_at is None:
-        return False
-    limit = compute_tick_deadline(loop_row) + STUCK_GRACE_SECONDS
-    return result.started_at < now - dt.timedelta(seconds=limit)
-
-
 def ensure_loop_timers() -> dict[str, int]:
     """Reconcile the loop-timer chains to the enabled-loop set; return the repair counts.
 
@@ -127,12 +101,16 @@ def ensure_loop_timers() -> dict[str, int]:
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.schedule_liveness import (  # noqa: PLC0415 — deferred: breaks the liveness/reconciler import cycle
+        is_stranded,
+        loop_timers_by_name,
+    )
 
     now = timezone.now()
     chain_names = timer_chain_loop_names()
     loops = {row.name: row for row in Loop.objects.filter(name__in=chain_names)}
-    ready_by_name = _loop_timers_by_name(TaskResultStatus.READY)
-    running_by_name = _loop_timers_by_name(TaskResultStatus.RUNNING)
+    ready_by_name = loop_timers_by_name(TaskResultStatus.READY)
+    running_by_name = loop_timers_by_name(TaskResultStatus.RUNNING)
 
     counts = {"added": 0, "pruned": 0, "repaired": 0}
 
@@ -140,7 +118,7 @@ def ensure_loop_timers() -> dict[str, int]:
         loop_row = loops[name]
         ready = sorted(ready_by_name.get(name, []), key=lambda r: r.run_after)
         running = running_by_name.get(name, [])
-        stranded = [r for r in running if _is_stranded(r, loop_row, now)]
+        stranded = [r for r in running if is_stranded(r, loop_row, now)]
         live_running = [r for r in running if r not in stranded]
 
         for result in stranded:
