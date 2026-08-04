@@ -7,7 +7,7 @@ The git surface is partitioned by concern across sibling modules under
 - :mod:`teatree.utils.git_branch` — branch/ref discovery.
 - :mod:`teatree.utils.git_commit` — commit/log/rev-list/message ops.
 - :mod:`teatree.utils.git_status` — working-tree status + diff capture.
-- :mod:`teatree.utils.git_sync` — fetch/rebase/merge/pull/push.
+- :mod:`teatree.utils.git_sync` — fetch/rebase/merge/pull.
 - :mod:`teatree.utils.git_worktree` — worktree management + teardown guards.
 - :mod:`teatree.utils.git_remote_ops` — invoking remote/config ops.
 
@@ -48,7 +48,7 @@ from teatree.utils.git_status import (
     status_porcelain_strict,
     status_porcelain_z_strict,
 )
-from teatree.utils.git_sync import fetch, fetch_all_prune, merge_abort, merge_no_edit, pull_ff_only, push, rebase
+from teatree.utils.git_sync import fetch, fetch_all_prune, merge_abort, merge_no_edit, pull_ff_only, rebase
 from teatree.utils.git_worktree import (
     commits_absent_from_all_remotes,
     locked_worktree_paths,
@@ -99,7 +99,6 @@ __all__ = [
     "merge_base",
     "merge_no_edit",
     "pull_ff_only",
-    "push",
     "rebase",
     "recovered_head_sha_after_ref_gone",
     "remote_slug",
@@ -167,9 +166,6 @@ class GitRepo:
 
     def pull_ff_only(self) -> bool:
         return pull_ff_only(self.path)
-
-    def push(self, remote: str = "origin", branch: str = "") -> None:
-        push(self.path, remote, branch)
 
     def default_branch(self) -> str:
         return default_branch(self.path)
