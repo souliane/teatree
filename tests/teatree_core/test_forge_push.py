@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.core import forge_push
 from teatree.core.forge_push import (
     PUSH_EXIT_CODES,
     PUSH_TIMEOUT_SECONDS,
@@ -20,13 +21,13 @@ from teatree.core.forge_push import (
     ForgeCredential,
     PushFailure,
     PushOutcome,
-    _local_tip,
     credential_failure_hint,
     push_branch,
     remote_url_embeds_credential,
     resolve_forge_credential,
     scrub_token,
 )
+from teatree.utils import git_run
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CompletedProcess, TimeoutExpired
 from tests._git_repo import make_git_repo, run_git
@@ -53,6 +54,18 @@ def clone_with_origin(tmp_path: Path) -> Path:
     run_git(clone, "add", "file.txt")
     run_git(clone, "commit", "-q", "-m", "work")
     return clone
+
+
+class _SpyingRun:
+    """Records every argv it is handed, then delegates to the real runner."""
+
+    def __init__(self, inner: Callable[..., CompletedProcess[str]]) -> None:
+        self._inner = inner
+        self.commands: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: object) -> CompletedProcess[str]:
+        self.commands.append(list(cmd))
+        return self._inner(cmd, **kwargs)
 
 
 class _RecordingRun:
@@ -521,16 +534,59 @@ class TestABranchThatDoesNotExistIsNeverTheGatesFault:
         assert recorder.commands == []
 
 
-class TestLocalTipReadsTheReturnCode:
-    """`git rev-parse` echoes an unresolvable argument back — rc is the only honest signal."""
+class TestATagSharingABranchsNameCannotBeResolvedForIt:
+    """One ref form throughout, so no lookup can answer the tag where the branch was meant.
 
-    def test_an_unresolvable_branch_yields_no_sha_rather_than_its_own_name(self, clone_with_origin: Path) -> None:
-        assert _local_tip(repo=str(clone_with_origin), branch="refs/heads/no-such-branch") == ""
+    A tag named after the branch makes every bare spelling ambiguous at once:
+    `rev-parse --abbrev-ref HEAD` answers `heads/feature`, `rev-parse feature`
+    answers the TAG's sha, and `push origin feature` refuses the refspec before any
+    hook runs (souliane/teatree#4117).
+    """
 
-    def test_a_real_branch_yields_its_sha(self, clone_with_origin: Path) -> None:
-        assert _local_tip(repo=str(clone_with_origin), branch="feature") == run_git(
-            clone_with_origin, "rev-parse", "HEAD"
-        )
+    @pytest.fixture
+    def shadowed(self, clone_with_origin: Path) -> Path:
+        """A clone whose `feature` branch is shadowed by a `feature` tag at an EARLIER sha."""
+        run_git(clone_with_origin, "tag", "feature", "HEAD")
+        (clone_with_origin / "more.txt").write_text("more\n")
+        run_git(clone_with_origin, "add", "more.txt")
+        run_git(clone_with_origin, "commit", "-q", "-m", "more")
+        return clone_with_origin
+
+    def test_the_auto_detected_branch_is_not_refused_as_a_typo(self, shadowed: Path) -> None:
+        outcome = push_branch(repo=shadowed)
+
+        assert outcome.ok, outcome.detail
+        assert outcome.branch == "feature"
+        assert outcome.pushed_sha == run_git(shadowed, "rev-parse", "refs/heads/feature")
+
+    def test_an_explicit_branch_is_not_blamed_on_the_pre_push_gate(self, shadowed: Path) -> None:
+        _install_pre_push_hook(shadowed, "exit 0\n")
+
+        outcome = push_branch(repo=shadowed, branch="feature")
+
+        assert outcome.ok, outcome.detail
+        assert outcome.failure is PushFailure.NONE
+        assert outcome.pushed_sha == run_git(shadowed, "rev-parse", "refs/heads/feature")
+
+    def test_the_tags_sha_is_never_what_lands(self, shadowed: Path) -> None:
+        """The tag is the earlier commit, so reading it would push — or verify — the wrong sha."""
+        outcome = push_branch(repo=shadowed)
+
+        assert outcome.ok, outcome.detail
+        assert outcome.pushed_sha != run_git(shadowed, "rev-parse", "refs/tags/feature")
+
+    def test_no_git_call_names_the_branch_in_its_bare_form(self, shadowed: Path) -> None:
+        """The grep-proof half: a bare name left anywhere is a lookup a tag can answer."""
+        spies = [_SpyingRun(module.run_allowed_to_fail) for module in (forge_push, git_run)]
+
+        with (
+            patch.object(forge_push, "run_allowed_to_fail", spies[0]),
+            patch.object(git_run, "run_allowed_to_fail", spies[1]),
+        ):
+            outcome = push_branch(repo=shadowed, branch="feature")
+
+        assert outcome.ok, outcome.detail
+        assert [cmd for spy in spies for cmd in spy.commands if "feature" in cmd] == []
 
 
 class TestAPushUrlIsWhereThePushActuallyGoes:
