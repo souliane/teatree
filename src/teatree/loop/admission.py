@@ -17,6 +17,7 @@ from pathlib import Path
 
 from teatree.core.admission_governor import (
     AdmissionDecision,
+    MachineBrake,
     YieldSignal,
     decide_admission,
     governor_enabled,
@@ -101,7 +102,7 @@ def governor_verdict(*, statusline_path: Path, static_ceiling: int | None = None
             quota=read_quota_signal(),
             machine=read_machine_signal(),
             yield_signal=read_yield_signal(),
-            braked=read_braked(statusline_path=statusline_path),
+            load_brake=MachineBrake(braked=read_braked(statusline_path=statusline_path)),
             static_ceiling=static_ceiling,
         )
     except Exception:

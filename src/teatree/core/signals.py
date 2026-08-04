@@ -296,19 +296,21 @@ def _auto_enqueue_headless_task(
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
-    from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred: call-time
+    from teatree.core.headless_admission import headless_admission_verdict  # noqa: PLC0415 — deferred: call-time
 
-    denied = headless_admission_denied_reason()
-    if denied is not None:
-        # The governor brakes the headless lane at its admission chokepoint (F9).
-        # The task stays PENDING; the (also-gated) drain re-admits it once the
-        # governor clears. Never silent — a refusal is always logged.
-        logger.warning("Governor DENIED auto-enqueue of headless task %s: %s (staying PENDING)", instance.pk, denied)
+    admission = headless_admission_verdict()
+    # The governor brakes the headless lane at its admission chokepoint (F9), per the
+    # row's phase COST CLASS (#4098) — the same classification AND the same lane bound
+    # the drain applies, so the two chokepoints cannot diverge on which work a braked box
+    # still admits, nor on how much of it. The task stays PENDING; the (also-gated) drain
+    # re-admits it once the governor clears.
+    if admission.refuse(int(instance.pk), instance.phase, at="auto-enqueue"):
         return
     from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         execute_headless_task.enqueue(int(instance.pk), instance.phase)
+        admission.record_admitted(int(instance.pk), instance.phase)
         logger.info("Auto-enqueued headless task %s (phase=%s)", instance.pk, instance.phase)
     except Exception:
         logger.exception("Failed to auto-enqueue headless task %s", instance.pk)
