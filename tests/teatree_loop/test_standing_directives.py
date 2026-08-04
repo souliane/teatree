@@ -16,6 +16,7 @@ from teatree.loop.standing_directives import (
     MAX_DIRECTIVE_CHARS,
     STANDING_DIRECTIVE_SCOPE,
     STANDING_DIRECTIVES,
+    StandingDirectivePayload,
     golden_rule_cadence_seconds,
     override_prompt_name,
     pr_board_cadence_seconds,
@@ -156,6 +157,8 @@ class TestResolveStandingDirectives(TestCase):
     def test_as_dict_is_the_documented_four_key_contract(self) -> None:
         payload = resolve_standing_directives()[0].as_dict()
 
-        assert set(payload) == {"slot_id", "cadence_seconds", "text", "scope"}
+        # The declared TypedDict IS the contract, so the emitted payload's keys
+        # must equal its annotations — not merely a hand-copied literal set.
+        assert set(payload) == set(StandingDirectivePayload.__annotations__)
         assert payload["slot_id"] == "standing-golden-rule"
         assert payload["scope"] == "attended"
