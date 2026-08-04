@@ -50,6 +50,8 @@ class SideManifest:
 class TestPlanManifest:
     """Parsed + validated ``--manifest``: ticket, MRs, per-side input, template, optional steps."""
 
+    __test__ = False  # not a pytest test class (name starts with 'Test')
+
     ticket: str
     mrs: tuple[str, ...]
     dev: SideManifest

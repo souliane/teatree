@@ -33,7 +33,7 @@ from teatree.core.management.commands._test_plan.post import (
     find_existing_note,
 )
 from teatree.core.management.commands._test_plan.render import (
-    TestPlanState,
+    PlanState,
     TestPlanValidationError,
     empty_state,
     render_body,
@@ -140,7 +140,7 @@ def _render_scenario(host: CodeHostBackend, *, repo: str, scenario: Scenario, ru
 
 def assemble_scenario_state(
     host: CodeHostBackend, *, repo: str, title: str, scenarios: tuple[Scenario, ...], run: SeamsRun
-) -> TestPlanState:
+) -> PlanState:
     """Fold the authored scenarios + the run's captures + the recorded SHAs into a note state."""
     state = empty_state(ticket=run.ticket_number, title=title)
     state["template"] = _SCENARIO_TEMPLATE
