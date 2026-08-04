@@ -1,1 +1,1 @@
-0057_merge_upstream_vendor_sync
+0058_merge_vendor_sync_and_availability_removal

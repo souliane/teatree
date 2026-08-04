@@ -37,6 +37,12 @@ in the host ticket even after the standalone closes — and as its actual
 substance (problem statement, evidence, acceptance criteria), not a bare
 checklist line.
 
+This sweep is the cure; the prevention is the same doctrine one step earlier, at
+filing time — search the open backlog, extend the host issue that already covers
+the ask, one issue per root cause. That rule is canonical in `AGENTS.md`
+§ "Issue Creation" and is not restated here. A tracker that needs this sweep
+often is a tracker where the filing-time reuse rule is being skipped.
+
 It is a deliberately separate skill from `t3:retro` / dreaming (#2419).
 Dreaming distills transcripts into memory rules — additive, unattended, low
 blast radius. Sweeping-tickets reads the *issue tracker*, judges each issue

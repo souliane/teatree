@@ -505,7 +505,6 @@ default_enabled = false
 description = "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF."
 
 [modes.engaged]
-availability_mode = ""
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
@@ -531,7 +530,6 @@ local_stack_queue = true
 resource_pressure = true
 
 [modes.heads-down]
-availability_mode = ""
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
@@ -557,7 +555,6 @@ eval_local = false
 dogfood = false
 
 [modes.unattended]
-availability_mode = "autonomous_away"
 defers_questions = true
 pauses_self_pump = false
 presence_sensitive = true
@@ -581,7 +578,6 @@ resource_pressure = true
 followup = false
 
 [modes.maintenance]
-availability_mode = ""
 defers_questions = true
 pauses_self_pump = false
 presence_sensitive = true
@@ -608,7 +604,6 @@ audit = false
 issue_implementer = false
 
 [modes.low-power]
-availability_mode = ""
 defers_questions = true
 pauses_self_pump = false
 presence_sensitive = true
@@ -644,7 +639,6 @@ ci_eval_heal = false
 memory_skim = false
 
 [modes.off]
-availability_mode = ""
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
@@ -680,7 +674,6 @@ ci_eval_heal = false
 memory_skim = false
 
 [modes.offline]
-availability_mode = "away"
 defers_questions = true
 pauses_self_pump = true
 presence_sensitive = false

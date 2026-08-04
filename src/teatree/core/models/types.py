@@ -192,6 +192,12 @@ class TicketExtra(TypedDict, total=False):
     dream_gap_key: str
     dream_memory_cluster_key: str
     dream_umbrella_url: str
+    # Idempotency stamp for the merged-gap reconcile: the ISO timestamp at which
+    # this ticket's merged fix was folded back into the umbrella checkbox and its
+    # memory retired. Its PRESENCE is the signal — the reconcile scan skips an
+    # already-stamped ticket, so a merged gap is not re-read from the forge on
+    # every pass. See ``teatree.loops.dream.umbrella_ledger``.
+    dream_gap_reconciled_at: str
     # #2886: durable pydantic_ai harness conversation store for cached-resume
     # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
     # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the

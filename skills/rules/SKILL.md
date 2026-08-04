@@ -52,14 +52,14 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 32. [Never Modify a Remote Database Without Explicit User Approval](#never-modify-a-remote-database-without-explicit-user-approval-non-negotiable)
 33. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
 34. [Self-Apply `needs-triage` on Agent-Filed Issues](#self-apply-needs-triage-on-agent-filed-issues-non-negotiable)
-35. [Leak Remediation — Silent Scrubs](#leak-remediation-silent-scrubs-non-negotiable)
+35. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
 36. [Public-Repo Commit Author Identity](#public-repo-commit-author-identity-non-negotiable)
 37. [Sub-Agent Limitations](#sub-agent-limitations)
 38. [Prefer Native Tool APIs Over Filesystem Heuristics](#prefer-native-tool-apis-over-filesystem-heuristics)
 39. [Symlink Safety](#symlink-safety)
 40. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
 41. [Shell Alias Safety](#shell-alias-safety)
-42. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh-a-probe-without-a-control-is-unfalsifiable)
+42. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh--a-probe-without-a-control-is-unfalsifiable)
 43. [Skill File Writes Require a Git Repo](#skill-file-writes-require-a-git-repo)
 44. [Fix TeaTree/Skill Bugs Immediately](#fix-teatreeskill-bugs-immediately)
 45. [Teatree Extension Point Changes Must Update All Registered Overlays](#teatree-extension-point-changes-must-update-all-registered-overlays-non-negotiable)
@@ -68,15 +68,15 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 48. [Autonomous Directive Adoption](#autonomous-directive-adoption)
 49. [Ask About Auth Before External Service Integrations](#ask-about-auth-before-external-service-integrations)
 50. [Never Change PR Base Branch or Dependencies](#never-change-pr-base-branch-or-dependencies-non-negotiable)
-51. [Fewest PRs for Related Work — Splitting Requires Approval](#fewest-prs-for-related-work-splitting-requires-approval-non-negotiable)
+51. [Fewest PRs for Related Work — Splitting Requires Approval](#fewest-prs-for-related-work--splitting-requires-approval-non-negotiable)
 52. [Always Create Tasks](#always-create-tasks)
 53. [Mid-Task Interrupts](#mid-task-interrupts-non-negotiable)
 54. [Background Long Operations](#background-long-operations-non-negotiable)
 55. [Always Use AskUserQuestion for Questions](#always-use-askuserquestion-for-questions)
-56. [The User Asked a Question — Answer It](#the-user-asked-a-question-answer-it-non-negotiable)
+56. [The User Asked a Question — Answer It](#the-user-asked-a-question--answer-it-non-negotiable)
 57. [Never Introduce Tech Debt; Reduce It](#never-introduce-tech-debt-reduce-it-non-negotiable)
 58. [Publishing Actions Are Mode-Conditional](#publishing-actions-are-mode-conditional-non-negotiable)
-59. [Three Orthogonal Repo Axes — Visibility, Ownership, Collaboration](#three-orthogonal-repo-axes-visibility-ownership-collaboration-non-negotiable)
+59. [Three Orthogonal Repo Axes — Visibility, Ownership, Collaboration](#three-orthogonal-repo-axes--visibility-ownership-collaboration-non-negotiable)
 60. [Run Retro Before Ending Non-Trivial Sessions](#run-retro-before-ending-non-trivial-sessions)
 61. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
 4a. [Read the Canonical Source Before Fixing a Conformance Bug](#read-the-canonical-source-before-fixing-a-conformance-bug)
@@ -578,6 +578,8 @@ The convention closes that gap: **an agent self-applies `needs-triage` by defaul
 - Teatree's programmatic filing path encodes this: `FilingContext.auto_filed` defaults to `True` and adds `NEEDS_TRIAGE_LABEL`; a user-directed caller sets `auto_filed=False`.
 
 When in doubt, apply `needs-triage` — a withheld issue costs the maintainer one label-removal; an un-withheld one risks the factory implementing something the maintainer never decided to build.
+
+The label governs an issue that is going to exist. Whether it should exist at all is decided one step earlier by the backlog-reuse precondition — search the open backlog, extend a suitable host rather than adding a near-duplicate, one issue per root cause — which is canonical in `AGENTS.md` § "Issue Creation" and is not restated here.
 
 ## Leak Remediation — Silent Scrubs (Non-Negotiable)
 

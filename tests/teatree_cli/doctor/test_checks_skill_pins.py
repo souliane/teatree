@@ -43,7 +43,7 @@ def _status(**overrides: object) -> SkillPinStatus:
         "head_sha": _SPEC.partition("#")[2],
         "branch": "main",
     }
-    return SkillPinStatus(**(fields | overrides))  # type: ignore[arg-type]
+    return SkillPinStatus(**(fields | overrides))
 
 
 def test_no_recorded_measurement_is_unverified_not_up_to_date(tmp_path: Path) -> None:
