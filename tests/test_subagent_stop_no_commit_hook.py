@@ -6,7 +6,7 @@ landed — a phantom-completion source. The ``SubagentStop`` handler resolves
 the sub-agent's worktree from the harness ``cwd``, runs the conservative
 detector, and on a confirmed empty work branch records a
 ``terminated_without_commit`` signal: a durable ``<session>.no-commit`` state
-file (the same seam the dispatched-sub-agent roster uses) plus a structured
+file (the same seam the dispatched-sub-agent ledger uses) plus a structured
 stderr line. The PreCompact recovery snapshot reads that file back so the
 signal survives compaction.
 

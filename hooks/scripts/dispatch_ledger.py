@@ -1,11 +1,15 @@
-r"""PostToolUse: persist the dispatched sub-agent roster to ``<session>.agents``.
+r"""PostToolUse: persist the dispatch ledger of sub-agents to ``<session>.agents``.
 
 The agentId is the handle ``SendMessage`` needs to resume/steer/collect a running
 agent; it lives only in the conversation and is lost on auto-compaction, orphaning
 the agent. Mirroring the #970 ``TodoWrite`` capture, every ``Agent`` PostToolUse
 appends the agentId + its role/description so the PreCompact snapshot can quote
-the roster back. Each line is ``<agentId>\t<role>`` — append-only and deduped on
+the ledger back. Each line is ``<agentId>\t<role>`` — append-only and deduped on
 agentId, so a multi-agent fan-out accumulates rather than clobbers.
+
+The ledger is append-only, so it outlives the agents it records: the #4108
+resume-admission reader subtracts ``<session>.agents-stopped`` from it rather than
+reading it as a live population (``resume_admission.live_restored_agents``).
 
 Extracted whole from ``hook_router`` (the #2384 router-split pattern) so the
 shrink-only dispatcher nets smaller; the router re-exports
@@ -22,8 +26,8 @@ from typing import TypedDict, cast
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
-sys.modules.setdefault("agent_roster", sys.modules[__name__])
-sys.modules.setdefault("hooks.scripts.agent_roster", sys.modules[__name__])
+sys.modules.setdefault("dispatch_ledger", sys.modules[__name__])
+sys.modules.setdefault("hooks.scripts.dispatch_ledger", sys.modules[__name__])
 
 
 class AgentDispatchResponse(TypedDict, total=False):
@@ -77,7 +81,7 @@ def _newest_task_agent_id() -> str:
 
 
 def handle_track_agents(data: dict) -> None:
-    """Persist a dispatched ``Agent`` sub-agent's id + role to ``<session>.agents``.
+    """Append a dispatched ``Agent`` sub-agent's id + role to the ``<session>.agents`` ledger.
 
     No-op for any other tool name. Prefers the agentId carried on the PostToolUse
     ``tool_response`` (``tool_result`` as a secondary payload key); falls back to
@@ -110,7 +114,7 @@ def handle_track_agents(data: dict) -> None:
     )
 
     _ensure_state_dir()
-    agents_file = _state_file(session_id, "agents")
-    if any(line.split("\t", 1)[0] == agent_id for line in _read_lines(agents_file)):
+    ledger_file = _state_file(session_id, "agents")
+    if any(line.split("\t", 1)[0] == agent_id for line in _read_lines(ledger_file)):
         return
-    _append_line(agents_file, f"{agent_id}\t{role}")
+    _append_line(ledger_file, f"{agent_id}\t{role}")
