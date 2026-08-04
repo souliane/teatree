@@ -6,6 +6,7 @@ file mirror, and the sub-agent wrap-up section the barrier's returns become.
 """
 
 import contextlib
+import datetime as dt
 import os
 import tempfile
 from collections.abc import Iterator
@@ -16,7 +17,12 @@ from django.test import TestCase
 from teatree.core import handover
 from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover_orchestration import SubagentPush
-from teatree.core.handover_wrapup import append_subagent_section, render_subagent_section
+from teatree.core.handover_wrapup import (
+    merge_subagent_records,
+    render_subagent_section,
+    subagent_record,
+    upsert_subagent_section,
+)
 from teatree.core.models import LoopLease, SessionHandover
 
 
@@ -160,6 +166,14 @@ class TestCreateHandover(TestCase):
         assert row.is_for_next_session is True
 
 
+_AT = dt.datetime(2026, 8, 4, 12, 0, tzinfo=dt.UTC)
+_LATER = dt.datetime(2026, 8, 4, 13, 0, tzinfo=dt.UTC)
+
+
+def _records(pushes: "list[SubagentPush]", *, at: dt.datetime) -> list[dict]:
+    return [subagent_record(push, at=at) for push in pushes]
+
+
 class TestRenderSubagentSection:
     """What the barrier collected, as the section the receiver reads (#4194)."""
 
@@ -179,15 +193,18 @@ class TestRenderSubagentSection:
             ),
         )
 
-        section = render_subagent_section([pushed, refused])
+        section = render_subagent_section(_records([pushed, refused], at=_AT))
 
-        assert "Sub-agent wrap-up (2 agents)" in section
+        assert "Sub-agent wrap-up (2 agents seen; 2 enumerated at the latest barrier)" in section
         assert "committed, pushed, PR http://pr/1" in section
         assert "token in a.py" in section
 
     def test_an_undriven_agent_reports_its_error_as_what_remains(self) -> None:
         section = render_subagent_section(
-            [SubagentPush(worktree=Path("/wt/agent-z"), branch="feat/z", driven=False, error="git exploded")]
+            _records(
+                [SubagentPush(worktree=Path("/wt/agent-z"), branch="feat/z", driven=False, error="git exploded")],
+                at=_AT,
+            )
         )
         assert "git exploded" in section
 
@@ -196,7 +213,59 @@ class TestRenderSubagentSection:
         assert "No in-flight sub-agent worktrees" in render_subagent_section([])
 
 
-class TestAppendSubagentSection(TestCase):
+class TestMergeSubagentRecords:
+    """One record per agent worktree, carrying every agent the row's barriers ever saw."""
+
+    def test_merge_keeps_an_agent_seen_only_in_an_earlier_barrier(self) -> None:
+        first = _records(
+            [
+                SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="refused: unpushed"),
+                SubagentPush(worktree=Path("/wt/b"), branch="feat/b", driven=False, error="refused: leak"),
+            ],
+            at=_AT,
+        )
+        second = _records(
+            [
+                SubagentPush(
+                    worktree=Path("/wt/b"),
+                    branch="feat/b2",
+                    driven=True,
+                    outcome=FastPushOutcome(ok=True, branch="feat/b2", committed=True, pushed=True),
+                )
+            ],
+            at=_LATER,
+        )
+
+        merged = merge_subagent_records(first, second)
+
+        assert [record["worktree"] for record in merged] == ["/wt/a", "/wt/b"]
+        gone, still_there = merged
+        assert gone["in_latest_barrier"] is False, "absence from the latest barrier may mean its worktree is gone"
+        assert gone["remaining"] == "refused: unpushed", "its LAST KNOWN status is kept, not blanked"
+        assert gone["first_seen_at"] == gone["last_seen_at"] == _AT.isoformat()
+        assert still_there["in_latest_barrier"] is True
+        assert still_there["branch"] == "feat/b2"
+        assert still_there["remaining"] == "nothing"
+        assert still_there["first_seen_at"] == _AT.isoformat(), "the first sighting survives the update"
+        assert still_there["last_seen_at"] == _LATER.isoformat()
+
+    def test_an_agent_that_is_gone_is_marked_in_the_rendered_section(self) -> None:
+        merged = merge_subagent_records(
+            _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="boom")], at=_AT),
+            _records([SubagentPush(worktree=Path("/wt/c"), branch="feat/c", driven=False, error="boom")], at=_LATER),
+        )
+
+        section = render_subagent_section(merged)
+
+        assert "Sub-agent wrap-up (2 agents seen; 1 enumerated at the latest barrier)" in section
+        assert "NOT enumerated at the latest barrier" in section
+
+    def test_merging_into_nothing_is_the_incoming_set(self) -> None:
+        incoming = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
+        assert merge_subagent_records([], incoming) == incoming
+
+
+class TestUpsertSubagentSection(TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(_tmp_env("XDG_STATE_HOME"))
@@ -204,10 +273,18 @@ class TestAppendSubagentSection(TestCase):
     def test_the_section_is_persisted_and_the_same_mirror_file_is_rewritten(self) -> None:
         created = handover.create_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY")
 
-        rewritten = append_subagent_section(created.handover, render_subagent_section([]))
+        rewritten = upsert_subagent_section(created.handover, [])
 
         assert rewritten == created.mirror, "created_at is untouched, so the unique mirror file is the same one"
         row = SessionHandover.objects.get(pk=created.handover.pk)
         assert row.payload.startswith("BODY")
         assert "Sub-agent wrap-up" in row.payload
         assert "Sub-agent wrap-up" in rewritten.read_text(encoding="utf-8")
+
+    def test_the_records_are_stored_on_the_row_rather_than_re_parsed_from_the_payload(self) -> None:
+        created = handover.create_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY")
+        records = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
+
+        upsert_subagent_section(created.handover, records)
+
+        assert SessionHandover.objects.get(pk=created.handover.pk).subagent_wrapup == records

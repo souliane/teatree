@@ -14,6 +14,8 @@ from django.test import TestCase
 from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover import claim_handovers
 from teatree.core.handover_orchestration import SubagentPush
+from teatree.core.handover_wrapup import SUBAGENT_MARKER_START
+from teatree.core.management.commands.handover import Command
 from teatree.core.models import LoopLease, SessionHandover, Ticket
 
 
@@ -214,6 +216,78 @@ class TestTheBarriersReturnsLandInThePayload(_PinnedSessionTestCase):
         assert "Sub-agent wrap-up" not in SessionHandover.objects.get().payload
 
 
+def _push(worktree: str, branch: str, *, error: str = "", pushed: bool = False) -> SubagentPush:
+    if pushed:
+        outcome = FastPushOutcome(ok=True, branch=branch, committed=True, pushed=True)
+        return SubagentPush(worktree=pathlib.Path(worktree), branch=branch, driven=True, outcome=outcome)
+    return SubagentPush(worktree=pathlib.Path(worktree), branch=branch, driven=False, error=error)
+
+
+class TestOneWrapUpSectionPerRow(_PinnedSessionTestCase):
+    """N hand-offs from one session leave ONE wrap-up block, carrying every agent seen (#4194).
+
+    Ten hand-offs used to leave the receiver ten ``## Sub-agent wrap-up`` sections,
+    each a snapshot of a different moment — the N-partially-contradictory-narratives
+    problem this PR's single row was built to end, reproduced inside that row.
+    """
+
+    def _barrier(self, *rounds: list[SubagentPush]) -> None:
+        """Return a different push set on each successive ``create``."""
+        remaining = list(rounds)
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            lambda *a, **k: remaining.pop(0) if remaining else [],
+        )
+
+    def test_a_second_hand_off_updates_one_wrap_up_section(self) -> None:
+        self._barrier([_push("/wt/a", "feat/a", error="boom")], [_push("/wt/a", "feat/a", error="boom")])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", json_output=True)
+
+        payload = SessionHandover.objects.get().payload
+        assert payload.count(SUBAGENT_MARKER_START) == 1
+
+    def test_an_agent_dropped_from_the_latest_barrier_is_still_named(self) -> None:
+        """The discriminating test: under a REPLACE strategy A's record vanishes entirely."""
+        self._barrier(
+            [_push("/wt/a", "feat/a", error="refused: unpushed work"), _push("/wt/b", "feat/b", error="boom")],
+            [_push("/wt/b", "feat/b", pushed=True)],
+        )
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", json_output=True)
+
+        payload = SessionHandover.objects.get().payload
+        assert payload.count(SUBAGENT_MARKER_START) == 1
+        assert "/wt/a" in payload, "a worktree refused at hand-off #1 and since pruned must still be named"
+        assert "refused: unpushed work" in payload
+        assert "NOT enumerated at the latest barrier" in payload
+        assert "/wt/b" in payload
+        assert "committed, pushed" in payload, "the surviving agent carries its LATEST status"
+
+    def test_a_changed_agent_status_is_updated_not_duplicated(self) -> None:
+        self._barrier([_push("/wt/a", "feat/a", error="refused: leak")], [_push("/wt/a", "feat/a", pushed=True)])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", json_output=True)
+
+        payload = SessionHandover.objects.get().payload
+        assert payload.count("/wt/a") == 1
+        assert "refused: leak" not in payload, "the stale status is UPDATED, not left beside the new one"
+        assert "committed, pushed" in payload
+
+    def test_the_completeness_assertion_refuses_a_duplicated_wrap_up_block(self) -> None:
+        created = _call("handover", "create", body="BODY", json_output=True)
+        row = SessionHandover.objects.get()
+        assert json.loads(created)["completeness_ok"] is True
+        SessionHandover.objects.filter(pk=row.pk).update(payload=f"{row.payload}\n\n{row.payload}")
+
+        failures = Command._completeness_failures(pk=row.pk, expected="BODY", drove_subagents=True)
+
+        assert any("sub-agent wrap-up sections" in failure for failure in failures)
+
+
 class TestHandoverReportsTheIntegerRowId(_PinnedSessionTestCase):
     def test_json_carries_the_integer_primary_key(self) -> None:
         data = json.loads(_call("handover", "create", to="target-Z", json_output=True))
@@ -249,11 +323,11 @@ class TestCompletenessIsAssertedBeforeAnyOkLine(_PinnedSessionTestCase):
     """Verify-by-re-read: the row is re-fetched from the DB, never trusted in memory (#4194)."""
 
     def test_a_persisted_payload_that_lost_the_resolved_bytes_fails_loudly(self) -> None:
-        def _gut_the_row(_handover, _section) -> pathlib.Path:
+        def _gut_the_row(_handover, _records) -> pathlib.Path:
             SessionHandover.objects.update(payload="something else entirely")
             return pathlib.Path("/tmp/mirror.md")
 
-        self._patch("teatree.core.management.commands.handover.append_subagent_section", _gut_the_row)
+        self._patch("teatree.core.management.commands.handover.upsert_subagent_section", _gut_the_row)
 
         err = StringIO()
         out = StringIO()

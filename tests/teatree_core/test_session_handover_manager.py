@@ -18,9 +18,12 @@ from teatree.core.models import SessionHandover
 from teatree.core.session_handover_manager import (
     SelfAddressedHandoverError,
     SessionHandoverQuerySet,
-    append_payload,
+    block_markers,
     render_fenced_handoffs,
+    upsert_payload_block,
 )
+
+_MARKER = "t3:test:block"
 
 
 class TestClaimAll(TestCase):
@@ -178,19 +181,43 @@ class TestRenderFencedHandoffs:
         assert render_fenced_handoffs([]) == ""
 
 
-class TestAppendPayload(TestCase):
-    def test_a_section_is_appended_and_persisted_without_touching_other_fields(self) -> None:
+class TestUpsertPayloadBlock(TestCase):
+    """A delimited block a later write REPLACES — never a second copy of the same section."""
+
+    def test_upsert_payload_block_replaces_rather_than_appends(self) -> None:
         row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL")
 
-        append_payload(row, "## Added section")
+        upsert_payload_block(row, marker=_MARKER, block="FIRST BLOCK")
+        upsert_payload_block(row, marker=_MARKER, block="SECOND BLOCK")
+        row.save(update_fields=["payload"])
 
         row.refresh_from_db()
-        assert row.payload.startswith("ORIGINAL")
-        assert "## Added section" in row.payload
+        start, _end = block_markers(_MARKER)
+        assert row.payload.count(start) == 1, "a second write updates the block; it does not accumulate another"
+        assert "FIRST BLOCK" not in row.payload
+        assert "SECOND BLOCK" in row.payload
+        assert row.payload.startswith("ORIGINAL"), "the surrounding body is untouched"
         assert row.to_session == "b"
 
-    def test_an_empty_payload_becomes_the_section(self) -> None:
-        row = SessionHandover.objects.create(from_session="a", to_session="b", payload="")
-        append_payload(row, "## Only section")
+    def test_the_block_is_written_last_so_a_later_absorb_cannot_bury_it(self) -> None:
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL")
+
+        upsert_payload_block(row, marker=_MARKER, block="BLOCK")
+        row.save(update_fields=["payload"])
+        SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LATER HAND-OFF")
         row.refresh_from_db()
-        assert row.payload == "## Only section"
+        upsert_payload_block(row, marker=_MARKER, block="REFRESHED BLOCK")
+        row.save(update_fields=["payload"])
+
+        row.refresh_from_db()
+        start, _end = block_markers(_MARKER)
+        assert row.payload.count(start) == 1
+        assert row.payload.index("LATER HAND-OFF") < row.payload.index("REFRESHED BLOCK")
+
+    def test_an_empty_payload_becomes_the_block(self) -> None:
+        row = SessionHandover.objects.create(from_session="a", to_session="b", payload="")
+        upsert_payload_block(row, marker=_MARKER, block="ONLY BLOCK")
+        row.save(update_fields=["payload"])
+        row.refresh_from_db()
+        start, end = block_markers(_MARKER)
+        assert row.payload == f"{start}\nONLY BLOCK\n{end}"

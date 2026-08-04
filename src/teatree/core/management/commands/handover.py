@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import IO, Annotated, NoReturn, cast
 
 import typer
+from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.handover import (
@@ -29,7 +30,12 @@ from teatree.core.handover import (
     resolve_handover,
 )
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
-from teatree.core.handover_wrapup import SUBAGENT_SECTION_HEADER, append_subagent_section, render_subagent_section
+from teatree.core.handover_wrapup import (
+    SUBAGENT_MARKER_START,
+    merge_subagent_records,
+    subagent_record,
+    upsert_subagent_section,
+)
 from teatree.core.machine_output import emit
 from teatree.core.models import SessionHandover
 from teatree.core.session_identity import is_loop_runner_session
@@ -113,7 +119,7 @@ class Command(TyperCommand):
         handover, mirror, source = created.handover, created.mirror, created.source
         recipient = handover.to_session or "next-session"
         if drive_subagents:
-            mirror = append_subagent_section(handover, render_subagent_section(pushes))
+            mirror = self._fold_subagent_wrapup(handover, pushes)
         failures = self._completeness_failures(
             pk=handover.pk, expected=created.resolved, drove_subagents=drive_subagents
         )
@@ -172,6 +178,17 @@ class Command(TyperCommand):
             raise SystemExit(3)
 
     @staticmethod
+    def _fold_subagent_wrapup(handover: SessionHandover, pushes: list[SubagentPush]) -> Path:
+        """Merge this barrier's returns into the row's union and re-render its one block.
+
+        The union is what makes a second hand-off UPDATE the wrap-up rather than
+        append a second one, while still naming an agent this barrier no longer sees.
+        """
+        now = timezone.now()
+        records = merge_subagent_records(handover.subagent_wrapup, [subagent_record(push, at=now) for push in pushes])
+        return upsert_subagent_section(handover, records)
+
+    @staticmethod
     def _completeness_failures(*, pk: int, expected: str, drove_subagents: bool) -> list[str]:
         """What is wrong with the PERSISTED row, read fresh from the DB — ``[]`` when nothing is.
 
@@ -181,6 +198,7 @@ class Command(TyperCommand):
         """
         row = SessionHandover.objects.get(pk=pk)
         unclaimed = SessionHandover.objects.filter(from_session=row.from_session, claimed_at__isnull=True).count()
+        sections = row.payload.count(SUBAGENT_MARKER_START)
         checks = (
             (isinstance(row.pk, int) and row.pk > 0, f"the row id {row.pk!r} is not a positive integer"),
             (bool(row.payload.strip()), "the persisted payload is empty"),
@@ -198,8 +216,16 @@ class Command(TyperCommand):
                 f"the row is addressed to {row.to_session!r}, an id no receiving session can have",
             ),
             (
-                not drove_subagents or SUBAGENT_SECTION_HEADER in row.payload,
+                not drove_subagents or sections == 1,
                 "the sub-agent barrier ran but its per-agent returns are not in the payload",
+            ),
+            # Verify-by-re-read must catch THIS bug class too: the wrap-up used to be
+            # appended, so N hand-offs left N sections. An authored body that itself
+            # quotes the marker trips this loudly rather than silently — loud-over-
+            # silent is the intended polarity.
+            (
+                sections <= 1,
+                f"the payload carries {sections} sub-agent wrap-up sections — exactly one is allowed",
             ),
             (unclaimed == 1, f"this session holds {unclaimed} unclaimed hand-offs — exactly one is allowed"),
         )

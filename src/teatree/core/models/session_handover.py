@@ -42,11 +42,22 @@ class SessionHandover(models.Model):
     oldest-first drain order and :func:`~teatree.core.handover.unique_mirror_path`
     want: a row whose payload just changed is the newest state, and its mirror
     file is named after the write that produced it.
+
+    A row carries exactly ONE sub-agent wrap-up block, whatever the number of
+    hand-offs that landed on it; :attr:`subagent_wrapup` is that block's source.
     """
 
     from_session = models.CharField(max_length=255)
     to_session = models.CharField(max_length=255, blank=True, default="")
     payload = models.TextField()
+    #: Every sub-agent worktree this row's barrier has EVER enumerated, keyed by
+    #: worktree path, with each agent's latest known status. The payload's wrap-up
+    #: block is RENDERED from this, so a second hand-off updates one section instead
+    #: of appending another — and an agent that has since disappeared is still named,
+    #: which is the highest-risk thing a hand-off carries. Stored rather than
+    #: re-parsed out of the rendered markdown: a text round-trip is a data model in
+    #: disguise, and it breaks the first time an authored body quotes the section.
+    subagent_wrapup = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     claimed_at = models.DateTimeField(null=True, blank=True)
     claimed_by = models.CharField(max_length=255, blank=True, default="")
