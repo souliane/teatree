@@ -5,6 +5,7 @@ import pytest
 
 from teatree.utils import git
 from teatree.utils import run as utils_run_mod
+from teatree.utils.git_commit import last_commit_message
 from tests.teatree_core.cleanup._shared import _run_git
 
 
@@ -281,8 +282,8 @@ def test_last_commit_message_skip_merges_reads_the_branch_s_own_last_real_commit
     _run_git("checkout", "-q", "feature", cwd=clone)
     _run_git("merge", "-q", "--no-ff", "--no-edit", "main", cwd=clone)
 
-    assert git.last_commit_message(repo=str(clone))[0].startswith("Merge branch")
-    assert git.last_commit_message(repo=str(clone), skip_merges=True) == ("feat(x): the branch's own work", "Body.")
+    assert last_commit_message(repo=str(clone))[0].startswith("Merge branch")
+    assert last_commit_message(repo=str(clone), skip_merges=True) == ("feat(x): the branch's own work", "Body.")
 
 
 def test_first_commit_message_returns_oldest_branch_commit_not_default_head(tmp_path: Path) -> None:
