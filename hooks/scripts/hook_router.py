@@ -52,7 +52,6 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
-from hooks.scripts.agent_roster import handle_track_agents
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
 from hooks.scripts.classifier_relax_gate import (
@@ -88,6 +87,7 @@ from hooks.scripts.direct_command_guard import (
 from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa: F401 re-export for test access
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission, handle_dispatch_admission_on_task_create
+from hooks.scripts.dispatch_ledger import handle_track_agents
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import autoload_skill_demand, engage
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
@@ -3217,7 +3217,7 @@ def handle_read_dedup(data: dict) -> None:
 
 
 # ``handle_track_agents`` (+ its ``_agent_id_from_response`` /
-# ``_newest_task_agent_id`` helpers) lives in the ``agent_roster`` sibling — the
+# ``_newest_task_agent_id`` helpers) lives in the ``dispatch_ledger`` sibling — the
 # #778 sub-agent-dispatch capture — and is imported into the PostToolUse chain.
 
 
