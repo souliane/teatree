@@ -19,6 +19,12 @@ coin-flip the incident report describes — where the chain survives and nothing
 deliberately: :mod:`teatree.loops.off_live_tick_driver` fires their own tick command,
 so carrying no timer row is their correct steady state, and exposing them would be a
 permanent false alarm.
+
+The ``loop_runner_enabled`` kill-switch is the invariant's PRECONDITION, not a breach
+of it: step 0 of ``loop_timer`` halts without a successor precisely to terminate every
+chain at its source, so a drained fleet under an OFF switch is the documented outcome
+of an operator decision. The lane below pins that the alarm stays silent there, with
+the same drained state under an ON switch as its control.
 """
 
 import datetime as dt
@@ -27,10 +33,13 @@ import uuid
 
 import django.test
 import pytest
+import typer
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, normalize_uuid
+from typer.testing import CliRunner
 
+from teatree.cli.doctor.checks_loop import _check_loop_schedule_liveness
 from teatree.core.models import ConfigSetting, Loop
 from teatree.loops import timer_chains
 from teatree.loops.registry import iter_loops
@@ -136,6 +145,61 @@ class TestScheduleLiveness(django.test.TestCase):
     def test_a_disabled_loop_is_not_expected_to_carry_a_chain(self) -> None:
         self._enable(enabled=False)
         assert self._names() == []
+
+
+def _doctor_verdict() -> tuple[bool, str]:
+    """``_check_loop_schedule_liveness``'s verdict and the operator-facing text it echoed."""
+    verdict: list[bool] = []
+    app = typer.Typer()
+
+    @app.command()
+    def run() -> None:
+        verdict.append(_check_loop_schedule_liveness())
+
+    output = CliRunner().invoke(app, []).output
+    return verdict[0], output
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestTheKillSwitchIsThePreconditionNotABreach(django.test.TestCase):
+    """An operator who turns the loop runner OFF has not broken the invariant.
+
+    Step 0 of ``loop_timer`` halts WITHOUT a successor so the chain terminates at its
+    source, while ``Loop.enabled`` stays True — so every enabled loop drains into the
+    exact state the alarm reads as a stopped chain. Red-lining a deliberate kill-switch,
+    with remediation advice that is wrong for the operator who flipped it, is how a
+    doctor teaches people to ignore it.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        DBTaskResult.objects.all().delete()
+        Loop.objects.create(name=_LOOP, script=f"src/teatree/loops/{_LOOP}/loop.py", delay_seconds=60)
+
+    def _drain(self) -> None:
+        """Fire the real timer body under the current switch and assert it halted the chain."""
+        assert _fire(_LOOP, task_id=uuid.uuid4())["action"] == "halted"
+        assert timer_chains.pending_loop_timers(_LOOP) == []
+
+    def test_a_fleet_drained_by_the_kill_switch_is_not_named(self) -> None:
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
+        self._drain()
+        assert unscheduled_loops(timezone.now()) == ()
+
+    def test_the_doctor_does_not_fail_on_a_deliberate_kill_switch(self) -> None:
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
+        self._drain()
+        passes, output = _doctor_verdict()
+        assert passes is True
+        assert "t3 worker ensure" not in output
+
+    def test_the_same_drained_state_is_named_once_the_switch_is_back_on(self) -> None:
+        """The control: only the switch differs, and the alarm fires."""
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
+        self._drain()
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
+        assert [loop.name for loop in unscheduled_loops(timezone.now())] == [_LOOP]
+        assert _doctor_verdict()[0] is False
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)

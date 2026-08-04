@@ -17,10 +17,24 @@ would be a change detector wearing an invariant's clothes. What IS principled he
 is the surface: every enumeration backing a ``t3 tool`` triage verdict, walked as a
 family rather than fixed one offender at a time.
 
-The AST walk is the forward ratchet — a NEW enumerator added to this module cannot
-reintroduce the silent-empty — and the behavioural lanes below pin the verdict
-layer end to end, including that ``--close-resolved`` cannot act on a scan that
-never ran.
+**What each lane is worth.** The substantive guarantee is structural: ``_gh_json`` is
+the one chokepoint every enumeration reads through, and it raises. The two lanes below
+guard that shape rather than restate it — no ``gh`` result is CONSUMED outside the
+chokepoint (the two write calls discard theirs, and a discarded result cannot be
+laundered into a verdict), and nothing catches :class:`ForgeEnumerationError` to hand
+back an empty. Between them a new enumerator has no route to the silent-empty that does
+not also fail a lane.
+
+The ``returncode`` AST walk is narrower than either, and deliberately so: it recognises
+the PRE-FIX SHAPE — a ``returncode``-guarded ``if`` returning a neutral empty — and
+nothing else. A ternary, a ``stdout`` guard, a ``try``/``except`` swallow and an
+assign-then-return all read clean to it. Widening it into a general dataflow analysis
+would earn false positives across the ~34 legitimate neutral-empty returns named above,
+for a shape the chokepoint lane already forecloses. It is a cheap regression pin on one
+known defect, not the thing standing between the tree and the class.
+
+The behavioural lanes pin the verdict layer end to end, including that
+``--close-resolved`` cannot act on a scan that never ran.
 """
 
 import ast
@@ -36,8 +50,14 @@ from teatree.cli.triage_tools import find_duplicates, label_issues, triage_issue
 from teatree.triage import DuplicateFinder, ForgeEnumerationError, LabelSuggester, TriageScanner
 
 _TRIAGE_MODULE = Path(__file__).resolve().parents[2] / "src" / "teatree" / "triage.py"
+_TRIAGE_SOURCE = _TRIAGE_MODULE.read_text(encoding="utf-8")
 _RUN_TARGET = "teatree.triage.run_allowed_to_fail"
 _REPO = "souliane/teatree"
+
+#: The single function every enumeration reads through, and the raise it makes.
+_CHOKEPOINT = "_gh_json"
+_ERROR = "ForgeEnumerationError"
+_RUNNER = "run_allowed_to_fail"
 
 #: Anti-vacuity floor: the walk must find the enumerators it claims to cover.
 _MIN_RETURNCODE_BRANCHES = 1
@@ -69,6 +89,69 @@ def _is_neutral_empty(value: ast.expr | None) -> bool:
     if value is None or (isinstance(value, ast.Constant) and value.value is None):
         return True
     return isinstance(value, _NEUTRAL_EMPTIES) and not getattr(value, "elts", getattr(value, "keys", None))
+
+
+def _consumed_forge_reads(tree: ast.AST) -> list[int]:
+    """Lines where a ``gh`` call's result is USED outside the ``_gh_json`` chokepoint.
+
+    A read whose result is discarded (the ``issue edit`` / ``issue close`` writes)
+    cannot reach a verdict; a read whose result is bound or returned can.
+    """
+    chokepoint = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == _CHOKEPOINT)
+    discarded = {
+        node.value.lineno for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    }
+    inside = {node.lineno for node in ast.walk(chokepoint) if isinstance(node, ast.Call)}
+    return sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _RUNNER in ast.unparse(node.func)
+        and node.lineno not in discarded
+        and node.lineno not in inside
+    )
+
+
+def _swallowed_enumeration_errors(tree: ast.AST) -> list[int]:
+    """Lines of every ``except`` handler that catches the fail-loud error."""
+    return sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ExceptHandler) and node.type is not None and _ERROR in ast.unparse(node.type)
+    )
+
+
+class TestTheChokepointIsTheOnlyRouteToAForgeRead:
+    """The structural guarantee the narrow ``returncode`` walk does NOT provide."""
+
+    def test_no_forge_read_is_consumed_outside_the_chokepoint(self) -> None:
+        assert _consumed_forge_reads(ast.parse(_TRIAGE_SOURCE)) == []
+
+    def test_the_lane_goes_red_on_an_enumerator_that_bypasses_the_chokepoint(self) -> None:
+        """The control — an assign-then-return enumerator, one shape the walk cannot see."""
+        bypass = _TRIAGE_SOURCE + (
+            "\n\ndef fetch_extra(repo):\n"
+            "    result = run_allowed_to_fail(['gh', 'issue', 'list'], expected_codes=None)\n"
+            "    out = [] if result.returncode != 0 else json.loads(result.stdout)\n"
+            "    return out\n"
+        )
+        assert _consumed_forge_reads(ast.parse(bypass))
+        assert _laundering_returns(bypass) == []  # the narrow walk stays blind to it
+
+    def test_nothing_swallows_the_fail_loud_error(self) -> None:
+        assert _swallowed_enumeration_errors(ast.parse(_TRIAGE_SOURCE)) == []
+
+    def test_the_lane_goes_red_on_a_handler_that_hands_back_an_empty(self) -> None:
+        """The control — the fourth shape, a ``try``/``except`` swallow of the raise."""
+        swallow = _TRIAGE_SOURCE + (
+            "\n\ndef fetch_extra(repo):\n"
+            "    try:\n"
+            "        return _open_issues(repo)\n"
+            "    except ForgeEnumerationError:\n"
+            "        return []\n"
+        )
+        assert _swallowed_enumeration_errors(ast.parse(swallow))
+        assert _laundering_returns(swallow) == []  # the narrow walk stays blind to it
 
 
 class TestNoEnumeratorLaundersAFailedReadIntoAnEmptyOne:
