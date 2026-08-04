@@ -25,6 +25,8 @@ from teatree.core.admission_governor import (
     decide_admission,
     per_agent_test_workers,
     read_machine_signal,
+    resume_agent_ceiling,
+    resume_shed_directive,
     weekly_pace,
 )
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
@@ -149,12 +151,12 @@ class TestYieldPerToken:
 
 
 class TestFailSafeAndFloor:
-    def test_an_unreadable_quota_probe_admits_without_tightening(self) -> None:
-        # CORRECTED contract (see TestUnreadableProbeNeverManufacturesAClamp): the
-        # first cut asserted a clamp-down to 1 here, which was the defect itself.
+    def test_an_unreadable_quota_probe_still_admits(self) -> None:
+        # An unreadable probe bounds the lane (see TestAnUnknownQuotaIsBoundedNotUnlimited)
+        # but never DENIES: the governor has no evidence of a spent budget.
         decision = _decide(quota=_quota(fresh=False), static_ceiling=6)
         assert decision.admit
-        assert decision.ceiling == 6
+        assert decision.ceiling == 4
 
     def test_the_ceiling_never_deadlocks_the_factory_to_zero(self) -> None:
         decision = _decide(
@@ -216,21 +218,24 @@ class TestTestWorkerCapWiring:
 
 
 class TestUnreadableProbeNeverManufacturesAClamp:
-    """#3644 regression: a probe that cannot read must not TIGHTEN admission.
+    """#3644 regression: a probe that cannot read must not INVENT a tighter ceiling.
 
     The first cut treated "quota unreadable" as a reason to clamp the ceiling to 1.
     That is the silent-starvation failure the governor exists to prevent: the quota
     cache is cold on every fresh install and permanently cold for an operator who
     pins no subscription account, so the governor pinned concurrency to 1 forever on
-    evidence it never had — and, worse, manufactured a clamp where the operator's own
-    state said UNCLAMPED. Conservative means "do not RAISE", never "clamp down".
+    evidence it never had. The bound an unknown quota falls back to is the one derived
+    from the machine signal it DID read (#4097) — never a constant, and never below
+    what the same box would get on a healthy quota.
     """
 
-    def test_an_unreadable_probe_leaves_an_absent_static_ceiling_unclamped(self) -> None:
-        assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling is None
+    def test_an_unreadable_probe_never_tightens_below_the_healthy_ceiling(self) -> None:
+        assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling == _decide().ceiling
 
     def test_an_unreadable_probe_preserves_the_operators_static_ceiling(self) -> None:
-        assert _decide(quota=_quota(fresh=False), static_ceiling=4).ceiling == 4
+        # 32 cores so the machine ceiling is 16: a static 4 that merely COINCIDED with
+        # the machine answer would pass whether or not it was honoured.
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=32), static_ceiling=4).ceiling == 4
 
     def test_an_unreadable_probe_still_admits(self) -> None:
         assert _decide(quota=_quota(fresh=False), static_ceiling=None).admit
@@ -242,7 +247,6 @@ class TestUnreadableProbeNeverManufacturesAClamp:
             machine=_machine(cores=8),
             static_ceiling=8,
         )
-        assert tightened.ceiling is not None
         assert tightened.ceiling < 8
 
     def test_a_machine_brake_still_denies_even_when_the_quota_probe_is_unreadable(self) -> None:
@@ -250,6 +254,36 @@ class TestUnreadableProbeNeverManufacturesAClamp:
         # the load brake, which reads its own signal successfully.
         denied = _decide(quota=_quota(fresh=False), machine=_machine(load1=8 * 5.0 + 1))
         assert not denied.admit
+
+
+class TestAnUnknownQuotaIsBoundedNotUnlimited:
+    """#4097: not knowing the budget must never buy MORE concurrency than knowing it.
+
+    An unknown quota used to leave ``static_ceiling`` verbatim, so the headless lane —
+    which passes ``static_ceiling=None`` — got no ceiling at all, while a known-healthy
+    quota got ``floor(cores * WRITE_CONCURRENCY_PER_CORE)``. The machine-derived base
+    needs no quota information whatsoever, so it is available in both cases; only the
+    weekly-pace scaling on top of it genuinely requires a fresh quota.
+    """
+
+    def test_an_unknown_quota_still_yields_a_bounded_ceiling(self) -> None:
+        assert _decide(quota=_quota(fresh=False), static_ceiling=None).ceiling == 4
+
+    def test_an_unknown_quota_never_admits_wider_than_a_known_healthy_one(self) -> None:
+        unknown = _decide(quota=_quota(fresh=False), static_ceiling=None)
+        known_healthy = _decide(quota=_quota(), static_ceiling=None)
+        assert unknown.ceiling <= known_healthy.ceiling
+
+    def test_an_operator_ceiling_below_the_machine_one_still_wins(self) -> None:
+        assert _decide(quota=_quota(fresh=False), static_ceiling=2).ceiling == 2
+
+    def test_the_unknown_quota_ceiling_never_deadlocks_the_factory_to_zero(self) -> None:
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=1), static_ceiling=None).ceiling == 1
+
+    def test_an_unknown_quota_scales_with_the_box_instead_of_pinning_to_one(self) -> None:
+        # The #3644 defect this must not re-introduce was a hard clamp to 1 regardless
+        # of the box; the machine-derived bound grows with the cores it is derived from.
+        assert _decide(quota=_quota(fresh=False), machine=_machine(cores=32), static_ceiling=None).ceiling == 16
 
 
 class TestWeeklyPace:
@@ -464,3 +498,49 @@ class TestWriteConcurrencyRaise:
     def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
         """The melt driver the old 0.25 was calibrated against, now bounded independently."""
         assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+
+
+class TestResumeAgentPopulation:
+    """A session resume restores the whole previously-running fleet in one step (#4108).
+
+    The restore is not a dispatch, so the dispatch-side ceiling never sees it. The
+    population it re-creates is a HOST fact, so the bound is derived from the live
+    machine reading — never from a per-lane concurrency setting, which bounds one lane
+    and says nothing about how many agents the box is carrying in total.
+    """
+
+    def test_an_idle_box_carries_one_agent_per_core(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0)) == 8
+
+    def test_the_ceiling_falls_as_live_load_eats_the_box(self) -> None:
+        idle = resume_agent_ceiling(_machine(cores=8, load1=0.0))
+        busy = resume_agent_ceiling(_machine(cores=8, load1=20.0))
+        assert 1 <= busy < idle
+
+    def test_the_recorded_meltdown_leaves_room_for_nothing_beyond_one(self) -> None:
+        """Load 58 on 8 cores — the reading taken during the simultaneous restore."""
+        assert resume_agent_ceiling(_machine(cores=8, load1=58.0)) == 1
+
+    def test_the_ceiling_never_reaches_zero(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=1, load1=999.0)) == 1
+
+    def test_a_fleet_within_the_ceiling_says_nothing(self) -> None:
+        assert resume_shed_directive(restored=3, machine=_machine(cores=8, load1=0.0)) == ""
+
+    def test_a_fleet_at_the_ceiling_says_nothing(self) -> None:
+        assert resume_shed_directive(restored=8, machine=_machine(cores=8, load1=0.0)) == ""
+
+    def test_an_over_ceiling_restore_names_the_count_and_the_ceiling(self) -> None:
+        directive = resume_shed_directive(restored=12, machine=_machine(cores=8, load1=20.0))
+        assert "12" in directive  # the restored count
+        assert "4" in directive  # the ceiling the live reading leaves
+        assert "shed" in directive.lower()
+
+    def test_the_recorded_meltdown_restore_is_never_silent(self) -> None:
+        assert resume_shed_directive(restored=12, machine=_machine(cores=8, load1=58.0)) != ""
+
+    def test_the_bound_is_the_live_reading_not_a_per_lane_setting(self) -> None:
+        """Same fleet, same cores — only the live load differs, and only one warns."""
+        fleet = 6
+        assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=0.0)) == ""
+        assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=30.0)) != ""

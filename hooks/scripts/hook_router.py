@@ -52,6 +52,7 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
+from hooks.scripts.agent_roster import handle_track_agents
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
 from hooks.scripts.classifier_relax_gate import (
@@ -86,6 +87,7 @@ from hooks.scripts.direct_command_guard import (
 )
 from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa: F401 re-export for test access
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
+from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission, handle_dispatch_admission_on_task_create
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import autoload_skill_demand, engage
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
@@ -166,6 +168,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
@@ -280,7 +283,16 @@ _SWEEP_SENTINEL = ".last-sweep"
 # long-lived session's statusline silently go blank. The throttle-and-recreate
 # markers (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT
 # listed: their absence is the safe default and they are re-armed on demand.
-_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons", "teatree-active"})
+#
+# ``.agents`` / ``.agents-stopped`` (#4108) are a THIRD reason to protect, distinct
+# from the first two: ``live_restored_agents`` reads them as a SET DIFFERENCE, so
+# the pair must age out together or not at all. A long-running session with agents
+# still in flight keeps dispatching (refreshing ``.agents``) while nothing has
+# terminated in over the retention window (``.agents-stopped`` goes stale) — sweeping
+# only the stopped ledger reinstates the WHOLE append-only dispatch history as
+# "restored" on the next resume, the exact false-positive the design note in
+# ``resume_admission.py`` says the set-difference exists to avoid.
+_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons", "teatree-active", "agents", "agents-stopped"})
 
 
 def _sweep_stale_state_files() -> None:
@@ -3204,96 +3216,9 @@ def handle_read_dedup(data: dict) -> None:
 # decision-policy home — and is imported into the PostToolUse chain above.
 
 
-# ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
-#
-# Issue #778 (reopened): the PreCompact snapshot pinned the loop
-# tick-owner (#786 WS3) but NOT ad-hoc background sub-agents an
-# orchestrator dispatches via the ``Agent`` tool. The dispatched
-# agentId is the handle ``SendMessage`` needs to resume/steer/collect a
-# running agent; it lives only in the conversation and is lost on
-# auto-compaction, orphaning the agent. Mirror the #970 ``TodoWrite``
-# capture: on every ``Agent`` PostToolUse, append the agentId + its
-# role/description to ``<session>.agents`` so the snapshot can quote the
-# roster back. Each line is ``<agentId>\t<role>`` — append-only, deduped
-# on agentId, so a multi-agent fan-out accumulates rather than clobbers.
-
-
-_AGENT_ID_KEYS = ("agentId", "agent_id", "id")
-
-
-def _agent_id_from_response(tool_response: object) -> str:
-    """Extract the dispatched agentId from an ``Agent`` PostToolUse payload.
-
-    The harness response shape is not contractually fixed, so probe the
-    known id-bearing keys on a dict response (``agentId`` / ``agent_id``
-    / ``id``). Returns ``""`` when none is present — the caller then
-    falls back to scanning the harness tasks dir.
-    """
-    from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
-
-    if not isinstance(tool_response, dict):
-        return ""
-    response = cast("dict[str, object]", tool_response)
-    for key in _AGENT_ID_KEYS:
-        value = response.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _newest_task_agent_id() -> str:
-    """Scan the harness tasks output dir for the newest ``a*`` task id.
-
-    Fallback used only when the PostToolUse payload does not expose the
-    agentId. The harness writes one ``<agentId>.output`` file per
-    dispatched task under ``CLAUDE_TASKS_DIR`` (or
-    ``~/.claude/tasks``); the dispatched sub-agent's id is ``a``-prefixed.
-    Returns the most-recently-modified match, or ``""`` when the dir is
-    absent / has no match. Never raises — capture must never block the
-    orchestrator.
-    """
-    tasks_dir = Path(os.environ.get("CLAUDE_TASKS_DIR", str(Path.home() / ".claude" / "tasks")))
-    try:
-        candidates = [p for p in tasks_dir.glob("a*.output") if p.is_file()]
-    except OSError:
-        return ""
-    if not candidates:
-        return ""
-    newest = max(candidates, key=lambda p: p.stat().st_mtime)
-    return newest.stem
-
-
-def handle_track_agents(data: dict) -> None:
-    """Persist a dispatched ``Agent`` sub-agent's id + role to ``<session>.agents``.
-
-    No-op for any other tool name. Prefers the agentId carried on the
-    PostToolUse ``tool_response`` (``tool_result`` as a secondary
-    payload key); falls back to the newest ``a*`` id under the harness
-    tasks dir when the payload omits it. Append-only and deduped on
-    agentId so a parallel fan-out of sub-agents all survive compaction.
-    """
-    if data.get("tool_name") != "Agent":
-        return
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-
-    agent_id = _agent_id_from_response(data.get("tool_response"))
-    if not agent_id:
-        agent_id = _agent_id_from_response(data.get("tool_result"))
-    if not agent_id:
-        agent_id = _newest_task_agent_id()
-    if not agent_id:
-        return
-
-    tool_input = data.get("tool_input", {})
-    role = str(tool_input.get("description") or tool_input.get("subagent_type") or "(no description)").strip()
-
-    _ensure_state_dir()
-    agents_file = _state_file(session_id, "agents")
-    if any(line.split("\t", 1)[0] == agent_id for line in _read_lines(agents_file)):
-        return
-    _append_line(agents_file, f"{agent_id}\t{role}")
+# ``handle_track_agents`` (+ its ``_agent_id_from_response`` /
+# ``_newest_task_agent_id`` helpers) lives in the ``agent_roster`` sibling — the
+# #778 sub-agent-dispatch capture — and is imported into the PostToolUse chain.
 
 
 # ── PreCompact: retro-before-compact ──────────────────────────────
@@ -4190,17 +4115,13 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     if handover is not None:
         context = f"{handover}\n\n---\n\n{context}"
 
-    advisory = _autocompact_kill_switch_advisory()
-    if advisory:
-        context = f"{context}\n\n---\n\n{advisory}"
-
-    switch_advisory = _account_switch_advisory()
-    if switch_advisory:
-        context = f"{switch_advisory}\n\n---\n\n{context}"
-
-    mcp_advisory = _mcp_connectivity_advisory()
-    if mcp_advisory:
-        context = f"{mcp_advisory}\n\n---\n\n{context}"
+    autocompact = _autocompact_kill_switch_advisory()
+    leading = (_account_switch_advisory(), _mcp_connectivity_advisory(), resume_admission_advisory(session_id, source))
+    if autocompact:
+        context = f"{context}\n\n---\n\n{autocompact}"
+    for advisory in leading:
+        if advisory:
+            context = f"{advisory}\n\n---\n\n{context}"
     return context
 
 
@@ -5786,6 +5707,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_mcp_slack_write,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
+        handle_dispatch_admission,
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
@@ -5819,6 +5741,7 @@ _HANDLERS: dict[str, list] = {
     "TaskCreated": [
         handle_enforce_skill_loading_on_task_create,
         handle_dispatch_prompt_quote_scanner_on_task_create,
+        handle_dispatch_admission_on_task_create,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
@@ -5839,7 +5762,7 @@ _HANDLERS: dict[str, list] = {
         handle_stop_snapshot_slot,
         handle_loop_self_pump,
     ],
-    "SubagentStop": [handle_subagent_stop_no_commit],
+    "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent],
 }
 
 # Events whose block/deny is carried by a TOP-LEVEL ``decision`` JSON object on

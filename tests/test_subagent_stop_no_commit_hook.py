@@ -171,4 +171,5 @@ class TestFailsOpen:
 
 class TestRouterWiring:
     def test_subagent_stop_event_is_registered(self) -> None:
-        assert router._HANDLERS["SubagentStop"] == [handle_subagent_stop_no_commit]
+        """This recorder runs FIRST; #4108's restored-fleet tracker shares the event."""
+        assert router._HANDLERS["SubagentStop"][0] is handle_subagent_stop_no_commit
