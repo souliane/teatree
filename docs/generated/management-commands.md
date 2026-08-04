@@ -247,10 +247,10 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
 | `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
 | `auto` | Clear the manual override so the active schedule / default mode decides again |
-| `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
-| `edit` | Edit a preset's entries / description / pin / scope in place |
+| `create` | Create a new preset from ``--set`` entries and an optional overlay scope |
+| `edit` | Edit a preset's entries / description / scope in place |
 | `delete` | Delete a preset — refused while anything still names it; a shipped one needs ``--confirm`` |
-| `list` | List every preset with its pin, scope, entry count, and the ACTIVE marker |
+| `list` | List every preset with its scope, entry count, and the ACTIVE marker |
 
 ## `loop_schedule`
 
