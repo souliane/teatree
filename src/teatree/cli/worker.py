@@ -111,17 +111,22 @@ def _resolve_kill_switch() -> tuple[bool, str]:
 
 
 def _timer_counts() -> dict[str, dict[str, int]]:
-    """Per-loop ``{ready, running}`` ``loop_timer`` chain counts across the enabled set."""
-    from teatree.core.models import Loop  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+    """Per-loop ``{ready, running}`` ``loop_timer`` counts across the set that SHOULD be chained.
+
+    Keyed on the chain membership (the effective verdict), so a preset-admitted loop with
+    zero timers shows up as the ``0/0`` it is. Keyed on ``Loop.enabled`` the diagnostic
+    silently omitted exactly the starved loops it existed to surface (#4185).
+    """
+    from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 (deferred: no DB at CLI import)
     from teatree.loops.timer_chains import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
         pending_loop_timers,
         running_loop_timers,
     )
 
-    counts: dict[str, dict[str, int]] = {}
-    for name in Loop.objects.enabled().values_list("name", flat=True):
-        counts[name] = {"ready": len(pending_loop_timers(name)), "running": len(running_loop_timers(name))}
-    return counts
+    return {
+        name: {"ready": len(pending_loop_timers(name)), "running": len(running_loop_timers(name))}
+        for name in sorted(timer_chain_loop_names())
+    }
 
 
 def _holder_lines(record: "HolderRecord | None") -> list[str]:

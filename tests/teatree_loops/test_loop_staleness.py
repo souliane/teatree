@@ -16,7 +16,7 @@ import django.test
 from django.utils import timezone
 
 from teatree.core.mode_resolution import ResolvedMode
-from teatree.core.models import Loop, Mode, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_staleness import (
     STALE_CADENCE_MULTIPLIER,
@@ -156,20 +156,60 @@ class TestStaleLoops(_LoopTableCase):
 
 
 @django.test.override_settings(USE_TZ=True)
+class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
+    """Staleness measures whatever the verdict says should run — not the raw column (#4185).
+
+    Real ``Mode`` / ``ModeOverride`` rows rather than a patched resolver seam: the whole
+    point is that the effective verdict, not ``Loop.enabled``, decides the measured set.
+    """
+
+    def _activate(self, entries: dict[str, bool]) -> None:
+        Mode.objects.create(name="preset-4185", entries=entries)
+        ModeOverride.objects.set_override("preset-4185")
+
+    def test_a_preset_forced_on_column_disabled_loop_is_measured_and_stale(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=False)
+        self._activate({"tickets": True})
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is False
+
+    def test_a_preset_masked_off_column_enabled_loop_is_not_measured(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        self._activate({"tickets": False})
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            assert stale_loops(timezone.now()) == []
+
+    def test_a_held_loop_is_not_measured(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        LoopState.objects.pause("tickets")
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            assert stale_loops(timezone.now()) == []
+
+    def test_admission_counts_the_admitted_total_not_the_enabled_column(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(seconds=60), enabled=False)
+        self._activate({"tickets": True})
+        with patch(_ADMITTED_SEAM, return_value=["tickets"]):
+            verdict = admission(timezone.now())
+        assert verdict.admitted_total == 1
+
+
+@django.test.override_settings(USE_TZ=True)
 class TestSuppressionClassification(_LoopTableCase):
-    """Which deliberate control planes excuse a loop from standing still."""
+    """Which deliberate control plane excuses an ADMITTED loop from standing still.
+
+    Only the colleague gate: a masked or held loop is not admitted, so it is never
+    measured and needs no excuse — that half is covered by
+    :class:`TestMeasuredSetIsTheAdmissionVerdict`.
+    """
 
     def _stale_one(self, **mode_kwargs: object) -> StaleLoop:
         with (
             patch(_REGISTRY_SEAM, return_value=(_mini("review"),)),
             patch(_MODE_SEAM, return_value=_mode(**mode_kwargs)),
-            patch(_HOLDS_SEAM, return_value=(set(), {})),
         ):
             return stale_loops(timezone.now())[0]
-
-    def test_mode_mask_of_false_suppresses(self) -> None:
-        _loop("review", ran_ago=dt.timedelta(hours=7))
-        assert self._stale_one(name="offline", entries={"review": False}).suppressed
 
     def test_colleague_loop_is_suppressed_while_questions_defer(self) -> None:
         _loop("review", ran_ago=dt.timedelta(hours=7), colleague_facing=True)
@@ -178,15 +218,6 @@ class TestSuppressionClassification(_LoopTableCase):
     def test_colleague_loop_is_not_suppressed_while_questions_are_live(self) -> None:
         _loop("review", ran_ago=dt.timedelta(hours=7), colleague_facing=True)
         assert not self._stale_one(name="engaged", defers=False).suppressed
-
-    def test_loop_state_hold_suppresses(self) -> None:
-        _loop("review", ran_ago=dt.timedelta(hours=7))
-        with (
-            patch(_REGISTRY_SEAM, return_value=(_mini("review"),)),
-            patch(_MODE_SEAM, return_value=_mode()),
-            patch(_HOLDS_SEAM, return_value=({"review"}, {})),
-        ):
-            assert stale_loops(timezone.now())[0].suppressed
 
     def test_unmasked_loop_is_not_suppressed(self) -> None:
         _loop("review", ran_ago=dt.timedelta(hours=7))
@@ -208,7 +239,7 @@ class TestLoopHealth(_LoopTableCase):
         _loop("tickets", ran_ago=dt.timedelta(seconds=60))
         health = self._health(admitted=["tickets"], mode=_mode(), registry=(_mini("tickets"),))
         assert health.ok
-        assert health.lines() == ["mode: engaged (source=override) — 1/1 enabled loop(s) admitted"]
+        assert health.lines() == ["mode: engaged (source=override) — 1/1 admitted loop(s) due"]
 
     def test_healthy_fleet_that_is_simply_not_due_is_ok(self) -> None:
         # Admission requires ``is_due``, so a fleet that ticked a second ago admits
@@ -216,7 +247,7 @@ class TestLoopHealth(_LoopTableCase):
         _loop("tickets", ran_ago=dt.timedelta(seconds=10))
         health = self._health(admitted=[], mode=_mode(), registry=(_mini("tickets"),))
         assert health.ok
-        assert "0/1 enabled loop(s) admitted" in "\n".join(health.lines())
+        assert "0/1 admitted loop(s) due" in "\n".join(health.lines())
 
     def test_admission_reports_the_resolved_mode_and_admitted_loops(self) -> None:
         # ``admission`` reads the SAME verdict the timer chain gates on — it must
@@ -232,7 +263,7 @@ class TestLoopHealth(_LoopTableCase):
         assert verdict.mode == "engaged"
         assert verdict.source == "override"
         assert verdict.admitted == ("tickets",)
-        assert verdict.enabled_total == 1
+        assert verdict.admitted_total == 1
 
     def test_frozen_fleet_fails_and_names_the_mode(self) -> None:
         # The seven-hour incident: an all-off mask, forgotten, with a live worker.
@@ -279,7 +310,7 @@ class TestLoopHealth(_LoopTableCase):
         assert not health.ok
         assert not health.frozen_fleet
         assert "dispatch" in rendered
-        assert "no mode mask, colleague gate or LoopState hold explains it" in rendered
+        assert "the colleague gate does not explain it" in rendered
 
     def test_json_carries_the_mode_and_every_stale_loop(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(hours=7))
@@ -291,7 +322,7 @@ class TestLoopHealth(_LoopTableCase):
         assert payload["mode"] == "offline"
         assert payload["mode_source"] == "override"
         assert payload["admitted"] == []
-        assert payload["enabled_total"] == 1
+        assert payload["admitted_total"] == 1
         assert payload["considered"] == 1
         assert payload["frozen_fleet"] is True
         assert [entry["name"] for entry in payload["stale"]] == ["tickets"]
@@ -328,13 +359,13 @@ class TestFrozenFleetPredicate(django.test.SimpleTestCase):
     def test_a_box_with_no_measured_loops_is_not_frozen(self) -> None:
         # No loops to judge is idle by configuration, not a freeze — the alarm needs a
         # denominator before "all of them are behind" means anything.
-        verdict = Admission(mode="offline", source="override", admitted=(), enabled_total=0)
+        verdict = Admission(mode="offline", source="override", admitted=(), admitted_total=0)
         assert not LoopHealth(admission=verdict, stale=(), considered=0).frozen_fleet
 
     def test_all_suppressed_still_counts_as_a_frozen_fleet(self) -> None:
         # Precisely the incident: every loop off ON PURPOSE, and forgotten. Deliberate
         # does not mean fine once it is total.
-        verdict = Admission(mode="offline", source="override", admitted=(), enabled_total=2)
+        verdict = Admission(mode="offline", source="override", admitted=(), admitted_total=2)
         health = LoopHealth(
             admission=verdict,
             stale=(self._stale("tickets", suppressed=True), self._stale("ship", suppressed=True)),
@@ -382,7 +413,7 @@ class TestDriverlessLoops(django.test.SimpleTestCase):
 class TestDriverlessHealthVerdict(django.test.SimpleTestCase):
     @staticmethod
     def _verdict() -> Admission:
-        return Admission(mode="engaged", source="override", admitted=("tickets",), enabled_total=1)
+        return Admission(mode="engaged", source="override", admitted=("tickets",), admitted_total=1)
 
     def test_a_driverless_loop_fails_health_even_with_nothing_stale(self) -> None:
         health = LoopHealth(admission=self._verdict(), stale=(), considered=1, driverless=("directive_loop",))

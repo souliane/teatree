@@ -239,30 +239,36 @@ def _check_dead_ticket_spend(now: dt.datetime | None = None) -> ReconciliationFi
 
 
 def _check_enabled_loops_ticked(now: dt.datetime | None = None) -> ReconciliationFinding:
-    """ALARM when an enabled loop has not ticked in 24h (a silent freeze).
+    """ALARM when a verdict-ADMITTED loop has not ticked in 24h (a silent freeze).
 
-    Query: ``Loop.objects.enabled()`` whose ``last_run_at`` is null or older than
-    24h. Any such loop alarms.
+    Query: every ``Loop`` row the effective verdict admits (hold > forced > preset >
+    ``Loop.enabled``) whose ``last_run_at`` is null or older than 24h. Keyed on the raw
+    ``enabled`` column instead, a preset-forced-on loop froze invisibly — this bug's exact
+    signature — and a preset-masked-off enabled loop false-alarmed (#4185). Deliberately
+    NOT intersected with the live-tick registry: an ``off_live_tick`` loop has its own
+    driver chain and freezes just as silently.
     """
     check_id = "enabled_loops_ticked_24h"
     try:
         from teatree.core.models import Loop  # noqa: PLC0415 — ORM import needs the app registry
+        from teatree.loops.preset_status import effective_verdicts  # noqa: PLC0415 — ORM-backed resolver
 
+        admitted = {verdict.name for verdict in effective_verdicts() if verdict.admitted}
         cutoff = _now(now) - _DAY
         stale = sorted(
             row.name
-            for row in Loop.objects.enabled().only("name", "last_run_at")
+            for row in Loop.objects.filter(name__in=admitted).only("name", "last_run_at")
             if row.last_run_at is None or row.last_run_at < cutoff
         )
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
     if not stale:
-        return _ok(check_id, "all enabled loops ticked in 24h")
+        return _ok(check_id, "all admitted loops ticked in 24h")
     names = ", ".join(f"`{name}`" for name in stale)
     return _alarm(
         check_id,
-        f"Loop-freeze alarm: {len(stale)} enabled loop(s) have not ticked in 24h: {names}. "
-        f"An enabled loop that stops ticking is a silent freeze — start the worker "
+        f"Loop-freeze alarm: {len(stale)} admitted loop(s) have not ticked in 24h: {names}. "
+        f"An admitted loop that stops ticking is a silent freeze — start the worker "
         f"(`t3 worker ensure`) or inspect `t3 loops`.",
     )
 

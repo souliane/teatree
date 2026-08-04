@@ -47,7 +47,7 @@ _STAMP_KEY = "loop_preset_transition_stamp"
 
 
 def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
-    """Run one transition pass: reap expired override, drain + Slack line on a switch.
+    """Run one transition pass: reap expired override, reconcile chains, drain + Slack line.
 
     Idempotent: with no change since the last stamp, only the expired-override reap
     runs and the pass is otherwise a no-op. Fail-soft — a side-effect failure is
@@ -60,10 +60,28 @@ def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
     if current_name == prior_name:
         return {"reaped": reaped, "unchanged": 1}
 
+    _reconcile_timer_chains()
     _drain_on_scheduled_return(prior_name)
     _post_switch_line(active, now)
     _write_stamp(_STAMP_KEY, current_name)
     return {"reaped": reaped, "switched": current_name}
+
+
+def _reconcile_timer_chains() -> None:
+    """Re-head / prune the loop-timer chains the switch just changed membership of (#4185).
+
+    Chain membership IS the preset verdict, so a switch that forces a loop ON leaves it
+    driverless and one that masks a loop OFF leaves a chain to prune. The 5-minute
+    reconcile chain would close both eventually; this 60s chain is the switch's own
+    chokepoint, so the new membership takes effect at the switch. Fail-open — a
+    reconcile failure never blocks the transition.
+    """
+    from teatree.loops.timer_reconciler import ensure_loop_timers  # noqa: PLC0415 — deferred: cycle-safe
+
+    try:
+        ensure_loop_timers()
+    except Exception as exc:  # noqa: BLE001 — reconciliation is best-effort; never block the transition
+        logger.warning("preset-transition timer reconcile failed: %s", exc)
 
 
 def _reap_expired_overrides(now: dt.datetime) -> int:

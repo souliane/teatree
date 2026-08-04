@@ -16,21 +16,22 @@ when it cries wolf. Two facts are NOT faults on their own:
 *   **Zero loops admitted.** Admission requires ``is_due``, so a healthy fleet that
     just ticked admits nothing for most of any given second. The count is context,
     never the alarm.
-*   **One suppressed loop sitting still.** An operator who turns the colleague
-    ``review`` loop off for the week gets exactly what they asked for; a gate that
-    reports that as a failure every hour is a gate people learn to ignore.
+*   **One suppressed loop sitting still.** A colleague-facing loop is admitted through
+    an away window yet has its individual fires skipped; reporting that as a failure
+    every hour is a gate people learn to ignore.
 
-So a staleness failure is one of two shapes: an **unexplained** stale loop (nothing in
-the mode mask, the colleague gate or a ``LoopState`` hold accounts for it — something is
-actually broken), or a **frozen fleet** (every measured loop is behind, which is the
-seven-hour incident: deliberate, forgotten, and total).
+So a staleness failure is one of two shapes: an **unexplained** stale loop (the colleague
+gate does not account for it — something is actually broken), or a **frozen fleet**
+(every measured loop is behind, which is the seven-hour incident: deliberate, forgotten,
+and total). A loop the preset masks off or a ``LoopState`` hold stops is not admitted at
+all, so it is never measured and needs no excuse.
 
 :func:`driverless_loops` is the third, structural reading, and it exists because
 staleness alone has a blind spot it cannot close: :func:`_measured_loops` keeps only
-rows that are enabled AND live-tick AND interval-cadenced, so a loop with no driver at
-all — ``off_live_tick``, and typically disabled and mask-suppressed besides — is
-invisible to the very alarm built to catch loops that are not ticking. Driverlessness is
-a WIRING property, not a cadence one, so it is measured off the registry alone and is
+rows that are verdict-admitted AND live-tick AND interval-cadenced, so a loop with no
+driver at all — ``off_live_tick``, and typically un-admitted besides — is invisible to
+the very alarm built to catch loops that are not ticking. Driverlessness is a WIRING
+property, not a cadence one, so it is measured off the registry alone and is
 deliberately NOT gated on enablement or the mask: a loop nothing can ever drive is a
 fault whether or not anyone has turned it on yet.
 
@@ -77,15 +78,15 @@ def format_age(age_seconds: float) -> str:
 
 @dataclass(frozen=True, slots=True)
 class StaleLoop:
-    """One enabled loop whose cadence anchor has not moved in more than 3x its cadence."""
+    """One admitted loop whose cadence anchor has not moved in more than 3x its cadence."""
 
     name: str
     cadence_seconds: int
     #: Seconds since ``last_run_at`` — or since the row was created, when it never ran.
     age_seconds: float
     ever_ran: bool
-    #: Some deliberate control plane (the mode mask, the colleague gate, a
-    #: ``LoopState`` hold) accounts for this loop standing still.
+    #: The colleague gate accounts for this loop standing still — it is admitted, so it
+    #: keeps its chain, but its fires are skipped while the mode defers questions.
     suppressed: bool
 
     @property
@@ -114,14 +115,16 @@ class Admission:
     mode: str
     source: str
     admitted: tuple[str, ...]
-    enabled_total: int
+    #: How many loops the effective verdict admits at all — the denominator that
+    #: decides ticks. NOT ``Loop.enabled``'s count, which the preset overrides.
+    admitted_total: int
 
     def as_json(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "mode_source": self.source,
             "admitted": list(self.admitted),
-            "enabled_total": self.enabled_total,
+            "admitted_total": self.admitted_total,
         }
 
 
@@ -131,7 +134,7 @@ class LoopHealth:
 
     admission: Admission
     stale: tuple[StaleLoop, ...]
-    #: Enabled live-tick interval loops measured this pass — the denominator that
+    #: Admitted live-tick interval loops measured this pass — the denominator that
     #: makes "every one of them is behind" a meaningful statement.
     considered: int
     #: Registered loops NO driver reaches — the structural fault staleness cannot see.
@@ -166,7 +169,7 @@ class LoopHealth:
         rendered = [
             (
                 f"mode: {verdict.mode} (source={verdict.source}) — "
-                f"{len(verdict.admitted)}/{verdict.enabled_total} enabled loop(s) admitted"
+                f"{len(verdict.admitted)}/{verdict.admitted_total} admitted loop(s) due"
             )
         ]
         if self.driverless:
@@ -176,7 +179,8 @@ class LoopHealth:
             return rendered
         reported = self.stale if self.frozen_fleet else self.unexplained
         rendered.append(
-            f"STALE: {len(reported)} enabled loop(s) have not ticked in over {STALE_CADENCE_MULTIPLIER}x their cadence:"
+            f"STALE: {len(reported)} admitted loop(s) have not ticked in over "
+            f"{STALE_CADENCE_MULTIPLIER}x their cadence:"
         )
         rendered.extend(
             f"  {loop.name:<24} every {loop.cadence_seconds}s   {loop.age_label}"
@@ -208,7 +212,7 @@ class LoopHealth:
         """Name the most likely cause, so a stale reading is actionable rather than alarming."""
         if self.frozen_fleet:
             return (
-                f"FAIL the worker is RUNNING but ticking NOTHING — all {self.considered} enabled "
+                f"FAIL the worker is RUNNING but ticking NOTHING — all {self.considered} admitted "
                 f"loop(s) are behind their cadence under the resolved mode {self.admission.mode!r} "
                 f"(source={self.admission.source}). Inspect it with `t3 loop preset show`; "
                 "clear a manual override with `t3 loop preset auto`, or keep questions "
@@ -216,7 +220,7 @@ class LoopHealth:
             )
         return (
             "FAIL the worker holds the flock but these loops are not advancing their cadence "
-            "anchor, and no mode mask, colleague gate or LoopState hold explains it. Check "
+            "anchor, and the colleague gate does not explain it. Check "
             "`t3 loop status` and the worker log for a failing tick."
         )
 
@@ -243,50 +247,52 @@ def driverless_loops() -> tuple[str, ...]:
 
 
 def _measured_loops() -> list["Loop"]:
-    """Enabled, live-tick, interval-cadence rows — the only ones staleness can judge."""
+    """Verdict-admitted, live-tick, interval-cadence rows — the only ones staleness can judge.
+
+    Admission is the unified verdict (hold > forced > preset > ``Loop.enabled``) via
+    :func:`teatree.loops.chain_membership.timer_chain_loop_names`, the SAME membership the
+    timer chain is built from — so the alarm measures exactly the loops something is
+    supposed to be driving. Reading the raw ``enabled`` column instead made a
+    preset-admitted loop that never ran invisible to the alarm built to catch it (#4185).
+    """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
+    from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 — deferred: ORM-backed
 
-    live = _live_tick_loop_names()
-    return [row for row in Loop.objects.enabled() if row.name in live and row.delay_seconds]
+    admitted = timer_chain_loop_names()
+    return [row for row in Loop.objects.all() if row.name in admitted and row.delay_seconds]
 
 
-def _is_suppressed(row: "Loop", resolved: "ResolvedMode", held: set[str]) -> bool:
+def _is_suppressed(row: "Loop", resolved: "ResolvedMode") -> bool:
     """Whether a deliberate control plane accounts for *row* standing still.
 
-    The three planes an operator actually turns: a ``LoopState`` hold (``t3 loop
-    pause`` / ``disable``), the colleague gate (a ``colleague_facing`` loop while the
-    mode defers questions), and the mode's own tri-state mask. Mirrors the deliberate
-    arms of :func:`teatree.loops.loop_table._loop_admitted` — it deliberately does NOT
-    mirror the ``is_due`` arm, which is cadence, not intent.
+    Only the colleague gate remains: a ``colleague_facing`` loop is admitted (it keeps its
+    chain through an away window) yet its individual fires are skipped while the mode
+    defers questions, so it legitimately stands still. The ``LoopState`` hold and the
+    preset mask no longer need an arm here — a held or masked loop is not admitted, so
+    :func:`_measured_loops` never offers it for judgement in the first place.
     """
-    if row.name in held:
-        return True
-    if row.colleague_facing and resolved.defers_questions:
-        return True
-    return resolved.state_for(row.name) is False
+    return row.colleague_facing and resolved.defers_questions
 
 
 def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER) -> list[StaleLoop]:
-    """Every enabled live-tick interval loop whose anchor is older than ``multiplier x`` its cadence.
+    """Every admitted live-tick interval loop whose anchor is older than ``multiplier x`` its cadence.
 
     A loop that has NEVER run measures from ``created_at`` instead of its absent
     anchor: a freshly seeded fleet is young and silent by construction (flagging it
-    would fail every new install), while a loop that has sat enabled for many
+    would fail every new install), while a loop that has sat admitted for many
     cadences without ever running is frozen just as surely as one that stopped.
     Sorted by name so the status output is stable between runs.
     """
     from teatree.core.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: ORM-backed resolver
-    from teatree.loop.loop_state_db import control_planes_in_db  # noqa: PLC0415 — deferred: ORM-backed read
 
     resolved = resolve_active_mode(now)
-    held, _forced = control_planes_in_db()
     stale = [
         StaleLoop(
             name=row.name,
             cadence_seconds=row.delay_seconds,
             age_seconds=age,
             ever_ran=row.last_run_at is not None,
-            suppressed=_is_suppressed(row, resolved, held),
+            suppressed=_is_suppressed(row, resolved),
         )
         for row in _measured_loops()
         if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * row.delay_seconds
@@ -300,10 +306,12 @@ def admission(now: dt.datetime) -> Admission:
     Reads the SAME verdict the loop-timer chain gates on
     (:func:`teatree.loops.loop_table.admitted_loop_names`), so the number the
     operator is shown is the number that decides whether a tick happens — it can
-    never drift into a second, friendlier opinion.
+    never drift into a second, friendlier opinion. The denominator is the chain
+    membership, for the same reason: a count of ``Loop.enabled`` rows is not the count
+    that decides ticks once a preset overrides the column.
     """
     from teatree.core.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: ORM-backed resolver
-    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
+    from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 — deferred: ORM-backed
     from teatree.loops.loop_table import admitted_loop_names  # noqa: PLC0415 — deferred: loaded at status time
 
     resolved = resolve_active_mode(now)
@@ -311,7 +319,7 @@ def admission(now: dt.datetime) -> Admission:
         mode=resolved.name,
         source=resolved.source,
         admitted=tuple(sorted(admitted_loop_names(now))),
-        enabled_total=Loop.objects.enabled().count(),
+        admitted_total=len(timer_chain_loop_names()),
     )
 
 

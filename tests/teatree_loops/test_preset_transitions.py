@@ -18,6 +18,7 @@ from teatree.loops.preset_transitions import apply_preset_transition
 
 _STAMP_KEY = "loop_preset_transition_stamp"
 _DRAIN = "teatree.loops.preset_transitions.drain_deferred_questions"
+_ENSURE_TIMERS = "teatree.loops.timer_reconciler.ensure_loop_timers"
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
@@ -92,3 +93,39 @@ class TestApplyPresetTransition(django.test.TestCase):
         with patch("teatree.loops.preset_transitions.notify_user") as notify:
             apply_preset_transition(timezone.now())
         notify.assert_called_once()
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestTransitionReconcilesTheChains(django.test.TestCase):
+    """A switch re-heads the chains it just changed membership of (#4185).
+
+    Chain membership is the preset verdict, so a switch that forces a loop ON leaves it
+    driverless — and one that masks a loop OFF leaves a chain to prune — until something
+    reconciles. The 5-minute reconcile chain would eventually, but this 60s chain is the
+    switch's own chokepoint, so the new membership takes effect at the switch.
+    """
+
+    def test_a_switch_reconciles_the_timer_chains(self) -> None:
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
+        with (
+            patch("teatree.loops.preset_transitions.notify_user"),
+            patch(_ENSURE_TIMERS) as ensure,
+        ):
+            apply_preset_transition(timezone.now())
+        ensure.assert_called_once()
+
+    def test_an_unchanged_pass_does_not_reconcile(self) -> None:
+        with patch("teatree.loops.preset_transitions.notify_user"), patch(_ENSURE_TIMERS) as ensure:
+            apply_preset_transition(timezone.now())
+        ensure.assert_not_called()
+
+    def test_a_reconcile_failure_never_breaks_the_transition(self) -> None:
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
+        with (
+            patch("teatree.loops.preset_transitions.notify_user"),
+            patch(_ENSURE_TIMERS, side_effect=RuntimeError("db down")),
+        ):
+            outcome = apply_preset_transition(timezone.now())
+        assert outcome["switched"] == "heads-down"
