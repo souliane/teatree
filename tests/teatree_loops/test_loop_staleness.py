@@ -481,3 +481,30 @@ class TestDriverlessHealthVerdict(django.test.SimpleTestCase):
         health = LoopHealth(admission=self._verdict(), stale=(), considered=1)
         assert health.ok
         assert "FAIL" not in "\n".join(health.lines())
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestSuppressionStaysOnTheNarrowVerdict(_LoopTableCase):
+    """The suppression arm reads what RUNS, never the wider persisted-chain membership.
+
+    Membership keeps a mask-masked loop across the presence flip on purpose, so if this
+    arm asked membership instead of the instant verdict, exactly the loops the closure
+    protects (`audit`, `followup`) would be measured, admitted-looking, standing still —
+    and reported ``unexplained``, hard-FAILing ``t3 worker status`` every weeknight.
+    """
+
+    def test_a_mask_masked_member_is_suppressed_not_unexplained(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        Mode.objects.create(name="slot-narrow", entries={"tickets": False})
+        schedule = ModeSchedule.objects.create(name="calendar-narrow", timezone="UTC")
+        ModeScheduleSlot.objects.create(
+            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="slot-narrow"
+        )
+        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "calendar-narrow")
+        with (
+            patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)),
+            patch(_ADMITTED_SEAM, return_value=[]),
+        ):
+            health = loop_health(timezone.now())
+        assert [loop.name for loop in health.stale] == ["tickets"]
+        assert health.unexplained == ()

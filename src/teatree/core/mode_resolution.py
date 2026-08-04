@@ -33,7 +33,7 @@ the loop fleet or silently mute the user.
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
@@ -88,6 +88,17 @@ class ResolvedMode:
     #: per-loop verdict — the schedule slot / override wording, or the L0 / presence
     #: layer that supplied the mode when no preset did.
     reason: str = ""
+    #: The OTHER side of the live-presence flip, when this mode sits on one side of it:
+    #: the upgrade counterpart of an upgradable schedule/default mode, or the
+    #: schedule/default mode an applied upgrade replaced. ``None`` when no keystroke can
+    #: move this mode at all (a manual override, or a mode that is not upgradable).
+    #:
+    #: It exists because the presence upgrade is the ONE arm of the enable verdict that
+    #: flips with no observable event — a keystroke raises it and the mere ABSENCE of one
+    #: lowers it — so a decision PERSISTED under one side of it (a ``loop_timer`` chain)
+    #: cannot be kept correct by any chokepoint. Chain membership closes over both sides
+    #: instead; see :meth:`teatree.loops.enable_verdict.EnablePlanes.admits_any_mask`.
+    presence_alternate: "Mode | None" = None
 
     @property
     def name(self) -> str:
@@ -145,15 +156,32 @@ def _apply_presence_upgrade(resolved: ResolvedMode, now: dt.datetime) -> Resolve
     ``override``) is authoritative and never upgraded. A fresh keystroke within the
     presence-freshness window is direct evidence the user is at the keyboard now, so
     it beats the schedule's heuristic guess (the #58-era live-presence rule).
+
+    Either way the mode carries its :attr:`~ResolvedMode.presence_alternate` — the side of
+    the flip it is NOT on — so a reader that must survive the flip can close over both.
+    This is the ONLY producer of that field.
     """
-    if resolved.source not in {"schedule", "default"}:
-        return resolved
-    if not resolved.mode.presence_sensitive or not resolved.mode.defers_questions:
-        return resolved
-    if not _fresh_keystroke(now):
+    if not _is_upgradable(resolved):
         return resolved
     upgrade = _mode_by_name(_presence_upgrade_mode_name()) or _synthetic_default_mode()
-    return ResolvedMode(mode=upgrade, source="live", until=None, reason=f"live keystroke upgraded {resolved.name}")
+    if not _fresh_keystroke(now):
+        return replace(resolved, presence_alternate=upgrade)
+    return ResolvedMode(
+        mode=upgrade,
+        source="live",
+        until=None,
+        reason=f"live keystroke upgraded {resolved.name}",
+        presence_alternate=resolved.mode,
+    )
+
+
+def _is_upgradable(resolved: ResolvedMode) -> bool:
+    """Whether a keystroke could move this mode at all — the upgrade's own precondition."""
+    return (
+        resolved.source in {"schedule", "default"}
+        and bool(resolved.mode.presence_sensitive)
+        and bool(resolved.mode.defers_questions)
+    )
 
 
 def _fresh_keystroke(now: dt.datetime) -> bool:

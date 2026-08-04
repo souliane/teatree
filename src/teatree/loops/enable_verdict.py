@@ -23,11 +23,14 @@ it.
 """
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
 
 from teatree.core.mode_resolution import ResolvedMode, resolve_active_mode
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.request_cache import cached_per_request
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,10 +64,43 @@ class EnablePlanes:
         return cls(resolved=resolve_active_mode(now), held=held, forced=forced)
 
     def admits(self, name: str, *, configured_enabled: bool) -> bool:
+        """The verdict AT THIS INSTANT — what the tick gates each individual fire on."""
+        return self._admits_under(name, mask=self.resolved.state_for(name), configured_enabled=configured_enabled)
+
+    def admits_any_mask(self, name: str, *, configured_enabled: bool) -> bool:
+        """The verdict over the presence-INVARIANT closure — what a PERSISTED decision needs.
+
+        :meth:`admits` answers for one instant. A ``loop_timer`` chain is built once and
+        fires later, so it needs the verdict for every instant in between, and the two
+        errors are not symmetric: a member the tick refuses costs one ``skipped`` no-op
+        (the successor is queued before the gate, so the chain self-corrects the moment
+        admission flips true), while an admitted loop that is not a member does not run at
+        all AND has its existing timer DELETED by
+        :func:`teatree.loops.timer_reconciler.ensure_loop_timers`. Pruning is the
+        destructive direction, so membership must cover every verdict reachable while the
+        chain lives.
+
+        Exactly one arm can flip inside that window with nothing to hook: the live-presence
+        upgrade, raised by a keystroke and lowered by the mere absence of one. Every other
+        arm moves only on a durable write (hold, forced, ``ModeOverride``, ``default_mode``)
+        or a schedule boundary, each of which has a chokepoint. So this closes over the
+        presence axis ALONE — the mode's mask OR its
+        :attr:`~teatree.core.mode_resolution.ResolvedMode.presence_alternate` — and reads
+        every other plane exactly as :meth:`admits` does. A ``LoopState`` hold still loses
+        its chain; a loop BOTH sides of the flip mask off still loses its chain.
+        """
+        if self.admits(name, configured_enabled=configured_enabled):
+            return True
+        alternate = self.resolved.presence_alternate
+        if alternate is None:
+            return False
+        return self._admits_under(name, mask=alternate.state_for(name), configured_enabled=configured_enabled)
+
+    def _admits_under(self, name: str, *, mask: bool | None, configured_enabled: bool) -> bool:
         return loop_state_admits(
             configured_enabled=configured_enabled,
             held=name in self.held,
-            preset_state=self.resolved.state_for(name),
+            preset_state=mask,
             forced=self.forced.get(name),
         )
 
@@ -104,7 +140,13 @@ class EnablePlanes:
 
 @cached_per_request
 def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
-    """The effective run verdict + deciding layer for every ``Loop`` row, sorted by name."""
+    """The NARROW, instant verdict + deciding layer for every ``Loop`` row, sorted by name.
+
+    What the tick gates a fire on, so this is what every observability surface reports —
+    "will this loop run now". Chain membership is the wider
+    :func:`membership_loop_names`; the two are named apart deliberately, because reporting
+    the membership set here would tell an operator a masked-off loop is running.
+    """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
 
     planes = EnablePlanes.resolve(now)
@@ -112,4 +154,43 @@ def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
     return sorted(verdicts, key=lambda verdict: verdict.name)
 
 
-__all__ = ["EnablePlanes", "LoopVerdict", "effective_verdicts"]
+def loop_admits(name: str, now: dt.datetime | None = None) -> bool:
+    """The instant verdict for ONE loop — the single-lookup form of :meth:`EnablePlanes.admits`.
+
+    What the off-live-tick daily gates (``directive`` / ``dream`` / ``outer`` tick
+    commands) and the per-loop connector preflight ask. It used to live in
+    :mod:`teatree.loop.loop_state_db` and resolve its own mask through the L3/L2 preset
+    layer — a THIRD variant of the verdict, blind to the L0 default mode and the presence
+    upgrade, so ``outer_loop``'s own gate could refuse a tick the fleet's verdict admitted
+    (#4196). A missing ``Loop`` row is a real, deterministic disable.
+
+    FAIL SAFE, unchanged: a genuine read error resolves to ``True`` so a DB hiccup never
+    silently disables a loop, and it WARNS so the degraded read is observable.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+
+    try:
+        row = Loop.objects.filter(name=name).only("enabled").first()
+        if row is None:
+            return False
+        return EnablePlanes.resolve(now).admits(name, configured_enabled=row.enabled)
+    except Exception:
+        logger.warning("enable-verdict read failed for %r — failing safe to enabled", name, exc_info=True)
+        return True
+
+
+@cached_per_request
+def membership_loop_names(now: dt.datetime | None = None) -> set[str]:
+    """Every ``Loop`` row the presence-invariant closure admits — the chain-membership read.
+
+    The ONLY caller of :meth:`EnablePlanes.admits_any_mask`; everything else asks
+    :meth:`EnablePlanes.admits`. :func:`teatree.loops.chain_membership.timer_chain_loop_names`
+    intersects this with the live-tick registry.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+
+    planes = EnablePlanes.resolve(now)
+    return {row.name for row in Loop.objects.all() if planes.admits_any_mask(row.name, configured_enabled=row.enabled)}
+
+
+__all__ = ["EnablePlanes", "LoopVerdict", "effective_verdicts", "loop_admits", "membership_loop_names"]

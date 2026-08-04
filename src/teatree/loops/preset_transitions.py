@@ -43,35 +43,59 @@ logger = logging.getLogger(__name__)
 
 TRANSITION_POLL_SECONDS = 60
 
+#: Stamps the PRESET layer (override / schedule slot). Drives the deferred-question drain
+#: and the one Slack line per switch, both of which are about the OWNER's reachability —
+#: so it must not fire on a mode change the owner never made.
 _STAMP_KEY = "loop_preset_transition_stamp"
+#: Stamps the resolved MODE, which the preset layer cannot see: an L0 ``default_mode``
+#: change moves the mask while ``resolve_active_preset`` returns the same ``None`` before
+#: and after, so the reconcile chokepoint keyed on the preset stamp never fired (#4196).
+#: Separate from :data:`_STAMP_KEY` on purpose — this one drives ONLY the chain reconcile.
+_MODE_STAMP_KEY = "loop_mode_transition_stamp"
 
 
 def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
     """Run one transition pass: reap expired override, reconcile chains, drain + Slack line.
 
-    Idempotent: with no change since the last stamp, only the expired-override reap
+    Two stamps, because two different things change on different axes. The PRESET stamp
+    gates the owner-facing side effects (drain + Slack line); the MODE stamp gates the
+    chain reconcile, because membership follows the resolved mode and that moves on
+    inputs the preset layer is blind to. The presence upgrade is deliberately NOT one of
+    them: membership closes over it (:meth:`~teatree.loops.enable_verdict.EnablePlanes.admits_any_mask`)
+    precisely because it has no transition to stamp.
+
+    Idempotent: with nothing changed since the last stamps, only the expired-override reap
     runs and the pass is otherwise a no-op. Fail-soft — a side-effect failure is
     logged and never propagates (resolution is unaffected either way).
     """
     reaped = _reap_expired_overrides(now)
+    outcome: dict[str, Any] = {"reaped": reaped}
+
+    current_mode = resolve_active_mode(now).name
+    if current_mode != _read_stamp(_MODE_STAMP_KEY):
+        _reconcile_timer_chains()
+        _write_stamp(_MODE_STAMP_KEY, current_mode)
+        outcome["reconciled"] = current_mode
+
     active = resolve_active_preset(now)
     current_name = active.preset.name if active is not None else ""
     prior_name = _read_stamp(_STAMP_KEY)
     if current_name == prior_name:
-        return {"reaped": reaped, "unchanged": 1}
+        outcome.setdefault("unchanged", 1)
+        return outcome
 
-    _reconcile_timer_chains()
     _drain_on_scheduled_return(prior_name)
     _post_switch_line(active, now)
     _write_stamp(_STAMP_KEY, current_name)
-    return {"reaped": reaped, "switched": current_name}
+    outcome["switched"] = current_name
+    return outcome
 
 
 def _reconcile_timer_chains() -> None:
     """Re-head / prune the loop-timer chains the switch just changed membership of (#4185).
 
-    Chain membership IS the preset verdict, so a switch that forces a loop ON leaves it
-    driverless and one that masks a loop OFF leaves a chain to prune. The 5-minute
+    Chain membership follows the resolved MODE, so a switch that forces a loop ON leaves
+    it driverless and one that masks a loop OFF leaves a chain to prune. The 5-minute
     reconcile chain would close both eventually; this 60s chain is the switch's own
     chokepoint, so the new membership takes effect at the switch. Fail-open — a
     reconcile failure never blocks the transition.

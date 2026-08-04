@@ -64,14 +64,19 @@ def timer_chain_loop_names(now: "dt.datetime | None" = None) -> set[str]:
     :mod:`teatree.loops.off_live_tick_driver` firing their own tick command, never a
     worker timer, so they never get a chain that would only ever no-op.
 
+    Membership is the PRESENCE-INVARIANT closure of the enable verdict
+    (:func:`teatree.loops.enable_verdict.membership_loop_names`), not the instant verdict
+    the tick gates a fire on: the chain is persisted and fires later, and the presence
+    upgrade flips with no event to hook, so a point-in-time set would delete the timers of
+    loops the very next keystroke admits. Wider, never differently-sourced.
+
     *now* pins the instant the mode is resolved at, so a caller that judges membership
     ALONGSIDE another mode-derived reading (the staleness alarm's suppression arm) asks
     both questions of the same moment rather than of two ``timezone.now()`` calls.
     """
-    from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — deferred: ORM-backed resolver
+    from teatree.loops.enable_verdict import membership_loop_names  # noqa: PLC0415 — deferred: ORM-backed resolver
 
-    admitted = {verdict.name for verdict in effective_verdicts(now) if verdict.admitted}
-    return live_tick_loop_names() & admitted
+    return live_tick_loop_names() & membership_loop_names(now)
 
 
 def starved_loop_names() -> set[str]:

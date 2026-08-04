@@ -124,7 +124,7 @@ def shipped_inertness(path: Path | None = None, *, now: dt.datetime | None = Non
 
 def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 — deferred: ORM-backed read
+    from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — deferred: ORM-backed read
     from teatree.loops.loop_staleness import (  # noqa: PLC0415 — deferred: ORM-backed read
         STALE_CADENCE_MULTIPLIER,
         stale_loops,
@@ -132,7 +132,12 @@ def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
 
     rows = {row.name: row for row in Loop.objects.all()}
     behind = {loop.name: loop for loop in stale_loops(now)}
-    admitted = timer_chain_loop_names()
+    # The NARROW verdict, not chain membership: the question here is "is the shipped
+    # loop actually working", and membership is the deliberately wider persisted-chain
+    # set — a loop kept a member across the presence flip is NOT running right now
+    # (#4196), so reporting it as live would be the same false-quiet this file exists
+    # to surface.
+    admitted = {verdict.name for verdict in effective_verdicts(now) if verdict.admitted}
     findings = []
     for spec in load_loop_specs(path):
         row = rows.get(spec.name)

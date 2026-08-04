@@ -14,8 +14,10 @@ from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, get_date_max
 
+from teatree.core import mode_resolution
 from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
 from teatree.core.tasks import execute_headless_task
+from teatree.live_presence import PRESENCE_FRESHNESS
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_headless_runs
 from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
@@ -223,6 +225,18 @@ class TestScheduleUpgradedByPresenceGetsAHeadAndTicks(ModeWithoutOverrideMixin):
         assert result["action"] == "ticked"
         assert ticked == [LOOP]
         assert len(timer_chains.pending_loop_timers(LOOP)) == 1  # the successor carries the chain
+
+    def test_a_presence_lapse_does_not_prune_the_chain(self) -> None:
+        # The regression on two WORKING loops, in the shape it actually occurs: the chain
+        # exists, the owner stops typing for fifteen minutes, and the next reconcile pass
+        # deletes the READY timer because the away slot's mask no longer admits the loop.
+        # `pruned == 0` is the whole claim — an idle timer is a no-op, a deleted one is a
+        # loop that never runs again until something re-heads it (#4196).
+        assert timer_reconciler.ensure_loop_timers()["added"] == 1
+        mode_resolution.PRESENCE.record(session_id="s", now=timezone.now() - PRESENCE_FRESHNESS * 2)
+        counts = timer_reconciler.ensure_loop_timers()
+        assert counts["pruned"] == 0
+        assert len(timer_chains.pending_loop_timers(LOOP)) == 1
 
     def test_an_existing_head_is_not_pruned(self) -> None:
         # The regression direction that stops two working loops: ``ensure_loop_timers``

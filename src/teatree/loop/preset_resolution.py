@@ -87,7 +87,7 @@ def resolve_preset_state(loop_name: str, now: dt.datetime | None = None) -> bool
     """The single-lookup preset opinion for *loop_name*: ``True``/``False``/``None``.
 
     The per-loop form the off-live-tick daily gates and connector preflight consume
-    through :func:`teatree.loop.loop_state_db.loop_enabled`; the bulk tick resolves
+    through :func:`teatree.loops.enable_verdict.loop_admits`; the bulk tick resolves
     :func:`resolve_active_preset` once and calls :func:`preset_state_for` per row.
     """
     return preset_state_for(resolve_active_preset(now), loop_name)

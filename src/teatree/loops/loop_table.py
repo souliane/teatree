@@ -12,7 +12,8 @@ configured/opt-in plane) AND not ``LoopState``-held (the durable runtime control
 tier: ``t3 loop pause`` / ``disable``, #1913) — there is no env kill-switch and no
 ``[loops]`` toml disabled-state tier. The tick applies that ONE predicate over its
 already-bulk-loaded ``Loop`` rows plus a SINGLE bulk ``LoopState`` read (no
-per-loop hold query), and the standalone :func:`loop_enabled` single-lookup used
+per-loop hold query), and the standalone :func:`teatree.loops.enable_verdict.loop_admits`
+single-lookup used
 by the off-live-tick daily loop gates applies the same predicate — so no
 enable-decision site drifts into a tier-subset. (The review-claim chokepoint
 reads the ``LoopState`` arm only, by documented design — see

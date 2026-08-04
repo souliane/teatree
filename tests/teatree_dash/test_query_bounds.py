@@ -25,12 +25,14 @@ State = Ticket.State
 
 _BOARD_MAX_QUERIES = 12
 #: The health panel resolves the operating mode twice when nothing memoizes it — once for
-#: its own band, once inside the effective-verdict read behind the starvation axis. The
-#: SERVED page collapses those to one (``cached_per_request`` under the dash middleware's
-#: request scope, where the pinned plan is two queries CHEAPER than before #4196); this
+#: its own band, once inside the effective-verdict read behind the starvation axis — and
+#: each resolve now reads BOTH sides of the live-presence flip, because membership is the
+#: closure over them and knowing both sides costs one mode lookup. The SERVED page pays
+#: neither: ``cached_per_request`` under the dash middleware's request scope collapses the
+#: resolves to one, and its pinned plan is two queries CHEAPER than before #4196. This
 #: builder is called bare, which is the un-memoized worst case the bound exists to cap.
 #: Flatness across row count — the property this file actually asserts — is unaffected.
-_HEALTH_MAX_QUERIES = 32
+_HEALTH_MAX_QUERIES = 34
 _PRESETS_MAX_QUERIES = 14
 
 

@@ -167,13 +167,13 @@ class Command(TyperCommand):
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         from teatree.core.models import DreamRunMarker, Loop, LoopLease  # noqa: PLC0415 — deferred: ORM/app-registry
-        from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream import lease  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: keeps command import light
             DREAM_LEASE_NAME,
             DREAM_LEASE_SECONDS,
             MINI_LOOP,
         )
+        from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — deferred: keeps command import light
 
         now = timezone.now()
         if enforce_cadence:
@@ -182,7 +182,7 @@ class Command(TyperCommand):
             # cadence ledger. dream is off_live_tick, so the live tick never bumps
             # this row; t3 dream tick owns its last_run_at alone.
             row = Loop.objects.filter(name=MINI_LOOP.name).first()
-            if row is None or not loop_enabled(MINI_LOOP.name):
+            if row is None or not loop_admits(MINI_LOOP.name):
                 self.stdout.write("SKIP  dream loop disabled (no enabled Loop row / LoopState hold).")
                 return PassOutcome.SKIPPED
             if not row.is_due(now):
