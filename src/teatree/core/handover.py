@@ -46,7 +46,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
-from teatree.core.session_handover_manager import SelfAddressedHandoverError, render_fenced_handoffs
+from teatree.core.session_handover_manager import SelfAddressedHandoverError, append_payload, render_fenced_handoffs
+from teatree.core.session_identity import is_loop_runner_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -282,8 +283,6 @@ def resolve_target_session(explicit_to: str) -> str:
     start claims it — rather than written as a target, and the same normalisation
     applies to an explicit ``--to loop-runner``.
     """
-    from teatree.core.session_identity import is_loop_runner_session  # noqa: PLC0415 — deferred: cheap, kept local
-
     if explicit_to:
         return "" if is_loop_runner_session(explicit_to) else explicit_to
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -510,6 +509,5 @@ def append_subagent_section(handover: "SessionHandover", section: str) -> Path:
     re-mirror OVERWRITES the same file and leaves ``latest`` pointed at it — one
     hand-off stays one file, with no pointer churn.
     """
-    handover.payload = f"{handover.payload.rstrip()}\n\n{section}\n" if handover.payload.strip() else section
-    handover.save(update_fields=["payload"])
+    append_payload(handover, section)
     return write_mirror(handover)

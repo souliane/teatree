@@ -30,6 +30,7 @@ from teatree.core.handover import (
 )
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
 from teatree.core.machine_output import emit
+from teatree.core.models import SessionHandover
 from teatree.core.session_identity import is_loop_runner_session
 from teatree.loop.session_identity import current_session_id
 
@@ -173,8 +174,6 @@ class Command(TyperCommand):
         so checking it proves only that the command agrees with itself. Every check
         here runs against a fresh fetch, before any success line is written.
         """
-        from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
         row = SessionHandover.objects.get(pk=pk)
         unclaimed = SessionHandover.objects.filter(from_session=row.from_session, claimed_at__isnull=True).count()
         checks = (

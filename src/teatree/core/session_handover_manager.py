@@ -60,6 +60,17 @@ def _absorb_payload(*, prior: str, incoming: str, author: str, at: "dt.datetime"
     return f"{prior.rstrip()}\n\n## Hand-off update — from `{author}` at {at.isoformat()}\n\n{incoming}"
 
 
+def append_payload(handover: "SessionHandover", section: str) -> None:
+    """Append *section* to *handover*'s persisted payload, leaving every other field alone.
+
+    Payload mutation lives beside :func:`_absorb_payload` rather than at the call
+    site, so both ways a row grows — a second hand-off absorbed, a barrier's
+    returns appended — are written in one module.
+    """
+    handover.payload = f"{handover.payload.rstrip()}\n\n{section}\n" if handover.payload.strip() else section
+    handover.save(update_fields=["payload"])
+
+
 def _absorb(existing: "SessionHandover", *, to_session: str, payload: str) -> "SessionHandover":
     now = timezone.now()
     existing.payload = _absorb_payload(prior=existing.payload, incoming=payload, author=existing.from_session, at=now)
