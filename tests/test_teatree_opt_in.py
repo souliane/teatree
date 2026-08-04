@@ -718,15 +718,23 @@ class TestStatuslineGating:
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
         assert "statusline off" in out
 
-    def test_engaged_render_broken_db_fails_closed_to_hint(self, tmp_path: Path) -> None:
-        # A corrupt/unreadable DB fails CLOSED (opt-in OFF) -> the hint, never blank.
+    def test_engaged_render_broken_db_fails_closed_to_an_honest_hint(self, tmp_path: Path) -> None:
+        # A corrupt/unreadable DB still fails CLOSED (opt-in OFF) and still never blanks
+        # the bar — both invariants below. What it must NOT do is name a cause it did not
+        # establish: this used to assert the "off (autoload disabled)" hint, and that
+        # wording was the #4041 defect, not the contract. The DB the read failed on may
+        # hold `autoload = True`, so the honest hint is UNKNOWN (see the shell-parity lane
+        # for the full unknown/off matrix).
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
         garbage = tmp_path / "corrupt.sqlite3"
         garbage.write_bytes(b"this is not a sqlite database at all")
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(garbage)})
-        assert "statusline off" in out
+        assert out.strip() != "", "the bar must never be blank (#3233)"
+        assert "model=" not in out, "the opt-in must stay closed on a read it could not make"
+        assert "UNKNOWN" in out
+        assert "autoload disabled" not in out
 
 
 # ── #256: default-off teatree autoload + engagement seam ──────────────────
