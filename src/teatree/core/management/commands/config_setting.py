@@ -27,7 +27,7 @@ import json
 import sys
 import tomllib
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from django.core.exceptions import ValidationError
@@ -41,6 +41,7 @@ from teatree.config import (
     get_effective_settings,
 )
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
+from teatree.config.retired_settings import retirement_notice
 from teatree.config.setting_groups import group_outline
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
@@ -82,6 +83,17 @@ def _stored_row_suffix(key: str) -> str:
 
 
 class Command(TyperCommand):
+    def _refuse_unknown_key(self, key: str) -> NoReturn:
+        """Refuse *key*, rendering its retirement record when one is on file (#4094).
+
+        The registry is the single source, so this surface, the resolver's loud
+        warning and the ``list`` marker cannot come to describe a retirement
+        differently. A retired key stays unwritable — the record is the answer, not
+        an admission that would resolve nowhere.
+        """
+        self.stderr.write(f"  refusing: {retirement_notice(key) or f'{key!r} is not a known config setting'}")
+        raise SystemExit(2)
+
     @command()
     def set(
         self,
@@ -107,8 +119,7 @@ class Command(TyperCommand):
         on write is what keeps a bad row from bricking all reads.
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -161,8 +172,7 @@ class Command(TyperCommand):
         from an operator's deliberate pin. Same key/JSON validation as ``set``.
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -255,8 +265,7 @@ class Command(TyperCommand):
         accepts every key ``list`` can display (the unified known-key set).
         """
         if key not in _ALLOWED_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
-            raise SystemExit(2)
+            self._refuse_unknown_key(key)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
             self.stdout.write(f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]{_flag_suffix(key)}")
