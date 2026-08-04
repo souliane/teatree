@@ -18,6 +18,7 @@ bound they share has to be the durable ``Task.admitted_at`` stamp rather than ei
 one's in-memory count.
 """
 
+import datetime as dt
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -117,6 +118,47 @@ class TestHeadlessAdmissionDeniedReason(TestCase):
             reason = headless_admission_denied_reason()
         assert reason is not None
         assert "at/over governor ceiling" in reason
+
+
+class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
+    """#4097: the lane passes ``static_ceiling=None``, so an unknown quota was unbounded.
+
+    The production shape, not a contrived one: healthy ``AnthropicTokenUsage`` rows carry
+    a 5-minute TTL and are written only reactively, so ``read_quota_signal()`` reports
+    ``fresh=False`` for most of the factory's life. Reading the real (empty) cache here
+    reproduces that; only the box probe is stubbed, so the assertion does not ride on the
+    load of whatever machine runs the suite.
+    """
+
+    def _live_headless_agents(self, count: int) -> None:
+        ticket = Ticket.objects.create()
+        for _ in range(count):
+            Task.objects.create(
+                ticket=ticket,
+                session=Session.objects.create(ticket=ticket),
+                execution_target=Task.ExecutionTarget.HEADLESS,
+                status=Task.Status.CLAIMED,
+                phase="architectural_review",
+                lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+            )
+
+    def test_an_unknown_quota_denies_once_the_live_count_reaches_the_machine_ceiling(self) -> None:
+        self._live_headless_agents(4)
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            reason = headless_admission_denied_reason()
+        assert reason is not None
+        assert "at/over governor ceiling 4" in reason
+
+    def test_an_unknown_quota_still_admits_below_the_ceiling(self) -> None:
+        self._live_headless_agents(3)
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            assert headless_admission_denied_reason() is None
 
 
 class TestPhaseAwareVerdict(TestCase):
