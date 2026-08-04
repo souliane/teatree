@@ -42,6 +42,19 @@ def loop_timers_by_name(status: str) -> "dict[str, list[DBTaskResult]]":
     return grouped
 
 
+def live_tick_loop_names() -> set[str]:
+    """Registered mini-loops the live tick drives — an ``off_live_tick`` row has its own command.
+
+    Membership's registry half on its own, for the one caller that needs the
+    ``off_live_tick`` cut WITHOUT the enable verdict: the staleness alarm also measures the
+    loops the OPERATOR left on, so a mode that masks every one of them off reads as a
+    STOPPED fleet rather than an empty one.
+    """
+    from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    return {loop.name for loop in iter_loops() if not loop.off_live_tick}
+
+
 @cached_per_request
 def timer_chain_loop_names(now: "dt.datetime | None" = None) -> set[str]:
     """The loops that should carry a timer chain: verdict-admitted, registered, and live-tick.
@@ -56,11 +69,9 @@ def timer_chain_loop_names(now: "dt.datetime | None" = None) -> set[str]:
     both questions of the same moment rather than of two ``timezone.now()`` calls.
     """
     from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — deferred: ORM-backed resolver
-    from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    registered = {loop.name for loop in iter_loops() if not loop.off_live_tick}
     admitted = {verdict.name for verdict in effective_verdicts(now) if verdict.admitted}
-    return registered & admitted
+    return live_tick_loop_names() & admitted
 
 
 def starved_loop_names() -> set[str]:
@@ -93,4 +104,10 @@ def driven_loop_names() -> set[str]:
     return {args[0] for payload in live if (args := payload.get("args") or [])}
 
 
-__all__ = ["driven_loop_names", "loop_timers_by_name", "starved_loop_names", "timer_chain_loop_names"]
+__all__ = [
+    "driven_loop_names",
+    "live_tick_loop_names",
+    "loop_timers_by_name",
+    "starved_loop_names",
+    "timer_chain_loop_names",
+]

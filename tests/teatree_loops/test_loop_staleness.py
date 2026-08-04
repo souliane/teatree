@@ -16,7 +16,17 @@ import django.test
 from django.utils import timezone
 
 from teatree.core.mode_resolution import ResolvedMode
-from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
+from teatree.core.models import (
+    ConfigSetting,
+    Loop,
+    LoopState,
+    Mode,
+    ModeOverride,
+    ModeSchedule,
+    ModeScheduleSlot,
+    Prompt,
+)
+from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_staleness import (
     STALE_CADENCE_MULTIPLIER,
@@ -34,7 +44,10 @@ from teatree.loops.loop_staleness import (
 # patched where it is DEFINED — patching a name on ``loop_staleness`` would miss it.
 _REGISTRY_SEAM = "teatree.loops.registry.iter_loops"
 _ADMITTED_SEAM = "teatree.loops.loop_table.admitted_loop_names"
-_MODE_SEAM = "teatree.core.mode_resolution.resolve_active_mode"
+# The mode is resolved through the ONE ``EnablePlanes`` seam both the measured set
+# and the suppression arm read, so patching it here moves BOTH — a patch that moved
+# only one would recreate the two-resolver split #4196 removed.
+_MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 _HOLDS_SEAM = "teatree.loop.loop_state_db.control_planes_in_db"
 
 
@@ -175,17 +188,56 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
         assert [loop.name for loop in stale] == ["tickets"]
         assert stale[0].suppressed is False
 
-    def test_a_preset_masked_off_column_enabled_loop_is_not_measured(self) -> None:
+    def test_a_preset_masked_off_column_enabled_loop_is_measured_but_suppressed(self) -> None:
+        # Measured so an all-off mask still reads as a STOPPED fleet rather than an empty
+        # one; suppressed so it is never reported as unexplained on its own (#4196).
         _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
         self._activate({"tickets": False})
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
-            assert stale_loops(timezone.now()) == []
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is True
 
-    def test_a_held_loop_is_not_measured(self) -> None:
+    def test_a_held_loop_is_measured_but_suppressed(self) -> None:
         _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
         LoopState.objects.pause("tickets")
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is True
+
+    def test_a_forced_off_loop_is_suppressed_not_unexplained(self) -> None:
+        # The FORCED plane is a deliberate operator action too; it had no arm at all, so a
+        # force-OFF loop standing still hard-FAILed `t3 worker status` as unexplained.
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        LoopState.objects.override("tickets", on=False)
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is True
+
+    def test_a_column_disabled_loop_no_mode_admits_is_not_measured(self) -> None:
+        # Neither a member nor operator-enabled — nothing is supposed to drive it, so it
+        # is not part of the fleet reading at all.
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=False)
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             assert stale_loops(timezone.now()) == []
+
+    def test_a_schedule_mode_mask_suppresses_rather_than_reporting_unexplained(self) -> None:
+        # The mask arm is what stops a masked loop from landing in ``unexplained`` and
+        # hard-FAILing ``t3 worker status``. Exercised under a SCHEDULE slot, the config
+        # where membership used to consult a resolver of its own (#4196).
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        Mode.objects.create(name="slot-4196", entries={"tickets": False})
+        schedule = ModeSchedule.objects.create(name="calendar-4196", timezone="UTC")
+        ModeScheduleSlot.objects.create(
+            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="slot-4196"
+        )
+        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "calendar-4196")
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is True
 
     def test_admission_counts_the_admitted_total_not_the_enabled_column(self) -> None:
         _loop("tickets", cadence=300, ran_ago=dt.timedelta(seconds=60), enabled=False)
@@ -199,9 +251,9 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
 class TestSuppressionClassification(_LoopTableCase):
     """Which deliberate control plane excuses an ADMITTED loop from standing still.
 
-    Only the colleague gate: a masked or held loop is not admitted, so it is never
-    measured and needs no excuse — that half is covered by
-    :class:`TestMeasuredSetIsTheAdmissionVerdict`.
+    Two shapes: the enable verdict refusing the loop (hold / force-OFF / mode mask), and
+    the colleague gate on an ADMITTED loop whose fires are skipped while questions defer.
+    The first half is covered by :class:`TestMeasuredSetIsTheAdmissionVerdict`.
     """
 
     def _stale_one(self, **mode_kwargs: object) -> StaleLoop:
@@ -310,7 +362,7 @@ class TestLoopHealth(_LoopTableCase):
         assert not health.ok
         assert not health.frozen_fleet
         assert "dispatch" in rendered
-        assert "the colleague gate does not explain it" in rendered
+        assert "no control plane explains it" in rendered
 
     def test_json_carries_the_mode_and_every_stale_loop(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(hours=7))
@@ -322,7 +374,9 @@ class TestLoopHealth(_LoopTableCase):
         assert payload["mode"] == "offline"
         assert payload["mode_source"] == "override"
         assert payload["admitted"] == []
-        assert payload["admitted_total"] == 1
+        # An all-off mask makes the loop a non-member — nothing is CHAINED to drive it —
+        # yet it is still measured, which is what makes the total shutdown visible.
+        assert payload["admitted_total"] == 0
         assert payload["considered"] == 1
         assert payload["frozen_fleet"] is True
         assert [entry["name"] for entry in payload["stale"]] == ["tickets"]
