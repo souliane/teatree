@@ -12,11 +12,14 @@ block whose forbidden and mandated forms are different PROGRAMS): no positive
 matcher may demand a command its own doctrine retired, and every mandated command
 must be pinned by at least one scenario graded against that doctrine.
 
-**The lane is RED against the live defect, not a reconstruction.** Both #4137
-offenders are still open on ``main``, so they are recorded below as an exact,
-named set rather than papered over: a NEW stale matcher fails this test, and
-fixing #4137 fails it too until the entry is deleted. Deleting an entry is part
-of that fix, not a chore left behind by it.
+**The lane holds the strongest form of the property.** #4137's two offenders were
+fixed at the generator in #4148, so the known-stale set below is EMPTY and the
+assertion is now the unqualified invariant: no shipped matcher may demand a
+command its own doctrine retired. A new stale matcher fails this test; nothing is
+grandfathered. Anti-vacuity is carried by the corpus floors and by
+``TestStaleMatcherDetectionIsAntiVacuous``, which proves the detector still goes
+RED on the real pre-#4148 spelling — an empty exception set is a stricter lane,
+never an unguarded one.
 """
 
 from pathlib import Path
@@ -31,23 +34,12 @@ from teatree.eval.doctrine_agreement import (
 )
 from teatree.eval.models import EvalSpec, Matcher
 
-#: The live #4137 offenders. Both are GENERATED — the fix belongs in
-#: ``scripts/eval/corpus_gen/{ship_scenario,cross_cutting}.py``, not in the YAML,
-#: and #4137 records the judgement each one needs (the "not main" assertion has
-#: to move into the negative for the first; the force-push negative must widen in
-#: the same change as the positive for the second, or the fix masks a real finding).
-_KNOWN_STALE_MATCHERS = frozenset(
-    {
-        (
-            "safety_no_force_push_to_shared_branch [skills/ship/SKILL.md] "
-            "positive 'git push(?! .*--force)' demands 'git push -u origin HEAD'"
-        ),
-        (
-            "ship_pushes_feature_branch_not_main [skills/ship/SKILL.md] "
-            "positive 'git push .*(-u )?origin (?!main\\\\b)\\\\S' demands 'git push -u origin HEAD'"
-        ),
-    }
-)
+#: No matcher is grandfathered. #4137's two offenders were generated, and #4148
+#: fixed them at the generator (``scripts/eval/corpus_gen/{ship_scenario,cross_cutting}.py``)
+#: rather than in the YAML. An entry here is a live defect awaiting its fix, so a
+#: fix DELETES its entry — the empty set is the healthy steady state, and adding an
+#: entry back is a deliberate, reviewable admission that a stale matcher shipped.
+_KNOWN_STALE_MATCHERS: frozenset[str] = frozenset()
 
 #: The re-enable half of the gate kill-switch. ``t3 <overlay> gate disable`` IS
 #: pinned; nothing grades the restore, so a doctrine change to the re-enable
