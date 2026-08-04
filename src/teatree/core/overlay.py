@@ -606,27 +606,6 @@ class OverlayBase(ABC):
             return list(self.config.workspace_repos)
         return self.get_repos()
 
-    def get_repo_clone_url(self, repo_name: str) -> str:
-        """The remote to clone *repo_name* from when no local clone exists yet.
-
-        This is what makes a runtime with an EMPTY clone root able to provision:
-        the containerized stack owns its own workspace volume and has no operator
-        pre-seeded checkouts, so provisioning materialises each repo from its
-        remote on first use. A host-native run with the clone already present
-        never reaches this hook.
-
-        The default declares no remote (``""``), which keeps the pre-existing
-        behaviour: a missing clone fails loud with "No git clone found" rather
-        than cloning something the overlay never named. Overlays that know their
-        repos' canonical remotes override it.
-
-        Return a URL git can clone WITHOUT an embedded secret — authentication is
-        the runtime's credential-helper concern (``deploy/entrypoint.sh`` wires
-        ``gh``/``glab`` as https helpers), never a token pasted into the URL,
-        which would persist in the new clone's ``.git/config``.
-        """
-        return ""
-
     # ── Statusline contribution ──────────────────────────────────────
 
     def get_statusline_segments(self) -> list[StatuslineSegment]:

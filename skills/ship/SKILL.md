@@ -172,7 +172,27 @@ Common triggers (not exhaustive):
 
 **If YES:** the same MR includes the doc update — pick the file by the trigger, then start editing it before `pr create`:
 
-The trigger-to-doc table, the YES path (edit the matching doc before `pr create`), the NO path (the `docs: n/a — <reason>` attestation, with examples), and how `scripts/hooks/check_doc_update.py` splits the work with this prose are in [`skills/ship/references/documentation-discipline.md`](references/documentation-discipline.md).
+| Trigger | Doc to update |
+|---|---|
+| New `t3` command / flag / env var | `README.md` (user-facing usage) |
+| New `Ticket.State` / FSM phase / `LoopLease` name | `BLUEPRINT.md` |
+| New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
+| Skill behaviour change | the relevant `SKILL.md` |
+
+```bash
+# YES path — open the matching doc to add the entry (canonical HOW; e.g. a new SKILL.md):
+$EDITOR README.md          # skills catalogue, or the user-facing command doc
+$EDITOR BLUEPRINT.md       # for a new FSM state / lifecycle concept
+```
+
+**If NO:** the MR description carries this attestation line on its own — record it directly, do NOT touch README/BLUEPRINT:
+
+```bash
+# NO path — append the attestation to the PR body draft (canonical HOW):
+echo "docs: n/a — <one-line reason>" >> .git/PR_BODY.md
+```
+
+The attestation examples and how `scripts/hooks/check_doc_update.py` splits the work with this prose are in [`skills/ship/references/documentation-discipline.md`](references/documentation-discipline.md).
 
 Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
 
@@ -240,7 +260,27 @@ The two stores (`Session.visited_phases` and the `Ticket.state` FSM), how the sh
 
 #### How to satisfy the gate (the only sanctioned path)
 
-The numbered path — locate the reviewing task, acquire the per-MR review-dispatch lock, spawn the `t3:reviewer` sub-agent with its verbatim prompt block, apply every finding, drive the `review` transition, verify before pushing — is in [`skills/ship/references/review-gate-fsm.md`](references/review-gate-fsm.md).
+The numbered path — locate the reviewing task, acquire the per-MR review-dispatch lock (`t3 <overlay> review lock-acquire`), apply every finding, drive the `review` transition, verify before pushing — is in [`skills/ship/references/review-gate-fsm.md`](references/review-gate-fsm.md). The dispatch itself stays here, because a reference file never reaches a spawned agent:
+
+**Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool. The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
+
+```text
+NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
+```
+
+```text
+Agent(
+  description: "Pre-push review of <ticket>",
+  subagent_type: "t3:reviewer",
+  prompt: "<the verbatim block above>, then: \
+           Review the diverging code on this branch against main. Branch: <name>. \
+           Ticket: <url>. Scope: <one-line summary>. Read the linked ticket end-to-end \
+           before touching the diff (per /t3:review § 'Step 0 — Gather Ticket Context'). \
+           Apply both the per-file repo-rules check (/t3:review § 'Active Verification \
+           Against Repo Rules') and the module-level architectural check (full files of \
+           every touched module). Report findings as a punch list — no code edits."
+)
+```
 
 ### 4c. Visual QA Gate
 

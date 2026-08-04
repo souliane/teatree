@@ -6,7 +6,7 @@ from django_fsm import FSMField, transition
 
 from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
+from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields, validated_worktree_extra
 from teatree.utils.postgres_secret import postgres_pass_key
 
 
@@ -312,8 +312,8 @@ class Worktree(models.Model):
     def merge_extra(
         self,
         *,
-        set_keys: dict[str, object] | None = None,
-        also_set: dict[str, object] | None = None,
+        set_keys: "WorktreeExtra | None" = None,
+        also_set: "WorktreeSiblingFields | None" = None,
     ) -> None:
         """Locked read-modify-write of ``extra``, the counterpart of :meth:`Ticket.merge_extra`.
 

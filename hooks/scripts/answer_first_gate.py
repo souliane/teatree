@@ -41,6 +41,13 @@ _DEFERRED_BACKLOG_RE = re.compile(
     re.MULTILINE,
 )
 
+# Material the user pasted rather than typed. A question inside a quoted mail or
+# a fenced excerpt was asked by that document's author, so it is not an ask the
+# agent owes an answer for; without this strip, "here is the review, please
+# apply it" carrying "> why was this not caught?" reads as the user asking.
+_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+_QUOTED_BLOCK_RE = re.compile(r"^[ \t]*>.*(?:\n|$)", re.MULTILINE)
+
 
 def _gate_enabled() -> bool:
     from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
@@ -58,23 +65,37 @@ def _skip_token(text: str) -> str | None:
 def _user_words_only(text: str) -> str:
     """*text* with everything the user did not actually say removed.
 
-    Two injected sources ride into the same message and both read as asks: the
-    harness ambient wrappers (stripped by the shared #1567 helper, so this gate
-    and the skill loader agree on what counts as genuine intent) and the loop's
-    own deferred-question backlog. A Slack reply relayed into the turn IS the
-    user speaking and is deliberately kept.
+    Three sources ride into the same message and all read as asks: the harness
+    ambient wrappers (stripped by the shared #1567 helper, so this gate and the
+    skill loader agree on what counts as genuine intent), the loop's own
+    deferred-question backlog, and material the user PASTED rather than wrote —
+    a quoted mail, a spec excerpt, a fenced log — where a '?' belongs to the
+    document's author, not to the asker. A Slack reply relayed into the turn IS
+    the user speaking and is deliberately kept.
     """
     from hooks.scripts.skill_loader_input import strip_ambient_context  # noqa: PLC0415 deferred cold-hook import
 
-    return _DEFERRED_BACKLOG_RE.sub(" ", strip_ambient_context(text))
+    prose = strip_ambient_context(text)
+    for pattern in (_FENCED_BLOCK_RE, _QUOTED_BLOCK_RE, _DEFERRED_BACKLOG_RE):
+        prose = pattern.sub(" ", prose)
+    return prose
+
+
+def _is_tool_result_only(content: list) -> bool:
+    """True for a ``user`` entry that is a tool RESULT rather than the user typing."""
+    return bool(content) and all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
 
 
 def _last_user_text(transcript_path: str) -> str:
     """What the user actually said in the most recent user message, else ``""``.
 
-    Walks the transcript newest-first and stops at the first user entry, so the
-    question under consideration is the one the agent was replying to. Any odd
-    entry contributes nothing rather than raising.
+    Walks the transcript newest-first to the most recent GENUINE user message.
+    Stopping at the first ``user`` entry is not enough: a tool result is recorded
+    as a ``user`` entry whose blocks are all ``tool_result``, so any turn that
+    called a tool — which is EVERY delegation-report turn, the exact shape this
+    gate exists for — hides the real question behind one, and the text filter
+    then yields ``""``. Those entries are walked past. Any odd entry contributes
+    nothing rather than raising.
     """
     from hooks.scripts.question_gates import read_transcript_entries  # noqa: PLC0415 deferred cold-hook import
 
@@ -88,6 +109,8 @@ def _last_user_text(transcript_path: str) -> str:
             return _user_words_only(content)
         if not isinstance(content, list):
             return ""
+        if _is_tool_result_only(content):
+            continue
         return _user_words_only(
             "\n".join(
                 str(block.get("text", ""))

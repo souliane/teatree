@@ -141,7 +141,7 @@ Still on `OverlayBase`:
 - `get_repos()` — repo list for worktree creation
 - `get_provision_steps(worktree)` — setup steps (migrations, fixtures)
 - `get_workspace_repos()` — repos the workspace commands span
-- `get_repo_clone_url(repo)`, `get_statusline_segments()`, `get_issue_title(url)`,
+- `get_statusline_segments()`, `get_issue_title(url)`,
   `is_issue_done(url)`, `resolve_mr_token(...)`, `resolve_issue_token(...)`,
   `get_timeouts()`, `get_health_signals()`, `get_checking_sources()`,
   `get_eval_scenarios_dir()`

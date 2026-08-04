@@ -71,6 +71,46 @@ class TestBlocksUnbackedClaims:
         assert result is True
 
 
+class TestHonestyIsNotTaxed:
+    """Naming what is still running must not cost a turn that already cited its evidence."""
+
+    def test_cited_alarm_mentioning_a_run_still_in_flight_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body = (
+            "BLOCKER: the reaper deletes live rows at src/teatree/core/reaper.py:88.\n"
+            "The full shard results are still pending; I will post them when they land.\n"
+        )
+        transcript = _write_transcript(tmp_path, [_user(), _assistant(body)])
+
+        result = handle_unbacked_claim_gate({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_blocked_because_is_a_dependency_status_not_a_diagnosis(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body = "Nothing to do this tick. The merge is blocked because the reviewer has not approved it yet.\n"
+        transcript = _write_transcript(tmp_path, [_user(), _assistant(body)])
+
+        result = handle_unbacked_claim_gate({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize("path", ["run.log", "events.jsonl", "rows.csv", "nginx.conf", "settings.env"])
+    def test_a_named_artefact_counts_as_a_citation(
+        self, path: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user(), _assistant(f"The run failed because {path} names it.\n")])
+
+        result = handle_unbacked_claim_gate({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+
 class TestPassesWhenCitedOrOutOfScope:
     def test_cited_diagnosis_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         transcript = _write_transcript(tmp_path, [_user(), _assistant(_CITED_DIAGNOSIS)])

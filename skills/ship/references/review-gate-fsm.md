@@ -21,27 +21,7 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
    `acquired: true` → proceed to step 2. `acquired: false` → a review is already in flight for this MR (the reported `holder` + `state`) — do **not** spawn a second reviewer; the in-flight one already covers this dispatch.
 
-2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool:
-
-   The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
-
-   ```text
-   NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
-   ```
-
-   ```text
-   Agent(
-     description: "Pre-push review of <ticket>",
-     subagent_type: "t3:reviewer",
-     prompt: "<the verbatim block above>, then: \
-              Review the diverging code on this branch against main. Branch: <name>. \
-              Ticket: <url>. Scope: <one-line summary>. Read the linked ticket end-to-end \
-              before touching the diff (per /t3:review § 'Step 0 — Gather Ticket Context'). \
-              Apply both the per-file repo-rules check (/t3:review § 'Active Verification \
-              Against Repo Rules') and the module-level architectural check (full files of \
-              every touched module). Report findings as a punch list — no code edits."
-   )
-   ```
+2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool. The dispatch template — including the verbatim near-zero-comments block the `prompt:` MUST open with — is in `/t3:ship` § "4b. Review Gate" itself, not here: skill prose reaches a spawned agent only through `SKILL.md`, so a reference-file copy would be lost at exactly the moment it is needed.
 
 3. **Apply every finding.** Reviewer sub-agents are read-only; the implementing conversation owns the edits. Do not cherry-pick which findings to take — if a finding is wrong, push back with evidence in the same conversation, do not silently drop it.
 

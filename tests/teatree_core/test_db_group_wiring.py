@@ -1,3 +1,5 @@
+# test-path: cross-cutting — pins the teatree.cli.django_groups catalogue against the core
+# `db` management command's registered subcommands; the contract spans both packages.
 """The ``t3 <overlay> db`` group must re-expose every core subcommand.
 
 The overlay CLI bridges ``t3 <overlay> db <sub>`` through the static

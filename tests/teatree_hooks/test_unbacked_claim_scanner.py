@@ -59,10 +59,8 @@ class TestFiresOnUnbackedSeverity:
         assert verdict is not None
         assert verdict.kind == "severity"
 
-    def test_severity_with_settling_evidence_outstanding_fires_even_when_cited(self) -> None:
-        text = _PREMATURE_ALARM + "The assertion that flagged it was `offers[0].rate != selected.rate`.\n"
-
-        verdict = find_unbacked_claim(text)
+    def test_uncited_severity_with_settling_evidence_outstanding_names_both_gaps(self) -> None:
+        verdict = find_unbacked_claim(_PREMATURE_ALARM)
 
         assert verdict is not None
         assert verdict.kind == "severity"
@@ -85,6 +83,11 @@ class TestDoesNotFireOnBackedOrHonestTurns:
 
     def test_honestly_hedged_diagnosis_passes(self) -> None:
         text = "I have not read the logs yet; my guess is it failed because the ratchet fired.\n"
+
+        assert find_unbacked_claim(text) is None
+
+    def test_cited_severity_naming_a_run_still_in_flight_passes(self) -> None:
+        text = _PREMATURE_ALARM + "The assertion that flagged it was `offers[0].rate != selected.rate`.\n"
 
         assert find_unbacked_claim(text) is None
 

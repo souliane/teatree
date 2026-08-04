@@ -33,18 +33,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-class TestDockerHostAddress(TestCase):
-    def test_returns_host_docker_internal_on_darwin(self) -> None:
-        with patch.object(worktree_env_mod.platform, "system", return_value="Darwin"):
-            assert worktree_env_mod._docker_host_address() == "host.docker.internal"
-
-    def test_returns_host_docker_internal_on_windows(self) -> None:
-        with patch.object(worktree_env_mod.platform, "system", return_value="Windows"):
-            assert worktree_env_mod._docker_host_address() == "host.docker.internal"
-
-    def test_returns_bridge_gateway_on_linux(self) -> None:
-        with patch.object(worktree_env_mod.platform, "system", return_value="Linux"):
-            assert worktree_env_mod._docker_host_address() == "172.17.0.1"
+# The host-address decision itself moved to ``teatree.utils.ports.docker_host_address`` and is
+# covered at that seam by ``tests/teatree_utils/test_ports.py::TestDockerHostAddress``, which
+# exercises the container boundary a bare ``platform.system()`` check cannot see. What this
+# module still owns is that the env cache ROUTES POSTGRES_HOST through it — asserted by
+# ``TestWriteEnvCache.test_shared_postgres_adds_host`` against the public entry point.
 
 
 class _SharedPostgresOverlayProvisioning(OverlayProvisioning):

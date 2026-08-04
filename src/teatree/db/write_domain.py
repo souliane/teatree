@@ -185,8 +185,8 @@ def _lsof_holders(targets: Mapping[str, Path]) -> Iterator[tuple[Path, FdHolder]
 
     ``lsof`` exits 1 when nothing holds the files, which is an ANSWER (no holders),
     not a failure — hence the widened *expected_codes*. The ``n`` (name) field
-    arrives AFTER the ``a`` (access) field of the same record, so a record is only
-    complete once its name lands; that is what lets one invocation cover many files.
+    arrives AFTER the ``a`` (access) field of the same record, so a record is emitted
+    only once its name has been read; that is what lets one invocation cover many files.
     """
     lsof = shutil.which("lsof")
     if lsof is None:

@@ -137,6 +137,9 @@ class TestReadWriteHoldersAcrossManyPaths:
     def test_the_descriptor_table_is_read_once_for_every_path(self, tmp_path: Path) -> None:
         # The whole point. Forced onto the lsof branch (the non-Linux view) because it
         # is the one whose cost is a subprocess, and the one a call count can observe.
+        # ``which`` is stubbed too: the branch returns BEFORE spawning anything when the
+        # host has no lsof, so without this the count is 0 on a box that lacks one (this
+        # container does) and the guard only holds where lsof happens to be installed.
         paths = [tmp_path / f"db.sqlite3.copy-{index}" for index in range(12)]
         for path in paths:
             path.write_bytes(b"x")
@@ -148,6 +151,7 @@ class TestReadWriteHoldersAcrossManyPaths:
 
         with (
             patch.object(write_domain, "_PROC", tmp_path / "no-procfs"),
+            patch.object(write_domain.shutil, "which", return_value="/usr/bin/lsof"),
             patch.object(write_domain, "run_allowed_to_fail", record),
         ):
             read_write_holders_across(paths)

@@ -510,7 +510,18 @@ The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver
 
 When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent makes **under the user's identity to a colleague or customer surface** — a GitLab/GitHub PR/MR comment, an issue comment, a PR/MR approve or unapprove, a Slack channel or thread message, a Notion page or comment, an emoji reaction on someone else's message — the agent must obtain the user's explicit approval **first** (via `AskUserQuestion` for ad-hoc agent posts, or by recording an `OnBehalfApproval` for teatree code paths — see below) and publish only after the user confirms.
 
-How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, the `notify_on_post_on_behalf` receipt, and the two CLI shapes (colleague channel vs. the user's own DM) are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
+How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, and the `notify_on_post_on_behalf` receipt are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
+
+**Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete.
+
+```bash
+# colleague channel (or a colleague's DM) — gated, then routed to the user's own identity:
+t3 <overlay> notify post --channel <channel> --text '<message>'
+# the user's OWN DM (bot→user self-DM) — exempt from the gate, never on-behalf:
+t3 <overlay> notify send '<body>' --idempotency-key <key>
+```
+
+Never hand-roll the colleague egress: a raw Slack Web API call carrying your own credential, or any post/react outside that class, fails an import-guard test in the build.
 
 **Failure mode this prevents:** the agent posts a poorly-worded reply or an approval the user did not intend under the user's name to a colleague, and the user only learns of it after the fact (or via the notify receipt). The pre-gate keeps the user in control of their own voice until they choose to delegate it.
 

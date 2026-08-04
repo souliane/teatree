@@ -12,11 +12,11 @@ three legs required, so precision comes from the shape rather than from any one
 list of words:
 
 1. the last user message asks something ANSWER-SEEKING — an explanation demand,
-   or an interrogative carrying a second-person / state cue;
+    or an interrogative carrying a second-person / state cue;
 2. the final assistant turn reports a DELEGATION — the work was handed to a lane,
-   a sub-agent, a task;
+    a sub-agent, a task;
 3. that turn carries NO answer — no polarity opener, no causal explanation, and
-   no honest "I do not know yet".
+    no honest "I do not know yet".
 
 A turn that answers and then dispatches clears leg 3 on one word, which is the
 whole behaviour being asked for. A dispatch report following a non-question
@@ -36,11 +36,23 @@ _QUESTION_SPAN_RE: Final[re.Pattern[str]] = re.compile(r"[^.!?\n]{0,300}\?")
 # A cue that the '?' is directed at the agent and wants an ANSWER: an explanation
 # word, or a second-person / state interrogative. A bare '?' is deliberately not
 # enough — an id in parentheses ("ship it (4001?)") must never fire.
+#
+# A bare modal second person is NOT a cue. "can you merge this?", "could you
+# rebase it?", "will you push that?" are POLITE IMPERATIVES: the '?' is courtesy
+# and the ask is for the WORK, which a dispatch report answers perfectly well.
+# They only seek an answer when an information verb follows ("can you confirm the
+# pipeline is green?"), so the modal alternative requires one. "do you" is
+# narrowed the same way, to the forms asking about state, knowledge or
+# preference ("do you want me to merge it?"). A modal question that really is
+# polar still fires through its own tail ("will you merge it or not?").
 _ANSWER_SEEKING_CUE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bwhy\b|\bhow come\b|\bon what basis\b|"
     r"\bwhat (?:were|was|is|are|caused|went wrong|broke|blocked|happened)\b|"
     r"\bwhat'?s the (?:reason|cause|problem|blocker|status)\b|"
-    r"\bare you\b|\bwill you\b|\bdid you\b|\bhave you\b|\bdo you\b|\bcan you\b|\bcould you\b|"
+    r"\bare you\b|\bdid you\b|\bhave you\b|"
+    r"\bdo you (?:want|think|know|mean|agree|recall|remember)\b|"
+    r"\b(?:can|could|will|would) you\s+(?:tell me|explain|clarify|confirm|say|know|describe|"
+    r"elaborate|remind me|let me know|walk me through|talk me through)\b|"
     r"\bare we\b|\bdid we\b|\bis it\b|\bwas it\b|\bdoes it\b|\bdid it\b|\bis that\b|"
     r"\bor not\b|\byes or no\b",
     re.IGNORECASE,

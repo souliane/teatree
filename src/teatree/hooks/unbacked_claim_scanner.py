@@ -21,8 +21,8 @@ Two honest outs are not blocked, because they are the behaviour being asked for:
 a diagnosis explicitly marked unverified ("I have not read the logs; my guess is
 …") is a hypothesis, not a diagnosis; and downgrading an alarm you cannot yet
 back is exactly right. A severity label is NOT clearable by hedging, though —
-raising the alarm IS the claim — and it fires additionally when the turn itself
-says the settling evidence is outstanding.
+raising the alarm IS the claim — and an uncited one is named twice over when the
+turn itself says the settling evidence is outstanding.
 
 Fail-safe-to-silent everywhere: empty or odd input yields ``None``.
 """
@@ -33,16 +33,21 @@ from typing import Final, NamedTuple
 _FENCED_CODE_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
 _SENTENCE_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r"[.!?\n]+")
 
+# "blocked" is deliberately absent, from this list and from _CAUSAL_RE alike: it
+# states a DEPENDENCY, not a failure, so "blocked on a human approval" and
+# "blocked because the reviewer is away" are ordinary status lines, and reading
+# either as an uncited diagnosis fired the gate on every honest one. Keeping the
+# word here while dropping "blocked on" below left the exclusion vacuous — the
+# generic "because" re-admitted the same false positive.
 _FAILURE_WORD_RE: Final[re.Pattern[str]] = re.compile(
-    r"\bfail(?:ed|s|ing|ure|ures)?\b|\bred\b|\bbroke\b|\bbroken\b|\breject(?:ed|s)?\b|"
-    r"\bblock(?:ed|s)\b|\berror(?:ed|s)?\b|\bcrash(?:ed|es)?\b|\btimed out\b|\brefused\b|"
+    r"\bfail(?:ed|s|ing|ures?)?\b|\bred\b|\bbroke\b|\bbroken\b|\breject(?:ed|s)?\b|"
+    r"\berror(?:ed|s)?\b|\bcrash(?:ed|es)?\b|\btimed out\b|\brefused\b|"
     r"\bdid ?n[o']?t pass\b|\bwent red\b|\bregressed\b|\bregression\b",
     re.IGNORECASE,
 )
 
-# "blocked on X" is deliberately absent: it states a dependency, not a cause, so
-# every ordinary "blocked on a human approval" status read as an uncited
-# diagnosis. "failed on <step>" stays — that one does name a cause.
+# "blocked on X" is deliberately absent for the same reason. "failed on <step>"
+# stays — that one does name a cause.
 _CAUSAL_RE: Final[re.Pattern[str]] = re.compile(
     r"\bbecause\b|\bdue to\b|\bcaused by\b|\bthe cause\b|\broot cause\b|\bthe reason\b|"
     r"\bowing to\b|\bon account of\b|\bfailed on\b|\bthanks to\b",
@@ -91,7 +96,8 @@ _FENCED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(r"```[^\n]*\n(?P<body>.*?)
 _INLINE_CODE_RE: Final[re.Pattern[str]] = re.compile(r"`([^`\n]{2,})`")
 _FILE_LINE_RE: Final[re.Pattern[str]] = re.compile(r"\b[\w./-]+\.[A-Za-z]{1,5}:\d+\b")
 _PATH_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
-    r"\b[\w./-]*[\w-]\.(?:py|pyi|ts|tsx|js|jsx|json|ya?ml|toml|md|sh|sql|cfg|ini|txt|lock|html|css)\b",
+    r"\b[\w./-]*[\w-]\.(?:py|pyi|tsx?|jsx?|jsonl|json|ya?ml|toml|md|sh|sql|cfg|conf|ini|env|"
+    r"txt|log|csv|lock|html|css)\b",
 )
 # A lint/rule code (`F401`, `PLR0911`) or a CamelCase exception name — one letter
 # is enough, since the common ruff codes carry exactly one.
@@ -129,16 +135,20 @@ def _causal_failure_sentence(prose: str) -> str | None:
 
 
 def _severity_verdict(prose: str, text: str) -> ClaimVerdict | None:
+    """An escalation with nothing read behind it, else ``None``.
+
+    A citation clears the leg outright. The outstanding-evidence phrasing is an
+    ADDITIONAL reason on an already-uncited alarm, never a reason on its own: an
+    escalation that quotes its artefact AND says in the same breath that a
+    further check is still running is an honest, backed report, and blocking it
+    taxed exactly the disclosure the gate wants to encourage.
+    """
     label = _SEVERITY_LABEL_RE.search(prose)
-    if label is None:
+    if label is None or _has_evidence_citation(text):
         return None
-    missing: list[str] = []
-    if not _has_evidence_citation(text):
-        missing.append("the escalation cites no artefact — no quoted output, file:line, path, code, or link")
+    missing = ["the escalation cites no artefact — no quoted output, file:line, path, code, or link"]
     if _EVIDENCE_OUTSTANDING_RE.search(prose):
         missing.append("the settling evidence is still outstanding — the turn says it has not come back yet")
-    if not missing:
-        return None
     return ClaimVerdict(kind="severity", claim=label.group(0).strip(), missing=missing)
 
 
@@ -146,9 +156,9 @@ def find_unbacked_claim(text: str) -> ClaimVerdict | None:
     """Return a verdict to BLOCK, or ``None`` to allow.
 
     Severity is judged first and is the stricter leg: an escalation label needs a
-    citation AND must not declare its own settling evidence outstanding. A causal
-    failure diagnosis needs only a citation, and an explicitly unverified one is
-    a hypothesis rather than a diagnosis, so it never fires.
+    citation, and hedging does not clear it the way it clears a diagnosis. A
+    causal failure diagnosis needs only a citation, and an explicitly unverified
+    one is a hypothesis rather than a diagnosis, so it never fires.
     """
     if not text:
         return None

@@ -1,29 +1,11 @@
-# Documentation discipline — the trigger table, the two paths, and the attestation
+# Documentation discipline — the attestation examples and the deterministic gate
 
-The recipes behind `/t3:ship` § "3a1. Documentation Discipline". That section carries the question every PR answers; this file carries the trigger-to-doc table, the YES and NO paths, the `docs: n/a` attestation examples, and how the deterministic gate divides the work with the prose.
+The recipes behind `/t3:ship` § "3a1. Documentation Discipline". That section carries the question every PR answers, the trigger-to-doc table, and the two runnable paths — a dispatched sub-agent receives only `SKILL.md`, so the commands it must be able to issue stay there. This file carries the `docs: n/a` attestation examples and how the deterministic gate divides the work with the prose.
 
-| Trigger | Doc to update |
-|---|---|
-| New `t3` command / flag / env var | `README.md` (user-facing usage) |
-| New `Ticket.State` / FSM phase / `LoopLease` name | `BLUEPRINT.md` |
-| New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
-| Skill behaviour change | the relevant `SKILL.md` |
-
-```bash
-# YES path — open the matching doc to add the entry (canonical HOW; e.g. a new SKILL.md):
-$EDITOR README.md          # skills catalogue, or the user-facing command doc
-$EDITOR BLUEPRINT.md       # for a new FSM state / lifecycle concept
-```
-
-**If NO:** the MR description carries this attestation line on its own — record it directly, do NOT touch README/BLUEPRINT:
+The attestation line the NO path records reads:
 
 ```text
 docs: n/a — <one-line reason>
-```
-
-```bash
-# NO path — append the attestation to the PR body draft (canonical HOW):
-echo "docs: n/a — <one-line reason>" >> .git/PR_BODY.md
 ```
 
 Examples:

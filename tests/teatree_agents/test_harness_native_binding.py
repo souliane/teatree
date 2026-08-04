@@ -86,13 +86,11 @@ class TestNativeBindingCredentialRouting(TestCase):
         return harness
 
     def test_factory_routes_the_configured_pass_account_onto_the_native_binding(self) -> None:
-        # The selector probes an account's health before routing to it; the probe is the
-        # only unstoppable external here, so it is the one thing stubbed.
-        with (
-            patch("teatree.credential_config.PassPathSelector._probe", return_value=None),
-            patch("teatree.credential_config.PassPathSelector.select", return_value=self._ACCOUNT),
-        ):
-            harness = self._resolve_native_harness()
+        # Nothing is stubbed: ``PassPathSelector.select`` performs no network I/O — it
+        # rules an account out only on a FRESH stored exhausted verdict — so the REAL
+        # selector routes the configured account here, and the assertion below covers
+        # the whole factory → selector → credential chain rather than a stubbed slice.
+        harness = self._resolve_native_harness()
         credential = harness._anthropic_credential
         assert credential is not None, "the native binding was built with an UNROUTED credential"
         assert credential._effective_spec().pass_path == self._ACCOUNT

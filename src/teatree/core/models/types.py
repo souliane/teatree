@@ -1,4 +1,7 @@
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from teatree.core.provision.provision_report import ProvisionReportDict
 
 type Ports = dict[str, int]
 
@@ -586,6 +589,17 @@ def validated_ticket_extra(raw: dict | None) -> TicketExtra:
     return TicketExtra(**{k: v for k, v in raw.items() if k in _TICKET_EXTRA_KEYS})
 
 
+class WorktreeSiblingFields(TypedDict, total=False):
+    """Non-``extra`` ``Worktree`` fields a locked ``merge_extra`` co-writes.
+
+    The intake resolver re-points a reused row's ``branch`` alongside its
+    ``extra.worktree_path``; ``Worktree.merge_extra(also_set=…)`` keeps that
+    write in the same locked UPDATE. Mirrors :class:`TicketSiblingFields`.
+    """
+
+    branch: str
+
+
 class WorktreeExtra(TypedDict, total=False):
     worktree_path: str
     clone_path: str
@@ -596,6 +610,12 @@ class WorktreeExtra(TypedDict, total=False):
     db_refreshed_at: str
     db_import_failures: int
     setup_hook: str
+    # Written by the start runner alongside ``services`` in one locked update, and
+    # by the provision runner at the end of a provision. Both were absent from this
+    # TypedDict, so ``_WORKTREE_EXTRA_KEYS`` filtered them straight back out of
+    # every ``get_extra()`` read — declared here so the accessor keeps them.
+    ports: Ports
+    provision_report: "ProvisionReportDict"
     # #2227 Explicit operator pin: when true the idle-stack reaper never reaps
     # this worktree, regardless of idleness — the manual escape hatch alongside
     # the active-delivery-lease and recent-E2E-run KEEP guards.

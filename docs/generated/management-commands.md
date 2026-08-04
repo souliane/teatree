@@ -299,14 +299,6 @@ List DB-configured autonomous loops (read-only; #1796).
 
 Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires.
 
-## `memory`
-
-``t3 <overlay> memory`` group root.
-
-| Subcommand | Description |
-| --- | --- |
-| `recall` | Print the cold-tier memory rules most relevant to *query* (top *limit*) |
-
 ## `mr_reminder`
 
 | Subcommand | Description |

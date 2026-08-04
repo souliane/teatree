@@ -343,77 +343,88 @@ def default_provision_concurrency(cpu_count: "int | None" = None) -> int:
     return max(1, n // 2)
 
 
-def derive_worker_cpus(cpu_count: "int | None" = None) -> int:
-    """Whole-core CPU quota for the worker container, derived from the host (#3432).
+class DockerWorkerSizing:
+    """Derives the worker container's compose caps from the real host.
 
-    All host cores but one — the reserved core covers the light
-    admin/listener/watchdog sidecars and the host OS — floored at 1. Called by
-    ``deploy/deploy.sh`` on the UNCAPPED host so the resulting compose ``cpus``
-    reflects real host cores; inside the cgroup-capped worker
-    :func:`available_cpu_count` then reads this quota and
-    :func:`default_provision_concurrency` derives concurrency from the host
-    instead of a baked-in 3-core cap.
+    Grouped as one class because these three steps are a single concern —
+    turning what the HOST and the Docker DAEMON report into the ``cpus`` and
+    ``mem_limit`` ``deploy/deploy.sh`` passes to compose. They are separate from
+    the raw OS/cgroup RAM probes above, which answer "what is available right
+    now" for the admission gate rather than "how big may the worker be".
     """
-    n = cpu_count if cpu_count is not None else available_cpu_count()
-    return max(1, n - 1)
 
+    @staticmethod
+    def worker_cpus(cpu_count: "int | None" = None) -> int:
+        """Whole-core CPU quota for the worker container, derived from the host (#3432).
 
-def docker_daemon_total_ram_mib() -> int:
-    """RAM the Docker daemon can actually hand a container, in whole MiB; ``0`` when unreadable.
+        All host cores but one — the reserved core covers the light
+        admin/listener/watchdog sidecars and the host OS — floored at 1. Called by
+        ``deploy/deploy.sh`` on the UNCAPPED host so the resulting compose ``cpus``
+        reflects real host cores; inside the cgroup-capped worker
+        :func:`available_cpu_count` then reads this quota and
+        :func:`default_provision_concurrency` derives concurrency from the host
+        instead of a baked-in 3-core cap.
+        """
+        n = cpu_count if cpu_count is not None else available_cpu_count()
+        return max(1, n - 1)
 
-    On Linux — the box — the daemon shares the host kernel, so this equals host
-    RAM and changes nothing. Under Docker Desktop the daemon runs in the product's
-    own Linux VM, sized a FRACTION of the host (a 24 GiB Mac commonly allocates 8
-    GiB). A cap derived from host RAM there exceeds the machine the container
-    actually runs on, so the cgroup ceiling can never bind: instead of a clean
-    per-container OOM the VM reaches a GLOBAL one (``constraint=CONSTRAINT_NONE``,
-    ``global_oom``) that reaps whichever task it picks and leaves dockerd without
-    an exit event — the container then refuses `stop`/`kill` and exits 137.
+    @staticmethod
+    def daemon_total_ram_mib() -> int:
+        """RAM the Docker daemon can actually hand a container, in whole MiB; ``0`` when unreadable.
 
-    Pure stdlib on purpose: ``deploy/deploy.sh`` runs this file as a bare
-    ``python3`` script with no teatree package importable, and it suppresses
-    stderr — so an import error here would degrade SILENTLY to the compose default.
-    """
-    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-    import subprocess  # noqa: PLC0415 — deferred: loaded only on this code path
+        On Linux — the box — the daemon shares the host kernel, so this equals host
+        RAM and changes nothing. Under Docker Desktop the daemon runs in the product's
+        own Linux VM, sized a FRACTION of the host (a 24 GiB Mac commonly allocates 8
+        GiB). A cap derived from host RAM there exceeds the machine the container
+        actually runs on, so the cgroup ceiling can never bind: instead of a clean
+        per-container OOM the VM reaches a GLOBAL one (``constraint=CONSTRAINT_NONE``,
+        ``global_oom``) that reaps whichever task it picks and leaves dockerd without
+        an exit event — the container then refuses `stop`/`kill` and exits 137.
 
-    docker = shutil.which("docker")
-    if not docker:
-        return 0
-    try:
-        out = subprocess.run(
-            [docker, "info", "--format", "{{.MemTotal}}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-        total = int(out.stdout.strip())
-    except (subprocess.SubprocessError, ValueError, OSError):
-        return 0
-    return max(0, total // (1024 * 1024))
+        Pure stdlib on purpose: ``deploy/deploy.sh`` runs this file as a bare
+        ``python3`` script with no teatree package importable, and it suppresses
+        stderr — so an import error here would degrade SILENTLY to the compose default.
+        """
+        import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
+        import subprocess  # noqa: PLC0415 — deferred: loaded only on this code path
 
+        docker = shutil.which("docker")
+        if not docker:
+            return 0
+        try:
+            out = subprocess.run(
+                [docker, "info", "--format", "{{.MemTotal}}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+            total = int(out.stdout.strip())
+        except (subprocess.SubprocessError, ValueError, OSError):
+            return 0
+        return max(0, total // (1024 * 1024))
 
-def derive_worker_mem_limit_mib(total_ram_mib: "int | None" = None, daemon_ram_mib: "int | None" = None) -> int:
-    """Worker ``mem_limit`` in whole MiB derived from the RAM a container can really get, or ``0`` when unknown (#3432).
+    @classmethod
+    def worker_mem_limit_mib(cls, total_ram_mib: "int | None" = None, daemon_ram_mib: "int | None" = None) -> int:
+        """Worker ``mem_limit`` (whole MiB) from the RAM a container can really get; ``0`` when unknown (#3432).
 
-    The basis is the SMALLER of host RAM and what the Docker daemon reports it can
-    hand out (:func:`docker_daemon_total_ram_mib`) — identical on Linux, but under
-    Docker Desktop the daemon's VM is the real ceiling and the host figure would
-    size a cap the container can never be held to. From that basis, a fixed reserve
-    for the sibling containers (:data:`_SIBLING_RESERVE_MIB`) and ~20% OS/burst
-    headroom (:data:`_HOST_HEADROOM`), floored at :data:`_WORKER_MIN_MIB`. Returns
-    ``0`` when the basis is unreadable so ``deploy/deploy.sh`` keeps the compose
-    default rather than imposing a cap derived from a bogus reading.
-    """
-    total = total_ram_mib if total_ram_mib is not None else host_total_ram_mib()
-    daemon = daemon_ram_mib if daemon_ram_mib is not None else docker_daemon_total_ram_mib()
-    if daemon > 0:
-        total = daemon if total <= 0 else min(total, daemon)
-    if total <= 0:
-        return 0
-    worker = int((total - _SIBLING_RESERVE_MIB) * _HOST_HEADROOM)
-    return max(_WORKER_MIN_MIB, worker)
+        The basis is the SMALLER of host RAM and what the Docker daemon reports it can
+        hand out (:meth:`daemon_total_ram_mib`) — identical on Linux, but under
+        Docker Desktop the daemon's VM is the real ceiling and the host figure would
+        size a cap the container can never be held to. From that basis, a fixed reserve
+        for the sibling containers (:data:`_SIBLING_RESERVE_MIB`) and ~20% OS/burst
+        headroom (:data:`_HOST_HEADROOM`), floored at :data:`_WORKER_MIN_MIB`. Returns
+        ``0`` when the basis is unreadable so ``deploy/deploy.sh`` keeps the compose
+        default rather than imposing a cap derived from a bogus reading.
+        """
+        total = total_ram_mib if total_ram_mib is not None else host_total_ram_mib()
+        daemon = daemon_ram_mib if daemon_ram_mib is not None else cls.daemon_total_ram_mib()
+        if daemon > 0:
+            total = daemon if total <= 0 else min(total, daemon)
+        if total <= 0:
+            return 0
+        worker = int((total - _SIBLING_RESERVE_MIB) * _HOST_HEADROOM)
+        return max(_WORKER_MIN_MIB, worker)
 
 
 def _emit_compose_sizing() -> None:
@@ -423,19 +434,17 @@ def _emit_compose_sizing() -> None:
     The ``mem_limit`` line is omitted when host RAM is unreadable so compose keeps
     its in-file default; ``cpus`` always emits (its derivation floors at 1).
     """
-    sys.stdout.write(f"TEATREE_WORKER_CPUS={derive_worker_cpus()}\n")
-    mem = derive_worker_mem_limit_mib()
+    sys.stdout.write(f"TEATREE_WORKER_CPUS={DockerWorkerSizing.worker_cpus()}\n")
+    mem = DockerWorkerSizing.worker_mem_limit_mib()
     if mem > 0:
         sys.stdout.write(f"TEATREE_WORKER_MEM_LIMIT={mem}m\n")
 
 
 __all__ = [
+    "DockerWorkerSizing",
     "available_cpu_count",
     "cgroup_v2_memory_mib",
     "default_provision_concurrency",
-    "derive_worker_cpus",
-    "derive_worker_mem_limit_mib",
-    "docker_daemon_total_ram_mib",
     "host_total_ram_mib",
     "linux_mem_available_kb",
     "read_ram_used_percent",

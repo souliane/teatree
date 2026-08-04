@@ -19,6 +19,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -29,6 +30,9 @@ from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.utils import git
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields
 
 logger = logging.getLogger(__name__)
 
@@ -338,11 +342,11 @@ def _refresh_reused_row(worktree: Worktree, branch: str, cwd_path: Path) -> None
     raises :class:`WorktreePathConflictError` rather than silently steal.
     """
     new_path = str(cwd_path)
-    set_keys: dict[str, object] = {}
+    set_keys: WorktreeExtra = {}
     if (worktree.extra or {}).get("worktree_path") != new_path:
         _assert_path_unclaimed(worktree, new_path)
         set_keys["worktree_path"] = new_path
-    also_set: dict[str, object] = {} if worktree.branch == branch else {"branch": branch}
+    also_set: WorktreeSiblingFields = {} if worktree.branch == branch else {"branch": branch}
     if set_keys or also_set:
         # `branch` and `extra` are co-written here on purpose, so this stays ONE
         # locked UPDATE — `merge_extra` re-reads `extra` from the locked row, so a
