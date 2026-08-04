@@ -13,6 +13,7 @@ from teatree.dash.views import (
     board,
     board_columns_partial,
     command_run,
+    cycle_time,
     debug_session,
     gate_toggle,
     health,
@@ -54,6 +55,7 @@ urlpatterns = [
     path("", RedirectView.as_view(pattern_name="dash:board", permanent=False), name="index"),
     path("board/", board, name="board"),
     path("board/columns/", board_columns_partial, name="board_columns"),
+    path("cycle-time/", cycle_time, name="cycle_time"),
     path("health/", health, name="health"),
     path("health/bands/", health_bands_partial, name="health_bands"),
     # Retired: the config page merged into /dash/settings/. Kept as a redirect so an old
