@@ -16,10 +16,22 @@ The same conflation had a second, delivering half (#4194): the mirror was read
 whenever the payload was falsy, so a DB that was read PERFECTLY and returned
 nothing took the file path too. The mirror is now the bootstrap transport for a
 process that cannot reach the DB, and nothing else.
+
+Three states, and delivery on two of them:
+
+1. **reachable and mine** — the drain's answer is the answer, empty or not.
+2. **reachable but DIVERGED** — the DB opened, but it is not the DB the hand-off
+    was written to (``resolve_data_dir`` auto-isolates per worktree while the
+    mirror stays in the shared primary dir, #3563). Nothing is delivered and a
+    WARNING says so; the mirror is deliberately NOT read, because an auto-isolated
+    DB can legitimately BE the delivery DB, so reading the shared mirror would
+    trade a silent miss for a wrong delivery.
+3. **unreachable** — the mirror bootstraps the session, loudly.
 """
 
 import contextlib
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -90,10 +102,41 @@ def claim_session_handover(session_id: str) -> str | None:
                 "UNREACHABLE — the mirror carries at most one hand-off, so any other pending row is still parked",
                 session_id,
             )
+    elif not payload:
+        _warn_if_the_control_db_is_not_the_primary(session_id)
     if not payload:
         return None
     origin = f" from session `{from_session}`" if from_session else ""
     return _HANDOVER_DIRECTIVE.format(origin=origin, payload=payload)
+
+
+def _warn_if_the_control_db_is_not_the_primary(session_id: str) -> None:
+    """Say so when an EMPTY drain read a control DB that is not the one hand-offs go to.
+
+    The third state. ``teatree.paths.resolve_data_dir`` auto-isolates the control DB
+    per worktree while the mirror stays in the SHARED primary data dir (#3563), so a
+    hook running in a worktree can open a perfectly healthy DB that simply is not the
+    one the hand-off was written to — and answer "nothing pending" indistinguishably
+    from an empty queue.
+
+    Loud, NOT a mirror read: an auto-isolated DB can legitimately BE the delivery DB
+    (a session handing off inside worktree W writes to W's DB and the next session in
+    W reads it), so reading the shared mirror here would trade a silent miss for a
+    wrong delivery. A diagnostic must never break the pickup, so every failure of the
+    detector itself is swallowed.
+    """
+    with contextlib.suppress(Exception):
+        from teatree.paths import ControlDb  # noqa: PLC0415 — deferred: only reachable once Django bootstrapped
+
+        divergence = ControlDb(env=os.environ).divergence_message(Path(__file__).resolve().parents[2])
+        if divergence:
+            logger.warning(
+                "session hand-off drain for session %s read a control DB that is NOT the primary and it held "
+                "nothing — this is not proof the queue is empty. %s Any hand-off written against the primary "
+                "DB is still parked.",
+                session_id,
+                divergence,
+            )
 
 
 def claim_session_handover_from_file() -> tuple[str, str]:

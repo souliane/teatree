@@ -21,6 +21,7 @@ import pytest
 
 import hooks.scripts.session_handover_pickup as pickup
 from teatree.core.models import SessionHandover
+from teatree.paths import ControlDb
 
 _MIRROR_BODY = "STALE MIRROR PAYLOAD"
 
@@ -84,3 +85,50 @@ class TestTheDatabaseIsTheDeliverySurface:
         assert directive is not None
         assert _MIRROR_BODY in directive
         assert "db is locked" in caplog.text
+
+
+class TestADivergedControlDbIsLoudRatherThanExtendingTheFallback:
+    """Three states, delivery on two: reachable-and-mine, reachable-but-diverged, unreachable.
+
+    ``db_readable`` was two-valued, so a DB that opens but is NOT the DB the hand-off
+    was written to delivered nothing with no trace at all — a straight recurrence of
+    the #3810 loud-degradation contract this module's docstring claims to honour.
+
+    Extending the mirror fallback to that branch would be WRONG rather than merely
+    bigger: an auto-isolated control DB can legitimately BE the delivery DB (a session
+    handing off inside worktree W writes to W's DB and the next session in W reads
+    it), so reading the SHARED mirror there trades a silent miss for a WRONG delivery.
+    """
+
+    def test_a_drain_against_a_diverged_control_db_warns_and_still_delivers_nothing(
+        self, mirror: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(ControlDb, "divergence_message", lambda _self, _root: "resolves /a/x vs primary /b/y")
+
+        with caplog.at_level(logging.WARNING, logger="teatree.hook_router"):
+            directive = pickup.claim_session_handover("the-fresh-session")
+
+        assert directive is None
+        assert mirror.read_text(encoding="utf-8") == _MIRROR_BODY, "a diverged DB must not reach for the mirror"
+        assert "resolves /a/x vs primary /b/y" in caplog.text
+        assert "the-fresh-session" in caplog.text
+
+    def test_a_drain_against_the_primary_control_db_is_silent(
+        self, mirror: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The CONTROL: without it, a probe that warned unconditionally would pass the test above."""
+        monkeypatch.setattr(ControlDb, "divergence_message", lambda _self, _root: None)
+
+        with caplog.at_level(logging.WARNING, logger="teatree.hook_router"):
+            assert pickup.claim_session_handover("the-fresh-session") is None
+
+        assert caplog.text == "", "an ordinary empty drain against the primary DB has nothing to say"
+
+    def test_a_failing_detector_never_breaks_the_pickup(self, mirror: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(_self: ControlDb, _root: Path) -> str:
+            msg = "the detector exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(ControlDb, "divergence_message", _boom)
+
+        assert pickup.claim_session_handover("the-fresh-session") is None
