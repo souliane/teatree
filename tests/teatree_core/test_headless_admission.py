@@ -443,6 +443,120 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         assert Task.objects.cheap_lane_occupancy() == 0
 
 
+class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
+    """#4125: the bound holds across processes, not merely inside one probe window.
+
+    The occupancy probe and the admission stamp were two unsynchronised statements, so two
+    processes hitting a chokepoint between them each saw room and each admitted — an
+    effective bound of ceiling PLUS however many raced. The racers below are deliberately
+    NOT wrapped in ``transaction.atomic()``: the path under test is a stale read followed
+    by a bare autocommit write, and wrapping them would let the backend's connection-level
+    write serialization hide the very race being reproduced.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        self.addCleanup(
+            post_save.connect, _auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless"
+        )
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+
+    def _cheap_row(self) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="reviewing",
+        )
+
+    def _seated_row(self) -> Task:
+        row = self._cheap_row()
+        Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now())
+        return row
+
+    def _probe(self) -> HeadlessAdmission:
+        """One chokepoint's verdict, off the live occupancy count — a racer's stale read."""
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            return headless_admission_verdict()
+
+    def test_two_racing_chokepoints_cannot_both_take_the_last_seat(self) -> None:
+        self._seated_row()
+        racer_one, racer_two = self._probe(), self._probe()
+        first, second = self._cheap_row(), self._cheap_row()
+
+        assert racer_one.admit(first.pk, "reviewing", at="racer-one") is True
+        assert racer_two.admit(second.pk, "reviewing", at="racer-two") is False
+        assert Task.objects.cheap_lane_occupancy() == 2
+
+    def test_a_row_already_holding_a_live_seat_is_not_admitted_twice(self) -> None:
+        # Re-admitting a row already in the runner's hand is a duplicate dispatch, which
+        # is what the drain did to every row it had admitted on its previous pass.
+        row = self._cheap_row()
+
+        assert self._probe().admit(row.pk, "reviewing", at="first pass") is True
+        assert self._probe().admit(row.pk, "reviewing", at="next pass") is False
+
+    def test_a_seat_the_window_released_can_be_taken_again(self) -> None:
+        # The single-occupancy rule must not outlive the seat: a runner that died holding
+        # an admission would otherwise wedge that row out of the lane permanently.
+        row = self._cheap_row()
+        assert self._probe().admit(row.pk, "reviewing", at="first pass") is True
+        Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+
+        assert self._probe().admit(row.pk, "reviewing", at="after the window") is True
+
+    def test_the_expensive_class_is_seated_without_a_lane_ceiling(self) -> None:
+        # The cheap ceiling bounds the cheap lane only; an expensive row is braked by the
+        # governor's own verdict and must not inherit a width that was never about it.
+        for _ in range(3):
+            self._seated_row()
+        coding = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+        assert self._probe().admit(coding.pk, "coding", at="expensive") is True
+
+    def test_a_class_level_refusal_is_not_repeated_for_every_row_it_holds(self) -> None:
+        # A braked drain announced the class refusal once and then repeated it per held
+        # row — 19 lines a cadence on the measured shape, all saying the same thing.
+        for _ in range(2):
+            self._seated_row()
+        held = [self._cheap_row() for _ in range(3)]
+        verdict = self._probe()
+
+        with self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs:
+            verdict.log_denials()
+            for row in held:
+                assert verdict.admit(row.pk, "reviewing", at="headless drain") is False
+
+        assert len([line for line in logs.output if "cheap-phase lane occupancy" in line]) == 1
+
+    def test_a_pass_announces_the_seats_the_window_released(self) -> None:
+        # The ceiling goes soft exactly when the box is saturated — the state an operator
+        # most needs named, and the one carrying no refusal of its own to name it.
+        released = self._cheap_row()
+        Task.objects.filter(pk=released.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+
+        with self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs:
+            self._probe().log_denials()
+
+        assert any("released 1 unclaimed seat" in line for line in logs.output)
+
+
 class TestAutoEnqueueConsultsTheGovernor(TestCase):
     @override_settings(**IMMEDIATE_BACKEND)
     def test_auto_enqueue_is_suppressed_on_a_governor_deny(self) -> None:

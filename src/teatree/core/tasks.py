@@ -254,7 +254,7 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
-        if admission.refuse(task_obj.pk, task_obj.phase, at="headless drain"):
+        if not admission.admit(task_obj.pk, task_obj.phase, at="headless drain"):
             continue
         if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
             task_obj.route_to_headless(
@@ -262,7 +262,6 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             )
             rerouted.append(task_obj.pk)
         execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
-        admission.record_admitted(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
     return {"enqueued": enqueued, "rerouted": rerouted, "failed_unknown_overlay": failed_unknown_overlay}
 
