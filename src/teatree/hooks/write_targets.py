@@ -10,11 +10,12 @@ nothing firing at write time.
 This module is the shared answer both gates consume. It is deliberately
 PRECISION-biased: a false negative is exactly today's behaviour and costs
 nothing new, while a false positive blocks legitimate shell work. So a target
-it cannot pin statically (a ``$VAR`` path, an interpreter body that writes
-through a variable) is reported as :attr:`WriteTargets.unresolved` rather than
-guessed at — each consumer then applies its own posture (the main-clone guard
-ALLOWS an unresolvable target, matching its existing stance on an unpinnable
-git target; the plan gate warns rather than denying).
+it cannot pin statically (a ``$VAR`` path, a ``>(...)`` process substitution, an
+interpreter body that writes through a variable) is reported as
+:attr:`WriteTargets.unresolved` rather than guessed at — each consumer then
+applies its own posture (the main-clone guard ALLOWS an unresolvable target,
+matching its existing stance on an unpinnable git target; the plan gate warns
+rather than denying).
 
 Segmentation runs through the shared quote-accurate :mod:`_shell_lexer`, so a
 write verb inside a quoted string or a heredoc body is never mistaken for a
@@ -34,8 +35,12 @@ _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]
 # An output redirect, optionally fd-qualified: ``>`` / ``>>`` / ``>|`` / ``2>``.
 _REDIRECT_RE: Final[re.Pattern[str]] = re.compile(r"^\d*(?:>>|>\|?)")
 # A target the shell expands at run time — the hook cannot pin it, so it is
-# reported unresolved instead of matched as the literal pre-expansion text.
-_SUBSTITUTION_CHARS: Final[frozenset[str]] = frozenset({"$", "`", "*", "?"})
+# reported unresolved instead of matched as the literal pre-expansion text. The
+# parens cover process substitution: ``_REDIRECT_RE`` matches the leading ``>``
+# of ``>(...)``, so its split-token remainder (``(gzip``, ``/tmp/a.gz)``) would
+# otherwise be emitted as a literal path that does not exist (#4127). Bash
+# expands the substitution to a ``/dev/fd/N``, so unresolved is the honest answer.
+_SUBSTITUTION_CHARS: Final[frozenset[str]] = frozenset({"$", "`", "*", "?", "(", ")"})
 
 _SED_NAMES: Final[frozenset[str]] = frozenset({"sed", "gsed"})
 _COPY_NAMES: Final[frozenset[str]] = frozenset({"cp", "mv", "install"})

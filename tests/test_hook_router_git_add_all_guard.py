@@ -99,6 +99,11 @@ class TestNarrowlyScoped:
             "echo git add -A",
             "git add -n .",
             "git add --dry-run .",
+            # A dry run stages nothing, so the sweep flag it is clustered with
+            # cannot sweep either — the no-sweep test has to run FIRST (#4127).
+            "git add -An",
+            "git add -nA",
+            "git add --all --dry-run",
         ],
     )
     def test_allowed(self, command: str) -> None:

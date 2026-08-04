@@ -131,6 +131,44 @@ class TestQuotedRedirectCharactersAreArguments:
         assert bash_write_targets("grep -rn '>' src/ > /tmp/hits.txt").targets == ("/tmp/hits.txt",)
 
 
+class TestProcessSubstitutionIsNotAnOutputRedirect:
+    """`>(...)` is a process substitution, not a `> path` redirect (#4127).
+
+    ``_REDIRECT_RE`` matched its leading `>` and emitted the rest of the split
+    token as a literal relative path — `tee >(gzip -c > /tmp/a.gz)` resolved to
+    `(gzip` and `/tmp/a.gz)`, so both gates denied a legitimate command while
+    naming a path that does not exist. The honest answer is `unresolved`: bash
+    expands the substitution to a `/dev/fd/N` at run time, so what the inner
+    command writes is not statically knowable — the same posture `echo hi > $OUT`
+    already gets.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat in.txt | tee >(gzip -c > /tmp/a.gz)",
+            "make 2> >(tee /tmp/err.log)",
+            "tee >(gzip)",
+        ],
+    )
+    def test_output_substitution_is_unresolved_not_a_literal_path(self, command: str) -> None:
+        result = bash_write_targets(command)
+        assert result.targets == ()
+        assert result.unresolved is True
+
+    def test_input_substitution_is_not_a_write_at_all(self) -> None:
+        result = bash_write_targets("diff <(sort a) <(sort b)")
+        assert result.targets == ()
+        assert result.unresolved is False
+
+    def test_a_real_redirect_sharing_the_line_is_still_resolved(self) -> None:
+        # The anti-vacuous companion: reporting the substitution unresolved must
+        # not blind the resolver to a genuine `> path` on the same line.
+        result = bash_write_targets("make 2> >(tee /tmp/err.log) > src/app/out.txt")
+        assert result.targets == ("src/app/out.txt",)
+        assert result.unresolved is True
+
+
 class TestLeaderPrefixesAreSkipped:
     """`command mv` is the shell-alias-safe spelling the house rules mandate."""
 
