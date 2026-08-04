@@ -21,8 +21,12 @@
     # command ends in a bare `--` and the paths arrive via the pipe — never a full local
     # suite). The `t3 … run tests … -- <path>` alternative alone missed that idiom; credit
     # the recognizable `t3 tool affected-tests` prefix, which can only lead to a scoped run.
+    # `dev/test-affected.sh` is the runner `skills/test/SKILL.md` § "How it selects" and
+    # `skills/code/SKILL.md` § 6 literally mandate ("Use `bash dev/test-affected.sh`, which
+    # force-keeps the floor"), and `dev/ci-parity-fast.sh` wraps that same lane — both are
+    # diff-scoped, so an agent running the mandated command was being graded wrong.
     - tool_call: Bash
-      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3\s+\S+\s+run\s+tests\s+(?:--\S+\s+)*--\s+[^-]\S*|t3 test run\s+\S+|pytest\s+-k\s|t3 tool affected-tests"'
+      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3\s+\S+\s+run\s+tests\s+(?:--\S+\s+)*--\s+[^-]\S*|t3 test run\s+\S+|pytest\s+-k\s|t3 tool affected-tests|dev/test-affected\.sh|dev/ci-parity-fast\.sh"'
     - no_tool_call_matching:
         Bash.command: '~ "(uv run )?pytest( -o addopts=\"\")?\s*$"'
 

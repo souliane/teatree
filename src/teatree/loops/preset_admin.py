@@ -20,7 +20,7 @@ from teatree.core.mode_resolution import (
     PRESENCE_UPGRADE_SETTING,
 )
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeScheduleSlot
-from teatree.core.models.loop_preset import DEFAULT_LOW_POWER_PRESET, LOW_POWER_PRESET_SETTING, PIN_MODES
+from teatree.core.models.loop_preset import DEFAULT_LOW_POWER_PRESET, LOW_POWER_PRESET_SETTING
 from teatree.loops.preset_editing import PresetEditError, require_preset
 from teatree.loops.shipped_guard import require_shipped_delete_confirm
 
@@ -81,18 +81,12 @@ def create_preset(name: str, *, description: str = "") -> Mode:
     return Mode.objects.create(name=slug, entries={}, description=description)
 
 
-def update_preset_meta(name: str, *, description: str | None = None, availability_pin: str | None = None) -> Mode:
-    """Edit a preset's operator-facing description and its availability pin.
-
-    ``availability_pin=""`` CLEARS the pin — clearing must be expressible, not only
-    switching between pins, so the argument is tri-state (``None`` leaves it alone).
-    """
+def update_preset_meta(name: str, *, description: str | None = None) -> Mode:
+    """Edit a preset's operator-facing description."""
     preset = require_preset(name)
     if description is not None:
         preset.description = description
-    if availability_pin is not None:
-        preset.availability_mode = _validated_pin(availability_pin)
-    preset.save(update_fields=["description", "availability_mode", "updated_at"])
+    preset.save(update_fields=["description", "updated_at"])
     return preset
 
 
@@ -143,14 +137,6 @@ def _validated_slug(name: str) -> str:
         msg = f"invalid preset name {name!r}; use letters, digits, dashes and underscores"
         raise PresetEditError(msg)
     return slug
-
-
-def _validated_pin(pin: str) -> str:
-    value = pin.strip()
-    if value and value not in PIN_MODES:
-        msg = f"invalid availability pin {pin!r}; use {'|'.join(sorted(PIN_MODES))} or empty to clear"
-        raise PresetEditError(msg)
-    return value
 
 
 __all__ = [

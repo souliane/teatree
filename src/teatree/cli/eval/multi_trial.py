@@ -35,8 +35,9 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
-from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdown
+from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.summary_json import write_summary_json
+from teatree.eval.summary_markdown import render_summary_markdown
 from teatree.eval.surface import is_advisory
 
 #: The column name ``--presets`` recognises for "no preset" — each scenario's

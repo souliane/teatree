@@ -9,9 +9,9 @@ The guard is deliberately two complementary defenses (both required — neither 
 is sufficient):
 
 1.  This explicit denylist — the per-setting ``private`` flag, expressed as set
-    membership. ``config_migration.export_db_to_toml`` drops these keys by default.
+    membership. ``config_interchange.migration.export_db_to_toml`` drops these keys by default.
 2.  An active banned-term CONTENT scan over every exported key+value (in
-    ``config_migration``), which catches a NON-listed key whose value happens to
+    ``config_interchange.migration``), which catches a NON-listed key whose value happens to
     contain a customer/brand term (e.g. ``ban_close_trailers_on_namespaces =
     ['acme-engineering/*']``) — the case a static keylist can never enumerate.
 

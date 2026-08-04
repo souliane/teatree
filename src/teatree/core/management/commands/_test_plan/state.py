@@ -1,6 +1,6 @@
 """The persisted test-plan state model — the source of truth for the merge.
 
-The typed :class:`TestPlanState` is serialised into the hidden
+The typed :class:`PlanState` is serialised into the hidden
 ``<!-- t3-e2e-data {…} -->`` blob on the one-note-per-ticket test-plan note
 (teatree #272). This module owns the state schema, its defensive JSON
 coercion, and the note-marker parse/emit — every function a pure transform
@@ -37,6 +37,8 @@ _DATA_BLOB_RE = re.compile(r"<!--\s*t3-e2e-data\s+(?P<json>\{.*?\})\s*-->", re.D
 class TestPlanValidationError(ValueError):
     """Raised when a manifest fails pre-post validation; the note is NOT posted."""
 
+    __test__ = False  # not a pytest test class (name starts with 'Test')
+
 
 def _as_dict(value: object) -> Mapping[str, object]:
     """``value`` as a read-only mapping when it is a dict, else ``{}``."""
@@ -65,7 +67,7 @@ class SideState(TypedDict):
     missing_on_dev: NotRequired[list[str]]
 
 
-class TestPlanState(ScenarioSection):
+class PlanState(ScenarioSection):
     """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob.
 
     ``template``: ``"capture-matrix"`` (default), ``"browser-click-first"``,
@@ -86,7 +88,7 @@ class TestPlanState(ScenarioSection):
     blocked_workflows: NotRequired[dict[str, str]]
 
 
-def empty_state(*, ticket: str, title: str) -> TestPlanState:
+def empty_state(*, ticket: str, title: str) -> PlanState:
     """A fresh state with both sides empty."""
     return {
         "ticket": ticket,
@@ -121,10 +123,10 @@ def _coerce_side(raw: object, *, env: str) -> SideState:
     return side
 
 
-def coerce_state(raw: object) -> TestPlanState:
-    """Build a well-typed :class:`TestPlanState` from a JSON blob; drops malformed fields."""
+def coerce_state(raw: object) -> PlanState:
+    """Build a well-typed :class:`PlanState` from a JSON blob; drops malformed fields."""
     raw_dict = _as_dict(raw)
-    state: TestPlanState = {
+    state: PlanState = {
         "ticket": str(raw_dict.get("ticket") or ""),
         "title": str(raw_dict.get("title") or ""),
         "mrs": [str(m) for m in _as_list(raw_dict.get("mrs"))],
@@ -152,12 +154,12 @@ def _coerce_steps(raw: object) -> dict[str, list[str]]:
     return {str(name): [str(s) for s in _as_list(steps)] for name, steps in _as_dict(raw).items() if _as_list(steps)}
 
 
-def test_plan_marker(*, ticket_id: str) -> str:
+def render_ticket_marker(*, ticket_id: str) -> str:
     """Hidden HTML-comment idempotency marker; matched by :data:`_TICKET_MARKER_RE`."""
     return f"<!-- t3-e2e-evidence ticket={ticket_id} -->"
 
 
-def parse_state_blob(body: str) -> TestPlanState:
+def parse_state_blob(body: str) -> PlanState:
     """Recover the persisted state from a note body, or an empty state when absent/corrupt."""
     match = _DATA_BLOB_RE.search(body)
     if match is None:

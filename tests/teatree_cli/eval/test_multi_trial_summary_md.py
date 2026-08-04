@@ -48,7 +48,7 @@ class _CleanRunner:
 @pytest.fixture
 def clean_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("teatree.cli.eval.multi_trial.make_runner", lambda *a, **k: _CleanRunner())
-    monkeypatch.setattr("teatree.eval.report.find_spec", _spec)
+    monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", _spec)
 
 
 @pytest.mark.usefixtures("clean_runner")
@@ -102,7 +102,7 @@ class _FailingRunner:
 class TestSummaryWrittenEvenOnRedRun:
     def test_summary_written_before_non_zero_exit(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setattr("teatree.cli.eval.multi_trial.make_runner", lambda *a, **k: _FailingRunner())
-        monkeypatch.setattr("teatree.eval.report.find_spec", _spec)
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", _spec)
         spec = EvalSpec(
             name="fails",
             scenario="s",

@@ -551,6 +551,8 @@ The convention closes that gap: **an agent self-applies `needs-triage` by defaul
 
 When in doubt, apply `needs-triage` — a withheld issue costs the maintainer one label-removal; an un-withheld one risks the factory implementing something the maintainer never decided to build.
 
+The label governs an issue that is going to exist. Whether it should exist at all is decided one step earlier by the backlog-reuse precondition — search the open backlog, extend a suitable host rather than adding a near-duplicate, one issue per root cause — which is canonical in `AGENTS.md` § "Issue Creation" and is not restated here.
+
 ## A Filed Issue Separates OBSERVED From INFERRED (Non-Negotiable)
 
 A root-cause claim in a filed issue is load-bearing: the next reader starts from it, so a wrong mechanism sends them down the wrong path and costs more than filing no mechanism at all. Keep the two apart in the body, labelled:

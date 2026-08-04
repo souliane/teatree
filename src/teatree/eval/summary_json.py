@@ -6,7 +6,7 @@ record of ``name`` / ``lane`` / ``verdict`` plus the triage discriminators
 the ``triage_class`` :func:`teatree.eval.triage.classify_red` derives from them.
 It is built ONLY from spec identity + verdict + discriminators — NEVER a
 transcript, a tool-call input, or a judge rationale — the same sanitization
-contract as :func:`teatree.eval.report.render_summary_markdown`, so the CI heal
+contract as :func:`teatree.eval.summary_markdown.render_summary_markdown`, so the CI heal
 workflow can upload it as a published artifact. Works for a single-trial run and
 for a ``--trials``/pass@k run (the aggregate discriminators fold over each
 scenario's per-trial results).

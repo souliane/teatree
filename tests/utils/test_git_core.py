@@ -5,6 +5,7 @@ import pytest
 
 from teatree.utils import git
 from teatree.utils import run as utils_run_mod
+from teatree.utils.git_commit import last_commit_message
 from tests.teatree_core.cleanup._shared import _run_git
 
 
@@ -271,6 +272,18 @@ def _origin_with_branch(tmp_path: Path, branch_commits: list[tuple[str, str]]) -
         message = f"{subject}\n\n{body}" if body else subject
         _run_git("commit", "--allow-empty", "-q", "-m", message, cwd=clone)
     return clone
+
+
+def test_last_commit_message_skip_merges_reads_the_branch_s_own_last_real_commit(tmp_path: Path) -> None:
+    """#4103: a merge commit at the tip must not supply the PR subject."""
+    clone = _origin_with_branch(tmp_path, [("feat(x): the branch's own work", "Body.")])
+    _run_git("checkout", "-q", "main", cwd=clone)
+    _run_git("commit", "--allow-empty", "-q", "-m", "chore(z): main moved on", cwd=clone)
+    _run_git("checkout", "-q", "feature", cwd=clone)
+    _run_git("merge", "-q", "--no-ff", "--no-edit", "main", cwd=clone)
+
+    assert last_commit_message(repo=str(clone))[0].startswith("Merge branch")
+    assert last_commit_message(repo=str(clone), skip_merges=True) == ("feat(x): the branch's own work", "Body.")
 
 
 def test_first_commit_message_returns_oldest_branch_commit_not_default_head(tmp_path: Path) -> None:

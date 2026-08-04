@@ -840,7 +840,7 @@ subset, because a subset check still passes while a key silently vanishes, which
 failure mode that makes replacing the shipped file dangerous. It renders through
 `defaults_snapshot.render_toml`, the SAME emitter `snapshot_settings_defaults` writes with
 (one emitter, two callers — pinned by an identity assertion), and reproduces the seed tables
-from `core.config_seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
+from `core.config_interchange.seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
 therefore byte-for-byte the shipped file, header and seed tables included:
 `tests/teatree_core/test_config_export_filters.py` asserts it against the real committed
 file, with a control proving a single live override moves exactly one line.

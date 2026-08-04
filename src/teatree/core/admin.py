@@ -232,7 +232,7 @@ class ConfigSettingAdmin(admin.ModelAdmin):
 @admin.register(Mode)
 class ModeAdmin(ShippedDeleteRouting):
     shipped_family = "preset"
-    list_display = ("name", "availability_mode", "entry_count", "description", "updated_at")
+    list_display = ("name", "entry_count", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
 

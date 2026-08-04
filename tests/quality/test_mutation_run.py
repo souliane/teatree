@@ -22,10 +22,29 @@ from teatree.quality.mutation_run import (
     build_mutmut_config,
     load_baseline_per_module,
     load_settings,
+    module_test_paths,
     parse_results,
     run_scoped,
 )
 from teatree.utils.run import CommandFailedError, TimeoutExpired
+
+
+class TestModuleTestPaths:
+    def test_mapped_module_gets_its_own_scoped_dirs(self) -> None:
+        settings = MutationSettings(
+            timeout_seconds=1,
+            module_tests={"src/teatree/on_behalf_gate.py": ("tests/teatree_core/",), "default": ("tests/",)},
+            baseline_total=0,
+        )
+        assert module_test_paths("src/teatree/on_behalf_gate.py", settings) == ("tests/teatree_core/",)
+
+    def test_unmapped_module_falls_back_to_the_default_entry(self) -> None:
+        settings = MutationSettings(timeout_seconds=1, module_tests={"default": ("tests/",)}, baseline_total=0)
+        assert module_test_paths("src/teatree/unmapped.py", settings) == ("tests/",)
+
+    def test_no_default_entry_falls_back_to_the_whole_suite(self) -> None:
+        settings = MutationSettings(timeout_seconds=1, module_tests={}, baseline_total=0)
+        assert module_test_paths("src/teatree/unmapped.py", settings) == ("tests/",)
 
 
 class TestBuildMutmutConfig:

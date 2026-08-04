@@ -1,7 +1,7 @@
 """The one parse→coerce→canonicalize core every config WRITE surface shares.
 
 Four surfaces persist a ``ConfigSetting`` row — ``config_setting set`` / ``seed``
-(the CLI), the dashboard settings editor POST, and the ``config_migration`` TOML
+(the CLI), the dashboard settings editor POST, and the ``config_interchange`` TOML
 import. Each ran the SAME copy: look up the key's registry parser, coerce the raw
 value, and catch the same ``(ValueError, TypeError, AttributeError)`` tuple a bad
 value raises. This module owns that core once so the surfaces can never drift on

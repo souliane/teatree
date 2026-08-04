@@ -49,6 +49,8 @@ Amplifies CLAUDE.md "No stale references". When a change retires or renames a fu
 ## Issue Creation (Non-Negotiable)
 
 - **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
+- **Search the open backlog first, and reuse a host issue where one fits.** `gh issue list` returns 30 rows by default, so a first-page read reports "nothing open matches this" while the host sits at position 40 — pass `--limit 200`. Extending beats filing a near-duplicate: append the new evidence and acceptance criteria to the existing issue's body or as a comment, so the host carries the whole ask. A cross-link from a second issue is not reuse.
+- **One issue per root cause, not per finding.** Findings that a single PR would close belong in one issue. The exception is scope, not similarity: a genuinely unrelated defect in another subsystem still gets its own issue — this rule bounds duplication, never the backlog's coverage.
 - **Teatree is a public repository.** Only generic, project-agnostic issues belong here. Never mention downstream project names, tenant names, customer names, internal architecture, feature flags, or any proprietary information.
 - **Overlay-specific issues go on the overlay repository.** If an issue involves both core teatree and an overlay, create it on the overlay repo and reference the core component — not the other way around.
 - **When in doubt, ask.** If you're unsure whether an issue is generic or overlay-specific, ask the user before creating it anywhere.

@@ -25,8 +25,8 @@ from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.setting_groups import setting_comment
 from teatree.config.setting_help import setting_help
-from teatree.core import config_migration
-from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange import migration as config_migration
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 
 _SHIPPED_TEXT = DEFAULTS_TOML.read_text(encoding="utf-8")

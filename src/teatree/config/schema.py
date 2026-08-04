@@ -367,6 +367,7 @@ class TeatreeSettingsSchema(BaseSettings):
     task_sweep_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     task_sweep_recheck_interval_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     target_branch: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    test_worker_ram_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_budget_max_cost_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_transition_prune_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     timezone: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]

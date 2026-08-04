@@ -6,10 +6,12 @@ leaves the source intact — salvage never destroys the only copy on its own
 failure.
 """
 
+import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
-from teatree.core.cleanup.cleanup_salvage import SalvageHooks, SalvageRequest, salvage_item
+from teatree.core.cleanup.cleanup_salvage import SalvageHooks, SalvageRequest, default_salvage_hooks, salvage_item
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -188,3 +190,33 @@ def test_scan_can_be_bypassed_when_banned_clean_not_required(tmp_path: Path) -> 
     assert result.salvaged is True
     assert result.deleted is True
     assert rec.calls == ["push", "open_pr", "verify", "delete"]
+
+
+def test_default_push_hook_supplies_the_forge_credential(tmp_path: Path) -> None:
+    """#4103: salvage deletes the source once the branch lands, so its push must carry the credential.
+
+    A raw ``git push`` inherits only what git can already see, and only ``GH_TOKEN``
+    reaches git's credential helper — so a venue holding the token under teatree's
+    own name pushes iff the hook resolves the credential itself. Asserted on the
+    KEY's presence in the env git received — never on a value.
+    """
+    only_teatree_named = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+    only_teatree_named["TEATREE_GH_TOKEN"] = "sentinel-not-a-credential"
+    work = _repo_with_feature(tmp_path)
+    push_envs: list[dict[str, str]] = []
+    real_run = subprocess.run
+
+    def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "push" in cmd:
+            push_envs.append(dict(env or {}))
+        return real_run(cmd, env=env, **kwargs)  # type: ignore[arg-type,call-overload,no-any-return]
+
+    hooks = default_salvage_hooks(source_branch="feature", delete=lambda: True)
+    with (
+        patch.dict(os.environ, only_teatree_named, clear=True),
+        patch("teatree.utils.run.subprocess.run", side_effect=spy),
+    ):
+        assert hooks.push(str(work), "feature") is True
+
+    assert push_envs, "the salvage hook never ran a git push"
+    assert all("GH_TOKEN" in env for env in push_envs)

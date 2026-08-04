@@ -269,6 +269,7 @@ SETTING_HELP: dict[str, str] = {
     "task_result_retention_days": "days a task result row is kept",
     "task_sweep_disabled": "stop sweeping abandoned tasks back into the queue",
     "task_sweep_recheck_interval_hours": "hours between rechecks of a swept task",
+    "test_worker_ram_gb": "RAM one pytest worker is sized at when the governor caps test parallelism",
     "ticket_budget_max_cost_usd": "dollars one ticket may cost before it is halted",
     "ticket_transition_prune_disabled": "stop pruning old ticket transition rows",
     "timeouts": "per-operation timeout overrides, keyed by operation name",

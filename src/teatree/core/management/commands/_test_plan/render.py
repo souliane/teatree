@@ -2,7 +2,7 @@
 
 The rendering half of the one-note-per-ticket test-plan model (teatree #272):
 :func:`merge_state` overlays a run's side(s) on the prior
-:class:`~teatree.core.management.commands._test_plan.state.TestPlanState`
+:class:`~teatree.core.management.commands._test_plan.state.PlanState`
 (freezing the side the run does not carry) and :func:`render_body` is a pure
 function of the merged state. The state schema lives in :mod:`.state` and the
 manifest parse in :mod:`.manifest`; this module re-exports both surfaces so
@@ -23,15 +23,15 @@ from teatree.core.management.commands._test_plan.scenario import render_scenario
 from teatree.core.management.commands._test_plan.state import (
     DEFAULT_TEMPLATE,
     KNOWN_TEMPLATES,
+    PlanState,
     SideState,
-    TestPlanState,
     TestPlanValidationError,
     WorkflowEmbed,
     coerce_state,
     empty_state,
     find_ticket_marker,
     parse_state_blob,
-    test_plan_marker,
+    render_ticket_marker,
 )
 from teatree.core.management.commands._test_plan.workflow_templates import render_browser_click_first, render_link_api
 from teatree.utils.url_slug import pr_ref_from_url
@@ -41,10 +41,10 @@ _EMPTY_CELL = "—"
 __all__ = [
     "DEFAULT_TEMPLATE",
     "KNOWN_TEMPLATES",
+    "PlanState",
     "SideManifest",
     "SideState",
     "TestPlanManifest",
-    "TestPlanState",
     "TestPlanValidationError",
     "WorkflowArtifacts",
     "WorkflowEmbed",
@@ -56,7 +56,7 @@ __all__ = [
     "parse_state_blob",
     "render_body",
     "render_mrs_line",
-    "test_plan_marker",
+    "render_ticket_marker",
     "validate_template",
 ]
 
@@ -65,17 +65,17 @@ __all__ = [
 
 
 def merge_state(
-    prior: TestPlanState,
+    prior: PlanState,
     *,
     manifest: TestPlanManifest,
     title: str,
     embeds: dict[str, dict[str, WorkflowEmbed]],
-) -> TestPlanState:
+) -> PlanState:
     """Overlay this run's sides over *prior*, freezing sides not present in *manifest*.
 
     Steps persist across re-runs: a steps-less re-run preserves the prior steps.
     """
-    state: TestPlanState = {
+    state: PlanState = {
         "ticket": manifest.ticket or prior.get("ticket", ""),
         "title": title,
         "mrs": list(manifest.mrs) if manifest.mrs else list(prior.get("mrs", [])),
@@ -179,7 +179,7 @@ def _dev_gap_clause(side: SideState) -> str:
     return "⚠️ Not yet on dev: " + ", ".join(missing) + " — expected gap."
 
 
-def _workflow_names(state: TestPlanState) -> list[str]:
+def _workflow_names(state: PlanState) -> list[str]:
     """Ordered union of both sides' media-bearing workflows and the steps-only ones.
 
     A steps-only manifest (steps recorded, no screenshots/video) keeps its
@@ -198,7 +198,7 @@ def _cells(side: SideState, workflow: str) -> tuple[str, list[str]]:
     return wf.get("video_md") or _EMPTY_CELL, list(wf.get("image_md", []))
 
 
-def _test_plan_block(state: TestPlanState, workflow: str) -> list[str]:
+def _test_plan_block(state: PlanState, workflow: str) -> list[str]:
     """Numbered ``**How to test:**`` step list for *workflow*, or ``[]`` when none."""
     steps = state.get("steps", {}).get(workflow, [])
     if not steps:
@@ -206,7 +206,7 @@ def _test_plan_block(state: TestPlanState, workflow: str) -> list[str]:
     return ["**How to test:**", "", *[f"{i}. {step}" for i, step in enumerate(steps, start=1)], ""]
 
 
-def _workflow_table(state: TestPlanState, workflow: str) -> list[str]:
+def _workflow_table(state: PlanState, workflow: str) -> list[str]:
     """Heading + optional steps + ``| Dev | Local |`` table for one workflow.
 
     A backend-only workflow carries neither video nor screenshots on either
@@ -237,14 +237,14 @@ def _workflow_table(state: TestPlanState, workflow: str) -> list[str]:
     return lines
 
 
-def _render_header(state: TestPlanState) -> list[str]:
+def _render_header(state: PlanState) -> list[str]:
     """Shared preamble for every template: markers, heading, MRs, commits, reconcile."""
     ticket_id = state.get("ticket", "")
     title = state.get("title", "") or ticket_id
     dev, local = state["dev"], state["local"]
     base_index = _commit_base_index(tuple(state.get("mrs", [])))
     lines: list[str] = [
-        test_plan_marker(ticket_id=ticket_id),
+        render_ticket_marker(ticket_id=ticket_id),
         f"<!-- t3-e2e-data {json.dumps(state, separators=(',', ':'), sort_keys=True)} -->",
         f"## Test Plan — {title}",
         "",
@@ -266,7 +266,7 @@ def _render_header(state: TestPlanState) -> list[str]:
     return lines
 
 
-def _blocked_lines(state: TestPlanState) -> list[str]:
+def _blocked_lines(state: PlanState) -> list[str]:
     """Blocked-workflow placeholders: one heading + reason per entry."""
     lines: list[str] = []
     for workflow, reason in (state.get("blocked_workflows") or {}).items():
@@ -274,7 +274,7 @@ def _blocked_lines(state: TestPlanState) -> list[str]:
     return lines
 
 
-def render_body(state: TestPlanState) -> str:
+def render_body(state: PlanState) -> str:
     """Render the full note body from the merged state.
 
     Dispatches on ``state["template"]``: ``"browser-click-first"`` →

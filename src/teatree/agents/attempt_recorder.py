@@ -252,11 +252,11 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
     The orchestrator half of the headless review lane: a Bash-denied reviewer
     RETURNS a typed ``review_verdict``; this records the ``ReviewVerdict`` (which
     resolves the per-MR :class:`MRReviewLock`) — maker≠checker holds because THIS
-    actor is not the author. Returns an error string when the verdict is malformed or the
-    reviewer identity is a maker/loop role (the caller fails the task so the
-    block surfaces), else ``""``. A non-reviewing phase, a result without a
-    ``review_verdict``, or a reviewing task with no resolvable PR target is a
-    no-op (``""``).
+    actor is not the author. Returns an error string when the verdict is malformed, the
+    reviewer identity is a maker/loop role, or the reviewer's self-asserted head diverges
+    from the dispatch head (the caller fails the task so the block surfaces), else ``""``.
+    A non-reviewing phase, a result without a ``review_verdict``, or a reviewing task with
+    no resolvable PR target is a no-op (``""``).
     """
     if normalize_phase(phase or task.phase) not in _REVIEW_VERDICT_PHASES:
         return ""
@@ -268,6 +268,11 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         return ""
 
     envelope = cast("ReviewVerdictEnvelope", raw_envelope)
+    divergence = _head_divergence(
+        asserted=str(envelope.get("reviewed_sha") or "").strip(), dispatch_head=target.head_sha
+    )
+    if divergence:
+        return divergence
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -278,7 +283,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         ReviewVerdict.record(
             pr_id=target.pr_id,
             slug=target.slug,
-            reviewed_sha=str(envelope.get("reviewed_sha") or "").strip() or target.head_sha,
+            reviewed_sha=target.head_sha,
             verdict=str(envelope.get("verdict", "")),
             reviewer_identity=str(envelope.get("reviewer_identity") or _DEFAULT_HEADLESS_REVIEWER),
             findings=findings,
@@ -290,6 +295,34 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
     except ReviewVerdictError as exc:
         return f"review verdict recording refused: {exc}"
     return ""
+
+
+#: Shortest self-asserted prefix that still identifies the dispatch head — git's own
+#: abbreviation floor. Anything shorter is read as a divergence, not an abbreviation.
+_MIN_ABBREVIATED_SHA_LEN = 7
+
+
+def _head_divergence(*, asserted: str, dispatch_head: str) -> str:
+    """Refuse a verdict for a tree this review was not dispatched for, or ``""`` (#4126).
+
+    The verdict is recorded at the DISPATCH head because that is the key the landed-work
+    guard (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`) reads: a
+    verdict written at the reviewer's own ``reviewed_sha`` is unreachable there, so the
+    reviewing row stays ``failed`` and is re-dispatched forever. Recording a divergent
+    self-assertion at the dispatch head anyway would be worse — it would vouch for a tree
+    nobody reviewed — so the divergence is surfaced instead, and a reviewer that judged a
+    different tree than it was dispatched for becomes a finding rather than a silent miss.
+    An omitted or abbreviated head that prefixes the dispatch head asserts the same tree.
+    """
+    claimed = asserted.lower()
+    head = dispatch_head.strip().lower()
+    if not claimed or (len(claimed) >= _MIN_ABBREVIATED_SHA_LEN and head.startswith(claimed)):
+        return ""
+    return (
+        f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
+        f"({dispatch_head}) — a reviewer that judged a different tree than the one it was "
+        f"dispatched for is itself a finding; the verdict is not recorded"
+    )
 
 
 def _resolve_review_target(task: Task) -> "_ReviewTarget | None":

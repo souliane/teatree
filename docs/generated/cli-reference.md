@@ -4788,17 +4788,16 @@ Usage: t3 loop preset [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list    List every preset with its pin, scope, entry count, and ACTIVE       │
-│         marker.                                                              │
+│ list    List every preset with its scope, entry count, and ACTIVE marker.    │
 │ show    Show a preset, or (no arg) the active preset + WHY + per-loop        │
 │         verdict table.                                                       │
 │ use     Activate a preset as the manual override (default: until the next    │
 │         scheduled boundary).                                                 │
 │ auto    Clear the manual override so the active schedule / default mode      │
 │         decides again.                                                       │
-│ create  Create a preset from ``--set`` entries, an optional availability pin │
-│         and overlay scope.                                                   │
-│ edit    Edit a preset's entries / description / pin / scope in place.        │
+│ create  Create a preset from ``--set`` entries and an optional overlay       │
+│         scope.                                                               │
+│ edit    Edit a preset's entries / description / scope in place.              │
 │ delete  Delete a preset — refused while a slot/override/setting names it;    │
 │         shipped needs ``--confirm``.                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4809,7 +4808,7 @@ Usage: t3 loop preset [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 loop preset list [OPTIONS]
 
- List every preset with its pin, scope, entry count, and ACTIVE marker.
+ List every preset with its scope, entry count, and ACTIVE marker.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json                                                                       │
@@ -4873,8 +4872,7 @@ Usage: t3 loop preset auto [OPTIONS]
 ```
 Usage: t3 loop preset create [OPTIONS] NAME
 
- Create a preset from ``--set`` entries, an optional availability pin and
- overlay scope.
+ Create a preset from ``--set`` entries and an optional overlay scope.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  [required]                                              │
@@ -4882,7 +4880,6 @@ Usage: t3 loop preset create [OPTIONS] NAME
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --set                TEXT  <loop>=on|off (repeatable).                       │
 │ --description        TEXT                                                    │
-│ --pin                TEXT                                                    │
 │ --scope              TEXT                                                    │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4893,7 +4890,7 @@ Usage: t3 loop preset create [OPTIONS] NAME
 ```
 Usage: t3 loop preset edit [OPTIONS] NAME
 
- Edit a preset's entries / description / pin / scope in place.
+ Edit a preset's entries / description / scope in place.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  [required]                                              │
@@ -4901,7 +4898,6 @@ Usage: t3 loop preset edit [OPTIONS] NAME
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --set                TEXT  <loop>=on|off|inherit (repeatable).               │
 │ --description        TEXT                                                    │
-│ --pin                TEXT                                                    │
 │ --scope              TEXT                                                    │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -11326,7 +11322,17 @@ Usage: t3 teatree config_setting import [OPTIONS]
  parser the
  resolver applies on read. A value equal to the shipped default writes NO row
  (so a dump of
- ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without
+ ``defaults.toml`` imports to zero rows), and a value the store already holds
+ is reported
+ as unchanged rather than written. What the export could NOT carry cannot
+ become a change
+ either: a row omitted as non-configuration is simply absent, and a registry
+ field the
+ secret guard withheld is merged back from the store rather than deleted. So
+ re-importing
+ this box's own export writes nothing and deletes nothing — an import never
+ removes a
+ value; ``config_setting clear`` does. ``--dry-run`` classifies without
  writing.
 
  Safety-posture keys import here without a confirm phrase: typing this command
@@ -11375,6 +11381,12 @@ Usage: t3 teatree config_setting export [OPTIONS]
  even though the private DB store keeps it. Each withheld row is named on
  stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
  backup.
+
+ A stored row that is not a SETTING — internal runtime state sharing the store,
+ a
+ key outliving its declaration — is named on stderr and left out whatever the
+ flags
+ say: ``import`` has no home for such a key and refuses the whole file on one.
 
  Two INDEPENDENT filters widen the dump, both off by default.
  ``--default-keys-only``
