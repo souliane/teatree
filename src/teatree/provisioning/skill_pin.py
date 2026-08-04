@@ -32,6 +32,7 @@ import dataclasses
 import datetime as dt
 import json
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,11 @@ _LS_REMOTE_TIMEOUT_SECONDS = 30
 _SHORT_SHA = 12
 _HEAD = "HEAD"
 _BRANCH_PREFIX = "refs/heads/"
+
+#: What an IMMUTABLE pin looks like. Anything else (``main``, ``v5.0.7``, a branch) is
+#: SYMBOLIC: it resolves to a moving target, so it cannot be "behind" its own source.
+#: Seven is git's own minimum abbreviation, so a hand-shortened pin still reads as a sha.
+_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 
 
 def _short(sha: str) -> str:
@@ -107,6 +113,15 @@ class SkillPinStatus:
     ``is_current`` and ``is_behind`` are BOTH false when the source could not be
     read: an unmeasurable pin belongs to neither answer, and a reader that folded
     it into one of them would report a guess as a measurement.
+
+    A pin is one of two KINDS and the distinction decides the whole question. An
+    IMMUTABLE pin names a commit (``#<sha>``, full or abbreviated) and can genuinely
+    fall behind. A SYMBOLIC pin names a moving ref (``#main``, a tag, a branch) and
+    resolves to whatever that ref points at TODAY — so it is current by construction
+    and has no bump to suggest. Comparing the two spellings as strings made every
+    symbolic pin permanently "behind" and produced a remediation telling the operator
+    to replace their deliberately floating ref with a frozen sha — advice that
+    reverses the choice the declaration was making.
     """
 
     name: str
@@ -117,12 +132,42 @@ class SkillPinStatus:
     unmeasurable: str = ""
 
     @property
+    def is_symbolic(self) -> bool:
+        """Whether the pin names a moving ref rather than a commit."""
+        return not _SHA_RE.fullmatch(self.pinned_ref.strip().lower())
+
+    @property
+    def _measured(self) -> bool:
+        return not self.unmeasurable and bool(self.head_sha)
+
+    @property
+    def _resolves_to_head(self) -> bool:
+        """An abbreviated pin matches by PREFIX — ``#d0008a3`` names the same commit as its full sha."""
+        return self.head_sha.lower().startswith(self.pinned_ref.strip().lower())
+
+    @property
+    def tracks_default_branch(self) -> bool:
+        """A symbolic pin naming the very branch ``git ls-remote --symref HEAD`` just resolved.
+
+        The only symbolic pin this measurement actually proves anything about. The probe
+        reads ``HEAD``, so a pin naming some OTHER branch or a tag was never compared to
+        anything — calling that current would be the silent pass this module exists to
+        remove, so it reports UNVERIFIED instead.
+        """
+        return self.is_symbolic and bool(self.branch) and self.pinned_ref.strip() == self.branch
+
+    @property
     def is_current(self) -> bool:
-        return not self.unmeasurable and bool(self.head_sha) and self.head_sha == self.pinned_ref
+        return self._measured and (self.tracks_default_branch or (not self.is_symbolic and self._resolves_to_head))
 
     @property
     def is_behind(self) -> bool:
-        return not self.unmeasurable and bool(self.head_sha) and self.head_sha != self.pinned_ref
+        return self._measured and not self.is_symbolic and not self._resolves_to_head
+
+    @property
+    def is_unverified_ref(self) -> bool:
+        """Measured, symbolic, and naming something other than the branch that was read."""
+        return self._measured and self.is_symbolic and not self.tracks_default_branch
 
     @property
     def source_repo(self) -> str:
@@ -189,6 +234,11 @@ def pin_advisory_lines(statuses: Sequence[SkillPinStatus]) -> list[str]:
     suggestion reads identically in both. A moved pin is INFO (a suggestion,
     never a gate); a pin that could not be compared is WARN, because silence
     there would be the very failure this check exists to remove.
+
+    A SYMBOLIC pin that tracks the source's default branch is silent: it resolves to
+    whatever that branch points at, so it cannot trail it and there is nothing to
+    suggest. Proposing a bump there — which a plain string comparison did, forever —
+    told the operator to freeze the floating ref they deliberately chose.
     """
     lines: list[str] = []
     for status in statuses:
@@ -196,6 +246,12 @@ def pin_advisory_lines(statuses: Sequence[SkillPinStatus]) -> list[str]:
             lines.append(
                 f"WARN  Skill pin {status.name!r} is UNVERIFIED: {status.unmeasurable}. Whether "
                 f"{status.spec} has fallen behind its source is UNKNOWN, which is not the same answer as current."
+            )
+        elif status.is_unverified_ref:
+            lines.append(
+                f"WARN  Skill pin {status.name!r} is UNVERIFIED: {status.spec} names the ref "
+                f"{status.pinned_ref!r}, but {status.source_repo} was only read at its default branch "
+                f"({status.branch or _HEAD}). The two were never compared, which is not the same answer as current."
             )
         elif status.is_behind:
             lines.append(

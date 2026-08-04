@@ -33,8 +33,9 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import acceptance, decay, gates, reindex
-from teatree.loops.dream.decay import BudgetTier, DecayPolicy, _MemoryFile, decay_memories, ledger_durable_home_resolver
+from teatree.loops.dream import acceptance, decay, decay_corpus, decay_signal, gates, reindex
+from teatree.loops.dream.decay import BudgetTier, DecayPolicy, decay_memories, ledger_durable_home_resolver
+from teatree.loops.dream.decay_corpus import MemoryFile
 
 _NOW = datetime(2026, 6, 16, 12, tzinfo=UTC)
 
@@ -62,7 +63,7 @@ def _policy(*, retention_days: int = 30, budget_tier: bool = False) -> DecayPoli
     return DecayPolicy(retention_days=retention_days, budget_tier=BudgetTier() if budget_tier else None)
 
 
-def _always_home(_: _MemoryFile) -> bool:
+def _always_home(_: MemoryFile) -> bool:
     """A resolver that asserts every memory has a durable home — isolates the file-side guard."""
     return True
 
@@ -75,7 +76,7 @@ class DecayTestCase(SimpleTestCase):
     and keep running without a database.
     """
 
-    home_resolver: Callable[[_MemoryFile], bool] = staticmethod(_always_home)
+    home_resolver: Callable[[MemoryFile], bool] = staticmethod(_always_home)
 
     def setUp(self) -> None:
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -158,7 +159,7 @@ class DecayTestCase(SimpleTestCase):
 
         # Guard-disabled probe: retention=0 days makes nothing 'fresh', and we
         # bypass the reference check by treating every loaded file as unreferenced.
-        with patch.object(decay, "_is_referenced", return_value=False):
+        with patch.object(decay, "is_referenced", return_value=False):
             probed = self._decay(retention_days=0)
         probed_names = {a.name for a in probed.archived}
         # With the guard bypassed, the protected memories ARE archived -> teeth.
@@ -316,7 +317,7 @@ class TransferBeforePruneRailTestCase(TestCase):
     def test_default_resolver_consults_prunable_ledger(self) -> None:
         # The default resolver helper is the production seam; exercise it directly.
         stale = self._write_stale("mem_probe")
-        probe = _MemoryFile(path=stale, name="mem_probe", text="", mtime=_NOW)
+        probe = MemoryFile(path=stale, name="mem_probe", text="", mtime=_NOW)
         assert ledger_durable_home_resolver()(probe) is False
         self._promoted_row(cluster="probe", source_files=[str(stale)], destination="skills/rules/SKILL.md")
         # A fresh resolver re-reads the ledger.
@@ -329,7 +330,7 @@ class BudgetDecayTierTestCase(SimpleTestCase):
     The ledger home-rail (``prunable()``) is structurally empty for the hand-authored
     corpus (0 rows reference on-disk memories), so it can never archive the bloating
     files. This tier fires only when ``MEMORY.md`` is over the session-load budget and
-    then archives the LOWEST-:func:`~decay._signal_score` files first — just enough to
+    then archives the LOWEST-:func:`~decay_signal.signal_score` files first — just enough to
     bring the projected hot index back under budget. A user / BINDING entry scores
     highest and is archived only if the budget forces it. A referenced file is NOT
     hard-retained by this tier (#2753) — the +40-per-inbound-link signal ranks it higher
@@ -677,6 +678,80 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert hub.name not in archived
 
 
+class BudgetProjectionWithAPreambleTestCase(SimpleTestCase):
+    """The projection must model the header the re-index ACTUALLY writes (#4193).
+
+    ``render_index`` REPLACES the generated ~180-byte header with the human-owned
+    ``MEMORY_PRIORITY.md`` block whenever one exists. The tier projected the generated
+    header regardless, so on any box carrying a preamble it under-counted the index by
+    the preamble's entire size: it read the very first survivor set as already fitting,
+    archived ZERO files, and left gate (d) failing every night with nothing naming why.
+
+    No test covered a preamble before this one — which is exactly how a projection that
+    models a file nobody writes stayed green.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write_preamble(self, byte_size: int) -> None:
+        """A human-owned priority block big enough that ignoring it hides the overrun."""
+        filler = "\n".join(f"> priority note {i:04d} — a hand-curated line that must stay hot" for i in range(400))
+        (self.dir / "MEMORY_PRIORITY.md").write_text(
+            f"# Auto Memory — Priority\n\n{filler}\n"[:byte_size], encoding="utf-8"
+        )
+
+    def _seed(self, count: int) -> None:
+        for i in range(count):
+            path = self.dir / f"{_budget_name('feedback_filler', i)}.md"
+            path.write_text(
+                f"---\nname: filler{i}\nmetadata:\n  type: feedback\n---\n\nlesson keyword{i:04d} niche note\n",
+                encoding="utf-8",
+            )
+            ts = (_NOW - timedelta(days=120)).timestamp()
+            os.utime(path, (ts, ts))
+
+    def _decay(self) -> decay.DecayResult:
+        return decay_memories(
+            self.dir,
+            now=_NOW,
+            has_durable_home=lambda _m: False,
+            policy=_policy(budget_tier=True),
+        )
+
+    def test_a_preamble_pushing_the_index_over_budget_is_archived_back_under(self) -> None:
+        """RED before the fix: the small-header projection fits immediately, so 0 files move."""
+        self._write_preamble(20 * 1024)
+        self._seed(120)
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+        assert len(reindex.render_index(self.dir).encode("utf-8")) > gates.INDEX_BYTE_BUDGET
+
+        result = self._decay()
+
+        assert result.archived_count > 0, "the preamble's bytes were projected away, so nothing was archived"
+        assert len(reindex.render_index(self.dir).encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
+
+    def test_the_preamble_itself_is_never_archived(self) -> None:
+        self._write_preamble(20 * 1024)
+        self._seed(120)
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+
+        self._decay()
+
+        assert (self.dir / "MEMORY_PRIORITY.md").is_file()
+
+    def test_without_a_preamble_the_generated_header_is_still_projected(self) -> None:
+        """The no-preamble path must be byte-identical to before — the header still counts."""
+        self._seed(400)
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+        assert len(reindex.render_index(self.dir).encode("utf-8")) > gates.INDEX_BYTE_BUDGET
+
+        result = self._decay()
+
+        assert result.archived_count > 0
+        assert len(reindex.render_index(self.dir).encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
+
+
 class InboundReferenceSignalTestCase(SimpleTestCase):
     """Inbound references must survive the filename/frontmatter-name split.
 
@@ -800,8 +875,8 @@ class InboundReferenceSignalTestCase(SimpleTestCase):
         # ambiguous alias is dropped rather than attributed to an arbitrary owner.
         first = self._write("feedback_alpha_rule", "the first rule", frontmatter_name="shared-alias")
         second = self._write("feedback_beta_rule", "the second rule", frontmatter_name="shared-alias")
-        files = decay._load_memory_files(self.dir)
-        aliases = decay._canonical_by_alias(files)
+        files = decay_corpus.load_memory_files(self.dir)
+        aliases = decay_corpus.canonical_by_alias(files)
         assert "shared-alias" not in aliases
         assert aliases["feedback_alpha_rule"] == first.name
         assert aliases["feedback_beta_rule"] == second.name
@@ -811,22 +886,27 @@ class SignalScoreTestCase(SimpleTestCase):
     """Unit coverage of the pure signal-score / cold-index helpers (#2723) — DB-free."""
 
     @staticmethod
-    def _mem(name: str, text: str, *, age_days: int = 0) -> _MemoryFile:
-        return _MemoryFile(path=Path(f"{name}.md"), name=name, text=text, mtime=_NOW - timedelta(days=age_days))
+    def _mem(name: str, text: str, *, age_days: int = 0) -> MemoryFile:
+        return MemoryFile(path=Path(f"{name}.md"), name=name, text=text, mtime=_NOW - timedelta(days=age_days))
 
     def test_user_memory_by_filename_and_by_frontmatter_type(self) -> None:
-        assert decay._is_user_memory(self._mem("user_pref", "a pref"))  # filename prefix
-        assert decay._is_user_memory(self._mem("misc_note", "---\nmetadata:\n  type: user\n---\nx"))  # frontmatter
-        assert not decay._is_user_memory(self._mem("feedback_x", "---\nmetadata:\n  type: feedback\n---\nx"))
+        assert decay_signal._is_user_memory(self._mem("user_pref", "a pref"))  # filename prefix
+        assert decay_signal._is_user_memory(
+            self._mem("misc_note", "---\nmetadata:\n  type: user\n---\nx")
+        )  # frontmatter
+        assert not decay_signal._is_user_memory(self._mem("feedback_x", "---\nmetadata:\n  type: feedback\n---\nx"))
 
     def test_resolved_type_frontmatter_then_prefix_then_other(self) -> None:
-        assert decay._resolved_type(self._mem("anything", "---\nmetadata:\n  type: reference\n---\nx")) == "reference"
+        assert (
+            decay_signal._resolved_type(self._mem("anything", "---\nmetadata:\n  type: reference\n---\nx"))
+            == "reference"
+        )
         # an unrecognised frontmatter type falls back to the filename prefix
-        assert decay._resolved_type(self._mem("project_x", "---\nmetadata:\n  type: bogus\n---\nx")) == "project"
+        assert decay_signal._resolved_type(self._mem("project_x", "---\nmetadata:\n  type: bogus\n---\nx")) == "project"
         # no recognised type, unknown prefix -> other
-        assert decay._resolved_type(self._mem("random_note", "a body")) == "other"
+        assert decay_signal._resolved_type(self._mem("random_note", "a body")) == "other"
         # node_type is never read as type
-        assert decay._resolved_type(self._mem("misc", "metadata:\n  node_type: memory\n")) == "other"
+        assert decay_signal._resolved_type(self._mem("misc", "metadata:\n  node_type: memory\n")) == "other"
 
     def test_binding_detection_matches_binding_and_non_negotiable(self) -> None:
         # The binding heuristic now lives once in the shared leaf (F6.11); decay's
@@ -839,28 +919,33 @@ class SignalScoreTestCase(SimpleTestCase):
 
     def test_recency_within_window_is_max_then_decays_to_floor(self) -> None:
         retention = timedelta(days=30)
-        assert decay._recency_score(self._mem("m", "x", age_days=5), _NOW, retention) == decay._SIGNAL_RECENT
-        assert decay._recency_score(self._mem("m", "x", age_days=60), _NOW, retention) == decay._SIGNAL_RECENT - 30
-        assert decay._recency_score(self._mem("m", "x", age_days=900), _NOW, retention) == 0  # floored
+        assert (
+            decay_signal._recency_score(self._mem("m", "x", age_days=5), _NOW, retention) == decay_signal._SIGNAL_RECENT
+        )
+        assert (
+            decay_signal._recency_score(self._mem("m", "x", age_days=60), _NOW, retention)
+            == decay_signal._SIGNAL_RECENT - 30
+        )
+        assert decay_signal._recency_score(self._mem("m", "x", age_days=900), _NOW, retention) == 0  # floored
 
     def test_signal_score_composes_additively(self) -> None:
         user_binding = self._mem("user_rule", "BINDING the rule", age_days=1)
-        score = decay._signal_score(user_binding, inbound_links=2, now=_NOW, retention=timedelta(days=30))
+        score = decay_signal.signal_score(user_binding, inbound_links=2, now=_NOW, retention=timedelta(days=30))
         assert score == 1000 + 500 + (2 * 40) + 200 + 10  # user + binding + inbound + recency + user type weight
 
     def test_inbound_citers_index_self_skip_and_cross_link(self) -> None:
         a = self._mem("mem_a", "see [[mem_b]] and [[mem_a]] (a self link is ignored)")
         b = self._mem("mem_b", "no links here")
-        citers = decay._inbound_citers([a, b], "- index line [[mem_b]]")
+        citers = decay_corpus.inbound_citers([a, b], "- index line [[mem_b]]")
         assert citers["mem_b.md"] == ("MEMORY.md", "mem_a.md")
         assert citers.get("mem_a.md", ()) == ()  # self-link does not count as inbound
 
     def test_over_budget_on_either_dimension(self) -> None:
         # #4057: the loader truncates on BYTES and on LINES, so either alone is over budget.
-        assert decay._over_budget(gates.INDEX_BYTE_BUDGET + 1, 1)  # over by bytes alone
-        assert decay._over_budget(1, gates.INDEX_LINE_BUDGET + 1)  # over by lines alone
-        assert not decay._over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # exactly at both is fine
-        assert not decay._over_budget(1, 1)  # under
+        assert decay_signal.over_budget(gates.INDEX_BYTE_BUDGET + 1, 1)  # over by bytes alone
+        assert decay_signal.over_budget(1, gates.INDEX_LINE_BUDGET + 1)  # over by lines alone
+        assert not decay_signal.over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # exactly at both is fine
+        assert not decay_signal.over_budget(1, 1)  # under
 
     def test_strip_provenance_with_without_and_malformed(self) -> None:
         prov = "<!-- archived by dream decay 2026-06-16: x; original mtime 2026-01-01 -->\nthe body\n"
@@ -1016,10 +1101,10 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         assert not gates.Gate.index_budget(before).passed  # over budget -> gate (d) FAILS
 
         # Which entries are referenced BEFORE the pass — to prove the fix archived some.
-        files = decay._load_memory_files(self.dir)
+        files = decay_corpus.load_memory_files(self.dir)
         index_text = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
-        citers_before = decay._inbound_citers(files, index_text)
-        referenced_before = {f.name for f in files if decay._is_referenced(f, citers_before)}
+        citers_before = decay_corpus.inbound_citers(files, index_text)
+        referenced_before = {f.name for f in files if decay_corpus.is_referenced(f, citers_before)}
         assert len(referenced_before) >= n  # every ring entry is referenced — MOST of the corpus
 
         result = self._decay()

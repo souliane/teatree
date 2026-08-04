@@ -67,55 +67,27 @@ Fault-isolated: the command runs it in a try/except so a phase-6 failure never
 crashes the tick.
 """
 
-import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from teatree.loops.dream._shared import NON_MEMORY_DOCS, is_binding_text
+from teatree.loops.dream._shared import ARCHIVE_INDEX_NAME, INDEX_NAME
+from teatree.loops.dream.decay_corpus import MemoryFile, inbound_citers, is_referenced, load_memory_files
+from teatree.loops.dream.decay_signal import BudgetProjection, budget_tier_candidates
 
 #: Default retention window — a memory written within this many days is kept
 #: regardless of references (a fresh lesson is never stale). Generous on purpose.
 DEFAULT_RETENTION_DAYS = 30
 
 ARCHIVE_DIRNAME = "archive"
-_INDEX_NAME = "MEMORY.md"
+
 #: The COLD archive index (#2723), written by this phase in the MAIN memory dir so the
 #: gate snapshot globs it as a memory body (an archived entry's signature stays findable
 #: there, keeping retention green) while it is NEVER re-indexed, cross-linked, or
 #: itself archived/merged — excluded alongside ``MEMORY.md`` in every loader.
-_ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
-_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-#: Any ``name.md`` token — a ``](name.md)`` markdown link target, a backticked filename,
-#: or a bare filename in a curated grouped index line. One regex covers all three because
-#: they are the same citation wearing different punctuation.
-_MEMORY_FILENAME_RE = re.compile(r"[\w.\-/]+\.md")
-#: A line that is EXACTLY the ``- name.md`` pointer re-index writes for every memory.
-#: Dropped before counting references: it regenerates wholesale, so it can never dangle
-#: and it says nothing about which memories a reader actually leans on.
-_GENERATED_POINTER_LINE_RE = re.compile(r"^\s*-\s+[\w.\-/]+\.md\s*$", re.MULTILINE)
-_FRONTMATTER_NAME_RE = re.compile(r"^name:\s*(\S+)\s*$", re.MULTILINE)
-#: A logical "lesson last-touched" frontmatter date — the age clock the budget tier
-#: reads so a cross-link / re-index rewrite (which bumps ``st_mtime``) does NOT reset
-#: the decay clock. Absent the field, the budget tier falls back to ``st_mtime``.
-_LESSON_UPDATED_RE = re.compile(r"^lesson_updated:\s*(\S+)\s*$", re.MULTILINE)
-#: Frontmatter ``type:`` (top-level or nested under ``metadata:``) — the memory's
-#: declared kind, used for the type-weight signal. ``node_type:`` never matches.
-_TYPE_LINE_RE = re.compile(r"^\s*type:\s*(\S+)\s*$", re.MULTILINE)
 
-#: The recognised memory types (filename prefix or frontmatter ``metadata.type``).
-_KNOWN_TYPES = frozenset({"user", "feedback", "retro", "reference", "project"})
-
-#: Additive signal weights for :func:`_signal_score` — higher means keep HOT. ``user``
-#: and BINDING dominate so they are archived only if the budget forces it; inbound
-#: citations and recency add the rest; a per-type floor breaks ties.
-_SIGNAL_USER = 1000
-_SIGNAL_BINDING = 500
-_SIGNAL_PER_INBOUND_LINK = 40
-_SIGNAL_RECENT = 200
-_TYPE_WEIGHTS = {"feedback": 90, "retro": 70, "reference": 30, "project": 20, "user": 10, "other": 10}
 
 #: Preamble of the cold ``MEMORY_ARCHIVE.md`` — kept machine-readable (one
 #: ``- <name>.md — <original signature>`` line per entry) for a future recall pass.
@@ -182,38 +154,11 @@ class DecayResult:
         return len(self.archived)
 
 
-@dataclass(frozen=True, slots=True)
-class _MemoryFile:
-    path: Path
-    name: str
-    text: str
-    mtime: datetime
-
-    @property
-    def lesson_touched(self) -> datetime:
-        """The logical lesson last-touched time — frontmatter ``lesson_updated`` or mtime.
-
-        The budget tier ages a lesson by WHEN IT WAS LAST MEANINGFULLY UPDATED, not
-        when the file was last written: cross-link and re-index rewrite a file (and
-        bump ``st_mtime``) without touching the lesson, so keying the decay clock on
-        ``st_mtime`` would keep resetting it. The ``lesson_updated`` frontmatter date
-        is that logical clock; absent it, ``st_mtime`` is the conservative fallback.
-        """
-        match = _LESSON_UPDATED_RE.search(self.text)
-        if match:
-            try:
-                parsed = datetime.fromisoformat(match.group(1))
-            except ValueError:
-                return self.mtime
-            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return self.mtime
-
-
 #: The transfer-before-prune seam: given a memory file, has its lesson been
 #: demonstrably transferred to a confirmed durable home? Injected so the
 #: file-side mechanics stay DB-free under test; the production default is
 #: :func:`ledger_durable_home_resolver`.
-HomeResolver = Callable[[_MemoryFile], bool]
+HomeResolver = Callable[[MemoryFile], bool]
 
 
 def ledger_durable_home_resolver() -> HomeResolver:
@@ -239,7 +184,7 @@ def ledger_durable_home_resolver() -> HomeResolver:
         if row.durable_destination:
             destinations.append(row.durable_destination)
 
-    def _has_home(memory: _MemoryFile) -> bool:
+    def _has_home(memory: MemoryFile) -> bool:
         if str(memory.path) in homed_source_paths:
             return True
         targets = {memory.path.name, memory.name}
@@ -284,81 +229,7 @@ def _source_path_strings(source_files: object) -> set[str]:
     return paths
 
 
-def _memory_name(path: Path, text: str) -> str:
-    match = _FRONTMATTER_NAME_RE.search(text)
-    return match.group(1) if match else path.stem
-
-
-def _load_memory_files(memory_dir: Path) -> list[_MemoryFile]:
-    files: list[_MemoryFile] = []
-    for md in sorted(memory_dir.glob("*.md")):
-        if md.name in NON_MEMORY_DOCS:  # never load an index as a memory (#2723)
-            continue
-        try:
-            text = md.read_text(encoding="utf-8")
-            mtime = datetime.fromtimestamp(md.stat().st_mtime, tz=UTC)
-        except OSError:
-            continue
-        files.append(_MemoryFile(path=md, name=_memory_name(md, text), text=text, mtime=mtime))
-    return files
-
-
-def _reference_tokens(text: str) -> set[str]:
-    """Every token in *text* that may NAME another memory.
-
-    ``[[wikilink]]`` targets plus every ``name.md`` token, once the lone generated
-    pointer lines are dropped. What remains is a citation a reader would follow and an
-    archival would break.
-    """
-    body = _GENERATED_POINTER_LINE_RE.sub("", text)
-    return set(_WIKILINK_RE.findall(body)) | set(_MEMORY_FILENAME_RE.findall(body))
-
-
-def _reference_aliases(memory: _MemoryFile) -> set[str]:
-    """Every name *memory* answers to — its filename, its stem, and its frontmatter name."""
-    return {memory.path.name, memory.path.stem, memory.name}
-
-
-def _canonical_by_alias(files: Sequence[_MemoryFile]) -> dict[str, str]:
-    """Resolve every unambiguous alias UP to the canonical filename that owns it.
-
-    The FILENAME is a memory's identity. A memory declares a hyphenated, prefix-stripped
-    frontmatter ``name`` while its citers write the filename form, so a citation has to be
-    canonicalized rather than compared against whichever form the target happens to carry —
-    comparing the two forms directly resolves to zero and reads a heavily-cited rule as
-    orphaned. An alias two memories both claim is dropped: conflating distinct rules is
-    worse than missing one citation.
-    """
-    owners: dict[str, set[str]] = {}
-    for memory in files:
-        for alias in _reference_aliases(memory):
-            owners.setdefault(alias, set()).add(memory.path.name)
-    return {alias: next(iter(owner)) for alias, owner in owners.items() if len(owner) == 1}
-
-
-def _inbound_citers(files: Sequence[_MemoryFile], index_text: str) -> dict[str, tuple[str, ...]]:
-    """Map each memory's canonical filename to the documents citing it, sorted.
-
-    Computed in ONE pass over the index and every body, so the reference guard, the
-    inbound-link signal, and the broken-citation warning all read the same answer.
-    """
-    canonical_by_alias = _canonical_by_alias(files)
-    citers: dict[str, set[str]] = {}
-    for source_name, text in [(_INDEX_NAME, index_text)] + [(m.path.name, m.text) for m in files]:
-        for token in _reference_tokens(text):
-            target = canonical_by_alias.get(token)
-            if target is None or target == source_name:
-                continue  # unresolvable, or a memory citing itself
-            citers.setdefault(target, set()).add(source_name)
-    return {target: tuple(sorted(names)) for target, names in citers.items()}
-
-
-def _is_referenced(memory: _MemoryFile, citers: Mapping[str, tuple[str, ...]]) -> bool:
-    """True iff a document OTHER than *memory* cites it."""
-    return bool(citers.get(memory.path.name))
-
-
-def _provenance_header(memory: _MemoryFile, now: datetime, reason: str) -> str:
+def _provenance_header(memory: MemoryFile, now: datetime, reason: str) -> str:
     return (
         f"<!-- archived by dream decay {now.date().isoformat()}: {reason}; "
         f"original mtime {memory.mtime.date().isoformat()} -->\n"
@@ -392,7 +263,7 @@ class _Archival:
 
 
 def _archive_one(
-    memory: _MemoryFile, archive_dir: Path, now: datetime, archival: _Archival, *, dry_run: bool
+    memory: MemoryFile, archive_dir: Path, now: datetime, archival: _Archival, *, dry_run: bool
 ) -> ArchivedMemory:
     if dry_run:
         return ArchivedMemory(
@@ -416,12 +287,12 @@ def _archive_one(
 
 
 def _stale_candidates(
-    files: Sequence[_MemoryFile],
+    files: Sequence[MemoryFile],
     citers: Mapping[str, tuple[str, ...]],
     now: datetime,
     retention: timedelta,
     has_durable_home: HomeResolver,
-) -> Iterable[_MemoryFile]:
+) -> Iterable[MemoryFile]:
     """Yield only the memories that are old AND unreferenced AND durably homed — the guard.
 
     A fresh memory (``lesson_touched`` within *retention*) is retained; a referenced
@@ -438,141 +309,10 @@ def _stale_candidates(
     for memory in files:
         if memory.lesson_touched >= cutoff:
             continue  # fresh — retained
-        if _is_referenced(memory, citers):
+        if is_referenced(memory, citers):
             continue  # referenced — retained
         if not has_durable_home(memory):
             continue  # no confirmed durable home — retained (transfer before prune)
-        yield memory
-
-
-def _over_budget(byte_size: int, line_count: int) -> bool:
-    """Whether an index of *byte_size* bytes / *line_count* lines is over the gate-(d) budget.
-
-    The one place the §4 gate-(d) budgets are compared, so the decay-pressure trigger and
-    the gate that grades the result can never disagree on "over budget" (#2723). The
-    loader truncates ``MEMORY.md`` on BOTH axes, so either alone is over: bytes at ~24 KB
-    (#2755) and lines at 200 (#4057). Reading only bytes leaves decay idle under line
-    pressure — precisely the case where a comfortable byte figure certifies a truncated
-    file.
-    """
-    from teatree.loops.dream.gates import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        INDEX_BYTE_BUDGET,
-        INDEX_LINE_BUDGET,
-    )
-
-    return byte_size > INDEX_BYTE_BUDGET or line_count > INDEX_LINE_BUDGET
-
-
-def _index_over_budget(index_text: str) -> bool:
-    """Whether the rendered ``MEMORY.md`` exceeds either gate-(d) session-load budget."""
-    return _over_budget(len(index_text.encode("utf-8")), len(index_text.splitlines()))
-
-
-def _resolved_type(memory: _MemoryFile) -> str:
-    """The memory's type for the type-weight signal.
-
-    Frontmatter ``metadata.type`` when present and recognised, else the filename prefix
-    (``feedback_x`` -> ``feedback``), else ``other``. The ~96 older files with no
-    parseable ``metadata.type`` fall back to the prefix; deterministic and DB-free.
-    """
-    match = _TYPE_LINE_RE.search(memory.text)
-    if match:
-        candidate = match.group(1).strip().lower()
-        if candidate in _KNOWN_TYPES:
-            return candidate
-    prefix = memory.path.stem.split("_", 1)[0].lower()
-    return prefix if prefix in _KNOWN_TYPES else "other"
-
-
-def _is_user_memory(memory: _MemoryFile) -> bool:
-    """True for a user-authored memory — frontmatter ``metadata.type: user`` OR a ``user_*`` filename."""
-    return _resolved_type(memory) == "user" or memory.path.name.lower().startswith("user_")
-
-
-def _recency_score(memory: _MemoryFile, now: datetime, retention: timedelta) -> int:
-    """Recency signal — +200 within the retention window, decaying linearly past it.
-
-    Floored at 0. Reads the logical ``lesson_touched`` clock so a cross-link / re-index
-    rewrite (which bumps ``st_mtime``) does not reset recency.
-    """
-    age = now - memory.lesson_touched
-    if age <= retention:
-        return _SIGNAL_RECENT
-    return max(0, _SIGNAL_RECENT - (age - retention).days)
-
-
-def _signal_score(memory: _MemoryFile, *, inbound_links: int, now: datetime, retention: timedelta) -> int:
-    """The keep-HOT signal of a memory — higher means more worth keeping in ``MEMORY.md``.
-
-    Composed ADDITIVELY (never short-circuits) from the signals that mark a lesson
-    load-bearing: a user-authored memory (+1000), BINDING / Non-Negotiable doctrine
-    (+500), each inbound ``[[name]]`` wikilink (+40, *inbound_links* precomputed by the
-    caller via :func:`_inbound_link_counts` so scoring the whole set stays O(N)), recency
-    by the logical ``lesson_touched`` clock (+200 within *retention*, decaying linearly
-    with age beyond it), and a per-type floor (feedback 90 / retro 70 / reference 30 /
-    project 20 / other 10). The budget tier archives LOWEST score first, so the
-    highest-signal memories stay hot and user / BINDING entries are archived only if the
-    budget forces it. DB-free and deterministic — usable under ``SimpleTestCase``.
-    """
-    score = _SIGNAL_USER if _is_user_memory(memory) else 0
-    if is_binding_text(memory.text):
-        score += _SIGNAL_BINDING
-    score += _SIGNAL_PER_INBOUND_LINK * inbound_links
-    score += _recency_score(memory, now, retention)
-    score += _TYPE_WEIGHTS.get(_resolved_type(memory), _TYPE_WEIGHTS["other"])
-    return score
-
-
-def _budget_tier_candidates(
-    files: Sequence[_MemoryFile],
-    index_text: str,
-    citers: Mapping[str, tuple[str, ...]],
-    now: datetime,
-    retention: timedelta,
-) -> Iterable[_MemoryFile]:
-    """Yield budget-tier archival candidates lowest-signal first, just enough to fit budget.
-
-    Fires only when the live ``MEMORY.md`` is over budget. Each file is scored by
-    :func:`_signal_score` and the lowest-signal files are archived first. A referenced
-    file (a live consumer still ``[[link]]``s it) is NOT hard-retained here (#2753): the
-    cross-link phase runs before decay and references most of the corpus, so a hard skip
-    floored the tier above the referenced count and the index could never reach budget.
-    Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so referenced
-    entries rank HIGHER and are archived LAST — only when the budget genuinely forces it.
-    After each removal the survivor set's PROJECTED index — rendered exactly as the
-    re-index will render it — is re-measured on BOTH axes, and the walk STOPS as soon as
-    it is under the byte AND line budgets, so the MINIMUM number of (lowest-signal) files is
-    archived and as much high-signal memory as fits stays hot. user / BINDING entries
-    score highest and are archived only if the budget forces it. Every archived entry
-    stays restorable (full body in ``archive/`` with provenance) and recall-able (its
-    signature in the cold ``MEMORY_ARCHIVE.md``); a now-dangling ``[[link]]`` in a
-    surviving body is cosmetic, not data loss — the hot index uses bare ``- name.md``
-    pointers, which never dangle. The conservative stale/ledger tier
-    (:func:`_stale_candidates`) keeps its reference skip — only the budget tier drops it.
-    """
-    if not _index_over_budget(index_text):
-        return
-    from teatree.loops.dream import reindex  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    ordered = sorted(
-        files,
-        key=lambda m: _signal_score(m, inbound_links=len(citers.get(m.path.name, ())), now=now, retention=retention),
-    )
-    line_bytes = {m.path: len(reindex.index_line_for(m.path.name).encode("utf-8")) for m in files}
-    header = reindex.render_index_lines([])
-    header_bytes = len(header.encode("utf-8"))
-    header_lines = len(header.splitlines())
-    survivor_count = len(files)
-    survivor_bytes = sum(line_bytes.values())
-    for memory in ordered:
-        # Both projections are EXACT against render_index_lines(survivor lines) for any
-        # count: the per-line "\n" join + trailing newline total ``survivor_count`` bytes,
-        # and each survivor contributes exactly one line past the header's own.
-        projected_bytes = header_bytes + survivor_bytes + survivor_count
-        if not _over_budget(projected_bytes, header_lines + survivor_count):
-            break  # projected survivor index fits BOTH budgets — archive no more
-        survivor_count -= 1
-        survivor_bytes -= line_bytes[memory.path]
         yield memory
 
 
@@ -622,7 +362,7 @@ def _rebuild_cold_index(memory_dir: Path, archive_dir: Path) -> None:
     lines = [line for md in sorted(archive_dir.glob("*.md")) if (line := _cold_index_line(md))]
     if not lines:
         return
-    (memory_dir / _ARCHIVE_INDEX_NAME).write_text(_COLD_HEADER + "\n".join(lines) + "\n", encoding="utf-8")
+    (memory_dir / ARCHIVE_INDEX_NAME).write_text(_COLD_HEADER + "\n".join(lines) + "\n", encoding="utf-8")
 
 
 def decay_memories(
@@ -664,13 +404,13 @@ def decay_memories(
     if not memory_dir.is_dir():
         return DecayResult(seen=0, archived=(), retained=0, dry_run=dry_run)
     resolver = has_durable_home if has_durable_home is not None else ledger_durable_home_resolver()
-    files = _load_memory_files(memory_dir)
-    index_path = memory_dir / _INDEX_NAME
+    files = load_memory_files(memory_dir)
+    index_path = memory_dir / INDEX_NAME
     index_text = index_path.read_text(encoding="utf-8") if index_path.is_file() else ""
     retention = timedelta(days=settings.retention_days)
     archive_dir = memory_dir / ARCHIVE_DIRNAME
 
-    citers = _inbound_citers(files, index_text)
+    citers = inbound_citers(files, index_text)
 
     home_tier = list(_stale_candidates(files, citers, moment, retention, resolver))
     archived: list[ArchivedMemory] = [
@@ -680,6 +420,9 @@ def decay_memories(
     if settings.budget_tier is not None:
         homed_paths = {m.path for m in home_tier}
         remaining = [m for m in files if m.path not in homed_paths]
+        projection = BudgetProjection(
+            memory_dir=memory_dir, index_text=index_text, citers=citers, now=moment, retention=retention
+        )
         archived.extend(
             _archive_one(
                 memory,
@@ -688,7 +431,7 @@ def decay_memories(
                 _Archival("over-budget, lowest-signal", citers.get(memory.path.name, ())),
                 dry_run=dry_run,
             )
-            for memory in _budget_tier_candidates(remaining, index_text, citers, moment, retention)
+            for memory in budget_tier_candidates(remaining, projection)
         )
     if not dry_run:
         _rebuild_cold_index(memory_dir, archive_dir)

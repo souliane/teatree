@@ -79,6 +79,20 @@ class TestDetectorUnit:
         )
         assert privacy_diff_comments.scan_diff(diff) == []
 
+    def test_the_domain_verb_without_a_tracker_reference_is_not_a_self_reference(self) -> None:
+        # The dream loop folds a transcript corpus into memories, so the stem is this  # privacy-scan:allow
+        # codebase's own vocabulary. Only the bookkeeping form carrying a tracker
+        # reference is a self-reference — the line `workstream` / `umbrella` already draw.
+        diff = _diff(
+            "src/teatree/loops/dream/engine.py",
+            "    # a broken batch means PART of the corpus was not consolidated, so the pass",  # privacy-scan:allow
+        )
+        assert privacy_diff_comments.scan_diff(diff) == []
+
+    def test_the_bookkeeping_form_with_a_reference_is_still_caught(self) -> None:
+        diff = _diff("src/teatree/loops/dream/engine.py", "    # consolidated into !7511")  # privacy-scan:allow
+        assert privacy_diff_comments.scan_diff(diff) != []
+
     def test_markdown_self_reference_is_exempt(self) -> None:
         diff = _diff("docs/BLUEPRINT.md", "see !7511 for the consolidation")  # privacy-scan:allow
         assert privacy_diff_comments.scan_diff(diff) == []

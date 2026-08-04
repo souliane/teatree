@@ -13,7 +13,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import distill, engine, sdk_distiller
+from teatree.loops.dream import distill, engine, replay, sdk_distiller
 from teatree.loops.dream.engine import (
     ConsolidationExtract,
     DistilledCluster,
@@ -479,7 +479,7 @@ class BuildExtractTestCase(TestCase):
         # corpus-wide ceiling that dropped every member past the first prompt's worth.
         members = [self._member(f"feedback_{i}.md", "x" * 1_000_000) for i in range(50)]
         extract = build_extract(members)
-        assert {len(s.text) for s in extract.snippets} == {engine._PER_SNIPPET_CHARS}
+        assert {len(s.text) for s in extract.snippets} == {replay._PER_SNIPPET_CHARS}
         assert len(extract.snippets) == len(members)
 
     def test_keeps_user_correction_prose_with_no_signal_keyword(self) -> None:
@@ -828,7 +828,7 @@ class TestEnumerateMembersMainTranscripts:
         (slug / "a.jsonl").write_text("{}\n")
         (slug / "b.jsonl").write_text("{}\n")
 
-        real_recent_mtime = engine._recent_file_mtime
+        real_recent_mtime = replay._recent_file_mtime
 
         def reaping_probe(path: Path, cutoff_ts: float) -> float | None:
             mtime = real_recent_mtime(path, cutoff_ts)
@@ -836,7 +836,7 @@ class TestEnumerateMembersMainTranscripts:
                 path.unlink()  # reaped right after the recency check, before the sort
             return mtime
 
-        monkeypatch.setattr(engine, "_recent_file_mtime", reaping_probe)
+        monkeypatch.setattr(replay, "_recent_file_mtime", reaping_probe)
 
         members = enumerate_members(
             projects_dir=tmp_path,
@@ -955,9 +955,9 @@ class TestTaskOutputRoots:
         base_var_tmp = tmp_path / "var_tmp"
         (base_tmp / f"claude-{uid}").mkdir(parents=True)
         (base_var_tmp / f"claude-{uid}").mkdir(parents=True)
-        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
+        monkeypatch.setattr(replay, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
 
-        roots = engine._task_output_roots()
+        roots = replay._task_output_roots()
 
         assert roots == [base_tmp / f"claude-{uid}", base_var_tmp / f"claude-{uid}"]
 
@@ -967,9 +967,9 @@ class TestTaskOutputRoots:
         base_var_tmp = tmp_path / "var_tmp"
         base_tmp.mkdir()  # base present but no claude-{uid} subdir under it
         (base_var_tmp / f"claude-{uid}").mkdir(parents=True)
-        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
+        monkeypatch.setattr(replay, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
 
-        roots = engine._task_output_roots()
+        roots = replay._task_output_roots()
 
         assert roots == [base_var_tmp / f"claude-{uid}"]
 
@@ -981,9 +981,9 @@ class TestTaskOutputRoots:
         (real_base / f"claude-{uid}").mkdir(parents=True)
         link_base = tmp_path / "link"
         link_base.symlink_to(real_base)
-        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(real_base), str(link_base)))
+        monkeypatch.setattr(replay, "_TASK_OUTPUT_TMP_BASES", (str(real_base), str(link_base)))
 
-        roots = engine._task_output_roots()
+        roots = replay._task_output_roots()
 
         assert roots == [real_base / f"claude-{uid}"]
 
@@ -1236,17 +1236,17 @@ class ExtractKeepsEveryMemberTestCase(TestCase):
         members: list[TranscriptMember] = []
         for i in range(count):
             path = self.tmp / f"feedback_{i:04d}.md"
-            path.write_text(f"BINDING: lesson {i} — {_CITATION} " + "x" * engine._PER_SNIPPET_CHARS)
+            path.write_text(f"BINDING: lesson {i} — {_CITATION} " + "x" * replay._PER_SNIPPET_CHARS)
             members.append(TranscriptMember(path=path, kind="memory"))
         return members
 
     def test_corpus_beyond_one_prompt_keeps_every_member(self) -> None:
-        members = self._dense_members(3 * ConsolidationExtract.CHAR_CEILING // engine._PER_SNIPPET_CHARS)
+        members = self._dense_members(3 * ConsolidationExtract.CHAR_CEILING // replay._PER_SNIPPET_CHARS)
         assert len(build_extract(members).snippets) == len(members)
 
     def test_no_member_is_clipped_for_a_corpus_wide_budget(self) -> None:
-        members = self._dense_members(3 * ConsolidationExtract.CHAR_CEILING // engine._PER_SNIPPET_CHARS)
-        assert {len(s.text) for s in build_extract(members).snippets} == {engine._PER_SNIPPET_CHARS}
+        members = self._dense_members(3 * ConsolidationExtract.CHAR_CEILING // replay._PER_SNIPPET_CHARS)
+        assert {len(s.text) for s in build_extract(members).snippets} == {replay._PER_SNIPPET_CHARS}
 
     def test_ranking_still_puts_the_highest_signal_first(self) -> None:
         weights = [s.weight for s in build_extract(self._dense_members(40)).snippets]

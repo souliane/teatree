@@ -93,3 +93,70 @@ class TestMeasureSkillPins:
         manifest = _write_manifest(tmp_path, [f"{_OWNER_REPO}/{_SKILL}"])
         declared = skills_declared_in_apm_manifest(manifest)
         assert measure_skill_pins(declared, remote_base=_remote_base(tmp_path)) == []
+
+
+class TestSymbolicPinsAreNotShaPins:
+    """A pin naming a moving ref cannot "fall behind" the ref it names (#4193).
+
+    ``is_current`` compared the pin to the head sha as strings, so ``#main`` never
+    matched and every symbolic pin read as permanently behind — with a remediation
+    telling the operator to replace their deliberately floating ref with a frozen sha,
+    reversing the choice the declaration was making. Symbolic and immutable pins are
+    different kinds and are answered differently.
+    """
+
+    def test_a_pin_on_the_default_branch_is_current_and_suggests_nothing(self, tmp_path: Path, source: Path) -> None:
+        branch = run_git(source, "rev-parse", "--abbrev-ref", "HEAD")
+
+        [status] = _measure(tmp_path, branch)
+
+        assert status.is_symbolic
+        assert status.is_current
+        assert not status.is_behind
+        assert pin_advisory_lines([status]) == []
+
+    def test_a_moved_source_does_not_make_a_default_branch_pin_behind(self, tmp_path: Path, source: Path) -> None:
+        """The regression proper: the source advancing is exactly what a floating pin tracks."""
+        branch = run_git(source, "rev-parse", "--abbrev-ref", "HEAD")
+        (source / _SKILL / "SKILL.md").write_text("---\nname: ac-python\n---\nmoved on\n", encoding="utf-8")
+        run_git(source, "commit", "-qam", "advance the source")
+
+        [status] = _measure(tmp_path, branch)
+
+        assert not status.is_behind
+        assert status.is_current
+        assert pin_advisory_lines([status]) == []
+
+    def test_a_symbolic_ref_that_was_never_compared_is_unverified(self, tmp_path: Path, source: Path) -> None:
+        """The probe reads HEAD, so a pin naming some other ref was compared to nothing."""
+        [status] = _measure(tmp_path, "v5.0.7")
+
+        assert status.is_symbolic
+        assert status.is_unverified_ref
+        assert not status.is_current
+        assert not status.is_behind
+        [line] = pin_advisory_lines([status])
+        assert line.startswith("WARN")
+        assert "UNVERIFIED" in line
+        assert "apm install" not in line  # never advise freezing a ref that was not measured
+
+    def test_an_abbreviated_sha_pin_at_head_is_current(self, tmp_path: Path, source: Path) -> None:
+        """``#d0008a3`` and its full sha name the same commit — a prefix is not "behind"."""
+        head = run_git(source, "rev-parse", "HEAD")
+
+        [status] = _measure(tmp_path, head[:12])
+
+        assert not status.is_symbolic
+        assert status.is_current
+        assert not status.is_behind
+
+    def test_a_sha_pin_the_source_moved_past_is_still_behind(self, tmp_path: Path, source: Path) -> None:
+        """The teeth: relaxing the comparison must not stop a real immutable pin trailing."""
+        pinned = run_git(source, "rev-parse", "HEAD")
+        (source / _SKILL / "SKILL.md").write_text("---\nname: ac-python\n---\nmoved on\n", encoding="utf-8")
+        run_git(source, "commit", "-qam", "advance the source")
+
+        [status] = _measure(tmp_path, pinned)
+
+        assert status.is_behind
+        assert not status.is_current

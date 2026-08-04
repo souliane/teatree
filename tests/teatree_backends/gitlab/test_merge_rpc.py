@@ -19,6 +19,7 @@ from teatree.backends.gitlab.merge_rpc import GitLabApiMergeRpc
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
     BackendResolutionError,
+    MergeConflictState,
     changed_paths_unavailable,
     rollup_query_failed,
 )
@@ -136,6 +137,47 @@ class TestFetchPrMergeState:
         state = _rpc(raises=failure).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
         assert (state.state, state.merge_commit_oid) == ("", "")
         assert not state.is_merged
+
+
+class TestFetchPrMergeStateConflictAxis:
+    """The conflict axis must be READ, not left at its ``UNKNOWN`` default (#4193).
+
+    The mapper existed in ``forge_merge_rpc`` but the #4007 httpx port never called it,
+    so every GitLab MR reported ``UNKNOWN``. ``mr_conflict`` turns any non-``CLEAN``
+    verdict into a signal, which manufactured one permanent "merge state unreadable"
+    signal per open MR — indistinguishable from the genuine "the forge is still
+    computing it" case the tri-state exists to report.
+    """
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"has_conflicts": False, "merge_status": "can_be_merged"}, MergeConflictState.CLEAN),
+            ({"has_conflicts": True, "merge_status": "cannot_be_merged"}, MergeConflictState.CONFLICTED),
+            # `has_conflicts` is authoritative on its own — a draft / unapproved MR still
+            # reports its real conflict state instead of hiding behind `merge_status`.
+            ({"has_conflicts": True, "merge_status": "checking"}, MergeConflictState.CONFLICTED),
+            ({"merge_status": "cannot_be_merged"}, MergeConflictState.CONFLICTED),
+            # Still computing: `has_conflicts` is a default here, not a finding.
+            ({"has_conflicts": False, "merge_status": "checking"}, MergeConflictState.UNKNOWN),
+            ({"has_conflicts": False, "merge_status": "unchecked"}, MergeConflictState.UNKNOWN),
+            ({}, MergeConflictState.UNKNOWN),
+        ],
+    )
+    def test_maps_the_gitlab_pair_onto_the_conflict_axis(
+        self, payload: dict[str, object], expected: MergeConflictState
+    ) -> None:
+        state = _rpc(get={"state": "opened", **payload}).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert state.conflict is expected
+
+    def test_a_mergeable_mr_is_clean_so_the_scanner_stays_silent(self) -> None:
+        """The regression itself: a healthy open MR must produce NO conflict signal."""
+        rpc = _rpc(get={"state": "opened", "has_conflicts": False, "merge_status": "can_be_merged"})
+        assert rpc.fetch_pr_merge_state(slug=_SLUG, pr_id=_IID).conflict is MergeConflictState.CLEAN
+
+    def test_an_unreadable_mr_stays_unknown(self) -> None:
+        state = _rpc(raises=httpx.ConnectError("refused")).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert state.conflict is MergeConflictState.UNKNOWN
 
 
 class TestFetchPrIsDraft:

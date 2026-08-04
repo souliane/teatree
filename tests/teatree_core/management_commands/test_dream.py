@@ -31,6 +31,8 @@ from teatree.loops.dream.engine import (
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
 
+_COMMAND = "teatree.core.management.commands.dream.Command"
+
 
 def _enable_dream_loop(*, last_run_at: "dt.datetime | None" = None) -> None:
     """Seed an ENABLED, interval-cadenced ``dream`` Loop row — the ONE cadence ledger.
@@ -1535,6 +1537,38 @@ class DreamBrokenDistillerFailsLoudTestCase(TestCase):
             call_command("dream", "run", stdout=StringIO())
         marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
         assert marker is None or marker.last_succeeded_at is None
+
+    def test_broken_distillation_still_runs_the_maintenance_phases(self) -> None:
+        """It must not short-circuit: `write_clusters` already wrote the healthy batches' rows.
+
+        Returning at the broken check left those rows behind AND skipped cross-link,
+        re-index, decay and the §4 gates — the phases that reconcile them. `main`
+        counted the failures and carried on; the pass still refuses to stamp succeeded,
+        which is the part that has to hold.
+        """
+        broken = _broken_distillation_result()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=broken),
+            patch(f"{_COMMAND}._run_memory_phases_and_gates", return_value=("; phases ran", True, "")) as phases,
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert exc.value.code == 1, "a broken distiller must still fail the pass"
+        phases.assert_called_once()
+
+    def test_broken_distillation_names_itself_on_the_final_line(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            patch(f"{_COMMAND}._run_memory_phases_and_gates", return_value=("", True, "")),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=stdout)
+
+        out = stdout.getvalue()
+        assert "the distiller FAILED on some batch(es)" in out
+        assert "NOT stamped succeeded" in out
 
     def test_healthy_quiet_pass_still_exits_zero(self) -> None:
         quiet = DreamRunResult(clusters_recorded=0, members_replayed=407, dry_run=True, snippets_distilled=20)

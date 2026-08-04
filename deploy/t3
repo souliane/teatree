@@ -38,6 +38,26 @@ fi
 # path that does not exist on the host ("mounts denied: … is not shared").
 export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
 
+# PATH IDENTITY for the worktree tree, added only when the host home differs from the
+# container's. docker-compose.yml deliberately gives up path identity off-box: mount
+# TARGETS are fixed container paths under the container HOME while the host-side SOURCE
+# root follows the real host home. That is right for everything the container reads
+# itself — and wrong for what it hands the docker DAEMON. `t3 <overlay> worktree start`
+# runs `docker compose up` for a worktree stack through the mounted socket; compose
+# resolves that stack's relative `volumes:` against its own cwd (a CONTAINER path) and
+# gives the daemon a source that does not exist on the host, which answers "mounts
+# denied: the path ... is not shared from the host" and fails every worktree stack. The
+# overlay ADDS a second, host-identical view so a worktree path is valid as both
+# coordinates. On the box the two homes coincide, the two mount targets would collide,
+# and the overlay is correctly not added — so the box is byte-identical to before.
+# Derived from the source-mount target rather than restated, so the container HOME
+# has exactly one definition in this file.
+CONTAINER_HOME="${CONTAINER_SOURCE_DIR%/*}"
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+if [ "$TEATREE_HOST_HOME" != "$CONTAINER_HOME" ]; then
+    COMPOSE_ARGS+=(-f "$HOST_IDENTITY_FILE")
+fi
+
 # The checkout this wrapper runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
 # `$TEATREE_DEPLOY_CHECKOUT/deploy/watchdog.sh` from it, so both read this one
@@ -325,7 +345,7 @@ warn_unreachable_host_paths() {
 
 warn_unreachable_host_paths "$@"
 
-compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+compose() { docker compose "${COMPOSE_ARGS[@]}" "$@"; }
 
 # WHICH TREE THE RUNNING CONTAINER ACTUALLY EXECUTES. `TEATREE_SOURCE_MOUNT` above
 # resolves the host project this wrapper was invoked from, so the container runs the
@@ -368,7 +388,7 @@ warn_source_mount_drift() {
     echo "           Every change made here is invisible to the running factory until the" >&2
     echo "           stack is recreated against this tree:" >&2
     echo "             TEATREE_SOURCE_MOUNT=$TEATREE_SOURCE_MOUNT \\" >&2
-    echo "               docker compose -f $COMPOSE_FILE up -d" >&2
+    echo "               docker compose ${COMPOSE_ARGS[*]} up -d" >&2
     return 0
 }
 
@@ -503,9 +523,9 @@ if [ -n "$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" ]; then
     # (`exec: compose: not found`), so the final hop inlines `docker compose`
     # directly instead of calling through the function.
     if [ -t 0 ]; then
-        exec docker compose -f "$COMPOSE_FILE" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
+        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
     fi
-    exec docker compose -f "$COMPOSE_FILE" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
+    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
 fi
 
 # Nothing running. Two different worlds reach this line: a merely STOPPED stack,
@@ -558,4 +578,4 @@ echo "           $REPO_ROOT/deploy/deploy.sh" >&2
 
 # `--entrypoint t3` bypasses the TEATREE_ROLE dispatcher so we run the CLI
 # directly, not a server.
-exec docker compose -f "$COMPOSE_FILE" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"
+exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"

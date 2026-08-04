@@ -20,6 +20,7 @@ from teatree.loops.dream.engine import (
     ConsolidationExtract,
     DistilledCluster,
     DistillEmptyReason,
+    Distiller,
     DistillResult,
     TranscriptMember,
     build_extract,
@@ -145,7 +146,14 @@ class DeferredRemainderIsCarriedTestCase(TestCase):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.extract = build_extract(_memory_members(self.tmp, 3 * ConsolidationExtract.CHAR_CEILING // 4000))
 
-    def _run_capped_pass(self) -> list[str]:
+    def _run_capped_pass(self, distiller: Distiller | None = None) -> list[str]:
+        """One capped pass, then the caller's half of the contract: commit the cursor.
+
+        ``distill_in_batches`` only PROPOSES the advance;
+        :func:`~teatree.loops.dream.engine.run_consolidation` commits it in the same
+        transaction as the ledger write. Mirroring that split here is what keeps these
+        tests exercising the real rotation rather than a side effect it no longer has.
+        """
         seen: list[str] = []
 
         def _spy(batch: ConsolidationExtract) -> list[DistilledCluster]:
@@ -153,7 +161,9 @@ class DeferredRemainderIsCarriedTestCase(TestCase):
             return []
 
         with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_BATCHES": "1"}):
-            self.outcome = distill.distill_in_batches(self.extract, distiller=_spy)
+            self.outcome = distill.distill_in_batches(self.extract, distiller=distiller or _spy)
+        if self.outcome.next_cursor is not None:
+            distill.commit_distill_cursor(self.outcome.next_cursor)
         return seen
 
     def test_capped_pass_reports_its_deferred_remainder(self) -> None:
@@ -171,3 +181,67 @@ class DeferredRemainderIsCarriedTestCase(TestCase):
 
         outcome = distill.distill_in_batches(self.extract, distiller=_spy)
         assert outcome.deferred_members == 0
+
+    def test_a_capped_pass_only_proposes_the_advance_it_never_writes_it(self) -> None:
+        """The cursor must not move on ``distill_in_batches`` alone — the ledger write owns it.
+
+        Writing it here put it in its own autocommit ahead of ``write_clusters``, so
+        anything raising in that window left a cursor claiming a window was consolidated
+        with no rows to show for it, and the rotation only revisits it after wrapping the
+        whole corpus.
+        """
+        before = distill._read_cursor()
+
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_BATCHES": "1"}):
+            outcome = distill.distill_in_batches(self.extract, distiller=_healthy_empty)
+
+        assert outcome.next_cursor is not None
+        assert distill._read_cursor() == before
+
+    def test_a_dry_run_proposes_no_advance(self) -> None:
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_BATCHES": "1"}):
+            outcome = distill.distill_in_batches(self.extract, distiller=_healthy_empty, dry_run=True)
+
+        assert outcome.next_cursor is None
+
+
+class ABrokenPassHoldsTheCursorTestCase(TestCase):
+    """An outage must not walk the cursor across the corpus, skipping all of it.
+
+    ``_distil_one`` swallows a raise and a broken reply on purpose, so one bad call
+    cannot discard the paid work of the other batches. Advancing the cursor anyway
+    turned that isolation into silent data loss: an unauthenticated ``claude``
+    answering ``Not logged in`` fails EVERY batch, and each pass moved the rotation on
+    while reporting nothing worse than "0 clusters".
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.extract = build_extract(_memory_members(self.tmp, 3 * ConsolidationExtract.CHAR_CEILING // 4000))
+
+    def _capped_outcome(self, distiller: Distiller) -> distill.BatchDistillOutcome:
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_BATCHES": "1"}):
+            return distill.distill_in_batches(self.extract, distiller=distiller)
+
+    def test_a_broken_reply_holds_the_cursor(self) -> None:
+        outcome = self._capped_outcome(_unparsable)
+
+        assert outcome.broken_batches == 1
+        assert outcome.next_cursor is None
+
+    def test_a_raising_batch_holds_the_cursor(self) -> None:
+        def _raises(_batch: ConsolidationExtract) -> DistillResult:
+            msg = "Not logged in · Please run /login"
+            raise RuntimeError(msg)
+
+        outcome = self._capped_outcome(_raises)
+
+        assert outcome.failed_batches == 1
+        assert outcome.next_cursor is None
+
+    def test_a_healthy_empty_reply_still_advances(self) -> None:
+        """A healthy empty reply is an ANSWER — the window was reached, so it may be passed."""
+        outcome = self._capped_outcome(_healthy_empty)
+
+        assert outcome.broken_batches == 0
+        assert outcome.next_cursor is not None

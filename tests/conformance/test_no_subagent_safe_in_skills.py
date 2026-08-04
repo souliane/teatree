@@ -36,5 +36,5 @@ def test_no_skill_declares_the_superseded_subagent_safe_key() -> None:
         f"`{RETIRED_KEY}` is superseded by `t3 <overlay> skill-preamble` and read by no code, "
         f"yet these carry it: {carriers}. The preamble embeds each SKILL.md body into the "
         f"sub-agent brief, so a dispatched agent gets the skills themselves — a per-skill "
-        f"safe/unsafe flag decides nothing. Drop the key instead of re-declaring it."
+        f"safe/unsafe flag decides nothing. Drop the key instead of redeclaring it."
     )

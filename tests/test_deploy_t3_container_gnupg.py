@@ -133,7 +133,10 @@ class TestContainerGnupgPrologue:
 class TestWrapperUsesThePrologue:
     def test_the_running_worker_exec_path_carries_it(self) -> None:
         wrapper = WRAPPER.read_text(encoding="utf-8")
-        exec_lines = [line for line in wrapper.splitlines() if "compose -f" in line and " exec " in line]
+        # Matched on `docker compose` rather than the `-f` spelling: since #4193 the
+        # wrapper passes its compose files through `${COMPOSE_ARGS[@]}`, so anchoring on
+        # `-f` silently matched NOTHING and the loop below asserted over an empty list.
+        exec_lines = [line for line in wrapper.splitlines() if "docker compose" in line and " exec " in line]
         assert exec_lines, "the wrapper must still exec into the running worker"
         for line in exec_lines:
             assert f'"${PROLOGUE_NAME}"' in line, f"exec path bypasses the GPG-home prologue: {line.strip()}"

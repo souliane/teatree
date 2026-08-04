@@ -279,7 +279,12 @@ def _is_suppressed(row: "Loop", resolved: "ResolvedMode", held: set[str], forced
         return True
     if row.colleague_facing and resolved.defers_questions:
         return True
-    return resolved.state_for(row.name) is False
+    # The preset mask is the WEAKEST plane: `t3 loop override <name> on` beats it, and
+    # `_loop_admitted` ADMITS the loop on exactly that combination. Reading the mask
+    # alone therefore contradicted both the docstring above and the admission verdict —
+    # a loop the operator forced ON against an off preset ran, wedged, and reported
+    # "deliberately suppressed", which is the one loop whose silence is never deliberate.
+    return forced.get(row.name) is not True and resolved.state_for(row.name) is False
 
 
 def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER) -> list[StaleLoop]:

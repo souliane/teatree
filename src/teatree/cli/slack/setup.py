@@ -38,7 +38,11 @@ import typer
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.cli.slack.app_resolve import overlay_scope_profile, read_overlay_field, write_overlay_fields
-from teatree.cli.slack.config_token import ConfigTokenStore
+from teatree.cli.slack.config_token import (
+    ConfigTokenStore,
+    SlackConfigTokenPersistError,
+    SlackConfigTokenStoreUnwritableError,
+)
 from teatree.cli.slack.manifest import (
     _BOT_ONLY_SCOPES,
     _CONFIG_REFRESH_REF,
@@ -247,6 +251,13 @@ def _export_with_rotation(*, app_id: str) -> SlackManifest:
     ``write_pass`` twice and discarded both results: Slack's rotate is one-shot,
     so a failed write there left the old pair already spent and the new one
     dropped on the floor — bricking the credential with no recovery path.
+
+    Both store faults exit through a diagnostic rather than a traceback. This
+    function is the shared reactive path for ``t3 slack setup``, ``t3 slack
+    provision`` and ``t3 slack socket-doctor``, so an escaping
+    :class:`SlackConfigTokenStoreUnwritableError` gave all three a stack trace
+    whose top frame is a ``pass`` writability probe — burying the two facts the
+    operator needs: what to fix, and that NOTHING was spent.
     """
     config_token = read_pass(_CONFIG_TOKEN_REF)
     try:
@@ -263,9 +274,17 @@ def _export_with_rotation(*, app_id: str) -> SlackManifest:
         # Write-ahead, exactly as in the proactive path: prove the store can keep
         # the result BEFORE spending a rotation Slack cannot undo.
         store = ConfigTokenStore()
-        store.assert_writable()
+        try:
+            store.assert_writable()
+        except SlackConfigTokenStoreUnwritableError as unwritable:
+            typer.echo(f"ERROR {unwritable}")
+            raise typer.Exit(code=1) from unwritable
         access, refresh = rotate_config_token(refresh_token=refresh_token)
-        ConfigTokenStore().persist(access=access, refresh=refresh, issued_at=dt.datetime.now(dt.UTC))
+        try:
+            store.persist(access=access, refresh=refresh, issued_at=dt.datetime.now(dt.UTC))
+        except SlackConfigTokenPersistError as lost:
+            typer.echo(f"ERROR {lost}")
+            raise typer.Exit(code=1) from lost
         return export_manifest(app_id=app_id, config_token=access)
 
 

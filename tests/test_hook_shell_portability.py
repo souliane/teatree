@@ -12,9 +12,9 @@ that could not help — a fail-closed gate misdiagnosing its own crash.
 Two assertions, because either alone is half a guarantee:
 
 + the SCAN pins the class on every host, including one whose only bash is 5.x
-  and where the behavioural run below would prove nothing;
+    and where the behavioural run below would prove nothing;
 + the RUN proves the real script actually resolves, under every bash the box
-  has, which on macOS includes the 3.2 that the scan is written for.
+    has, which on macOS includes the 3.2 that the scan is written for.
 """
 
 import re

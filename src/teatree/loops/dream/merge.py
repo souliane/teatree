@@ -39,7 +39,8 @@ from teatree.loops.dream._shared import WEIGHT_OTHER as _WEIGHT_OTHER
 from teatree.loops.dream._shared import WEIGHT_RETRO as _WEIGHT_RETRO
 from teatree.loops.dream._shared import is_binding_text
 from teatree.loops.dream.cross_link import _jaccard, _topic_tokens
-from teatree.loops.dream.decay import _Archival, _archive_one, _load_memory_files, _MemoryFile
+from teatree.loops.dream.decay import _Archival, _archive_one
+from teatree.loops.dream.decay_corpus import MemoryFile, load_memory_files
 from teatree.loops.dream.reindex import _strip_frontmatter
 
 #: A pair is a near-duplicate (mergeable) only above this HIGH Jaccard floor —
@@ -87,7 +88,7 @@ class MergeResult:
         return len(self.merged)
 
 
-def _file_weight(memory: _MemoryFile) -> int:
+def _file_weight(memory: MemoryFile) -> int:
     body = memory.text.lower()
     name = memory.path.name.lower()
     if is_binding_text(memory.text):
@@ -99,11 +100,11 @@ def _file_weight(memory: _MemoryFile) -> int:
     return _WEIGHT_OTHER
 
 
-def _is_binding(memory: _MemoryFile) -> bool:
+def _is_binding(memory: MemoryFile) -> bool:
     return is_binding_text(memory.text)
 
 
-def _family(memory: _MemoryFile) -> str:
+def _family(memory: MemoryFile) -> str:
     """The ``type``/``name`` family two files must share to be mergeable.
 
     Reads a frontmatter ``type:`` field; absent one, falls back to the filename's
@@ -117,7 +118,7 @@ def _family(memory: _MemoryFile) -> str:
     return memory.path.stem.split("_", 1)[0].lower()
 
 
-def _body_tokens(memory: _MemoryFile) -> frozenset[str]:
+def _body_tokens(memory: MemoryFile) -> frozenset[str]:
     """Topic tokens of the memory BODY (frontmatter stripped).
 
     The near-dup decision compares lesson CONTENT, not metadata: two twins carry
@@ -131,11 +132,11 @@ def _body_tokens(memory: _MemoryFile) -> frozenset[str]:
 
 @dataclass(frozen=True, slots=True)
 class _Pair:
-    survivor: _MemoryFile
-    absorbed: _MemoryFile
+    survivor: MemoryFile
+    absorbed: MemoryFile
 
 
-def _near_duplicate_pairs(files: Sequence[_MemoryFile]) -> list[_Pair]:
+def _near_duplicate_pairs(files: Sequence[MemoryFile]) -> list[_Pair]:
     """The disjoint near-duplicate pairs to collapse, highest-weight survivor first.
 
     Greedy + disjoint: each file is merged at most once per pass (the survivor of
@@ -163,12 +164,12 @@ def _near_duplicate_pairs(files: Sequence[_MemoryFile]) -> list[_Pair]:
     return pairs
 
 
-def _order_by_weight(a: _MemoryFile, b: _MemoryFile) -> tuple[_MemoryFile, _MemoryFile]:
+def _order_by_weight(a: MemoryFile, b: MemoryFile) -> tuple[MemoryFile, MemoryFile]:
     """Return (survivor, absorbed): the higher-weight file survives; ties keep *a*."""
     return (a, b) if _file_weight(a) >= _file_weight(b) else (b, a)
 
 
-def _distinct_lines(survivor: _MemoryFile, absorbed: _MemoryFile) -> list[str]:
+def _distinct_lines(survivor: MemoryFile, absorbed: MemoryFile) -> list[str]:
     """The absorbed file's BODY lines not already present in the survivor.
 
     The absorbed file's frontmatter is STRIPPED before the diff (F6.8): appending its
@@ -183,7 +184,7 @@ def _distinct_lines(survivor: _MemoryFile, absorbed: _MemoryFile) -> list[str]:
     return [raw for raw in absorbed_body.splitlines() if raw.strip() and raw.strip() not in have]
 
 
-def _merge_provenance(absorbed: _MemoryFile, now: datetime) -> str:
+def _merge_provenance(absorbed: MemoryFile, now: datetime) -> str:
     return (
         f"\n<!-- merged in {absorbed.path.name} by dream merge {now.date().isoformat()}; "
         f"its distinct content follows -->\n"
@@ -256,7 +257,7 @@ def merge_memories(memory_dir: Path, *, now: datetime | None = None, dry_run: bo
     moment = now or datetime.now(tz=UTC)
     if not memory_dir.is_dir():
         return MergeResult(seen=0, merged=(), binding_conflicts=(), dry_run=dry_run)
-    files = _load_memory_files(memory_dir)
+    files = load_memory_files(memory_dir)
     archive_dir = memory_dir / "archive"
     merged: list[MergedMemory] = []
     conflicts: list[BindingConflict] = []

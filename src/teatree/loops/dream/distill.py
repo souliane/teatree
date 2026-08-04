@@ -60,6 +60,11 @@ class BatchDistillOutcome:
     distilled from the others (paid LLM work). ``diagnostics`` carries one
     human-readable line per failed / broken batch. ``deferred_members`` counts snippets
     the per-pass batch cap could not reach, which the cursor carries forward.
+
+    ``next_cursor`` is a PROPOSAL, not a fact: the value the cursor should take once —
+    and only once — the clusters this pass produced are durably in the ledger. ``None``
+    means the cursor must not move at all. It is deliberately not written here; see
+    :func:`distill_in_batches`.
     """
 
     clusters: list[DistilledCluster]
@@ -69,6 +74,7 @@ class BatchDistillOutcome:
     diagnostics: tuple[str, ...] = ()
     snippets_distilled: int = 0
     deferred_members: int = 0
+    next_cursor: int | None = None
 
 
 @dataclass(slots=True)
@@ -154,7 +160,14 @@ def _read_cursor() -> int:
     return marker.distill_cursor if marker else 0
 
 
-def _write_cursor(cursor: int) -> None:
+def commit_distill_cursor(cursor: int) -> None:
+    """Move the persisted rotation cursor to *cursor*.
+
+    Called by :func:`~teatree.loops.dream.engine.run_consolidation` INSIDE the same
+    transaction as the ledger write, never from :func:`distill_in_batches`. The cursor
+    is a claim that a region of the corpus has been consolidated, so it may only become
+    true at the instant the rows proving it become true.
+    """
     from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     DreamRunMarker.objects.update_or_create(name=DreamRunMarker.NAME, defaults={"distill_cursor": cursor})
@@ -166,14 +179,34 @@ def distill_in_batches(
     """Distil *extract* batch-by-batch, merging clusters by ``cluster_key``.
 
     Every ranked snippet reaches a call unless the per-pass batch cap binds, in which
-    case the unreached remainder is counted in ``deferred_members`` and the cursor
-    advances so the NEXT pass continues from there. Under *dry_run* the cursor is left
-    untouched, so a preview never consumes the corpus.
+    case the unreached remainder is counted in ``deferred_members`` and the cursor is
+    PROPOSED to advance so the NEXT pass continues from there. Under *dry_run* nothing
+    is proposed, so a preview never consumes the corpus.
 
     Clusters merge last-wins by ``cluster_key`` (the ledger's idempotency anchor), so a
     key surfaced in two batches collapses to one row. A batch that raises or returns a
     broken reply is logged, counted, given a diagnostic, and skipped — never allowed to
     discard the clusters the other batches already produced.
+
+    The cursor is REPORTED here and COMMITTED by the caller, for two reasons.
+
+    *   **Atomicity.** Writing it here put it in its own autocommit, ahead of
+        ``write_clusters``. Anything raising in that window — the ledger write itself,
+        the eval proposer, a lost DB connection — left a cursor claiming a region was
+        consolidated and no rows to show for it, and that region is not revisited until
+        the rotation wraps the entire corpus.
+    *   **Conditionality.** A batch that raised or came back broken was NOT consolidated;
+        :func:`_distil_one` deliberately swallows both so one bad call cannot discard the
+        other batches' paid work, and the cursor advancing anyway turned a single auth
+        outage (an unauthenticated ``claude`` answering ``Not logged in``) into a walk of
+        the cursor across the whole corpus, skipping all of it, reporting each pass as
+        merely "0 clusters". So a pass with any failed or broken batch proposes NO
+        advance and the next pass re-reaches the same region.
+
+    Refusing to advance can, in principle, park the rotation on a permanently broken
+    batch. That is the strictly better failure: it is loud on every pass
+    (``distillation_broken`` carries the reply excerpt into the command's report),
+    whereas advancing is silent and consumes the corpus while it does it.
     """
     batches = _batch_extracts(extract, max_members=_max_distill_members(), max_chars=ConsolidationExtract.CHAR_CEILING)
     if not batches:
@@ -186,9 +219,8 @@ def distill_in_batches(
     tally = _BatchTally()
     for index in selected:
         _distil_one(batches[index], distiller=distiller, tally=tally)
-    if capped and not dry_run:
-        _write_cursor(next_cursor)
 
+    consolidated = not tally.failed and not tally.broken
     reached = set(selected)
     return BatchDistillOutcome(
         clusters=list(tally.merged.values()),
@@ -198,6 +230,7 @@ def distill_in_batches(
         diagnostics=tuple(tally.diagnostics),
         snippets_distilled=tally.distilled_snippets,
         deferred_members=sum(len(batch.snippets) for i, batch in enumerate(batches) if i not in reached),
+        next_cursor=next_cursor if capped and not dry_run and consolidated else None,
     )
 
 

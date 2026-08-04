@@ -215,6 +215,34 @@ class TestSuppressionClassification(_LoopTableCase):
         ):
             assert not stale_loops(timezone.now())[0].suppressed
 
+    def test_force_on_beats_an_off_preset(self) -> None:
+        """The force plane OUTRANKS the preset mask, so an off preset cannot excuse the silence.
+
+        This is the combination that inverted the module's contract (#4193): the operator
+        ran ``t3 loop override review on`` against a preset that masks ``review`` off, so
+        ``_loop_admitted`` ADMITS it and the loop really is expected to run — yet reading
+        the preset mask alone reported it as deliberately suppressed. A wedged loop the
+        operator explicitly demanded then read as clean, which is the exact loop whose
+        silence is never deliberate.
+        """
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        with (
+            patch(_REGISTRY_SEAM, return_value=(_mini("review"),)),
+            patch(_MODE_SEAM, return_value=_mode(name="offline", entries={"review": False})),
+            patch(_HOLDS_SEAM, return_value=(set(), {"review": True})),
+        ):
+            assert not stale_loops(timezone.now())[0].suppressed
+
+    def test_a_hold_still_beats_a_force_on(self) -> None:
+        """A durable ``LoopState`` hold is the stronger plane and keeps its explanation."""
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        with (
+            patch(_REGISTRY_SEAM, return_value=(_mini("review"),)),
+            patch(_MODE_SEAM, return_value=_mode(name="offline", entries={"review": False})),
+            patch(_HOLDS_SEAM, return_value=({"review"}, {"review": True})),
+        ):
+            assert stale_loops(timezone.now())[0].suppressed
+
     def test_a_force_masked_loop_does_not_fail_the_health_verdict(self) -> None:
         # End to end: the health surface `t3 worker status` exits on. A force-off must
         # read as idle-by-configuration, never as an unexplained stale loop.

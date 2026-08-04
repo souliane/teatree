@@ -14,9 +14,9 @@ The tool stream is the signal that survives that, because it is a property of th
 RUN rather than of the branch. It also separates the two cases that matter:
 
 * **Nothing to do** — a coding task whose change is already upstream. Reaching that
-  conclusion requires reading the code, so the run emits tool calls and passes.
+    conclusion requires reading the code, so the run emits tool calls and passes.
 * **Could not act** — the agent had no usable tool surface, or stopped before
-  touching one. Zero tool calls, and no way to have learned anything.
+    touching one. Zero tool calls, and no way to have learned anything.
 
 ``None`` is neither: it means the recorder path never observed a tool stream (the
 in-session ``record-attempt`` hand-off relays a sub-agent's envelope). "Not

@@ -1,5 +1,7 @@
 import logging
 import re
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.core.provision.provision_report import StepResult
@@ -130,7 +132,21 @@ def _install_cwd(wt_path: str) -> str:
     return result.stdout.strip()
 
 
-def drop_foreign_config_hooks(wt_path: str) -> list[str]:
+@dataclass(frozen=True, slots=True)
+class DroppedHook:
+    """One prek shim removed ahead of a re-install, kept whole so it can be put back."""
+
+    path: Path
+    body: str
+    mode: int
+
+    def restore(self) -> None:
+        self.path.write_text(self.body, encoding="utf-8")
+        self.path.chmod(self.mode)
+        logger.warning("Restored the prek hook removed for a failed re-install: %s", self.path)
+
+
+def drop_foreign_config_hooks(wt_path: str) -> list[DroppedHook]:
     """Remove prek shims bound to a config other than the repo root's.
 
     ``prek install`` bakes ``--cd=<subdir>`` when it runs from below the repo
@@ -141,28 +157,62 @@ def drop_foreign_config_hooks(wt_path: str) -> list[str]:
     indefinitely and keeps running the vendored project's lane. Removing it
     BEFORE the install is what lets the repair reach it: a declared type is then
     rewritten correctly, and an undeclared one is simply gone.
+
+    Each removal is returned WHOLE (body + mode), not merely named, because these
+    hooks live in the clone's SHARED hooks dir: the removal reaches every sibling
+    worktree at once, and until the install that justifies it succeeds the deletion is
+    not a repair but an outage. :func:`install` puts them back when it fails.
     """
     hooks_dir = _shared_hooks_dir(wt_path)
     if hooks_dir is None:
         return []
-    cleaned: list[str] = []
+    dropped: list[DroppedHook] = []
     for name in _HOOK_NAMES:
         hook = hooks_dir / name
         if not _is_prek_hook(hook) or _FOREIGN_CONFIG_FLAG not in _read(hook):
             continue
+        dropped.append(DroppedHook(path=hook, body=_read(hook), mode=stat.S_IMODE(hook.stat().st_mode)))
         hook.unlink()
-        cleaned.append(str(hook))
         logger.info("Removed prek hook bound to a non-root config: %s", hook)
-    return cleaned
+    return dropped
 
 
 def install(wt_path: str) -> StepResult:
+    """Install the repo-root prek hooks, leaving the gate no weaker than it was found.
+
+    The drop below is only safe because the install that follows rewrites what it
+    removed. When the install FAILS the removal has to be undone: the hooks are the
+    clone's SHARED ones, so an unrepaired drop leaves EVERY sibling worktree of that
+    clone with no pre-commit / pre-push / commit-msg hook at all, and nothing says so —
+    commits and pushes simply stop being gated. A shim bound to the wrong config is a
+    bad gate; no shim at all is no gate, which is strictly worse and far quieter.
+    """
     _clear_redundant_hooks_path(wt_path)
-    drop_foreign_config_hooks(wt_path)
+    dropped = drop_foreign_config_hooks(wt_path)
     result = run_step("prek-install", ["prek", "install", "-f"], cwd=_install_cwd(wt_path))
-    if result.success:
-        harden_hooks(wt_path)
+    if not result.success:
+        _restore(dropped)
+        return result
+    harden_hooks(wt_path)
     return result
+
+
+def _restore(dropped: list[DroppedHook]) -> None:
+    """Put back every hook the failed install was supposed to have replaced.
+
+    Restoring is itself best-effort — a hooks dir that has become unwritable cannot be
+    repaired from here — but a failure to restore is LOUD, because it is the state in
+    which the clone is left ungated.
+    """
+    for hook in dropped:
+        try:
+            hook.restore()
+        except OSError:
+            logger.exception(
+                "Could NOT restore the prek hook %s after a failed install — every worktree of this "
+                "clone is now missing that hook and its commit/push gate is dark until `t3` re-provisions.",
+                hook.path,
+            )
 
 
 def harden_hooks(wt_path: str) -> None:
