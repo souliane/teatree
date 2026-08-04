@@ -28,9 +28,13 @@ import math
 import os
 from dataclasses import dataclass
 
+from teatree.utils import ram_probe
+
 logger = logging.getLogger(__name__)
 
 WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
+
+_MIB_PER_GB = 1024.0
 
 #: WRITE concurrency as a function of cores, not a magic number, so a bigger box scales
 #: up automatically. 8 cores → 4.
@@ -66,6 +70,19 @@ HOST_AGENT_POPULATION_PER_CORE = 1.0
 #: gap is the hysteresis that stops it flapping around one threshold.
 BRAKE_LOAD_PER_CORE = 5.0
 RESUME_LOAD_PER_CORE = 3.0
+
+#: Memory watermarks in GB, the same shape as the load pair above: below ``RAM_BRAKE``
+#: new admissions are denied, and a braked governor re-admits only above ``RAM_RESUME``.
+#: Absolute rather than per-core because a pytest worker's footprint is a property of the
+#: suite, not of the box that runs it.
+#:
+#: ``4.0`` is the headroom one p90 worker (1.24 GB) plus the OS and page cache need to
+#: survive the burst a fresh admission creates; it matches ``intake_ram_reserve_gb``,
+#: which reserves the same margin for the same reason one layer up. ``6.0`` is one more
+#: worker's worth above it — the gap is the hysteresis, so a box hovering at the floor
+#: cannot flap admissions on and off.
+RAM_BRAKE_FLOOR_GB = 4.0
+RAM_RESUME_FLOOR_GB = 6.0
 
 #: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
 SHORT_WINDOW_BRAKE = 0.95
@@ -241,12 +258,33 @@ def weekly_pace(quota: QuotaSignal) -> float:
     return headroom / runway
 
 
-def per_agent_test_workers(*, cores: int, active_agents: int) -> int:
+def per_agent_test_workers(
+    *,
+    cores: int,
+    active_agents: int,
+    ram_available_gb: float | None = None,
+    per_worker_gb: float = 0.0,
+) -> int:
     """Per-agent pytest worker count, so the TOTAL stays bounded however many agents run.
 
     Exported to a child agent as ``PYTEST_XDIST_AUTO_NUM_WORKERS``, which is how
     pytest-xdist resolves ``-n auto`` — so the addopts stay untouched and a human
     running the suite alone still gets the whole box.
+
+    Cores alone sized the TOTAL at ``cores * 2``, which on 8 cores is 16 workers — 10.4 GB
+    at the measured p50 worker RSS but 19.8 GB at the p90, against 19.7 GB usable (#4163).
+    The bound is safe at the median and over the line at the tail, which is why the OOMs
+    were relentless but intermittent. *ram_available_gb* (the live cgroup-aware reading)
+    and *per_worker_gb* (the operator's ``test_worker_ram_gb``) add the term that makes
+    the total respond to the resource that actually saturates: whichever of the two totals
+    is smaller wins. Both are applied to the TOTAL, never to the per-agent share — a
+    per-agent memory budget would hand each of N agents the whole box.
+
+    Omitting either is the fail-safe path, and it is BOUNDED rather than closed: the
+    result is exactly the cores-derived bound, never a manufactured clamp to 1. Denying
+    on an unreadable ``/proc`` file is a kill switch operated by a missing file (#4097),
+    and the pure function is deliberately config-free — the consumer resolves the setting
+    and passes it in.
 
     The share floors at 1 (an agent with zero test workers cannot run its suite), so the
     total bound holds while *active_agents* stays within the admission ceiling — which
@@ -254,6 +292,9 @@ def per_agent_test_workers(*, cores: int, active_agents: int) -> int:
     floor wins: a 50-agent box is already a governor failure, not a division problem.
     """
     total = max(1, int(cores)) * TOTAL_TEST_WORKERS_PER_CORE
+    if ram_available_gb is not None and per_worker_gb > 0:
+        budget = math.floor(max(0.0, ram_available_gb - RAM_BRAKE_FLOOR_GB) / per_worker_gb)
+        total = min(total, budget)
     return max(1, total // max(1, int(active_agents)))
 
 
@@ -270,16 +311,41 @@ def _quota_brake(quota: QuotaSignal) -> str:
 
 
 def _machine_brake(machine: MachineSignal, *, braked: bool) -> str:
+    """Load and memory watermarks, both riding the *braked* hysteresis and the exemption.
+
+    Memory sits HERE rather than in the ceiling because ``_adaptive_ceiling`` already owns
+    "how many agents fit", and two unsynchronised readers of one quantity drift (#4125). A
+    brake answers a different question — "is the box in trouble right now?" — so it
+    inherits the load brake's hysteresis and cheap-lane exemption for free. An unread
+    reading is not a brake: unknown never denies.
+    """
     cores = max(1, machine.cores)
     watermark = (RESUME_LOAD_PER_CORE if braked else BRAKE_LOAD_PER_CORE) * cores
     if machine.load1 >= watermark:
         return f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s)"
+    ram_floor = RAM_RESUME_FLOOR_GB if braked else RAM_BRAKE_FLOOR_GB
+    if machine.ram_available_gb is not None and machine.ram_available_gb <= ram_floor:
+        return f"{machine.ram_available_gb:.1f} GB available at/under the {ram_floor:.0f} GB watermark"
     return ""
 
 
 def _machine_ceiling(machine: MachineSignal) -> int:
     """The core-derived WRITE default, floored at 1 — the part that needs NO quota signal."""
     return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
+
+
+def _ram_headroom(ram_available_gb: float | None) -> float:
+    """The fraction of the agent population the live memory reading still supports.
+
+    ``1.0`` at or above :data:`RAM_RESUME_FLOOR_GB` (inert on a healthy box), ramping to
+    ``0.0`` at :data:`RAM_BRAKE_FLOOR_GB`, which is where the brake refuses outright.
+    ``None`` is ``1.0`` for the reason every unknown here is: a probe that cannot answer
+    must not be able to lower a ceiling.
+    """
+    if ram_available_gb is None:
+        return 1.0
+    span = RAM_RESUME_FLOOR_GB - RAM_BRAKE_FLOOR_GB
+    return min(1.0, max(0.0, ram_available_gb - RAM_BRAKE_FLOOR_GB) / span)
 
 
 def _adaptive_ceiling(quota: QuotaSignal, machine: MachineSignal) -> int:
@@ -346,16 +412,23 @@ def resume_agent_ceiling(machine: MachineSignal) -> int:
     own bound — and that bound is read live, because the box's spare capacity is what decides
     whether a fleet is survivable, not a number set when it was quiet.
 
-    ``cores * HOST_AGENT_POPULATION_PER_CORE``, scaled by the load headroom still left under
-    the same :data:`BRAKE_LOAD_PER_CORE` watermark the dispatch lanes brake on, so the two
-    read one machine the same way. The floor of 1 keeps this an admission ceiling rather than
-    a kill switch: a wedged box still gets to carry the one agent that might unwedge it.
+    ``cores * HOST_AGENT_POPULATION_PER_CORE``, scaled by the SMALLER of two headrooms so
+    the tighter resource decides: the load still left under the same
+    :data:`BRAKE_LOAD_PER_CORE` watermark the dispatch lanes brake on, and the memory still
+    left above the same :data:`RAM_BRAKE_FLOOR_GB` floor they refuse at — the recorded
+    incident was load 58 AND 1 GB free, and a bound that reads only load calls that half
+    healthy. The memory term ramps between the two RAM watermarks and is inert above the
+    upper one, so it lowers the ceiling only on a box that is genuinely tight; an unread
+    reading leaves the ceiling load-derived, never lower.
+
+    The floor of 1 keeps this an admission ceiling rather than a kill switch: a wedged box
+    still gets to carry the one agent that might unwedge it.
     """
     cores = max(1, machine.cores)
     watermark = BRAKE_LOAD_PER_CORE * cores
-    headroom = max(0.0, watermark - machine.load1) / watermark
+    load_headroom = max(0.0, watermark - machine.load1) / watermark
     base = max(1, math.floor(cores * HOST_AGENT_POPULATION_PER_CORE))
-    return max(1, math.floor(base * headroom))
+    return max(1, math.floor(base * min(load_headroom, _ram_headroom(machine.ram_available_gb))))
 
 
 def resume_shed_directive(*, restored: int, machine: MachineSignal) -> str:
@@ -428,11 +501,25 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
 
 
 def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSignal:
-    """The deterministic, model-free machine probe (stdlib only, no external process)."""
+    """The deterministic, model-free machine probe (stdlib only, no external process).
+
+    Memory comes from :func:`~teatree.utils.ram_probe.effective_available_ram_mib`, the ONE
+    cgroup-aware reader — ``min(host MemAvailable, memory.max - memory.current)``. Reading
+    ``/proc/meminfo`` here instead would report the HOST figure inside a container and
+    would be invisible to that reader's own fix (#4118). Its ``None`` (unreadable) is a
+    different answer from ``0`` (readable, nothing left) and is carried through as ``None``
+    rather than collapsed to a number nobody measured.
+
+    An explicit *ram_available_gb* wins, so a caller holding a reading of its own is never
+    made to pay for a second probe.
+    """
     try:
         load1 = os.getloadavg()[0]
     except OSError:
         load1 = 0.0
+    if ram_available_gb is None:
+        available_mib = ram_probe.effective_available_ram_mib()
+        ram_available_gb = None if available_mib is None else available_mib / _MIB_PER_GB
     return MachineSignal(cores=os.cpu_count() or 1, load1=load1, ram_available_gb=ram_available_gb)
 
 
@@ -488,6 +575,8 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
 
 
 __all__ = [
+    "RAM_BRAKE_FLOOR_GB",
+    "RAM_RESUME_FLOOR_GB",
     "UNBRAKED",
     "AdmissionDecision",
     "MachineBrake",
