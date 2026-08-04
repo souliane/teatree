@@ -31,6 +31,7 @@ from teatree.core.backend_protocols import BackendResolutionError, CodeHostBacke
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
@@ -42,7 +43,6 @@ from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
-    from teatree.core.gates.orphan_guard import BranchReport
     from teatree.core.models import Ticket
     from teatree.core.models.pending_pull_request import SerializedPrSpec
     from teatree.types import RawAPIDict
@@ -138,14 +138,12 @@ def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResul
     return _owe_pr(repo_path, branch_name, reason=PR_UNKNOWN_DEFERRAL)
 
 
-def skip_for_classified(report: "BranchReport", repo_path: str, branch_name: str) -> EnsurePrResult | None:
+def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) -> EnsurePrResult | None:
     """The answer a classification already carries, or ``None`` when a PR must be created.
 
     A pure mapping over the classification — four of the five branch states are
     a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
     """
-    from teatree.core.gates.orphan_guard import BranchStatus  # noqa: PLC0415 — deferred: avoids the app-load cycle
-
     if report.status is BranchStatus.SYNCED:
         return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
     if report.status is BranchStatus.OPEN_PR:
