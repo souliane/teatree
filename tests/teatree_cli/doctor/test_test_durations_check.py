@@ -1,12 +1,18 @@
-"""The doctor's two readings of ``dev/.test_durations`` — blind split, and ceiling pressure (#4048)."""
+"""The doctor's readings of ``dev/.test_durations`` — blind split, refresh age, ceiling pressure (#4048)."""
 
+import datetime as dt
 from pathlib import Path
 from unittest.mock import patch
 
 from teatree.cli.doctor.app import run_doctor_checks
-from teatree.cli.doctor.checks_test_durations import check_test_durations_coverage, check_test_timeout_headroom
+from teatree.cli.doctor.checks_test_durations import (
+    check_test_durations_coverage,
+    check_test_durations_freshness,
+    check_test_timeout_headroom,
+)
 from teatree.quality.durations_coverage import DurationsCoverage
 from teatree.quality.durations_file import DurationsUnreadableError
+from teatree.quality.durations_freshness import MAX_REFRESH_AGE_DAYS, DurationsFreshness
 from teatree.quality.timeout_headroom import CeilingPressure, HeadroomReport
 
 
@@ -88,6 +94,65 @@ class TestTestDurationsDoctorCheck:
         assert "boom" in out
 
 
+def _aged(days: int | None):
+    measured_at = dt.datetime(2026, 8, 4, 12, 0, tzinfo=dt.UTC)
+    freshness = (
+        None
+        if days is None
+        else DurationsFreshness(landed_at=measured_at - dt.timedelta(days=days), measured_at=measured_at)
+    )
+    return patch(
+        "teatree.quality.durations_freshness.measure_durations_freshness",
+        return_value=freshness,
+    )
+
+
+class TestDurationsRefreshFreshnessDoctorCheck:
+    def test_a_refresh_landed_inside_the_window_is_silent(self, capsys, tmp_path: Path) -> None:
+        with _repo_found(tmp_path), _aged(MAX_REFRESH_AGE_DAYS - 1):
+            assert check_test_durations_freshness() is True
+        assert capsys.readouterr().out == ""
+
+    def test_a_stale_refresh_fails_and_names_the_refresh_job(self, capsys, tmp_path: Path) -> None:
+        with _repo_found(tmp_path), _aged(MAX_REFRESH_AGE_DAYS + 9):
+            assert check_test_durations_freshness() is False
+        out = capsys.readouterr().out
+        fail_line = next(line for line in out.splitlines() if line.startswith("FAIL"))
+        assert "21 day" in fail_line
+        assert "refresh-durations" in fail_line
+        assert "ci/test-durations-refresh" in fail_line
+
+    def test_a_fresh_but_incomplete_file_produces_no_fail_anywhere(self, capsys, tmp_path: Path) -> None:
+        """The whole point of keying the alarm on age: today's 11% file must not page the owner.
+
+        A refresh that landed yesterday and still covers a ninth of the tree is the
+        expected, self-clearing state the WARN exists to tolerate — the pipeline is
+        running and catching up. A coverage-keyed FAIL would page nightly here, which is
+        the failure #4113 removed one surface over.
+        """
+        incomplete = DurationsCoverage(covered_files=246, test_files=2225, orphan_keys=73)
+        with _repo_found(tmp_path), _aged(1), _measured(incomplete):
+            assert check_test_durations_freshness() is True
+            assert check_test_durations_coverage() is True
+        out = capsys.readouterr().out
+        assert "FAIL" not in out
+        assert "WARN" in out
+
+    def test_an_unanswerable_age_is_silent_never_a_verdict(self, capsys, tmp_path: Path) -> None:
+        with _repo_found(tmp_path), _aged(None):
+            assert check_test_durations_freshness() is True
+        assert capsys.readouterr().out == ""
+
+    def test_no_repo_resolved_is_silent(self, capsys) -> None:
+        with patch("teatree.cli.doctor.service.DoctorService.find_teatree_repo", return_value=None):
+            assert check_test_durations_freshness() is True
+        assert capsys.readouterr().out == ""
+
+    def test_the_aggregate_actually_calls_it(self) -> None:
+        """A check nothing invokes is a check that reports nothing (#4048)."""
+        assert "check_test_durations_freshness" in run_doctor_checks.__code__.co_names
+
+
 def _headroom(report: HeadroomReport | None):
     return patch(
         "teatree.quality.timeout_headroom.measure_timeout_headroom",
@@ -121,6 +186,19 @@ class TestTimeoutHeadroomDoctorCheck:
         out = capsys.readouterr().out
         assert "FAIL" in out
         assert "tests/test_b.py::test_slow" in out
+
+    def test_the_over_run_message_says_which_remedy_waits_on_the_next_refresh(self, capsys, tmp_path: Path) -> None:
+        """Only one of the two remedies clears it on the next run (#4130).
+
+        The ceiling is read live from source, so raising the test's own marker clears the
+        FAIL immediately; making the test faster changes nothing until a refresh records
+        the new cost, which an operator reading the old wording had no way to expect.
+        """
+        over = CeilingPressure(node_id="tests/test_b.py::test_slow", seconds=180.2, ceiling=180.0)
+        with _repo_found(tmp_path), _headroom(_report(over)):
+            assert check_test_timeout_headroom() is False
+        fail_line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("FAIL"))
+        assert "durations refresh" in fail_line
 
     def test_a_long_list_is_truncated_with_an_honest_trailer(self, capsys, tmp_path: Path) -> None:
         squeezed = [

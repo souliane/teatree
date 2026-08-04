@@ -1,4 +1,4 @@
-"""Two readings of ``dev/.test_durations``, both ahead of the outage rather than during it (#4048).
+"""Three readings of ``dev/.test_durations``, all ahead of the outage rather than during it (#4048).
 
 The daily scheduled ``refresh-durations`` job is the only thing that keeps the
 file current, and its failure mode is silence: the job is skipped, no refresh PR
@@ -19,6 +19,12 @@ the CI OAuth pool, whose identical failure was a decaying value nobody was
 watching until every merge stopped. Neither is a PR gate: staleness and drift are
 not attributable to any diff, and a required check that reds every PR for
 something no author caused is the very thing this epic exists to remove.
+
+The third reading is the one that pages (#4130). Both readings above are advisory
+by design, so a refresh pipeline that stops produces no FAIL at all and the whole
+arrangement reads green while it rots. Age is what distinguishes a file the running
+pipeline has not caught up to yet from one no pipeline is behind — see
+:mod:`teatree.quality.durations_freshness` for why the window is what it is.
 """
 
 from typing import TYPE_CHECKING
@@ -45,9 +51,10 @@ def check_test_durations_coverage() -> bool:
     mode this epic exists to remove, one surface over. The reading itself is
     unchanged — the same numbers and the same remedy print at every session start.
 
-    ``MIN_FILE_COVERAGE`` is untouched; only the severity is. The companion headroom
-    check keeps its FAIL, because a recorded over-run is a discrete, attributable fact
-    that a single commit clears.
+    ``MIN_FILE_COVERAGE`` is untouched; only the severity is. What pages instead is
+    :func:`check_test_durations_freshness`, which keys on the age of the last refresh
+    rather than on the coverage number — so the known-stale-but-improving state this
+    WARN tolerates cannot re-page, while a refresh pipeline that has stopped does.
     """
     from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.quality import durations_coverage, durations_file  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -87,6 +94,36 @@ def check_test_durations_coverage() -> bool:
     return True
 
 
+def check_test_durations_freshness() -> bool:
+    """FAIL when no refresh of the durations file has landed within the window.
+
+    The one alarm on this artifact that pages. Its remedy is the ``refresh-durations``
+    job rather than anything in the tree, which is why it names that job and the branch
+    it opens inside the FAIL line itself: ``deploy/watchdog.sh`` DMs the FAIL line only,
+    so a remedy on a continuation line never reaches the owner.
+    """
+    from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.quality import durations_freshness  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    repo = DoctorService.find_teatree_repo()
+    if repo is None:
+        return True
+
+    freshness = durations_freshness.measure_durations_freshness(repo)
+    if freshness is None or not freshness.is_stale:
+        return True
+
+    typer.echo(
+        f"FAIL  No `dev/.test_durations` refresh has landed in {freshness.age_days} days "
+        f"(last: {freshness.landed_at.date().isoformat()}, window "
+        f"{durations_freshness.MAX_REFRESH_AGE_DAYS} days) — the daily scheduled "
+        "`refresh-durations` job has stopped producing, so the 12-way split is bin-packing "
+        "from a file that no longer describes the suite. Read that job on the latest "
+        "`schedule` run of the CI workflow, and merge the `ci/test-durations-refresh` PR."
+    )
+    return False
+
+
 def check_test_timeout_headroom() -> bool:
     """FAIL when a recorded duration exceeds the ceiling that applies to that test."""
     from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -109,7 +146,9 @@ def check_test_timeout_headroom() -> bool:
         typer.echo(
             f"FAIL  {len(over)} recorded test(s) exceed the timeout ceiling that applies to them — "
             "recorded, not predicted, so the shard that draws one reds whichever PR is in flight. "
-            "Make each faster, or raise its own `@pytest.mark.timeout` to the measured cost."
+            "Raising a test's own `@pytest.mark.timeout` to the measured cost clears this at once "
+            "(the ceiling is read from source); making the test faster clears it only once the next "
+            "durations refresh records the new cost."
         )
     else:
         typer.echo(
