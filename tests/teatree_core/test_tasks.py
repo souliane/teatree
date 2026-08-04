@@ -986,7 +986,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
             stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
             stack.enter_context(patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host))
             stack.enter_context(patch("teatree.core.runners.ship.push_branch"))
-            stack.enter_context(patch("teatree.core.runners.ship.git.branch_merged", return_value=False))
+            stack.enter_context(patch("teatree.core.runners.ship.branch_is_landed", return_value=False))
             stack.enter_context(patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None))
             stack.enter_context(
                 patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body"))

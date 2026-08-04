@@ -1294,6 +1294,10 @@
           "name": "list-orphans"
         },
         {
+          "help": "Is this branch's work already on the default branch? The canonical answer (#4070)",
+          "name": "branch-verdict"
+        },
+        {
           "help": "Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207)",
           "name": "reap-stale"
         },

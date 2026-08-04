@@ -6760,6 +6760,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    no-op) kill-switch (self-rescue).                         │
 │ add-all            Whole-tree `git add -A` / `git add .` gate kill-switch    │
 │                    (self-rescue).                                            │
+│ merged-detect      Hand-rolled merged-branch-detection advisory (WARN-only)  │
+│                    kill-switch (self-rescue).                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7429,6 +7431,60 @@ Usage: t3 teatree gate add-all disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate add-all enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate merged-detect`
+
+```
+Usage: t3 teatree gate merged-detect [OPTIONS] COMMAND [ARGS]...
+
+ Hand-rolled merged-branch-detection advisory (WARN-only) kill-switch
+ (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate merged-detect status`
+
+```
+Usage: t3 teatree gate merged-detect status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate merged-detect disable`
+
+```
+Usage: t3 teatree gate merged-detect disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate merged-detect enable`
+
+```
+Usage: t3 teatree gate merged-detect enable [OPTIONS]
 
  Re-enable the gate.
 

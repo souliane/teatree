@@ -418,7 +418,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -443,7 +443,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=True),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -464,7 +464,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -489,7 +489,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -510,7 +510,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=True),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -573,7 +573,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -632,7 +632,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             ShipExecutor(ticket).run()
 
@@ -659,7 +659,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
         ):
             ShipExecutor(ticket).run()
 
@@ -729,7 +729,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
@@ -754,7 +754,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
             patch.object(Worktree, "save", autospec=True) as wt_save,
         ):
@@ -783,7 +783,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
@@ -803,7 +803,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch") as push,
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
@@ -830,7 +830,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch"),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
@@ -1080,7 +1080,7 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.push_branch"),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
@@ -1146,7 +1146,7 @@ class TestShipExecutorHonorsTitleOverride(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
-            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
             patch("teatree.core.runners.ship.push_branch"),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",

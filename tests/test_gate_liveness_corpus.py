@@ -1421,6 +1421,10 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # + always returns ``False``); it has no deny path, so no must-deny
         # corpus payload.
         router.handle_enforce_orchestrator_investigation_boundary,
+        # Merged-branch-detection probe (#4070) — a WARN-only nudge (stderr +
+        # always returns ``False``); pinned structurally to have no deny path by
+        # ``tests/test_merged_detection_probe_gate.py``.
+        router.handle_warn_merged_detection_probe,
     }
 )
 
