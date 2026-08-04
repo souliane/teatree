@@ -80,6 +80,16 @@ class TestBashMediatedWritesAreGated(TestCase):
         assert blocked is True
         assert payload is not None
 
+    def test_a_real_redirect_beside_a_substitution_is_still_denied(self) -> None:
+        # The anti-vacuous companion: reporting the substitution unresolved must
+        # not blind the gate to a genuine `> path` on the same line (#4127).
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = _started_worktree(Path(tmp))
+            command = "make 2> >(tee /tmp/err.log) > src/app/out.txt"
+            blocked, payload, _ = _run(_bash_event(toplevel, command))
+        assert blocked is True
+        assert payload is not None
+
     def test_planned_ticket_allows_the_same_bash_write(self) -> None:
         # The anti-vacuous companion: the deny is keyed on the STARTED state,
         # not on the command shape, so a planned ticket is untouched.
@@ -140,6 +150,16 @@ class TestLegitimateShellWorkIsNotBlocked(TestCase):
         assert blocked is False
         assert payload is None
         assert "plan-gate" in stderr.lower()
+
+    def test_process_substitution_is_not_a_write_into_the_repo(self) -> None:
+        # `>(...)` was parsed as a `> path` redirect, so the gate denied a
+        # legitimate `tee >(...)` naming `<repo>/(gzip` — a path that does not
+        # exist, which reads as a broken guard rather than a rule (#4127).
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = _started_worktree(Path(tmp))
+            blocked, payload, _ = _run(_bash_event(toplevel, "cat in.txt | tee >(gzip -c > /tmp/a.gz)"))
+        assert blocked is False
+        assert payload is None
 
     def test_skip_token_in_the_command_allows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

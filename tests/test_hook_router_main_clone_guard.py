@@ -413,6 +413,33 @@ class TestBashMediatedWriteIntoMainClone:
         assert router.handle_block_main_clone_mutation(_bash_event(command, clone, session)) is False
         assert _deny(capsys) is None
 
+    @pytest.mark.parametrize(
+        ("command", "session"),
+        [
+            ("cat in.txt | tee >(gzip -c > /tmp/a.gz)", "sess-procsub-tee"),
+            ("make 2> >(tee /tmp/err.log)", "sess-procsub-stderr"),
+        ],
+    )
+    def test_process_substitution_is_not_a_write_into_the_clone(
+        self, command: str, session: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `>(...)` was parsed as a `> path` redirect, so the guard denied a
+        # legitimate command while naming `<clone>/(gzip` — a path that does not
+        # exist, which reads as a broken guard rather than a rule (#4127).
+        clone = _managed_main_clone(tmp_path / "teatree")
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, session)) is False
+        assert _deny(capsys) is None
+
+    def test_a_real_redirect_beside_a_substitution_is_still_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The anti-vacuous companion: reporting the substitution unresolved must
+        # not blind the guard to a genuine `> path` on the same line (#4127).
+        clone = _managed_main_clone(tmp_path / "teatree")
+        command = f"make 2> >(tee /tmp/err.log) > {clone}/app.py"
+        assert router.handle_block_main_clone_mutation(_bash_event(command, clone, "sess-procsub-real")) is True
+        assert _deny(capsys) is not None
+
     def test_write_into_a_main_clone_on_a_feature_branch_is_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

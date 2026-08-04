@@ -127,10 +127,12 @@ def _segment_stages_whole_tree(segment: str) -> bool:
     args = _git_add_args(segment.split())
     if args is None:
         return False
-    if any(arg in _SWEEP_FLAGS or _short_cluster_has(arg, "A") for arg in args):
-        return True
+    # No-sweep WINS over a sweep flag it is combined with (#4127): `-An` stages
+    # nothing, `-A -p`/`-A -i` stage hunk by hunk, and git itself dies on `-A -u`.
     if any(arg in _NO_SWEEP_FLAGS or _short_cluster_has(arg, "upin") for arg in args):
         return False
+    if any(arg in _SWEEP_FLAGS or _short_cluster_has(arg, "A") for arg in args):
+        return True
     return any(arg in _WHOLE_TREE_PATHSPECS for arg in _pathspecs(args))
 
 

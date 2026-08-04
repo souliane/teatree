@@ -287,10 +287,11 @@ def _bash_write_paths(command: str, base: "Path | None") -> tuple[Path, ...]:
     """The paths *command* would WRITE, anchored to *base*; empty on any failure.
 
     Delegates to the shared resolver :mod:`teatree.hooks.write_targets`, whose
-    unresolvable targets (a ``$VAR`` path, an interpreter body writing through a
-    variable) are deliberately DROPPED here: this module's posture on anything it
-    cannot pin statically is ALLOW, the same stance it takes on an unpinnable git
-    target. A cold hook env without ``teatree`` yields no paths — fail OPEN.
+    unresolvable targets (a ``$VAR`` path, a ``>(...)`` process substitution, an
+    interpreter body writing through a variable) are deliberately DROPPED here:
+    this module's posture on anything it cannot pin statically is ALLOW, the same
+    stance it takes on an unpinnable git target. A cold hook env without
+    ``teatree`` yields no paths — fail OPEN.
     """
     try:
         with teatree_src_on_path():
