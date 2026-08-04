@@ -133,6 +133,30 @@ class YieldSignal:
 
 
 @dataclass(frozen=True)
+class MachineBrake:
+    """The caller's two inputs to the LOAD brake, as one value.
+
+    ``braked`` is the previous decision's brake state and supplies the hysteresis — a
+    braked governor is held to the lower watermark so it cannot flap.
+
+    ``applies`` is the cheap-phase exemption (#4098): the read-only phases that RETIRE
+    work were being refused on the very load their expensive siblings created, which
+    removed the only relief available and held the brake on. ``False`` skips the LOAD
+    brake for that class alone — never the token brakes, which are a claim about budget
+    rather than pressure and so refuse a cheap phase exactly as they refuse an expensive
+    one. The caller supplies the exemption's own bound; :func:`decide_admission` never
+    widens a lane on its own.
+    """
+
+    applies: bool = True
+    braked: bool = False
+
+
+#: The default: the brake applies, with no prior brake state to hold it to the low watermark.
+UNBRAKED = MachineBrake()
+
+
+@dataclass(frozen=True)
 class MergeSignal:
     """Merge throughput — whether produced work is actually LANDING.
 
@@ -254,7 +278,7 @@ def decide_admission(
     quota: QuotaSignal,
     machine: MachineSignal,
     yield_signal: YieldSignal | None = None,
-    braked: bool = False,
+    load_brake: MachineBrake = UNBRAKED,
     static_ceiling: int | None = None,
 ) -> AdmissionDecision:
     """Decide whether to admit new work now, and at what ceiling.
@@ -264,12 +288,12 @@ def decide_admission(
     ISSUE INTAKE only, because the ship and review lanes are what CLEAR a backed-up
     pipeline and braking them on the backlog they exist to drain would deadlock the
     factory against itself.
-    *braked* is the previous decision's brake state and supplies the hysteresis — a
-    braked governor is held to the lower watermark so it cannot flap. *static_ceiling*
-    is the operator's configured concurrency, applied as an upper BOUND on the adaptive
-    answer rather than as the target — and it is what an unreadable quota probe falls
-    back to VERBATIM, ``None`` (no clamp) included. The governor tightens only on
-    evidence it actually has; the load brake reads its own signal and still applies.
+    *load_brake* carries the caller's two machine-brake inputs (see :class:`MachineBrake`)
+    — the previous decision's brake state, for hysteresis, and whether the brake applies
+    to this class at all. *static_ceiling* is the operator's configured concurrency,
+    applied as an upper BOUND on the adaptive answer rather than as the target — and it
+    is what an unreadable quota probe falls back to VERBATIM, ``None`` (no clamp)
+    included. The governor tightens only on evidence it actually has.
     """
     ceiling = static_ceiling
     if quota.fresh:
@@ -278,7 +302,8 @@ def decide_admission(
             ceiling = max(1, min(ceiling, static_ceiling))
 
     quota_brake = _quota_brake(quota) if quota.fresh else ""
-    for brake in (quota_brake, _machine_brake(machine, braked=braked)):
+    machine_brake = _machine_brake(machine, braked=load_brake.braked) if load_brake.applies else ""
+    for brake in (quota_brake, machine_brake):
         if brake:
             return AdmissionDecision(admit=False, reason=brake, ceiling=ceiling, braked=True)
 
@@ -399,7 +424,9 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
 
 
 __all__ = [
+    "UNBRAKED",
     "AdmissionDecision",
+    "MachineBrake",
     "MachineSignal",
     "QuotaSignal",
     "YieldSignal",

@@ -317,6 +317,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #3644 Default-ON adaptive admission governor; false is the kill-switch that
     # reverts admission to the pre-governor static behaviour. Per-overlay overridable.
     "admission_governor_enabled": _parse_strict_bool,
+    # #4098 Bound on the CHEAP-phase admission lane — how many read-only/work-retiring
+    # phase agents stay admissible while the governor brakes the expensive class. 0
+    # disables the exemption (cheap is braked like expensive). Per-overlay overridable.
+    "cheap_phase_admission_ceiling": _parse_strict_int,
     # RAM-used-percent ceiling above which a NEW provision is held (queued, not
     # started) rather than admitted — mirrors ``DEFAULT_RAM_USED_CEILING_PCT``
     # in the self-improve budget gate. Per-overlay overridable.

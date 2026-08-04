@@ -202,6 +202,7 @@ class TeatreeSettingsSchema(BaseSettings):
     billing_cycle_anchor_day: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     boost_concurrency: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     bulk_close_threshold: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    cheap_phase_admission_ceiling: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     check_updates: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     chrome_devtools_headless: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     chrome_devtools_mcp_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

@@ -291,6 +291,10 @@ class IssueIntakeScanner:
         the governor, yet the measured congestion collapse was on the headless
         lane the admitted issue then runs on. A DENY defers new intake with a
         visible log; fail-open (``None``) leaves intake unchanged.
+
+        Asks with no phase, which is the EXPENSIVE class (#4098): what intake
+        admits is a new coding ticket, so it is braked exactly as it was before
+        the cheap-phase exemption existed.
         """
         from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred
 
