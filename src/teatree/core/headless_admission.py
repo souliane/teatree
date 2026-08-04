@@ -34,7 +34,7 @@ only seam that returns a DENY reason, and every caller logs it at WARNING.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from teatree.core.admission_governor import (
@@ -63,22 +63,29 @@ class HeadlessAdmission:
 
     ``cheap_headroom`` is the ceiling minus the lane's occupancy at probe time — what
     keeps the exemption from becoming a second unbounded lane. Callers book every
-    admission through :meth:`record_admitted`, which BOTH stamps the row
+    admission through :meth:`admit`, which BOTH takes the row's durable seat
     (``Task.admitted_at``, so the next probe's occupancy read sees it) and decrements
     this local headroom (so a caller mid-pass need not re-probe to stay bounded). The
     two chokepoints have different shapes — the drain is a loop holding one verdict,
-    ``post_save`` is one row with a fresh verdict each time — so the durable stamp is
+    ``post_save`` is one row with a fresh verdict each time — so the durable seat is
     what they actually share; the local headroom only covers the span of a single pass,
-    between the probe that computed it and the stamps it is writing. ``None`` is
+    between the probe that computed it and the seats it is taking. ``None`` is
     UNBOUNDED, reached only where the governor has no opinion at all: the kill-switch,
     the fail-open path, and the zero-ceiling rollback under which cheap simply follows
     the expensive verdict.
+
+    ``cheap_ceiling`` is the same bound the probe measured against, carried so the seat
+    write can re-check it (#4125). Headroom alone is a number computed BEFORE the write
+    and private to one process, which is exactly why it could not stop two of them.
     """
 
     expensive_denied: str | None
     cheap_denied: str | None
     cheap_headroom: int | None = None
+    cheap_ceiling: int | None = None
+    seats_released: int = 0
     _cheap_admitted: int = 0
+    _announced: set[str] = field(default_factory=set)
 
     def denied_for(self, cost: PhaseCost) -> str | None:
         """The reason to refuse one more admission of *cost*, or ``None`` to admit."""
@@ -98,42 +105,67 @@ class HeadlessAdmission:
         """
         return self.denied_for(phase_cost(phase))
 
-    def refuse(self, task_pk: int, phase: str, *, at: str) -> bool:
-        """True when this row must not be admitted now — and say so, at *at*.
+    def admit(self, task_pk: int, phase: str, *, at: str) -> bool:
+        """True when *task_pk* now holds a seat and may be dispatched — else refuse, at *at*.
 
-        Resolving and announcing are ONE call so a chokepoint cannot skip a row quietly:
-        spent headroom is refused mid-loop, after :meth:`log_denials` has already spoken,
-        and that is the refusal an operator most needs to see against the rows it holds.
+        The single seam every chokepoint routes its admission through, so no caller can
+        dispatch a row it never booked: a chokepoint that enqueued without the durable
+        seat would leave its own admission invisible to every later probe, which is
+        exactly how a one-row-at-a-time burst outran the ceiling. The seat is therefore
+        taken BEFORE the dispatch, and a dispatch that then fails costs at most one
+        :data:`~teatree.core.managers.ADMITTED_INFLIGHT_WINDOW` of under-admission — the
+        direction that is safe, and what that window already exists to recover.
+
+        Deciding, booking and announcing are ONE call so a chokepoint cannot skip a row
+        quietly. A reason :meth:`log_denials` already announced for the whole pass drops
+        to DEBUG rather than repeating per held row: on the measured shape (18 rows, one
+        braked drain) that repetition was 19 lines every cadence saying one thing.
         """
-        denied = self.denied_reason(phase)
+        denied = self.denied_reason(phase) or self._book(task_pk, phase)
         if denied is None:
-            return False
-        logger.warning("Governor DENIED %s of task %s: %s (staying PENDING)", at, task_pk, denied)
-        return True
+            return True
+        level = logging.DEBUG if denied in self._announced else logging.WARNING
+        logger.log(level, "Governor DENIED %s of task %s: %s (staying PENDING)", at, task_pk, denied)
+        return False
 
-    def record_admitted(self, task_pk: int, phase: str) -> None:
-        """Book one admission of *task_pk* against the lane bound — durably, then locally.
+    def _book(self, task_pk: int, phase: str) -> str | None:
+        """Take *task_pk*'s durable seat — ``None`` when granted, else why it was refused.
 
-        The single seam every chokepoint routes its admission through, so the durable
-        stamp cannot be the step one of them forgets: a chokepoint that enqueued without
-        it would leave its own admission invisible to every later probe, which is exactly
-        how a one-row-at-a-time burst outran the ceiling.
+        The expensive class has no lane width of its own, so only the one-seat-per-row
+        rule can refuse it; the cheap class hands its ceiling to the write, which
+        re-checks occupancy there rather than trusting this verdict's probe (#4125).
         """
-        _task_model().objects.record_admission(task_pk)
-        if phase_cost(phase) is PhaseCost.CHEAP:
+        cheap = phase_cost(phase) is PhaseCost.CHEAP
+        if not _task_model().objects.record_admission(task_pk, cheap_ceiling=self.cheap_ceiling if cheap else None):
+            if not cheap:
+                return "already dispatched this window"
+            return "no cheap-phase lane seat: already dispatched this window, or a racer took the last one"
+        if cheap:
             self._cheap_admitted += 1
+        return None
 
     def log_denials(self) -> None:
         """Announce every class this verdict refuses, one WARNING line each.
 
         Lives on the verdict rather than at each chokepoint so a refusal is worded
         identically wherever it is taken, and so a class added to :class:`PhaseCost`
-        cannot acquire a caller that forgets to report it.
+        cannot acquire a caller that forgets to report it. What is announced here is
+        remembered, so :meth:`admit` can hold a row against it without saying it again.
+
+        A released seat is announced alongside: it is the state in which the ceiling is
+        SOFT, and it arrives with no refusal of its own to carry it.
         """
         for cost in PhaseCost:
             denied = self.denied_for(cost)
             if denied is not None:
+                self._announced.add(denied)
                 logger.warning("Governor DENIED headless admission of %s work: %s (rows stay queued)", cost, denied)
+        if self.seats_released:
+            logger.warning(
+                "Cheap lane released %s unclaimed seat(s) — the runner backlog outran the seat window, "
+                "so the ceiling is soft until it drains",
+                self.seats_released,
+            )
 
 
 def _task_model() -> "type[Task]":
@@ -206,6 +238,7 @@ def headless_admission_verdict() -> HeadlessAdmission:
         cheap = (
             exempt.reason if not exempt.admit else _ceiling_denial(cheap_ceiling, cheap_occupancy, lane="cheap-phase")
         )
+        seats_released = task_model.objects.cheap_lane_seats_released()
     except Exception:
         logger.exception("headless admission governor probe failed — admitting (fail-open)")
         return _admit_all()
@@ -213,6 +246,8 @@ def headless_admission_verdict() -> HeadlessAdmission:
         expensive_denied=expensive,
         cheap_denied=cheap,
         cheap_headroom=max(0, cheap_ceiling - cheap_occupancy),
+        cheap_ceiling=cheap_ceiling,
+        seats_released=seats_released,
     )
 
 
