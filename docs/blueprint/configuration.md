@@ -147,7 +147,8 @@ data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatre
 `handover/latest.md` (#3563) — the state dir is runtime-local, so a hand-off created inside
 the worker container wrote its mirror to a filesystem the host could not read and the host's
 `latest.md` stayed pinned to an ancient session, while the data dir is the one directory
-every runtime shares (the deploy already bind-mounts it) — `statusline_chain` —
+every runtime shares (the deploy already bind-mounts it); the mirror is BOOTSTRAP-ONLY, read
+only when the DB is unreachable and never merely because the drain came back empty (#4194) — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
 `json_each` — `statusline_engaged_render` — the #3502 opt-in (strict bool, default OFF)
 that renders the statusline in a hand-engaged session (an engage marker present) even

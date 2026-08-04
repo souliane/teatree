@@ -11,7 +11,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.fast_push import FastPushOutcome
+from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.models import LoopLease, SessionHandover
 
@@ -168,6 +168,108 @@ class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
         assert data["ok"] is True
         assert data["subagent_pushes"] == []
         assert SessionHandover.objects.count() == 1
+
+
+class TestTheBarriersReturnsLandInThePayload(_PinnedSessionTestCase):
+    """The receiver reads the ROW, so per-agent done/remaining must be IN it, not only printed (#4194)."""
+
+    def test_each_agents_done_and_remaining_are_persisted(self) -> None:
+        pushed = SubagentPush(
+            worktree=pathlib.Path("/wt/agent-x"),
+            branch="feat/x",
+            driven=True,
+            outcome=FastPushOutcome(ok=True, branch="feat/x", committed=True, pushed=True, pr_url="http://pr/1"),
+        )
+        refused = SubagentPush(
+            worktree=pathlib.Path("/wt/agent-y"),
+            branch="feat/y",
+            driven=True,
+            outcome=FastPushOutcome(
+                ok=False, branch="feat/y", findings=[LeakFinding(gate="secrets", path="a.py", detail="token in a.py")]
+            ),
+        )
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push", lambda *a, **k: [pushed, refused]
+        )
+
+        data = json.loads(_call("handover", "create", json_output=True))
+
+        payload = SessionHandover.objects.get().payload
+        assert "Sub-agent wrap-up" in payload
+        assert "feat/x" in payload
+        assert "http://pr/1" in payload
+        assert "feat/y" in payload
+        assert "token in a.py" in payload, "what REMAINS is the half a receiver has to act on"
+        assert data["subagent_count"] == 2
+
+    def test_zero_agents_renders_an_explicit_line(self) -> None:
+        """An absent section reads exactly like a barrier that never ran — the reported symptom."""
+        _call("handover", "create", json_output=True)
+        payload = SessionHandover.objects.get().payload
+        assert "No in-flight sub-agent worktrees" in payload
+
+    def test_skipping_the_barrier_writes_no_section(self) -> None:
+        _call("handover", "create", drive_subagents=False, json_output=True)
+        assert "Sub-agent wrap-up" not in SessionHandover.objects.get().payload
+
+
+class TestHandoverReportsTheIntegerRowId(_PinnedSessionTestCase):
+    def test_json_carries_the_integer_primary_key(self) -> None:
+        data = json.loads(_call("handover", "create", to="target-Z", json_output=True))
+        row = SessionHandover.objects.get()
+        assert data["handover_id"] == row.pk
+        assert isinstance(data["handover_id"], int), "the issue asks for the row id, not a uuid"
+
+    def test_the_human_line_leads_with_the_row_id(self) -> None:
+        out = _call_human("handover", "create", to="target-Z")
+        assert f"hand-off #{SessionHandover.objects.get().pk}" in out
+
+
+class TestASecondCreateReportsWhatItAbsorbed(_PinnedSessionTestCase):
+    def test_updated_existing_and_the_prior_byte_count_are_reported(self) -> None:
+        first = json.loads(_call("handover", "create", body="FIRST STATE", to="target-Z", json_output=True))
+        assert first["updated_existing"] is False
+        assert first["previous_payload_bytes"] == 0
+
+        second = json.loads(_call("handover", "create", body="SECOND STATE", to="target-Z", json_output=True))
+
+        assert second["updated_existing"] is True
+        assert second["previous_payload_bytes"] > 0
+        assert second["handover_id"] == first["handover_id"]
+
+    def test_the_absorb_is_announced_on_the_human_channel(self) -> None:
+        _call("handover", "create", body="FIRST STATE", to="target-Z", json_output=True)
+        out = _call_human("handover", "create", body="SECOND STATE", to="target-Z")
+        assert "one row per session" in out
+        assert "absorbed" in out.lower()
+
+
+class TestCompletenessIsAssertedBeforeAnyOkLine(_PinnedSessionTestCase):
+    """Verify-by-re-read: the row is re-fetched from the DB, never trusted in memory (#4194)."""
+
+    def test_a_persisted_payload_that_lost_the_resolved_bytes_fails_loudly(self) -> None:
+        def _gut_the_row(_handover, _section) -> pathlib.Path:
+            SessionHandover.objects.update(payload="something else entirely")
+            return pathlib.Path("/tmp/mirror.md")
+
+        self._patch("teatree.core.management.commands.handover.append_subagent_section", _gut_the_row)
+
+        err = StringIO()
+        out = StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", to="target-Z", stdout=out, stderr=err, json_output=True)
+
+        assert excinfo.value.code == 1
+        data = json.loads(out.getvalue())
+        assert data["ok"] is False
+        assert data["completeness_ok"] is False
+        assert data["completeness_failures"], "the failure must name what is wrong with the row"
+        assert "OK " not in err.getvalue()
+
+    def test_a_healthy_row_reports_completeness_ok(self) -> None:
+        data = json.loads(_call("handover", "create", to="target-Z", json_output=True))
+        assert data["completeness_ok"] is True
+        assert data["payload_bytes"] > 0
 
 
 class TestHandoverWhoami(_PinnedSessionTestCase):

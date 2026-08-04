@@ -18,10 +18,20 @@ from typing import IO, Annotated, NoReturn, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.handover import PayloadSource, SelfAddressedHandoverError, claim_handovers, create_handover
+from teatree.core.handover import (
+    PayloadSource,
+    SelfAddressedHandoverError,
+    append_subagent_section,
+    claim_handovers,
+    create_handover,
+    render_subagent_section,
+)
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
 from teatree.core.machine_output import emit
+from teatree.core.session_identity import is_loop_runner_session
 from teatree.loop.session_identity import current_session_id
+
+_SUBAGENT_SECTION_HEADER = "## Sub-agent wrap-up"
 
 
 class Command(TyperCommand):
@@ -88,30 +98,56 @@ class Command(TyperCommand):
         handover, mirror, source = created.handover, created.mirror, created.source
         recipient = handover.to_session or "next-session"
         pushes = self._drive_subagents() if drive_subagents else []
+        if drive_subagents:
+            mirror = append_subagent_section(handover, render_subagent_section(pushes))
+        failures = self._completeness_failures(
+            pk=handover.pk, expected=created.resolved, drove_subagents=drive_subagents
+        )
         # A hand-off that reports OK while transferring nothing usable is worse
         # than one that fails: the operator moves on believing state was carried
         # over, and the receiving session claims a row that does not hold it
-        # (#3551, #3888). Only a VETTED source may report OK.
+        # (#3551, #3888). Only a VETTED source whose row survives the re-read may
+        # report OK, and the re-read happens BEFORE the line is written.
         empty = source is PayloadSource.EMPTY
-        status = "OK   " if source.is_vetted else "WARN "
-        human_lines = [f"{status} handed off to {recipient} ({source.value}); mirror written to {mirror}."]
+        ok = source.is_vetted and not failures
+        status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
+        human_lines = [
+            f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); mirror written to {mirror}."
+        ]
+        if created.updated_existing:
+            human_lines.append(
+                f"WARN  absorbed into this session's existing unclaimed hand-off, which already carried "
+                f"{created.previous_bytes} bytes — one row per session, and nothing it held was dropped."
+            )
         human_lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
+        human_lines += [f"ERROR completeness: {failure}" for failure in failures]
         emit(
             {
-                "ok": source.is_vetted,
+                "ok": ok,
+                "handover_id": handover.pk,
                 "payload_source": source.value,
                 "empty_payload": empty,
                 "from_session": handover.from_session,
                 "to_session": handover.to_session,
                 "parked_for_next": handover.is_for_next_session,
                 "mirror_path": str(mirror),
+                "updated_existing": created.updated_existing,
+                "previous_payload_bytes": created.previous_bytes,
+                "payload_bytes": len(handover.payload),
+                "subagent_count": len(pushes),
                 "subagent_pushes": [self._push_json(push) for push in pushes],
+                "completeness_ok": not failures,
+                "completeness_failures": failures,
             },
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
             human="\n".join(human_lines),
         )
+        if failures:
+            for failure in failures:
+                self.stderr.write(f"ERROR hand-off {handover.pk} is INCOMPLETE: {failure}")
+            raise SystemExit(1)
         if empty:
             self.stderr.write(
                 f"ERROR hand-off {handover.pk} carries NO durable state — no authored body, no PreCompact snapshot "
@@ -126,6 +162,42 @@ class Command(TyperCommand):
                 f"`--from-file <path>` (or `--body`) to hand over what this session actually knows."
             )
             raise SystemExit(3)
+
+    @staticmethod
+    def _completeness_failures(*, pk: int, expected: str, drove_subagents: bool) -> list[str]:
+        """What is wrong with the PERSISTED row, read fresh from the DB — ``[]`` when nothing is.
+
+        Verify-by-re-read: the in-memory row is what the command believes it wrote,
+        so checking it proves only that the command agrees with itself. Every check
+        here runs against a fresh fetch, before any success line is written.
+        """
+        from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        row = SessionHandover.objects.get(pk=pk)
+        unclaimed = SessionHandover.objects.filter(from_session=row.from_session, claimed_at__isnull=True).count()
+        checks = (
+            (isinstance(row.pk, int) and row.pk > 0, f"the row id {row.pk!r} is not a positive integer"),
+            (bool(row.payload.strip()), "the persisted payload is empty"),
+            (
+                not expected.strip() or expected.strip() in row.payload,
+                "the persisted payload does not carry the bytes this hand-off resolved",
+            ),
+            (row.claimed_at is None, f"the row was already claimed by {row.claimed_by!r} — nothing to deliver"),
+            (
+                not row.to_session or row.to_session != row.from_session,
+                "the row is addressed to its own author, so no session can claim it",
+            ),
+            (
+                not is_loop_runner_session(row.to_session),
+                f"the row is addressed to {row.to_session!r}, an id no receiving session can have",
+            ),
+            (
+                not drove_subagents or _SUBAGENT_SECTION_HEADER in row.payload,
+                "the sub-agent barrier ran but its per-agent returns are not in the payload",
+            ),
+            (unclaimed == 1, f"this session holds {unclaimed} unclaimed hand-offs — exactly one is allowed"),
+        )
+        return [failure for held, failure in checks if not held]
 
     def _refuse(self, msg: str, *, json_output: bool, code: int) -> "NoReturn":
         """Report a refusal on both channels and exit non-zero — never a silent no-op."""
