@@ -253,15 +253,30 @@ def resolve_target_session(explicit_to: str) -> str:
     is read via the same :class:`~teatree.core.models.LoopLease`
     ``t3-master`` slot the t3-master CLI uses, so a no-target hand-off
     lands on whichever session is actively driving the loop.
+
+    The ``t3 worker`` holds that slot as its own durable principal
+    (:data:`~teatree.core.session_identity.LOOP_RUNNER_SESSION_ID`, the literal
+    ``"loop-runner"``) rather than as a Claude session id. Addressing a hand-off
+    THERE is addressing it to an id no session can ever have:
+    :meth:`~teatree.core.session_handover_manager.SessionHandoverQuerySet.claimable_for`
+    admits only ``to_session == session_id`` or ``to_session == ""``, so such a row
+    is claimable by nobody and counts as pending forever. Four rows had accumulated
+    that way. The runner principal is therefore PARKED (``""``) — the next session to
+    start claims it — rather than written as a target, and the same normalisation
+    applies to an explicit ``--to loop-runner``.
     """
+    from teatree.core.session_identity import is_loop_runner_session  # noqa: PLC0415 — deferred: cheap, kept local
+
     if explicit_to:
-        return explicit_to
+        return "" if is_loop_runner_session(explicit_to) else explicit_to
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     # The t3-master owner slot (``T3_MASTER_SLOT``); the tach boundary forbids
     # importing it here, so the literal is repeated at this read site.
     status = LoopLease.objects.ownership_status("t3-master")
-    return status.owner_session if status.is_live else ""
+    if not status.is_live or is_loop_runner_session(status.owner_session):
+        return ""
+    return status.owner_session
 
 
 def mirror_path() -> Path:

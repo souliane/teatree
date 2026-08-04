@@ -35,11 +35,25 @@ class SelfAddressedHandoverError(ValueError):
 
 class SessionHandoverQuerySet(models.QuerySet):
     def create_handover(self, *, from_session: str, to_session: str, payload: str) -> "SessionHandover":
-        """Persist a new pending hand-off from ``from_session``.
+        """Persist the pending hand-off from ``from_session``, one row per session.
 
         ``to_session == ""`` targets "whichever session starts next". The
         row is the source of truth; the caller mirrors ``payload`` to the
         XDG file separately.
+
+        A session gets ONE unclaimed row, UPDATED in place. Repeated ``create``
+        calls used to insert siblings, so a session that learned something after
+        its first hand-off left the receiver several rows to reconcile — one
+        session produced three in fourteen minutes, each superseding the last in
+        prose ("Supersedes the previous addendum. Read all three."). The receiver
+        cannot diff prose, so the newest row is not reliably the whole story.
+        Updating keeps the latest payload authoritative and the queue one-deep per
+        author. ``created_at`` is refreshed so the parked tier's oldest-first
+        delivery order reflects the latest write rather than the first.
+
+        Only UNCLAIMED rows are reused: once a receiver has taken a hand-off, that
+        row is its delivered record and a later hand-off from the same session is
+        genuinely new work.
 
         A hand-off addressed to its own author is REFUSED
         (:class:`SelfAddressedHandoverError`): :meth:`claimable_for` admits only the
@@ -55,7 +69,14 @@ class SessionHandoverQuerySet(models.QuerySet):
                 "Name a different target, or omit it to park the hand-off for the next session."
             )
             raise SelfAddressedHandoverError(msg)
-        return self.create(from_session=from_session, to_session=to_session, payload=payload)
+        existing = self.filter(from_session=from_session, claimed_at__isnull=True).order_by("pk").first()
+        if existing is None:
+            return self.create(from_session=from_session, to_session=to_session, payload=payload)
+        existing.to_session = to_session
+        existing.payload = payload
+        existing.created_at = timezone.now()
+        existing.save(update_fields=["to_session", "payload", "created_at"])
+        return existing
 
     def claimable_for(self, session_id: str) -> "SessionHandoverQuerySet":
         """Unclaimed hand-offs this session may take over.
