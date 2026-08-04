@@ -12,7 +12,19 @@ Importing this module has the side effect of registering the commands;
 
 import typer
 
-from teatree.triage import DuplicateFinder, LabelSuggester
+from teatree.triage import DuplicateFinder, ForgeEnumerationError, LabelSuggester
+
+
+def _unknown(exc: ForgeEnumerationError) -> typer.Exit:
+    """Report an enumeration that did not run as UNKNOWN, and exit non-zero.
+
+    A verdict is a claim about a set that was enumerated. When the enumeration
+    failed the honest answer is UNKNOWN — never a clean "none found" the scan never
+    established, which is what let this command report a clear backlog while both
+    its ``gh`` calls had failed unauthenticated (#4135).
+    """
+    typer.echo(f"UNKNOWN  the scan did not run: {exc}. Nothing was examined — this is not a clean result.", err=True)
+    return typer.Exit(code=1)
 
 
 def label_issues(
@@ -22,7 +34,10 @@ def label_issues(
 ) -> None:
     """Suggest labels for unlabeled open issues by keyword-matching title and body."""
     suggester = LabelSuggester(repo)
-    suggestions = suggester.collect_suggestions()
+    try:
+        suggestions = suggester.collect_suggestions()
+    except ForgeEnumerationError as exc:
+        raise _unknown(exc) from exc
     if not suggestions:
         typer.echo("No labelable issues found.")
         return
@@ -50,7 +65,10 @@ def find_duplicates(
 ) -> None:
     """Flag pairs of open issues with near-identical titles."""
     finder = DuplicateFinder(repo, threshold=threshold)
-    matches = finder.find()
+    try:
+        matches = finder.find()
+    except ForgeEnumerationError as exc:
+        raise _unknown(exc) from exc
     if not matches:
         typer.echo("No potential duplicates found.")
         return
@@ -75,7 +93,10 @@ def triage_issues(
 
     scanner = TriageScanner(repo)
 
-    resolved = scanner.find_resolved()
+    try:
+        resolved = scanner.find_resolved()
+    except ForgeEnumerationError as exc:
+        raise _unknown(exc) from exc
     if resolved:
         typer.echo(f"\n{'=' * 60}\n Resolved-but-open ({len(resolved)} issue(s))\n{'=' * 60}")
         for r in resolved:
@@ -89,7 +110,10 @@ def triage_issues(
     else:
         typer.echo("No resolved-but-open issues found.")
 
-    stale = scanner.find_stale(days=stale_days)
+    try:
+        stale = scanner.find_stale(days=stale_days)
+    except ForgeEnumerationError as exc:
+        raise _unknown(exc) from exc
     if stale:
         typer.echo(f"\n{'=' * 60}\n Stale issues — unlabeled, inactive >{stale_days}d ({len(stale)})\n{'=' * 60}")
         for s in stale:

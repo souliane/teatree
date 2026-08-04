@@ -1,14 +1,52 @@
-"""Auto-labeling, duplicate detection, and triage for GitHub issues (see #49)."""
+"""Auto-labeling, duplicate detection, and triage for GitHub issues (see #49).
+
+Every verdict these scanners produce is a claim about a set they ENUMERATED, so a
+failed enumeration is not an empty one. Each ``gh`` read therefore raises
+:class:`ForgeEnumerationError` rather than degrading to ``[]`` — the fail-loud rule
+in ``skills/rules/SKILL.md`` § "External Read Failure Must Fail Loud, Never
+Silent-Empty". Returning ``[]`` on a failed read is what let ``t3 tool
+triage-issues`` report a clean sweep from a scan that never ran while a hand triage
+at the same moment found three resolved-but-open issues (#4135).
+"""
 
 import json
 import re
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from itertools import combinations
 
 from teatree.utils.run import run_allowed_to_fail
+
+
+class ForgeEnumerationError(RuntimeError):
+    """A forge read a verdict depends on did not run — the answer is UNKNOWN, not empty."""
+
+
+def _gh_json(args: list[str], *, what: str) -> list[dict]:
+    """Run a ``gh`` list command and parse its JSON, or raise.
+
+    The single chokepoint every enumeration here goes through, so no caller can
+    reintroduce the silent-empty by hand.
+    """
+    result = run_allowed_to_fail(["gh", *args], expected_codes=None)
+    if result.returncode != 0:
+        msg = f"{what} failed: {result.stderr.strip()}"
+        raise ForgeEnumerationError(msg)
+    return json.loads(result.stdout or "[]")
+
+
+#: The fields every open-issue enumeration here reads.
+_OPEN_ISSUE_FIELDS = "number,title,body,labels,updatedAt"
+
+
+def _open_issues(repo: str) -> list[dict]:
+    """Every open issue in *repo*, or raise :class:`ForgeEnumerationError`."""
+    return _gh_json(
+        ["issue", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json", _OPEN_ISSUE_FIELDS],
+        what="gh issue list",
+    )
+
 
 LABEL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "bug": ("bug", "error", "broken", "crash", "crashes", "fails", "failing", "regression"),
@@ -43,27 +81,7 @@ class LabelSuggester:
         self.repo = repo
 
     def collect_suggestions(self) -> list[LabelSuggestion]:
-        result = run_allowed_to_fail(
-            [
-                "gh",
-                "issue",
-                "list",
-                "--repo",
-                self.repo,
-                "--state",
-                "open",
-                "--limit",
-                "200",
-                "--json",
-                "number,title,body,labels",
-            ],
-            expected_codes=None,
-        )
-        if result.returncode != 0:
-            sys.stderr.write(f"gh issue list failed: {result.stderr.strip()}\n")
-            return []
-
-        issues = json.loads(result.stdout or "[]")
+        issues = _open_issues(self.repo)
         suggestions: list[LabelSuggestion] = []
         for issue in issues:
             if issue.get("labels"):
@@ -127,27 +145,7 @@ class DuplicateFinder:
         self.threshold = threshold
 
     def find(self) -> list[DuplicateMatch]:
-        result = run_allowed_to_fail(
-            [
-                "gh",
-                "issue",
-                "list",
-                "--repo",
-                self.repo,
-                "--state",
-                "open",
-                "--limit",
-                "200",
-                "--json",
-                "number,title,body,labels",
-            ],
-            expected_codes=None,
-        )
-        if result.returncode != 0:
-            sys.stderr.write(f"gh issue list failed: {result.stderr.strip()}\n")
-            return []
-
-        issues = json.loads(result.stdout or "[]")
+        issues = _open_issues(self.repo)
         normalized = [(issue["number"], issue["title"], normalize_title(issue["title"])) for issue in issues]
 
         matches: list[DuplicateMatch] = []
@@ -202,32 +200,9 @@ class TriageScanner:
     def __init__(self, repo: str) -> None:
         self.repo = repo
 
-    def _fetch_open_issues(self) -> list[dict]:
-        result = run_allowed_to_fail(
-            [
-                "gh",
-                "issue",
-                "list",
-                "--repo",
-                self.repo,
-                "--state",
-                "open",
-                "--limit",
-                "200",
-                "--json",
-                "number,title,body,labels,updatedAt",
-            ],
-            expected_codes=None,
-        )
-        if result.returncode != 0:
-            sys.stderr.write(f"gh issue list failed: {result.stderr.strip()}\n")
-            return []
-        return json.loads(result.stdout or "[]")
-
     def _fetch_merged_prs(self) -> list[dict]:
-        result = run_allowed_to_fail(
+        return _gh_json(
             [
-                "gh",
                 "pr",
                 "list",
                 "--repo",
@@ -239,18 +214,13 @@ class TriageScanner:
                 "--json",
                 "number,title,mergedAt",
             ],
-            expected_codes=None,
+            what="gh pr list",
         )
-        if result.returncode != 0:
-            return []
-        return json.loads(result.stdout or "[]")
 
     def find_resolved(self) -> list[ResolvedIssue]:
-        issues = self._fetch_open_issues()
-        if not issues:
-            return []
+        issues = _open_issues(self.repo)
         prs = self._fetch_merged_prs()
-        if not prs:
+        if not issues or not prs:
             return []
 
         issue_numbers = {i["number"] for i in issues}
@@ -289,10 +259,7 @@ class TriageScanner:
             )
 
     def find_stale(self, *, days: int = 30) -> list[StaleIssue]:
-        issues = self._fetch_open_issues()
-        if not issues:
-            return []
-
+        issues = _open_issues(self.repo)
         now = datetime.now(tz=UTC)
         stale: list[StaleIssue] = []
         for issue in issues:
