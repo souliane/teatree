@@ -60,7 +60,7 @@ from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_g
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
-from teatree.core.management.commands._test_plan.post import TestPlanMediaError
+from teatree.core.management.commands._test_plan.post import TestPlanMediaError as _TestPlanMediaError
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
@@ -633,7 +633,7 @@ class Command(PendingPrCommands, TyperCommand):
                 MrTestPlanPost(repo=repo_path, mr_iid=mr_iid, title=title, body=body, files=list(files or [])),
                 write_out=self.stdout.write,
             )
-        except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, TestPlanMediaError) as err:
+        except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, _TestPlanMediaError) as err:
             return {"error": str(err)}
 
     @command(name="post-evidence", hidden=True, deprecated=True)
