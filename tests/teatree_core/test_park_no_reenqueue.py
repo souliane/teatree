@@ -16,6 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.usage_window import maybe_park_for_active_window
+from teatree.core.headless_admission import HeadlessAdmission
 from teatree.core.managers_task_claim import _claimable_now_q
 from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.models.config_setting import ConfigSetting
@@ -31,8 +32,8 @@ class TestParkDoesNotReEnqueue(TestCase):
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         self.admit = mock.patch(
-            "teatree.core.headless_admission.headless_admission_denied_reason",
-            return_value=None,
+            "teatree.core.headless_admission.headless_admission_verdict",
+            return_value=HeadlessAdmission(expensive_denied=None, cheap_denied=None),
         )
         self.admit.start()
         self.addCleanup(self.admit.stop)

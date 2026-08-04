@@ -823,6 +823,18 @@ def _direct_allow(_ctx: GateContext) -> dict:
     return _bash("t3 teatree ticket list")
 
 
+# block-git-add-all (PreToolUse Bash): the whole-tree stage denies; naming the
+# paths allows.
+
+
+def _add_all_deny(_ctx: GateContext) -> dict:
+    return _bash("git add -A")
+
+
+def _add_all_allow(_ctx: GateContext) -> dict:
+    return _bash("git add src/app/models.py")
+
+
 # block-out-of-band-merge (PreToolUse Bash): a raw merge in a managed repo
 # denies; the same merge in an unmanaged repo allows.
 
@@ -1191,6 +1203,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_direct_deny,
         allow_input=_direct_allow,
+    ),
+    GateRow(
+        gate_id="block-git-add-all",
+        handler=router.handle_block_git_add_all,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_add_all_deny,
+        allow_input=_add_all_allow,
     ),
     GateRow(
         gate_id="block-out-of-band-merge",

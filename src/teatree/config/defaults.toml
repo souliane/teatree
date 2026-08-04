@@ -247,6 +247,7 @@ config_overwrite_gate_enabled = true # bool — refuse a blind overwrite of a co
 deny_circuit_breaker_enabled = true # bool — pause dispatch after repeated classifier denials instead of retrying
 deny_circuit_breaker_threshold = 3 # int — consecutive denials that trip the circuit breaker
 dispatch_quote_gate_on_task_create_enabled = false # bool — check quoting of a dispatch brief when the task is created
+git_add_all_gate_enabled = true # bool — refuse a whole-tree `git add -A` / `git add .` stage
 glab_stale_base_remote_gate_enabled = true # bool — refuse a merge-request create on a stale glab-base remote (glab no-ops)
 headless_authoring_gate_enabled = true # bool — refuse headless authoring outside a live worktree
 hook_validator_timeout_seconds = 60 # int — seconds a hook validator may run before it is abandoned
@@ -302,6 +303,7 @@ ticket_transition_prune_disabled = false # bool — stop pruning old ticket tran
 
 [teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated
+cheap_phase_admission_ceiling = 2 # int — how many cheap-class phase agents still run while the box is braked
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle

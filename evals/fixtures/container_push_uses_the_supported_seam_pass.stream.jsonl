@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-container_push_uses_the_supported_seam-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Container shell, so the supported seam resolves the token and disables the prompt."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 push"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

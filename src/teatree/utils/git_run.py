@@ -12,7 +12,7 @@ import contextlib
 import os
 from collections.abc import Iterator
 
-from teatree.utils.run import run_allowed_to_fail, run_checked
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
 
 
 def run(*, repo: str = ".", args: list[str]) -> str:
@@ -27,6 +27,22 @@ def run_strict(*, repo: str = ".", args: list[str]) -> str:
 
 def check(*, repo: str = ".", args: list[str]) -> bool:
     return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None).returncode == 0
+
+
+def run_with_status(
+    *,
+    repo: str = ".",
+    args: list[str],
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> CompletedProcess[str]:
+    """The lenient runner for a caller that must tell a failed command from an empty answer.
+
+    :func:`run` collapses both onto ``""``, which is fatal for a remote probe:
+    "the ref is not there" and "the remote could not be reached" demand opposite
+    conclusions, and only the return code separates them.
+    """
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env, timeout=timeout)
 
 
 def git_env_without_overrides() -> dict[str, str]:
@@ -46,12 +62,16 @@ def git_env_without_overrides() -> dict[str, str]:
 #: rather than an indefinite block. ``GIT_ASKPASS=""`` neutralises an inherited GUI
 #: askpass helper — git skips an empty program name — which is what leaves
 #: ``GIT_TERMINAL_PROMPT=0`` free to fail the prompt; ``GCM_INTERACTIVE`` is the same
-#: switch for Git Credential Manager.
+#: switch for Git Credential Manager. ``LC_ALL=C`` keeps git's diagnostics in the one
+#: language every caller that CLASSIFIES them was written against — under a translated
+#: locale a marker match silently stops firing, and a classifier degrades to its
+#: catch-all without ever reporting that it could not read the answer.
 NON_INTERACTIVE_GIT_ENV: dict[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "",
     "SSH_ASKPASS": "",
     "GCM_INTERACTIVE": "never",
+    "LC_ALL": "C",
 }
 
 
