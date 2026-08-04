@@ -79,6 +79,19 @@ class TestIsSubagentWorktree:
     def test_agent_dir_elsewhere_is_not(self, tmp_path: Path) -> None:
         assert not _is_subagent_worktree(tmp_path / "somewhere" / "agent-abc")
 
+    def test_a_worktree_under_a_session_job_dir_is_a_subagent(self, tmp_path: Path) -> None:
+        """The five stranded worktrees in the #4194 incident all lived here, unseen by the barrier."""
+        assert _is_subagent_worktree(tmp_path / ".claude" / "jobs" / "0e077e62" / "tmp" / "wt4101")
+
+    def test_a_job_dirs_direct_child_is_a_subagent(self, tmp_path: Path) -> None:
+        assert _is_subagent_worktree(tmp_path / ".claude" / "jobs" / "0e077e62" / "wt")
+
+    def test_the_job_dir_itself_is_not_a_worktree(self, tmp_path: Path) -> None:
+        assert not _is_subagent_worktree(tmp_path / ".claude" / "jobs" / "0e077e62")
+
+    def test_a_jobs_dir_outside_claude_is_not(self, tmp_path: Path) -> None:
+        assert not _is_subagent_worktree(tmp_path / "elsewhere" / "jobs" / "0e077e62" / "tmp" / "wt")
+
 
 class TestHasPendingWork:
     def test_dirty_tree_is_pending(self, clone: Path, tmp_path: Path) -> None:

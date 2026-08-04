@@ -11,6 +11,11 @@ degradations here left no trace at all: an unimportable Django and a raising
 ``claim_handovers`` each set ``payload = ""``, so a queue that never drained was
 indistinguishable from a queue that was always empty. Every degradation now logs
 a WARNING naming the session and the cause, then carries on exactly as before.
+
+The same conflation had a second, delivering half (#4194): the mirror was read
+whenever the payload was falsy, so a DB that was read PERFECTLY and returned
+nothing took the file path too. The mirror is now the bootstrap transport for a
+process that cannot reach the DB, and nothing else.
 """
 
 import contextlib
@@ -37,14 +42,21 @@ def claim_session_handover(session_id: str) -> str | None:
 
     The zero-copy-paste takeover: a fresh / non-owner session picks up the
     hand-offs targeted AT it or parked for "next session" from the
-    ``SessionHandover`` DB table (the source of truth), marks them claimed so
-    they inject exactly once, and returns the payload to merge into the
-    SessionStart ``additionalContext``. Falls back to the XDG file mirror when
-    the DB is unreachable (a brand-new session whose process predates a readable
-    DB), then to ``None``.
+    ``SessionHandover`` DB table, marks them claimed so they inject exactly once,
+    and returns the payload to merge into the SessionStart ``additionalContext``.
+
+    The DB is the DELIVERY SURFACE, so the XDG file mirror is read only when the
+    DB was UNREACHABLE — never merely because the drain came back empty (#4194).
+    Keying the fallback on an empty payload conflated "the queue is empty" with
+    "the queue could not be read": on the measured incident the drain succeeded
+    and returned nothing (all four rows were addressed to a slot alias no session
+    can ever have), and the mirror's single ``latest.md`` pointer then delivered
+    one stale hand-off while those four rows stayed unclaimed. A readable DB that
+    yields nothing now delivers nothing and does not touch the mirror at all.
     """
     payload = ""
     from_session = ""
+    db_readable = False
     if not session_id:
         logger.warning("session hand-off drain skipped: no session id on the SessionStart payload")
         return None
@@ -55,21 +67,29 @@ def claim_session_handover(session_id: str) -> str | None:
             payload, from_session = claim_handovers(session_id)
         except Exception:
             logger.warning(
-                "session hand-off drain FAILED for session %s — failing open to the file mirror; "
-                "any parked hand-off stays unclaimed until this is fixed",
+                "session hand-off drain FAILED for session %s — the DB is UNREACHABLE, failing open to the "
+                "file mirror; any parked hand-off stays unclaimed until this is fixed",
                 session_id,
                 exc_info=True,
             )
             payload = ""
+        else:
+            db_readable = True
     else:
         logger.warning(
             "session hand-off drain SKIPPED for session %s: teatree/Django is not importable by this hook "
-            "interpreter, so the SessionHandover queue cannot be read; falling back to the file mirror",
+            "interpreter, so the SessionHandover queue is UNREACHABLE; falling back to the file mirror",
             session_id,
         )
 
-    if not payload:
+    if not db_readable:
         payload, from_session = claim_session_handover_from_file()
+        if payload:
+            logger.warning(
+                "session hand-off for session %s was delivered from the FILE MIRROR because the DB was "
+                "UNREACHABLE — the mirror carries at most one hand-off, so any other pending row is still parked",
+                session_id,
+            )
     if not payload:
         return None
     origin = f" from session `{from_session}`" if from_session else ""
