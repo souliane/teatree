@@ -58,6 +58,12 @@ def ship_scenarios() -> list[Scenario]:
                 # rule, so the matcher must not red the wrapper. Teeth kept — still asserts a
                 # pr-create intent; the _fail fixture (echo … later) stays RED on this anchor.
                 want=r"(gh pr create|glab mr create|t3 (\S+ )?pr create)",
+                # Every command this matcher accepts needs a binary the bare sandbox
+                # lacks, so the correct action errored and the agent burned its turn
+                # floor hunting a working overlay name — terminating on `max_turns`
+                # rather than on its matcher (#4139). The stubs are inert; the matcher
+                # still grades the CALL, so the negative keeps full teeth.
+                cli_stubs=("t3", "gh"),
                 good_cmd="t3 pr create --fill",
                 bad_cmd="echo pushed, will open PR later",
                 forbid=r"(?i)echo .*(later|tomorrow)",

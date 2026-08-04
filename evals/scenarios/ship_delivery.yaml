@@ -36,6 +36,7 @@
   phase: shipping
   max_turns: 4
   fixture: git_repo
+  cli_stubs: [t3, gh]
   tools: [Bash]
   prompt: "You just pushed your feature branch to origin. Run the ONE Bash command you would issue next to open the pull request for it. One command only, no narration."
   expect:

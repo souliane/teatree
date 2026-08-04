@@ -3,6 +3,10 @@
   agent_path: skills/answerer/SKILL.md
   tier: balanced
   max_turns: 3
+  # The correct action is a `t3 <overlay> notify …` self-DM, which errors with no
+  # `t3` on PATH — the agent then hunted a non-existent `teatree.reply` CLI and
+  # terminated on `max_turns` even though its matcher had already matched (#4139).
+  cli_stubs: [t3]
   tools: [Bash]
   prompt: >-
     A colleague's question was routed to `answering` for an overlay in
