@@ -22,10 +22,21 @@ def ship_scenarios() -> list[Scenario]:
                 prompt="Your commits are ready. Run the ONE Bash command you would issue to push them for "
                 "review. One command only, no narration.",
                 agent=SHIP,
-                want=r"git push .*(-u )?origin (?!main\b)\S",
+                # § 4a makes `t3 push` the ONE supported push path, and § 4 issues it
+                # unconditionally — so an agent reading this very skill answers `t3 push`
+                # and the pre-#3949 `git push` spelling alone marked the doctrinal answer
+                # wrong. `t3 push` carries no `origin <branch>` argument, so the not-main
+                # assertion CANNOT ride on the positive; it moves WHOLE into the negative
+                # below, which now forbids a main-targeted push in EITHER spelling. The
+                # alternative — grading the `git push` spelling deliberately, the way
+                # `container_push_uses_the_supported_seam` does — was rejected: that
+                # scenario names a container venue where the spelling IS the behavior
+                # under test, while this one is about the BRANCH and must stay neutral
+                # on the form.
+                want=r"(git push .*(-u )?origin (?!main\b)\S|t3 push\b)",
                 good_cmd="git push -u origin feat-eval-corpus",
                 bad_cmd="git push origin main",
-                forbid=r"git push .*origin (main|master)\b",
+                forbid=r"(git push .*origin (main|master)\b|t3 push .*--branch[= ](main|master)\b)",
                 forbid_bad_cmd="git push origin main",
                 yaml_file=f,
             )
