@@ -145,3 +145,33 @@ class TestAStoppedStackStillDispatches:
 
         assert proc.returncode == 0
         assert DISPATCHED_EXEC in proc.stdout
+
+
+class TestTheOneOffFallbackAnnouncesItself:
+    """The fallback runs the CLI but not the worker's environment (souliane/teatree#4076).
+
+    Its container never runs the entrypoint, so git has no credential helper there and a
+    push fails to authenticate. Said only afterwards, that arrives as an opaque rc=1.
+    """
+
+    def test_the_one_off_names_itself_and_its_missing_credentials_before_dispatching(
+        self, wrapper: Path, home: Path, tmp_path: Path
+    ) -> None:
+        proc = _run(wrapper, home, tmp_path)
+
+        assert DISPATCHED_ONE_OFF in proc.stdout
+        assert "one-off" in proc.stderr
+        assert "credential" in proc.stderr
+
+    def test_the_notice_stays_off_stdout_so_a_json_consumer_is_unaffected(
+        self, wrapper: Path, home: Path, tmp_path: Path
+    ) -> None:
+        proc = _run(wrapper, home, tmp_path)
+
+        assert "one-off" not in proc.stdout
+
+    def test_an_exec_into_the_running_worker_says_nothing(self, wrapper: Path, home: Path, tmp_path: Path) -> None:
+        proc = _run(wrapper, home, tmp_path, STUB_RUNNING_ID="abc123")
+
+        assert DISPATCHED_EXEC in proc.stdout
+        assert "one-off" not in proc.stderr
