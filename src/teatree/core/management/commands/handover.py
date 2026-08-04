@@ -5,7 +5,8 @@ the ``t3-master`` slot for the default target. ``create`` persists a
 :class:`~teatree.core.models.SessionHandover` row (the delivery surface),
 mirrors it to the XDG file, runs the sub-agent barrier and folds its returns
 into the persisted payload, then re-reads the row and asserts it complete
-before reporting anything; ``whoami`` prints this session's id;
+before reporting anything — unless the payload resolves EMPTY, in which case
+the barrier still runs and NO row is written; ``whoami`` prints this session's id;
 ``claim-on-start`` is the SessionStart-hook entry point that atomically
 claims an unclaimed hand-off for a starting session and returns its payload.
 
@@ -23,18 +24,16 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.core.handover import (
     PayloadSource,
     SelfAddressedHandoverError,
-    append_subagent_section,
     claim_handovers,
     create_handover,
-    render_subagent_section,
+    resolve_handover,
 )
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
+from teatree.core.handover_wrapup import SUBAGENT_SECTION_HEADER, append_subagent_section, render_subagent_section
 from teatree.core.machine_output import emit
 from teatree.core.models import SessionHandover
 from teatree.core.session_identity import is_loop_runner_session
 from teatree.loop.session_identity import current_session_id
-
-_SUBAGENT_SECTION_HEADER = "## Sub-agent wrap-up"
 
 
 class Command(TyperCommand):
@@ -80,11 +79,14 @@ class Command(TyperCommand):
         failure this command is supposed to make impossible.
 
         No ``--to`` → the live ``t3-master`` slot holder; if none, parked
-        for whichever session starts next. Always persists the
-        :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
-        directive #8, drives every in-flight sub-agent worktree through
-        leak-gated fast-push so their work is committed/pushed/PR'd BEFORE the
-        orchestrator terminates them.
+        for whichever session starts next. Per directive #8, every in-flight
+        sub-agent worktree is driven through leak-gated fast-push so their work is
+        committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
+        barrier runs on the refused path too, since a session with nothing to hand
+        over is the one most likely to be stranding a sub-agent's work.
+
+        A resolve that finds NOTHING writes nothing: no row, no mirror, and no
+        mutation of this author's existing unclaimed row.
         """
         from_session = current_session_id()
         if not from_session:
@@ -92,6 +94,16 @@ class Command(TyperCommand):
             self._refuse(msg, json_output=json_output, code=2)
 
         authored = self._read_authored(from_file=from_file, body=body, json_output=json_output)
+        resolution = resolve_handover(from_session=from_session, explicit_to=to, authored=authored)
+
+        # The barrier runs BEFORE the write on every path, including the refused one:
+        # rescuing a sub-agent's unpushed work is orthogonal to whether this session
+        # has a payload, and a session with nothing to hand over is the profile most
+        # likely to be stranding some. Do not "restore" persist-first — an EMPTY
+        # resolve has no state to protect, only a dead row to avoid writing.
+        pushes = self._drive_subagents() if drive_subagents else []
+        if resolution.resolved.source is PayloadSource.EMPTY:
+            self._refuse_empty(from_session, pushes=pushes, json_output=json_output)
 
         try:
             created = create_handover(from_session=from_session, explicit_to=to, authored=authored)
@@ -100,7 +112,6 @@ class Command(TyperCommand):
 
         handover, mirror, source = created.handover, created.mirror, created.source
         recipient = handover.to_session or "next-session"
-        pushes = self._drive_subagents() if drive_subagents else []
         if drive_subagents:
             mirror = append_subagent_section(handover, render_subagent_section(pushes))
         failures = self._completeness_failures(
@@ -111,7 +122,6 @@ class Command(TyperCommand):
         # over, and the receiving session claims a row that does not hold it
         # (#3551, #3888). Only a VETTED source whose row survives the re-read may
         # report OK, and the re-read happens BEFORE the line is written.
-        empty = source is PayloadSource.EMPTY
         ok = source.is_vetted and not failures
         status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
         human_lines = [
@@ -129,7 +139,8 @@ class Command(TyperCommand):
                 "ok": ok,
                 "handover_id": handover.pk,
                 "payload_source": source.value,
-                "empty_payload": empty,
+                "empty_payload": False,
+                "row_written": True,
                 "from_session": handover.from_session,
                 "to_session": handover.to_session,
                 "parked_for_next": handover.is_for_next_session,
@@ -150,12 +161,6 @@ class Command(TyperCommand):
         if failures:
             for failure in failures:
                 self.stderr.write(f"ERROR hand-off {handover.pk} is INCOMPLETE: {failure}")
-            raise SystemExit(1)
-        if empty:
-            self.stderr.write(
-                f"ERROR hand-off {handover.pk} carries NO durable state — no authored body, no PreCompact snapshot "
-                f"for session {from_session}, and no in-flight worktrees, tickets or PRs to derive one from."
-            )
             raise SystemExit(1)
         if not source.is_vetted:
             self.stderr.write(
@@ -193,12 +198,50 @@ class Command(TyperCommand):
                 f"the row is addressed to {row.to_session!r}, an id no receiving session can have",
             ),
             (
-                not drove_subagents or _SUBAGENT_SECTION_HEADER in row.payload,
+                not drove_subagents or SUBAGENT_SECTION_HEADER in row.payload,
                 "the sub-agent barrier ran but its per-agent returns are not in the payload",
             ),
             (unclaimed == 1, f"this session holds {unclaimed} unclaimed hand-offs — exactly one is allowed"),
         )
         return [failure for held, failure in checks if not held]
+
+    def _refuse_empty(self, from_session: str, *, pushes: list[SubagentPush], json_output: bool) -> "NoReturn":
+        """Refuse a hand-off with nothing to transfer — writing NO row, NO mirror, nothing.
+
+        A zero-agent barrier result is a negative fact ABOUT a hand-off, not a
+        hand-off: it exists so that, within a row that carries state, an absent
+        wrap-up cannot be mistaken for a barrier that never ran. On its own it
+        transfers nothing a receiver can act on, yet a row carrying it arrives under
+        the ``SESSION HAND-OFF RECEIVED`` directive and consumes this author's single
+        unclaimed slot, so the next REAL hand-off absorbs behind it.
+
+        The barrier's own returns still travel — on stdout, stderr and in the JSON —
+        because the rescue happened whether or not a payload existed.
+        """
+        human_lines = ["ERROR hand-off REFUSED — no durable state to hand over; NO row was written."]
+        human_lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
+        emit(
+            {
+                "ok": False,
+                "handover_id": None,
+                "payload_source": PayloadSource.EMPTY.value,
+                "empty_payload": True,
+                "row_written": False,
+                "mirror_path": "",
+                "subagent_count": len(pushes),
+                "subagent_pushes": [self._push_json(push) for push in pushes],
+            },
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(human_lines),
+        )
+        self.stderr.write(
+            f"ERROR hand-off carries NO durable state — no authored body, no PreCompact snapshot "
+            f"for session {from_session}, and no in-flight worktrees, tickets or PRs to derive one from. "
+            f"No row was written, so nothing will be delivered."
+        )
+        raise SystemExit(1)
 
     def _refuse(self, msg: str, *, json_output: bool, code: int) -> "NoReturn":
         """Report a refusal on both channels and exit non-zero — never a silent no-op."""

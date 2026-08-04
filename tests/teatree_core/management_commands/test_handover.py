@@ -12,8 +12,9 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.fast_push import FastPushOutcome, LeakFinding
+from teatree.core.handover import claim_handovers
 from teatree.core.handover_orchestration import SubagentPush
-from teatree.core.models import LoopLease, SessionHandover
+from teatree.core.models import LoopLease, SessionHandover, Ticket
 
 
 def _call(*args: str, **kwargs) -> str:
@@ -315,12 +316,92 @@ class TestLoopWhoamiAndOwnerDisplay(_PinnedSessionTestCase):
 
 
 class TestEmptyHandoverIsRefused(_PinnedSessionTestCase):
-    """A hand-off with nothing durable to transfer fails loud, never reports OK (#3551)."""
+    """A hand-off with nothing durable to transfer fails loud, never reports OK (#3551).
 
-    def test_exits_non_zero_when_no_snapshot_and_no_live_state(self) -> None:
+    And it writes NOTHING (#4194): a zero-agent barrier result is a negative fact
+    ABOUT a hand-off, not a hand-off. A row carrying only "no sub-agents had pending
+    work" arrives under the ``SESSION HAND-OFF RECEIVED`` directive while transferring
+    nothing a receiver can act on, and it consumes the author's single unclaimed slot.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
         (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").unlink()
 
+    def _refused(self, *args: str, **kwargs) -> tuple[dict, str]:
+        """Run an EMPTY ``create``, assert it exits 1, and return its JSON + stderr."""
+        out, err = StringIO(), StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", *args, stdout=out, stderr=err, json_output=True, **kwargs)
+        assert excinfo.value.code == 1
+        return json.loads(out.getvalue()), err.getvalue()
+
+    def test_exits_non_zero_when_no_snapshot_and_no_live_state(self) -> None:
         with pytest.raises(SystemExit) as excinfo:
             _call("handover", "create", json_output=True)
 
         assert excinfo.value.code == 1
+
+    def test_an_empty_hand_off_writes_no_row(self) -> None:
+        data, err = self._refused()
+
+        assert SessionHandover.objects.count() == 0, "an empty hand-off is not durable state; nothing is persisted"
+        assert data["ok"] is False
+        assert data["handover_id"] is None
+        assert data["row_written"] is False
+        assert data["mirror_path"] == ""
+        assert list(self.tmp_path.rglob("handover-*.md")) == [], "no row means no mirror either"
+        assert "No row was written" in err
+
+    def test_an_empty_hand_off_delivers_nothing_to_a_receiver(self) -> None:
+        """The end-to-end statement: a receiving session is handed nothing at all."""
+        self._refused()
+
+        assert claim_handovers("some-receiving-session") == ("", "")
+
+    def test_an_empty_hand_off_leaves_an_existing_unclaimed_row_untouched(self) -> None:
+        SessionHandover.objects.create_handover(from_session="this-session", to_session="first", payload="REAL STATE")
+        before = SessionHandover.objects.get()
+
+        self._refused(to="other")
+
+        after = SessionHandover.objects.get()
+        assert after.payload == before.payload
+        assert after.to_session == before.to_session
+        assert after.created_at == before.created_at
+
+    def test_an_empty_hand_off_still_runs_the_barrier_and_reports_it(self) -> None:
+        """Rescuing stranded sub-agent work is orthogonal to whether a payload exists."""
+        outcome = FastPushOutcome(ok=True, branch="feat/x", committed=True, pushed=True, pr_url="http://pr/1")
+        push = SubagentPush(worktree=pathlib.Path("/wt/agent-x"), branch="feat/x", driven=True, outcome=outcome)
+        self._patch("teatree.core.management.commands.handover.drive_subagents_to_fast_push", lambda *a, **k: [push])
+
+        data, _err = self._refused()
+
+        assert data["subagent_count"] == 1
+        assert data["subagent_pushes"][0]["pr_url"] == "http://pr/1"
+        assert SessionHandover.objects.count() == 0
+
+
+class TestTheJsonAndExitCodesAreOtherwiseUnchanged(_PinnedSessionTestCase):
+    """Control test — GREEN before AND after; a red here means a contract broke."""
+
+    def _code(self, *args: str, **kwargs) -> int:
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", *args, stdout=StringIO(), stderr=StringIO(), **kwargs)
+        return int(excinfo.value.code or 0)
+
+    def test_an_authored_body_exits_zero(self) -> None:
+        assert json.loads(_call("handover", "create", body="AUTHORED", json_output=True))["ok"] is True
+
+    def test_a_live_state_payload_is_unvetted_and_exits_three(self) -> None:
+        (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").unlink()
+        Ticket.objects.create(issue_url="https://github.com/o/r/issues/1", short_description="real work")
+
+        assert self._code(json_output=True) == 3
+
+    def test_a_self_addressed_target_exits_one(self) -> None:
+        assert self._code(to="this-session", json_output=True) == 1
+
+    def test_both_payload_inputs_exit_two(self) -> None:
+        assert self._code(body="B", from_file="/nonexistent", json_output=True) == 2

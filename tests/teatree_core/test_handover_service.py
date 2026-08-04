@@ -15,8 +15,8 @@ from django.test import TestCase
 
 from teatree.core import handover
 from teatree.core.fast_push import FastPushOutcome, LeakFinding
-from teatree.core.handover import append_subagent_section, render_subagent_section
 from teatree.core.handover_orchestration import SubagentPush
+from teatree.core.handover_wrapup import append_subagent_section, render_subagent_section
 from teatree.core.models import LoopLease, SessionHandover
 
 
