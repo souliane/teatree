@@ -204,7 +204,16 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # lands at the root beside forge_push.py, mirroring speak_cleaning.py beside speak.py and
 # notify_targets.py beside notify.py; no existing subpackage owns it (merge/ is the keystone
 # transition, not a push seam).
-PINNED_FLAT_CORE_MODULES = 108
+# 109: +handover_wrapup.py (#4194) — the sub-agent barrier's returns: the stored per-agent
+# union, its merge, its renderer and the one-block upsert onto the row. Carved out of
+# handover.py, which crossed the module-health public-function ceiling once the resolve/write
+# split landed. It answers "what does each agent still owe", a different question from the
+# payload/target resolution and XDG mirror the hub keeps. It lands at the root beside
+# handover.py and handover_orchestration.py, the two flat leaves this concern already occupies
+# by the #75 decision above, mirroring forge_push_refs.py beside forge_push.py and
+# speak_cleaning.py beside speak.py; no existing subpackage owns the hand-off (merge/ is the
+# keystone transition, not the hand-off seam).
+PINNED_FLAT_CORE_MODULES = 109
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
