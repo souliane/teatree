@@ -38,6 +38,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypedDict
 
+from teatree.loop.preset_resolution import resolve_active_preset
+
 
 class StandingDirectivePayload(TypedDict):
     """The cross-harness directive contract — what ``t3 loop directives --json`` prints."""
@@ -242,8 +244,6 @@ def _self_pump_paused() -> bool:
     to silently suppressing it. Only a positively-resolved away preset brakes.
     """
     try:
-        from teatree.loop.preset_resolution import resolve_active_preset  # noqa: PLC0415 — deferred: DB-free import
-
         active = resolve_active_preset()
         return bool(active is not None and active.preset.pauses_self_pump)
     except Exception:  # noqa: BLE001 — an unresolvable preset degrades to delivering.

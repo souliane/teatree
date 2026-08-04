@@ -182,8 +182,11 @@ class TestEnforceLoopOnPromptGating:
         # marker, so it registers no reactive slot.
         handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
         out = capsys.readouterr().out
-        assert "standing directives" in out
+        assert "[standing-golden-rule]" in out
         assert "reactive infra loops" not in out
+        # And nothing that would make the session wake itself: autoload alone
+        # engages, it does not arm (#256).
+        assert "/loop " not in out
 
     def test_marked_session_emits_reactive_slot_registrations(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -540,11 +543,12 @@ class TestLoopAutoLoadOptInGate:
         handle_enforce_loop_on_prompt({"session_id": "colleague"})
         out = capsys.readouterr().out
         # The session engaged teatree (the marker) but never armed its loops, so
-        # it registers no reactive slot and claims no ownership. The standing
-        # directives (#4166) are per-session behaviour keyed on ENGAGEMENT, not on
-        # loop-arming, so they are deliberately still delivered here.
+        # it registers no reactive slot and claims no ownership. The zero-turn
+        # standing rule (#4166) is keyed on ENGAGEMENT rather than loop-arming, so
+        # it is deliberately still delivered — and the self-waking slots are not.
         assert "reactive infra loops" not in out
-        assert "standing directives" in out
+        assert "[standing-golden-rule]" in out
+        assert "/loop " not in out
         assert _read_loop_registry() == {}
 
     def test_prompt_nag_fires_with_opt_in(

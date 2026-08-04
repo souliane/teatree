@@ -22,6 +22,7 @@ from teatree.loop.standing_directives import (
     STANDING_DIRECTIVES,
     StandingDirective,
     StandingDirectivePayload,
+    _self_pump_paused,
     golden_rule_cadence_seconds,
     override_prompt_name,
     pr_board_cadence_seconds,
@@ -281,7 +282,7 @@ class TestThePresetBrake(TestCase):
         return ActivePreset(preset=mode, layer="override", reason="test", until=None)
 
     def test_a_paused_self_pump_drops_the_waking_slots_and_keeps_the_zero_turn_rule(self) -> None:
-        with mock.patch("teatree.loop.preset_resolution.resolve_active_preset", return_value=self._away_preset()):
+        with mock.patch("teatree.loop.standing_directives.resolve_active_preset", return_value=self._away_preset()):
             resolved = resolve_standing_directives()
             budget = self_woken_turns_per_hour()
 
@@ -292,17 +293,21 @@ class TestThePresetBrake(TestCase):
         mode = Mode(name="reachable", defers_questions=False, pauses_self_pump=False)
         active = ActivePreset(preset=mode, layer="schedule", reason="test", until=None)
 
-        with mock.patch("teatree.loop.preset_resolution.resolve_active_preset", return_value=active):
+        with mock.patch("teatree.loop.standing_directives.resolve_active_preset", return_value=active):
+            braked = _self_pump_paused()
             resolved = resolve_standing_directives()
 
+        assert braked is False
         assert len(resolved) == len(STANDING_DIRECTIVES)
 
     def test_a_raising_preset_resolver_fails_open_to_delivering(self) -> None:
         # Polarity: never suppress a rule because the brake could not be read.
         with mock.patch(
-            "teatree.loop.preset_resolution.resolve_active_preset",
+            "teatree.loop.standing_directives.resolve_active_preset",
             side_effect=RuntimeError("no preset table"),
         ):
+            braked = _self_pump_paused()
             resolved = resolve_standing_directives()
 
+        assert braked is False
         assert len(resolved) == len(STANDING_DIRECTIVES)
