@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
+from django.db.models.lookups import LessThan
 from django.utils import timezone
 
 from teatree.config import worker_is_quiescing
@@ -78,6 +80,57 @@ logger = logging.getLogger(__name__)
 #: the row on its next pass. Erring long would trade a melt for a stall; erring short
 #: reopens the burst window this bounds.
 ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
+
+
+def _cheap_headless_q() -> Q:
+    """Every HEADLESS row of the cheap phase class, whichever spelling it was stored with.
+
+    The lane's membership test, held apart from any one question about it so the seat
+    predicates below share a single hop to the phase vocabulary — one intra-core edge
+    hidden from tach's acyclic guard, not one per question.
+    """
+    from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+    return Q(execution_target=task_model.ExecutionTarget.HEADLESS, phase__in=cheap_phase_spellings())
+
+
+def _cheap_lane_occupancy_q(now: datetime) -> Q:
+    """The rows holding a seat in the cheap lane at *now*.
+
+    One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
+    ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
+    conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
+    bound at all.
+    """
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+    return _cheap_headless_q() & (
+        Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
+        | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
+    )
+
+
+def _cheap_lane_under_ceiling(now: datetime, ceiling: int) -> LessThan:
+    """A ``WHERE`` term true only while the cheap lane has a free seat at *now*.
+
+    ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
+    ``NULL < ceiling`` is not true — an empty lane would refuse every admission.
+    """
+    task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+    occupied = (
+        task_model.objects.filter(_cheap_lane_occupancy_q(now))
+        .order_by()
+        .values(_lane=models.Value(1))
+        .annotate(seats=models.Count("*"))
+        .values("seats")[:1]
+    )
+    return LessThan(
+        Coalesce(models.Subquery(occupied, output_field=models.IntegerField()), models.Value(0)),
+        ceiling,
+    )
 
 
 class TicketQuerySet(models.QuerySet):
@@ -407,35 +460,52 @@ class TaskQuerySet(models.QuerySet):
         memory across its loop; the one-row-at-a-time ``post_save`` cannot, so the bound
         has to live where both can see it. :data:`ADMITTED_INFLIGHT_WINDOW` bounds how
         long an unclaimed admission keeps its seat, so a runner that died holding one
-        cannot wedge the lane shut. Filters on stored spellings, so a row written as
-        ``review`` counts like ``reviewing``.
+        cannot wedge the lane shut.
         """
-        from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
+        return self.filter(_cheap_lane_occupancy_q(timezone.now())).count()
 
+    def cheap_lane_seats_released(self) -> int:
+        """Cheap rows the seat window took back while they were still unclaimed.
+
+        The number an operator cannot otherwise see: releasing an unclaimed seat keeps a
+        dead runner from wedging the lane shut, but it fires precisely when the runner
+        backlog outruns :data:`ADMITTED_INFLIGHT_WINDOW` — a saturated box — and the
+        re-admission that follows drifts the live agent count above the ceiling. Non-zero
+        means the bound is soft right now.
+        """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        now = timezone.now()
-        return (
-            self.filter(
-                execution_target=task_model.ExecutionTarget.HEADLESS,
-                phase__in=cheap_phase_spellings(),
-            )
-            .filter(
-                models.Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
-                | models.Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
-            )
-            .count()
-        )
+        return self.filter(
+            _cheap_headless_q(),
+            status=task_model.Status.PENDING,
+            admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
+        ).count()
 
-    def record_admission(self, task_pk: int) -> None:
-        """Stamp one row as handed to the runner — the write that makes an admission countable.
+    def record_admission(self, task_pk: int, *, cheap_ceiling: int | None = None) -> bool:
+        """Take *task_pk*'s seat in the admission lane — ``True`` when this call got it.
+
+        The bound is arbitrated INSIDE this write, not between the caller's probe and it
+        (#4125). A probe is stale the moment it returns, so two processes reaching a
+        chokepoint in one window each saw room and each admitted, bounding the lane at
+        ceiling plus however many raced. Re-checking occupancy in the ``WHERE`` makes the
+        loser match no row and be refused instead.
+
+        A row still holding a live seat is refused too: it is already in the runner's
+        hand, so a second booking is a duplicate dispatch. ``cheap_ceiling`` of ``None``
+        is UNBOUNDED — the kill-switch, fail-open and zero-ceiling paths, where the
+        governor has no opinion on the lane's width.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
         auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
         inside it would re-enter the receiver, and the stamp must not be able to re-arm
         the dispatch it is recording.
         """
-        self.filter(pk=task_pk).update(admitted_at=timezone.now())
+        now = timezone.now()
+        unseated = models.Q(admitted_at__isnull=True) | models.Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
+        seat = self.filter(unseated, pk=task_pk)
+        if cheap_ceiling is not None:
+            seat = seat.filter(_cheap_lane_under_ceiling(now, cheap_ceiling))
+        return bool(seat.update(admitted_at=now))
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

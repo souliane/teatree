@@ -302,15 +302,15 @@ def _auto_enqueue_headless_task(
     # The governor brakes the headless lane at its admission chokepoint (F9), per the
     # row's phase COST CLASS (#4098) — the same classification AND the same lane bound
     # the drain applies, so the two chokepoints cannot diverge on which work a braked box
-    # still admits, nor on how much of it. The task stays PENDING; the (also-gated) drain
-    # re-admits it once the governor clears.
-    if admission.refuse(int(instance.pk), instance.phase, at="auto-enqueue"):
+    # still admits, nor on how much of it. The seat is taken before the dispatch, so a
+    # racing chokepoint cannot enqueue against a bound this one already spent (#4125).
+    # The task stays PENDING; the (also-gated) drain re-admits it once the governor clears.
+    if not admission.admit(int(instance.pk), instance.phase, at="auto-enqueue"):
         return
     from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         execute_headless_task.enqueue(int(instance.pk), instance.phase)
-        admission.record_admitted(int(instance.pk), instance.phase)
         logger.info("Auto-enqueued headless task %s (phase=%s)", instance.pk, instance.phase)
     except Exception:
         logger.exception("Failed to auto-enqueue headless task %s", instance.pk)

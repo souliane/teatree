@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from teatree.agents.usage_window import maybe_park_for_active_window
 from teatree.core.headless_admission import HeadlessAdmission
+from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.managers_task_claim import _claimable_now_q
 from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.models.config_setting import ConfigSetting
@@ -100,6 +101,10 @@ class TestParkDoesNotReEnqueue(TestCase):
         # suppression is keyed on the FUTURE instant rather than on the field being set.
         task = self._dispatching_task()
         task.park(not_before=timezone.now() - dt.timedelta(minutes=1))
+        # A re-arm is a LATER instant, so the row's admission seat has aged out by then too.
+        # Within ADMITTED_INFLIGHT_WINDOW the re-enqueue is a duplicate dispatch (#4125), which
+        # is a second suppression this control is not measuring.
+        Task.objects.filter(pk=task.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW)
         with mock.patch("teatree.core.tasks.execute_headless_task") as job:
             task.save(update_fields=["status", "not_before"])
         job.enqueue.assert_called_once_with(task.pk, task.phase)
