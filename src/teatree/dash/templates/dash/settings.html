@@ -92,7 +92,7 @@
             {% endfor %}
           </ul>
         {% else %}
-          <p>{{ import_result.written|length }} row(s) {% if import_applied %}written{% else %}would be written{% endif %}; {{ import_result.skipped_default|length }} equal the shipped default (no row).</p>
+          <p>{{ import_result.written|length }} row(s) {% if import_applied %}written{% else %}would be written{% endif %}; {{ import_result.unchanged|length }} already at that value; {{ import_result.skipped_default|length }} equal the shipped default (no row).</p>
           {% if import_result.safety_posture_keys and not import_applied %}
             <p class="banner-red">{{ import_result.safety_posture_keys|length }} safety-posture row(s) —
               <span class="mono">{{ import_result.safety_posture_keys|join:", " }}</span>.
@@ -100,7 +100,7 @@
           {% endif %}
           <ul>
             {% for row in import_result.written %}
-              <li class="mono">{{ row.key }} = {{ row.value }} [{{ row.scope|default:"global" }}]{% if row.is_safety_posture %} <span class="banner-red">safety-posture</span>{% endif %}</li>
+              <li class="mono">{{ row.key }} = {{ row.toml_value }} [{{ row.scope|default:"global" }}]{% if row.is_safety_posture %} <span class="banner-red">safety-posture</span>{% endif %}</li>
             {% endfor %}
           </ul>
         {% endif %}

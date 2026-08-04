@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 
 from teatree.core.cleanup.cleanup_emit import banned_terms_status
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr
+from teatree.core.forge_push import push_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -175,7 +176,12 @@ def salvage_item(request: SalvageRequest, hooks: SalvageHooks) -> SalvageResult:
 
 
 def _gh_push(repo: str, branch: str) -> bool:
-    return run_allowed_to_fail(["git", "-C", repo, "push", "-u", "origin", branch], expected_codes=None).returncode == 0
+    """Publish the salvage branch over the one credential-supplying push path.
+
+    Salvage deletes the source only once the branch is on the forge, so a push that
+    silently lacked a credential is the shape that loses the work it was salvaging.
+    """
+    return push_branch(repo=repo, branch=branch).ok
 
 
 def _gh_open_pr(repo: str, branch: str, target: str) -> str:
@@ -203,7 +209,7 @@ def _gh_verify_open(repo: str, branch: str) -> bool:
 def default_salvage_hooks(*, source_branch: str, delete: DeleteFn) -> SalvageHooks:
     """Wire the real ``git`` + ``gh`` side effects for the ``workspace salvage`` CLI.
 
-    ``push`` is ``git push -u origin``; ``open_pr`` is ``gh pr create --fill``;
+    ``push`` is :func:`~teatree.core.forge_push.push_branch`; ``open_pr`` is ``gh pr create --fill``;
     ``verify_landed`` is ``gh pr list --state open`` (the PR is on the forge);
     ``delete_source`` is supplied by the caller (branch delete, or full worktree
     teardown) since only it knows what kind of item the source is. ``gh`` absent /

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Self, TypedDict
 from urllib.parse import urlsplit
 
+from teatree.core.forge_push_refs import BranchRef, local_tip
 from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.git_run import run as git_read
 from teatree.utils.run import CompletedProcess, TimeoutExpired, run_allowed_to_fail
@@ -311,12 +312,12 @@ class ObservedRemoteRef:
     """
 
     remote: str
-    branch: str
+    branch: BranchRef
     reachable: bool
     sha: str
 
     @classmethod
-    def observe(cls, *, repo: str, remote: str, branch: str, env: dict[str, str]) -> Self:
+    def observe(cls, *, repo: str, remote: str, branch: BranchRef, env: dict[str, str]) -> Self:
         # The remote NAME carries config `ls-remote <url>` would drop (`uploadpack`,
         # `proxy`), so it stays the target unless a `pushurl` makes the two endpoints
         # genuinely different — in which case only the push url proves anything.
@@ -325,7 +326,7 @@ class ObservedRemoteRef:
         try:
             result = run_with_status(
                 repo=repo,
-                args=["ls-remote", target, f"refs/heads/{branch}"],
+                args=["ls-remote", target, branch.qualified],
                 env=env,
                 timeout=VERIFY_TIMEOUT_SECONDS,
             )
@@ -341,17 +342,17 @@ class ObservedRemoteRef:
             return PushVerdict(
                 PushFailure.UNVERIFIABLE,
                 f"git push exited 0 but '{self.remote}' could not be read back, so nothing confirms "
-                f"'{self.branch}' landed — treat it as unlanded and re-run `t3 push` once the remote answers",
+                f"'{self.branch.name}' landed — treat it as unlanded and re-run `t3 push` once the remote answers",
             )
         if not self.sha:
             return PushVerdict(
                 PushFailure.NOT_ON_REMOTE,
-                f"git push exited 0 but '{self.remote}' has no refs/heads/{self.branch} — nothing landed",
+                f"git push exited 0 but '{self.remote}' has no {self.branch.qualified} — nothing landed",
             )
         if self.sha != local_sha:
             return PushVerdict(
                 PushFailure.REMOTE_SHA_MISMATCH,
-                f"git push exited 0 but '{self.remote}' holds refs/heads/{self.branch} at {self.sha}, "
+                f"git push exited 0 but '{self.remote}' holds {self.branch.qualified} at {self.sha}, "
                 f"not the local tip {local_sha} — fetch and compare before re-running `t3 push`",
             )
         return PushVerdict(PushFailure.NONE, "")
@@ -455,35 +456,17 @@ class GitPushError:
         )
 
 
-def _current_branch(repo: str) -> str:
-    branch = git_read(repo=repo, args=["rev-parse", "--abbrev-ref", "HEAD"])
-    return "" if branch == "HEAD" else branch
-
-
-def _resolved_branch(repo: str, branch: str) -> str:
-    """The plain branch NAME *branch* denotes — the form the rest of this module assumes.
-
-    ``git push`` accepts ``HEAD`` and a fully-qualified ``refs/heads/x`` as well as a
-    bare name, but the post-condition has to look up ``refs/heads/<name>`` on the remote
-    and would find nothing under either of the other two spellings. Normalising here is
-    what keeps them working rather than being refused or, worse, reported unlanded.
-    """
-    if not branch or branch == "HEAD":
-        return _current_branch(repo)
-    return branch.removeprefix("refs/heads/")
-
-
-def _push_argv(repo: str, remote: str, branch: str, *, force_with_lease: bool) -> list[str]:
-    argv = ["git", "-C", repo, "push", "--set-upstream", remote, branch]
+def _push_argv(repo: str, remote: str, branch: BranchRef, *, force_with_lease: bool) -> list[str]:
+    argv = ["git", "-C", repo, "push", "--set-upstream", remote, branch.qualified]
     if force_with_lease:
         argv.insert(4, "--force-with-lease")
     return argv
 
 
-def _refusal(verdict: PushVerdict, *, branch: str, remote: str, credential: ForgeCredential) -> PushOutcome:
+def _refusal(verdict: PushVerdict, *, branch: BranchRef, remote: str, credential: ForgeCredential) -> PushOutcome:
     return PushOutcome(
         ok=False,
-        branch=branch,
+        branch=branch.name,
         remote=remote,
         credential_source=credential.source,
         detail=scrub_token(verdict.detail, credential.token),
@@ -491,29 +474,17 @@ def _refusal(verdict: PushVerdict, *, branch: str, remote: str, credential: Forg
     )
 
 
-def _local_tip(*, repo: str, branch: str) -> str:
-    """The sha *branch* points at, or ``""`` when it resolves nothing.
-
-    ``git rev-parse`` ECHOES an unresolvable argument back on stderr and exits 128, so
-    a lenient reader hands back the branch NAME as if it were a sha — the same
-    echoed-answer trap souliane/teatree#4088 is about. The return code is the only
-    honest signal, so this reads it.
-    """
-    result = run_with_status(repo=repo, args=["rev-parse", branch])
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _config_verdict(*, repo: str, remote: str, branch: str) -> PushVerdict:
+def _config_verdict(*, repo: str, remote: str, branch: BranchRef) -> PushVerdict:
     """The repo-config reason this push must not even be attempted; ``NONE`` when there is none."""
-    if not branch:
+    if not branch.name:
         return PushVerdict(
             PushFailure.CONFIG,
             "refusing to push a detached HEAD — check out a branch first, or pass --branch",
         )
-    if not _local_tip(repo=repo, branch=f"refs/heads/{branch}"):
+    if not local_tip(repo=repo, ref=branch.qualified):
         return PushVerdict(
             PushFailure.CONFIG,
-            f"no branch '{branch}' in {repo} — check the spelling, or drop --branch to push the "
+            f"no branch '{branch.name}' in {repo} — check the spelling, or drop --branch to push the "
             "checked-out one. git resolves the refspec before it runs any hook, so this never "
             "reached the pre-push gate",
         )
@@ -549,7 +520,7 @@ def push_branch(
     """
     credential = resolve_forge_credential()
     repo_path = str(repo)
-    resolved_branch = _resolved_branch(repo_path, branch)
+    resolved_branch = BranchRef.resolve(repo=repo_path, branch=branch)
     config = _config_verdict(repo=repo_path, remote=remote, branch=resolved_branch)
     if config.failure:
         return _refusal(config, branch=resolved_branch, remote=remote, credential=credential)
@@ -559,7 +530,7 @@ def push_branch(
         env["GH_TOKEN"] = credential.token
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
-    local_tip = _local_tip(repo=repo_path, branch=resolved_branch)
+    tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.qualified)
     try:
         result = run_allowed_to_fail(
             _push_argv(repo_path, remote, resolved_branch, force_with_lease=force_with_lease),
@@ -583,13 +554,13 @@ def push_branch(
         )
 
     observed = ObservedRemoteRef.observe(repo=repo_path, remote=remote, branch=resolved_branch, env=env)
-    landing = observed.verdict(local_tip)
+    landing = observed.verdict(tip_before_push)
     if landing.failure:
         return _refusal(landing, branch=resolved_branch, remote=remote, credential=credential)
 
     return PushOutcome(
         ok=True,
-        branch=resolved_branch,
+        branch=resolved_branch.name,
         remote=remote,
         credential_source=credential.source,
         pushed_sha=observed.sha,

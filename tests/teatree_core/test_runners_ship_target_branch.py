@@ -95,7 +95,7 @@ class TestShipTargetsTheConfiguredBranch(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value="souliane/teatree"),
             patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),

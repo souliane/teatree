@@ -35,6 +35,7 @@ from teatree.core.evidence import test_plan_validation as _validation
 from teatree.core.management.commands._test_plan import post as _test_plan
 from teatree.core.management.commands._test_plan import render as _render
 from teatree.core.management.commands._test_plan import scenario as _scenario
+from teatree.core.management.commands._test_plan.render import PlanState, render_body
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -98,7 +99,7 @@ class TestRenderBody:
         local: _render.SideState | None = None,
         mrs: list[str] | None = None,
         steps: dict[str, list[str]] | None = None,
-    ) -> _render.TestPlanState:
+    ) -> PlanState:
         default_mrs = [
             "https://gitlab.com/org/client/-/merge_requests/6331",
             "https://gitlab.com/org/product/-/merge_requests/7585",
@@ -116,7 +117,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {"client": "aaaa", "product": "bbbb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
         assert "<!-- t3-e2e-data " in body
         assert "## Test Plan — My feature" in body
@@ -146,7 +147,7 @@ class TestRenderBody:
                 },
             },
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "### Login" in body
         assert "| Dev | Local |" in body
         # Video row first: dev video left, local video right.
@@ -167,7 +168,7 @@ class TestRenderBody:
                 },
             },
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "| — | ![v](/uploads/s/loc.webm) |" in body
         assert "| — | ![i](/uploads/s/l1.png) |" in body
 
@@ -179,7 +180,7 @@ class TestRenderBody:
                 "workflows": {"Login": self._embedded()},
             },
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "⚠️ Not yet on dev: client!6331 (unmerged), product!7585 (draft) — expected gap." in body
 
     def test_empty_video_row_is_omitted_when_neither_side_has_a_video(self) -> None:
@@ -189,7 +190,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](/uploads/s/x.png)",))}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "| — | — |" not in body  # the empty video row is dropped, not rendered blank
         # The screenshot pair row still renders (dev absent → em-dash left, local image right).
         assert "| — | ![i](/uploads/s/x.png) |" in body
@@ -206,12 +207,12 @@ class TestRenderBody:
                 "workflows": {"Login": self._embedded(video="![v](/uploads/s/loc.webm)")},
             },
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "| — | ![v](/uploads/s/loc.webm) |" in body
 
     def test_mrs_line_omitted_when_no_mrs(self) -> None:
         state = self._state(mrs=[], local={"commits": {}, "workflows": {"Wf": self._embedded(images=("![i](u)",))}})
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "Repos & MRs:" not in body
 
     def test_test_plan_steps_render_numbered_above_the_table(self) -> None:
@@ -219,7 +220,7 @@ class TestRenderBody:
             local={"commits": {}, "workflows": {"Login": self._embedded(images=("![i](/uploads/s/l1.png)",))}},
             steps={"Login": ["Open the app", "Click the Login button", "Expect the dashboard"]},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "**How to test:**" in body
         assert "1. Open the app" in body
         assert "2. Click the Login button" in body
@@ -237,7 +238,7 @@ class TestRenderBody:
             local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](u)",))}},
             steps={},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "**How to test:**" not in body
 
     def test_backend_only_workflow_suppresses_the_empty_dev_local_table(self) -> None:
@@ -249,7 +250,7 @@ class TestRenderBody:
             local={"commits": {}, "workflows": {}},
             steps={"Backend fee removal": ["Load the offer serializer", "Actual: ✅ fee line absent from payload"]},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "### Backend fee removal" in body
         assert "1. Load the offer serializer" in body
         assert "2. Actual: ✅ fee line absent from payload" in body
@@ -262,7 +263,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {}, "workflows": {"Backend claim": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "### Backend claim" in body
         assert "| Dev | Local |" not in body
 
@@ -276,7 +277,7 @@ class TestRenderBody:
             },
             steps={"Backend fee removal": ["Load the serializer", "Actual: ✅ absent"]},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "### UI login" in body
         assert "| Dev | Local |" in body  # the media-bearing workflow keeps its table
         assert "| — | ![i](/uploads/s/l1.png) |" in body
@@ -288,7 +289,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {"client": "aabbcc"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "Local tested: [client `aabbcc`](https://gitlab.com/org/client/-/commit/aabbcc)" in body
 
     def test_commit_sha_without_matching_mr_falls_back_to_bare_codespan(self) -> None:
@@ -297,7 +298,7 @@ class TestRenderBody:
             mrs=["https://gitlab.com/org/client/-/merge_requests/6331"],
             local={"commits": {"backend": "ddeeff"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "Local tested: backend `ddeeff`" in body
         assert "](https://gitlab.com/org/backend/-/commit/" not in body
 
@@ -306,7 +307,7 @@ class TestRenderBody:
             mrs=["https://github.com/owner/product/pull/7585"],
             local={"commits": {"product": "c0ffee"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "[product `c0ffee`](https://github.com/owner/product/commit/c0ffee)" in body
 
     def test_reconcile_line_shows_same_when_dev_and_local_match(self) -> None:
@@ -314,7 +315,7 @@ class TestRenderBody:
             dev={"commits": {"client": "aabb"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
             local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "Dev ± Local: client: = same commit" in body
 
     def test_reconcile_line_shows_differ_with_both_shas(self) -> None:
@@ -322,7 +323,7 @@ class TestRenderBody:
             dev={"commits": {"client": "ddee"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
             local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "Dev ± Local: client: ≠ dev `ddee` vs local `aabb`" in body
 
     def test_reconcile_line_omitted_when_no_repo_on_both_sides(self) -> None:
@@ -330,7 +331,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _test_plan.render_body(state)
+        body = render_body(state)
         assert "Dev ± Local:" not in body
 
 
@@ -354,7 +355,7 @@ class TestMergeState:
         )
 
     def test_dev_only_run_preserves_existing_local_column(self) -> None:
-        prior: _render.TestPlanState = {
+        prior: PlanState = {
             "ticket": "8521",
             "title": "t",
             "mrs": [],
@@ -382,7 +383,7 @@ class TestMergeState:
     def test_steps_less_rerun_preserves_prior_steps(self) -> None:
         # A workflow's steps were recorded on a prior run; a later run that omits
         # steps must NOT erase them (workflow-level, persisted across re-renders).
-        prior: _render.TestPlanState = {
+        prior: PlanState = {
             "ticket": "8521",
             "title": "t",
             "mrs": [],
@@ -433,7 +434,7 @@ class TestMergeState:
             },
         )
         local_state["ticket"] = "8521"
-        body_after_local = _test_plan.render_body(local_state)
+        body_after_local = render_body(local_state)
         recovered = _test_plan.parse_state_blob(body_after_local)
 
         dev_state = _test_plan.merge_state(
@@ -446,7 +447,7 @@ class TestMergeState:
             },
         )
         dev_state["ticket"] = "8521"
-        final = _test_plan.render_body(dev_state)
+        final = render_body(dev_state)
         # Both columns are present and paired.
         assert "| ![v](/uploads/s/d.webm) | ![v](/uploads/s/l.webm) |" in final
         assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in final
@@ -1184,7 +1185,7 @@ class TestPureHelpers:
     """The marker / state-blob / existing-note helpers are independently testable."""
 
     def test_marker_round_trip(self) -> None:
-        marker = _render.test_plan_marker(ticket_id="8521")
+        marker = _render.render_ticket_marker(ticket_id="8521")
         assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
         assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 
@@ -1355,7 +1356,7 @@ class TestRetractEvidence(_EvidenceTestBase):
 
 
 class TestBrowserClickFirstTemplate(TestCase):
-    def _state(self, *, steps: list[str] | None = None) -> _render.TestPlanState:
+    def _state(self, *, steps: list[str] | None = None) -> PlanState:
         return {
             "ticket": "8521",
             "title": "Login flow",
@@ -1403,7 +1404,7 @@ class TestBrowserClickFirstTemplate(TestCase):
 class TestBrowserClickFirstStepsWithoutMedia(TestCase):
     """A steps-only manifest (steps, no screenshots/video) must still render the steps."""
 
-    def _steps_only_state(self) -> _render.TestPlanState:
+    def _steps_only_state(self) -> PlanState:
         return {
             "ticket": "8521",
             "title": "Login flow",
@@ -1446,7 +1447,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
         assert "2. Click Login" in visible
 
     def test_media_and_steps_both_render(self) -> None:
-        state: _render.TestPlanState = {
+        state: PlanState = {
             "ticket": "8521",
             "title": "Login flow",
             "mrs": [],
@@ -1462,7 +1463,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
 
 
 class TestLinkApiTemplate(TestCase):
-    def _state(self) -> _render.TestPlanState:
+    def _state(self) -> PlanState:
         return {
             "ticket": "8521",
             "title": "API check",
@@ -1498,7 +1499,7 @@ class TestLinkApiTemplate(TestCase):
 class TestLinkApiStepsRendered(TestCase):
     """A steps-only ``link-api`` manifest (steps, no link/code embeds) must render the steps."""
 
-    def _steps_only_state(self) -> _render.TestPlanState:
+    def _steps_only_state(self) -> PlanState:
         return {
             "ticket": "8521",
             "title": "API check",
@@ -1542,7 +1543,7 @@ class TestLinkApiStepsRendered(TestCase):
         assert "2. Assert 201" in visible
 
     def test_renders_steps_alongside_link_and_code(self) -> None:
-        state: _render.TestPlanState = {
+        state: PlanState = {
             "ticket": "8521",
             "title": "API check",
             "mrs": [],
@@ -1590,10 +1591,8 @@ class TestScenarioPlanTemplate(TestCase):
         scenario.update(over)
         return scenario
 
-    def _state(
-        self, *, scenarios: list[_scenario.Scenario], intro: str = "", environment: str = ""
-    ) -> _render.TestPlanState:
-        state: _render.TestPlanState = {
+    def _state(self, *, scenarios: list[_scenario.Scenario], intro: str = "", environment: str = "") -> PlanState:
+        state: PlanState = {
             "ticket": "1025",
             "title": "Dark mode toggle",
             "mrs": [],
@@ -1690,7 +1689,7 @@ class TestScenarioPlanTemplate(TestCase):
 
 class TestNeverEmptyRender(TestCase):
     def test_raises_on_empty_state(self) -> None:
-        state: _render.TestPlanState = {
+        state: PlanState = {
             "ticket": "8521",
             "title": "Empty",
             "mrs": [],
@@ -1829,7 +1828,7 @@ class TestTemplateThroughManifest(TestCase):
 class TestTemplateRoundTrip(TestCase):
     """A second ``post-test-plan`` re-reads the blob; new fields must survive."""
 
-    def _seeded_state(self) -> _render.TestPlanState:
+    def _seeded_state(self) -> PlanState:
         return {
             "ticket": "8521",
             "title": "Login flow",
@@ -1850,7 +1849,7 @@ class TestTemplateRoundTrip(TestCase):
             "blocked_workflows": {"Checkout": "Not deployed yet"},
         }
 
-    def _reread(self, state: _render.TestPlanState) -> _render.TestPlanState:
+    def _reread(self, state: PlanState) -> PlanState:
         return _render.parse_state_blob(_render.render_body(state))
 
     def test_template_survives_round_trip(self) -> None:
@@ -1873,7 +1872,7 @@ class TestTemplateRoundTrip(TestCase):
 
 class TestCaptureMatrixRendersBlocked(TestCase):
     def test_capture_matrix_renders_blocked_workflow(self) -> None:
-        state: _render.TestPlanState = {
+        state: PlanState = {
             "ticket": "8521",
             "title": "Login flow",
             "mrs": [],

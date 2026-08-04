@@ -16,10 +16,11 @@ import tomlkit
 from django.test import TestCase
 from tomlkit import items as tomlkit_items
 
-from teatree.core.config_seed_tables import (
+from teatree.core.config_interchange.seed_tables import (
     SeedFieldDisposition,
     classify_seed_rows,
     emit_seed_tables,
+    holds_value,
     live_seed_rows,
     unseeded_entries,
     write_seed_field,
@@ -115,3 +116,28 @@ class TestWriteSeedField(TestCase):
         with pytest.raises(Loop.DoesNotExist):
             write_seed_field("loops", "no-such-loop", "delay_seconds", 60)
         assert Loop.objects.count() == before
+
+
+class TestHoldsValue(TestCase):
+    """Would this write change anything? — the second half of a seed field's disposition.
+
+    ``classify_seed_field`` compares against what ``defaults.toml`` SHIPS, so a field an
+    operator tuned reads ``write`` on the way back in even when the live row is where the
+    exported value came from. That made a box's own export look like a set of changes
+    (souliane/teatree#4147).
+    """
+
+    def _entry(self, value: ConfigValue) -> SeedFieldDisposition:
+        return SeedFieldDisposition("loops", _SEEDED_LOOP, "delay_seconds", value, "write", "")
+
+    def test_a_write_the_live_row_already_holds_changes_nothing(self) -> None:
+        write_seed_field("loops", _SEEDED_LOOP, "delay_seconds", 4242)
+        assert holds_value(self._entry(4242))
+
+    def test_a_write_that_would_move_the_row_does_change_something(self) -> None:
+        write_seed_field("loops", _SEEDED_LOOP, "delay_seconds", 4242)
+        assert not holds_value(self._entry(60))
+
+    def test_an_unseeded_row_holds_nothing(self) -> None:
+        Loop.objects.filter(name=_SEEDED_LOOP).delete()
+        assert not holds_value(self._entry(60))

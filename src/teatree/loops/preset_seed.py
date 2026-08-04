@@ -43,7 +43,6 @@ class PresetSpec:
     name: str
     description: str
     entries: dict[str, bool]
-    availability_mode: str = ""
     # The intrinsic availability posture (#61 merge, design §7-A). ``present_sensitive``
     # defaults True so any scheduled away honours a live keystroke (today's behaviour).
     defers_questions: bool = False
@@ -75,7 +74,6 @@ def default_preset_specs(path: Path | None = None) -> tuple[PresetSpec, ...]:
             name=name,
             description=entry["description"],
             entries={loop: bool(value) for loop, value in entry.get("entries", {}).items()},
-            availability_mode=entry.get("availability_mode", ""),
             defers_questions=entry.get("defers_questions", False),
             pauses_self_pump=entry.get("pauses_self_pump", False),
             presence_sensitive=entry.get("presence_sensitive", True),
@@ -137,7 +135,6 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
             defaults={
                 "entries": spec.entries,
                 "description": spec.description,
-                "availability_mode": spec.availability_mode,
                 "defers_questions": spec.defers_questions,
                 "pauses_self_pump": spec.pauses_self_pump,
                 "presence_sensitive": spec.presence_sensitive,

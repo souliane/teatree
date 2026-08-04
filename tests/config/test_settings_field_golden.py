@@ -216,6 +216,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "task_sweep_disabled",
         "task_sweep_recheck_interval_hours",
         "target_branch",
+        "test_worker_ram_gb",
         "ticket_budget_max_cost_usd",
         "ticket_transition_prune_disabled",
         "timezone",

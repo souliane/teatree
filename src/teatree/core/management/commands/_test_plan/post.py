@@ -1,7 +1,7 @@
 """Host-facing orchestration for ``e2e post-test-plan`` (teatree #272, #2165).
 
 The ORM + code-host side of the one-note-per-ticket test-plan model. The pure
-string/JSON layer — the manifest parse, the persisted :class:`TestPlanState`,
+string/JSON layer — the manifest parse, the persisted :class:`PlanState`,
 the merge, and the side-by-side render — lives in :mod:`.render`;
 this module resolves the ticket, uploads the artifacts (embedding the relative
 ``/uploads/<secret>/<file>`` reference GitLab claims on save; #2165), merges
@@ -26,9 +26,9 @@ from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostErro
 from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.core.management.commands._shared_code_host import NO_CODE_HOST_MESSAGE
 from teatree.core.management.commands._test_plan.render import (
+    PlanState,
     SideManifest,
     TestPlanManifest,
-    TestPlanState,
     TestPlanValidationError,
     WorkflowEmbed,
     empty_state,
@@ -82,6 +82,8 @@ class TestPlanResolutionError(TestPlanValidationError):
     failures alike — both must exit non-zero with no host side effect.
     """
 
+    __test__ = False  # not a pytest test class (name starts with 'Test')
+
 
 class TestPlanMediaError(TestPlanValidationError):
     """An uploaded artifact would not render in the posted note.
@@ -94,11 +96,13 @@ class TestPlanMediaError(TestPlanValidationError):
     failure burns no on-behalf approval and writes no note.
     """
 
+    __test__ = False  # not a pytest test class (name starts with 'Test')
+
 
 @dataclass(frozen=True, slots=True)
 class ExistingNote:
     comment_id: int
-    state: TestPlanState
+    state: PlanState
 
 
 def find_existing_note(comments: list[RawAPIDict], *, ticket_id: str) -> ExistingNote | None:
@@ -138,6 +142,8 @@ class TestPlanPost:
     upload target must follow the note, never the manifest's MRs / CI project.
     """
 
+    __test__ = False  # not a pytest test class (name starts with 'Test')
+
     issue_url: str
     ticket_id: str
     title: str
@@ -157,6 +163,8 @@ class TestPlanFlags:
     is the user-authorised escape for the stills-only gate (a manifest with
     screenshots but no video on any present side is refused without it).
     """
+
+    __test__ = False  # not a pytest test class (name starts with 'Test')
 
     ticket: str = ""
     manifest: str = ""

@@ -393,3 +393,30 @@ class TestShipPreviewEmitsRequiredSections(TestCase):
             _, _, description = ship_preview(ticket, ticket.worktrees.first())
         # Standard What/Why already present; no overlay required section to add.
         assert "## Configuration" not in description
+
+
+class TestPreviewAndShipReadTheSameCommit(TestCase):
+    """#4103: the preflight must validate the title the ship will actually use.
+
+    ``ShipExecutor._build_pr_spec`` skips merge commits when deriving the subject;
+    a preview that still read the raw ``HEAD`` would validate a merge subject the
+    ship never ships — the two drifting again, which is what
+    ``resolve_pr_title`` exists to prevent.
+    """
+
+    def test_preview_derives_the_subject_past_merge_commits(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/4103")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(_pr_preview.git, "last_commit_message", return_value=("feat: real work", "")) as read,
+        ):
+            ship_preview(ticket, ticket.worktrees.first())
+
+        assert read.call_args.kwargs["skip_merges"] is True
