@@ -211,6 +211,10 @@ Group root — forces sub-commands to be addressed by name.
 | `record-e2e-run` | Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
+## `loop_directives`
+
+Print the standing directives with their resolved cadence and text (read-only; #4166).
+
 ## `loop_dispatch`
 
 | Subcommand | Description |

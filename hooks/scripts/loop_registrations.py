@@ -24,6 +24,20 @@ too, so the hook, the ``/t3:health`` skill, and the CLI can never disagree: reac
 slots come from ``teatree.loop.loop_cadences.reactive_slot_directives`` (the
 ``/loop`` directive).
 
+**Standing directives** (#4166) — the SECOND, differently-scoped emission this
+module owns. The reactive slots above are singleton infrastructure, so only the
+loop OWNER registers them; the standing directives are per-session behaviour, so
+EVERY engaged session gets them (the SDK lane excluded — a factory worker is
+FSM-governed and has no user-request channel). They keep their own
+``<session>.directives-pending`` emit-once marker for that reason.
+
+This half is the Claude-plugin ADAPTER of a harness-neutral model: policy, text
+and cadence all live in :mod:`teatree.loop.standing_directives`, and this module
+only renders whatever that seam resolves as ``/loop <duration>`` registrations.
+Another harness delivers the same three behaviours by reading
+``t3 loop directives --json`` and writing its own adapter, changing no teatree
+code — which is why no directive text and no cadence value may appear here.
+
 Crash-proof / fail-open / silent: any failure to bootstrap Django or query the seam
 yields ZERO directives, so the handler stays silent — never an exception into the
 30s ``UserPromptSubmit`` hook. Reactive-slot resolution is a pure ``os.environ``
@@ -32,7 +46,10 @@ read, so the three infra loops still register even when the DB is unreachable.
 
 import re
 import sys
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:  # the contract is OWNED by layer 1; typed here, never redefined
+    from teatree.loop.standing_directives import StandingDirectivePayload
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # imports and a test patching a helper here operate on ONE module object.
@@ -48,6 +65,8 @@ class _Writable(Protocol):
 # worker's subprocess-tick argv (``python -m teatree loops_tick --loop <name>``) and
 # the manual ``t3 loops tick --loop <name>``. Used to RECOGNISE a fired per-loop tick
 # prompt from the hot ``UserPromptSubmit`` path WITHOUT importing teatree (no Django).
+_SECONDS_PER_MINUTE = 60
+
 _RUN_CMD_RE = re.compile(r"t3 loops tick --loop (?P<name>[^\s`]+)")
 _BARE_PROMPT_RE = re.compile(r"^Run `t3 loops tick --loop \S+` in Bash, then briefly report the tick summary\.$")
 
@@ -103,6 +122,79 @@ def cron_decommission_directive() -> str | None:
         "those loops now, so the crons only ever waste a subprocess (the per-loop mutex + CAS "
         "make them benign). If CronList shows none, nothing to do."
     )
+
+
+def _standing_directives() -> "list[StandingDirectivePayload]":
+    """The resolved standing directives as plain payloads; fail-open to ``[]`` on ANY error."""
+    from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
+
+    if not bootstrap_teatree_django():
+        return []
+    from teatree.loop.standing_directives import resolve_standing_directives  # noqa: PLC0415 — deferred cold import
+
+    return [directive.as_dict() for directive in resolve_standing_directives()]
+
+
+def _duration_token(seconds: int) -> str:
+    """The ``/loop`` duration argument — ``<N>m`` when minute-aligned, else ``<N>s``."""
+    if seconds % _SECONDS_PER_MINUTE == 0:
+        return f"{seconds // _SECONDS_PER_MINUTE}m"
+    return f"{seconds}s"
+
+
+def emit_standing_directives(stream: _Writable) -> bool:
+    """Render every resolved standing directive as a recurring ``/loop`` registration.
+
+    Returns whether anything was written. The slot id is rendered inline so the
+    owner can tell which registration a later "stop the loop" would drop, and so
+    a re-emission is recognisable rather than anonymous. Nothing resolvable —
+    or any resolver failure — writes NOTHING: a session that cannot reach the
+    seam is left exactly as it was, never nagged with a partial rule.
+    """
+    try:
+        directives = _standing_directives()
+    except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.
+        return False
+    if not directives:
+        return False
+    stream.write(
+        f"Session setup: register the {len(directives)} standing directives — recurring reminders that "
+        f"keep the standing rules from decaying out of context. Run each slash command in this session:\n"
+    )
+    for directive in directives:
+        cadence = _duration_token(directive["cadence_seconds"])
+        stream.write(f"  - /loop {cadence} [{directive['slot_id']}] {directive['text']}\n")
+    return True
+
+
+def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
+    """Emit the standing directives to an engaged attended session, once per session.
+
+    Deliberately scoped WIDER than the reactive slots (every engaged session, not
+    only the loop owner) and NARROWER on lane (never the Agent-SDK lane, whose
+    workers are FSM-governed and have no user-request channel). Fail-open silent:
+    an unreadable engagement marker or lane probe emits nothing.
+    """
+    try:
+        from hooks.scripts.headless_authoring_gate import LANE_SDK, session_lane  # noqa: PLC0415 deferred back-import
+        from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+            _ensure_state_dir,
+            _state_file,
+            _teatree_engaged,
+        )
+
+        if not session_id or session_lane() == LANE_SDK or not _teatree_engaged(session_id):
+            return False
+        _ensure_state_dir()
+        marker = _state_file(session_id, "directives-pending")
+        if marker.is_file():
+            return False
+        if not emit_standing_directives(stream):
+            return False
+        marker.write_text("1", encoding="utf-8")
+    except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.
+        return False
+    return True
 
 
 def emit_loop_registrations(stream: _Writable) -> bool:

@@ -4137,6 +4137,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  emit it.                                                    │
 │ list             Print LIVE loop status: each loop's enabled state, cadence, │
 │                  last fire, and next tick.                                   │
+│ directives       Print the standing directives every attended session is     │
+│                  re-reminded of.                                             │
 │ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
 │                  one per line, sorted.                                       │
 │ reclaim-markers  Release non-terminal markers whose ticket is terminal,      │
@@ -4414,6 +4416,23 @@ Usage: t3 loop list [OPTIONS]
 │ --json          Emit the live loop status as JSON.                           │
 │ --all           Also show the per-loop owning sessions (cross-session health │
 │                 view, #1834).                                                │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop directives`
+
+```
+Usage: t3 loop directives [OPTIONS]
+
+ Print the standing directives every attended session is re-reminded of.
+
+ Read-only. The ``--json`` payload — ``{slot_id, cadence_seconds, text,
+ scope}`` per directive — is the harness-neutral contract: a non-Claude
+ harness reads it and writes only its own delivery adapter.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the standing directives as JSON.                        │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -419,6 +419,11 @@
       ]
     },
     {
+      "help": "Print the standing directives with their resolved cadence and text (read-only; #4166).",
+      "name": "loop_directives",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "loop_dispatch",
       "subcommands": [
