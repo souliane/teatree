@@ -253,8 +253,8 @@ def _export_with_rotation(*, app_id: str) -> SlackManifest:
     dropped on the floor — bricking the credential with no recovery path.
 
     Both store faults exit through a diagnostic rather than a traceback. This
-    function is the shared reactive path for ``t3 slack setup``, ``t3 slack
-    provision`` and ``t3 slack socket-doctor``, so an escaping
+    function is the shared reactive path for this package's ``setup``,
+    ``provision`` and ``socket_doctor`` modules, so an escaping
     :class:`SlackConfigTokenStoreUnwritableError` gave all three a stack trace
     whose top frame is a ``pass`` writability probe — burying the two facts the
     operator needs: what to fix, and that NOTHING was spent.
