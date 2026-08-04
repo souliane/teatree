@@ -459,6 +459,16 @@ if [ -n "$SERVICE_IMAGE" ] && ! docker image inspect "$SERVICE_IMAGE" >/dev/null
     refuse_absent_stack "No local image \`$SERVICE_IMAGE\` — this host has never built the stack."
 fi
 
+# Bypassing the entrypoint is also what makes this container credential-less: the
+# entrypoint is where GH_TOKEN is exported and git's credential helper is wired, so a
+# push from here fails on `could not read Username` — a failure of the venue, not of the
+# branch. Announced BEFORE the dispatch, on stderr so a `--json` consumer is unaffected;
+# said afterwards it arrives as one more opaque rc=1 (#4076).
+echo "deploy/t3: the teatree worker is not running — dispatching in a one-off container." >&2
+echo "           It shares the mounts but not the worker's environment: git has no credential" >&2
+echo "           helper there, so a push cannot authenticate. Start the stack first for a push:" >&2
+echo "           $REPO_ROOT/deploy/deploy.sh" >&2
+
 # `--entrypoint t3` bypasses the TEATREE_ROLE dispatcher so we run the CLI
 # directly, not a server.
 exec docker compose -f "$COMPOSE_FILE" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint t3 "$SERVICE" "$@"
