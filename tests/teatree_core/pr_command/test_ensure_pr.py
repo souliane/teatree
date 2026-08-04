@@ -213,6 +213,37 @@ class TestEnsurePr(TestCase):
         assert "feat-q" in str(result["hint"])
         host.create_pr.assert_called_once()
 
+    def test_defers_and_owes_when_the_open_pr_probe_could_not_answer(self) -> None:
+        """#4116: a can't-tell probe never becomes a create attempt.
+
+        Creating on an unreadable probe is what refused the SECOND push to a
+        branch whose PR already existed: ``gh pr create`` answered ``already
+        exists`` and the hook aborted the push. The push proceeds instead, and
+        the PR stays owed as a durable obligation the drain settles.
+        """
+        host = MagicMock()
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-u"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-u",
+                    status=BranchStatus.PR_UNKNOWN,
+                    ahead_count=2,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert result["owed"] is True
+        assert "could not be read" in str(result["skipped"])
+        host.create_pr.assert_not_called()
+
     def test_repo_flag_with_forge_slug_rejected_before_touching_classification(self) -> None:
         """#2937.
 

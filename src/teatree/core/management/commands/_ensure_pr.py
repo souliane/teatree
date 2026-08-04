@@ -42,6 +42,7 @@ from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
+    from teatree.core.gates.orphan_guard import BranchReport
     from teatree.core.models import Ticket
     from teatree.core.models.pending_pull_request import SerializedPrSpec
     from teatree.types import RawAPIDict
@@ -71,6 +72,7 @@ class DischargeResult(TypedDict, total=False):
 
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
+PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
 
 
 def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestSpec | None = None) -> EnsurePrResult:
@@ -122,6 +124,37 @@ def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestS
 def defer_unpushed_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     """Owe the PR for a branch git has not put on the remote yet (the FIRST push)."""
     return _owe_pr(repo_path, branch_name, reason=UNPUSHED_DEFERRAL)
+
+
+def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for a branch whose open-PR state the forge would not report (#4116).
+
+    Creating on a can't-tell probe is what refused the SECOND push to a branch
+    whose PR already existed: ``gh pr create`` answered ``already exists`` and the
+    hook aborted the very push that was addressing review findings. Deferring
+    keeps the push moving, and the obligation — not a bare exit 0 — is what stops
+    the branch from shipping with no PR when the forge really was silent.
+    """
+    return _owe_pr(repo_path, branch_name, reason=PR_UNKNOWN_DEFERRAL)
+
+
+def skip_for_classified(report: "BranchReport", repo_path: str, branch_name: str) -> EnsurePrResult | None:
+    """The answer a classification already carries, or ``None`` when a PR must be created.
+
+    A pure mapping over the classification — four of the five branch states are
+    a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
+    """
+    from teatree.core.gates.orphan_guard import BranchStatus  # noqa: PLC0415 — deferred: avoids the app-load cycle
+
+    if report.status is BranchStatus.SYNCED:
+        return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
+    if report.status is BranchStatus.OPEN_PR:
+        return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
+    if report.status is BranchStatus.UNPUSHED_ORPHAN:
+        return defer_unpushed_pr(repo_path, branch_name)
+    if report.status is BranchStatus.PR_UNKNOWN:
+        return defer_unreadable_pr_state(repo_path, branch_name)
+    return None
 
 
 def _ticket_for_branch(branch_name: str) -> "Ticket | None":

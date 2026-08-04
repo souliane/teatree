@@ -141,6 +141,50 @@ class TestFindOpenPrForBranch:
         assert seen == []
 
 
+class TestProbeRunsWithTheWriterCredential:
+    """#4116: the probe authenticates with the same token the writer path uses.
+
+    ``resolve_forge_credential`` is what ``push_branch`` hands git; a probe that
+    shells ``gh`` with a bare environment gets a 4 on every private repo, and the
+    caller that reads that as "no PR" refuses the second push to a branch whose
+    PR already exists.
+    """
+
+    def test_env_carries_the_resolved_token(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("TEATREE_GH_TOKEN", "tok-from-the-writer-chain")
+        captured: dict[str, object] = {}
+
+        def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured.update(kwargs)
+            return _completed("[]")
+
+        monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
+        probe_github_open_pr(tmp_path, "feature")
+
+        env = captured.get("env")
+        assert isinstance(env, dict)
+        assert env["GH_TOKEN"] == "tok-from-the-writer-chain"
+
+    def test_token_gated_forge_is_found_not_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A ``gh`` that refuses an unauthenticated read — every private repo — still answers."""
+        monkeypatch.setenv("GH_TOKEN", "tok-writer")
+
+        def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            env = kwargs.get("env")
+            authenticated = isinstance(env, dict) and bool(env.get("GH_TOKEN"))
+            if not authenticated:
+                return _completed("", returncode=4)
+            return _completed(json.dumps([{"url": _GH_URL}]))
+
+        monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
+
+        probe = probe_github_open_pr(tmp_path, "feature")
+
+        assert probe.outcome is PrProbeOutcome.FOUND
+        assert probe.url == _GH_URL
+
+
 class TestForgeSpecificProbes:
     """The forge-explicit wrappers fast_push uses — no re-sniff, right CLI each."""
 

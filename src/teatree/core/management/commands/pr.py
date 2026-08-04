@@ -16,10 +16,10 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
-from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
+from teatree.core.gates.orphan_guard import classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
-from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, defer_unpushed_pr
+from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, skip_for_classified
 from teatree.core.management.commands._pending_pr_commands import PendingPrCommands
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
@@ -76,7 +76,6 @@ from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
-    from teatree.core.gates.orphan_guard import BranchReport
     from teatree.core.models.types import TicketExtra
 
 # The host create/update-comment response shape returned by the comment commands.
@@ -287,21 +286,6 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
     return branch_name, None
 
 
-def _skip_for_classified_branch(report: "BranchReport", repo_path: str, branch_name: str) -> EnsurePrResult | None:
-    """The answer a classification already carries, or ``None`` when a PR must be created.
-
-    A pure mapping over the classification — three of the four branch states are
-    a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
-    """
-    if report.status is BranchStatus.SYNCED:
-        return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
-    if report.status is BranchStatus.OPEN_PR:
-        return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
-    if report.status is BranchStatus.UNPUSHED_ORPHAN:
-        return defer_unpushed_pr(repo_path, branch_name)
-    return None
-
-
 class Command(PendingPrCommands, TyperCommand):
     @command()
     # PLR0913: this signature IS the CLI contract — django-typer derives
@@ -486,7 +470,7 @@ class Command(PendingPrCommands, TyperCommand):
                 error=f"could not determine sync status of {branch_name!r} in {repo_path!r}: {exc}",
             )
 
-        already_answered = _skip_for_classified_branch(report, repo_path, branch_name)
+        already_answered = skip_for_classified(report, repo_path, branch_name)
         if already_answered is not None:
             return already_answered
 
