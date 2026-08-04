@@ -162,6 +162,27 @@ class TestDoctorCheckCommand:
         assert result.exit_code == 0
         assert "All checks passed" in result.output
 
+    def test_aggregates_the_shard_durations_checks_against_the_staged_repo(self, tmp_path, monkeypatch):
+        """Both #4048 checks run end to end here, not stubbed (#4113 review).
+
+        A measurement stubbed to ``None`` in the shared stager silences its check
+        with no line of output, so this aggregation test would keep passing with
+        either check removed. Naming the coverage verdict of the staged tree keeps
+        that surface live.
+        """
+        _stage_home(tmp_path, monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "OK    Test-shard durations cover 100.0% of the test files" in result.output
+
     def test_reports_warning_when_editable_state_mismatches(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         # contribute=false but teatree is editable → WARN
