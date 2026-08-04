@@ -22,7 +22,8 @@ from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defaults
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_annotation import choice_token
-from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
+from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_secret_guard import resolve_export_scan_terms
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
@@ -221,7 +222,7 @@ class TestExportScanTermsResolveFailsSafe(TestCase):
 
 
 class TestExportScanTermsRoutesThroughRegistry:
-    """``_resolve_export_scan_terms`` resolves through the consolidated registry.
+    """``resolve_export_scan_terms`` resolves through the consolidated registry.
 
     Seeds the canonical config DB directly (via ``T3_CONFIG_DB``) so ``cold_reader``
     reads it, then asserts the export scan set is the union of every ban class,
@@ -251,7 +252,7 @@ class TestExportScanTermsRoutesThroughRegistry:
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        assert set(_resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
+        assert set(resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
 
 
 class TestImportTomlToDb(TestCase):

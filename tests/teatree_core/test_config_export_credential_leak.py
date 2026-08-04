@@ -17,11 +17,13 @@ from django.test import TestCase
 
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.secret_settings import is_credential_reference
-from teatree.core.config_migration import RedactedRow, export_db_to_toml
+from teatree.core.config_migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from teatree.core.config_secret_guard import RedactedRow
 
 
 def _teatree(toml: str) -> dict[str, object]:

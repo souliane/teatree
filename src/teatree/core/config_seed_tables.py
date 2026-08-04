@@ -85,6 +85,19 @@ def classify_seed_rows(doc: dict[str, Any]) -> list[SeedFieldDisposition]:
     return dispositions
 
 
+def holds_value(entry: SeedFieldDisposition) -> bool:
+    """Whether the row *entry* targets already holds that value — a write with nothing to write.
+
+    ``classify_seed_field`` compares against what ``defaults.toml`` SHIPS, so a field an
+    operator tuned reads ``write`` on the way back in even when the live row is the very
+    place the exported value came from. The interchange's own round trip is that case
+    (souliane/teatree#4147), so the live value is the second half of the question.
+    """
+    attribute, _type = SEED_ROW_FIELDS[entry.table][entry.field]
+    row = _SEED_MODELS[entry.table].objects.filter(name=entry.name).first()
+    return row is not None and getattr(row, attribute) == entry.value
+
+
 def unseeded_entries(writes: list[SeedFieldDisposition]) -> set[tuple[str, str]]:
     """The ``(table, name)`` pairs *writes* target that have no DB row yet.
 

@@ -333,6 +333,10 @@ class Command(TyperCommand):
         stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
         backup.
 
+        A stored row that is not a SETTING — internal runtime state sharing the store, a
+        key outliving its declaration — is named on stderr and left out whatever the flags
+        say: ``import`` has no home for such a key and refuses the whole file on one.
+
         Two INDEPENDENT filters widen the dump, both off by default. ``--default-keys-only``
         restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
         ``--include-defaults`` also emits the eligible keys that have no DB row, at their
@@ -350,6 +354,12 @@ class Command(TyperCommand):
         if result.redacted:
             self.stderr.write(
                 f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
+            )
+        for row in result.omitted:
+            self.stderr.write(f"  omitted {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
+        if result.omitted:
+            self.stderr.write(
+                f"  {len(result.omitted)} stored row(s) omitted: not configuration, so import refuses them."
             )
         if output:
             Path(output).expanduser().write_text(result.toml, encoding="utf-8")
@@ -378,7 +388,9 @@ class Command(TyperCommand):
         rows are REJECTED and the WHOLE import is refused (nothing written) so one bad key never
         leaves a partial store; every value is validated through the same registry parser the
         resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
-        ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without writing.
+        ``defaults.toml`` imports to zero rows), and a value the store already holds is reported
+        as unchanged rather than written — re-importing this box's own export does nothing at
+        all. ``--dry-run`` classifies without writing.
 
         Safety-posture keys import here without a confirm phrase: typing this command IS the
         operator's authorization, exactly as ``config_setting set`` is. The dashboard's import
@@ -399,8 +411,8 @@ class Command(TyperCommand):
             raise SystemExit(2)
         verb = "would import" if dry_run else "imported"
         for row in result.written:
-            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
+            self.stdout.write(f"  {verb} {row.key} = {row.toml_value}  [{scope_label(row.scope)}]")
         self.stdout.write(
-            f"  {verb} {len(result.written)} row(s); "
+            f"  {verb} {len(result.written)} row(s); {len(result.unchanged)} already at that value; "
             f"{len(result.skipped_default)} equal to the shipped default (no row)."
         )
