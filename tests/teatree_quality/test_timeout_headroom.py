@@ -113,6 +113,49 @@ def test_slow() -> None:
     pass
 """
 
+_STACKED_DECORATORS = """
+import pytest
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.timeout(40)
+def test_slow() -> None:
+    pass
+"""
+
+_CLASS_DECORATOR_OVER_BODY = """
+import pytest
+
+
+@pytest.mark.timeout(300)
+class TestSlowGroup:
+    pytestmark = pytest.mark.timeout(40)
+
+    def test_inside(self) -> None:
+        pass
+"""
+
+_MODULE_MARK_LIST = """
+import pytest
+
+pytestmark = [pytest.mark.timeout(50), pytest.mark.timeout(300)]
+
+
+def test_slow() -> None:
+    pass
+"""
+
+_CLASS_BODY_MARK_LIST = """
+import pytest
+
+
+class TestSlowGroup:
+    pytestmark = [pytest.mark.timeout(50), pytest.mark.timeout(300)]
+
+    def test_inside(self) -> None:
+        pass
+"""
+
 _NAMED_CEILING_AND_UNMARKED = """
 import pytest
 
@@ -336,6 +379,66 @@ class TestMarkerResolutionIsPerTest:
         assert report is not None
         assert [pressure.node_id for pressure in report.over_ceiling] == ["tests/test_a.py::test_unmarked"]
         assert report.unresolved_ceilings == 1
+
+
+class TestTheFirstStoredMarkWins:
+    """Ties resolve to the mark pytest STORES FIRST, measured against real collection.
+
+    Decorators apply bottom-up and a class body runs before its decorators, so the
+    bottom-most decorator and the class-body ``pytestmark`` are the ones stored first
+    — and ``get_closest_marker`` returns those, not the ones read first in source
+    order. Guessing source order over-states the ceiling, which is the silent-green
+    direction: a test pytest caps at 40s judged against a believed 300s reads healthy
+    while it over-runs.
+    """
+
+    def test_the_bottom_most_of_stacked_decorators_applies(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _STACKED_DECORATORS},
+            durations={"tests/test_a.py::test_slow": 45.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::test_slow", 40.0)
+        ]
+
+    def test_a_class_body_pytestmark_beats_a_decorator_on_the_same_class(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _CLASS_DECORATOR_OVER_BODY},
+            durations={"tests/test_a.py::TestSlowGroup::test_inside": 45.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::TestSlowGroup::test_inside", 40.0)
+        ]
+
+    def test_the_first_element_of_a_module_pytestmark_list_applies(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MODULE_MARK_LIST},
+            durations={"tests/test_a.py::test_slow": 55.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::test_slow", 50.0)
+        ]
+
+    def test_the_first_element_of_a_class_pytestmark_list_applies(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _CLASS_BODY_MARK_LIST},
+            durations={"tests/test_a.py::TestSlowGroup::test_inside": 55.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::TestSlowGroup::test_inside", 50.0)
+        ]
 
 
 class TestAgainstThisRepo:

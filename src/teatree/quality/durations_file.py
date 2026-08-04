@@ -27,7 +27,10 @@ def read_durations(path: Path) -> dict[str, float]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    # ValueError rather than json.JSONDecodeError: a non-UTF-8 file raises UnicodeDecodeError
+    # out of read_text, which is neither that nor OSError. No caller guards this call and the
+    # doctor has no global except, so an unwrapped escape took down the whole run.
+    except (OSError, ValueError) as exc:
         message = f"{path} exists but could not be read as durations JSON: {exc}"
         raise DurationsUnreadableError(message) from exc
     if not isinstance(data, dict):

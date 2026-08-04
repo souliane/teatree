@@ -155,6 +155,16 @@ class _MarkerScan:
     so the ceiling is attributed to the definition it decorates and to nothing else.
     A file-wide reading lets one slow test's raise cover every neighbour, and an
     unmarked test over-running the lane value then reads as healthy.
+
+    Ties within one definition go to the mark pytest STORES first, which is not the
+    one read first in source order: decorators apply bottom-up, and a class body runs
+    before the decorators applied to it. So the bottom-most decorator wins, and a
+    class-body ``pytestmark`` beats a decorator on that same class. Reading source
+    order instead over-states the ceiling — the silent-green direction.
+
+    A marker this scan cannot see (one inherited through a base class's MRO, or added
+    by a hook) leaves the test on the module or lane value, which UNDER-states its
+    ceiling and can only over-report. That is the direction a health check may err in.
     """
 
     def __init__(self, module: ast.Module) -> None:
@@ -166,10 +176,13 @@ class _MarkerScan:
     def _collect(self, body: list[ast.stmt], inherited: _StatedCeiling, prefix: tuple[str, ...]) -> None:
         for node in body:
             if isinstance(node, ast.ClassDef):
-                own = self._first_marker(node.decorator_list) or self._pytestmark_in(node.body)
+                own = self._pytestmark_in(node.body) or self._decorated(node.decorator_list)
                 self._collect(node.body, own or inherited, (*prefix, node.name))
             elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                self.ceilings["::".join((*prefix, node.name))] = self._first_marker(node.decorator_list) or inherited
+                self.ceilings["::".join((*prefix, node.name))] = self._decorated(node.decorator_list) or inherited
+
+    def _decorated(self, decorators: list[ast.expr]) -> _StatedCeiling | None:
+        return self._first_marker(list(reversed(decorators)))
 
     def _aliases_in(self, body: list[ast.stmt]) -> dict[str, _StatedCeiling]:
         """Module names bound to a marker (``_SCAN_TIMEOUT = pytest.mark.timeout(300)``), reused as decorators."""

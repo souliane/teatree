@@ -27,12 +27,21 @@ class TestTestDurationsDoctorCheck:
             assert check_test_durations_coverage() is True
         assert "OK" in capsys.readouterr().out
 
-    def test_blind_split_fails_and_names_the_refresh_branch(self, capsys, tmp_path: Path) -> None:
+    def test_blind_split_warns_and_names_the_refresh_branch(self, capsys, tmp_path: Path) -> None:
+        """Reported at every session start, but never a FAIL — see the check's own docstring.
+
+        A FAIL is consumed by ``deploy/watchdog.sh``, which DMs the owner every
+        non-deploy-sensitive FAIL line on a 300s cadence, re-keyed daily. Staleness
+        stands until a refresh PR is merged, so a FAIL here is a standing nightly page
+        for something no actor caused. The numbers and the remedy still print.
+        """
         with _repo_found(tmp_path), _measured(DurationsCoverage(covered_files=246, test_files=2207, orphan_keys=73)):
-            assert check_test_durations_coverage() is False
+            assert check_test_durations_coverage() is True
         out = capsys.readouterr().out
-        assert "FAIL" in out
+        assert "WARN" in out
+        assert "FAIL" not in out
         assert "11.1%" in out
+        assert "73 recorded key(s) name a deleted file" in out
         assert "ci/test-durations-refresh" in out
 
     def test_no_checkout_is_silent_never_a_verdict(self, capsys, tmp_path: Path) -> None:
@@ -48,6 +57,22 @@ class TestTestDurationsDoctorCheck:
     def test_the_aggregate_actually_calls_it(self) -> None:
         """A check nothing invokes is a check that reports nothing (#4048)."""
         assert "check_test_durations_coverage" in run_doctor_checks.__code__.co_names
+
+    def test_a_non_utf8_durations_file_is_reported_not_a_crash(self, capsys, tmp_path: Path) -> None:
+        """The real file, not a stubbed measurement: an unwrapped read error took down the whole run."""
+        (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntimeout = 60\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text("def test_a() -> None:\n    pass\n", encoding="utf-8")
+        (tmp_path / "dev").mkdir()
+        (tmp_path / "dev" / ".test_durations").write_bytes(b'\xff\xfe{"a": 1}')
+
+        with _repo_found(tmp_path):
+            assert check_test_durations_coverage() is False
+            assert check_test_timeout_headroom() is True
+
+        out = capsys.readouterr().out
+        assert "FAIL  Test-shard durations:" in out
+        assert "could not be read as durations JSON" in out
 
     def test_unreadable_durations_file_fails_loud_never_silent(self, capsys, tmp_path: Path) -> None:
         with (

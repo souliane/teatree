@@ -33,7 +33,22 @@ _NAMED_LIMIT = 5
 
 
 def check_test_durations_coverage() -> bool:
-    """FAIL when too few test files are recorded for the shard split to be balanced."""
+    """WARN when too few test files are recorded for the shard split to be balanced.
+
+    An advisory rather than a hard FAIL because of who consumes a FAIL. ``deploy/
+    watchdog.sh`` execs ``t3 doctor check --json`` inside the stack every
+    ``TEATREE_WATCHDOG_INTERVAL`` (300s), and DMs the owner every FAIL line that is
+    not one of three deploy-sensitive tokens, re-keyed per day — so a hard FAIL here
+    is a standing daily page for as long as the durations file is stale. Staleness is
+    attributable to no actor and clears only when a refresh PR is merged, which can
+    take weeks; a pager that fires nightly for something nobody caused is the failure
+    mode this epic exists to remove, one surface over. The reading itself is
+    unchanged — the same numbers and the same remedy print at every session start.
+
+    ``MIN_FILE_COVERAGE`` is untouched; only the severity is. The companion headroom
+    check keeps its FAIL, because a recorded over-run is a discrete, attributable fact
+    that a single commit clears.
+    """
     from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.quality import durations_coverage, durations_file  # noqa: PLC0415 — deferred: keeps CLI startup light
 
@@ -57,7 +72,7 @@ def check_test_durations_coverage() -> bool:
         return True
 
     typer.echo(
-        f"FAIL  Test-shard durations cover only {percent} of the test files "
+        f"WARN  Test-shard durations cover only {percent} of the test files "
         f"({coverage.covered_files}/{coverage.test_files}"
         f"{f', {coverage.orphan_keys} recorded key(s) name a deleted file' if coverage.orphan_keys else ''}) — "
         "pytest-split bin-packs every unrecorded test at the average, so the 12-way split is "
@@ -69,7 +84,7 @@ def check_test_durations_coverage() -> bool:
         "merge it. If no such PR exists, the refresh job is not running: check it on the latest "
         "`schedule` run of the CI workflow."
     )
-    return False
+    return True
 
 
 def check_test_timeout_headroom() -> bool:
