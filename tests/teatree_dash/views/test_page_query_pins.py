@@ -34,6 +34,7 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 11,
     "dash:board_columns": 9,
+    "dash:cycle_time": 10,
     "dash:health": 20,
     "dash:health_bands": 20,
     "dash:live": 12,
