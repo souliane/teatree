@@ -11328,9 +11328,16 @@ Usage: t3 teatree config_setting import [OPTIONS]
  (so a dump of
  ``defaults.toml`` imports to zero rows), and a value the store already holds
  is reported
- as unchanged rather than written — re-importing this box's own export does
- nothing at
- all. ``--dry-run`` classifies without writing.
+ as unchanged rather than written. What the export could NOT carry cannot
+ become a change
+ either: a row omitted as non-configuration is simply absent, and a registry
+ field the
+ secret guard withheld is merged back from the store rather than deleted. So
+ re-importing
+ this box's own export writes nothing and deletes nothing — an import never
+ removes a
+ value; ``config_setting clear`` does. ``--dry-run`` classifies without
+ writing.
 
  Safety-posture keys import here without a confirm phrase: typing this command
  IS the

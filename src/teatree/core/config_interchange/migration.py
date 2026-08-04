@@ -31,11 +31,12 @@ from teatree.config.provenance import PERSISTED_SOURCES, resolve_settings
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.setting_groups import grouped_settings_table
-from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS
+from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.stored_row_health import is_operator_configuration, stored_row_kind
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.config_secret_guard import RedactedRow, redaction_reason, resolve_export_scan_terms
-from teatree.core.config_seed_tables import (
+from teatree.core.config_interchange.registry_rows import merged_registry, overlay_table_split
+from teatree.core.config_interchange.secret_guard import RedactedRow, redaction_reason, resolve_export_scan_terms
+from teatree.core.config_interchange.seed_tables import (
     SeedFieldDisposition,
     classify_seed_rows,
     emit_seed_tables,
@@ -43,6 +44,7 @@ from teatree.core.config_seed_tables import (
     unseeded_entries,
     write_seed_field,
 )
+from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, OmittedRow, RejectedRow
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
 
@@ -50,24 +52,6 @@ GLOBAL_SCOPE = ""
 _TEATREE_TABLE = "teatree"
 _OVERLAYS_TABLE = "overlays"
 _E2E_REPOS_TABLE = "e2e_repos"
-
-
-@dataclass(frozen=True)
-class OmittedRow:
-    """One stored row the export left out because it is not configuration at all."""
-
-    scope: str
-    key: str
-    reason: str  # `stored_row_kind`: "internal state — …" / "retired — …" / "unknown — …"
-
-
-@dataclass(frozen=True)
-class ConfigExport:
-    """A config-store export: the TOML text, the secret-withheld rows, the non-config rows."""
-
-    toml: str
-    redacted: tuple[RedactedRow, ...]
-    omitted: tuple[OmittedRow, ...] = ()
 
 
 @dataclass
@@ -343,70 +327,19 @@ def _emit_e2e_repos_tables(
 # ---- import (the inverse of export) -----------------------------------------------------
 
 
-@dataclass(frozen=True)
-class RejectedRow:
-    """One import row the validator refused, with the reason it was not stored."""
-
-    scope: str
-    key: str
-    reason: str  # "unknown key" / "secret (<class>)" / "removed (<why>)" / "invalid: <msg>" / "safety-posture"
-
-
-@dataclass(frozen=True)
-class ImportedRow:
-    """One import row that was (or, under ``dry_run``, would be) written to the store."""
-
-    scope: str
-    key: str
-    value: ConfigValue
-    is_safety_posture: bool = False
-
-    @property
-    def toml_value(self) -> str:
-        """The value as the TOML literal the file carries it as — never Python ``repr``.
-
-        A preview lists what a TOML file says, so it must say it in TOML. Rendered through
-        ``str()`` the same value reads ``True`` where the file says ``true`` and
-        ``['abc']`` where it says ``["abc"]``, which is a DIFFERENCE on screen between a
-        value and itself (#4147).
-        """
-        return tomlkit.item(self.value).as_string()
-
-
-@dataclass(frozen=True)
-class ConfigImport:
-    """The outcome of an ``import_toml_to_db`` run — all five dispositions, plus the mode.
-
-    ``rejected`` non-empty means the import was REFUSED wholesale: nothing was written,
-    even the clean rows, so a partial store can never result from one bad key.
-
-    ``written`` is the CHANGES alone. A row the store already holds at that value is
-    ``unchanged``: re-importing a box's own export is a no-op, and a preview that called
-    those rows writes reported a store full of changes to an operator who had changed
-    nothing (#4147).
-    """
-
-    written: tuple[ImportedRow, ...]
-    skipped_default: tuple[ImportedRow, ...]
-    folded: tuple[tuple[str, str], ...]  # (retired alias, canonical replacement)
-    rejected: tuple[RejectedRow, ...]
-    dry_run: bool
-    unchanged: tuple[ImportedRow, ...] = ()
-
-    @property
-    def safety_posture_keys(self) -> tuple[str, ...]:
-        """The safety-posture keys this run writes — what a preview must flag before an apply."""
-        return tuple(row.key for row in self.written if row.is_safety_posture)
-
-
 def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]:
     """Flatten a parsed export document into ``(scope, key, value)`` candidate rows.
 
     Reverses the export layout: the ``[teatree]`` table -> global settings; each
-    ``[overlays.<name>]`` table splits into per-overlay SETTING rows (keys in
-    ``OVERLAY_OVERRIDABLE_SETTINGS``) and overlay-DEFINITION keys (``path`` / ``class`` /
-    …, folded back into the ``overlays`` registry row); each ``[e2e_repos.<name>]`` table
-    rebuilds the ``e2e_repos`` registry row.
+    ``[overlays.<name>]`` table splits — through the export's own join predicate,
+    :func:`~teatree.core.config_interchange.registry_rows.overlay_table_split` — into per-overlay
+    SETTING rows and overlay-DEFINITION keys (``path`` / ``class`` / …, folded back into
+    the ``overlays`` registry row); each ``[e2e_repos.<name>]`` table rebuilds the
+    ``e2e_repos`` registry row.
+
+    A rebuilt registry value is a candidate, not the row: it describes only what the file
+    could say, and the import MERGES it onto the stored row rather than replacing it (see
+    :mod:`teatree.core.config_interchange.registry_rows`).
 
     The ``[teatree]`` table goes through the SAME flattener the cold reader applies, so a
     nested file and a flat one import to the same rows and the group wrappers never reach
@@ -419,11 +352,10 @@ def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]
     for name, table in doc.get(_OVERLAYS_TABLE, {}).items():
         if not isinstance(table, dict):
             continue
-        for key, value in table.items():
-            if key in OVERLAY_OVERRIDABLE_SETTINGS:
-                candidates.append((name, key, value))
-            else:
-                overlays_registry.setdefault(name, {})[key] = value
+        settings, definitions = overlay_table_split(table)
+        candidates.extend((name, key, value) for key, value in settings.items())
+        if definitions:
+            overlays_registry[name] = definitions
     if overlays_registry:
         candidates.append((GLOBAL_SCOPE, _OVERLAYS_TABLE, overlays_registry))
     e2e_registry: dict[str, Any] = {n: dict(t) for n, t in doc.get(_E2E_REPOS_TABLE, {}).items() if isinstance(t, dict)}
@@ -460,6 +392,13 @@ def _classify_import_row(
     tier, so every shipped value IS that effective default: importing the shipped file
     writes zero rows, and each skipped row resolves to exactly the value the file declares.
 
+    A registry row is MERGED onto *stored* first (:func:`~teatree.core.config_interchange.
+    registry_rows.merged_registry`): its value is a table of independent facts, so the file
+    can describe it INCOMPLETELY — the secret guard withholds an overlay's credential
+    coordinates — and taking the file's version whole would make the redaction a deletion.
+    Here is where the merge belongs, because this is where what the file says meets what the
+    store holds, and a merged row equal to *stored* is exactly the ``unchanged`` below.
+
     A value the row in *stored* already holds is ``unchanged``. Writing it would be a
     no-op on the value and a REAL edit to the row — ``set_value`` clears seed provenance,
     so re-importing a box's own export would hand every deploy-seeded row to the operator.
@@ -472,8 +411,9 @@ def _classify_import_row(
     """
     if (unstorable := _unstorable_reason(key, value, terms)) is not None:
         return ("reject", unstorable)
+    candidate = merged_registry(value, stored) if key in REGISTRY_KEYS and isinstance(value, dict) else value
     try:
-        canonical = validate_config_write(key, value)
+        canonical = validate_config_write(key, candidate)
     except ConfigWriteError as exc:
         return ("reject", f"invalid: {exc}")
     if canonical == effective_default(key):
@@ -499,8 +439,14 @@ def import_toml_to_db(
     leaves a partial store); every value is validated through the same registry parser the
     resolver applies on read. A value equal to the shipped default writes NO row (the #3676
     zero-seed + ``restore = delete row`` property), so a dump of ``defaults.toml`` imports to
-    zero rows. A row the store ALREADY holds at that value is ``unchanged`` rather than a
-    write, so a box re-importing its own export reports — and performs — nothing at all.
+    zero rows. A row the store ALREADY holds at that value is ``unchanged`` rather than a write.
+
+    What the export could NOT carry cannot become a change either, which is what makes the round
+    trip a genuine no-op rather than an almost-no-op: a row omitted as non-configuration is
+    simply absent from the file, and a registry field the secret guard withheld is merged back
+    from the store (:mod:`teatree.core.config_interchange.registry_rows`) rather than deleted. An import
+    writes values and never removes one; removing a value is ``config_setting clear``.
+
     ``dry_run`` classifies without writing. Raises ``tomllib.TOMLDecodeError`` on malformed
     input.
 

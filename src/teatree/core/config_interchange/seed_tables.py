@@ -5,7 +5,7 @@ modes and schedules are too. They ride the SAME override rule as a setting — o
 tuned away from its ``defaults.toml`` seed is exported — but they live in their own models,
 carry no operator secrets, and take the same path in a shared and a private export. That
 is a different concern from the ``ConfigSetting`` store's secret-guarded rows, so it lives
-in its own module; :mod:`teatree.core.config_migration` composes the two.
+in its own module; :mod:`teatree.core.config_interchange.migration` composes the two.
 
 The dependency runs one way: this module knows nothing of the export's row dataclasses. It
 answers in :class:`SeedFieldDisposition`, and the caller maps each one onto its own

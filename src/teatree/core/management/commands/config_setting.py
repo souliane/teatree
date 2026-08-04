@@ -45,7 +45,7 @@ from teatree.config.retired_settings import retirement_notice
 from teatree.config.setting_groups import group_outline
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 
@@ -389,8 +389,11 @@ class Command(TyperCommand):
         leaves a partial store; every value is validated through the same registry parser the
         resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
         ``defaults.toml`` imports to zero rows), and a value the store already holds is reported
-        as unchanged rather than written — re-importing this box's own export does nothing at
-        all. ``--dry-run`` classifies without writing.
+        as unchanged rather than written. What the export could NOT carry cannot become a change
+        either: a row omitted as non-configuration is simply absent, and a registry field the
+        secret guard withheld is merged back from the store rather than deleted. So re-importing
+        this box's own export writes nothing and deletes nothing — an import never removes a
+        value; ``config_setting clear`` does. ``--dry-run`` classifies without writing.
 
         Safety-posture keys import here without a confirm phrase: typing this command IS the
         operator's authorization, exactly as ``config_setting set`` is. The dashboard's import

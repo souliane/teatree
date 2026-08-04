@@ -16,7 +16,7 @@ import tomlkit
 from django.test import TestCase
 from tomlkit import items as tomlkit_items
 
-from teatree.core.config_seed_tables import (
+from teatree.core.config_interchange.seed_tables import (
     SeedFieldDisposition,
     classify_seed_rows,
     emit_seed_tables,
