@@ -17,6 +17,7 @@ row. Distinct from the singular ``t3 loop`` (the legacy fat-loop status view).
 """
 
 import datetime as dt
+from dataclasses import dataclass
 from typing import IO, Annotated, Any, cast
 
 import typer
@@ -60,18 +61,31 @@ def _validated_tags(requested: list[str] | None) -> frozenset[str]:
     return frozenset(requested or ())
 
 
-def _effective_state(loop: Loop, status: LoopStatus) -> str:
-    """The admitted state, folding a ``LoopState`` hold into the row's ``enabled`` flag.
+@dataclass(frozen=True, slots=True)
+class _LoopRow:
+    """One loop's render inputs: the row plus every control-plane read resolved in bulk."""
 
-    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT flipping
-    ``Loop.enabled``, so the row alone still reads ``enabled`` — this surfaces the
-    hold so a pause is confirmable at a glance (#3117).
+    loop: Loop
+    status: LoopStatus
+    verdict: LoopVerdict | None
+    mini_loop: MiniLoop | None
+    starved: bool
+
+
+def _effective_state(verdict: LoopVerdict | None, loop: Loop, status: LoopStatus) -> str:
+    """The state the TICK would take, keyed on the effective verdict (#4185).
+
+    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT flipping ``Loop.enabled``,
+    so the row alone still reads ``enabled`` — ``paused`` surfaces the hold so a pause is
+    confirmable at a glance (#3117). Everything else follows the verdict rather than the
+    raw column: a preset-forced-on loop the tick WILL fire read ``disabled``, and a
+    preset-masked-off one the tick will skip read ``enabled``. The ``forced-on`` /
+    ``masked`` note from :func:`_preset_note` still carries WHY.
     """
-    if not loop.enabled or status is LoopStatus.DISABLED:
-        return "disabled"
     if status is LoopStatus.PAUSED:
         return "paused"
-    return "enabled"
+    admitted = verdict.admitted if verdict is not None else loop.enabled
+    return "enabled" if admitted else "disabled"
 
 
 def _human_duration(seconds: float | None) -> str:
@@ -87,9 +101,12 @@ def _human_duration(seconds: float | None) -> str:
     return f"{hours}h{remainder // _SECONDS_PER_MINUTE:02d}m"
 
 
-def _next_label(loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
-    # A held loop (paused/disabled) won't tick — its next-fire is meaningless.
-    if not loop.enabled or status is not LoopStatus.ENABLED:
+def _next_label(verdict: LoopVerdict | None, loop: Loop, status: LoopStatus, now: dt.datetime) -> str:
+    # A loop the verdict refuses won't tick — its next-fire is meaningless. Keyed on the
+    # verdict, not ``Loop.enabled``: a preset-forced-on loop the tick will fire showed no
+    # countdown at all (#4185).
+    admitted = verdict.admitted if verdict is not None else loop.enabled
+    if not admitted or status is not LoopStatus.ENABLED:
         return _NEVER
     if loop.is_due(now):
         return "due"
@@ -111,22 +128,19 @@ def _preset_note(verdict: LoopVerdict | None) -> str:
     return f"  {tag} ({verdict.detail})"
 
 
-def _line(
-    loop: Loop,
-    status: LoopStatus,
-    now: dt.datetime,
-    verdict: LoopVerdict | None,
-    mini_loop: MiniLoop | None,
-) -> str:
-    state = _effective_state(loop, status)
+def _line(row: "_LoopRow", now: dt.datetime) -> str:
+    loop = row.loop
+    state = _effective_state(row.verdict, loop, row.status)
     last = _human_duration(loop.seconds_since_run(now))
-    nxt = _next_label(loop, status, now)
+    nxt = _next_label(row.verdict, loop, row.status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
-    if mini_loop is not None and mini_loop.tags:
-        line += f"  [{' '.join(mini_loop.tags)}]"
+    if row.mini_loop is not None and row.mini_loop.tags:
+        line += f"  [{' '.join(row.mini_loop.tags)}]"
     if loop.colleague_facing:
         line += "  away-gated"
-    return line + _preset_note(verdict)
+    if row.starved:
+        line += "  starved"
+    return line + _preset_note(row.verdict)
 
 
 def _description_line(loop: Loop) -> str | None:
@@ -140,18 +154,13 @@ def _description_line(loop: Loop) -> str | None:
     return f"      {loop.description}"
 
 
-def _payload(
-    loop: Loop,
-    status: LoopStatus,
-    now: dt.datetime,
-    verdict: LoopVerdict | None,
-    mini_loop: MiniLoop | None,
-) -> dict[str, Any]:
+def _payload(row: "_LoopRow", now: dt.datetime) -> dict[str, Any]:
+    loop, verdict, mini_loop = row.loop, row.verdict, row.mini_loop
     next_at = loop.next_run_at()
     return {
         "name": loop.name,
         "enabled": loop.enabled,
-        "status": _effective_state(loop, status),
+        "status": _effective_state(verdict, loop, row.status),
         "description": loop.description,
         "delay_seconds": loop.delay_seconds,
         "daily_at": loop.daily_at.strftime("%H:%M") if loop.daily_at else "",
@@ -165,6 +174,7 @@ def _payload(
         "tags": list(mini_loop.tags) if mini_loop is not None else [],
         "effective_admitted": verdict.admitted if verdict is not None else None,
         "effective_layer": verdict.layer if verdict is not None else "base",
+        "starved": row.starved,
     }
 
 
@@ -188,28 +198,25 @@ class Command(TyperCommand):
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
         # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
         verdicts = {verdict.name: verdict for verdict in effective_verdicts(now)}
-        payload = [
-            _payload(
-                loop,
-                held.get(loop.name, LoopStatus.ENABLED),
-                now,
-                verdicts.get(loop.name),
-                registered.get(loop.name),
+        # One read of the admitted-but-driverless set (#4185).
+        from teatree.loops.chain_membership import starved_loop_names  # noqa: PLC0415 — deferred: resolved at call time
+
+        starved = starved_loop_names()
+        rows = [
+            _LoopRow(
+                loop=loop,
+                status=held.get(loop.name, LoopStatus.ENABLED),
+                verdict=verdicts.get(loop.name),
+                mini_loop=registered.get(loop.name),
+                starved=loop.name in starved,
             )
             for loop in loops
         ]
+        payload = [_payload(row, now) for row in rows]
         human_lines = ["loops:"]
-        for loop in loops:
-            human_lines.append(
-                _line(
-                    loop,
-                    held.get(loop.name, LoopStatus.ENABLED),
-                    now,
-                    verdicts.get(loop.name),
-                    registered.get(loop.name),
-                )
-            )
-            description_line = _description_line(loop)
+        for row in rows:
+            human_lines.append(_line(row, now))
+            description_line = _description_line(row.loop)
             if description_line is not None:
                 human_lines.append(description_line)
         emit(

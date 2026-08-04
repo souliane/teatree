@@ -93,7 +93,9 @@
           <td>{{ row.last_run_at|default:"never" }}</td>
           <td>{{ row.next_run_at|default:"—" }}</td>
           <td>
-            {% if row.dispatching %}
+            {% if row.starved %}
+              <span class="chip small warn">starved — admitted, but no timer chain drives it</span>
+            {% elif row.dispatching %}
               <span class="chip small">would dispatch</span>
             {% else %}
               <span class="chip small warn">{{ row.blocked_reason }}</span>

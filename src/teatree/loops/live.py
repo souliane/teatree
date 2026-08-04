@@ -78,6 +78,10 @@ class LoopStatusEntry:
     #: running, counting-down loop (the drift #3159's single predicate exists to prevent).
     admitted: bool
     held: bool = False
+    #: Admitted, yet carrying no ``loop_timer`` row at all — nothing is driving it
+    #: (#4185). A separate axis from ``admitted``: this loop passed every gate and
+    #: still has no chain. Infra slots are never starved (they carry no timer chain).
+    starved: bool = False
 
     @property
     def never_fired(self) -> bool:
@@ -199,17 +203,26 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     effective verdict the tick gates on. The active preset is resolved ONCE here,
     so a preset-masked-off loop is reported un-admitted (no live countdown) and a
     preset-forced-ON base-disabled loop is reported admitted (the tick will fire it).
+
+    ``starved`` is resolved ONCE here too (two bulk timer-row reads), so an admitted
+    loop nothing is driving is visible rather than reading as a healthy countdown.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.chain_membership import starved_loop_names  # noqa: PLC0415 — deferred: ORM-backed read
 
     active = resolve_active_preset()
     held, forced = control_planes_in_db()
-    entries = [_mini_entry(loop, active, held, forced) for loop in Loop.objects.all()]
+    starved = starved_loop_names()
+    entries = [_mini_entry(loop, active, held, forced, starved) for loop in Loop.objects.all()]
     return tuple(sorted(entries, key=operator.attrgetter("name")))
 
 
 def _mini_entry(
-    loop: "Loop", active: "ActivePreset | None", held_names: set[str], forced: dict[str, bool]
+    loop: "Loop",
+    active: "ActivePreset | None",
+    held_names: set[str],
+    forced: dict[str, bool],
+    starved_names: set[str],
 ) -> LoopStatusEntry:
     held = loop.name in held_names
     return LoopStatusEntry(
@@ -226,6 +239,7 @@ def _mini_entry(
             forced=forced.get(loop.name),
         ),
         held=held,
+        starved=loop.name in starved_names,
     )
 
 
