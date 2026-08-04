@@ -90,8 +90,9 @@ MERGE_STUCK_AFTER_TICKS = 3
 class QuotaSignal:
     """Live model-quota headroom — the PRIMARY admission signal.
 
-    ``fresh`` is False when no account's headroom is known; the decision then keeps the
-    operator's static ceiling rather than trusting a guess.
+    ``fresh`` is False when no account's headroom is known; the decision then drops the
+    weekly-pace scaling — the only part that needs this signal — rather than trusting a
+    guess, and bounds the lane on the machine signal alone.
     Utilizations are the BEST (lowest) across usable accounts: the account selector
     already falls through to a non-exhausted account, so the governor asks what the
     healthiest remaining account has left, and ``all_accounts_exhausted`` is the
@@ -191,13 +192,16 @@ class MergeSignal:
 class AdmissionDecision:
     """The verdict a dispatcher acts on. ``reason`` is never empty — refusals are visible.
 
-    ``ceiling is None`` means NO clamp — the governor has no ceiling opinion and the
-    caller keeps whatever it had. It is never a synonym for zero.
+    ``ceiling`` is always a positive bound, never ``None``: an unbounded lane is not a
+    state the governor can express (#4097), and the floor of 1 means it can never
+    deadlock the factory to zero either. "The governor has no opinion" is the ABSENCE of
+    a decision — :func:`teatree.loop.admission.governor_verdict` returns ``None`` for the
+    kill-switch and the failed-probe paths — not a decision carrying an absent ceiling.
     """
 
     admit: bool
     reason: str
-    ceiling: int | None
+    ceiling: int
     braked: bool
 
 
@@ -266,11 +270,14 @@ def _machine_brake(machine: MachineSignal, *, braked: bool) -> str:
     return ""
 
 
+def _machine_ceiling(machine: MachineSignal) -> int:
+    """The core-derived WRITE default, floored at 1 — the part that needs NO quota signal."""
+    return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
+
+
 def _adaptive_ceiling(quota: QuotaSignal, machine: MachineSignal) -> int:
     """The live ceiling: the core-derived WRITE default, scaled by weekly pace, floored at 1."""
-    base = max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
-    scaled = math.floor(base * min(1.0, weekly_pace(quota)))
-    return max(1, scaled)
+    return max(1, math.floor(_machine_ceiling(machine) * min(1.0, weekly_pace(quota))))
 
 
 def decide_admission(
@@ -291,15 +298,19 @@ def decide_admission(
     *load_brake* carries the caller's two machine-brake inputs (see :class:`MachineBrake`)
     — the previous decision's brake state, for hysteresis, and whether the brake applies
     to this class at all. *static_ceiling* is the operator's configured concurrency,
-    applied as an upper BOUND on the adaptive answer rather than as the target — and it
-    is what an unreadable quota probe falls back to VERBATIM, ``None`` (no clamp)
-    included. The governor tightens only on evidence it actually has.
+    applied as an upper BOUND on whichever ceiling the signals produce rather than as
+    the target.
+
+    An UNKNOWN quota is the conservative case, never the unbounded one (#4097): the
+    ceiling falls back to :func:`_machine_ceiling`, which reads only the machine signal
+    the governor DID read successfully, so not knowing the budget can never buy more
+    concurrency than knowing it is healthy. Only the weekly-pace scaling on top of that
+    base genuinely needs a fresh quota, and that is exactly what is dropped. The load
+    brake reads its own signal and still applies either way.
     """
-    ceiling = static_ceiling
-    if quota.fresh:
-        ceiling = _adaptive_ceiling(quota, machine)
-        if static_ceiling is not None:
-            ceiling = max(1, min(ceiling, static_ceiling))
+    ceiling = _adaptive_ceiling(quota, machine) if quota.fresh else _machine_ceiling(machine)
+    if static_ceiling is not None:
+        ceiling = max(1, min(ceiling, static_ceiling))
 
     quota_brake = _quota_brake(quota) if quota.fresh else ""
     machine_brake = _machine_brake(machine, braked=load_brake.braked) if load_brake.applies else ""
@@ -314,9 +325,8 @@ def decide_admission(
         )
         return AdmissionDecision(admit=False, reason=reason, ceiling=ceiling, braked=True)
 
-    headroom = "unclamped" if ceiling is None else f"up to {ceiling}"
     return AdmissionDecision(
-        admit=True, reason=f"admitting {headroom} — signals healthy", ceiling=ceiling, braked=False
+        admit=True, reason=f"admitting up to {ceiling} — signals healthy", ceiling=ceiling, braked=False
     )
 
 
@@ -391,8 +401,8 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     against, never evidence that the fallthrough has nowhere left to go.
 
     When no fresh row is usable and the fleet is not known-exhausted, the healthy
-    accounts' headroom is simply unknown: ``fresh=False``, and the decision keeps the
-    operator's static ceiling. Reporting the surviving exhausted row's 100% instead
+    accounts' headroom is simply unknown: ``fresh=False``, and the decision falls back to
+    the machine-derived ceiling. Reporting the surviving exhausted row's 100% instead
     would brake the lane on a row that proves nothing about the account being used.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django app-registry read at call time

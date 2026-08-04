@@ -166,8 +166,8 @@ def _cheap_lane_ceiling() -> int:
     return max(0, int(get_effective_settings().cheap_phase_admission_ceiling))
 
 
-def _ceiling_denial(ceiling: int | None, occupied: int, *, lane: str = "") -> str | None:
-    if ceiling is None or occupied < ceiling:
+def _ceiling_denial(ceiling: int, occupied: int, *, lane: str = "") -> str | None:
+    if occupied < ceiling:
         return None
     if lane:
         return f"{lane} lane occupancy {occupied} at/over the {lane} ceiling {ceiling}"
@@ -186,6 +186,12 @@ def headless_admission_verdict() -> HeadlessAdmission:
     latter is what lets a chokepoint see admissions it (or the other chokepoint) just
     made, so the bound is one number in the database rather than per-caller state. A
     ceiling of ``0`` collapses cheap onto expensive: the rollback lever.
+
+    ``static_ceiling=None`` says the operator has configured no cap for THIS lane,
+    which is not the same as no cap at all: the governor always derives one from the
+    signals it has, so a stale quota cache — the steady state, since healthy health
+    rows expire in minutes and are written only reactively — bounds the lane at the
+    machine-derived ceiling rather than leaving it unbounded (#4097).
     """
     if not governor_enabled():
         return _admit_all()

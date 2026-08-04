@@ -40,12 +40,22 @@ def _healthy_quota() -> QuotaSignal:
     )
 
 
+def _unknown_quota() -> QuotaSignal:
+    return QuotaSignal(
+        fresh=False,
+        all_accounts_exhausted=False,
+        weekly_utilization=0.0,
+        short_utilization=0.0,
+        seconds_to_weekly_reset=None,
+    )
+
+
 @contextmanager
-def _signals(*, load1: float = 1.0) -> Iterator[None]:
+def _signals(*, load1: float = 1.0, quota: QuotaSignal | None = None) -> Iterator[None]:
     machine = MachineSignal(cores=_CORES, load1=load1, ram_available_gb=20.0)
     with ExitStack() as stack:
         stack.enter_context(patch.object(gate_mod, "governor_enabled", return_value=True))
-        stack.enter_context(patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()))
+        stack.enter_context(patch.object(gate_mod, "read_quota_signal", return_value=quota or _healthy_quota()))
         stack.enter_context(patch.object(gate_mod, "read_machine_signal", return_value=machine))
         yield
 
@@ -105,24 +115,18 @@ class TestDispatchAdmissionDeniedReason(TestCase):
         with _signals(load1=_OVER_THE_WATERMARK):
             assert dispatch_admission_denied_reason(apply_ceiling=False) is not None
 
-    def test_an_unknown_quota_yields_no_clamp_and_never_counts(self) -> None:
-        # ``ceiling is None`` means NO clamp, never zero — the governor tightens only
-        # on evidence it has. The live count must not even be read (it is a DB query
-        # whose answer could not change the verdict).
-        unknown = QuotaSignal(
-            fresh=False,
-            all_accounts_exhausted=False,
-            weekly_utilization=0.0,
-            short_utilization=0.0,
-            seconds_to_weekly_reset=None,
-        )
-        with (
-            _signals(),
-            patch.object(gate_mod, "read_quota_signal", return_value=unknown),
-            patch.object(gate_mod, "live_agent_count") as count,
-        ):
+    def test_an_unknown_quota_still_bounds_the_lane(self) -> None:
+        # #4097: an unknown budget is the CONSERVATIVE case, never the unbounded one — the
+        # ceiling falls back to the machine signal the governor DID read, so this lane is
+        # gated on a real count rather than waved through.
+        with _signals(quota=_unknown_quota()), patch.object(gate_mod, "live_agent_count", return_value=999):
+            reason = dispatch_admission_denied_reason()
+        assert reason is not None
+        assert "at/over governor ceiling" in reason
+
+    def test_an_unknown_quota_admits_under_the_machine_ceiling(self) -> None:
+        with _signals(quota=_unknown_quota()), patch.object(gate_mod, "live_agent_count", return_value=0):
             assert dispatch_admission_denied_reason() is None
-        count.assert_not_called()
 
 
 class TestLiveAgentCount(TestCase):
