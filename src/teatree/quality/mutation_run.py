@@ -121,7 +121,7 @@ def load_baseline_per_module(pyproject_path: Path | None = None) -> dict[str, in
     return {str(entry["path"]): int(entry.get("count", 0)) for entry in section.get("baseline_surviving", [])}
 
 
-def tests_for(module: str, settings: MutationSettings) -> tuple[str, ...]:
+def module_test_paths(module: str, settings: MutationSettings) -> tuple[str, ...]:
     return settings.module_tests.get(module, settings.module_tests.get("default", ("tests/",)))
 
 
@@ -303,7 +303,7 @@ def run_scoped(
 
     tests_dir: list[str] = []
     for module in scoped:
-        for path in tests_for(module, settings):
+        for path in module_test_paths(module, settings):
             if path not in tests_dir:
                 tests_dir.append(path)
 

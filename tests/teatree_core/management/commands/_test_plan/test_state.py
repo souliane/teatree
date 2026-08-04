@@ -1,7 +1,7 @@
 """Tests for the persisted test-plan state model (``_test_plan/state.py``).
 
 Pure transforms over the hidden ``t3-e2e-data`` blob: defensive coercion of a
-JSON payload into a typed :class:`TestPlanState`, the note-marker parse/emit,
+JSON payload into a typed :class:`PlanState`, the note-marker parse/emit,
 and the blob round-trip. No ORM, no code host — every case is a value-in /
 value-out assertion on the state layer split out of ``render.py`` (Unit 22).
 """
@@ -74,11 +74,11 @@ class TestParseStateBlob:
 
 class TestMarkers:
     def test_marker_emit_and_find_are_consistent(self) -> None:
-        marker = state_mod.test_plan_marker(ticket_id="8521")
+        marker = state_mod.render_ticket_marker(ticket_id="8521")
         assert state_mod.find_ticket_marker(f"body\n{marker}\ntail", ticket_id="8521") is True
 
     def test_find_rejects_a_different_ticket(self) -> None:
-        marker = state_mod.test_plan_marker(ticket_id="8521")
+        marker = state_mod.render_ticket_marker(ticket_id="8521")
         assert state_mod.find_ticket_marker(marker, ticket_id="9999") is False
 
     def test_find_is_false_without_a_marker(self) -> None:

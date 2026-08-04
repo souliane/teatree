@@ -98,7 +98,7 @@ class TestRenderBody:
         local: _render.SideState | None = None,
         mrs: list[str] | None = None,
         steps: dict[str, list[str]] | None = None,
-    ) -> _render.TestPlanState:
+    ) -> _render.PlanState:
         default_mrs = [
             "https://gitlab.com/org/client/-/merge_requests/6331",
             "https://gitlab.com/org/product/-/merge_requests/7585",
@@ -354,7 +354,7 @@ class TestMergeState:
         )
 
     def test_dev_only_run_preserves_existing_local_column(self) -> None:
-        prior: _render.TestPlanState = {
+        prior: _render.PlanState = {
             "ticket": "8521",
             "title": "t",
             "mrs": [],
@@ -382,7 +382,7 @@ class TestMergeState:
     def test_steps_less_rerun_preserves_prior_steps(self) -> None:
         # A workflow's steps were recorded on a prior run; a later run that omits
         # steps must NOT erase them (workflow-level, persisted across re-renders).
-        prior: _render.TestPlanState = {
+        prior: _render.PlanState = {
             "ticket": "8521",
             "title": "t",
             "mrs": [],
@@ -1184,7 +1184,7 @@ class TestPureHelpers:
     """The marker / state-blob / existing-note helpers are independently testable."""
 
     def test_marker_round_trip(self) -> None:
-        marker = _render.test_plan_marker(ticket_id="8521")
+        marker = _render.render_ticket_marker(ticket_id="8521")
         assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
         assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 
@@ -1355,7 +1355,7 @@ class TestRetractEvidence(_EvidenceTestBase):
 
 
 class TestBrowserClickFirstTemplate(TestCase):
-    def _state(self, *, steps: list[str] | None = None) -> _render.TestPlanState:
+    def _state(self, *, steps: list[str] | None = None) -> _render.PlanState:
         return {
             "ticket": "8521",
             "title": "Login flow",
@@ -1403,7 +1403,7 @@ class TestBrowserClickFirstTemplate(TestCase):
 class TestBrowserClickFirstStepsWithoutMedia(TestCase):
     """A steps-only manifest (steps, no screenshots/video) must still render the steps."""
 
-    def _steps_only_state(self) -> _render.TestPlanState:
+    def _steps_only_state(self) -> _render.PlanState:
         return {
             "ticket": "8521",
             "title": "Login flow",
@@ -1446,7 +1446,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
         assert "2. Click Login" in visible
 
     def test_media_and_steps_both_render(self) -> None:
-        state: _render.TestPlanState = {
+        state: _render.PlanState = {
             "ticket": "8521",
             "title": "Login flow",
             "mrs": [],
@@ -1462,7 +1462,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
 
 
 class TestLinkApiTemplate(TestCase):
-    def _state(self) -> _render.TestPlanState:
+    def _state(self) -> _render.PlanState:
         return {
             "ticket": "8521",
             "title": "API check",
@@ -1498,7 +1498,7 @@ class TestLinkApiTemplate(TestCase):
 class TestLinkApiStepsRendered(TestCase):
     """A steps-only ``link-api`` manifest (steps, no link/code embeds) must render the steps."""
 
-    def _steps_only_state(self) -> _render.TestPlanState:
+    def _steps_only_state(self) -> _render.PlanState:
         return {
             "ticket": "8521",
             "title": "API check",
@@ -1542,7 +1542,7 @@ class TestLinkApiStepsRendered(TestCase):
         assert "2. Assert 201" in visible
 
     def test_renders_steps_alongside_link_and_code(self) -> None:
-        state: _render.TestPlanState = {
+        state: _render.PlanState = {
             "ticket": "8521",
             "title": "API check",
             "mrs": [],
@@ -1592,8 +1592,8 @@ class TestScenarioPlanTemplate(TestCase):
 
     def _state(
         self, *, scenarios: list[_scenario.Scenario], intro: str = "", environment: str = ""
-    ) -> _render.TestPlanState:
-        state: _render.TestPlanState = {
+    ) -> _render.PlanState:
+        state: _render.PlanState = {
             "ticket": "1025",
             "title": "Dark mode toggle",
             "mrs": [],
@@ -1690,7 +1690,7 @@ class TestScenarioPlanTemplate(TestCase):
 
 class TestNeverEmptyRender(TestCase):
     def test_raises_on_empty_state(self) -> None:
-        state: _render.TestPlanState = {
+        state: _render.PlanState = {
             "ticket": "8521",
             "title": "Empty",
             "mrs": [],
@@ -1829,7 +1829,7 @@ class TestTemplateThroughManifest(TestCase):
 class TestTemplateRoundTrip(TestCase):
     """A second ``post-test-plan`` re-reads the blob; new fields must survive."""
 
-    def _seeded_state(self) -> _render.TestPlanState:
+    def _seeded_state(self) -> _render.PlanState:
         return {
             "ticket": "8521",
             "title": "Login flow",
@@ -1850,7 +1850,7 @@ class TestTemplateRoundTrip(TestCase):
             "blocked_workflows": {"Checkout": "Not deployed yet"},
         }
 
-    def _reread(self, state: _render.TestPlanState) -> _render.TestPlanState:
+    def _reread(self, state: _render.PlanState) -> _render.PlanState:
         return _render.parse_state_blob(_render.render_body(state))
 
     def test_template_survives_round_trip(self) -> None:
@@ -1873,7 +1873,7 @@ class TestTemplateRoundTrip(TestCase):
 
 class TestCaptureMatrixRendersBlocked(TestCase):
     def test_capture_matrix_renders_blocked_workflow(self) -> None:
-        state: _render.TestPlanState = {
+        state: _render.PlanState = {
             "ticket": "8521",
             "title": "Login flow",
             "mrs": [],
