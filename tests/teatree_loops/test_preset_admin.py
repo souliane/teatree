@@ -36,24 +36,11 @@ class CreatePresetTestCase(TestCase):
 
 class PresetMetadataTestCase(TestCase):
     def setUp(self) -> None:
-        _preset("low-power", description="stale text", availability_mode="away")
+        _preset("low-power", description="stale text")
 
     def test_description_is_editable(self) -> None:
         update_preset_meta("low-power", description="Token-budget guard.")
         assert Mode.objects.by_name("low-power").description == "Token-budget guard."
-
-    def test_pin_is_switchable(self) -> None:
-        update_preset_meta("low-power", availability_pin="autonomous_away")
-        assert Mode.objects.by_name("low-power").availability_pin == "autonomous_away"
-
-    def test_pin_is_clearable(self) -> None:
-        update_preset_meta("low-power", availability_pin="")
-        assert Mode.objects.by_name("low-power").availability_pin is None
-
-    def test_unknown_pin_is_refused(self) -> None:
-        with pytest.raises(PresetEditError):
-            update_preset_meta("low-power", availability_pin="vacation")
-        assert Mode.objects.by_name("low-power").availability_pin == "away"
 
 
 class RenamePresetTestCase(TestCase):

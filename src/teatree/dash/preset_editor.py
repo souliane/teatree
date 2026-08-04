@@ -13,7 +13,6 @@ its deciding layer come from :mod:`teatree.loops.preset_status`, the same resolv
 from dataclasses import dataclass
 
 from teatree.core.models import Loop, Mode, ModeSchedule, ModeScheduleSlot
-from teatree.core.models.loop_preset import PIN_MODES
 from teatree.loops.preset_admin import PresetReferrers, preset_referrers
 from teatree.loops.preset_editing import ENTRY_INHERIT, ENTRY_OFF, ENTRY_ON, entry_state_of
 from teatree.loops.preset_status import PresetSummary, active_summary
@@ -40,7 +39,6 @@ class PresetCard:
     name: str
     description: str
     active: bool
-    availability_pin: str
     entries: tuple[PresetEntryRow, ...]
     referrers: PresetReferrers
     #: A shipped preset deletes only against a typed phrase naming what stops (#3842).
@@ -117,7 +115,6 @@ class PresetEditorView:
     selected_card: PresetCard | None = None
     entry_states: tuple[str, str, str] = (ENTRY_ON, ENTRY_OFF, ENTRY_INHERIT)
     weekdays: tuple[tuple[int, str], ...] = tuple(enumerate(WEEKDAY_LABELS))
-    pin_choices: tuple[str, ...] = tuple(sorted(PIN_MODES))
 
 
 def build_preset_editor(*, selected: str = "") -> PresetEditorView:
@@ -151,7 +148,6 @@ def _preset_card(preset: Mode, loops: tuple[Loop, ...], *, active_name: str) -> 
         name=preset.name,
         description=preset.description,
         active=preset.name == active_name,
-        availability_pin=preset.availability_pin or "",
         entries=tuple(
             PresetEntryRow(
                 loop_name=loop.name,

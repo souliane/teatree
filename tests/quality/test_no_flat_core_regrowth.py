@@ -197,7 +197,14 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # and letting a shared rule drift from the pair that shares it is how export and import came to
 # disagree at all. Two root leaves collapse to one package entry and the two new modules never
 # land at the root, mirroring retention/.
-PINNED_FLAT_CORE_MODULES = 107
+# 108: +forge_push_refs.py (#4117) — the branch-ref normalization (BranchRef + local_tip)
+# carved out of forge_push.py, which crossed the 500-LOC module-health ceiling once every ref
+# read and write went through one form. It answers "which string names this branch to git", a
+# different question from the credential/classification/verification seam the hub keeps. It
+# lands at the root beside forge_push.py, mirroring speak_cleaning.py beside speak.py and
+# notify_targets.py beside notify.py; no existing subpackage owns it (merge/ is the keystone
+# transition, not a push seam).
+PINNED_FLAT_CORE_MODULES = 108
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

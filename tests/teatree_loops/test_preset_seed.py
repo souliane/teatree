@@ -16,7 +16,8 @@ import django.test
 from django.core.management import call_command
 
 from teatree.config.seed_defaults import shipped_seed_table
-from teatree.core.models import ConfigSetting, Mode, ModeSchedule, ModeScheduleSlot
+from teatree.core.mode_resolution import resolve_active_mode
+from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING, resolve_active_preset
 from teatree.loops.mode_shape import INTAKE_LOOPS, intake_without_delivery
 from teatree.loops.preset_seed import (
@@ -37,6 +38,7 @@ _VIENNA = zoneinfo.ZoneInfo("Europe/Vienna")
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestSeedDefaultPresets(django.test.TestCase):
     def setUp(self) -> None:
+        ModeOverride.objects.all().delete()
         Mode.objects.all().delete()
         ModeSchedule.objects.all().delete()
 
@@ -61,9 +63,20 @@ class TestSeedDefaultPresets(django.test.TestCase):
         assert entries["review"] is False
         assert entries["dispatch"] is False
 
-    def test_unattended_pins_autonomous_away(self) -> None:
+    def test_a_freshly_seeded_unattended_resolves_to_its_autonomous_away_posture(self) -> None:
+        """The seed → override → resolve chain still yields ``unattended``'s posture.
+
+        The end-to-end pin the availability string used to stand in for: a fresh box
+        seeds the row, an override selects it, and the resolver reads the booleans.
+        """
         seed_default_presets_and_schedules()
-        assert Mode.objects.get(name="unattended").availability_pin == "autonomous_away"
+        ModeOverride.objects.set_override("unattended")
+
+        resolved = resolve_active_mode()
+
+        assert resolved.name == "unattended"
+        assert resolved.defers_questions is True
+        assert resolved.pauses_self_pump is False
 
     def test_mode_booleans_seeded_per_recommended_table(self) -> None:
         seed_default_presets_and_schedules()
@@ -285,15 +298,15 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "offline": (frozenset(), frozenset(spec.name for spec in DEFAULT_LOOPS)),
 }
 
-#: ``(availability_mode, defers_questions, pauses_self_pump, presence_sensitive)`` per mode.
-_SHIPPED_POSTURES: dict[str, tuple[str, bool, bool, bool]] = {
-    "engaged": ("", False, False, True),
-    "heads-down": ("", False, False, True),
-    "unattended": ("autonomous_away", True, False, True),
-    "maintenance": ("", True, False, True),
-    "low-power": ("", True, False, True),
-    "off": ("", False, False, True),
-    "offline": ("away", True, True, False),
+#: ``(defers_questions, pauses_self_pump, presence_sensitive)`` per mode.
+_SHIPPED_POSTURES: dict[str, tuple[bool, bool, bool]] = {
+    "engaged": (False, False, True),
+    "heads-down": (False, False, True),
+    "unattended": (True, False, True),
+    "maintenance": (True, False, True),
+    "low-power": (True, False, True),
+    "off": (False, False, True),
+    "offline": (True, True, False),
 }
 
 
@@ -308,9 +321,9 @@ class TestShippedSpecsAreUnchangedByTheMoveIntoTheFile:
             assert {loop for loop, value in entries.items() if value} == on, name
             assert {loop for loop, value in entries.items() if not value} == off, name
 
-    def test_every_mode_ships_its_recorded_availability_posture(self) -> None:
+    def test_every_mode_ships_its_recorded_boolean_posture(self) -> None:
         for spec in default_preset_specs():
-            posture = (spec.availability_mode, spec.defers_questions, spec.pauses_self_pump, spec.presence_sensitive)
+            posture = (spec.defers_questions, spec.pauses_self_pump, spec.presence_sensitive)
             assert posture == _SHIPPED_POSTURES[spec.name], spec.name
 
     def test_the_exhaustive_modes_name_every_shipped_loop(self) -> None:
@@ -363,7 +376,6 @@ class TestSpecsAreShippedDataNotCode:
         fixture.write_text(
             "[modes.sentinel]\n"
             'description = "a synthetic mode"\n'
-            'availability_mode = "away"\n'
             "defers_questions = true\n"
             "pauses_self_pump = true\n"
             "presence_sensitive = false\n"
@@ -377,7 +389,6 @@ class TestSpecsAreShippedDataNotCode:
             name="sentinel",
             description="a synthetic mode",
             entries={"inbox": True, "dispatch": False},
-            availability_mode="away",
             defers_questions=True,
             pauses_self_pump=True,
             presence_sensitive=False,
@@ -410,7 +421,7 @@ class TestSpecsAreShippedDataNotCode:
         )
         (mode,) = default_preset_specs(fixture)
         (schedule,) = default_schedule_specs(fixture)
-        assert (mode.entries, mode.availability_mode, mode.defers_questions) == ({}, "", False)
+        assert (mode.entries, mode.defers_questions) == ({}, False)
         assert (mode.pauses_self_pump, mode.presence_sensitive) == (False, True)
         assert (schedule.slots, schedule.timezone) == ((), "")
 

@@ -146,20 +146,16 @@ class SchedulePostTestCase(TestCase):
 
 class PresetAdminPostTestCase(TestCase):
     def setUp(self) -> None:
-        _preset("spare", {}, description="old text", availability_mode="away")
+        _preset("spare", {}, description="old text")
         self.addCleanup(ModeOverride.objects.clear)
 
     def test_creating_a_preset_persists(self) -> None:
         self.client.post(reverse("dash:preset_create"), {"name": "night-shift", "description": "Nights."})
         assert Mode.objects.by_name("night-shift").description == "Nights."
 
-    def test_editing_description_and_clearing_the_pin_persists(self) -> None:
-        self.client.post(
-            reverse("dash:preset_meta"), {"preset": "spare", "description": "new text", "availability_pin": ""}
-        )
-        preset = Mode.objects.by_name("spare")
-        assert preset.description == "new text"
-        assert preset.availability_pin is None
+    def test_editing_the_description_persists(self) -> None:
+        self.client.post(reverse("dash:preset_meta"), {"preset": "spare", "description": "new text"})
+        assert Mode.objects.by_name("spare").description == "new text"
 
     def test_renaming_persists(self) -> None:
         self.client.post(reverse("dash:preset_rename"), {"preset": "spare", "new_name": "spare-tokens"})
