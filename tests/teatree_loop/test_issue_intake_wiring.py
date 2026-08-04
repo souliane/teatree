@@ -523,6 +523,29 @@ class TestMergeSignalCountsOnlyLivePrs(TestCase):
         assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.can_claim is True
 
+    def test_two_casings_of_one_pr_count_once_against_the_live_set(self) -> None:
+        """The unique constraint is case-SENSITIVE, so one PR can hold two streak rows.
+
+        Counting streaks by row while the live set is counted by de-duplicated key lets
+        that one PR contribute 2 to ``stuck_prs`` and 1 to ``open_prs`` — a brake fired on
+        arithmetic, with a healthy moving PR still in the pile.
+        """
+        for iid in (800, 801, 802):
+            self._live_pr(overlay="acme", repo="o/r", iid=iid)
+        for slug in ("o/r", "O/R"):
+            SweepSkipStreak.objects.create(slug=slug, pr_id=800, reason="ci red", tick_count=9, overlay="acme")
+        SweepSkipStreak.objects.create(slug="o/r", pr_id=801, reason="ci red", tick_count=9, overlay="acme")
+
+        signal = read_merge_signal(overlay="acme")
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        assert signal.open_prs == 3
+        assert signal.stuck_prs == 2, "two casings of one PR are one stuck PR, not two"
+        assert not signal.stalled, "PR 802 is healthy and moving — the pipeline is not stalled"
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
     def test_a_stall_in_one_overlay_leaves_another_overlay_claiming(self) -> None:
         for i in range(3):
             self._live_pr(overlay="other", repo="x/y", iid=500 + i)
