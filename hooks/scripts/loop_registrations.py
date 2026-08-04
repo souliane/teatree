@@ -24,17 +24,35 @@ too, so the hook, the ``/t3:health`` skill, and the CLI can never disagree: reac
 slots come from ``teatree.loop.loop_cadences.reactive_slot_directives`` (the
 ``/loop`` directive).
 
-**Standing directives** (#4166) — the SECOND, differently-scoped emission this
-module owns. The reactive slots above are singleton infrastructure, so only the
-loop OWNER registers them; the standing directives are per-session behaviour, so
-EVERY engaged session gets them (the SDK lane excluded — a factory worker is
-FSM-governed and has no user-request channel). They keep their own
-``<session>.directives-pending`` emit-once marker for that reason.
+**Standing directives** (#4166) — the SECOND emission this module owns, and it
+has TWO delivery shapes because the seam declares a per-slot ``wakes_session``:
 
-This half is the Claude-plugin ADAPTER of a harness-neutral model: policy, text
-and cadence all live in :mod:`teatree.loop.standing_directives`, and this module
-only renders whatever that seam resolves as ``/loop <duration>`` registrations.
-Another harness delivers the same three behaviours by reading
+A ``wakes_session`` FALSE slot is written into the turn that is already
+happening, as plain context. It costs no turn, so it arms nothing, and it is
+gated on the WIDE ``_teatree_engaged`` seam: every engaged session, from its
+first prompt, re-delivered no more often than the slot's own interval.
+
+A ``wakes_session`` TRUE slot is rendered as a recurring ``/loop <duration>``
+registration, which makes the session wake up on its own. That IS arming the
+loop machinery, so it is gated on ``_loop_auto_load_active`` — the marker split
+hooks/CLAUDE.md pins (``.t3-engaged`` engages the suggester only; the loop
+machinery consults ``.teatree-active``), so a session that merely loaded a
+lifecycle skill can never arm a self-waking slot (#256). A ``scope`` of
+``attended-singleton`` additionally requires the tick-owner election, so a
+host-global slot fires once per host rather than once per session. The SDK lane
+is excluded from both shapes — a factory worker is FSM-governed and has no
+user-request channel.
+
+Each shape keeps its OWN per-session marker holding per-slot data
+(``directives-injected`` carries the last delivery instant per slot;
+``directives-registered`` carries the slots already registered), because the
+singleton slot's eligibility is decided later in the same handler than the
+others' and a shared emit-once marker would strand it.
+
+This half is the Claude-plugin ADAPTER of a harness-neutral model: policy, text,
+cadence, scope and delivery cost all belong to
+:mod:`teatree.loop.standing_directives`, and this module only maps them onto this
+harness's own mechanisms. Another harness delivers the same behaviours by reading
 ``t3 loop directives --json`` and writing its own adapter, changing no teatree
 code — which is why no directive text and no cadence value may appear here.
 
@@ -44,8 +62,10 @@ yields ZERO directives, so the handler stays silent — never an exception into 
 read, so the three infra loops still register even when the DB is unreachable.
 """
 
+import json
 import re
 import sys
+import time
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:  # the contract is OWNED by layer 1; typed here, never redefined
@@ -142,59 +162,138 @@ def _duration_token(seconds: int) -> str:
     return f"{seconds}s"
 
 
-def emit_standing_directives(stream: _Writable) -> bool:
-    """Render every resolved standing directive as a recurring ``/loop`` registration.
+_INJECTED_MARKER = "directives-injected"
+_REGISTERED_MARKER = "directives-registered"
 
-    Returns whether anything was written. The slot id is rendered inline so the
-    owner can tell which registration a later "stop the loop" would drop, and so
-    a re-emission is recognisable rather than anonymous. Nothing resolvable —
-    or any resolver failure — writes NOTHING: a session that cannot reach the
-    seam is left exactly as it was, never nagged with a partial rule.
-    """
+
+def _marker_data(session_id: str, suffix: str) -> dict[str, float]:
+    """The per-slot delivery data in *suffix*, or ``{}`` when absent/unreadable."""
+    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
+
     try:
-        directives = _standing_directives()
-    except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.
+        parsed = json.loads(_state_file(session_id, suffix).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _write_marker_data(session_id: str, suffix: str, data: dict[str, float]) -> None:
+    """Persist *data*; an unwritable state dir is silent, never a raise."""
+    from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
+
+    try:
+        _ensure_state_dir()
+        _state_file(session_id, suffix).write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _drop_foreign_markers(session_id: str) -> None:
+    """Remove other sessions' directive markers — this module's own housekeeping.
+
+    The router's sweep is capped to shrink-only, so the markers this module mints
+    are reaped here rather than by growing it.
+    """
+    from hooks.scripts.hook_router import STATE_DIR  # noqa: PLC0415 deferred back-import
+
+    try:
+        for suffix in (_INJECTED_MARKER, _REGISTERED_MARKER):
+            for stale in STATE_DIR.glob(f"*.{suffix}"):
+                if stale.stem != session_id:
+                    stale.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _inject_context_directives(
+    session_id: str, directives: "list[StandingDirectivePayload]", stream: _Writable
+) -> bool:
+    """Write the zero-cost directives into the turn that is already happening.
+
+    Gated on the WIDE engagement seam: this arms nothing, so narrowing it would
+    cost reach and buy no safety. Throttled per slot to the seam's own interval,
+    and deliberately NOT emit-once — repeated delivery is the entire mechanism.
+    """
+    from hooks.scripts.hook_router import _teatree_engaged  # noqa: PLC0415 deferred back-import
+
+    candidates = [d for d in directives if not d["wakes_session"]]
+    if not candidates or not _teatree_engaged(session_id):
         return False
-    if not directives:
+    data = _marker_data(session_id, _INJECTED_MARKER)
+    now = time.time()
+    due = [d for d in candidates if now - data.get(d["slot_id"], 0.0) >= d["cadence_seconds"]]
+    if not due:
+        return False
+    stream.write(f"Standing rules for this session ({len(due)}) — they apply to your next reply:\n")
+    for directive in due:
+        stream.write(f"  - [{directive['slot_id']}] {directive['text']}\n")
+        data[directive["slot_id"]] = now
+    _write_marker_data(session_id, _INJECTED_MARKER, data)
+    return True
+
+
+def _register_waking_directives(
+    session_id: str, directives: "list[StandingDirectivePayload]", stream: _Writable
+) -> bool:
+    """Register the self-driving directives as recurring ``/loop``s, once per session.
+
+    Gated on ``_loop_auto_load_active`` because a self-waking slot arms the loop
+    machinery, and a host-global slot additionally on the tick-owner election so
+    N sessions do not each run it. The slot id is rendered inline so the owner
+    can tell which registration a later "stop the loop" would drop.
+    """
+    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+        _claim_loop_ownership,
+        _loop_auto_load_active,
+        _session_owns_loop,
+    )
+    from teatree.loop.standing_directives import SCOPE_ATTENDED_SINGLETON  # noqa: PLC0415 deferred cold-hook import
+
+    candidates = [d for d in directives if d["wakes_session"]]
+    if not candidates or not _loop_auto_load_active(session_id):
+        return False
+    data = _marker_data(session_id, _REGISTERED_MARKER)
+    pending = [d for d in candidates if d["slot_id"] not in data]
+    if any(d["scope"] == SCOPE_ATTENDED_SINGLETON for d in pending):
+        _claim_loop_ownership(session_id)
+        if not _session_owns_loop(session_id):
+            pending = [d for d in pending if d["scope"] != SCOPE_ATTENDED_SINGLETON]
+    if not pending:
         return False
     stream.write(
-        f"Session setup: register the {len(directives)} standing directives — recurring reminders that "
-        f"keep the standing rules from decaying out of context. Run each slash command in this session:\n"
+        f"Session setup: register the {len(pending)} recurring standing slots so they keep firing. "
+        f"Run each slash command in this session:\n"
     )
-    for directive in directives:
+    now = time.time()
+    for directive in pending:
         cadence = _duration_token(directive["cadence_seconds"])
         stream.write(f"  - /loop {cadence} [{directive['slot_id']}] {directive['text']}\n")
+        data[directive["slot_id"]] = now
+    _write_marker_data(session_id, _REGISTERED_MARKER, data)
     return True
 
 
 def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
-    """Emit the standing directives to an engaged attended session, once per session.
+    """Deliver both standing-directive shapes to *session_id*; returns whether anything was written.
 
-    Deliberately scoped WIDER than the reactive slots (every engaged session, not
-    only the loop owner) and NARROWER on lane (never the Agent-SDK lane, whose
-    workers are FSM-governed and have no user-request channel). Fail-open silent:
-    an unreadable engagement marker or lane probe emits nothing.
+    Fail-open silent throughout: an unreadable marker, an unresolvable seam, a
+    raising engagement or ownership probe all emit nothing rather than raising
+    into the hot ``UserPromptSubmit`` budget.
     """
     try:
         from hooks.scripts.headless_authoring_gate import LANE_SDK, session_lane  # noqa: PLC0415 deferred back-import
-        from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
-            _ensure_state_dir,
-            _state_file,
-            _teatree_engaged,
-        )
 
-        if not session_id or session_lane() == LANE_SDK or not _teatree_engaged(session_id):
+        if not session_id or session_lane() == LANE_SDK:
             return False
-        _ensure_state_dir()
-        marker = _state_file(session_id, "directives-pending")
-        if marker.is_file():
+        directives = _standing_directives()
+        if not directives:
             return False
-        if not emit_standing_directives(stream):
-            return False
-        marker.write_text("1", encoding="utf-8")
+        _drop_foreign_markers(session_id)
+        injected = _inject_context_directives(session_id, directives, stream)
+        registered = _register_waking_directives(session_id, directives, stream)
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.
         return False
-    return True
+    return injected or registered
 
 
 def emit_loop_registrations(stream: _Writable) -> bool:

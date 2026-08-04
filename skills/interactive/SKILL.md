@@ -66,23 +66,38 @@ Three standing rules are re-delivered to an engaged session on their own cadence
 they were written down in three places and skipped anyway — the failure is context decay,
 so the repetition is automated rather than remembered.
 
-| Slot | Cadence | What it holds |
-|---|---|---|
-| `standing-golden-rule` | 300s | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
-| `standing-todo-consolidate` | 1800s | Every user request is captured as a task; reconcile from durable state first, rescan the transcript only if something is unaccounted for; then implement the outstanding requests, oldest first. |
-| `standing-pr-board` | 600s | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
+| Slot | Cadence | Reaches | What it holds |
+|---|---|---|---|
+| `standing-golden-rule` | 300s | every attended session, costing no turn | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
+| `standing-todo-consolidate` | 1800s | an attended session that drives itself | Every user request is captured as a task; reconcile from durable state first, rescan the transcript only if something is unaccounted for; then implement the outstanding requests, oldest first. |
+| `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
 
-Read the live text with `t3 loop directives` (`--json` for the machine contract:
-`{slot_id, cadence_seconds, text, scope}` per directive). The text is data, not code — an
-owner edits a directive by creating a `Prompt` row named `standing-directive:<slot_id>`,
-which is versioned like any other prompt; an empty body switches that slot off, and the
-cadences are tunable per slot (`T3_GOLDEN_RULE_CADENCE`, `T3_TODO_CONSOLIDATE_CADENCE`,
-`T3_PR_BOARD_CADENCE`, floors 60/300/120).
+The third column is the cost story. A rule that only has to be in context when you next act
+rides the turn already happening, so it reaches widest and is never rationed; a rule that
+has to drive work with nobody prompting costs a whole turn, so it reaches only a session
+that opted into driving itself — and the board is one board per host, not one per session.
+That comes to **2 self-woken turns per hour per attended session plus 6 per host**, and
+none at all while the active preset pauses the self-pump (the zero-turn rule still arrives).
 
-The directives themselves are harness-neutral: teatree owns the text, the cadences and the
-attended-scoping rule, and each harness supplies its own delivery adapter over the JSON
-contract above. They are advisory — repeated prose, not a gate. A rule that is repeated is
-one the session still holds; it is not one it cannot break.
+Read the live text and that budget with `t3 loop directives show` (`--json` for the machine
+contract: `{slot_id, cadence_seconds, text, scope, wakes_session}` per directive). The text
+is data, not code — an owner edits a directive by creating a `Prompt` row named
+`standing-directive:<slot_id>`, versioned like any other prompt, and the cadences are
+tunable per slot (`T3_GOLDEN_RULE_CADENCE`, `T3_TODO_CONSOLIDATE_CADENCE`,
+`T3_PR_BOARD_CADENCE`, floors 60/600/300).
+
+Switching a slot off:
+
+```bash
+t3 loop directives disable standing-pr-board   # one slot off, versioned and reversible
+t3 loop directives enable standing-pr-board    # back on, restoring your own text if you had one
+t3 loop directives disable --all               # the whole feature off
+```
+
+The directives themselves are harness-neutral: teatree owns the text, the cadences, the
+scoping rule and the per-slot delivery cost, and each harness supplies its own delivery
+adapter over the JSON contract above. They are advisory — repeated prose, not a gate. A
+rule that is repeated is one the session still holds; it is not one it cannot break.
 
 ## Plugin Hooks Architecture
 

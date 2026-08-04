@@ -6,10 +6,11 @@ seeded production prompt names.
 """
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from teatree.core.models import Prompt
+from teatree.core.models import Loop, Prompt
 
 
 class TestPromptDefaults(TestCase):
@@ -40,3 +41,24 @@ class TestPromptManager(TestCase):
 
     def test_by_name_returns_none_when_absent(self) -> None:
         assert Prompt.objects.by_name("demo-missing") is None
+
+
+class TestAnEmptyBody(TestCase):
+    """Empty is legal exactly where it means "switched off" (#4166)."""
+
+    def test_an_unreferenced_prompt_may_have_an_empty_body(self) -> None:
+        prompt = Prompt.objects.create(name="demo-off", body="")
+
+        prompt.full_clean()
+
+        assert prompt.body == ""
+
+    def test_a_prompt_a_loop_runs_refuses_an_empty_body(self) -> None:
+        prompt = Prompt.objects.create(name="demo-loop-body", body="do the thing")
+        Loop.objects.create(name="demo-loop", prompt=prompt)
+        prompt.body = "   "
+
+        with pytest.raises(ValidationError) as exc:
+            prompt.full_clean()
+
+        assert "body" in exc.value.message_dict

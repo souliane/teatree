@@ -211,9 +211,18 @@ Group root — forces sub-commands to be addressed by name.
 | `record-e2e-run` | Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
+## `loop_directive_set`
+
+Switch standing-directive slots off (disable) or back on (enable) (#4166).
+
+| Subcommand | Description |
+| --- | --- |
+| `disable` | Switch each named slot off by writing an empty override body |
+| `enable` | Switch each named slot back on, restoring the owner's own text where there is one |
+
 ## `loop_directives`
 
-Print the standing directives with their resolved cadence and text (read-only; #4166).
+Print the standing directives with their resolved cadence, scope, cost and text (#4166).
 
 ## `loop_dispatch`
 

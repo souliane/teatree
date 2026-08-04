@@ -20,10 +20,18 @@ passed in, is a loud error rather than a silent wrong-render.
 snapshots the SUPERSEDED body+params as a :class:`PromptVersion` row (keyed on
 ``(prompt, version)``) before writing the new content, so the full edit history
 is durable and auditable. An identical revise is a no-op — no version churn.
+
+**An empty body is legal, and only where it means something (#4166).** A standing
+directive is switched off by giving its override prompt an empty body, so the
+field allows blank and the admin change form accepts it. That would otherwise let
+a live :class:`~teatree.core.models.loop.Loop` tick an empty instruction, so
+:meth:`Prompt.clean` refuses an empty body on a prompt a loop references — empty
+means "off", never "run nothing".
 """
 
 from typing import ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 
 
@@ -47,7 +55,7 @@ class Prompt(models.Model):
     """One row per named, reusable, triggerable prompt."""
 
     name = models.CharField(max_length=64, unique=True)
-    body = models.TextField()
+    body = models.TextField(blank=True)
     params = models.JSONField(default=list, blank=True)
     description = models.TextField(blank=True, default="")
     overlay = models.CharField(max_length=64, blank=True, default="")
@@ -62,6 +70,13 @@ class Prompt(models.Model):
 
     def __str__(self) -> str:
         return f"prompt<{self.name}>"
+
+    def clean(self) -> None:
+        """Refuse an empty body on a prompt a :class:`Loop` runs."""
+        if self.body.strip() or self.pk is None or not self.loops.exists():  # ty: ignore[unresolved-attribute]
+            return
+        msg = "A prompt a loop runs needs a body — an empty body would tick an empty instruction."
+        raise ValidationError({"body": msg})
 
     @property
     def declared_params(self) -> frozenset[str]:

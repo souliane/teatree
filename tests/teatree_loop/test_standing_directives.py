@@ -1,32 +1,88 @@
 """Harness-neutral standing directives — the layer-1 contract (#4166 Phase 1).
 
-The three directives, their cadences, the ``Prompt``-row override, and the
-``{slot_id, cadence_seconds, text, scope}`` read surface every harness consumes.
-Nothing here knows about slash commands, hooks, or session markers — that is the
-adapter's layer, pinned separately in ``tests/test_loop_registrations_hook.py``.
+The three directives, their cadences, their per-slot scope and delivery cost, the
+``Prompt``-row override, and the ``{slot_id, cadence_seconds, text, scope,
+wakes_session}`` read surface every harness consumes. Nothing here knows about
+slash commands, hooks, or session markers — that is the adapter's layer, pinned
+separately in ``tests/test_standing_directives_adapter.py``.
 """
 
+import re
 from unittest import mock
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Prompt
+from teatree.core.models import Mode, Prompt
+from teatree.loop.preset_resolution import ActivePreset
 from teatree.loop.standing_directives import (
     MAX_DIRECTIVE_CHARS,
-    STANDING_DIRECTIVE_SCOPE,
+    SCOPE_ATTENDED,
+    SCOPE_ATTENDED_SINGLETON,
     STANDING_DIRECTIVES,
+    StandingDirective,
     StandingDirectivePayload,
     golden_rule_cadence_seconds,
     override_prompt_name,
     pr_board_cadence_seconds,
     resolve_standing_directives,
+    self_woken_turns_per_hour,
     todo_consolidate_cadence_seconds,
 )
 
 
 def _text(slot_id: str) -> str:
     return next(d.default_text for d in STANDING_DIRECTIVES if d.slot_id == slot_id)
+
+
+# ── the harness-vocabulary predicate (minor 5) ───────────────────────
+#
+# The old guard was a five-substring denylist that let bare `/loop` and
+# `/t3:interactive` through on a trailing space and named no session marker. A
+# predicate over the SHAPE of a slash token makes that whole class impossible,
+# and the control corpus below is what proves the predicate can go red.
+
+_SLASH_SHAPED_TOKEN = re.compile(r"(?<!\S)/[A-Za-z0-9][\w:.\-]*")
+
+_HARNESS_TOKENS = (
+    ".teatree-active",
+    ".t3-engaged",
+    "teatree-active",
+    "t3-engaged",
+    "directives-pending",
+    "loop-pending",
+    "session marker",
+    "pretooluse",
+    "userpromptsubmit",
+    "sessionstart",
+    "stop hook",
+    "hook",
+    "additionalcontext",
+    "claude",
+    "anthropic",
+    "cursor",
+    "copilot",
+    "codex",
+    "slash command",
+)
+
+#: Mutations that MUST be caught. The first is the reviewer's own — it slipped
+#: past the shipped denylist, which is why the guard is a predicate now.
+_HARNESS_VOCABULARY_MUTATIONS = (
+    " Set the .teatree-active session marker.",
+    " per the /t3:interactive workflow.",
+    " register a /loop",
+    " the UserPromptSubmit hook injects this.",
+    " ask Claude to do it.",
+)
+
+
+def harness_vocabulary_violations(text: str) -> list[str]:
+    """Every harness-specific token in *text* — empty means layer-1 neutral."""
+    lowered = text.lower()
+    found = {match.group(0) for match in _SLASH_SHAPED_TOKEN.finditer(text)}
+    found.update(token for token in _HARNESS_TOKENS if token in lowered)
+    return sorted(found)
 
 
 class TestTheThreeSlots:
@@ -46,8 +102,10 @@ class TestTheThreeSlots:
         assert "skip-planning" in text
         assert "NOT a plan" in text
         # The second coupled failure: the orchestrator doing the work itself.
+        # Assert the BEHAVIOUR clause, never a pointer to a harness-specific
+        # skill — the module claims to carry no such vocabulary.
         assert "never implements itself" in text
-        assert "/t3:interactive" in text
+        assert "delegate every implementation" in text
 
     def test_todo_directive_is_durable_state_first_with_a_conditional_rescan(self) -> None:
         text = _text("standing-todo-consolidate")
@@ -69,13 +127,32 @@ class TestTheThreeSlots:
         for directive in STANDING_DIRECTIVES:
             assert len(directive.default_text) <= MAX_DIRECTIVE_CHARS, directive.slot_id
 
-    def test_no_slash_loop_or_hook_vocabulary_leaks_into_layer_one(self) -> None:
-        # Harness neutrality: another harness reads these texts verbatim, so no
-        # Claude-plugin vocabulary may appear in them.
-        for directive in STANDING_DIRECTIVES:
-            lowered = directive.default_text.lower()
-            for banned in ("/loop ", "pretooluse", "userpromptsubmit", "hook", "claude"):
-                assert banned not in lowered, f"{directive.slot_id} leaks {banned!r}"
+    def test_the_slot_table_is_the_scope_and_delivery_cost_contract(self) -> None:
+        # Cost follows the delivery shape: the zero-turn rule reaches every
+        # attended session, and the only global slot is delivered once per host.
+        by_slot = {d.slot_id: (d.scope, d.wakes_session) for d in STANDING_DIRECTIVES}
+
+        assert by_slot == {
+            "standing-golden-rule": (SCOPE_ATTENDED, False),
+            "standing-todo-consolidate": (SCOPE_ATTENDED, True),
+            "standing-pr-board": (SCOPE_ATTENDED_SINGLETON, True),
+        }
+
+
+class TestHarnessVocabularyIsAbsent:
+    """Minor 5: the neutrality guard, and the control corpus proving it can fail."""
+
+    @pytest.mark.parametrize("directive", STANDING_DIRECTIVES, ids=lambda d: d.slot_id)
+    def test_a_real_directive_text_is_clean(self, directive: StandingDirective) -> None:
+        assert harness_vocabulary_violations(directive.default_text) == []
+
+    @pytest.mark.parametrize("mutation", _HARNESS_VOCABULARY_MUTATIONS)
+    def test_control_a_harness_token_appended_to_a_real_text_is_caught(self, mutation: str) -> None:
+        # CONTROL — each of these passed the shipped substring denylist. If any
+        # returns clean, the guard is vacuous and its green means nothing.
+        mutated = _text("standing-golden-rule") + mutation
+
+        assert harness_vocabulary_violations(mutated) != []
 
 
 class TestCadences:
@@ -99,8 +176,18 @@ class TestCadences:
         monkeypatch.setenv("T3_TODO_CONSOLIDATE_CADENCE", "1")
         monkeypatch.setenv("T3_PR_BOARD_CADENCE", "1")
         assert golden_rule_cadence_seconds() == 60
-        assert todo_consolidate_cadence_seconds() == 300
-        assert pr_board_cadence_seconds() == 120
+        assert todo_consolidate_cadence_seconds() == 600
+        assert pr_board_cadence_seconds() == 300
+
+    def test_the_old_self_waking_floors_are_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The floor is the real bound, and the shipped ones permitted a single
+        # session to wake itself ~100 times an hour. A configuration AT the old
+        # floors must now be clamped up, not honoured.
+        monkeypatch.setenv("T3_TODO_CONSOLIDATE_CADENCE", "300")
+        monkeypatch.setenv("T3_PR_BOARD_CADENCE", "120")
+
+        assert todo_consolidate_cadence_seconds() == 600
+        assert pr_board_cadence_seconds() == 300
 
     @pytest.mark.parametrize("raw", ["", "   ", "not-a-number"])
     def test_garbage_override_degrades_to_the_default(self, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
@@ -117,7 +204,8 @@ class TestResolveStandingDirectives(TestCase):
         assert [r.slot_id for r in resolved] == [d.slot_id for d in STANDING_DIRECTIVES]
         assert [r.text for r in resolved] == [d.default_text for d in STANDING_DIRECTIVES]
         assert [r.cadence_seconds for r in resolved] == [300, 1800, 600]
-        assert {r.scope for r in resolved} == {STANDING_DIRECTIVE_SCOPE}
+        assert [r.scope for r in resolved] == [SCOPE_ATTENDED, SCOPE_ATTENDED, SCOPE_ATTENDED_SINGLETON]
+        assert [r.wakes_session for r in resolved] == [False, True, True]
 
     def test_prompt_row_override_wins_over_the_compiled_default(self) -> None:
         Prompt.objects.create(name=override_prompt_name("standing-pr-board"), body="Owner-edited board rule.")
@@ -154,7 +242,7 @@ class TestResolveStandingDirectives(TestCase):
 
         assert [r.text for r in resolved] == [d.default_text for d in STANDING_DIRECTIVES]
 
-    def test_as_dict_is_the_documented_four_key_contract(self) -> None:
+    def test_as_dict_is_the_documented_five_key_contract(self) -> None:
         payload = resolve_standing_directives()[0].as_dict()
 
         # The declared TypedDict IS the contract, so the emitted payload's keys
@@ -162,3 +250,59 @@ class TestResolveStandingDirectives(TestCase):
         assert set(payload) == set(StandingDirectivePayload.__annotations__)
         assert payload["slot_id"] == "standing-golden-rule"
         assert payload["scope"] == "attended"
+        assert payload["wakes_session"] is False
+
+
+class TestTheSelfWokenTurnBudget(TestCase):
+    """The aggregate cost, pinned — the number the cadences and floors exist to bound."""
+
+    def test_the_default_budget(self) -> None:
+        assert self_woken_turns_per_hour() == {"per_session": 2, "per_host_singleton": 6}
+
+    def test_the_worst_case_budget_at_the_floors(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"T3_TODO_CONSOLIDATE_CADENCE": "1", "T3_PR_BOARD_CADENCE": "1"},
+        ):
+            assert self_woken_turns_per_hour() == {"per_session": 6, "per_host_singleton": 12}
+
+    def test_a_disabled_slot_leaves_the_budget(self) -> None:
+        Prompt.objects.create(name=override_prompt_name("standing-pr-board"), body="")
+
+        assert self_woken_turns_per_hour() == {"per_session": 2, "per_host_singleton": 0}
+
+
+class TestThePresetBrake(TestCase):
+    """A self-waking directive IS a self-pump, so the away preset brakes it."""
+
+    @staticmethod
+    def _away_preset() -> ActivePreset:
+        mode = Mode(name="holiday", defers_questions=True, pauses_self_pump=True)
+        return ActivePreset(preset=mode, layer="override", reason="test", until=None)
+
+    def test_a_paused_self_pump_drops_the_waking_slots_and_keeps_the_zero_turn_rule(self) -> None:
+        with mock.patch("teatree.loop.preset_resolution.resolve_active_preset", return_value=self._away_preset()):
+            resolved = resolve_standing_directives()
+            budget = self_woken_turns_per_hour()
+
+        assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
+        assert budget == {"per_session": 0, "per_host_singleton": 0}
+
+    def test_a_preset_that_does_not_pause_the_pump_delivers_everything(self) -> None:
+        mode = Mode(name="reachable", defers_questions=False, pauses_self_pump=False)
+        active = ActivePreset(preset=mode, layer="schedule", reason="test", until=None)
+
+        with mock.patch("teatree.loop.preset_resolution.resolve_active_preset", return_value=active):
+            resolved = resolve_standing_directives()
+
+        assert len(resolved) == len(STANDING_DIRECTIVES)
+
+    def test_a_raising_preset_resolver_fails_open_to_delivering(self) -> None:
+        # Polarity: never suppress a rule because the brake could not be read.
+        with mock.patch(
+            "teatree.loop.preset_resolution.resolve_active_preset",
+            side_effect=RuntimeError("no preset table"),
+        ):
+            resolved = resolve_standing_directives()
+
+        assert len(resolved) == len(STANDING_DIRECTIVES)

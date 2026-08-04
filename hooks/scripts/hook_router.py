@@ -808,7 +808,7 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
 
     It ALSO delivers the standing directives (#4166) — same sibling, wider scope:
     they go to every engaged session, so they are emitted BEFORE the owner
-    election, under their own ``directives-pending`` marker.
+    election; the sibling decides per slot which gate applies and which marker.
     """
     session_id = data.get("session_id", "")
     if not session_id:

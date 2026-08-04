@@ -31,7 +31,7 @@ import typer
 
 from teatree.agents import permission_modes
 from teatree.cli.loop.claim_next import claim_next_command
-from teatree.cli.loop.directives import directives_command
+from teatree.cli.loop.directives import directives_app
 from teatree.cli.loop.drain_queue import drain_queue_app
 from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.listing import list_command
@@ -403,10 +403,10 @@ loop_app.command("claim-next")(claim_next_command)
 # reason) and registered as a flat ``t3 loop list``.
 loop_app.command("list")(list_command)
 
-# #4166 — the harness-neutral standing-directive read surface: flat
-# ``t3 loop directives [--json]``. The contract another harness reads to
-# build its own delivery adapter.
-loop_app.command("directives")(directives_command)
+# #4166 — the standing-directive surface: ``t3 loop directives show|disable|enable``.
+# ``show --json`` is the contract another harness reads to build its own delivery
+# adapter; ``disable`` is the reachable off switch, ``--all`` the whole-feature kill.
+loop_app.add_typer(directives_app, name="directives")
 
 # #3632 — the DB-free owner-intake loop names the deploy fleet policy must never
 # force off; a flat ``t3 loop intake-loops`` the entrypoint reseed reads.
