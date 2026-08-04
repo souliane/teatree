@@ -398,6 +398,13 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
     undercounts and the brake never fires — failing toward MORE claiming, the one direction
     this gate exists to prevent.
 
+    Both sides are then counted over that ONE de-duplicated key space. ``SweepSkipStreak``
+    is unique on ``(slug, pr_id)`` case-SENSITIVELY, so ``Owner/Repo``#800 and
+    ``owner/repo``#800 are two legal rows naming one PR: counting rows against a live set
+    counted by key lets that PR contribute 2 to ``stuck_prs`` and 1 to ``open_prs``, and
+    enough such pairs push ``stuck_prs >= open_prs`` while healthy PRs are still moving —
+    a brake fired on arithmetic, which is the silent stall this gate exists to catch.
+
     A read that raises returns ``fresh=False`` — unknown never brakes, because a probe that
     cannot answer must not be able to halt the factory.
     """
@@ -412,9 +419,8 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
         live_keys = {
             (str(repo).lower(), int(iid)) for repo, iid in live.values_list("repo", "iid") if str(iid).isdigit()
         }
-        stuck = sum(
-            1 for slug, pr_id in streaks.values_list("slug", "pr_id") if (str(slug).lower(), int(pr_id)) in live_keys
-        )
+        streak_keys = {(str(slug).lower(), int(pr_id)) for slug, pr_id in streaks.values_list("slug", "pr_id")}
+        stuck = len(streak_keys & live_keys)
     except Exception:
         logger.exception("merge-throughput probe failed — reporting unknown, which never brakes")
         return MergeSignal(fresh=False, open_prs=0, stuck_prs=0)
