@@ -146,6 +146,25 @@ def lease_is_live(claim: LeaseClaim, now: datetime, *, trust_pid_past_ttl: bool)
     return within_ttl and claim.within_unverifiable_grace(now)
 
 
+def reclaim_reason(owner_pid: int | None) -> str:
+    """Why a reclaimed lease was not live, branched on the ACTUAL pid probe (#4141).
+
+    :func:`lease_is_live` collapses disjoint not-live reasons into one boolean and
+    only ONE of them is proof of death. A ``loop:<name>`` slot whose cadence is at
+    least the lease TTL lapses between its own consecutive ticks, so its owner is
+    routinely ALIVE when the sweep reclaims it; reporting proof there sends an
+    operator diagnosing a real outage after a session that never died.
+    """
+    if owner_pid is None:
+        return "the TTL lapsed without a re-claim and no owner pid was recorded"
+    probe = pid_alive_probe()
+    if probe is None:
+        return f"the TTL lapsed without a re-claim; owner pid {owner_pid} could not be probed"
+    if probe(owner_pid):
+        return f"the TTL lapsed without a re-claim; owner pid {owner_pid} is still alive"
+    return f"owner pid {owner_pid} is provably dead"
+
+
 def live_foreign_owner_session(claim: LeaseClaim, session_id: str, now: datetime, *, trust_pid_past_ttl: bool) -> str:
     """The non-empty session of a live owner *other than* ``session_id``, or ``""``.
 
