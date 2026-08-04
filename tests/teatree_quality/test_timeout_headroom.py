@@ -50,6 +50,84 @@ def test_slow() -> None:
     pass
 """
 
+_MARKED_AND_UNMARKED = """
+import pytest
+
+
+@pytest.mark.timeout(240)
+def test_marked() -> None:
+    pass
+
+
+def test_unmarked() -> None:
+    pass
+"""
+
+_MARKED_CLASS_AND_LOOSE_TEST = """
+import pytest
+
+
+@pytest.mark.timeout(240)
+class TestSlowGroup:
+    def test_inside(self) -> None:
+        pass
+
+
+def test_outside() -> None:
+    pass
+"""
+
+_MODULE_MARKED = """
+import pytest
+
+pytestmark = pytest.mark.timeout(240)
+
+
+def test_slow() -> None:
+    pass
+"""
+
+_CLASS_BODY_MARKED = """
+import pytest
+
+
+class TestSlowGroup:
+    pytestmark = pytest.mark.timeout(240)
+
+    def test_inside(self) -> None:
+        pass
+
+
+def test_outside() -> None:
+    pass
+"""
+
+_ALIASED_MARKER = """
+import pytest
+
+SLOW = pytest.mark.timeout(240)
+
+
+@SLOW
+def test_slow() -> None:
+    pass
+"""
+
+_NAMED_CEILING_AND_UNMARKED = """
+import pytest
+
+BUDGET = 240
+
+
+@pytest.mark.timeout(BUDGET)
+def test_named() -> None:
+    pass
+
+
+def test_unmarked() -> None:
+    pass
+"""
+
 
 class TestMeasureTimeoutHeadroom:
     def test_a_comfortable_test_is_not_reported(self, tmp_path: Path) -> None:
@@ -174,6 +252,90 @@ class TestMeasureTimeoutHeadroom:
 
     def test_the_tight_band_is_the_one_the_ci_report_uses(self) -> None:
         assert 0.0 < TIGHT_FRACTION < 1.0
+
+
+class TestMarkerResolutionIsPerTest:
+    """``pytest_timeout`` resolves the ceiling per ITEM, so the judge must too.
+
+    A file-wide ceiling lets one test's marker cover every other test in the same
+    file — a real over-run of the applicable lane ceiling reported as healthy,
+    which is the silent-green class this epic exists to remove.
+    """
+
+    def test_a_marker_on_one_test_leaves_its_neighbour_on_the_lane_ceiling(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MARKED_AND_UNMARKED},
+            durations={"tests/test_a.py::test_marked": 100.0, "tests/test_a.py::test_unmarked": 75.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::test_unmarked", 60.0)
+        ]
+        assert not report.is_healthy
+
+    def test_a_class_marker_covers_its_methods_and_nothing_else(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MARKED_CLASS_AND_LOOSE_TEST},
+            durations={
+                "tests/test_a.py::TestSlowGroup::test_inside": 100.0,
+                "tests/test_a.py::test_outside": 75.0,
+            },
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::test_outside", 60.0)
+        ]
+
+    def test_a_class_body_pytestmark_covers_its_methods_and_nothing_else(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _CLASS_BODY_MARKED},
+            durations={
+                "tests/test_a.py::TestSlowGroup::test_inside": 100.0,
+                "tests/test_a.py::test_outside": 75.0,
+            },
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [(pressure.node_id, pressure.ceiling) for pressure in report.over_ceiling] == [
+            ("tests/test_a.py::test_outside", 60.0)
+        ]
+
+    def test_a_module_pytestmark_covers_every_test_in_the_file(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _MODULE_MARKED},
+            durations={"tests/test_a.py::test_slow": 100.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert report.pressured == ()
+
+    def test_a_marker_bound_to_a_module_name_still_states_its_ceiling(self, tmp_path: Path) -> None:
+        """``_SCAN_TIMEOUT = pytest.mark.timeout(300)`` then ``@_SCAN_TIMEOUT`` — the live tree's shape."""
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _ALIASED_MARKER},
+            durations={"tests/test_a.py::test_slow": 100.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert report.pressured == ()
+
+    def test_a_named_ceiling_silences_only_the_test_it_applies_to(self, tmp_path: Path) -> None:
+        repo = _repo(
+            tmp_path,
+            sources={"tests/test_a.py": _NAMED_CEILING_AND_UNMARKED},
+            durations={"tests/test_a.py::test_named": 100.0, "tests/test_a.py::test_unmarked": 75.0},
+        )
+        report = measure_timeout_headroom(repo)
+        assert report is not None
+        assert [pressure.node_id for pressure in report.over_ceiling] == ["tests/test_a.py::test_unmarked"]
+        assert report.unresolved_ceilings == 1
 
 
 class TestAgainstThisRepo:

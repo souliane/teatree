@@ -57,7 +57,10 @@ def measure_durations_coverage(repo: Path) -> DurationsCoverage | None:
     if not tests_dir.is_dir():
         return None
 
-    test_files = {path.relative_to(repo).as_posix() for path in tests_dir.glob("**/test_*.py")}
+    try:
+        test_files = {path.relative_to(repo).as_posix() for path in tests_dir.glob("**/test_*.py")}
+    except Exception:  # noqa: BLE001 — a doctor check must never crash the run
+        return None
     if not test_files:
         return None
 

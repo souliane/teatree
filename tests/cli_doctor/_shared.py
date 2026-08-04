@@ -45,28 +45,37 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
         don't leak into ``discover_overlays()`` / ``discover_active_overlay()``.
     - Moves cwd under ``tmp_path`` so ``_discover_from_manage_py`` cannot climb into
         the real teatree checkout.
-    - Reports NO checkout to either shard-durations check. A neutral cwd is not
-        enough: repo resolution falls through to ``T3_REPO`` and then to the installed
-        editable source, so a staged run still judged the developer's own
-        ``dev/.test_durations`` and failed on its real coverage. ``None`` is each
-        check's own "nothing in scope here", so they stay silent rather than
-        reporting a verdict about a repo this run is not about.
+    - Points ``T3_REPO`` at a staged checkout so the shard-durations checks judge a
+        controlled tree. A neutral cwd is not enough: repo resolution falls through
+        to ``T3_REPO`` and then to the installed editable source, so a staged run
+        judged the developer's own ``dev/.test_durations`` and failed on its real
+        coverage. Both checks run for REAL against the staged tree — stubbing the
+        measurements out instead is how a check quietly stops being exercised here.
     """
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
-    monkeypatch.setattr(
-        "teatree.quality.durations_coverage.measure_durations_coverage",
-        lambda _repo: None,
-    )
-    monkeypatch.setattr(
-        "teatree.quality.timeout_headroom.measure_timeout_headroom",
-        lambda _repo: None,
-    )
+    monkeypatch.setenv("T3_REPO", str(_stage_healthy_shard_durations(tmp_path)))
     neutral = tmp_path / "_neutral_cwd"
     neutral.mkdir(exist_ok=True)
     monkeypatch.chdir(neutral)
     monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
     return tmp_path
+
+
+#: One recorded test, comfortably inside the lane ceiling: full file coverage, no
+#: orphan key, no ceiling pressure — the healthy fixture both shard-durations
+#: checks are aggregated against by the ``t3 doctor check`` command tests.
+STAGED_DURATIONS_NODE_ID = "tests/test_staged.py::test_staged"
+
+
+def _stage_healthy_shard_durations(tmp_path: Path) -> Path:
+    repo = tmp_path / "_staged_repo"
+    (repo / "tests").mkdir(parents=True, exist_ok=True)
+    (repo / "dev").mkdir(parents=True, exist_ok=True)
+    (repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntimeout = 60\n", encoding="utf-8")
+    (repo / "tests" / "test_staged.py").write_text("def test_staged() -> None:\n    pass\n", encoding="utf-8")
+    (repo / "dev" / ".test_durations").write_text(json.dumps({STAGED_DURATIONS_NODE_ID: 1.0}), encoding="utf-8")
+    return repo
 
 
 def _fake_entry_point(dist_name: str = "my-overlay") -> object:
