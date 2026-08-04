@@ -24,7 +24,7 @@ from teatree.loops.seed import seed_default_loops_and_prompts
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
 
-_MODE_SEAM = "teatree.loops.loop_table.resolve_active_mode"
+_MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
 
 def _resolved(*, defers: bool, source: str = "override") -> ResolvedMode:

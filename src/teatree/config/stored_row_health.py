@@ -65,7 +65,12 @@ INTERNAL_STATE_KEYS: tuple[InternalStateKey, ...] = (
     InternalStateKey(
         key="loop_preset_transition_stamp",
         owner="teatree.loops.preset_transitions",
-        purpose="the last-applied mode name each transition pass compares against",
+        purpose="the last-applied PRESET name the owner-facing drain and Slack line compare against",
+    ),
+    InternalStateKey(
+        key="loop_mode_transition_stamp",
+        owner="teatree.loops.preset_transitions",
+        purpose="the last-applied RESOLVED MODE name the timer-chain reconcile compares against",
     ),
     InternalStateKey(
         key="approval_dial",

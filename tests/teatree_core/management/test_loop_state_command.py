@@ -12,10 +12,12 @@ from io import StringIO
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
+from django_tasks_db.models import DBTaskResult
 
 from teatree.core.models import Loop, LoopState, LoopStatus, Prompt
+from teatree.loops import timer_chains
 
 
 def _run(*args: str) -> str:
@@ -252,3 +254,29 @@ class TestOverrideCommand(TestCase):
         with pytest.raises(SystemExit) as caught:
             call_command("loop_state", "override", "review", "maybe", stdout=out)
         assert caught.value.code == 2
+
+
+@override_settings(TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}})
+class TestOverrideReconcilesTheTimerChain(TestCase):
+    """The FORCED plane outranks the mode mask, so writing it changes chain membership now.
+
+    ``resume``/``disable``/``enable`` all reconcile at their chokepoint; ``override`` did
+    not, so a force-ON left a loop admitted with nothing driving it — and a force-OFF left
+    a timer firing into a refusal — until the ~5-minute reconcile chain caught up (#4196).
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        DBTaskResult.objects.all().delete()
+        _loop("inbox", enabled=False)
+        Loop.objects.filter(name="inbox").update(script="src/teatree/loops/inbox/loop.py", prompt=None)
+
+    def test_force_on_heads_the_chain_at_once(self) -> None:
+        _run("override", "inbox", "on")
+        assert len(timer_chains.pending_loop_timers("inbox")) == 1
+
+    def test_force_off_prunes_the_chain_at_once(self) -> None:
+        Loop.objects.filter(name="inbox").update(enabled=True)
+        timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
+        _run("override", "inbox", "off")
+        assert timer_chains.pending_loop_timers("inbox") == []

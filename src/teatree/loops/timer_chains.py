@@ -1,8 +1,9 @@
 """Self-rescheduling loop-timer chains — durable, crash-surviving loop cadence (#1796).
 
 Replaces the in-memory beat with django-tasks ``run_after`` rows: exactly one
-pending ``loop_timer(name)`` task per enabled :class:`Loop` row on the dedicated
-``loops`` queue is a durable timer that survives a crash — the DB row IS the
+pending ``loop_timer(name)`` task per verdict-admitted :class:`Loop` row (the
+membership :func:`teatree.loops.chain_membership.timer_chain_loop_names` computes) on the
+dedicated ``loops`` queue is a durable timer that survives a crash — the DB row IS the
 scheduled fire. When a worker executor drains it (its ``run_after`` has elapsed)
 the task runs a five-step body that re-schedules its own successor BEFORE doing
 the tick work, so a crash mid-tick always leaves a queued successor and the chain

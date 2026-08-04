@@ -8,8 +8,8 @@ from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops.enable_verdict import effective_verdicts
 from teatree.loops.preset_editing import PresetEditError, activate_preset, clear_preset_override, set_preset_entry
-from teatree.loops.preset_status import effective_verdicts
 from teatree.loops.schedule_editing import (
     active_schedule_name,
     clear_active_schedule,

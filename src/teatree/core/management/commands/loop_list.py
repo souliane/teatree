@@ -59,6 +59,11 @@ def _held_cell(entry: LoopStatusEntry) -> str:
     if entry.held:
         # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
         return "held"
+    # #4185: admitted with no timer chain at all. Takes precedence over the preset
+    # labels below — those say WHO decided the loop runs, this says nothing is
+    # driving it, which is the alarming half of the signal.
+    if entry.starved:
+        return "starved"
     # A #3159 preset can flip a mini-loop with NO LoopState hold: the disagreement
     # between the effective `admitted` verdict and the base `enabled` flag is the
     # preset's doing — masking a base-enabled loop off, or forcing a base-disabled one on.
@@ -164,6 +169,7 @@ def _entry_payload(entry: LoopStatusEntry, now: dt.datetime) -> dict[str, Any]:
         "never_fired": entry.never_fired,
         "overdue": entry.overdue(now),
         "held": entry.held,
+        "starved": entry.starved,
     }
 
 
