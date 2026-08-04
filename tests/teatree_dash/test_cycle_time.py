@@ -20,7 +20,13 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.dash.charts import BAR_WIDTH, TREND_PADDING, TREND_WIDTH, BarInput, line_series, stacked_bar
-from teatree.dash.cycle_time import DEFAULT_WINDOW_DAYS, MAX_WINDOW_DAYS, build_cycle_time_view, clamp_window_days
+from teatree.dash.cycle_time import (
+    DEFAULT_WINDOW_DAYS,
+    MAX_WINDOW_DAYS,
+    UNMEASURED_TONE,
+    build_cycle_time_view,
+    clamp_window_days,
+)
 from teatree.dash.views.base import NAV_ITEMS
 
 State = Ticket.State
@@ -28,7 +34,13 @@ MINUTE = 60.0
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
 
-def ticket_taking(*, minutes: float, ago_hours: float = 1.0, phase_cost: float | None = None) -> Ticket:
+def ticket_taking(
+    *,
+    minutes: float,
+    ago_hours: float = 1.0,
+    phase_cost: float | None = None,
+    admitted: bool = True,
+) -> Ticket:
     """A ticket whose `planned -> coded` span lasted *minutes*, finishing *ago_hours* ago."""
     ticket = Ticket.objects.create(state=State.CODED)
     left = timezone.now() - timedelta(hours=ago_hours)
@@ -45,7 +57,8 @@ def ticket_taking(*, minutes: float, ago_hours: float = 1.0, phase_cost: float |
         phase="coding",
         execution_target=Task.ExecutionTarget.INTERACTIVE,
     )
-    Task.objects.filter(pk=task.pk).update(admitted_at=entered + timedelta(minutes=minutes / 4))
+    if admitted:
+        Task.objects.filter(pk=task.pk).update(admitted_at=entered + timedelta(minutes=minutes / 4))
     TaskAttempt.objects.create(
         task=task,
         execution_target=Task.ExecutionTarget.HEADLESS,
@@ -182,6 +195,16 @@ class CycleTimeViewTestCase(TestCase):
         assert row.cost_usd == pytest.approx(0.5)
         assert row.cost_is_wholly_estimated
 
+    def test_an_unmeasurable_split_is_one_neutral_piece_rather_than_all_waiting(self) -> None:
+        """A pre-admission-stamp ticket must not render as a bar that is entirely queue wait."""
+        Ticket.objects.all().delete()
+        ticket_taking(minutes=60, admitted=False)
+        row = build_cycle_time_view(window_days=7).tickets[0]
+        assert row.work_measured is False
+        assert [(piece.label, piece.tone) for piece in row.bar.pieces] == [
+            ("coding · split unmeasured", UNMEASURED_TONE),
+        ]
+
     def test_a_window_with_no_activity_renders_empty_rather_than_raising(self) -> None:
         TicketTransition.objects.all().delete()
         view = build_cycle_time_view(window_days=7)
@@ -222,6 +245,12 @@ class CycleTimePageTestCase(TestCase):
     def test_the_requested_window_is_honoured(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), {"days": "3"}, **_LOOPBACK)
         assert response.context["view"].window_days == 3
+
+    def test_an_unmeasured_split_is_labelled_rather_than_shown_as_zero(self) -> None:
+        Ticket.objects.all().delete()
+        ticket_taking(minutes=60, admitted=False)
+        body = self.client.get(reverse("dash:cycle_time"), **_LOOPBACK).content.decode()
+        assert "unmeasured" in body
 
     def test_an_out_of_range_window_does_not_500(self) -> None:
         response = self.client.get(reverse("dash:cycle_time"), {"days": "-4"}, **_LOOPBACK)

@@ -33,6 +33,9 @@ TICKET_BARS = 15
 #: Trend lines, slowest median first. Every edge at once is unreadable, and the
 #: aggregate table below already names the ones this drops.
 TREND_SERIES = 4
+#: The rail hue for a span whose queue/work split cannot be measured — deliberately the
+#: off-ladder grey, so an unmeasured stretch never reads as one of the four phase states.
+UNMEASURED_TONE = "ignored"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,9 @@ class TicketRow:
     lead_time: str
     queue_time: str
     work_time: str
+    #: False when a phase this ticket walked has no admission stamp to measure its
+    #: split with — the split cells read "—" there rather than a plausible zero.
+    work_measured: bool
     cost_usd: float
     cost_estimated_usd: float
 
@@ -135,12 +141,15 @@ def _ticket_row(timeline: TicketTimeline, *, scale: float) -> TicketRow:
     for segment in timeline.segments:
         tone = group_slug(segment.to_state)
         name = segment.phase or f"{segment.from_state} → {segment.to_state}"
-        pieces.extend(
-            (
-                BarInput(label=f"{name} · waiting", tone=tone, seconds=segment.queue_seconds, muted=True),
-                BarInput(label=f"{name} · working", tone=tone, seconds=segment.work_seconds),
+        if segment.work_measured:
+            pieces.extend(
+                (
+                    BarInput(label=f"{name} · waiting", tone=tone, seconds=segment.queue_seconds, muted=True),
+                    BarInput(label=f"{name} · working", tone=tone, seconds=segment.work_seconds),
+                )
             )
-        )
+        else:
+            pieces.append(BarInput(label=f"{name} · split unmeasured", tone=UNMEASURED_TONE, seconds=segment.seconds))
     return TicketRow(
         number=timeline.number,
         state=timeline.state,
@@ -153,6 +162,7 @@ def _ticket_row(timeline: TicketTimeline, *, scale: float) -> TicketRow:
         lead_time=_humanize_duration(timeline.lead_time_seconds),
         queue_time=_humanize_duration(timeline.queue_seconds),
         work_time=_humanize_duration(timeline.work_seconds),
+        work_measured=timeline.work_measured,
         cost_usd=round(timeline.cost_usd, 4),
         cost_estimated_usd=round(timeline.cost_estimated_usd, 4),
     )

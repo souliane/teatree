@@ -37,6 +37,13 @@ class PhaseSegment:
     seconds: float
     queue_seconds: float
     work_seconds: float
+    #: False when an agent demonstrably RAN in this span (attempts ended in it) yet no
+    #: task of the phase carries an admission stamp to measure the stretch with.
+    #: ``Task.admitted_at`` is stamped going forward only, so a span that predates it
+    #: has no honest split — reporting it as "0s working, all queue wait" would be the
+    #: same fiction as subtracting the attempt stamps, arriving by a different route.
+    #: ``work_seconds`` is 0.0 there and means UNKNOWN, not zero.
+    work_measured: bool
     cost_usd: float
     #: How much of ``cost_usd`` is a price-table ESTIMATE rather than a reported figure.
     cost_estimated_usd: float
@@ -54,6 +61,11 @@ class TicketTimeline:
     lead_time_seconds: float
     queue_seconds: float
     work_seconds: float
+    #: True only when EVERY segment's split is measurable. One unmeasured phase leaves
+    #: BOTH totals a lower bound (it contributes 0 to each rather than guessing), so
+    #: they no longer add up to ``lead_time_seconds`` — which is why the flag rides
+    #: alongside them instead of the difference being read as waiting.
+    work_measured: bool
     cost_usd: float
     cost_estimated_usd: float
 
@@ -70,6 +82,7 @@ class TicketTimeline:
             lead_time_seconds=0.0,
             queue_seconds=0.0,
             work_seconds=0.0,
+            work_measured=True,
             cost_usd=0.0,
             cost_estimated_usd=0.0,
         )
@@ -115,6 +128,7 @@ def _timeline(
         lead_time_seconds=sum(segment.seconds for segment in segments),
         queue_seconds=sum(segment.queue_seconds for segment in segments),
         work_seconds=sum(segment.work_seconds for segment in segments),
+        work_measured=all(segment.work_measured for segment in segments),
         cost_usd=sum(segment.cost_usd for segment in segments),
         cost_estimated_usd=sum(segment.cost_estimated_usd for segment in segments),
     )
@@ -133,6 +147,9 @@ def _segment(
         for ended_at, usage in usages.get(key, ())
         if ended_at is not None and span.entered_at <= ended_at <= span.left_at
     ]
+    # An agent demonstrably ran here iff an attempt ENDED here. With no measured
+    # engagement to set against that, the split is unknown rather than zero.
+    measured = work > 0.0 or not priced
     breakdown = CostBreakdown.from_usages(priced)
     return PhaseSegment(
         from_state=span.from_state,
@@ -141,8 +158,9 @@ def _segment(
         entered_at=span.entered_at,
         left_at=span.left_at,
         seconds=span.seconds,
-        queue_seconds=max(0.0, span.seconds - work),
+        queue_seconds=max(0.0, span.seconds - work) if measured else 0.0,
         work_seconds=work,
+        work_measured=measured,
         cost_usd=breakdown.total_usd,
         cost_estimated_usd=breakdown.estimated_usd,
         attempts=len(priced),

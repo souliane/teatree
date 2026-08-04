@@ -153,14 +153,16 @@ class WorkTimeIsDistinguishedFromQueueWaitTestCase(TestCase):
         coding = self._coding()
         assert coding.queue_seconds + coding.work_seconds == coding.seconds
 
-    def test_a_phase_no_agent_was_ever_admitted_to_is_all_queue_wait(self) -> None:
+    def test_a_phase_nothing_was_dispatched_to_is_all_queue_wait(self) -> None:
         segments = build_ticket_timeline(self.ticket.pk).segments
         planning = next(s for s in segments if s.to_state == State.PLANNED)
+        assert planning.work_measured
         assert planning.work_seconds == pytest.approx(0.0)
         assert planning.queue_seconds == planning.seconds
 
     def test_the_ticket_totals_the_split_across_every_segment(self) -> None:
         timeline = build_ticket_timeline(self.ticket.pk)
+        assert timeline.work_measured
         assert timeline.lead_time_seconds == 90 * MINUTE
         assert timeline.work_seconds == 60 * MINUTE
         assert timeline.queue_seconds == 30 * MINUTE
@@ -173,9 +175,12 @@ class OverlappingAndUnfinishedAttemptsTestCase(TestCase):
         record_transition(cls.ticket, source=State.NOT_STARTED, target=State.PLANNED, minutes=0)
         record_transition(cls.ticket, source=State.PLANNED, target=State.CODED, minutes=100)
 
-    def _coding_work(self) -> float:
+    def _coding(self) -> PhaseSegment:
         segments = build_ticket_timeline(self.ticket.pk).segments
-        return next(s for s in segments if s.to_state == State.CODED).work_seconds
+        return next(s for s in segments if s.to_state == State.CODED)
+
+    def _coding_work(self) -> float:
+        return self._coding().work_seconds
 
     def test_two_agents_holding_the_phase_at_once_are_counted_as_one_elapsed_stretch(self) -> None:
         record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=10), ended=50)
@@ -186,9 +191,20 @@ class OverlappingAndUnfinishedAttemptsTestCase(TestCase):
         record_task(self.ticket, phase="coding", queued=0, admitted=40)
         assert self._coding_work() == 60 * MINUTE
 
-    def test_a_never_admitted_task_contributes_no_work_time(self) -> None:
+    def test_an_attempt_with_no_admission_stamp_leaves_the_split_unmeasured(self) -> None:
+        """Work is UNKNOWN there, never zero — `admitted_at` is stamped going forward only."""
         record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=None), ended=50)
-        assert self._coding_work() == pytest.approx(0.0)
+        assert self._coding().work_measured is False
+        assert self._coding().work_seconds == pytest.approx(0.0)
+
+    def test_an_unmeasured_phase_is_not_reported_as_queue_wait(self) -> None:
+        """Calling an unmeasured stretch "waiting" is the same fiction by another route."""
+        record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=None), ended=50)
+        assert self._coding().queue_seconds == pytest.approx(0.0)
+
+    def test_an_unmeasured_phase_marks_the_whole_ticket_unmeasured(self) -> None:
+        record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=None), ended=50)
+        assert build_ticket_timeline(self.ticket.pk).work_measured is False
 
     def test_work_recorded_outside_the_segment_is_clipped_to_it(self) -> None:
         record_attempt(record_task(self.ticket, phase="coding", queued=0, admitted=-30), ended=140)

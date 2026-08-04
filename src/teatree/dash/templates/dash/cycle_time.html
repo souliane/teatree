@@ -72,6 +72,7 @@
     <ul class="chart-legend">
       <li data-group="building"><span class="swatch muted"></span>waiting</li>
       <li data-group="building"><span class="swatch"></span>an agent working</li>
+      <li data-group="ignored"><span class="swatch"></span>split unmeasured — no admission stamp recorded</li>
     </ul>
     {% if view.tickets %}
       <table class="dash">
@@ -98,8 +99,12 @@
                 </svg>
               </td>
               <td class="num">{{ row.lead_time }}</td>
-              <td class="num">{{ row.queue_time }}</td>
-              <td class="num">{{ row.work_time }}</td>
+              {% if row.work_measured %}
+                <td class="num">{{ row.queue_time }}</td>
+                <td class="num">{{ row.work_time }}</td>
+              {% else %}
+                <td class="num muted" colspan="2" title="a phase this ticket walked recorded no admission stamp, so its split is unknown — not zero">unmeasured</td>
+              {% endif %}
               <td class="num">
                 {% if row.cost_usd %}
                   <span class="mono">${{ row.cost_usd }}</span>
