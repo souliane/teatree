@@ -14,6 +14,7 @@ work-bearing state made terminal.
 """
 
 import pytest
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from teatree.core.handover import create_handover
@@ -22,14 +23,22 @@ from teatree.core.session_handover_manager import SelfAddressedHandoverError
 
 
 class TestSelfAddressedRowIsUnreachable(TestCase):
-    """The property that motivates the refusal — asserted directly, on a row built by hand."""
+    """The property that motivates the refusal, now unrepresentable rather than only refused (#4194).
 
-    def test_no_session_id_can_claim_it(self) -> None:
-        row = SessionHandover.objects.create(from_session="s1", to_session="s1", payload="real state")
-        for candidate in ("s1", "s2", ""):
-            assert row not in SessionHandover.objects.claimable_for(candidate), (
-                f"session {candidate!r} must not be able to claim it — that is the defect"
-            )
+    The pre-``0058`` proof built the degenerate row by hand and asserted no session
+    id could claim it. The DB no longer accepts that row at all, on INSERT or on
+    UPDATE, so the refusal itself is the assertion — the shape it forbids is the
+    same one ``claimable_for`` could never admit anybody for.
+    """
+
+    def test_the_database_refuses_to_insert_one(self) -> None:
+        with pytest.raises(IntegrityError), transaction.atomic():
+            SessionHandover.objects.create(from_session="s1", to_session="s1", payload="real state")
+
+    def test_the_database_refuses_to_update_a_good_row_into_one(self) -> None:
+        SessionHandover.objects.create(from_session="s1", to_session="s2", payload="real state")
+        with pytest.raises(IntegrityError), transaction.atomic():
+            SessionHandover.objects.filter(from_session="s1").update(to_session="s1")
 
 
 class TestCreationRefusesTheDegenerateHandover(TestCase):
