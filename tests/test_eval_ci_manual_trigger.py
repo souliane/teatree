@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
+
 from tests._ci_config import gitlab_ci_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
