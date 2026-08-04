@@ -31,7 +31,6 @@ class PresetSummary:
     layer: str  # "override" | "schedule"
     reason: str
     until: dt.datetime | None
-    availability_pin: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +53,6 @@ def active_summary(now: dt.datetime | None = None) -> PresetSummary | None:
         layer=active.layer,
         reason=active.reason,
         until=active.until,
-        availability_pin=active.preset.availability_pin,
     )
 
 

@@ -17,7 +17,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import clear_mode_override, posture_label, resolve_active_mode, set_mode_override
-from teatree.core.models import PIN_MODES, Loop, Mode
+from teatree.core.models import Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.preset_admin import delete_preset
 from teatree.loops.preset_editing import PresetEditError, apply_entry_edits
@@ -69,7 +69,7 @@ class Command(TyperCommand):
 
     @command(name="list")
     def list_presets(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
-        """List every preset with its pin, scope, entry count, and the ACTIVE marker."""
+        """List every preset with its scope, entry count, and the ACTIVE marker."""
         active = active_summary()
         active_name = active.name if active is not None else ""
         presets = list(Mode.objects.all())
@@ -80,9 +80,8 @@ class Command(TyperCommand):
             lines = ["presets:"]
             for preset in presets:
                 marker = " *ACTIVE*" if preset.name == active_name else ""
-                pin = f" pin={preset.availability_pin}" if preset.availability_pin else ""
                 scope = f" scope={','.join(preset.overlay_scope_names)}" if preset.overlay_scope_names else ""
-                lines.append(f"  {preset.name:<16} {preset.entry_count} entries{pin}{scope}{marker}")
+                lines.append(f"  {preset.name:<16} {preset.entry_count} entries{scope}{marker}")
                 if preset.description:
                     lines.append(f"      {preset.description}")
             human = "\n".join(lines)
@@ -151,17 +150,15 @@ class Command(TyperCommand):
         *,
         set_: Annotated[list[str], typer.Option("--set", help="Entry edit <loop>=on|off (repeatable).")] = [],  # noqa: B006 — typer Option default — idiomatic mutable default for a repeatable flag
         description: Annotated[str, typer.Option("--description", help="Human description.")] = "",
-        pin: Annotated[str, typer.Option("--pin", help="Availability pin: present|away|autonomous_away.")] = "",
         scope: Annotated[str, typer.Option("--scope", help="Comma-separated overlay allowlist.")] = "",
     ) -> None:
-        """Create a new preset from ``--set`` entries, optional pin and overlay scope."""
+        """Create a new preset from ``--set`` entries and an optional overlay scope."""
         if Mode.objects.by_name(name) is not None:
             self._refuse(f"preset {name!r} already exists — use `edit`", json_output=False)
         preset = Mode.objects.create(
             name=name,
             entries=self._entries_from_edits({}, set_, json_output=False),
             description=description,
-            availability_mode=self._validated_pin(pin, json_output=False),
             overlay_scope=_scope_list(scope),
         )
         self._emit_preset_saved(preset, json_output=False)
@@ -173,18 +170,15 @@ class Command(TyperCommand):
         *,
         set_: Annotated[list[str], typer.Option("--set", help="Entry edit <loop>=on|off|inherit (repeatable).")] = [],  # noqa: B006 — typer Option default — idiomatic mutable default for a repeatable flag
         description: Annotated[str, typer.Option("--description", help="Replace the description.")] = "",
-        pin: Annotated[str, typer.Option("--pin", help="Replace the availability pin (empty string clears).")] = "",
         scope: Annotated[str, typer.Option("--scope", help="Replace the overlay allowlist.")] = "",
     ) -> None:
-        """Edit a preset's entries / description / pin / scope in place."""
+        """Edit a preset's entries / description / scope in place."""
         preset = Mode.objects.by_name(name)
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=False)
         preset.entries = self._entries_from_edits(preset.entries, set_, json_output=False)
         if description:
             preset.description = description
-        if pin:
-            preset.availability_mode = self._validated_pin(pin, json_output=False)
         if scope:
             preset.overlay_scope = _scope_list(scope)
         preset.save()
@@ -230,9 +224,8 @@ class Command(TyperCommand):
         if summary is None:
             lines = ["active preset: none (no override, no active schedule) — loops run per base config."]
         else:
-            pin = f", pins availability {summary.availability_pin}" if summary.availability_pin else ""
             until = "" if summary.until is None else f", until {summary.until.isoformat()}"
-            lines = [f"active preset: {summary.name}  (why: {summary.reason}{until}{pin})"]
+            lines = [f"active preset: {summary.name}  (why: {summary.reason}{until})"]
         lines.append(_resolved_line())
         lines.append("per-loop effective verdict:")
         for verdict in verdicts:
@@ -271,12 +264,6 @@ class Command(TyperCommand):
         except ValueError as exc:
             self._refuse(str(exc), json_output=json_output)
 
-    def _validated_pin(self, pin: str, *, json_output: bool) -> str:
-        value = pin.strip()
-        if value and value not in PIN_MODES:
-            self._refuse(f"invalid --pin {pin!r}; use present|away|autonomous_away", json_output=json_output)
-        return value
-
     def _emit_preset_saved(self, preset: Mode, *, json_output: bool) -> None:
         unknown = _unknown_entry_loops(preset.entries)
         message = f"saved preset {preset.name!r} ({preset.entry_count} entries)."
@@ -308,7 +295,6 @@ def _preset_row(preset: Mode, active_name: str) -> dict[str, Any]:
     return {
         "name": preset.name,
         "description": preset.description,
-        "pin": preset.availability_pin,
         "scope": preset.overlay_scope_names,
         "entry_count": preset.entry_count,
         "active": preset.name == active_name,
@@ -320,7 +306,6 @@ def _preset_detail(preset: Mode, unknown: list[str]) -> dict[str, Any]:
         "name": preset.name,
         "description": preset.description,
         "entries": preset.entries,
-        "availability_mode": preset.availability_mode,
         "overlay_scope": preset.overlay_scope_names,
         "unknown_loops": unknown,
     }
@@ -334,7 +319,6 @@ def _summary_payload(summary: object) -> dict[str, Any] | None:
         "layer": summary.layer,  # ty: ignore[unresolved-attribute]
         "reason": summary.reason,  # ty: ignore[unresolved-attribute]
         "until": summary.until.isoformat() if summary.until else None,  # ty: ignore[unresolved-attribute]
-        "availability_pin": summary.availability_pin,  # ty: ignore[unresolved-attribute]
     }
 
 

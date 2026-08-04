@@ -485,11 +485,11 @@
           "name": "auto"
         },
         {
-          "help": "Create a new preset from ``--set`` entries, optional pin and overlay scope",
+          "help": "Create a new preset from ``--set`` entries and an optional overlay scope",
           "name": "create"
         },
         {
-          "help": "Edit a preset's entries / description / pin / scope in place",
+          "help": "Edit a preset's entries / description / scope in place",
           "name": "edit"
         },
         {
@@ -497,7 +497,7 @@
           "name": "delete"
         },
         {
-          "help": "List every preset with its pin, scope, entry count, and the ACTIVE marker",
+          "help": "List every preset with its scope, entry count, and the ACTIVE marker",
           "name": "list"
         }
       ]
