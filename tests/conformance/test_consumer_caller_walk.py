@@ -37,6 +37,11 @@ from tests.conformance._src_tree import SRC_DIR, src_modules
 _SRC_DIR = SRC_DIR
 _DOCTOR_DIR = _SRC_DIR / "cli" / "doctor"
 _SCANNERS_DIR = _SRC_DIR / "loop" / "scanners"
+#: First-party callers also live OUTSIDE ``src/``: a registered hook handler is a live
+#: caller, and ``teatree.hooks`` is a platform-layer node tach forbids from importing
+#: ``teatree.core``, so a core seam driven by a gate can only be called from here. The
+#: CALLER search spans both trees; every other lane stays scoped to ``src/``.
+_HOOK_SCRIPTS_DIR = _SRC_DIR.parents[1] / "hooks" / "scripts"
 
 #: The base scanner ``Protocol`` — a structural contract, never instantiated, so it is
 #: not a "registered scanner" the wiring walk should demand a job for.
@@ -64,6 +69,20 @@ def _src_trees() -> Iterator[tuple[str, ast.Module]]:
     """Every ``src/teatree`` module as (repo-relative path, parsed AST)."""
     for path, tree in src_modules():
         yield str(path.relative_to(_SRC_DIR)), tree
+
+
+def _caller_trees() -> Iterator[tuple[str, ast.Module]]:
+    """Every first-party module a live caller may live in — ``src/`` plus ``hooks/scripts``.
+
+    Scoped to the CALLER search only. A ``PreToolUse``/``TaskCreated`` handler
+    registered in ``hook_router._HANDLERS`` is as live a caller as any ``src/``
+    one, and for a core seam a gate drives it is the ONLY possible one — tach's
+    platform-layer ``teatree.hooks`` node may not import ``teatree.core``. Reading
+    ``src/`` alone reported such a seam as wired to nothing while it was wired.
+    """
+    yield from _src_trees()
+    for path in sorted(_HOOK_SCRIPTS_DIR.glob("*.py")):
+        yield f"hooks/scripts/{path.name}", ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _call_name(call: ast.Call) -> str | None:
@@ -194,8 +213,8 @@ def module_references(rel_file: str, targets: frozenset[str]) -> bool:
 
 @cache
 def called_from_another_module(name: str, own_file: str) -> str | None:
-    """The first module OTHER than *own_file* that calls ``name(...)``, else ``None``."""
-    for rel, tree in _src_trees():
+    """The first first-party module OTHER than *own_file* that calls ``name(...)``, else ``None``."""
+    for rel, tree in _caller_trees():
         if rel == own_file:
             continue
         if any(isinstance(node, ast.Call) and _call_name(node) == name for node in ast.walk(tree)):
@@ -262,10 +281,17 @@ class TestEveryGovernorConsumerHasALiveCaller:
         )
 
     def test_the_known_consumers_are_all_discovered(self) -> None:
-        # The derivation must actually find the interactive verdict, the headless deny
-        # reason, AND the headless test-worker cap — the three live consumer seams.
+        # The derivation must actually find the interactive-loop verdict, the headless
+        # verdict, the headless test-worker cap, AND the dispatch-gate deny reason —
+        # the four live consumer seams.
         found = set(governor_consumers())
-        assert {"governor_verdict", "headless_admission_verdict", "with_test_worker_cap"} <= found, sorted(found)
+        expected = {
+            "governor_verdict",
+            "headless_admission_verdict",
+            "with_test_worker_cap",
+            "dispatch_admission_denied_reason",
+        }
+        assert expected <= found, sorted(found)
 
 
 class TestHeadlessLaneWiresGovernor:
@@ -319,6 +345,28 @@ class TestHeadlessLaneWiresGovernor:
         assert called_from_another_module(self._INTERACTIVE_CONSUMER, "loop/admission.py") is not None
 
 
+class TestDispatchGateWiresGovernor:
+    """#4107: the harness ``Agent``/``Task`` dispatch is the THIRD lane the governor gates.
+
+    Both factory lanes asked and the interactive dispatch did not, so every guard
+    governed the headless population while the box carries the sum of both.
+    """
+
+    _DISPATCH_MODULE = "core/dispatch_admission.py"
+    _DISPATCH_CONSUMER = "dispatch_admission_denied_reason"
+    #: Both dispatch arms — ``PreToolUse`` misses the fan-out, which only ``TaskCreated`` sees.
+    _DISPATCH_GATE = "hooks/scripts/dispatch_admission_gate.py"
+
+    def test_the_dispatch_module_consults_the_pure_governor_decision(self) -> None:
+        assert module_references(self._DISPATCH_MODULE, frozenset({"decide_admission"})), (
+            "the dispatch admission module no longer references decide_admission — "
+            "the interactive dispatch lane has been un-wired from the governor"
+        )
+
+    def test_the_dispatch_gate_calls_the_consumer(self) -> None:
+        assert called_from_another_module(self._DISPATCH_CONSUMER, self._DISPATCH_MODULE) == self._DISPATCH_GATE
+
+
 class TestConsumerCallerWalkCardinalityFloors:
     """Anti-vacuity — a broken enumerator that discovers nothing must not pass green."""
 
@@ -329,7 +377,13 @@ class TestConsumerCallerWalkCardinalityFloors:
         assert len(scanner_classes()) >= 40, sorted(scanner_classes())
 
     def test_governor_consumer_floor(self) -> None:
-        assert len(governor_consumers()) >= 3, sorted(governor_consumers())
+        assert len(governor_consumers()) >= 4, sorted(governor_consumers())
+
+    def test_caller_tree_floor(self) -> None:
+        # The widened caller search must actually reach the hook tree, else a
+        # hook-driven consumer would pass for the wrong reason.
+        hook_modules = [rel for rel, _tree in _caller_trees() if rel.startswith("hooks/scripts/")]
+        assert len(hook_modules) >= 20, hook_modules
 
     def test_reference_index_floor(self) -> None:
         # The whole-tree reference index must be densely populated, else the walk broke.

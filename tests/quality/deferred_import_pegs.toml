@@ -214,6 +214,11 @@
 # intake attachment-gate hold instead of silently freezing the ticket.
 "src/teatree/core/tasks.py" = 8 # +2: F4 claim-CAS + F9 headless_admission lazy imports
 "src/teatree/core/headless_admission.py" = 1 # F9: lazy governor import, avoids app-registry-at-load
+# #4107: live_agent_count defers `from teatree.core.models import Task` for the same
+# reason its headless sibling does — the ceiling comparison reads the ORM, and this
+# module is imported from a bare PreToolUse/TaskCreated hook process, so an
+# app-registry read at module load would break the cold import.
+"src/teatree/core/dispatch_admission.py" = 1
 "src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three
