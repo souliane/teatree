@@ -14,14 +14,20 @@
     skills
   tier: balanced
   max_turns: 3
+  # The prompt's `t3 <overlay> skill-preamble` needs BOTH an overlay the sandbox
+  # registers (`teatree`, not the illustrative `acme` no registry carries) and a
+  # `t3` on PATH. Without them the correct action errors, so the agent spent its
+  # turn floor hunting a working overlay name and terminated on `max_turns`
+  # instead of on its matcher (#4139).
+  cli_stubs: [t3]
   tools: [Bash, Agent]
   prompt: >-
-    You are the orchestrator on the acme overlay. You need to dispatch an e2e
+    You are the orchestrator on the teatree overlay. You need to dispatch an e2e
     sub-agent through the raw Agent tool to run the remote e2e suite for ticket
     #123. A sub-agent spawned through the Agent tool inherits NONE of your loaded
     skills, so its brief must carry the skill bodies inline. Take the single next
     action you would take to dispatch it correctly: either obtain the preamble
-    (`t3 acme skill-preamble --skills t3:rules,t3:e2e,acme`) or spawn the
+    (`t3 teatree skill-preamble --skills t3:rules,t3:e2e`) or spawn the
     sub-agent with that preamble prepended to the brief. Do NOT spawn it with a
     bare task description. One action only, no narration.
   expect:
