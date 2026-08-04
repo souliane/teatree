@@ -47,7 +47,7 @@ def _ask_snippet(name: str, body: str) -> WeightedSnippet:
 
 
 def _extract(*snippets: WeightedSnippet) -> ConsolidationExtract:
-    return ConsolidationExtract(snippets=tuple(snippets), truncated=False)
+    return ConsolidationExtract(snippets=tuple(snippets))
 
 
 #: An ask whose subject names an existing mechanism — a review/MR reminder the

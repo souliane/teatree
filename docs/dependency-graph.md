@@ -40,6 +40,7 @@ graph TD
     teatree.core --> teatree.paths
     teatree.core --> teatree.pricing
     teatree.core --> teatree.project
+    teatree.core --> teatree.failure_signatures
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
@@ -91,6 +92,7 @@ graph TD
     teatree.core.models --> teatree.verification
     teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types
+    teatree.agents --> teatree.failure_signatures
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
@@ -209,6 +211,7 @@ graph TD
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
+    teatree.loop --> teatree.failure_signatures
     teatree.loop --> teatree.self_update
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
@@ -300,6 +303,7 @@ graph TD
     teatree.loop.scanners --> teatree.loop.review_done_reactions
     teatree.loop.scanners --> teatree.loop.review_request_tracker
     teatree.loop.scanners --> teatree.loop.pr_ticket_index
+    teatree.loop.scanners --> teatree.loop.inbound_reading
     teatree.loop.dispatch_reducer --> teatree.url_classify
     teatree.loop.dispatch_reducer --> teatree.core.modelkit
     teatree.loop.dispatch_reducer --> teatree.loop.scanners
@@ -350,6 +354,8 @@ graph TD
     teatree.loop.slack_answer --> teatree.backends.slack
     teatree.loop.slack_answer --> teatree.core
     teatree.loop.slack_answer --> teatree.core.models
+    teatree.loop.slack_answer --> teatree.loop.inbound_classifier
+    teatree.loop.slack_answer --> teatree.loop.inbound_reading
     teatree.loop.slack_answer --> teatree.loop.self_improve
     teatree.loop.slack_answer --> teatree.loop.statusline
     teatree.loops --> teatree.agents

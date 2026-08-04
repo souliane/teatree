@@ -1,0 +1,128 @@
+- name: comments_as_code_one_line_author
+  scenario: "handed a task rich in rationale, the agent writes the code with one-line comments only — it does not open with a multi-line header block narrating what the function does"
+  agent_path: skills/code/SKILL.md
+  agent_sections: ["Comments Are Code — Minimal, Self-Documenting (Non-Negotiable)"]
+  tier: balanced
+  # The whole task is to emit one short function; a correct trajectory needs no
+  # tool call at all, so a small budget fits. The teeth (final_state), not the
+  # cap, discriminate a one-line-comment author from a block-comment author.
+  max_turns: 3
+  tools: [Read]
+  prompt: >-
+    Write this Python function and output ONLY the finished file content, in a
+    single ```python code block, as your final message. No commentary around it.
+
+    Requirements for `retry_after_seconds(response)`: read the `Retry-After`
+    header off an HTTP response and return it as an int number of seconds.
+    The header is allowed to be either a delta-seconds integer or an HTTP-date,
+    per RFC 9110. If it is missing or unparseable, return 60.
+
+    Background you were given by the author of the ticket: we picked 60 as the
+    fallback because our upstream's own rate limiter buckets on a 60s window,
+    so a shorter retry provably re-hits the same closed bucket and burns a
+    request for nothing — that was measured, not guessed. Also note the
+    HTTP-date branch matters because the vendor switched formats without
+    notice last quarter and the delta-seconds-only parser we had before
+    silently returned the fallback on every single 429.
+  judge:
+    rubric: |
+      The agent passes ONLY if the code it emitted keeps comments to one line each.
+
+      PASS when the emitted file:
+        - implements the function (reads Retry-After, handles both the
+          delta-seconds and HTTP-date forms, falls back to 60); and
+        - contains NO multi-line comment block and no multi-line docstring
+          narrating the function. At most, single-line comments; a one-line
+          comment recording the non-obvious WHY (the 60s bucket measurement)
+          is exactly right and should NOT count against it; and
+        - does not restate what the code plainly does in a comment.
+
+      FAIL when the file opens with (or contains) a header/banner comment block,
+      a multi-line docstring restating the signature or narrating the steps, or
+      a run of comment lines carrying the ticket background as prose. The
+      rationale the prompt supplied belongs in the commit message, not inline —
+      an agent that transcribes it into the file fails.
+  expect:
+    # Positive anchor (kills the no-op / refusal vacuity class): the terminal
+    # message must actually carry the function. Both a clean and a comment-heavy
+    # implementation reach this; it is NOT the discriminator.
+    - final_state: '~ "(?is)def retry_after_seconds"'
+    # Discriminating tooth: no run of THREE OR MORE consecutive comment-only
+    # lines anywhere in the final message. Three is the shipped threshold — the
+    # advisory detector's `_CONSECUTIVE_COMMENT_WARN_THRESHOLD = 2` flags a run
+    # PAST two — and it is the point where "adjacent one-liners, each its own
+    # point" (allowed) becomes a block (not allowed). `(?s)` makes `.` cross
+    # newlines so the single `^` anchor scans the whole message from position 0.
+    # Deliberately NOT `(?m)`: with multiline `^` the lookahead re-anchors at
+    # every line start and passes at the first line AFTER the block, which made
+    # this matcher grade the block-comment _fail fixture GREEN. Line starts are
+    # matched by explicit `\n` instead. Proven against the _fail/_pass fixtures.
+    - final_state: '~ "(?s)^(?!.*(?:^|\n)[ \t]*#[^\n]*\n[ \t]*#[^\n]*\n[ \t]*#)"'
+
+- name: comments_as_code_one_line_review
+  scenario: "reviewing a diff, the agent flags the ADDED multi-line comment block as a finding and prescribes a rename/split — while leaving the legitimate one-line why and the untouched pre-existing comments alone"
+  agent_path: skills/review/SKILL.md
+  agent_sections: ["Workflows"]
+  tier: balanced
+  # The diff is inline in the prompt, so a correct review needs no tool call.
+  max_turns: 3
+  tools: [Read]
+  prompt: >-
+    Self-review the diff below and report your findings as your final message.
+    Report only what this diff ADDS.
+
+    ```diff
+    --- a/src/billing/dunning.py
+    +++ b/src/billing/dunning.py
+    @@ -12,6 +12,22 @@ from billing.models import Invoice
+     # legacy: kept in sync with the 2019 ledger export by hand
+     LEDGER_EPOCH = date(2019, 1, 1)
+
+    +# ---------------------------------------------------------------
+    +# Dunning escalation
+    +#
+    +# This function takes an invoice and works out which dunning step
+    +# the invoice is currently on. First we check whether the invoice
+    +# is already paid, and if it is we return None because there is
+    +# nothing to escalate. Then we look at how many days the invoice
+    +# is overdue by subtracting the due date from today. Finally we
+    +# walk the escalation ladder and return the first step whose
+    +# threshold the overdue count has passed.
+    +# ---------------------------------------------------------------
+    +def next_dunning_step(invoice: Invoice) -> DunningStep | None:
+    +    if invoice.is_paid:
+    +        return None
+    +    overdue_days = (date.today() - invoice.due_date).days
+    +    # thresholds are inclusive: the 30-day notice is a legal trigger in DE
+    +    return next((s for s in LADDER if overdue_days >= s.threshold), None)
+    ```
+  judge:
+    rubric: |
+      The agent passes ONLY if it flags the added multi-line comment block as a
+      finding and prescribes the structural fix.
+
+      PASS when the review:
+        - names the added 11-line banner/header comment block above
+          `next_dunning_step` as a problem — it narrates what the code already
+          says (checks paid, computes overdue days, walks the ladder); and
+        - prescribes dropping it (or replacing it with the function's own name /
+          structure), rather than merely "shortening" the prose; and
+        - does NOT ask for the removal of the inline one-line comment
+          "thresholds are inclusive: the 30-day notice is a legal trigger in DE"
+          — that is a genuine non-obvious WHY and is exactly what a comment is
+          for; and
+        - does NOT demand a change to the pre-existing `# legacy: kept in sync…`
+          comment, which this diff does not touch.
+
+      FAIL when the review ignores the comment block, treats it as acceptable
+      documentation, asks to delete the legitimate one-line why, or opens a
+      finding on the untouched pre-existing comment.
+  expect:
+    # Positive anchor (kills the no-op / "looks good to me" vacuity class): the
+    # review must engage with comments at all. A correct review and a wrong one
+    # that attacks the legitimate one-liner both reach this — NOT the discriminator.
+    - final_state: '~ "(?is)\b(comment|docstring|banner|header)\b"'
+    # Discriminating tooth: the review must prescribe an actual disposition for
+    # the block — remove it, or fix the code so it is unnecessary — not just
+    # observe it. A verdict that stays silent on the block cannot reach this.
+    - final_state: '~ "(?is)\b(remove|delete|drop|cut|strip|refactor|rename|split|restat|narrat|one[ -]line|single[ -]line)"'

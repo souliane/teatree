@@ -260,6 +260,10 @@ def _export_with_rotation(*, app_id: str) -> SlackManifest:
                 f"ERROR config token expired; recreate it at {app_manifest_editor_url(app_id)}",
             )
             raise typer.Exit(code=1) from exc
+        # Write-ahead, exactly as in the proactive path: prove the store can keep
+        # the result BEFORE spending a rotation Slack cannot undo.
+        store = ConfigTokenStore()
+        store.assert_writable()
         access, refresh = rotate_config_token(refresh_token=refresh_token)
         ConfigTokenStore().persist(access=access, refresh=refresh, issued_at=dt.datetime.now(dt.UTC))
         return export_manifest(app_id=app_id, config_token=access)

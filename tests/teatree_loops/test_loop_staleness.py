@@ -192,6 +192,45 @@ class TestSuppressionClassification(_LoopTableCase):
         _loop("review", ran_ago=dt.timedelta(hours=7))
         assert not self._stale_one().suppressed
 
+    def test_per_loop_force_off_suppresses(self) -> None:
+        # `t3 loop override review off` is an operator saying "not here". Reading only the
+        # hold map left it unexplained, so a deliberate force-off reported a FAIL — on a
+        # non-zero exit — every single status read, which is how a gate stops being read.
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        with (
+            patch(_REGISTRY_SEAM, return_value=(_mini("review"),)),
+            patch(_MODE_SEAM, return_value=_mode()),
+            patch(_HOLDS_SEAM, return_value=(set(), {"review": False})),
+        ):
+            assert stale_loops(timezone.now())[0].suppressed
+
+    def test_per_loop_force_on_does_not_suppress(self) -> None:
+        # The asymmetry that keeps the gate honest: a force-ON is an operator DEMANDING
+        # the loop run, so it standing still is a real fault, not an explanation.
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        with (
+            patch(_REGISTRY_SEAM, return_value=(_mini("review"),)),
+            patch(_MODE_SEAM, return_value=_mode()),
+            patch(_HOLDS_SEAM, return_value=(set(), {"review": True})),
+        ):
+            assert not stale_loops(timezone.now())[0].suppressed
+
+    def test_a_force_masked_loop_does_not_fail_the_health_verdict(self) -> None:
+        # End to end: the health surface `t3 worker status` exits on. A force-off must
+        # read as idle-by-configuration, never as an unexplained stale loop.
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        _loop("tickets", ran_ago=dt.timedelta(seconds=30))
+        with (
+            patch(_REGISTRY_SEAM, return_value=(_mini("review"), _mini("tickets"))),
+            patch(_MODE_SEAM, return_value=_mode()),
+            patch(_HOLDS_SEAM, return_value=(set(), {"review": False})),
+            patch(_ADMITTED_SEAM, return_value=set()),
+        ):
+            health = loop_health(timezone.now())
+        assert health.unexplained == ()
+        assert health.ok
+        assert "idle by configuration: review" in "\n".join(health.lines())
+
 
 @django.test.override_settings(USE_TZ=True)
 class TestLoopHealth(_LoopTableCase):
@@ -279,7 +318,7 @@ class TestLoopHealth(_LoopTableCase):
         assert not health.ok
         assert not health.frozen_fleet
         assert "dispatch" in rendered
-        assert "no mode mask, colleague gate or LoopState hold explains it" in rendered
+        assert "no mode mask, colleague gate, per-loop force-off or LoopState hold explains it" in rendered
 
     def test_json_carries_the_mode_and_every_stale_loop(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(hours=7))

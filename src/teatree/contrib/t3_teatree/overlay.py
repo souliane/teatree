@@ -168,6 +168,18 @@ class TeatreeOverlay(OverlayBase):
         return ["teatree"]
 
     @override
+    def get_repo_clone_url(self, repo_name: str) -> str:
+        """The public GitHub remote for teatree's own repo; ``""`` for anything else.
+
+        ``TEATREE_REPO_URL`` (the same name ``deploy/entrypoint.sh`` reads for the
+        runtime clone) overrides it, so a fork-hosted deployment provisions from
+        its own remote rather than upstream.
+        """
+        if Path(repo_name).name != "teatree":
+            return ""
+        return os.environ.get("TEATREE_REPO_URL") or f"https://github.com/{_DEFAULT_FOLLOWUP_REPOS[0]}.git"
+
+    @override
     def get_checking_sources(self) -> list[str]:
         # The teatree overlay relies on the core needs-you sources (pending
         # questions + failed agent runs); it adds none of its own.

@@ -53,16 +53,23 @@ except Exception as exc:
 # produces at the engagement seam, and whether the canonical token that demand
 # lands in ``<session>.pending`` as still resolves for the skill-loading gate.
 # Every link is a place the owner's opt-in has silently evaporated.
+#
+# The lane is reported from HERE rather than read in the CLI process, because the
+# demand is only interpretable against the lane that produced it — and this is the
+# process that produced it. A second reading in the doctor could disagree with the
+# one the seam actually consulted, which is the drift ``session_lane`` exists to
+# foreclose.
 _ENGAGEMENT_PROBE = """
 import json, sys
 sys.path.insert(0, {plugin_root!r})
 try:
     from hooks.scripts.engagement import autoload_skill_demand
     from hooks.scripts.hook_router import _skill_resolves, _skill_search_dirs, normalize_skill_name
+    from hooks.scripts.session_lane import session_lane
     demand = autoload_skill_demand([])
     search_dirs = _skill_search_dirs()
     enforceable = [normalize_skill_name(s) for s in demand if _skill_resolves(normalize_skill_name(s), search_dirs)]
-    print(json.dumps({{"status": "ok", "demand": demand, "enforceable": enforceable}}))
+    print(json.dumps({{"status": "ok", "lane": session_lane(), "demand": demand, "enforceable": enforceable}}))
 except Exception as exc:
     print(json.dumps({{"status": "probe_failed", "error": exc.__class__.__name__ + ": " + str(exc)}}))
 """
@@ -72,6 +79,12 @@ _PROBE_TIMEOUT_SECONDS = 30
 # ``HookResolution.status`` vocabulary.
 _STATUS_OK = "ok"
 _STATUS_PROBE_FAILED = "probe_failed"
+
+# ``hooks.scripts.session_lane.LANE_SDK``, restated rather than imported: ``hooks/``
+# is a repo-root sibling of ``src/`` and ships in no teatree distribution, which is
+# why every reference to it here is a resolved PATH. The two copies are bound by
+# ``tests/teatree_cli/doctor/test_autoload_engagement_check.py``.
+_LANE_SDK = "sdk"
 
 
 @dataclass(frozen=True)
@@ -261,7 +274,14 @@ def _check_autoload_engages_platform_skill() -> bool:
     actually be made to load, and FAILS when the two disagree.
 
     Off when ``autoload`` is off: nothing was claimed, so there is nothing to
-    contradict.
+    contradict. Off too when the probe reports a POSITIVELY SDK lane, where the
+    seam withholds the skill on purpose — the demand is enforced by a
+    ``PreToolUse`` gate that refuses every ``Edit``/``Write``/``Bash``, so
+    engaging a headless worker would block the factory this check protects. An
+    empty demand there is the contract being honoured, not the chain degrading.
+    Only a positively SDK lane is excused: an UNKNOWN lane (a doctor run from a
+    plain shell carries no Claude markers) keeps the FAIL, mirroring the seam's
+    own resolution of an unreadable signal toward the attended reading.
 
     An UNASKABLE probe (no bash, no shim, spawn failure, unparsable output) is a
     WARN — an undiagnosable environment must not turn a doctor run red on this
@@ -294,6 +314,14 @@ def _check_autoload_engages_platform_skill() -> bool:
 
     enforceable = parsed.get("enforceable")
     if isinstance(enforceable, list) and enforceable:
+        return True
+    if parsed.get("lane") == _LANE_SDK:
+        typer.echo(
+            "WARN  `autoload` is true, but this doctor run sits in the SDK lane, where the "
+            "platform skill is withheld by design — the gate enforcing it would refuse every "
+            "edit the factory's own workers make. Attended-session engagement is unverified "
+            "from here; re-run `t3 doctor check` from an interactive session to check it.",
+        )
         return True
     typer.echo(
         f"FAIL  `autoload` is true in the settings store, but the LIVE hook path engages no "

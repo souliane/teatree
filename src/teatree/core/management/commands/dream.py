@@ -41,7 +41,7 @@ from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
-    from teatree.loops.dream.engine import ConsolidationExtract
+    from teatree.loops.dream.engine import ConsolidationExtract, DreamRunResult
     from teatree.loops.dream.phase_runner import MemoryPhaseRunner
 
 
@@ -247,10 +247,22 @@ class Command(TyperCommand):
         rejected = (
             f"; WARN {result.clusters_rejected} ungrounded cluster(s) rejected" if result.clusters_rejected else ""
         )
+        deferred = (
+            f"; {result.deferred_members} snippet(s) DEFERRED to the next pass" if result.deferred_members else ""
+        )
+
+        # A broken distiller means the consolidation never happened, so it short-circuits
+        # every "did it find anything?" report below — those all read as a quiet night.
+        if result.distillation_broken:
+            if not dry_run:
+                DreamRunMarker.objects.mark_attempted(now)
+            self._report_broken_distillation(result)
+            return PassOutcome.FAILED
+
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
-                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}; "
+                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}{deferred}; "
                 "no rows or marker written.",
             )
             return PassOutcome.DRY_RUN
@@ -302,8 +314,8 @@ class Command(TyperCommand):
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
                 f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
                 f"{promoted}{compliance}{automation_asks}"
-                f"{memory_phases}{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped "
-                f"succeeded.",
+                f"{memory_phases}{memory_promote}{gates_summary}{deferred}; acceptance gate(s) FAILED — marker "
+                f"NOT stamped succeeded.",
             )
             return PassOutcome.FAILED
 
@@ -312,9 +324,24 @@ class Command(TyperCommand):
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
             f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
             f"{promoted}{compliance}{automation_asks}"
-            f"{memory_phases}{memory_promote}{gates_summary}.",
+            f"{memory_phases}{memory_promote}{gates_summary}{deferred}.",
         )
         return PassOutcome.STAMPED
+
+    def _report_broken_distillation(self, result: "DreamRunResult") -> None:
+        """Print WHY the distiller produced nothing, quoting the reply it could not parse.
+
+        The reply is the actionable part: ``Not logged in · Please run /login`` names an
+        auth gap the operator fixes in one step, where a bare ``unparsable`` reads like a
+        model formatting slip and cost a full debugging session to tell apart.
+        """
+        self.stdout.write(
+            f"FAIL  dream distiller could not do its job — {result.broken_batches} broken + "
+            f"{result.failed_batches} raised batch(es) over {result.snippets_distilled} snippet(s); "
+            "NO consolidation happened, marker NOT stamped succeeded.",
+        )
+        for line in result.distill_diagnostics:
+            self.stdout.write(f"      {line}")
 
     def _run_compliance_measurement(
         self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool

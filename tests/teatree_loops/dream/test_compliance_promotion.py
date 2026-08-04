@@ -48,7 +48,6 @@ def _extract_for(_cluster: DistilledCluster) -> ConsolidationExtract:
                 text=f"name: {_SLUG}\nDo not fire AskUserQuestion for routine obstacles.\n",
             ),
         ),
-        truncated=False,
     )
 
 

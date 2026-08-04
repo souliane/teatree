@@ -43,11 +43,7 @@ def schedule_experiment_fix(
         issue_url=issue_url,
         defaults={"role": Ticket.Role.AUTHOR, "short_description": experiment.hypothesis.strip()[:80]},
     )
-    extra = dict(ticket.extra or {})
-    extra.update({_EXPERIMENT_KEY: experiment.pk, _TARGET_KEY: experiment.target_provider_id})
-    if extra != ticket.extra:
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+    ticket.merge_extra(set_keys={_EXPERIMENT_KEY: experiment.pk, _TARGET_KEY: experiment.target_provider_id})
     task: Task | None = None
     already_scheduled = Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists()
     if not already_scheduled and ticket.state == Ticket.State.NOT_STARTED:

@@ -254,8 +254,8 @@ class ReviewContext(TypedDict, total=False):
     ``Ticket.record_review_context`` once the reviewer has fetched the
     work item from its source (``work_item``: the Notion/GitLab/tracker URL),
     followed every link in the MR description + ticket, downloaded each
-    referenced document (``documents``: spec, design doc, amortization /
-    Tilgungsplan schedule, requirement doc), and analyzed them against the
+    referenced document (``documents``: spec, design doc, amortization
+    schedule, requirement doc), and analyzed them against the
     diff (``analysis``: how the implementation was checked against the
     specified requirements + business rules). The reviewing-phase gate
     (``teatree.core.gates.review_context_gate``) consumes it: when

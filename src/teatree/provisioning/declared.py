@@ -33,10 +33,6 @@ _PYPROJECT = "pyproject.toml"
 _CLAUDE_SETTINGS = (".claude", "settings.json")
 _MIN_SKILL_SPEC_SEGMENTS = 3
 
-_SKILL_REMEDIATION = (
-    "run `t3 setup` in this environment (it provisions every declared skill dependency "
-    "idempotently), or install it directly with `apm install -g --target claude`"
-)
 _BINARY_REMEDIATION = "install it and put it on PATH, then re-run `t3 doctor check`"
 _INTEGRATION_REMEDIATION = "run `t3 setup` to re-register the plugin, or disable it in ~/.claude/settings.json"
 
@@ -72,6 +68,31 @@ class DeclaredDependency:
     source: str = ""
 
 
+def skill_remediation(spec: str) -> str:
+    """The runnable fix for an absent mandated skill, naming its declared source.
+
+    The command is spelled out with the manifest's own pinned spec rather than a
+    generic ``apm install`` shape: an operator reading a FAIL can paste the line,
+    and pinning it to the declaration keeps the fix and the mandate the same fact.
+    """
+    return (
+        f"`apm install {spec}` — or run `t3 setup` in this environment, "
+        "which provisions every declared skill dependency idempotently"
+    )
+
+
+def skill_bump_remediation(spec: str) -> str:
+    """The runnable fix for a pin its source has moved past, at the NEW spec.
+
+    Same pasteable shape as :func:`skill_remediation`, and deliberately a
+    different sentence: an absent skill is installed from the pin the manifest
+    already carries, while a trailing pin is two facts — the declaration moves
+    first, then the install follows it — and a reader handed only the install
+    would fix this box and leave the mandate behind.
+    """
+    return f"set the `dependencies.apm` entry to `{spec}`, then `apm install {spec}`"
+
+
 def _read_text(path: Path, surface: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -105,7 +126,8 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
     for entry in entries:
         if not isinstance(entry, str):
             continue
-        segments = entry.split("#", 1)[0].strip("/").split("/")
+        spec = entry.strip()
+        segments = spec.split("#", 1)[0].strip("/").split("/")
         if len(segments) < _MIN_SKILL_SPEC_SEGMENTS:
             continue
         declared.append(
@@ -113,8 +135,8 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
                 kind="skill",
                 name=segments[-1],
                 declared_in=f"{_APM_MANIFEST} → dependencies.apm",
-                remediation=_SKILL_REMEDIATION,
-                source=entry.strip(),
+                remediation=skill_remediation(spec),
+                source=spec,
             )
         )
     return declared

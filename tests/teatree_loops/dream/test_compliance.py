@@ -36,7 +36,7 @@ def _transcript_snippet(name: str, body: str) -> WeightedSnippet:
 
 
 def _extract(*snippets: WeightedSnippet) -> ConsolidationExtract:
-    return ConsolidationExtract(snippets=tuple(snippets), truncated=False)
+    return ConsolidationExtract(snippets=tuple(snippets))
 
 
 #: A memory-backed rule (a feedback_ slug) whose subject recurs in a fresh

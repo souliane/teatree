@@ -68,7 +68,7 @@ def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
     # — which now runs on EVERY pass and reuses ``result.extract`` — has something to
     # measure. No correction turn ⇒ 0 violations ⇒ an empty compliance summary clause.
     snippet = WeightedSnippet(path=Path("/memory/feedback_x.md"), kind="memory", weight=90, text="a durable lesson")
-    extract = ConsolidationExtract(snippets=(snippet,), truncated=False)
+    extract = ConsolidationExtract(snippets=(snippet,))
     return DreamRunResult(
         clusters_recorded=1,
         members_replayed=3,
@@ -1152,7 +1152,6 @@ def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
                 path=Path("/sessions/session-a.jsonl"), kind="main", weight=80, text=_COMPLIANCE_VIOLATION_TURN
             ),
         ),
-        truncated=False,
     )
     return DreamRunResult(
         clusters_recorded=1, members_replayed=5, dry_run=dry_run, snippets_distilled=2, extract=extract
@@ -1479,6 +1478,68 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
             call_command("dream", "run", stdout=StringIO())
         marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
         assert marker.last_succeeded_at is not None
+
+
+def _broken_distillation_result(*, dry_run: bool = False) -> DreamRunResult:
+    """A pass whose distiller produced nothing BECAUSE it was broken, not because it was quiet."""
+    return DreamRunResult(
+        clusters_recorded=0,
+        members_replayed=407,
+        dry_run=dry_run,
+        snippets_distilled=20,
+        empty_batches=1,
+        broken_batches=1,
+        distill_diagnostics=("batch of 20 member(s): unparsable — reply: 'Not logged in · Please run /login'",),
+    )
+
+
+class DreamBrokenDistillerFailsLoudTestCase(TestCase):
+    """A distiller that could not do its job fails the pass — it never reports success.
+
+    The pass that motivated this printed a WARNING and exited 0 while its `claude`
+    subprocess was unauthenticated, so nothing distinguished a broken consolidation
+    from a night with nothing to consolidate.
+    """
+
+    def test_broken_distillation_exits_non_zero(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert exc.value.code == 1
+
+    def test_broken_distillation_on_a_dry_run_also_exits_non_zero(self) -> None:
+        broken = _broken_distillation_result(dry_run=True)
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=broken),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
+        assert exc.value.code == 1
+
+    def test_broken_distillation_reports_the_raw_reply(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=stdout)
+        assert "Not logged in" in stdout.getvalue()
+
+    def test_broken_distillation_does_not_stamp_succeeded(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
+        assert marker is None or marker.last_succeeded_at is None
+
+    def test_healthy_quiet_pass_still_exits_zero(self) -> None:
+        quiet = DreamRunResult(clusters_recorded=0, members_replayed=407, dry_run=True, snippets_distilled=20)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=quiet):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
 
 
 class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):

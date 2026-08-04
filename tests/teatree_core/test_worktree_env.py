@@ -370,7 +370,7 @@ class TestWriteEnvCache(TestCase):
             wt, _ = _make_worktree(tmp, ticket_name="t2", ticket_url="https://ex.com/2", db_name="wt_2")
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_SHARED_PG),
-                patch.object(worktree_env_mod.platform, "system", return_value="Darwin"),
+                patch.object(worktree_env_mod, "docker_host_address", return_value="host.docker.internal"),
             ):
                 spec = write_env_cache(wt)
             assert spec is not None

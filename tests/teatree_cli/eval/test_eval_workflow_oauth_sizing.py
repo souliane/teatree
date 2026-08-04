@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
+from tests._ci_config import gitlab_ci_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
 _GH_EVAL_PR = _REPO_ROOT / ".github" / "workflows" / "eval-pr.yml"
-_GITLAB_CI = _REPO_ROOT / ".gitlab-ci.yml"
+_GITLAB_CI = gitlab_ci_path()
 
 
 def _load(path: Path) -> dict[str, Any]:

@@ -26,11 +26,13 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from tests._ci_config import gitlab_ci_path
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
 _GH_EVAL_WEEKLY_REUSABLE = _REPO_ROOT / ".github" / "workflows" / "eval-weekly-reusable.yml"
-_GITLAB_CI = _REPO_ROOT / ".gitlab-ci.yml"
+_GITLAB_CI = gitlab_ci_path()
 
 _FLAG = "--require-executed"
 
@@ -273,11 +275,55 @@ class TestGitLabRequireExecutedUnconditional:
             "--require-executed must be passed literally, not via a key-conditional shell var."
         )
 
-    def test_gitlab_installs_and_asserts_the_claude_cli(self) -> None:
+    def test_gitlab_lane_asserts_the_runtime_its_backend_needs(self) -> None:
+        # The guarantee is that a MISSING RUNTIME fails the job loudly instead of
+        # letting the suite skip every scenario and report a decorative green. WHICH
+        # runtime that is follows from the backend the lane selects, so the obligation
+        # is checked against the backend rather than assumed:
+        #
+        #   --backend api          drives the Agent SDK, which execs the `claude`
+        #                          binary as a child. The binary can be absent, so the
+        #                          lane must install it and assert `claude --version`.
+        #   --backend anthropic_api  calls the Anthropic Messages API directly. No
+        #                          `claude` child is ever spawned, so `claude
+        #                          --version` would assert a binary nothing runs — a
+        #                          gate over a dependency the lane does not have. What
+        #                          CAN be missing is the CREDENTIAL, so the equivalent
+        #                          obligation is a preflight that EXITS on an
+        #                          unresolvable credential, with the job's tolerance
+        #                          scoped to that one exit code so the job renders
+        #                          orange and never green.
+        #
+        # A host project that vendors core may pick the CLI-free backend on purpose —
+        # an architecture that forbids the harness depending on the Agent SDK or the
+        # Claude Code CLI has no other option. Both shapes carry a real obligation
+        # here; neither may carry none.
         config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
-        before = "\n".join(cast("list[str]", config[".eval-suite"]["before_script"]))
-        assert "claude --version" in before, (
-            "The GitLab eval-suite must assert the Claude CLI install so a missing binary fails."
+        suite = cast("dict[str, Any]", config[".eval-suite"])
+        before = "\n".join(cast("list[str]", suite["before_script"]))
+        script = "\n".join(cast("list[str]", suite["script"]))
+
+        if "--backend anthropic_api" not in script:
+            assert "claude --version" in before, (
+                "The GitLab eval-suite runs a CLI-backed backend, so it must assert the Claude "
+                "CLI install (`claude --version`) — a missing binary must fail the job."
+            )
+            return
+
+        assert "claude --version" not in before, (
+            "The CLI-free lane (--backend anthropic_api) must not install or assert the Claude "
+            "CLI: it spawns no `claude` child, so that assertion gates a dependency it does not have."
+        )
+        assert "EVAL_BLOCKED=75" in before, (
+            "The CLI-free lane must name the blocked-credential exit code its allow_failure scopes to."
+        )
+        assert 'exit "$EVAL_BLOCKED"' in before, (
+            "The CLI-free lane must preflight its credential and EXIT when neither route resolves, "
+            "so an unauthenticated suite can never skip every scenario and report green."
+        )
+        assert cast("dict[str, Any]", suite["allow_failure"])["exit_codes"] == [75], (
+            "The blocked-credential tolerance must be scoped to that one exit code, so a genuinely "
+            "failed eval still reddens the job."
         )
 
     def test_metered_eval_is_not_on_merge_request_pipelines(self) -> None:
@@ -292,11 +338,32 @@ class TestGitLabRequireExecutedUnconditional:
                 assert not on_mr, f"{job} must not run on merge-request pipelines; rule condition was {condition!r}."
 
     def test_scheduled_path_is_no_pr_guarded(self) -> None:
+        # The scheduled eval is gated on a RUN_EVAL flag the eval-gate job publishes as
+        # a dotenv report. WHERE that flag is read is not a free choice. GitLab
+        # evaluates `rules:` at pipeline CREATION, before any job has run, and its own
+        # documentation is explicit: "You cannot use dotenv variables created in job
+        # scripts in rules, because rules are evaluated before any jobs run."
+        # (https://docs.gitlab.com/ci/jobs/job_rules/). So a `rules:` clause reading
+        # RUN_EVAL only ever sees an empty value unless the pipeline supplies it some
+        # other way — a schedule variable, say — and a checkout that wants the GATE
+        # JOB's answer to decide has to read it in the shared `.eval-suite`
+        # before_script, where a dotenv variable from a needed job IS in scope and the
+        # lane self-skips before anything can bill.
+        #
+        # Either placement satisfies the guard, and this asserts the guard rather than
+        # the spelling: a checkout that reads RUN_EVAL in neither place has no no-PR
+        # pre-check at all and reds here. `needs` is asserted alongside, because the
+        # flag is only in scope for a lane that depends on the job producing it.
         config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
-        # The scheduled eval is gated on a RUN_EVAL flag the eval-gate job sets.
-        weekly_rules = cast("list[dict[str, Any]]", config["eval-weekly"]["rules"])
-        assert any("RUN_EVAL" in rule.get("if", "") for rule in weekly_rules), (
-            "eval-weekly (the scheduled path) must be gated on the eval-gate RUN_EVAL flag."
+        weekly = cast("dict[str, Any]", config["eval-weekly"])
+        weekly_rules = cast("list[dict[str, Any]]", weekly["rules"])
+        before_script = "\n".join(cast("list[str]", config[".eval-suite"]["before_script"]))
+        assert any("RUN_EVAL" in rule.get("if", "") for rule in weekly_rules) or "RUN_EVAL" in before_script, (
+            "eval-weekly (the scheduled path) must be gated on the eval-gate RUN_EVAL flag — in its "
+            "own rules, or in the shared eval-suite before_script that skips the lane before it spends."
+        )
+        assert "eval-gate" in cast("list[str]", weekly["needs"]), (
+            "eval-weekly must depend on eval-gate, or the RUN_EVAL flag is never in scope for it."
         )
         gate_script = "\n".join(cast("list[str]", config["eval-gate"]["script"]))
         assert "merged_prs_since.py" in gate_script, "eval-gate must run the no-PR pre-check (merged_prs_since.py)."

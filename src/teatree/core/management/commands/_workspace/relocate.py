@@ -242,11 +242,8 @@ def _move_one(result: RelocateResult, io: RelocateIO, candidate: _Candidate, tar
         io.write_err(f"  FAILED {candidate.old}: {exc}")
         return
     worktree = candidate.worktree
-    extra = dict(worktree.extra or {})
-    extra["worktree_path"] = str(target)
-    worktree.extra = extra
     try:
-        worktree.save(update_fields=["extra"])
+        worktree.merge_extra(set_keys={"worktree_path": str(target)})
     except DatabaseError as exc:
         # Git + disk are NOW at `target`, but the row save failed, so it still
         # records the OLD (now-gone) path. Report it (never silently lost, never
@@ -288,10 +285,7 @@ def _reconcile_half_move(
         result.moved.append(line)
         io.write_out(f"  would reconcile {line}")
         return
-    extra = dict(worktree.extra or {})
-    extra["worktree_path"] = str(target)
-    worktree.extra = extra
-    worktree.save(update_fields=["extra"])
+    worktree.merge_extra(set_keys={"worktree_path": str(target)})
     result.moved.append(line)
     io.write_out(f"  reconciled {line}")
 

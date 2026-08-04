@@ -8,7 +8,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # E2E Testing
@@ -37,31 +36,7 @@ Agentic browser work — driving a deployed page (navigate/click/fill/upload) an
 - **chrome-devtools-mcp:** upstream's `--headless` option defaults to `false`, so a registration that omits the flag pops a visible Chrome window on **every** navigation. `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) appends `--headless=true` off the default-on `chrome_devtools_headless` setting, so the line `t3 mcp browser-diagnosis` prints is headless unless an operator deliberately opts into a headed browser. Never turn that setting off, and re-register any server you find registered without the flag.
 - **Playwright:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `npx playwright test --headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
 
-**Register it (default on):**
-
-```bash
-t3 mcp browser-diagnosis   # prints the `claude mcp add` line; the flag ships ON by default
-# turn OFF only on a host that cannot run the server:
-# t3 <overlay> config_setting set chrome_devtools_mcp_enabled false
-```
-
-The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --headless=true`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.
-
-**Optional aid for authoring/debugging Playwright specs, never required (#3271).** The same live DOM/console/network view makes *writing* a Playwright spec (finding the right selector, confirming the expected DOM state) and *debugging* a red one far more tractable than working blind. It is purely a developer-experience aid — teatree's runtime requires **zero** MCP, so its absence gates nothing: `t3 doctor` only ever emits an INFO suggestion for it, never a WARN/FAIL. Prerequisite: a Chrome/Chromium executable on the host (the server launches its own Chrome over the DevTools Protocol).
-
-**Pre-authorize the tools for an unattended run.** So the tool never prompts mid-run, allow the server in `~/.claude/settings.json`:
-
-```jsonc
-{
-  "permissions": {
-    "allow": [
-      "mcp__chrome-devtools__*"
-    ]
-  }
-}
-```
-
-**Research finding — MCP allow-rules match by server + tool name only, no domain form.** Per the [Claude Code permission rule syntax](https://docs.claude.com/en/docs/claude-code/permissions#mcp), an MCP specifier is `mcp__server`, `mcp__server__*`, or `mcp__server__tool_name` — there is **no** argument/domain form, so you cannot scope `mcp__chrome-devtools__navigate_page` to a domain the way `WebFetch(domain:example.com)` scopes `WebFetch`. The allow-rule is therefore all-or-nothing per tool. Since chrome-devtools-mcp drives its own launched Chrome (not a shared extension session), there is no per-origin browser gate to clear on top of the allow-rule — allowing the tool is sufficient for an unattended run.
+The `t3 mcp browser-diagnosis` registration command, the exact `claude mcp add` line and the tools it surfaces, the `~/.claude/settings.json` pre-authorization entry, and the finding that MCP allow-rules carry no domain form are in [`skills/e2e/references/browser-tool-setup.md`](references/browser-tool-setup.md).
 
 ## Running E2E Tests
 
@@ -97,7 +72,7 @@ t3 <overlay> e2e run <work-item> --target local
 
 Test a deployed/merged change against `dev`; an unmerged change must still pass on `local` (the DoD gate below requires a green `local` run regardless).
 
-**Specs branch selection (`external` runner).** `t3 <overlay> e2e external --repo <name> --branch <name>` (alias `--ref`) runs the suite from a working branch of the external specs repo instead of the `[e2e_repos.<name>].branch` default. Use it while a specs-migration MR is still open — point at the MR's source branch so the team runs the new specs before they land. Omitted, the configured default ref is used unchanged. The branch must exist on the remote, or the run aborts with a clear message. (`--branch` applies only to a `--repo` clone; a `T3_PRIVATE_TESTS` directory is one you check out yourself, so the flag is rejected there.)
+**Specs branch selection (`external` runner).** `t3 <overlay> e2e external --repo <name> --branch <name>` (alias `--ref`) runs the suite from a working branch of the external specs repo instead of the `[e2e_repos.<name>].branch` default. Use it while a specs-migration MR is still open — point at the MR's source branch so the team runs the new specs before they land. Omitted, the configured default ref is used unchanged. The branch must exist on the remote, or the run aborts with a clear message. (`--branch` overrides the ref of whichever clone is resolved — the `--repo` entry's, or the overlay's own.)
 
 **Recording DEV-vs-local discrepancies (typed sidecar, not prose).** When a spec must behave differently per target (different field labels in a regulated vs internal document, a DEV-only cross-check, a feature whose data only exists on one side), encode it in a **typed TypeScript sidecar the spec imports** (e.g. `<spec>.dualenv.ts` exporting a typed `DualEnvSpec`). `tsc` type-checks it; nothing parses Markdown/YAML to drive behavior. The sidecar is the durable, machine-enforced record of every known divergence and of any fixture provenance.
 
@@ -242,7 +217,7 @@ The override is recorded on `Ticket.extra['dod_e2e_override']` (audited; a blank
 
 Sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data.
 
-- Set the `T3_PRIVATE_TESTS` environment variable to the path of your private test repo.
+- Register it as an `[e2e_repos.<name>]` entry (`url`, `branch`, `e2e_dir`) and run it with `--repo <name>`.
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Artifacts land under the out-of-repo root here too: `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/`. Copying them into the test repo and tracking them in git is a choice only a **private** test repo may make (there, the artifacts are the deliverable). It is never permitted in a product/customer repo — see the rule below.
 
@@ -250,19 +225,7 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 
 An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, and once `post-test-plan` uploads it, the ticket note holds the durable copy. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. The artifacts root lives **outside every working tree** (§ "Artifact directory layout"), so a correctly-pathed run never touches the repo; keep `artifacts/` gitignored in product repos anyway as a backstop against a stray hard-coded path. The evidence lives on the ticket, not in the branch.
 
-Three kinds of file get confused for one another — classify before deciding where each belongs:
-
-| Kind | Example | Home |
-|---|---|---|
-| **Artifact** — *records* a run | `step1.png`, `run.webm` | Never committed to a product repo; uploaded to the ticket note by `post-test-plan`. |
-| **Fixture** — *produces* state | flag/message seed, API seed | The spec's own `beforeAll` / fixture, in the specs tree. Never a loose script under `artifacts/`. |
-| **Manifest** — *authored intent* | `manifest.json` (workflow names, human `steps`, claim→capture mapping) | Hand-written, but it is an artifact too: it lives beside the captures it maps, at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json` — outside every working tree, never committed to a product repo. Once posted, the note's hidden state blob holds the durable copy. |
-
-The **run provenance** is DB-home, not in the tree — never re-derive it from files. `Ticket.extra['e2e_recipe']` records the run's sha and env; the rubric score lives on the `Rubric` model and the posted-note URL on `E2eMandatoryRun.posted_url`.
-
-A **private** test repo that legitimately tracks its manifest (the artifacts are the deliverable there) must commit only the *authored* half — never the per-run commit SHAs / `missing_on_dev`, which churn the file on every push (#3092). `t3 <overlay> e2e tracked-manifest --manifest <path>` prints that authored half (the top-level `dev`/`local` provenance blocks removed) so two runs produce a byte-identical tracked file. Keep the full manifest out-of-repo for `post-test-plan`; commit the stripped output.
-
-A loose `seed-*.py` under `artifacts/` is a smell: fixture logic escaped the spec. Fold it into the spec's fixture and delete the script, or the next run silently depends on a human having executed it by hand.
+The three-kind table (artifact / fixture / manifest) and their homes, where run provenance lives, what a private test repo may commit via `e2e tracked-manifest`, and the loose-seed-script smell are in [`skills/e2e/references/artifact-classification.md`](references/artifact-classification.md).
 
 ## Test-Plan Authoring
 
@@ -333,69 +296,15 @@ pass insert -m e2e/e2etest-password          # re-inject the credential, then ru
 
 **Use `t3 <overlay> e2e post-test-plan --manifest <json>`.** It maintains ONE structured test-plan note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
 
-The note renders as a **test plan**: a header (the ticket title, multi-repo MR links, the per-env commit provenance, and a dev-gap reconciliation line) followed by one block per workflow — the workflow heading, an optional **`How to test:` numbered step list** (the click-through a human follows to reproduce it manually), then the **side-by-side `Dev | Local` comparison table** — each workflow's video row first, then one row per screenshot pair (`—` where a side has no capture, e.g. dev not yet deployed).
-
-In the header, each `repo \`sha\`` in the `Dev deployed:` / `Local tested:` lines is a **clickable commit link** — the full project path is derived by matching the repo short-name against the MR URLs in the note, so a repo with no matching MR renders a bare code-span (never a broken link). A `Dev ± Local:`line then states, per repo present on both sides, whether dev and local are on the **same** commit (`= same commit`) or **differ** (`≠ dev \`<sha>\` vs local \`<sha>\``).
-
-Artifacts always upload to the **ticket's own project** (resolved from the issue URL the note posts on), never to a manifest MR's repo or the overlay's CI project — a note only renders the uploads its own project claims, so the upload target follows the note.
-
-The note is keyed on a hidden ticket marker `<!-- t3-e2e-evidence ticket=<n> -->` and carries a hidden machine-readable state blob `<!-- t3-e2e-data {…} -->` that is the source of truth. Each run **merges** the env(s) its manifest carries over the prior state: a `local`-only manifest fills/refreshes the Local column and freezes Dev; after merge + deploy a `dev`-only manifest fills the Dev column (and clears the "⚠️ Not yet on dev" line) while freezing Local. You never hand-dedup; re-running is always safe.
-
-The command refuses bad evidence before any upload or post: invalid manifest JSON, a referenced artifact that does not exist, or a file whose extension is the wrong media kind (an image listed under a video slot, etc.).
-
-Flags (all keyword-only):
-
-| Flag | Required | Notes |
-|---|---|---|
-| `--manifest` | yes | path to (or inline string of) the test-plan manifest JSON |
-| `--ticket` | no | pk / issue number / issue URL; falls back to the resolved worktree's ticket |
-| `--title` | no | overrides the `## Test Plan — <title>` heading |
-| `--mrs` | no | MR/PR URL(s) (repeat or comma-separate) — supplements the manifest's `mrs` |
-| `--template` | no | body template: `capture-matrix` (default) / `browser-click-first` / `link-api`; overrides the manifest's. Pick it from the AC's modality (below). |
-
-**Pick the `--template` from the AC's modality (§ "Modality — classify each AC").** The flag is how the modality classification becomes the actual note shape:
-
-- `capture-matrix` (default) — the side-by-side `Dev | Local` red-boxed screenshot table. Use for **UI-feature** ACs where screenshots are the per-step compare-against reference. This template runs the red-box pixel gate (below), so every image must carry the highlight.
-- `link-api` — links + code blocks per workflow, **no table, no images**. Use for **route-guard / RBAC / redirect / backend-boundary** ACs (a URL to navigate + an expected redirect/HTTP status, or a `curl` transcript) — the evidence is the URL and the request/response, not a screenshot. Because it carries no images, it skips the red-box gate entirely, so it is also the correct shape when the proof is a status code or golden-data check with no single visible element to box.
-- `browser-click-first` — numbered manual steps with inline screenshots, for a click-through a human reproduces.
+How the note renders (header provenance, per-workflow steps, the `Dev | Local` table), where artifacts upload, the hidden state blob and its merge semantics, the flag table, and how to pick `--template` from the AC's modality are in [`skills/e2e/references/test-plan-note-and-manifest.md`](references/test-plan-note-and-manifest.md).
 
 ### Manifest shape
 
-```json
-{
-  "ticket": "8521",
-  "mrs": ["https://gitlab.com/group/client/-/merge_requests/6331",
-          "https://gitlab.com/group/product/-/merge_requests/7585"],
-  "dev":   {"commits": {"client": "<deployed-sha>", "product": "<deployed-sha>"},
-            "missing_on_dev": ["client!6331 (unmerged)", "product!7585 (draft)"]},
-  "local": {"commits": {"client": "<branch-sha>", "product": "<branch-sha>"}},
-  "workflows": [
-    {"workflow": "<test name>",
-     "steps": ["Open the app", "Click the Login button", "Expect the dashboard"],
-     "dev":   {"video": null, "images": []},
-     "local": {"video": "local/run.webm",
-               "images": ["local/step1.png", "local/step2.png"]}}
-  ]
-}
-```
-
-- One object per workflow; each carries its `dev` and `local` captures. A side's captures may be empty (e.g. dev before deploy) → that column shows `—`.
-- `steps` (optional, workflow-level — shared across dev/local) is the written test plan: the numbered "how to test / where to click" list rendered above that workflow's table. Omit it and the block is omitted. It persists across re-runs — a later steps-less run keeps the recorded steps.
-- `images` and the optional `video` are file paths **relative to the manifest's own directory** — the manifest sits at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json`, so a capture in the per-env directory (see the layout rule below) is referenced as `<env>/<file>`. Just paste what Playwright captured there.
-- `dev.missing_on_dev` lists the MRs whose commits are not yet deployed — the note renders them as an expected gap so a dev column of `—` reads as normal, not a failure.
+The manifest JSON schema and the per-field notes are in [`skills/e2e/references/test-plan-note-and-manifest.md`](references/test-plan-note-and-manifest.md).
 
 ### Artifact directory layout (Non-Negotiable)
 
-E2E artifacts live in a **dedicated directory per environment**, **outside every repo working tree**. The **runner** exports the resolved root — the per-ticket workspace's `.t3-cache/artifacts` — as `T3_E2E_ARTIFACTS_DIR` (core owns the path, so the no-artifacts-in-a-repo rule is structural, not each overlay re-deriving it; #3331). Override it with `--artifacts-dir` (refused when it resolves inside a repo working tree). Honour the variable rather than hard-coding a path. A capture for `env ∈ {dev, local}` lives at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/<file>`. Writing captures to a **worktree-root** `artifacts/` puts binaries inside a product repo — the exact mistake the rule above forbids. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
-
-```
-$T3_E2E_ARTIFACTS_DIR/8521/local/run.webm
-$T3_E2E_ARTIFACTS_DIR/8521/local/step1.png
-$T3_E2E_ARTIFACTS_DIR/8521/dev/run.webm
-$T3_E2E_ARTIFACTS_DIR/8521/dev/step1.png
-```
-
-This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-test-plan` resolves relative artifact paths against the **manifest's own directory**, so keep the manifest beside its captures at `$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json` and reference them as `<env>/<file>`.
+The per-environment directory layout, the `T3_E2E_ARTIFACTS_DIR` contract, and the worked paths are in [`skills/e2e/references/test-plan-note-and-manifest.md`](references/test-plan-note-and-manifest.md).
 
 ### Rules
 
@@ -442,31 +351,7 @@ When an E2E test shows missing UI elements (empty form, blank section, component
 
 **Condition-based settle before capture (Non-Negotiable).** Always wait for the target element to be visible AND the network to be idle before capturing a screenshot — never use a fixed `waitForTimeout` as the settle step. A screenshot captured before the page has settled either shows a blank page or the previous route's content (a transition frame); a blank-page or transition-frame capture is NOT evidence — fail the step rather than posting it.
 
-```ts
-await expect(page.locator('[data-test=expected-element]')).toBeVisible();
-await page.waitForLoadState('networkidle');
-await page.screenshot({ path: `${process.env.T3_E2E_ARTIFACTS_DIR}/<TICKET>/<env>/step1.png` });
-```
-
-**Red-box the asserted element in DEV captures (evidence, not decoration).** A screenshot posted as evidence must make the asserted element obvious, not leave a reviewer hunting a full page for it. Before the capture, draw a saturated-red box around the element under assertion (a bright `outline`/`border` injected via `element.evaluate(...)`, or a Playwright highlight) so the captured PNG carries an unmissable marker on exactly the field/control the test verifies. This is the same red-box marker the post-test-plan evidence gate looks for in DEV captures — a deployed-env screenshot whose asserted element isn't visibly boxed reads as a generic page shot, not proof the specific behaviour rendered.
-
-```ts
-const el = page.getByLabel('Default purchase costs');
-await expect(el).toBeVisible();
-await el.evaluate((n) => { n.style.outline = '4px solid #ff0000'; n.style.outlineOffset = '2px'; });
-await el.scrollIntoViewIfNeeded();
-await page.screenshot({ path: `${process.env.T3_E2E_ARTIFACTS_DIR}/<TICKET>/dev/step1.png` });
-```
-
-Capture the red-boxed shot only after the settle (visible + network idle) above — a red box around a not-yet-rendered element is no more evidence than a blank page.
-
-**The red-box gate is a real pixel-count check — self-check before posting, not after a rejected post.** `t3 <overlay> e2e post-test-plan` rejects a `capture-matrix` image whose saturated-red pixel count is below the gate's minimum (`teatree.core.evidence.test_plan_validation._saturated_red_pixel_count`; a real highlighted crop clears it comfortably while a hidden-state / absence shot or a pre-red-box capture reads ~0 and is rejected). Two adjacent gates trip silently if you assemble carelessly:
-
-- **A hidden-state or "element absent" screenshot has no red box to draw, so it scores ~0 and is rejected.** If an AC's evidence is the *absence* of an element, that AC's modality is `link-api` (a status/redirect), not a boxed screenshot — don't try to post an unboxed shot.
-- **Byte-identical-image dedup (md5):** no two byte-identical images may appear in one manifest, and a `dev/` and `local/` capture of the same state can come out byte-identical — include each distinct state once, or ensure the two sides' bytes actually differ.
-- **A re-run replaces a whole side, not one workflow:** supplying a `dev` (or `local`) block replaces that ENTIRE side — commits, `missing_on_dev`, and ALL its workflows. To update one workflow on a side, re-send every workflow for that side or the others vanish (workflows are keyed by name; `steps` persist across runs).
-
-On the slower DEV stack the injected red box can render as ~0 px for a visible-element assertion even when the element is on screen (a timing/scroll/crop race the local stack doesn't hit). Mitigate by `scrollIntoViewIfNeeded()`, waiting for the outline to actually apply, and cropping so the outline is inside the captured region — before the screenshot, not after.
+The settle-then-capture and red-box Playwright recipes, the saturated-red pixel-count gate and its three adjacent traps (hidden-state shots, md5 dedup, whole-side replacement), and the slow-DEV mitigation are in [`skills/e2e/references/evidence-capture-recipes.md`](references/evidence-capture-recipes.md).
 
 **A capture that a control run would reproduce is not evidence (Non-Negotiable).** Before posting an image, ask: *would navigating without the thing under test produce a visually identical shot?* If yes, the image proves nothing, however clean and well-boxed it is. This is the trap when the assertion is about a **URL, a parameter, a redirect, or a token** — none of those live in pixels, and a viewport screenshot has no address bar, so a page reached *with* the deep link and a page reached *without* it look the same. It bites hardest with a synthetic/fabricated probe value: nothing rendered can depend on a value the backend rejects, so the capture degenerates into "a page loaded". Two consequences:
 
@@ -492,14 +377,7 @@ The captured recording must:
 - **Start the interaction promptly** — no significant blank/static pre-roll. Begin the recording right before the interaction starts; do **not** record dead setup time (waiting on a login, a cold-loading SPA, an idle page) and leave it at the head of the clip. A recording that opens on a frozen or black screen for many seconds reads as a broken capture, not evidence.
 - **End on a clearly-framed final state** showing the asserted outcome — hold the final frame on the result the test verifies (the rendered field, the confirmation screen, the computed value), settled and unambiguous, so the last thing a reviewer sees is the proof. Do not let the recording cut mid-transition or end on a navigation/blank frame.
 
-The deterministic check is `teatree.core.evidence.video_evidence` (mirroring `teatree.core.evidence.test_plan_validation` for stills) — it shells ffprobe/ffmpeg to measure the leading blank/static run and refuses an over-budget pre-roll. Run it directly on any recording before posting:
-
-```bash
-# Verify one recording (exits non-zero on excessive blank/static pre-roll):
-uv run python scripts/analyze_video.py "$T3_E2E_ARTIFACTS_DIR/<TICKET>/local/run.webm" --verify
-```
-
-This check is **machine-enforced by `post-test-plan`**: `t3 <overlay> e2e post-test-plan` runs `check_video_evidence` over every manifest `video` alongside the image gates and **refuses the post** (naming the dead-lead seconds) when a recording opens with excessive pre-roll — so a dead-lead video can never reach the ticket. When ffmpeg is absent the check skips cleanly (it never blocks a post merely because the host lacks ffmpeg); `--skip-validation` is the user-authorised bypass (the agent never sets it itself). The final-frame clarity is the author's discipline — capture so the recording holds the asserted end-state, then `--verify` the head.
+The `scripts/analyze_video.py --verify` command and how `post-test-plan` machine-enforces the pre-roll budget are in [`skills/e2e/references/evidence-capture-recipes.md`](references/evidence-capture-recipes.md).
 
 ### Store Contamination Check
 
@@ -519,30 +397,7 @@ A single E2E pass is not self-driving: it can go green vacuously, miss an accept
 
 > `/next` = the orchestrator advancing the FSM to the next phase and spawning that phase's sub-agent. The e2e ↔ e2e-review chaining IS this `/next` edge fired repeatedly: `e2e --/next--> e2e_reviewing`, and on HOLD, `e2e_reviewing --/next--> e2e` again.
 
-### The loop as FSM edges (max 5 iterations per ticket)
-
-1. **`test` / e2e phase — `/t3:e2e`.** Run the spec — against **DEV** if the feature is deployed there, else a **local stack** restored from the DEV dump (§ "Dual-Env Testing" and § "Replicating a DEV object to local"). On failure, **bug-hunt**: browser console first (§ "Browser Console First"), then screenshot sanity (§ "Screenshot Sanity Check"), driving the page with chrome-devtools-mcp where it helps. **Codify every confirmed finding into a committed Playwright spec** — a browser observation that isn't captured as a durable assertion is lost; the bug-hunt's output is *new committed test code*, not a note. If a real **product bug** surfaces, fix it. Opportunistically **consolidate** duplicated/outside specs into the canonical suite via the `/t3:e2e-review` § "Adopting an outside Playwright suite" conversion method. Then `/next`.
-2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): all three hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
-3. **VERIFIED** — `score ≥ threshold` AND all hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
-4. **BLOCKED** — a **hard external gate** blocks (no broker account and local can't substitute; a broken login with no available fix; a result observable nowhere programmatically — the rubric's `BLOCKED(<named-gate>)`). Terminal: surface the **named gate** to the user, post **nothing caveated**, exit. Do not loop.
-5. **HOLD** — below threshold (and fixable). The FSM loops **back to the `test`/e2e phase** (`e2e_reviewing --/next--> e2e`): a fresh `/t3:e2e` that applies the top rubric `findings` — fix spec brittleness, add the missing-AC assertions, fix the bug, de-flake — then re-scores. Re-loop.
-
-### Terminal states (never loop forever)
-
-- **VERIFIED** (`score ≥ threshold`, all hard gates pass) — the clean test plan is posted, the rubric score recorded.
-- **BLOCKED(named gate)** — a genuinely-unreachable feature (manual-only/no-API, infra-gated). The named gate is surfaced to the user; no caveated note is posted.
-- **MAX_ITERATIONS** (5 verify↔review rounds without VERIFIED) — stop and report the **best score reached** and the **precise remaining gap** (the specific rubric criteria/findings still short of threshold). Do not silently keep looping.
-
-Never post a caveated note as a substitute for reaching the threshold: a note that says "verified, except…" is not a VERIFIED — it is a HOLD or a BLOCKED wearing a green coat. The whole point of the threshold is that 100% confidence is unreachable for some tickets, so the loop terminates honestly (BLOCKED or MAX_ITERATIONS) rather than pretending.
-
-### Configuration
-
-The pass bar is the DB-home **`e2e_confidence_threshold`** setting — an integer 0–100, **default 90**, **per-overlay overridable**. Set it in the `ConfigSetting` store; a stricter client overlay can raise it, a fast dogfood overlay can lower it. It is the single knob both the rubric (`/t3:e2e-review`) and this loop read, so "the threshold" means one value, resolved through the DB-home chain: overlay-scope DB row → global DB row → the dataclass default (no env layer for this setting).
-
-```bash
-t3 <overlay> config_setting set e2e_confidence_threshold 90   # rubric score a spec must reach to be VERIFIED (0-100)
-t3 <overlay> config_setting set e2e_confidence_threshold 95 --overlay client-x   # stricter bar for a client overlay
-```
+The five FSM edges (test → e2e_reviewing → VERIFIED / BLOCKED / HOLD), the three terminal states with their max-5-iteration stop, and the `e2e_confidence_threshold` setting are in [`skills/e2e/references/verify-review-loop.md`](references/verify-review-loop.md).
 
 ## Re-Read Before Debugging
 

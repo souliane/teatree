@@ -180,8 +180,8 @@ def _state_check_ids_in(command: str) -> set[str]:
 
     Two id surfaces are credited: the ``#N`` / ``PR N`` / ``MR N`` tokens the
     free-text claim would also use (via ``_id_tokens_in``), and the BARE
-    numeric id a forge subcommand takes (``gh pr view 1448`` →\u200b ``#1448``,
-    ``glab mr view 1448`` →\u200b ``!1448``). Without a state-read verb, returns
+    numeric id a forge subcommand takes (``gh pr view 42`` →\u200b ``#42``,
+    ``glab mr view 42`` →\u200b ``!42``). Without a state-read verb, returns
     ``set()`` — a bare number elsewhere never counts as verification.
     """
     found: set[str] = set()

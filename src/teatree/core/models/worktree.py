@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import ClassVar, cast
 
-from django.db import models
+from django.db import models, transaction
 from django_fsm import FSMField, transition
 
 from teatree.core.managers import WorktreeManager
@@ -141,6 +141,24 @@ class Worktree(models.Model):
             extra["services"] = services
             self.extra = extra
         self.last_used_at = timezone.now()
+
+    @transition(field=state, source=[State.SERVICES_UP], target=State.PROVISIONED)
+    def start_failed(self) -> None:
+        """Record that a start did not take — the row stops claiming a stack it has not got.
+
+        ``start_services`` commits ``SERVICES_UP`` before the runner does any
+        work, so the state is an INTENT until the containers exist. When the
+        runner fails and the compose project is proven empty, this returns the
+        row to the last state that is actually true.
+
+        Deliberately NOT ``stop_services``: that one enqueues a
+        ``docker compose down``, and firing a down on the way out of a failed
+        start is the destroy-before-validate fault wearing a different hat — the
+        stack this transition describes may be a healthy one the start never
+        touched. Nothing is keyed to this name in
+        ``teatree.core.signals._WORKTREE_TRANSITION_TASKS``, so it enqueues no
+        side effect at all; it is bookkeeping, and only bookkeeping.
+        """
 
     @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.READY)
     def verify(self, *, urls: dict[str, str] | None = None) -> None:
@@ -290,6 +308,46 @@ class Worktree(models.Model):
 
     def _extra(self) -> WorktreeExtra:
         return validated_worktree_extra(self.extra)
+
+    def merge_extra(
+        self,
+        *,
+        set_keys: dict[str, object] | None = None,
+        also_set: dict[str, object] | None = None,
+    ) -> None:
+        """Locked read-modify-write of ``extra``, the counterpart of :meth:`Ticket.merge_extra`.
+
+        The keys land from different writers at different times: ``worktree_path`` from
+        intake, ``services``/``ports`` from the start runner, ``provision_report`` from
+        provisioning. Done as an unlocked ``self.extra = …; save(update_fields=["extra"])``
+        they last-writer-clobber each other — a provision report written from a snapshot
+        taken before the start runner stored its ports drops those ports, and the loss is
+        invisible because each writer's own key is present.
+
+        Same shape as the Ticket primitive: the RMW runs inside ``transaction.atomic()``
+        with the row ``select_for_update``-locked and re-read from the LOCKED row rather
+        than from the possibly-stale in-memory instance, which is what makes it correct on
+        the production SQLite backend where ``select_for_update`` is a no-op but the
+        writers are serialised. A merge that changes nothing issues no ``UPDATE``.
+
+        ``also_set`` writes sibling model fields (``branch``, …) in the SAME locked
+        ``UPDATE`` as ``extra``, so a caller that legitimately co-writes them keeps one
+        atomic write instead of splitting into two.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            merged = dict(locked.extra or {})
+            merged.update(set_keys or {})
+            changed_fields = [field for field, value in (also_set or {}).items() if getattr(locked, field) != value]
+            for field, value in (also_set or {}).items():
+                setattr(locked, field, value)
+                setattr(self, field, value)
+            if merged != (locked.extra or {}):
+                locked.extra = merged
+                changed_fields.append("extra")
+            if changed_fields:
+                locked.save(update_fields=changed_fields)
+            self.extra = merged
 
 
 class WorktreeEnvOverride(models.Model):

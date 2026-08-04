@@ -138,22 +138,25 @@ class WeightedSnippet:
 class ConsolidationExtract:
     """The bounded, ranked input one dream pass feeds the distiller."""
 
+    #: The per-PROMPT character budget. It bounds ONE distiller call, never the
+    #: corpus: :func:`~teatree.loops.dream.distill.distill_in_batches` partitions the
+    #: ranked members into batches of at most this size, so a corpus many times the
+    #: budget is distilled across several calls instead of clipped down to one.
     CHAR_CEILING: ClassVar[int] = 60_000
 
-    #: A guaranteed slice of the ceiling reserved for CURATED MEMORY members, filled
-    #: FIRST so a flood of recent transcript members (a night of large task outputs)
-    #: can never starve the durable doctrine out of the prompt. Complements
-    #: :data:`TRANSCRIPT_FLOOR`: the two floors protect the prompt from EITHER side
-    #: flooding the other, and the remainder is filled highest-weight-first.
+    #: A guaranteed slice of the FIRST batch reserved for CURATED MEMORY members,
+    #: placed FIRST so a flood of recent transcript members (a night of large task
+    #: outputs) can never push the durable doctrine out of the batch that is always
+    #: distilled. Complements :data:`TRANSCRIPT_FLOOR`: the two floors keep either
+    #: side from displacing the other at the head of the ranking.
     MEMORY_FLOOR: ClassVar[int] = 16_000
 
-    #: A guaranteed slice of the ceiling reserved for recent transcript members,
-    #: filled after the memory floor so high-weight curated-memory re-reads can never
-    #: starve fresh drift out of the prompt. The remainder is filled highest-weight-first.
+    #: A guaranteed slice of the first batch reserved for recent transcript members,
+    #: placed after the memory floor so high-weight curated-memory re-reads cannot
+    #: push fresh drift out of it. Everything else follows highest-weight-first.
     TRANSCRIPT_FLOOR: ClassVar[int] = 24_000
 
     snippets: tuple[WeightedSnippet, ...]
-    truncated: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +186,17 @@ class DistillEmptyReason(StrEnum):
     UNPARSABLE = "unparsable"
     ALL_ENTRIES_DROPPED = "all_entries_dropped"
 
+    @property
+    def is_broken(self) -> bool:
+        """True when the distiller could not do its job, as opposed to having nothing to do.
+
+        The distinction decides whether the whole pass failed: a broken reply means the
+        consolidation never happened (an unauthenticated ``claude`` answers
+        ``Not logged in · Please run /login``, which is non-blank prose carrying no JSON
+        array), whereas a genuine empty array means it happened and found nothing.
+        """
+        return self is not DistillEmptyReason.NOTHING_TO_CONSOLIDATE
+
 
 @dataclass(frozen=True, slots=True)
 class DistillResult:
@@ -190,11 +204,14 @@ class DistillResult:
 
     ``empty_reason`` is set exactly when ``clusters`` is empty and ``None`` otherwise,
     so :func:`distill_in_batches` can surface a broken parse distinctly from a genuine
-    no-consolidation in its 0-cluster WARNING.
+    no-consolidation in its 0-cluster WARNING. ``raw_excerpt`` carries a bounded slice
+    of the reply behind a BROKEN reason, so the operator reads the actual refusal
+    instead of a bare ``unparsable`` they can only explain by instrumenting the code.
     """
 
     clusters: list[DistilledCluster]
     empty_reason: DistillEmptyReason | None
+    raw_excerpt: str = ""
 
 
 class Distiller(Protocol):
@@ -236,15 +253,29 @@ class DreamRunResult:
     snippets_distilled: int = 0
     #: How many candidate clusters the ledger-write reject guard dropped as ungrounded.
     clusters_rejected: int = 0
-    #: Whether the bounded extract had to CLIP or DROP a member for lack of budget —
-    #: threaded from ``ConsolidationExtract.truncated`` and WARNED by
-    #: :func:`run_consolidation` (F6.7), so a pass that silently dropped high-signal
-    #: drift for prompt budget is a visible signal, not a value computed and ignored.
-    extract_truncated: bool = False
-    #: The bounded extract this pass built, so the command can reuse it for the
+    #: Batches whose distiller call RAISED, and batches whose reply was BROKEN
+    #: (unauthenticated / unparsable / every entry malformed). Either means the
+    #: consolidation did not happen, which is why :attr:`distillation_broken` fails
+    #: the pass rather than reporting a quiet night.
+    failed_batches: int = 0
+    broken_batches: int = 0
+    #: One line per failed / broken batch, carrying the reason AND the reply excerpt,
+    #: so the operator reads ``Not logged in · Please run /login`` on the FAIL line
+    #: instead of a bare ``unparsable``.
+    distill_diagnostics: tuple[str, ...] = ()
+    #: Members a per-pass batch cap could not reach. They are carried to the next pass
+    #: via the distill cursor, never dropped; a non-zero count is WARNED so a pass that
+    #: saw only part of the corpus says so.
+    deferred_members: int = 0
+    #: The ranked extract this pass built, so the command can reuse it for the
     #: compliance-measurement and automatable-ask phases instead of re-enumerating +
     #: re-reading every member a second time. ``None`` only on a pass that built none.
     extract: "ConsolidationExtract | None" = None
+
+    @property
+    def distillation_broken(self) -> bool:
+        """True when the distiller could not do its job on at least one batch."""
+        return bool(self.failed_batches or self.broken_batches)
 
 
 def default_projects_dir() -> Path:
@@ -387,19 +418,26 @@ def _is_transcript(snippet: WeightedSnippet) -> bool:
 
 
 def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
-    """Read, rank, and hard-bound the members into a distiller input.
+    """Read and RANK every member into the distiller input — discarding none.
 
     Each member is read once; transcript members keep only high-signal lines
     (gate BLOCKs, user-corrections, retro markers) so raw chatter never reaches
-    the LLM. TWO guaranteed floors protect the prompt from either side flooding the
-    other: a ``MEMORY_FLOOR`` slice is filled FIRST from curated-memory members so a
-    night of large task outputs can never starve durable doctrine out of the prompt,
-    then a ``TRANSCRIPT_FLOOR`` slice is filled from recent transcript members so a
-    flood of high-weight memory re-reads can never starve fresh drift. The remaining
-    budget is then filled highest-weight-first over everything not already kept.
-    Snippets are ordered by a WEIGHT-ONLY stable sort, so equal-weight members keep
-    their input (recency) order. ``truncated`` flips when a member is clipped or
-    dropped for lack of budget.
+    the LLM, and :data:`_PER_SNIPPET_CHARS` / :data:`_PER_SESSION_CHARS` bound what
+    any single member contributes. What this function does NOT do is bound the
+    corpus: the prompt budget belongs to one distiller call, so applying it here
+    discarded whatever did not fit the first prompt — on a real machine 20 of 419
+    members, permanently, every pass. Batching
+    (:func:`~teatree.loops.dream.distill.distill_in_batches`) owns that budget now,
+    and every ranked member reaches a call.
+
+    The ORDER is the whole contract this leaves behind. Members sort by a WEIGHT-ONLY
+    stable sort (equal weights keep input/recency order), then the two floors lead:
+    a ``MEMORY_FLOOR`` slice of curated memory first so a night of large task outputs
+    cannot displace durable doctrine, then a ``TRANSCRIPT_FLOOR`` slice of transcripts
+    so high-weight memory re-reads cannot displace fresh drift. Everything else
+    follows highest-weight-first. Since the head of the ranking becomes the batch that
+    is always distilled, that ordering is what guarantees doctrine and fresh drift are
+    seen on every pass.
     """
     weighted: list[WeightedSnippet] = []
     for member in members:
@@ -411,49 +449,45 @@ def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
         )
     weighted.sort(key=lambda s: s.weight, reverse=True)
 
-    kept: list[WeightedSnippet] = []
-    seen: set[int] = set()
-    used = 0
-
-    memories = [s for s in weighted if not _is_transcript(s)]
-    transcripts = [s for s in weighted if _is_transcript(s)]
-    used, mem_truncated = _fill(memories, kept, seen, used, ceiling=ConsolidationExtract.MEMORY_FLOOR)
-    used, transcript_truncated = _fill(
-        transcripts, kept, seen, used, ceiling=ConsolidationExtract.MEMORY_FLOOR + ConsolidationExtract.TRANSCRIPT_FLOOR
+    ordered: list[WeightedSnippet] = []
+    placed: set[int] = set()
+    used = _lead_with(
+        [s for s in weighted if not _is_transcript(s)], ordered, placed, 0, ceiling=ConsolidationExtract.MEMORY_FLOOR
     )
-    used, rest_truncated = _fill(weighted, kept, seen, used, ceiling=ConsolidationExtract.CHAR_CEILING)
+    _lead_with(
+        [s for s in weighted if _is_transcript(s)],
+        ordered,
+        placed,
+        used,
+        ceiling=ConsolidationExtract.MEMORY_FLOOR + ConsolidationExtract.TRANSCRIPT_FLOOR,
+    )
+    ordered.extend(snippet for snippet in weighted if id(snippet) not in placed)
+    return ConsolidationExtract(snippets=tuple(ordered))
 
-    return ConsolidationExtract(snippets=tuple(kept), truncated=mem_truncated or transcript_truncated or rest_truncated)
 
-
-def _fill(
+def _lead_with(
     candidates: Sequence[WeightedSnippet],
-    kept: list[WeightedSnippet],
-    seen: set[int],
+    ordered: list[WeightedSnippet],
+    placed: set[int],
     used: int,
     *,
     ceiling: int,
-) -> tuple[int, bool]:
-    truncated = False
+) -> int:
+    """Move *candidates* to the head of *ordered* until *ceiling* chars are spoken for.
+
+    Stops at the first candidate that would cross the ceiling rather than clipping it —
+    an unplaced member is not dropped, it simply falls back to its weight-ranked
+    position among the remainder.
+    """
     for snippet in candidates:
-        if id(snippet) in seen:
+        if id(snippet) in placed:
             continue
         if used + len(snippet.text) > ceiling:
-            remaining = ceiling - used
-            if remaining > 0:
-                kept.append(_clip(snippet, remaining))
-                seen.add(id(snippet))
-                used += remaining
-            truncated = True
             break
-        kept.append(snippet)
-        seen.add(id(snippet))
+        ordered.append(snippet)
+        placed.add(id(snippet))
         used += len(snippet.text)
-    return used, truncated
-
-
-def _clip(snippet: WeightedSnippet, length: int) -> WeightedSnippet:
-    return WeightedSnippet(path=snippet.path, kind=snippet.kind, weight=snippet.weight, text=snippet.text[:length])
+    return used
 
 
 def write_clusters(
@@ -605,14 +639,15 @@ def run_consolidation(
 
     members = enumerate_members(since=since)
     extract = build_extract(members)
-    if extract.truncated:
+    distill = distiller or sdk_distill
+    outcome = distill_in_batches(extract, distiller=distill, dry_run=dry_run)
+    if outcome.deferred_members:
         logger.warning(
-            "dream extract TRUNCATED — a member was clipped or dropped for prompt budget over "
-            "%d snippet(s); the highest-signal members were kept, but some drift did not reach the distiller.",
+            "dream pass DEFERRED %d of %d snippet(s) — the per-pass batch cap bound; "
+            "they are carried to the next pass by the distill cursor, not dropped.",
+            outcome.deferred_members,
             len(extract.snippets),
         )
-    distill = distiller or sdk_distill
-    outcome = distill_in_batches(extract, distiller=distill)
     clusters = outcome.clusters
     write_outcome = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
     proposed = 0
@@ -627,9 +662,12 @@ def run_consolidation(
         dry_run=dry_run,
         evals_proposed=proposed,
         empty_batches=outcome.empty_batches,
-        snippets_distilled=len(extract.snippets),
+        snippets_distilled=outcome.snippets_distilled,
         clusters_rejected=write_outcome.rejected,
-        extract_truncated=extract.truncated,
+        failed_batches=outcome.failed_batches,
+        broken_batches=outcome.broken_batches,
+        distill_diagnostics=outcome.diagnostics,
+        deferred_members=outcome.deferred_members,
         extract=extract,
     )
 

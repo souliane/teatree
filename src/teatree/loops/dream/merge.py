@@ -39,7 +39,7 @@ from teatree.loops.dream._shared import WEIGHT_OTHER as _WEIGHT_OTHER
 from teatree.loops.dream._shared import WEIGHT_RETRO as _WEIGHT_RETRO
 from teatree.loops.dream._shared import is_binding_text
 from teatree.loops.dream.cross_link import _jaccard, _topic_tokens
-from teatree.loops.dream.decay import _archive_one, _load_memory_files, _MemoryFile
+from teatree.loops.dream.decay import _Archival, _archive_one, _load_memory_files, _MemoryFile
 from teatree.loops.dream.reindex import _strip_frontmatter
 
 #: A pair is a near-duplicate (mergeable) only above this HIGH Jaccard floor —
@@ -202,7 +202,7 @@ def _apply_merge(pair: _Pair, archive_dir: Path, now: datetime, *, dry_run: bool
     """
     distinct = _distinct_lines(pair.survivor, pair.absorbed)
     archived = _archive_one(
-        pair.absorbed, archive_dir, now, reason=f"merged into {pair.survivor.path.name}", dry_run=dry_run
+        pair.absorbed, archive_dir, now, _Archival(f"merged into {pair.survivor.path.name}"), dry_run=dry_run
     )
     if not dry_run:
         existing = pair.survivor.path.read_text(encoding="utf-8")

@@ -65,28 +65,38 @@ class RunConsolidationSeamTestCase(TestCase):
         run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
         assert ConsolidatedMemory.objects.count() == 0
 
-    def test_truncated_extract_is_threaded_into_the_result_and_warned(self) -> None:
-        # F6.7: ConsolidationExtract.truncated was computed and propagated but never
-        # read. A pass that clipped/dropped high-signal drift for prompt budget now
-        # surfaces it — threaded onto the result and logged at WARNING.
-        big = "x" * 1_000_000
-        members = [TranscriptMember(path=self.tmp / f"feedback_{i}.md", kind="memory") for i in range(50)]
+    def _oversized_members(self, count: int) -> list[TranscriptMember]:
+        members = [TranscriptMember(path=self.tmp / f"feedback_{i}.md", kind="memory") for i in range(count)]
         for member in members:
-            member.path.write_text(big)
+            member.path.write_text("x" * 1_000_000)
+        return members
+
+    def test_corpus_beyond_the_prompt_budget_is_distilled_not_discarded(self) -> None:
+        # A corpus many times the prompt budget used to be clipped down to one call's
+        # worth and the rest dropped for good. It is batched across calls instead.
+        members = self._oversized_members(50)
+        with patch.object(engine, "enumerate_members", return_value=members):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.snippets_distilled == len(members)
+        assert result.deferred_members == 0
+
+    def test_batch_cap_defers_the_remainder_and_warns(self) -> None:
+        members = self._oversized_members(50)
         with (
             patch.object(engine, "enumerate_members", return_value=members),
+            patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_BATCHES": "2"}),
             self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs,
         ):
             result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
-        assert result.extract_truncated is True
-        assert any("TRUNCATED" in line for line in logs.output)
+        assert result.deferred_members > 0
+        assert any("DEFERRED" in line for line in logs.output)
 
-    def test_untruncated_extract_leaves_the_result_flag_false(self) -> None:
+    def test_corpus_inside_the_budget_defers_nothing(self) -> None:
         members = [TranscriptMember(path=self.tmp / "feedback_a.md", kind="memory")]
         members[0].path.write_text("BINDING: short lesson")
         with patch.object(engine, "enumerate_members", return_value=members):
             result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
-        assert result.extract_truncated is False
+        assert result.deferred_members == 0
 
     def test_injected_distiller_receives_extract(self) -> None:
         seen: list[ConsolidationExtract] = []
@@ -464,18 +474,13 @@ class BuildExtractTestCase(TestCase):
         assert "TEATREE GATE BLOCK" in joined
         assert "chatter line 100" not in joined
 
-    def test_size_is_bounded_and_truncated_flag_flips(self) -> None:
-        big = "x" * 1_000_000
-        members = [self._member(f"feedback_{i}.md", big) for i in range(50)]
+    def test_each_member_is_bounded_but_the_corpus_is_not(self) -> None:
+        # The per-member caps still bound what one file contributes; what is gone is the
+        # corpus-wide ceiling that dropped every member past the first prompt's worth.
+        members = [self._member(f"feedback_{i}.md", "x" * 1_000_000) for i in range(50)]
         extract = build_extract(members)
-        total = sum(len(s.text) for s in extract.snippets)
-        assert total <= ConsolidationExtract.CHAR_CEILING
-        assert extract.truncated is True
-
-    def test_small_extract_is_not_truncated(self) -> None:
-        member = self._member("feedback_a.md", "BINDING: short")
-        extract = build_extract([member])
-        assert extract.truncated is False
+        assert {len(s.text) for s in extract.snippets} == {engine._PER_SNIPPET_CHARS}
+        assert len(extract.snippets) == len(members)
 
     def test_keeps_user_correction_prose_with_no_signal_keyword(self) -> None:
         chatter = "\n".join(f'{{"type":"assistant","text":"chatter {i}"}}' for i in range(50))
@@ -1166,6 +1171,86 @@ class SilentEmptyBatchTestCase(TestCase):
         with self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured:
             distill.distill_in_batches(extract, distiller=_healthy)
         assert any("nothing_to_consolidate" in line for line in captured.output)
+
+
+class BrokenDistillationReachesTheResultTestCase(TestCase):
+    """A distiller that could not do its job must be visible on the pass result.
+
+    A broken reply (an unauthenticated `claude`, a truncated array) and a raising
+    distiller both used to land as a WARNING on a pass that reported success, so a
+    consolidation producing nothing was indistinguishable from a quiet night.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.members = _many_members(self.tmp, 2)
+
+    def _run(self, distiller: object) -> DreamRunResult:
+        with patch.object(engine, "enumerate_members", return_value=self.members):
+            return run_consolidation(overlay="", since=None, dry_run=True, distiller=distiller)
+
+    def test_unparsable_reply_marks_the_distillation_broken(self) -> None:
+        def _unparsable(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE)
+
+        result = self._run(_unparsable)
+        assert result.broken_batches == 1
+        assert result.distillation_broken is True
+
+    def test_raising_distiller_marks_the_distillation_broken(self) -> None:
+        def _boom(_batch: ConsolidationExtract) -> DistillResult:
+            msg = "claude is not installed — the dream distiller cannot run"
+            raise RuntimeError(msg)
+
+        result = self._run(_boom)
+        assert result.failed_batches == 1
+        assert result.distillation_broken is True
+
+    def test_healthy_empty_pass_is_not_broken(self) -> None:
+        def _healthy(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
+
+        result = self._run(_healthy)
+        assert result.broken_batches == 0
+        assert result.distillation_broken is False
+
+    def test_diagnostics_reach_the_result_so_the_cause_is_readable(self) -> None:
+        def _not_logged_in(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(
+                clusters=[],
+                empty_reason=DistillEmptyReason.UNPARSABLE,
+                raw_excerpt="Not logged in · Please run /login",
+            )
+
+        result = self._run(_not_logged_in)
+        assert any("Not logged in" in line for line in result.distill_diagnostics)
+
+
+class ExtractKeepsEveryMemberTestCase(TestCase):
+    """`build_extract` ranks the corpus; it never discards it for prompt budget."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _dense_members(self, count: int) -> list[TranscriptMember]:
+        members: list[TranscriptMember] = []
+        for i in range(count):
+            path = self.tmp / f"feedback_{i:04d}.md"
+            path.write_text(f"BINDING: lesson {i} — {_CITATION} " + "x" * engine._PER_SNIPPET_CHARS)
+            members.append(TranscriptMember(path=path, kind="memory"))
+        return members
+
+    def test_corpus_beyond_one_prompt_keeps_every_member(self) -> None:
+        members = self._dense_members(3 * ConsolidationExtract.CHAR_CEILING // engine._PER_SNIPPET_CHARS)
+        assert len(build_extract(members).snippets) == len(members)
+
+    def test_no_member_is_clipped_for_a_corpus_wide_budget(self) -> None:
+        members = self._dense_members(3 * ConsolidationExtract.CHAR_CEILING // engine._PER_SNIPPET_CHARS)
+        assert {len(s.text) for s in build_extract(members).snippets} == {engine._PER_SNIPPET_CHARS}
+
+    def test_ranking_still_puts_the_highest_signal_first(self) -> None:
+        weights = [s.weight for s in build_extract(self._dense_members(40)).snippets]
+        assert weights == sorted(weights, reverse=True)
 
 
 class RunConsolidationEvalProposalTestCase(TestCase):

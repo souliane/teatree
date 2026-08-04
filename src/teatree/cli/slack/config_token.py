@@ -15,25 +15,25 @@ that dead end, and the stored pair did after 12 days.
 Two invariants make that unreachable once a pair is seeded:
 
 1. **Rotate on age, not on failure.** :func:`ensure_fresh_config_token` rotates
-    as soon as the pair is older than :data:`ROTATE_AFTER` — a third of Slack's
-    lifetime, so several consecutive missed runs still leave hours of margin. Its
-    caller is ``t3 doctor``, which SessionStart runs (``bootstrap-cli.sh``) and
-    which the deployed stack's watchdog re-runs every five minutes — a cadence
-    far inside the window from two independent triggers, so a box whose worker
-    has been down for a day still self-heals the moment the owner opens a
-    session. An unknown age counts as stale: assuming freshness is precisely the
-    assumption that let the stored pair run to expiry.
+   as soon as the pair is older than :data:`ROTATE_AFTER` — a third of Slack's
+   lifetime, so several consecutive missed runs still leave hours of margin. Its
+   caller is ``t3 doctor``, which SessionStart runs (``bootstrap-cli.sh``) and
+   which the deployed stack's watchdog re-runs every five minutes — a cadence
+   far inside the window from two independent triggers, so a box whose worker
+   has been down for a day still self-heals the moment the owner opens a
+   session. An unknown age counts as stale: assuming freshness is precisely the
+   assumption that let the stored pair run to expiry.
 
 2. **Persist before the old pair is considered spent.** Slack has already
-    invalidated the previous pair by the time ``rotate`` returns, so a lost
-    response bricks the credential permanently.
-    :meth:`ConfigTokenStore.persist` writes the REFRESH half first — it is the
-    half that can mint another pair, so a crash between the two writes leaves a
-    store the next rotation recovers from, whereas the reverse order would leave
-    a live access token guarding a burned refresh token: dead in 12 hours with no
-    way back. Every write is verified by reading it back, and a failure raises
-    :class:`SlackConfigTokenPersistError` rather than returning a value a caller
-    can discard.
+   invalidated the previous pair by the time ``rotate`` returns, so a lost
+   response bricks the credential permanently.
+   :meth:`ConfigTokenStore.persist` writes the REFRESH half first — it is the
+   half that can mint another pair, so a crash between the two writes leaves a
+   store the next rotation recovers from, whereas the reverse order would leave
+   a live access token guarding a burned refresh token: dead in 12 hours with no
+   way back. Every write is verified by reading it back, and a failure raises
+   :class:`SlackConfigTokenPersistError` rather than returning a value a caller
+   can discard.
 
 The reactive path in :func:`~teatree.cli.slack.setup._export_with_rotation`
 remains as the complementary backstop for a pair invalidated early (revoked, or
@@ -44,11 +44,12 @@ module's store so the two paths cannot drift.
 import datetime as dt
 from dataclasses import dataclass
 from enum import Enum
+from uuid import uuid4
 
 import httpx
 
 from teatree.cli.slack.manifest import _CONFIG_REFRESH_REF, _CONFIG_TOKEN_REF, SlackManifestError, rotate_config_token
-from teatree.utils.secrets import read_pass, write_pass
+from teatree.utils.secrets import read_pass, remove_pass, write_pass
 
 #: Where the pair's issue time is recorded, so age is knowable without calling
 #: Slack. It lives beside the tokens in ``pass`` rather than in the config DB so
@@ -80,6 +81,15 @@ class SlackConfigTokenPersistError(RuntimeError):
     """
 
 
+class SlackConfigTokenStoreUnwritableError(RuntimeError):
+    """The store failed its write-ahead round-trip, so NO rotation was attempted.
+
+    Distinct from :class:`SlackConfigTokenPersistError` in the one way that
+    matters to whoever reads it: nothing was spent. The stored pair is exactly as
+    it was, and fixing the store is all that is needed — no re-minting.
+    """
+
+
 class RotationOutcome(Enum):
     """What :func:`ensure_fresh_config_token` did, or could not do."""
 
@@ -92,6 +102,9 @@ class RotationOutcome(Enum):
     #: Slack refused the rotation — the refresh half is spent or revoked, and
     #: only a human minting a fresh pair in the Slack UI can restore it.
     UNRECOVERABLE = "unrecoverable"
+    #: The store could not round-trip a throwaway value, so the rotation was
+    #: REFUSED before Slack was called. Nothing was spent; the pair is intact.
+    STORE_UNWRITABLE = "store_unwritable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +128,7 @@ class ConfigTokenStore:
     issued_at_key: str = _CONFIG_ISSUED_AT_REF
 
     def read_issued_at(self) -> dt.datetime | None:
-        """The recorded issue time, or ``None`` when absent or unparsable.
+        """The recorded issue time, or ``None`` when absent or unparseable.
 
         A naive stored value is read as UTC — every writer here emits an
         aware UTC timestamp, so a naive one can only come from hand-editing.
@@ -132,6 +145,52 @@ class ConfigTokenStore:
     def age(self, *, now: dt.datetime) -> dt.timedelta | None:
         issued_at = self.read_issued_at()
         return None if issued_at is None else now - issued_at
+
+    @property
+    def writability_probe_key(self) -> str:
+        """The throwaway slot the write-ahead round-trip uses. Never holds a credential."""
+        return f"{self.issued_at_key}-writability-probe"
+
+    def assert_writable(self) -> None:
+        """Prove a real write-then-read round-trip BEFORE any irreversible rotation.
+
+        Ordering is the whole point. ``tooling.tokens.rotate`` invalidates the
+        previous pair the instant it issues a new one, so a store discovered to
+        be unwritable AFTER the call has already destroyed the credential. The
+        proof therefore has to happen first, and it has to be a real round trip:
+        ``pass insert`` needs only the public key, so it exits 0 in a venue where
+        ``pass show`` cannot start ``gpg-agent``/``keyboxd`` and fails — a store
+        that accepts every write and returns nothing readable. Checking
+        permissions, or trusting the write's exit code, both pass there.
+
+        The value is freshly random per call so a leftover file from an earlier
+        run can never be mistaken for this write landing, and the slot is removed
+        afterwards whatever happens.
+
+        Raises :class:`SlackConfigTokenStoreUnwritableError` when the round trip
+        fails, which the caller turns into a refusal rather than a rotation.
+        """
+        witness = f"teatree-writability-probe-{uuid4().hex}"
+        try:
+            if not write_pass(self.writability_probe_key, witness):
+                raise SlackConfigTokenStoreUnwritableError(self._unwritable_message("the write was rejected"))
+            if read_pass(self.writability_probe_key) != witness:
+                raise SlackConfigTokenStoreUnwritableError(
+                    self._unwritable_message("the write reported success but could not be read back")
+                )
+        finally:
+            remove_pass(self.writability_probe_key)
+
+    def _unwritable_message(self, reason: str) -> str:
+        return (
+            f"refusing to rotate the Slack app-config token: {reason} for the throwaway slot "
+            f"`pass {self.writability_probe_key}`, so a rotated pair could not have been stored. "
+            f"Slack invalidates the previous pair the moment it issues a new one, so rotating "
+            f"against a store in this state would destroy the credential irrecoverably. "
+            f"NOTHING WAS SPENT — the stored pair is untouched. Fix the `pass`/GPG environment "
+            f"(a container venue whose GNUPGHOME cannot start gpg-agent is the usual cause) and "
+            f"the next run will rotate normally."
+        )
 
     def persist(self, *, access: str, refresh: str, issued_at: dt.datetime) -> None:
         """Durably store a freshly-rotated pair, refresh half first.
@@ -197,6 +256,14 @@ def ensure_fresh_config_token(
             f"no refresh token at `pass {store.refresh_key}`",
         )
 
+    # Write-ahead. The rotation below is irreversible, so the store's ability to
+    # keep its result is proven FIRST — on a store that cannot, the correct
+    # outcome is a loud refusal with the pair intact, never a spent credential.
+    try:
+        store.assert_writable()
+    except SlackConfigTokenStoreUnwritableError as exc:
+        return RotationReport(RotationOutcome.STORE_UNWRITABLE, str(exc))
+
     try:
         access, new_refresh = rotate_config_token(refresh_token=refresh)
     except (SlackManifestError, httpx.HTTPError) as exc:
@@ -233,5 +300,6 @@ __all__ = [
     "RotationOutcome",
     "RotationReport",
     "SlackConfigTokenPersistError",
+    "SlackConfigTokenStoreUnwritableError",
     "ensure_fresh_config_token",
 ]

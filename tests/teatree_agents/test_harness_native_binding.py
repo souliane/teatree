@@ -27,6 +27,7 @@ from teatree.agents.pydantic_ai_config import (
 from teatree.agents.pydantic_ai_session import _router_reported_cost
 from teatree.config import AgentHarness, AgentHarnessProvider
 from teatree.core.models import ConfigSetting
+from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
 
 _ANTHROPIC_INSTALLED = importlib.util.find_spec("anthropic") is not None
 
@@ -54,6 +55,68 @@ class TestBindingSelection(TestCase):
         assert harness.binding is PydanticAiBinding.NATIVE_ANTHROPIC
         assert harness.capabilities == PYDANTIC_AI_NATIVE_CAPABILITIES
         assert harness.capabilities.cache_control is True
+
+
+class TestNativeBindingCredentialRouting(TestCase):
+    """The native binding must ride the ROUTED per-account credential, not a bare one.
+
+    The regression: the factory built the binding but left the credential unrouted, so
+    ``resolve_native_anthropic_model`` constructed a bare ``AnthropicApiKeyCredential``.
+    That credential has NO built-in ``pass`` path, so with ``ANTHROPIC_API_KEY`` unset (the
+    headless worker's environment) the ``pass`` source was skipped entirely and EVERY
+    dispatch died on "no ANTHROPIC_API_KEY credential available" while the account
+    configured in ``anthropic_api_key_pass_paths`` sat readable in the store.
+    """
+
+    _ACCOUNT = "anthropic/routed-account/api-key"
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def _resolve_native_harness(self) -> PydanticAiHarness:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
+        ConfigSetting.objects.set_value("anthropic_api_key_pass_paths", [self._ACCOUNT])
+        harness = resolve_harness()
+        assert isinstance(harness, PydanticAiHarness)
+        return harness
+
+    def test_factory_routes_the_configured_pass_account_onto_the_native_binding(self) -> None:
+        # The selector probes an account's health before routing to it; the probe is the
+        # only unstoppable external here, so it is the one thing stubbed.
+        with (
+            patch("teatree.credential_config.PassPathSelector._probe", return_value=None),
+            patch("teatree.credential_config.PassPathSelector.select", return_value=self._ACCOUNT),
+        ):
+            harness = self._resolve_native_harness()
+        credential = harness._anthropic_credential
+        assert credential is not None, "the native binding was built with an UNROUTED credential"
+        assert credential._effective_spec().pass_path == self._ACCOUNT
+
+    def test_router_binding_is_not_charged_an_anthropic_account_lookup(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        harness = resolve_harness()
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._anthropic_credential is None
+
+    def test_routed_credential_resolves_from_the_store_with_no_env_var(self) -> None:
+        # End of the chain: with ANTHROPIC_API_KEY absent, the routed credential still
+        # yields a key because its pass_path override makes the store source reachable.
+        # A bare AnthropicApiKeyCredential() in the same conditions raises.
+        with patch("teatree.llm.credentials.read_pass", return_value="sk-from-the-store") as read:
+            with patch("teatree.credential_config.PassPathSelector.select", return_value=self._ACCOUNT):
+                harness = self._resolve_native_harness()
+            assert harness._anthropic_credential is not None
+            assert harness._anthropic_credential.resolve() == "sk-from-the-store"
+        read.assert_called_once_with(self._ACCOUNT)
+
+        with pytest.raises(CredentialError, match="no ANTHROPIC_API_KEY credential available"):
+            AnthropicApiKeyCredential().resolve()
 
 
 class TestProviderConstraintTable:

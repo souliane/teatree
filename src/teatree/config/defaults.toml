@@ -74,7 +74,7 @@ envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the re
 headless_max_turns = 250 # int — turn ceiling for one headless run
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
-pydantic_ai_max_tokens = 16384 # int — token ceiling for one pydantic-ai request
+pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request
 pydantic_ai_request_limit = 40 # int — requests one pydantic-ai run may make
 regulated_path_model_allowlist = [] # list — models allowed to touch a regulated path
 subagent_spawn_ceiling = 20 # int — sub-agents one dispatch may spawn
@@ -240,6 +240,7 @@ work_group_generic_scopes = ["build", "chore", "ci", "config", "deps", "docs", "
 work_group_max_members = 12 # int — members above which a work group is surfaced as a question rather than held
 
 [teatree.Gates."Pre-Django hooks"]
+answer_first_gate_enabled = true # bool — refuse a turn that reports a dispatch instead of answering the user's question
 banned_terms_gate_enabled = true # bool — run the banned-term scan before a publish
 banned_terms_required = false # bool — refuse to scan when no banned-term list is configured, instead of warning
 completion_claim_gate_enabled = true # bool — refuse a multi-deliverable completion claim carrying no evidence map
@@ -267,6 +268,7 @@ single_branch_repo_gate_enabled = true # bool — refuse a second branch in a re
 skill_loading_gate_enabled = true # bool — refuse a turn that skipped a skill the loader required
 standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done while a standing goal is unmet
 stop_snapshotter_enabled = true # bool — snapshot session findings before a stop, so context survives
+unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalation that cites no artefact the agent read
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]

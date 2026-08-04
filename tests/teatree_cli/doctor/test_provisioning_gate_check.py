@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 
 _DECLARED_SKILLS = ("souliane/skills/ac-python#d0008a3", "souliane/skills/ac-django#d0008a3")
+#: The real checkout, for the tests that gate the SHIPPED manifest rather than a fixture.
+_TEATREE_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _manifest_body(*specs: str) -> str:
@@ -38,15 +40,22 @@ def home(tmp_path: Path) -> Path:
     return path
 
 
-def _run(project_root: Path, home: Path, *, which: object = None) -> tuple[bool, str]:
+def _run(
+    project_root: Path,
+    home: Path,
+    *,
+    which: object = None,
+    search_dirs: list[Path] | None = None,
+) -> tuple[bool, str]:
     app = typer.Typer()
+    dirs = [project_root / "skills", home / ".claude" / "skills"] if search_dirs is None else search_dirs
 
     @app.command()
     def main() -> None:
         ok = _check_declared_dependencies_provisioned(
             project_root=project_root,
             home=home,
-            search_dirs=[project_root / "skills", home / ".claude" / "skills"],
+            search_dirs=dirs,
             which=which or (lambda _name: "/usr/bin/jq"),
         )
         raise typer.Exit(code=0 if ok else 1)
@@ -67,6 +76,10 @@ class TestMandatedSkillAbsent:
     def test_the_failure_carries_the_exact_remediation(self, project_root: Path, home: Path) -> None:
         _, output = _run(project_root, home)
 
+        # Pasteable per gap: the declared spec, not a generic `apm install` shape
+        # the reader still has to resolve back to a source.
+        assert "apm install souliane/skills/ac-python#d0008a3" in output
+        assert "apm install souliane/skills/ac-django#d0008a3" in output
         assert "t3 setup" in output
 
     def test_the_failure_names_where_the_dependency_is_declared(self, project_root: Path, home: Path) -> None:
@@ -113,6 +126,34 @@ class TestConfigDrivenEnumeration:
         _, output = _run(project_root, home, which=lambda name: None if name == "shellcheck" else "/usr/bin/jq")
 
         assert "shellcheck" in output
+
+
+class TestTheShippedManifestMandatesTheCompanionSkills:
+    """Against the REAL apm.yml: the three companions FAIL when absent.
+
+    `architectural_review_skill` defaults to `ac-reviewing-codebase`, so a box
+    without it dispatches its periodic architectural review with no skill
+    guidance. The gate is what keeps that from being silent, and it only holds
+    while the skill is mandated and NOT carried in-tree.
+    """
+
+    @pytest.mark.parametrize("name", ["ac-reviewing-codebase", "ac-python", "ac-django"])
+    def test_an_absent_companion_skill_is_a_named_fail_with_its_install_line(
+        self, tmp_path: Path, home: Path, name: str
+    ) -> None:
+        empty_skills = tmp_path / "no-skills"
+        empty_skills.mkdir()
+
+        _, output = _run(_TEATREE_ROOT, home, search_dirs=[empty_skills])
+
+        assert f"FAIL  Declared dependency not provisioned: skill '{name}'" in output
+        assert f"apm install souliane/skills/{name}#" in output
+
+    def test_the_companion_skills_are_not_shipped_in_the_plugins_own_skills_tree(self) -> None:
+        # A copy under `skills/` satisfies the mandate from the plugin-first
+        # install path, so vendoring one silently turns the gate above green.
+        for name in ("ac-reviewing-codebase", "ac-python", "ac-django"):
+            assert not (_TEATREE_ROOT / "skills" / name).exists(), name
 
 
 class TestSilenceIsNeverAnOutcome:

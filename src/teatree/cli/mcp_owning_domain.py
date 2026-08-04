@@ -22,7 +22,7 @@ import os
 from pathlib import Path
 
 from teatree.cli.setup.clone import find_main_clone
-from teatree.db.boundary import ControlDbBoundary
+from teatree.db.boundary import ControlDbBoundary, control_db_unreachable_reason
 from teatree.docker.workflow import is_running_in_container, wrapper_path
 from teatree.paths import CANONICAL_DB
 
@@ -42,7 +42,12 @@ def owning_domain_wrapper() -> Path | None:
         return None
     # The line above already settled which side of the boundary this process is on, so
     # the domain is passed down rather than re-derived — one detection, one answer.
-    if ControlDbBoundary(CANONICAL_DB, containerized=False).read_write_allowed:
+    # A DB the host cannot REACH is owned by the container even though no claim file is
+    # visible here — the claim lives inside the volume. Asking read_write_allowed alone
+    # inverts the guard exactly where it matters.
+    if control_db_unreachable_reason(CANONICAL_DB, env=os.environ) is None and (
+        ControlDbBoundary(CANONICAL_DB, containerized=False).read_write_allowed
+    ):
         return None
 
     try:

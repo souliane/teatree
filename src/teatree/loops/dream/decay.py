@@ -9,8 +9,15 @@ The retention guard is the load-bearing part and is NON-VACUOUS by construction.
 A memory is RETAINED (never archived) when ANY of:
 
 *   it was written recently (mtime within the retention window), OR
-*   it is still REFERENCED — another live memory ``[[name]]``-links it, or the
-    ``MEMORY.md`` index still lists it, OR
+*   it is still REFERENCED — another live memory cites it, or the ``MEMORY.md``
+    index still lists it. A citation is resolved by canonicalizing every alias UP
+    to the memory's FILENAME (:func:`_canonical_by_alias`), because a memory
+    declares a hyphenated, prefix-stripped frontmatter ``name`` while its citers
+    write the filename form; comparing the two forms directly resolves to zero and
+    reads a heavily-cited rule as orphaned. Both ``[[wikilink]]`` and ``name.md``
+    citations count (markdown link target, backticked, or bare in a curated grouped
+    index line); the lone ``- name.md`` pointer re-index writes for every file does
+    not, since it regenerates wholesale and can never dangle, OR
 *   its lesson has NO confirmed durable home in the ``ConsolidatedMemory``
     ledger — the **transfer-before-prune rail** (#1933 § 2, #2546). The §2 rail
     is *"delete an index line only after the fact has a confirmed durable home in
@@ -46,11 +53,13 @@ lives in the main memory dir (so the gate snapshot still finds the signature —
 stays green) but is NEVER re-indexed into the hot ``MEMORY.md``. Referenced entries are
 NOT hard-retained by the budget tier (#2753): the cross-link phase runs before decay and
 references most of the corpus, so a hard skip floored the tier above budget and it could
-never converge. Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so
-referenced entries rank HIGHER and are archived LAST — only when the budget genuinely
-forces it — staying restorable in ``archive/`` and recall-able via the cold
-``MEMORY_ARCHIVE.md``. (The conservative stale/ledger tier keeps its reference skip; only
-the budget tier drops it.)
+never converge. Instead ``_signal_score`` adds +40 per inbound citation, so referenced
+entries rank HIGHER and are archived LAST — only when the budget genuinely forces it —
+staying restorable in ``archive/`` and recall-able via the cold ``MEMORY_ARCHIVE.md``.
+(The conservative stale/ledger tier keeps its reference skip; only the budget tier drops
+it.) When the budget does force a cited entry out, its citers are recorded on
+:attr:`ArchivedMemory.broken_inbound` and the caller warns — a load-bearing memory can be
+archived under pressure, but never SILENTLY.
 
 PURE w.r.t. the real ``~/.claude``: the caller passes an explicit ``memory_dir``
 and a ``now``/``retention`` policy; tests pass a tmp fixture and a fixed clock.
@@ -65,7 +74,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from teatree.loops.dream._shared import is_binding_text
+from teatree.loops.dream._shared import NON_MEMORY_DOCS, is_binding_text
 
 #: Default retention window — a memory written within this many days is kept
 #: regardless of references (a fresh lesson is never stale). Generous on purpose.
@@ -79,6 +88,14 @@ _INDEX_NAME = "MEMORY.md"
 #: itself archived/merged — excluded alongside ``MEMORY.md`` in every loader.
 _ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+#: Any ``name.md`` token — a ``](name.md)`` markdown link target, a backticked filename,
+#: or a bare filename in a curated grouped index line. One regex covers all three because
+#: they are the same citation wearing different punctuation.
+_MEMORY_FILENAME_RE = re.compile(r"[\w.\-/]+\.md")
+#: A line that is EXACTLY the ``- name.md`` pointer re-index writes for every memory.
+#: Dropped before counting references: it regenerates wholesale, so it can never dangle
+#: and it says nothing about which memories a reader actually leans on.
+_GENERATED_POINTER_LINE_RE = re.compile(r"^\s*-\s+[\w.\-/]+\.md\s*$", re.MULTILINE)
 _FRONTMATTER_NAME_RE = re.compile(r"^name:\s*(\S+)\s*$", re.MULTILINE)
 #: A logical "lesson last-touched" frontmatter date — the age clock the budget tier
 #: reads so a cross-link / re-index rewrite (which bumps ``st_mtime``) does NOT reset
@@ -93,7 +110,7 @@ _KNOWN_TYPES = frozenset({"user", "feedback", "retro", "reference", "project"})
 
 #: Additive signal weights for :func:`_signal_score` — higher means keep HOT. ``user``
 #: and BINDING dominate so they are archived only if the budget forces it; inbound
-#: ``[[name]]`` wikilinks and recency add the rest; a per-type floor breaks ties.
+#: citations and recency add the rest; a per-type floor breaks ties.
 _SIGNAL_USER = 1000
 _SIGNAL_BINDING = 500
 _SIGNAL_PER_INBOUND_LINK = 40
@@ -137,12 +154,18 @@ class DecayPolicy:
 
 @dataclass(frozen=True, slots=True)
 class ArchivedMemory:
-    """One memory the decay phase archived — its old path, new path, and reason."""
+    """One memory the decay phase archived — its old path, new path, reason, and cost.
+
+    ``broken_inbound`` names every live document that cited this memory and will now
+    point at nothing. A non-empty tuple is what the caller renders as a warning, so a
+    load-bearing memory can still be archived under budget pressure but never SILENTLY.
+    """
 
     name: str
     source: Path
     destination: Path
     reason: str
+    broken_inbound: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +292,7 @@ def _memory_name(path: Path, text: str) -> str:
 def _load_memory_files(memory_dir: Path) -> list[_MemoryFile]:
     files: list[_MemoryFile] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME}:  # never load an index as a memory (#2723)
+        if md.name in NON_MEMORY_DOCS:  # never load an index as a memory (#2723)
             continue
         try:
             text = md.read_text(encoding="utf-8")
@@ -280,11 +303,59 @@ def _load_memory_files(memory_dir: Path) -> list[_MemoryFile]:
     return files
 
 
-def _is_referenced(memory: _MemoryFile, files: Sequence[_MemoryFile], index_text: str) -> bool:
-    """True iff a memory OTHER than *memory* (or the index) links *memory*'s name."""
-    if memory.name in _WIKILINK_RE.findall(index_text):
-        return True
-    return any(other.path != memory.path and memory.name in _WIKILINK_RE.findall(other.text) for other in files)
+def _reference_tokens(text: str) -> set[str]:
+    """Every token in *text* that may NAME another memory.
+
+    ``[[wikilink]]`` targets plus every ``name.md`` token, once the lone generated
+    pointer lines are dropped. What remains is a citation a reader would follow and an
+    archival would break.
+    """
+    body = _GENERATED_POINTER_LINE_RE.sub("", text)
+    return set(_WIKILINK_RE.findall(body)) | set(_MEMORY_FILENAME_RE.findall(body))
+
+
+def _reference_aliases(memory: _MemoryFile) -> set[str]:
+    """Every name *memory* answers to — its filename, its stem, and its frontmatter name."""
+    return {memory.path.name, memory.path.stem, memory.name}
+
+
+def _canonical_by_alias(files: Sequence[_MemoryFile]) -> dict[str, str]:
+    """Resolve every unambiguous alias UP to the canonical filename that owns it.
+
+    The FILENAME is a memory's identity. A memory declares a hyphenated, prefix-stripped
+    frontmatter ``name`` while its citers write the filename form, so a citation has to be
+    canonicalized rather than compared against whichever form the target happens to carry —
+    comparing the two forms directly resolves to zero and reads a heavily-cited rule as
+    orphaned. An alias two memories both claim is dropped: conflating distinct rules is
+    worse than missing one citation.
+    """
+    owners: dict[str, set[str]] = {}
+    for memory in files:
+        for alias in _reference_aliases(memory):
+            owners.setdefault(alias, set()).add(memory.path.name)
+    return {alias: next(iter(owner)) for alias, owner in owners.items() if len(owner) == 1}
+
+
+def _inbound_citers(files: Sequence[_MemoryFile], index_text: str) -> dict[str, tuple[str, ...]]:
+    """Map each memory's canonical filename to the documents citing it, sorted.
+
+    Computed in ONE pass over the index and every body, so the reference guard, the
+    inbound-link signal, and the broken-citation warning all read the same answer.
+    """
+    canonical_by_alias = _canonical_by_alias(files)
+    citers: dict[str, set[str]] = {}
+    for source_name, text in [(_INDEX_NAME, index_text)] + [(m.path.name, m.text) for m in files]:
+        for token in _reference_tokens(text):
+            target = canonical_by_alias.get(token)
+            if target is None or target == source_name:
+                continue  # unresolvable, or a memory citing itself
+            citers.setdefault(target, set()).add(source_name)
+    return {target: tuple(sorted(names)) for target, names in citers.items()}
+
+
+def _is_referenced(memory: _MemoryFile, citers: Mapping[str, tuple[str, ...]]) -> bool:
+    """True iff a document OTHER than *memory* cites it."""
+    return bool(citers.get(memory.path.name))
 
 
 def _provenance_header(memory: _MemoryFile, now: datetime, reason: str) -> str:
@@ -312,23 +383,41 @@ def _unique_archive_destination(archive_dir: Path, filename: str) -> Path:
     return candidate
 
 
+@dataclass(frozen=True, slots=True)
+class _Archival:
+    """Why a memory is being archived, and which live citations that will break."""
+
+    reason: str
+    breaks: tuple[str, ...] = ()
+
+
 def _archive_one(
-    memory: _MemoryFile, archive_dir: Path, now: datetime, reason: str, *, dry_run: bool
+    memory: _MemoryFile, archive_dir: Path, now: datetime, archival: _Archival, *, dry_run: bool
 ) -> ArchivedMemory:
     if dry_run:
         return ArchivedMemory(
-            name=memory.name, source=memory.path, destination=archive_dir / memory.path.name, reason=reason
+            name=memory.name,
+            source=memory.path,
+            destination=archive_dir / memory.path.name,
+            reason=archival.reason,
+            broken_inbound=archival.breaks,
         )
     archive_dir.mkdir(parents=True, exist_ok=True)
     destination = _unique_archive_destination(archive_dir, memory.path.name)
-    destination.write_text(_provenance_header(memory, now, reason) + memory.text, encoding="utf-8")
+    destination.write_text(_provenance_header(memory, now, archival.reason) + memory.text, encoding="utf-8")
     memory.path.unlink()
-    return ArchivedMemory(name=memory.name, source=memory.path, destination=destination, reason=reason)
+    return ArchivedMemory(
+        name=memory.name,
+        source=memory.path,
+        destination=destination,
+        reason=archival.reason,
+        broken_inbound=archival.breaks,
+    )
 
 
 def _stale_candidates(
     files: Sequence[_MemoryFile],
-    index_text: str,
+    citers: Mapping[str, tuple[str, ...]],
     now: datetime,
     retention: timedelta,
     has_durable_home: HomeResolver,
@@ -349,7 +438,7 @@ def _stale_candidates(
     for memory in files:
         if memory.lesson_touched >= cutoff:
             continue  # fresh — retained
-        if _is_referenced(memory, files, index_text):
+        if _is_referenced(memory, citers):
             continue  # referenced — retained
         if not has_durable_home(memory):
             continue  # no confirmed durable home — retained (transfer before prune)
@@ -400,23 +489,6 @@ def _is_user_memory(memory: _MemoryFile) -> bool:
     return _resolved_type(memory) == "user" or memory.path.name.lower().startswith("user_")
 
 
-def _inbound_link_counts(files: Sequence[_MemoryFile], index_text: str) -> dict[str, int]:
-    """Map each memory NAME to the number of distinct documents that ``[[name]]``-link it.
-
-    Counted in ONE pass (the index counts as one source, each other memory as one) so
-    the per-file inbound-wikilink signal is O(N), not an O(N²) rescan per memory.
-    """
-    counts: dict[str, int] = {}
-    for name in set(_WIKILINK_RE.findall(index_text)):
-        counts[name] = counts.get(name, 0) + 1
-    for source in files:
-        for name in set(_WIKILINK_RE.findall(source.text)):
-            if name == source.name:
-                continue  # a memory linking itself is not an inbound reference
-            counts[name] = counts.get(name, 0) + 1
-    return counts
-
-
 def _recency_score(memory: _MemoryFile, now: datetime, retention: timedelta) -> int:
     """Recency signal — +200 within the retention window, decaying linearly past it.
 
@@ -452,7 +524,11 @@ def _signal_score(memory: _MemoryFile, *, inbound_links: int, now: datetime, ret
 
 
 def _budget_tier_candidates(
-    files: Sequence[_MemoryFile], index_text: str, now: datetime, retention: timedelta
+    files: Sequence[_MemoryFile],
+    index_text: str,
+    citers: Mapping[str, tuple[str, ...]],
+    now: datetime,
+    retention: timedelta,
 ) -> Iterable[_MemoryFile]:
     """Yield budget-tier archival candidates lowest-signal first, just enough to fit budget.
 
@@ -478,9 +554,9 @@ def _budget_tier_candidates(
         return
     from teatree.loops.dream import reindex  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    inbound = _inbound_link_counts(files, index_text)
     ordered = sorted(
-        files, key=lambda m: _signal_score(m, inbound_links=inbound.get(m.name, 0), now=now, retention=retention)
+        files,
+        key=lambda m: _signal_score(m, inbound_links=len(citers.get(m.path.name, ())), now=now, retention=retention),
     )
     line_bytes = {m.path: len(reindex.index_line_for(m.path.name).encode("utf-8")) for m in files}
     header = reindex.render_index_lines([])
@@ -594,17 +670,25 @@ def decay_memories(
     retention = timedelta(days=settings.retention_days)
     archive_dir = memory_dir / ARCHIVE_DIRNAME
 
-    home_tier = list(_stale_candidates(files, index_text, moment, retention, resolver))
+    citers = _inbound_citers(files, index_text)
+
+    home_tier = list(_stale_candidates(files, citers, moment, retention, resolver))
     archived: list[ArchivedMemory] = [
-        _archive_one(memory, archive_dir, moment, reason="stale, unreferenced, durably homed", dry_run=dry_run)
+        _archive_one(memory, archive_dir, moment, _Archival("stale, unreferenced, durably homed"), dry_run=dry_run)
         for memory in home_tier
     ]
     if settings.budget_tier is not None:
         homed_paths = {m.path for m in home_tier}
         remaining = [m for m in files if m.path not in homed_paths]
         archived.extend(
-            _archive_one(memory, archive_dir, moment, reason="over-budget, lowest-signal", dry_run=dry_run)
-            for memory in _budget_tier_candidates(remaining, index_text, moment, retention)
+            _archive_one(
+                memory,
+                archive_dir,
+                moment,
+                _Archival("over-budget, lowest-signal", citers.get(memory.path.name, ())),
+                dry_run=dry_run,
+            )
+            for memory in _budget_tier_candidates(remaining, index_text, citers, moment, retention)
         )
     if not dry_run:
         _rebuild_cold_index(memory_dir, archive_dir)

@@ -18,7 +18,12 @@ when it cries wolf. Two facts are NOT faults on their own:
     never the alarm.
 *   **One suppressed loop sitting still.** An operator who turns the colleague
     ``review`` loop off for the week gets exactly what they asked for; a gate that
-    reports that as a failure every hour is a gate people learn to ignore.
+    reports that as a failure every hour is a gate people learn to ignore. All FOUR
+    deliberate planes count as an explanation — a ``LoopState`` hold, a per-loop
+    force-OFF (``t3 loop override <name> off``), the colleague gate, and the mode
+    mask — because any one of them is an operator having said "not here". A
+    force-ON is not among them: that is an operator demanding the loop RUN, so a
+    forced-on loop standing still stays a reported fault.
 
 So a staleness failure is one of two shapes: an **unexplained** stale loop (nothing in
 the mode mask, the colleague gate or a ``LoopState`` hold accounts for it — something is
@@ -216,8 +221,8 @@ class LoopHealth:
             )
         return (
             "FAIL the worker holds the flock but these loops are not advancing their cadence "
-            "anchor, and no mode mask, colleague gate or LoopState hold explains it. Check "
-            "`t3 loop status` and the worker log for a failing tick."
+            "anchor, and no mode mask, colleague gate, per-loop force-off or LoopState hold "
+            "explains it. Check `t3 loop status` and the worker log for a failing tick."
         )
 
 
@@ -250,16 +255,27 @@ def _measured_loops() -> list["Loop"]:
     return [row for row in Loop.objects.enabled() if row.name in live and row.delay_seconds]
 
 
-def _is_suppressed(row: "Loop", resolved: "ResolvedMode", held: set[str]) -> bool:
+def _is_suppressed(row: "Loop", resolved: "ResolvedMode", held: set[str], forced: dict[str, bool]) -> bool:
     """Whether a deliberate control plane accounts for *row* standing still.
 
-    The three planes an operator actually turns: a ``LoopState`` hold (``t3 loop
-    pause`` / ``disable``), the colleague gate (a ``colleague_facing`` loop while the
-    mode defers questions), and the mode's own tri-state mask. Mirrors the deliberate
+    The FOUR planes an operator actually turns: a ``LoopState`` hold (``t3 loop
+    pause`` / ``disable``), the emergency per-loop force-off (``t3 loop override
+    <name> off``), the colleague gate (a ``colleague_facing`` loop while the mode
+    defers questions), and the mode's own tri-state mask. Mirrors the deliberate
     arms of :func:`teatree.loops.loop_table._loop_admitted` — it deliberately does NOT
     mirror the ``is_due`` arm, which is cadence, not intent.
+
+    The force plane is the one this reading used to drop, and dropping it inverted the
+    module's whole contract: an operator who force-masked ``review`` off got exactly
+    what they asked for, and the health surface reported it as an UNEXPLAINED stale
+    loop — a FAIL, on a non-zero exit, for a deliberate choice. That is precisely the
+    "gate people learn to ignore" this module's docstring refuses to be. A force-ON
+    (``True``) is NOT a suppression: it is an operator demanding the loop run, so a
+    forced-on loop standing still is a genuine fault and must still be reported.
     """
     if row.name in held:
+        return True
+    if forced.get(row.name) is False:
         return True
     if row.colleague_facing and resolved.defers_questions:
         return True
@@ -279,14 +295,14 @@ def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER)
     from teatree.loop.loop_state_db import control_planes_in_db  # noqa: PLC0415 — deferred: ORM-backed read
 
     resolved = resolve_active_mode(now)
-    held, _forced = control_planes_in_db()
+    held, forced = control_planes_in_db()
     stale = [
         StaleLoop(
             name=row.name,
             cadence_seconds=row.delay_seconds,
             age_seconds=age,
             ever_ran=row.last_run_at is not None,
-            suppressed=_is_suppressed(row, resolved, held),
+            suppressed=_is_suppressed(row, resolved, held, forced),
         )
         for row in _measured_loops()
         if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * row.delay_seconds

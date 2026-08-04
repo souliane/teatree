@@ -8,7 +8,6 @@ requires:
 eval_exempt: interactive per-row approval/action flow over `gh` + a Django ORM ask-gate; the assessor agent's judgment is graded elsewhere and the mechanical persistence/dedup is covered by tests/teatree_core/test_pending_triage_recommendation.py and tests/teatree_agents/test_attempt_recorder.py
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # t3:triaging-issues — Approve & Act on Triage Recommendations

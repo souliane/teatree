@@ -8,7 +8,6 @@ requires:
   - finishing-a-development-branch
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Delivery
@@ -92,6 +91,27 @@ git commit -a -m "type(scope): description"
 
 Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass `--no-verify`. NEVER append a `Co-Authored-By:` line. Body content (Open questions & assumptions, the `Closes/Fixes #N` keyword) goes in additional `-m` blocks or via a `git commit` editor session, never as a trailer.
 
+**What the commit gate commits is the INDEX, not the working tree.** prek stashes unstaged
+changes, runs the hooks against the index, and restores the stash afterwards — once for the
+pre-commit stage and again for commit-msg. An edit made AFTER `git add` is therefore not in
+the resulting commit, and the working tree still shows it, so a `cat` of the file confirms a
+fix that did not ship. Verify with `git show HEAD:<path>`, never the working tree.
+
+prek announces this itself, on stdout, every time it applies:
+
+```text
+Unstaged changes detected. Temporarily saving them to `~/.cache/prek/patches/<id>.patch`
+...
+Restored unstaged changes from `~/.cache/prek/patches/<id>.patch`
+```
+
+No hook can add to that notice, which is why the behaviour is documented rather than gated.
+A hook runs after the stash, so `git diff --name-only` inside one reports nothing — the
+information is already gone by the time any hook could look. And prek prints a hook's output
+only when the hook FAILS, so a warn-only hook stays invisible unless it blocks every commit
+that carries an unstaged change. The two lines above are the signal; `git commit -a` is the
+way to avoid the split in the first place.
+
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and the overlay's `validate_pr` (the base-class no-op for teatree) will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
 - Read `TICKET_URL` from `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`) — never construct it from the branch name.
@@ -152,40 +172,7 @@ Common triggers (not exhaustive):
 
 **If YES:** the same MR includes the doc update — pick the file by the trigger, then start editing it before `pr create`:
 
-| Trigger | Doc to update |
-|---|---|
-| New `t3` command / flag / env var | `README.md` (user-facing usage) |
-| New `Ticket.State` / FSM phase / `LoopLease` name | `BLUEPRINT.md` |
-| New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
-| Skill behaviour change | the relevant `SKILL.md` |
-
-```bash
-# YES path — open the matching doc to add the entry (canonical HOW; e.g. a new SKILL.md):
-$EDITOR README.md          # skills catalogue, or the user-facing command doc
-$EDITOR BLUEPRINT.md       # for a new FSM state / lifecycle concept
-```
-
-**If NO:** the MR description carries this attestation line on its own — record it directly, do NOT touch README/BLUEPRINT:
-
-```text
-docs: n/a — <one-line reason>
-```
-
-```bash
-# NO path — append the attestation to the PR body draft (canonical HOW):
-echo "docs: n/a — <one-line reason>" >> .git/PR_BODY.md
-```
-
-Examples:
-
-- `docs: n/a — internal refactor, no user-visible change`
-- `docs: n/a — bug fix preserving existing contract`
-- `docs: n/a — test-only change`
-- `docs: n/a — generated-doc regeneration, source unchanged`
-
-The line is the friction-free attestation. Reviewers read it; if the reason looks wrong they push back on the specific reason, not on a generic "did you update docs?" prompt.
-
-**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
+The trigger-to-doc table, the YES path (edit the matching doc before `pr create`), the NO path (the `docs: n/a — <reason>` attestation, with examples), and how `scripts/hooks/check_doc_update.py` splits the work with this prose are in [`skills/ship/references/documentation-discipline.md`](references/documentation-discipline.md).
 
 Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
 
@@ -249,67 +236,15 @@ Before creating a PR, the `pr create` command automatically checks the session g
 
 #### Single source of truth: the session feeds the FSM (#694)
 
-Teatree has **two stores**, but they can no longer disagree:
-
-1. **`Session.visited_phases`** — the **single source of truth**. Both the loop path (`Task.complete()` → `_record_phase_visit()`) and the CLI path (`lifecycle visit-phase`) write canonical phase tokens here. `lifecycle visit-phase` resolves the ticket by pk / issue number / issue URL (same identifier set as `pr create`), normalizes the phase name (short verbs and gerunds both work), and logs a WARNING + reports the resulting state when a transition is not legal — out-of-order calls fail loudly, never silently.
-2. **`Ticket.state` FSM** (`STARTED → CODED → TESTED → REVIEWED → SHIPPED → IN_REVIEW → ...`) — `django_fsm` transitions on `core.models.ticket.Ticket`. At the shipping gate, `_check_shipping_gate` **reconciles `ticket.state` from `visited_phases`**: when the required phases are present it auto-walks the FSM to `REVIEWED` (`reconcile_reviewed()`) so `ticket.ship()` is legal; when phases are missing it blocks with the exact missing-phase list. `pr create` therefore **never raises a raw `TransitionNotAllowed`** — it either ships or returns a structured gate failure. This invariant holds on every path: missing phases, **no session at all** (no attested work ⇒ structured failure, not a silent pass), and **`--skip-validation`** (the un-reconciled `ship()` is wrapped, so an illegal hop becomes the same structured failure).
-
-**Still prefer driving transitions through task completion.** It keeps the task ledger clean: `Task.complete()` → `_record_phase_visit()` records the phase, `_advance_ticket()` fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled. `lifecycle visit-phase` is a valid fallback on the human/CLI path — the gate reconciles either way — but the reviewing phase must still be **earned by spawning the `t3:reviewer` sub-agent** (see § 4b above), not self-attested to skip review.
-
-The gate verifies the required phases (`testing`, `reviewing`, `retro`) were recorded for the work — nothing more. Independence in code review is a property of the **execution context**, not of a stored identity: the `reviewing` phase is earned by spawning a fresh `t3:reviewer` sub-agent that has not seen the implementation conversation, and that spawn boundary *is* the independence guarantee, by construction. A same-session spawn is fine and preferred. There is no `agent_id` comparison — the same identity recording `coding` and `reviewing` does not block the gate, because string-identity inference added no real independence over the structural spawn boundary. The shipping gate evaluates the **union of `visited_phases` across all of the ticket's sessions** (`Ticket.aggregate_phase_records()` → `Session.check_gate_across_ticket`), not the latest session alone — the single source of truth is the ticket's lifecycle, not one session. `phase_visits` is retained purely as an audit trail of who recorded each phase; it is not consumed for gate enforcement.
+The two stores (`Session.visited_phases` and the `Ticket.state` FSM), how the shipping gate reconciles them, and why the FSM rather than the session gate is the contract are in [`skills/ship/references/review-gate-fsm.md`](references/review-gate-fsm.md).
 
 #### How to satisfy the gate (the only sanctioned path)
 
-1. **Locate the reviewing task.** When the worktree was created via `t3 <overlay> workspace ticket <url>`, a `Task(phase="reviewing")` was scheduled by `Ticket.schedule_review()` once `test()` fired. If the branch is ad-hoc (no session/ticket exists yet), create one first with `t3 <overlay> workspace ticket <issue_url>` — never push from a session-less branch. The session is the receipt; without it the FSM has nothing to advance.
-
-1b. **Acquire the per-MR review-dispatch lock BEFORE spawning** (#1405, `MRReviewLock`) — this manual `Agent()` path and the loop's `AutoReviewDispatch` scanner enqueue are two independent dispatch paths that must not both spawn a reviewer for the same MR at once:
-
-   ```bash
-   t3 <overlay> review lock-acquire <mr-url> --holder <your-agent/session-id>
-   ```
-
-   `acquired: true` → proceed to step 2. `acquired: false` → a review is already in flight for this MR (the reported `holder` + `state`) — do **not** spawn a second reviewer; the in-flight one already covers this dispatch.
-
-2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool:
-
-   The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
-
-   ```text
-   NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
-   ```
-
-   ```text
-   Agent(
-     description: "Pre-push review of <ticket>",
-     subagent_type: "t3:reviewer",
-     prompt: "<the verbatim block above>, then: \
-              Review the diverging code on this branch against main. Branch: <name>. \
-              Ticket: <url>. Scope: <one-line summary>. Read the linked ticket end-to-end \
-              before touching the diff (per /t3:review § 'Step 0 — Gather Ticket Context'). \
-              Apply both the per-file repo-rules check (/t3:review § 'Active Verification \
-              Against Repo Rules') and the module-level architectural check (full files of \
-              every touched module). Report findings as a punch list — no code edits."
-   )
-   ```
-
-3. **Apply every finding.** Reviewer sub-agents are read-only; the implementing conversation owns the edits. Do not cherry-pick which findings to take — if a finding is wrong, push back with evidence in the same conversation, do not silently drop it.
-
-4. **Drive the `review` transition** so the FSM advances `TESTED → REVIEWED` and the shipping task is auto-scheduled. Two equivalent entry points (use the first one available):
-
-   - **Preferred — complete the reviewing task**, which auto-fires `ticket.review()` via `Task._advance_ticket()`. This matches how every other phase advances and keeps the task ledger clean.
-   - **Direct transition fallback** when the agent doesn't have the task ID handy: `t3 <overlay> ticket transition <ticket_id> review`. The FSM still requires a completed `reviewing` task as a `conditions=` predicate, so this only works after step 3 has already produced one.
-
-   Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review. Since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why marking `reviewing` visited without an independent reviewer having actually reviewed the diff defeats the quality gate. Earn the phase (step 2), then record it; never record it to dodge step 2.
-
-5. **Verify before pushing.** Prefer the `mcp__teatree__ticket_search` MCP tool (load via `ToolSearch` first if it shows as deferred) — call it with `state="reviewed"` (add `text=<issue-url-or-id-substring>` to narrow to one ticket) and read the `state` field of the returned JSON directly, no CLI shelling or text parsing (souliane/teatree#2863). It should show the ticket in `reviewed` once the reviewing task completed. Fall back to `t3 <overlay> ticket list --state reviewed` (filterable by `--state`/`--overlay` only — there is no `--id` flag) when the MCP server isn't connected. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list (`testing` / `reviewing` — #837: never `retro`); satisfy those phases (run the reviewer), don't bypass with `--skip-validation`.
-
-**Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
-
-**Why the FSM, not just the session gate.** The session gate is a soft safety net that fail-opens when no session exists. The FSM is the actual contract — every downstream consumer (`pr create`, `execute_ship`, the loop dispatcher, the statusline) reads `Ticket.state`. Bypassing the FSM produces tickets that look reviewed in the session record but are still `TESTED` in the source of truth, which then breaks every later transition until someone notices and rewinds by hand.
+The numbered path — locate the reviewing task, acquire the per-MR review-dispatch lock, spawn the `t3:reviewer` sub-agent with its verbatim prompt block, apply every finding, drive the `review` transition, verify before pushing — is in [`skills/ship/references/review-gate-fsm.md`](references/review-gate-fsm.md).
 
 ### 4c. Visual QA Gate
 
-`pr create` also runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff actually touches and reports silent-render regressions (page crashes, console errors, raw `app.*` translation keys, blocking asset 404s). Target URLs come from the overlay's `get_visual_qa_targets(changed_files)` — overlays opt in by mapping diff paths to URLs.
+`pr create` also runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff actually touches and reports silent-render regressions (page crashes, console errors, raw `app.*` translation keys, blocking asset 404s). Target URLs come from the overlay's `review.visual_qa_targets(changed_files)` — overlays opt in by mapping diff paths to URLs.
 
 - Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']`.
 - Blocks PR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
@@ -448,21 +383,7 @@ Then watch CI (§ 6 Monitor Pipeline). Re-reviewing already-reviewed work just b
 
 ## Merging the Default Branch into a PR (Non-Negotiable)
 
-Before touching the PR branch to "prepare" it for a merge, reason through what a clean 3-way merge would produce on its own:
-
-- **Default branch removed keys/lines the PR still has?** The merge will apply those removals automatically — no preemptive cleanup commit needed. Adding one creates noise and risks side effects (e.g., `json.dumps` round-tripping normalizes unrelated formatting).
-- **Both branches independently added the same key/line with different values?** That is a true add/add conflict. But verify the merge result first — the merge may have already resolved it correctly. Only surface it to the user if the result actually needs to change.
-
-**Merge conflict resolution for JSON files:**
-
-- Use proper 3-way semantics: `result = theirs + (ours_keys − base_keys)`. This correctly applies the default branch's removals while keeping the PR's own additions.
-- Do NOT use `json.dumps` to serialise back — it normalises indentation and whitespace across the entire file, producing a noisy diff far beyond the intended change. Remove keys surgically (line-by-line) to preserve original formatting.
-- Do NOT use `git checkout --ours` on whole files — this discards the default branch's removals and reintroduces whatever it had cleaned up.
-
-**After resolving conflicts, verify before asking anything:**
-
-1. Check that all PR-own additions (keys in ours but not in the merge base) are present in the result.
-2. Check that any values that differ between ours and theirs are already at the correct value per the merge strategy. If the result is already correct, do not ask the user — they made no decision to make.
+The 3-way reasoning to do before touching the branch, the JSON conflict-resolution semantics, and the post-resolution verification are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).
 
 ## Isolate Unrelated Fixes (Non-Negotiable)
 
@@ -529,45 +450,11 @@ If a sibling is open, **do not open a second PR targeting the default branch** �
 
 ### Also sweep by content for ticketless PRs (Non-Negotiable)
 
-The ticket-ref query above misses **retro fixes, skill edits, and other PRs without a ticket reference**. Before opening any such PR, also run a content sweep against open and recently-merged PRs on the same repo and look for overlap on title keywords or touched files:
-
-```bash
-# Open PRs (parallel work in flight)
-gh pr list --repo <repo> --state open --json number,title,headRefName
-
-# Recently-merged PRs (work that landed minutes ago — same risk)
-gh pr list --repo <repo> --state merged --limit 10 --json number,title,mergedAt
-```
-
-Match against:
-
-- **Title keywords** that overlap with the about-to-be-pushed PR's title (e.g., "rules", "worktree", "anti-fabrication"). Synonyms count.
-- **Touched files** that overlap with `git diff --name-only origin/main..HEAD` on the local branch — for skill PRs especially, multiple agents/users converge on the same `skills/<topic>/SKILL.md` file.
-
-Treat a hit on either signal as a sibling and apply the same options (wait, stack, or bundle per `## Bundle Into an Existing Open PR` below). If the hit is in the recently-merged list, run `git fetch origin main && git log origin/main..HEAD` — if the local diff is now empty, abandon the branch instead of pushing an empty PR.
+The `gh pr list` sweep commands for open and recently-merged PRs, and the title-keyword / touched-file signals to match them against, are in [`skills/ship/references/pr-siblings-and-bundling.md`](references/pr-siblings-and-bundling.md).
 
 ## Bundle Into an Existing Open PR
 
-When a session uncovers a small unique commit on a now-stale branch (typical during cleanup or retro), and opening a dedicated PR for that one commit would be more ceremony than the change deserves, **bundle it into a sibling open PR** instead. This trades a little PR-scope discipline for delivery speed.
-
-**Eligibility — all must hold:**
-
-1. The commit is small and self-contained (single concern, no cross-cutting impact).
-2. The target PR is **still open** and **not yet approved** (bundling into an approved PR forces re-review).
-3. The target PR is on the same repo and the change is at least loosely thematically adjacent. Strictly unrelated bundles are still better than abandoning the work, but explain it in the PR description.
-4. The bundled commit doesn't depend on or contradict anything in the target PR's diff.
-
-**Procedure:**
-
-1. Fetch the target PR's worktree (or create one with `t3 <overlay> workspace ticket <issue-url>` — use the same issue as the target PR).
-2. Cherry-pick the commit: `git cherry-pick <sha>`. Resolve any conflicts surgically.
-3. Run lint + the affected tests locally.
-4. Push to the target PR's branch (regular push, no rebase).
-5. **Update the target PR's title and description** to reflect both commits. Title format becomes `type(scope1): X + type(scope2): Y` if the two are heterogeneous. Body explains both fixes.
-6. Notify the reviewer in the PR comments that the scope grew, with a one-line rationale.
-7. Force-remove the original worktree and delete the now-empty branch (`git worktree remove --force <path>` + `git branch -D <branch>`).
-
-**Anti-pattern:** bundling into a PR that's already passed review. The reviewer's approval covered the original scope, not the bundled commit.
+The eligibility conditions, the seven-step bundling procedure, and the anti-pattern are in [`skills/ship/references/pr-siblings-and-bundling.md`](references/pr-siblings-and-bundling.md).
 
 ## Rules
 
@@ -635,8 +522,4 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 
 ### Git History Rewriting
 
-When rewriting commit messages, use `filter-branch --msg-filter` (matches by full hash). Do NOT use `git rebase -i` with `GIT_SEQUENCE_EDITOR="sed"` — the short hash may differ from `git log --oneline`, causing a silent no-op.
-
-**Post-rewrite verification (Non-Negotiable):** After ANY rebase or filter-branch, verify the hash changed. Same hash = no-op.
-
-**Rebase todo shorthand:** When automating `git rebase -i` with `GIT_SEQUENCE_EDITOR`, the todo list uses single-letter shorthand (`p` not `pick`, `f` not `fixup`). Match on `^p` not `^pick`. Use `sed -e '/^p <hash>/s/^p/f/'` for fixup squashing.
+The `filter-branch --msg-filter` recipe, the post-rewrite hash verification, and the rebase todo shorthand are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).

@@ -127,6 +127,33 @@ export TEATREE_HOST_HOME="$HOME"
 # compose default, so the box is byte-identical to before.
 export TEATREE_DEPLOY_CHECKOUT="$REPO_ROOT"
 
+# Run the WORKING TREE this deploy was invoked from when that tree vendors core —
+# the fork layout `<fork>/vendor/teatree/deploy/deploy.sh`. Without this a deploy
+# from a fork leaves `${TEATREE_SOURCE_MOUNT:-teatree_src}` on the named volume,
+# so the stack runs PUBLIC upstream core: `HOST_ROOT` is empty, entrypoint.sh's
+# `--with-editable "$HOST_ROOT"` never fires, no `teatree.overlays` entry point is
+# registered, and every headless task on an overlay ticket dies at dispatch
+# ("Overlay '<name>' not found"). deploy/t3 already derives this for one-off CLI
+# runs; the STACK needs the same wiring or the two disagree about what is deployed.
+#
+# What gets mounted is the FORK ROOT, not the vendored core alone: entrypoint.sh
+# detects a host project by `$TEATREE_CLONE_DIR` ending in `/vendor/teatree` with a
+# `pyproject.toml` at its parent, so core must sit one level DOWN from the mount.
+# Kept in sync with deploy/t3 by tests/test_deploy_host_project_source_mount.py.
+# An operator-set value always wins.
+CONTAINER_SOURCE_DIR=/home/teatree/teatree
+if [ -z "${TEATREE_SOURCE_MOUNT:-}" ] &&
+    [ "$(basename "$REPO_ROOT")" = teatree ] &&
+    [ "$(basename "$(dirname "$REPO_ROOT")")" = vendor ]; then
+    HOST_PROJECT_ROOT="$(dirname "$(dirname "$REPO_ROOT")")"
+    if [ -f "$HOST_PROJECT_ROOT/pyproject.toml" ]; then
+        export TEATREE_SOURCE_MOUNT="$HOST_PROJECT_ROOT"
+        export TEATREE_CLONE_DIR="${TEATREE_CLONE_DIR:-$CONTAINER_SOURCE_DIR/vendor/teatree}"
+    else
+        export TEATREE_SOURCE_MOUNT="$REPO_ROOT"
+    fi
+fi
+
 # TEATREE_DOCKER_SOCKET_GID — the group owning the docker socket AS THE CONTAINER
 # SEES IT, which is what docker-compose.yml's `group_add` on teatree-worker reads.
 # The worker runs as the non-root TEATREE_UID and needs the daemon for `worktree

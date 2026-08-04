@@ -7,7 +7,6 @@ requires:
 eval_exempt: thin detail/reference skill — points at the `health` CLI; no standalone agent behaviour to grade.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Health — Global Operational-Health Chip + Known-Issues Registry

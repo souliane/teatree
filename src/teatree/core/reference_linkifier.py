@@ -1,6 +1,6 @@
 r"""Deterministic, code-only reference linkifier for outbound messages.
 
-The "Clickable References" rule — a bare issue/MR ref (``#1500``, ``!6301``,
+The "Clickable References" rule — a bare issue/MR ref (``#1500``, ``!42``,
 ``owner/repo#42``) must ship to a user-facing surface as a clickable link.
 A historical PreToolUse/Stop bare-reference *blocking* gate enforced this by
 DETECTING a bare ref and BLOCKING the message, asking the **model** to rewrite

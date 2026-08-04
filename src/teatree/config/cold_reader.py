@@ -39,6 +39,7 @@ __all__ = [
     "SettingRead",
     "bool_setting",
     "canonical_config_db",
+    "canonical_projection",
     "int_setting",
     "list_setting",
     "loop_status",

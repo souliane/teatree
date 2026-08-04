@@ -92,10 +92,9 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "agent_session_model": _parse_strict_str,
     "agent_session_effort": _parse_strict_str,
     "agent_honesty_model": _parse_strict_str,
-    # Tunables that used to live in the file: the E2E private-specs dir, the
-    # availability schedule / timeouts / loops sub-tables, the operator's Slack id,
-    # and the master fail-open gate switch (the always-available Bash/gate self-rescue).
-    "private_tests": _parse_strict_str,
+    # Tunables that used to live in the file: the availability schedule / timeouts /
+    # loops sub-tables, the operator's Slack id, and the master fail-open gate switch
+    # (the always-available Bash/gate self-rescue).
     "slack_user_id": _parse_strict_str,
     "slack_user_channel": _parse_strict_str,
     "availability_schedule": _parse_registry_dict,

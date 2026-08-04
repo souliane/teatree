@@ -8,7 +8,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # t3:sweeping-tickets — Evidence-Gated Ticket Consolidation & Triage

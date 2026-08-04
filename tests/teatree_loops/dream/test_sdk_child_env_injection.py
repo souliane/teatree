@@ -33,7 +33,6 @@ _PINNED = {"T3_AGENT_HARNESS_PROVIDER": "subscription_oauth"}
 def _extract() -> ConsolidationExtract:
     return ConsolidationExtract(
         snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
-        truncated=False,
     )
 
 

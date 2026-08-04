@@ -221,7 +221,7 @@ def _parse_distill_result(raw: str) -> DistillResult:
         return DistillResult(clusters=[], empty_reason=DistillEmptyReason.EMPTY_RAW)
     payload = _extract_json_array(raw)
     if payload is None:
-        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE)
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE, raw_excerpt=raw)
     clusters: list[DistilledCluster] = []
     for entry in payload:
         cluster = _coerce_cluster(entry)
@@ -229,8 +229,9 @@ def _parse_distill_result(raw: str) -> DistillResult:
             clusters.append(cluster)
     if clusters:
         return DistillResult(clusters=clusters, empty_reason=None)
-    reason = DistillEmptyReason.NOTHING_TO_CONSOLIDATE if not payload else DistillEmptyReason.ALL_ENTRIES_DROPPED
-    return DistillResult(clusters=[], empty_reason=reason)
+    if payload:
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.ALL_ENTRIES_DROPPED, raw_excerpt=raw)
+    return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
 
 
 def _extract_json_array(raw: str) -> list[object] | None:

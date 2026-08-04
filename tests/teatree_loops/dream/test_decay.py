@@ -677,6 +677,136 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert hub.name not in archived
 
 
+class InboundReferenceSignalTestCase(SimpleTestCase):
+    """Inbound references must survive the filename/frontmatter-name split.
+
+    A production memory names itself twice: the FILE is ``feedback_x_y.md`` while its
+    frontmatter says ``name: x-y`` (hyphenated, prefix dropped), and every citing body
+    writes ``[[feedback_x_y]]`` — the filename form. Counting inbound links under the
+    frontmatter name resolved to zero for such a file, so the budget tier scored the
+    most-cited rule in the corpus as lowest-signal and archived it while six live files
+    still cited it. The canonical identity is the FILENAME; every alias resolves up to it.
+
+    The curated index cites by markdown link (``[Title](name.md)``) and by bare
+    comma-separated filename, neither of which is a ``[[wikilink]]`` — so being listed in
+    the index carried no signal either. Both forms count; the GENERATED index's lone
+    ``- name.md`` pointer does not, since re-index rewrites it for every file and it can
+    never dangle.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write(self, filename: str, body: str, *, frontmatter_name: str | None = None, age_days: int = 120) -> Path:
+        path = self.dir / f"{filename}.md"
+        name = frontmatter_name if frontmatter_name is not None else filename
+        path.write_text(f"---\nname: {name}\nmetadata:\n  type: feedback\n---\n\n{body}\n", encoding="utf-8")
+        ts = (_NOW - timedelta(days=age_days)).timestamp()
+        os.utime(path, (ts, ts))
+        return path
+
+    def _seed_pressure(self, count: int = 360) -> None:
+        for i in range(count):
+            self._write(_budget_name("feedback_filler", i), f"a niche low-signal note {i:04d}")
+
+    def _seed_index(self, *curated_lines: str) -> None:
+        generated = reindex.render_index(self.dir)
+        extra = "".join(f"{line}\n" for line in curated_lines)
+        (self.dir / "MEMORY.md").write_text(generated + extra, encoding="utf-8")
+
+    def _budget_decay(self) -> decay.DecayResult:
+        return decay_memories(self.dir, now=_NOW, has_durable_home=lambda _m: False, policy=_policy(budget_tier=True))
+
+    @staticmethod
+    def _archived_sources(result: decay.DecayResult) -> set[str]:
+        return {a.source.name for a in result.archived}
+
+    def test_wikilink_under_a_slug_frontmatter_name_still_counts(self) -> None:
+        # The production shape that lost the meta-rule: the file declares a hyphenated,
+        # prefix-stripped frontmatter name while six live bodies cite it by FILENAME.
+        self._seed_pressure()
+        cited = self._write(
+            "feedback_aaa_meta_rule_escalate_to_enforcement",
+            "a rule that failed again needs a gate, not another memory",
+            frontmatter_name="meta-rule-escalate-to-enforcement",
+        )
+        uncited_twin = self._write(
+            "feedback_aab_uncited_peer_rule", "an equally old note nobody cites", frontmatter_name="uncited-peer-rule"
+        )
+        for i in range(6):
+            self._write(f"feedback_citer_{i:02d}", "per [[feedback_aaa_meta_rule_escalate_to_enforcement]], escalate")
+        self._seed_index()
+        archived = self._archived_sources(self._budget_decay())
+        assert uncited_twin.name in archived, "teeth: the uncited peer of identical age/type IS archived"
+        assert cited.name not in archived
+        assert cited.exists()
+
+    def test_curated_index_markdown_link_counts_as_inbound(self) -> None:
+        self._seed_pressure()
+        cited = self._write("feedback_aaa_curated_link_target", "a lesson the curated index links")
+        uncited_twin = self._write("feedback_aab_unlinked_peer", "a lesson the index does not link")
+        self._seed_index("- [A load-bearing rule](feedback_aaa_curated_link_target.md)")
+        archived = self._archived_sources(self._budget_decay())
+        assert uncited_twin.name in archived, "teeth: the unlinked peer IS archived"
+        assert cited.name not in archived
+
+    def test_curated_index_bare_filename_mention_counts_as_inbound(self) -> None:
+        # The grouped index lines cite by bare comma-separated filename, not by link.
+        self._seed_pressure()
+        cited = self._write("feedback_aaa_grouped_mention_target", "a lesson listed in a grouped index line")
+        uncited_twin = self._write("feedback_aab_ungrouped_peer", "a lesson in no group")
+        self._seed_index("- Verification: feedback_aaa_grouped_mention_target.md,feedback_other_thing.md")
+        archived = self._archived_sources(self._budget_decay())
+        assert uncited_twin.name in archived, "teeth: the peer in no grouped line IS archived"
+        assert cited.name not in archived
+
+    def test_generated_pointer_line_alone_is_not_an_inbound_reference(self) -> None:
+        # Every file gets a lone `- name.md` pointer from re-index, so counting it would
+        # make the whole corpus permanently "referenced" and strand the stale tier.
+        self._seed_pressure()
+        self._seed_index()
+        assert self._budget_decay().archived_count > 0
+
+    def test_archiving_a_cited_memory_names_the_citers_it_breaks(self) -> None:
+        # The budget can still force a cited file out — but never SILENTLY.
+        self._seed_pressure()
+        doomed = self._write(
+            "feedback_aaa_doomed_but_cited",
+            "an old but cited lesson",
+            frontmatter_name="doomed-but-cited",
+            age_days=400,
+        )
+        self._write("feedback_citer_of_doomed", "per [[feedback_aaa_doomed_but_cited]] we escalate")
+        self._seed_index()
+        result = self._budget_decay()
+        entry = next(a for a in result.archived if a.source.name == doomed.name)
+        assert entry.broken_inbound == ("feedback_citer_of_doomed.md",)
+        uncited = next(a for a in result.archived if a.source.name.startswith("feedback_filler"))
+        assert uncited.broken_inbound == (), "teeth: an uncited archival breaks nothing and says so"
+
+    def test_stale_tier_retains_a_memory_cited_by_filename_under_a_slug_name(self) -> None:
+        # The conservative ledger tier keeps its hard reference skip — but only if it
+        # resolves the citation, which the frontmatter-name key never did.
+        target = self._write(
+            "feedback_slug_named_target", "old but cited", frontmatter_name="slug-named-target", age_days=90
+        )
+        self._write("feedback_citer", "see [[feedback_slug_named_target]] for the detail", age_days=1)
+        result = decay_memories(self.dir, now=_NOW, has_durable_home=_always_home, policy=_policy())
+        assert result.archived_count == 0
+        assert target.exists()
+
+    def test_an_alias_two_memories_claim_resolves_to_neither(self) -> None:
+        # Conflating two distinct files is worse than missing one reference, so an
+        # ambiguous alias is dropped rather than attributed to an arbitrary owner.
+        first = self._write("feedback_alpha_rule", "the first rule", frontmatter_name="shared-alias")
+        second = self._write("feedback_beta_rule", "the second rule", frontmatter_name="shared-alias")
+        files = decay._load_memory_files(self.dir)
+        aliases = decay._canonical_by_alias(files)
+        assert "shared-alias" not in aliases
+        assert aliases["feedback_alpha_rule"] == first.name
+        assert aliases["feedback_beta_rule"] == second.name
+
+
 class SignalScoreTestCase(SimpleTestCase):
     """Unit coverage of the pure signal-score / cold-index helpers (#2723) — DB-free."""
 
@@ -718,12 +848,12 @@ class SignalScoreTestCase(SimpleTestCase):
         score = decay._signal_score(user_binding, inbound_links=2, now=_NOW, retention=timedelta(days=30))
         assert score == 1000 + 500 + (2 * 40) + 200 + 10  # user + binding + inbound + recency + user type weight
 
-    def test_inbound_link_counts_index_self_skip_and_cross_link(self) -> None:
+    def test_inbound_citers_index_self_skip_and_cross_link(self) -> None:
         a = self._mem("mem_a", "see [[mem_b]] and [[mem_a]] (a self link is ignored)")
         b = self._mem("mem_b", "no links here")
-        counts = decay._inbound_link_counts([a, b], "- index line [[mem_b]]")
-        assert counts["mem_b"] == 2  # the index + mem_a
-        assert counts.get("mem_a", 0) == 0  # self-link does not count as inbound
+        citers = decay._inbound_citers([a, b], "- index line [[mem_b]]")
+        assert citers["mem_b.md"] == ("MEMORY.md", "mem_a.md")
+        assert citers.get("mem_a.md", ()) == ()  # self-link does not count as inbound
 
     def test_over_budget_on_either_dimension(self) -> None:
         # #4057: the loader truncates on BYTES and on LINES, so either alone is over budget.
@@ -888,7 +1018,8 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         # Which entries are referenced BEFORE the pass — to prove the fix archived some.
         files = decay._load_memory_files(self.dir)
         index_text = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
-        referenced_before = {f.name for f in files if decay._is_referenced(f, files, index_text)}
+        citers_before = decay._inbound_citers(files, index_text)
+        referenced_before = {f.name for f in files if decay._is_referenced(f, citers_before)}
         assert len(referenced_before) >= n  # every ring entry is referenced — MOST of the corpus
 
         result = self._decay()

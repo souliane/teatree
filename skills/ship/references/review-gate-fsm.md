@@ -1,0 +1,59 @@
+# The review gate — phase stores and the sanctioned path to satisfy it
+
+The mechanics behind `/t3:ship` § "4b. Review Gate". That section carries the gate itself; this file carries the two phase stores it reconciles and the numbered path that earns the `reviewing` phase.
+
+Teatree has **two stores**, but they can no longer disagree:
+
+1. **`Session.visited_phases`** — the **single source of truth**. Both the loop path (`Task.complete()` → `_record_phase_visit()`) and the CLI path (`lifecycle visit-phase`) write canonical phase tokens here. `lifecycle visit-phase` resolves the ticket by pk / issue number / issue URL (same identifier set as `pr create`), normalizes the phase name (short verbs and gerunds both work), and logs a WARNING + reports the resulting state when a transition is not legal — out-of-order calls fail loudly, never silently.
+2. **`Ticket.state` FSM** (`STARTED → CODED → TESTED → REVIEWED → SHIPPED → IN_REVIEW → ...`) — `django_fsm` transitions on `core.models.ticket.Ticket`. At the shipping gate, `_check_shipping_gate` **reconciles `ticket.state` from `visited_phases`**: when the required phases are present it auto-walks the FSM to `REVIEWED` (`reconcile_reviewed()`) so `ticket.ship()` is legal; when phases are missing it blocks with the exact missing-phase list. `pr create` therefore **never raises a raw `TransitionNotAllowed`** — it either ships or returns a structured gate failure. This invariant holds on every path: missing phases, **no session at all** (no attested work ⇒ structured failure, not a silent pass), and **`--skip-validation`** (the un-reconciled `ship()` is wrapped, so an illegal hop becomes the same structured failure).
+
+**Still prefer driving transitions through task completion.** It keeps the task ledger clean: `Task.complete()` → `_record_phase_visit()` records the phase, `_advance_ticket()` fires the matching FSM transition → `_consume_pending_phase_tasks` clears stragglers → next-phase task auto-scheduled. `lifecycle visit-phase` is a valid fallback on the human/CLI path — the gate reconciles either way — but the reviewing phase must still be **earned by spawning the `t3:reviewer` sub-agent** (see `/t3:ship` § "4b. Review Gate"), not self-attested to skip review.
+
+The gate verifies the required phases (`testing`, `reviewing`, `retro`) were recorded for the work — nothing more. Independence in code review is a property of the **execution context**, not of a stored identity: the `reviewing` phase is earned by spawning a fresh `t3:reviewer` sub-agent that has not seen the implementation conversation, and that spawn boundary *is* the independence guarantee, by construction. A same-session spawn is fine and preferred. There is no `agent_id` comparison — the same identity recording `coding` and `reviewing` does not block the gate, because string-identity inference added no real independence over the structural spawn boundary. The shipping gate evaluates the **union of `visited_phases` across all of the ticket's sessions** (`Ticket.aggregate_phase_records()` → `Session.check_gate_across_ticket`), not the latest session alone — the single source of truth is the ticket's lifecycle, not one session. `phase_visits` is retained purely as an audit trail of who recorded each phase; it is not consumed for gate enforcement.
+
+1. **Locate the reviewing task.** When the worktree was created via `t3 <overlay> workspace ticket <url>`, a `Task(phase="reviewing")` was scheduled by `Ticket.schedule_review()` once `test()` fired. If the branch is ad-hoc (no session/ticket exists yet), create one first with `t3 <overlay> workspace ticket <issue_url>` — never push from a session-less branch. The session is the receipt; without it the FSM has nothing to advance.
+
+1b. **Acquire the per-MR review-dispatch lock BEFORE spawning** (#1405, `MRReviewLock`) — this manual `Agent()` path and the loop's `AutoReviewDispatch` scanner enqueue are two independent dispatch paths that must not both spawn a reviewer for the same MR at once:
+
+   ```bash
+   t3 <overlay> review lock-acquire <mr-url> --holder <your-agent/session-id>
+   ```
+
+   `acquired: true` → proceed to step 2. `acquired: false` → a review is already in flight for this MR (the reported `holder` + `state`) — do **not** spawn a second reviewer; the in-flight one already covers this dispatch.
+
+2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool:
+
+   The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
+
+   ```text
+   NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
+   ```
+
+   ```text
+   Agent(
+     description: "Pre-push review of <ticket>",
+     subagent_type: "t3:reviewer",
+     prompt: "<the verbatim block above>, then: \
+              Review the diverging code on this branch against main. Branch: <name>. \
+              Ticket: <url>. Scope: <one-line summary>. Read the linked ticket end-to-end \
+              before touching the diff (per /t3:review § 'Step 0 — Gather Ticket Context'). \
+              Apply both the per-file repo-rules check (/t3:review § 'Active Verification \
+              Against Repo Rules') and the module-level architectural check (full files of \
+              every touched module). Report findings as a punch list — no code edits."
+   )
+   ```
+
+3. **Apply every finding.** Reviewer sub-agents are read-only; the implementing conversation owns the edits. Do not cherry-pick which findings to take — if a finding is wrong, push back with evidence in the same conversation, do not silently drop it.
+
+4. **Drive the `review` transition** so the FSM advances `TESTED → REVIEWED` and the shipping task is auto-scheduled. Two equivalent entry points (use the first one available):
+
+   - **Preferred — complete the reviewing task**, which auto-fires `ticket.review()` via `Task._advance_ticket()`. This matches how every other phase advances and keeps the task ledger clean.
+   - **Direct transition fallback** when the agent doesn't have the task ID handy: `t3 <overlay> ticket transition <ticket_id> review`. The FSM still requires a completed `reviewing` task as a `conditions=` predicate, so this only works after step 3 has already produced one.
+
+   Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review. Since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why marking `reviewing` visited without an independent reviewer having actually reviewed the diff defeats the quality gate. Earn the phase (step 2), then record it; never record it to dodge step 2.
+
+5. **Verify before pushing.** Prefer the `mcp__teatree__ticket_search` MCP tool (load via `ToolSearch` first if it shows as deferred) — call it with `state="reviewed"` (add `text=<issue-url-or-id-substring>` to narrow to one ticket) and read the `state` field of the returned JSON directly, no CLI shelling or text parsing (souliane/teatree#2863). It should show the ticket in `reviewed` once the reviewing task completed. Fall back to `t3 <overlay> ticket list --state reviewed` (filterable by `--state`/`--overlay` only — there is no `--id` flag) when the MCP server isn't connected. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list (`testing` / `reviewing` — #837: never `retro`); satisfy those phases (run the reviewer), don't bypass with `--skip-validation`.
+
+**Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
+
+**Why the FSM, not just the session gate.** The session gate is a soft safety net that fail-opens when no session exists. The FSM is the actual contract — every downstream consumer (`pr create`, `execute_ship`, the loop dispatcher, the statusline) reads `Ticket.state`. Bypassing the FSM produces tickets that look reviewed in the session record but are still `TESTED` in the source of truth, which then breaks every later transition until someone notices and rewinds by hand.

@@ -166,6 +166,53 @@ class TestRemoveStaleHooksSurvivesVanishedAnchor:
         assert prek_hook._is_within(Path("prek"), Path("/removed/worktree")) is False
 
 
+def _noop_config(stage: str, hook_id: str) -> str:
+    return (
+        f"default_install_hook_types: [{stage}]\n"
+        f"default_stages: [{stage}]\n"
+        "repos:\n"
+        "    - repo: local\n"
+        "      hooks:\n"
+        f"          - id: {hook_id}\n"
+        f"            name: {hook_id}\n"
+        "            language: system\n"
+        "            entry: 'true'\n"
+        "            pass_filenames: false\n"
+        "            always_run: true\n"
+    )
+
+
+@pytest.mark.skipif(shutil.which("prek") is None, reason="prek not on PATH")
+class TestInstallResolvesTheRepoRootConfig:
+    """The repo's OWN config gates its commits, never a vendored project's.
+
+    ``prek`` resolves its config from the CWD, and when that CWD is a
+    subdirectory of the repo it bakes ``--cd=<subdir>`` into the generated shim.
+    A repo that VENDORS another project which carries its own
+    ``.pre-commit-config.yaml`` therefore has its entire gate replaced the
+    moment provisioning installs from the vendored path: every one of the host
+    repo's hooks stops running, the vendored project's development lane gates
+    the host instead, and nothing reports the swap — the commits simply start
+    failing on the vendored project's rules and passing none of the host's.
+    """
+
+    def test_installing_from_a_vendored_subdir_still_gates_on_the_root_config(self, main_clone: Path) -> None:
+        (main_clone / ".pre-commit-config.yaml").write_text(_noop_config("pre-commit", "host-gate"))
+        vendored = main_clone / "vendor" / "core"
+        vendored.mkdir(parents=True)
+        (vendored / ".pre-commit-config.yaml").write_text(_noop_config("pre-commit", "vendored-gate"))
+
+        result = prek_hook.install(str(vendored))
+        assert result.success, f"prek install failed: {result.error}"
+
+        hook = _hooks_dir(main_clone) / "pre-commit"
+        assert hook.is_file()
+        body = hook.read_text()
+        assert "--cd=" not in body, (
+            "installed shim delegates to a nested config — the host repo's own gates are dark:\n" + body
+        )
+
+
 @pytest.mark.skipif(shutil.which("prek") is None, reason="prek not on PATH")
 class TestInstallProducesPathResolvedHook:
     def test_install_hook_never_carries_a_stale_absolute_only_path(self, main_clone: Path) -> None:

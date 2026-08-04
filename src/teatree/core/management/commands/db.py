@@ -26,6 +26,11 @@ from teatree.utils.env import patched_environ
 #: only rejects the obvious cases early with a clearer message (#774).
 _READ_ONLY_LEADING = frozenset({"select", "pragma", "explain"})
 
+#: The post-DB step ``db migrate-app`` runs. Overlays name their app-database
+#: migrate step this, so the schema-catch-up verb reuses the step provisioning
+#: already runs instead of carrying a second migrate of its own.
+_APP_MIGRATE_STEP = "django-migrate"
+
 
 def _is_read_only(sql: str) -> bool:
     """True iff *sql* passes the cheap leading-keyword read-only pre-filter.
@@ -296,6 +301,44 @@ class Command(TyperCommand):
         worktree.db_refresh()
         worktree.save()
         return f"DB restored from CI for {worktree.db_name}"
+
+    @command(name="migrate-app")
+    def migrate_app(
+        self,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+    ) -> str:
+        """Apply pending migrations to the worktree's APP database, without re-importing it.
+
+        ``db migrate`` targets teatree's own control DB and ``db refresh``
+        re-imports the app DB from a dump before migrating it, so a worktree
+        whose data is good but whose schema is one migration behind had no
+        verb at all: the only route to it destroyed the data first. That is
+        the ordinary state after pulling a branch that adds a migration.
+
+        Runs the overlay's own ``django-migrate`` post-DB step rather than a
+        second migrate implementation, so the venue, the env and the resolved
+        target database are identical to the ones provisioning uses and cannot
+        drift from them. The step is selected by name and nothing else in the
+        post-DB sequence runs — seeding and password resets are the importer's
+        job, not a schema catch-up's.
+        """
+        worktree = resolve_worktree(path)
+        overlay = get_overlay()
+        step = next(
+            (s for s in overlay.provisioning.post_db_steps(worktree) if s.name == _APP_MIGRATE_STEP),
+            None,
+        )
+        if step is None:
+            self.stderr.write(
+                f"Overlay {type(overlay).__name__} declares no {_APP_MIGRATE_STEP!r} post-DB step, "
+                "so there is no app-DB migrate to run."
+            )
+            raise SystemExit(1)
+        result = step.callable()
+        if result is not None and getattr(result, "returncode", 0) != 0:
+            self.stderr.write(f"Migrate failed for {worktree.db_name}. Check output above for details.")
+            raise SystemExit(1)
+        return f"Migrations applied to {worktree.db_name}"
 
     @command(name="reset-passwords")
     def reset_passwords(

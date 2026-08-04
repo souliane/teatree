@@ -13,9 +13,10 @@ shared recovery-snapshot implementation:
 
 Both bootstrap Django lazily (only when there is work to do) and swallow every
 error: a snapshot must never block a Stop or a compaction (#845 / #970
-invariant). :func:`open_prs_for_repo` is the gh-based open-PR reader the
-PreCompact durable snapshot renders — extracted here from ``hook_router`` so the
-dispatcher shrinks; the router re-exports it unchanged.
+invariant). :func:`open_prs_for_repo`, :func:`git_state_for_repo` and
+:func:`render_git_state_section` are the PreCompact durable snapshot's section
+readers — extracted here from ``hook_router`` so the dispatcher shrinks; the
+router re-exports them unchanged.
 
 Cold-import safe: the module top imports only stdlib, so the live hook (a bare
 ``python3`` subprocess with no guarantee ``teatree`` is importable) loads it
@@ -73,6 +74,58 @@ def open_prs_for_repo(repo_path: Path) -> list[dict]:
     except json.JSONDecodeError:
         return []
     return data if isinstance(data, list) else []
+
+
+def git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
+    """Best-effort current branch / HEAD / dirty / unpushed for *repo_path*.
+
+    Returns ``None`` if *repo_path* is not a git working tree. All subprocess
+    calls are short-timeout and exceptions are swallowed — the snapshot must
+    never block compaction (#970 / #845 invariant).
+    """
+    if not (repo_path / ".git").exists():
+        return None
+
+    def _git(*args: str) -> str:
+        try:
+            return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+                ["git", "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
+                text=True,
+                timeout=3,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return ""
+
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    head = _git("rev-parse", "--short", "HEAD")
+    porcelain = _git("status", "--porcelain")
+    # ``@{u}`` resolves to the configured upstream; absent ⇒ empty output ⇒ 0.
+    unpushed_log = _git("log", "@{u}..HEAD", "--oneline")
+
+    uncommitted_count = len([line for line in porcelain.splitlines() if line.strip()])
+    unpushed_count = len([line for line in unpushed_log.splitlines() if line.strip()])
+    return {
+        "branch": branch or "(detached)",
+        "head": head or "(unknown)",
+        "uncommitted": str(uncommitted_count),
+        "unpushed": str(unpushed_count),
+    }
+
+
+def render_git_state_section(repo: Path) -> list[str]:
+    state = git_state_for_repo(repo)
+    if state is None:
+        return []
+    return [
+        "",
+        "## Current git state",
+        f"- worktree: `{repo}`",
+        f"- branch: `{state['branch']}`",
+        f"- HEAD: `{state['head']}`",
+        f"- {state['uncommitted']} uncommitted file(s)",
+        f"- {state['unpushed']} unpushed commit(s)",
+    ]
 
 
 def _state_dir() -> Path:

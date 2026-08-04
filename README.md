@@ -279,6 +279,7 @@ stateDiagram-v2
     provisioned --> services_up : start_services
     services_up --> created : teardown
     services_up --> provisioned : db_refresh
+    services_up --> provisioned : start_failed
     services_up --> provisioned : stop_services
     services_up --> services_up : start_services
     services_up --> ready : verify
