@@ -19,9 +19,10 @@ from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import clear_mode_override, posture_label, resolve_active_mode, set_mode_override
 from teatree.core.models import PIN_MODES, Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
+from teatree.loops.enable_verdict import effective_verdicts
 from teatree.loops.preset_admin import delete_preset
 from teatree.loops.preset_editing import PresetEditError, apply_entry_edits
-from teatree.loops.preset_status import active_summary, effective_verdicts
+from teatree.loops.preset_status import active_summary
 
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$")
 _DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}

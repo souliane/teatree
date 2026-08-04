@@ -27,7 +27,7 @@ from django_typer.management import TyperCommand
 from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState, LoopStatus
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
-from teatree.loops.preset_status import LoopVerdict, effective_verdicts
+from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts
 from teatree.loops.registry import iter_loops
 
 _NEVER = "—"

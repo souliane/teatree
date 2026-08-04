@@ -251,7 +251,7 @@ def _check_enabled_loops_ticked(now: dt.datetime | None = None) -> Reconciliatio
     check_id = "enabled_loops_ticked_24h"
     try:
         from teatree.core.models import Loop  # noqa: PLC0415 — ORM import needs the app registry
-        from teatree.loops.preset_status import effective_verdicts  # noqa: PLC0415 — ORM-backed resolver
+        from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — ORM-backed resolver
 
         admitted = {verdict.name for verdict in effective_verdicts() if verdict.admitted}
         cutoff = _now(now) - _DAY

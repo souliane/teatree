@@ -84,6 +84,10 @@ class ResolvedMode:
     mode: "Mode"
     source: str  # "override" | "schedule" | "live" | "default"
     until: dt.datetime | None
+    #: The human "why this mode governs" the observability surfaces render beside a
+    #: per-loop verdict — the schedule slot / override wording, or the L0 / presence
+    #: layer that supplied the mode when no preset did.
+    reason: str = ""
 
     @property
     def name(self) -> str:
@@ -117,15 +121,19 @@ def resolve_active_mode(now: dt.datetime | None = None) -> ResolvedMode:
         return _resolve_active_mode(moment)
     except Exception:
         logger.warning("mode resolution failed — failing open to a present-class default", exc_info=True)
-        return ResolvedMode(mode=_synthetic_default_mode(), source="default", until=None)
+        return ResolvedMode(
+            mode=_synthetic_default_mode(), source="default", until=None, reason="mode resolution failed"
+        )
 
 
 def _resolve_active_mode(now: dt.datetime) -> ResolvedMode:
     active = resolve_active_preset(now)
     if active is not None:
-        resolved = ResolvedMode(mode=active.preset, source=active.layer, until=active.until)
+        resolved = ResolvedMode(mode=active.preset, source=active.layer, until=active.until, reason=active.reason)
     else:
-        resolved = ResolvedMode(mode=_default_mode(), source="default", until=None)
+        resolved = ResolvedMode(
+            mode=_default_mode(), source="default", until=None, reason=f"{DEFAULT_MODE_SETTING} setting"
+        )
     return _apply_presence_upgrade(resolved, now)
 
 
@@ -145,7 +153,7 @@ def _apply_presence_upgrade(resolved: ResolvedMode, now: dt.datetime) -> Resolve
     if not _fresh_keystroke(now):
         return resolved
     upgrade = _mode_by_name(_presence_upgrade_mode_name()) or _synthetic_default_mode()
-    return ResolvedMode(mode=upgrade, source="live", until=None)
+    return ResolvedMode(mode=upgrade, source="live", until=None, reason=f"live keystroke upgraded {resolved.name}")
 
 
 def _fresh_keystroke(now: dt.datetime) -> bool:

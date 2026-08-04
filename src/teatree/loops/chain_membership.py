@@ -1,20 +1,21 @@
 """Which loops should carry a ``loop_timer`` chain, and which admitted ones have no driver (#4185).
 
-Chain MEMBERSHIP is the unified ENABLE verdict — hold > forced > preset >
+Chain MEMBERSHIP is the unified ENABLE verdict — hold > forced > mode mask >
 ``Loop.enabled`` — read in bulk through
-:func:`teatree.loops.preset_status.effective_verdicts`, NOT the raw ``Loop.enabled``
-column. That column is the verdict's LOWEST-precedence input, so a complete preset
-decides every loop and the column is never reached: building the chain from it left
-preset-admitted loops with no driver at all, and
-:func:`teatree.loops.timer_reconciler.ensure_loop_timers` pruned away any timer they
-did have.
+:func:`teatree.loops.enable_verdict.effective_verdicts`, the SAME
+:class:`~teatree.loops.enable_verdict.EnablePlanes` seam the live tick's per-fire
+admission gates on. NOT the raw ``Loop.enabled`` column: that column is the verdict's
+LOWEST-precedence input, so a governing mode decides every loop and the column is never
+reached, and building the chain from it left mode-admitted loops with no driver at all
+while :func:`teatree.loops.timer_reconciler.ensure_loop_timers` pruned away any timer
+they did have.
 
-Deliberately NOT :func:`teatree.loops.loop_table.admitted_loop_names`: that carries the
-``is_due`` arm, which would prune the chain of every loop sitting between cadences. It
-stays the per-FIRE admission (:func:`teatree.loops.timer_chains._loop_admitted`); this
-module answers chain membership. The verdict also carries no colleague-facing arm, which
-is right for membership — a colleague-facing loop keeps its chain through an away window
-and step-3 admission skips its individual fires.
+Membership is deliberately WIDER than the per-fire admission, but never
+differently-sourced. :func:`teatree.loops.loop_table.admitted_loop_names` narrows the
+same seam with two further arms this module must not carry: ``is_due``, which would
+prune the chain of every loop sitting between cadences, and the colleague-facing away
+gate — a colleague-facing loop keeps its chain through an away window and step-3
+admission skips its individual fires.
 """
 
 from typing import TYPE_CHECKING
@@ -22,6 +23,8 @@ from typing import TYPE_CHECKING
 from teatree.request_cache import cached_per_request
 
 if TYPE_CHECKING:
+    import datetime as dt
+
     from django_tasks_db.models import DBTaskResult
 
 
@@ -40,19 +43,23 @@ def loop_timers_by_name(status: str) -> "dict[str, list[DBTaskResult]]":
 
 
 @cached_per_request
-def timer_chain_loop_names() -> set[str]:
+def timer_chain_loop_names(now: "dt.datetime | None" = None) -> set[str]:
     """The loops that should carry a timer chain: verdict-admitted, registered, and live-tick.
 
     Intersected with the registered mini-loops that are NOT ``off_live_tick`` — the heavy
     off-tick loops (``dream``, ``directive_loop``, ``outer_loop``) are driven by
     :mod:`teatree.loops.off_live_tick_driver` firing their own tick command, never a
     worker timer, so they never get a chain that would only ever no-op.
+
+    *now* pins the instant the mode is resolved at, so a caller that judges membership
+    ALONGSIDE another mode-derived reading (the staleness alarm's suppression arm) asks
+    both questions of the same moment rather than of two ``timezone.now()`` calls.
     """
-    from teatree.loops.preset_status import effective_verdicts  # noqa: PLC0415 — deferred: ORM-backed resolver
+    from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — deferred: ORM-backed resolver
     from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     registered = {loop.name for loop in iter_loops() if not loop.off_live_tick}
-    admitted = {verdict.name for verdict in effective_verdicts() if verdict.admitted}
+    admitted = {verdict.name for verdict in effective_verdicts(now) if verdict.admitted}
     return registered & admitted
 
 

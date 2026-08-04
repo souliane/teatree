@@ -38,16 +38,22 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: two-population assertion below is what proves that, and it is the invariant this file
 #: exists to hold. A count that differs BETWEEN the two populations is the failure; a
 #: flat count that rose because the page reads a new datum is a re-pin, not an N+1.
+#:
+#: #4196 folded the effective verdict onto the resolver the tick itself gates on, which
+#: nets OUT on every page that already resolved the operating mode — health, the bands
+#: and the loop table each shed the duplicate preset read they used to pay. ``live``
+#: resolved no mode at all, so it now pays the L0 default lookup its membership read
+#: needs; still flat, still one bounded read per datum.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 11,
     "dash:board_columns": 9,
     "dash:cycle_time": 10,
-    "dash:health": 24,
-    "dash:health_bands": 24,
-    "dash:live": 16,
-    "dash:live_body": 14,
-    "dash:loops": 18,
-    "dash:loops_table": 18,
+    "dash:health": 22,
+    "dash:health_bands": 22,
+    "dash:live": 18,
+    "dash:live_body": 16,
+    "dash:loops": 16,
+    "dash:loops_table": 16,
     "dash:presets": 15,
     "dash:sessions": 3,
     "dash:settings": 7,

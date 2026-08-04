@@ -18,6 +18,7 @@ from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverri
 from teatree.core.tasks import execute_headless_task
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_headless_runs
+from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
 #: A preset of the test's own, so nothing here depends on the seeded production modes.
@@ -186,6 +187,51 @@ class TestReconcilerHonoursTheAdmissionVerdict(django.test.TestCase):
         LoopState.objects.resume("inbox")
         assert timer_reconciler.ensure_loop_timers()["added"] == 1
         assert len(timer_chains.pending_loop_timers("inbox")) == 1
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC", TASKS=_DB_TASKS)
+class TestScheduleUpgradedByPresenceGetsAHeadAndTicks(ModeWithoutOverrideMixin):
+    """#4185 AC1 in the configuration a source-``override`` test cannot reach (#4196).
+
+    The away-class schedule slot the owner is typing through: the tick's live admission
+    step admits the loop, so the chain the reconciler builds must contain it — and it did
+    not, because membership resolved the mask through the preset layer the presence
+    upgrade never reaches. The timer row alone is not the acceptance criterion: the fire
+    that row carries has to reach the tick.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.activate_away_schedule_slot()
+        self.record_fresh_keystroke()
+
+    def test_the_head_exists_and_its_fire_ticks_the_loop(self) -> None:
+        assert timer_reconciler.ensure_loop_timers()["added"] == 1
+        [head] = timer_chains.pending_loop_timers(LOOP)
+        assert head.status == TaskResultStatus.READY
+
+        ticked: list[str] = []
+
+        def _tick(name: str, *, deadline: float) -> dict[str, object]:
+            ticked.append(name)
+            Loop.objects.mark_run(name, timezone.now())
+            return {"timed_out": False, "returncode": 0}
+
+        with mock.patch.object(timer_chains, "run_deadlined_tick", _tick):
+            result = _claim_and_fire(LOOP)
+
+        assert result["action"] == "ticked"
+        assert ticked == [LOOP]
+        assert len(timer_chains.pending_loop_timers(LOOP)) == 1  # the successor carries the chain
+
+    def test_an_existing_head_is_not_pruned(self) -> None:
+        # The regression direction that stops two working loops: ``ensure_loop_timers``
+        # DELETES the timers of a non-member, so a membership set narrower than the tick's
+        # takes away chains that already existed.
+        DBTaskResult.objects.all().delete()
+        timer_chains.enqueue_loop_timer(LOOP, run_after=timezone.now())
+        assert timer_reconciler.ensure_loop_timers()["pruned"] == 0
+        assert len(timer_chains.pending_loop_timers(LOOP)) == 1
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)

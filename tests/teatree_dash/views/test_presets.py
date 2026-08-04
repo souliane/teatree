@@ -9,7 +9,7 @@ from django.urls import reverse
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.dash.preset_editor import build_preset_editor
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.preset_status import effective_verdicts
+from teatree.loops.enable_verdict import effective_verdicts
 
 
 def _loop(name: str, *, enabled: bool = True) -> Loop:

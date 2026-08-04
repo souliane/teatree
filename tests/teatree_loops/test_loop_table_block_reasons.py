@@ -26,7 +26,7 @@ from teatree.core.models import Loop, LoopState, Mode, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import build_loop_table_jobs, dispatch_loop_table
 
-_MODE_SEAM = "teatree.loops.loop_table.resolve_active_mode"
+_MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
 
 def _resolved(*, defers: bool = False, name: str = "engaged") -> ResolvedMode:

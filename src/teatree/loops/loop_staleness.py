@@ -225,13 +225,6 @@ class LoopHealth:
         )
 
 
-def _live_tick_loop_names() -> set[str]:
-    """Registry loops the live tick drives — an ``off_live_tick`` row runs on its own command."""
-    from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: the walk imports every loop module
-
-    return {loop.name for loop in iter_loops() if not loop.off_live_tick}
-
-
 def driverless_loops() -> tuple[str, ...]:
     """Registered loops NO driver reaches, sorted by name.
 
@@ -246,19 +239,19 @@ def driverless_loops() -> tuple[str, ...]:
     return tuple(sorted(loop.name for loop in iter_loops() if loop.off_live_tick and not loop.off_tick_command))
 
 
-def _measured_loops() -> list["Loop"]:
+def _measured_loops(now: dt.datetime) -> list["Loop"]:
     """Verdict-admitted, live-tick, interval-cadence rows — the only ones staleness can judge.
 
-    Admission is the unified verdict (hold > forced > preset > ``Loop.enabled``) via
+    Admission is the unified verdict (hold > forced > mode mask > ``Loop.enabled``) via
     :func:`teatree.loops.chain_membership.timer_chain_loop_names`, the SAME membership the
     timer chain is built from — so the alarm measures exactly the loops something is
     supposed to be driving. Reading the raw ``enabled`` column instead made a
-    preset-admitted loop that never ran invisible to the alarm built to catch it (#4185).
+    mode-admitted loop that never ran invisible to the alarm built to catch it (#4185).
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
     from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 — deferred: ORM-backed
 
-    admitted = timer_chain_loop_names()
+    admitted = timer_chain_loop_names(now)
     return [row for row in Loop.objects.all() if row.name in admitted and row.delay_seconds]
 
 
@@ -267,9 +260,13 @@ def _is_suppressed(row: "Loop", resolved: "ResolvedMode") -> bool:
 
     Only the colleague gate remains: a ``colleague_facing`` loop is admitted (it keeps its
     chain through an away window) yet its individual fires are skipped while the mode
-    defers questions, so it legitimately stands still. The ``LoopState`` hold and the
-    preset mask no longer need an arm here — a held or masked loop is not admitted, so
-    :func:`_measured_loops` never offers it for judgement in the first place.
+    defers questions, so it legitimately stands still. The ``LoopState`` hold and the mode
+    mask need no arm here BECAUSE :func:`_measured_loops` resolves membership through the
+    very same :class:`~teatree.loops.enable_verdict.EnablePlanes` mask this *resolved* mode
+    supplies, at the same instant — a held or masked loop is not a member, so it is never
+    offered for judgement. That identity is what makes the narrowing safe: while membership
+    read a DIFFERENT resolver, a mask-refused loop was measured with no arm to excuse it and
+    reported ``unexplained`` (#4196).
     """
     return row.colleague_facing and resolved.defers_questions
 
@@ -294,7 +291,7 @@ def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER)
             ever_ran=row.last_run_at is not None,
             suppressed=_is_suppressed(row, resolved),
         )
-        for row in _measured_loops()
+        for row in _measured_loops(now)
         if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * row.delay_seconds
     ]
     return sorted(stale, key=lambda loop: loop.name)
@@ -319,7 +316,7 @@ def admission(now: dt.datetime) -> Admission:
         mode=resolved.name,
         source=resolved.source,
         admitted=tuple(sorted(admitted_loop_names(now))),
-        admitted_total=len(timer_chain_loop_names()),
+        admitted_total=len(timer_chain_loop_names(now)),
     )
 
 
@@ -328,7 +325,7 @@ def loop_health(now: dt.datetime) -> LoopHealth:
     return LoopHealth(
         admission=admission(now),
         stale=tuple(stale_loops(now)),
-        considered=len(_measured_loops()),
+        considered=len(_measured_loops(now)),
         driverless=driverless_loops(),
     )
 
