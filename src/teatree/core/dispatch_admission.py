@@ -67,7 +67,7 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True) -> str | Non
         )
         if not decision.admit:
             return decision.reason
-        if not apply_ceiling or decision.ceiling is None:
+        if not apply_ceiling:
             return None
         live = live_agent_count()
     except Exception:
