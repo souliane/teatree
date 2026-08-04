@@ -561,22 +561,58 @@ def _assigned(issue: RawAPIDict, assignee: str) -> RawAPIDict:
 
 
 class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
-    """Rule 2: an active ticket already owning the URL blocks a second intake."""
+    """Rule 2: a ticket already owning the URL blocks a second intake (#4133).
+
+    Ownership is every state but IGNORED. ``_handle_orchestrator`` reuses the
+    existing row (``get_or_create(issue_url=...)``) and returns early for anything
+    past NOT_STARTED, so a re-admission cannot schedule work — it only claims an
+    ``ImplementedIssueMarker``, holds an intake budget slot until the dead grace
+    abandons it, and re-admits on the next tick, forever.
+    """
+
+    def _ticket_at(self, state: str) -> None:
+        Ticket.objects.create(issue_url=self.URL_A, overlay=self.OVERLAY, role=Ticket.Role.AUTHOR, state=state)
 
     def test_active_ticket_for_the_url_is_ignored(self) -> None:
-        Ticket.objects.create(issue_url=self.URL_A, overlay=self.OVERLAY, role=Ticket.Role.AUTHOR)
+        self._ticket_at(Ticket.State.NOT_STARTED)
         host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
         assert self._scanner(host).scan() == []
         assert not ImplementedIssueMarker.objects.exists()
 
-    def test_a_terminal_ticket_does_not_block_intake(self) -> None:
-        Ticket.objects.create(
-            issue_url=self.URL_A, overlay=self.OVERLAY, role=Ticket.Role.AUTHOR, state=Ticket.State.DELIVERED
-        )
+    def test_a_planned_ticket_blocks_re_admission(self) -> None:
+        self._ticket_at(Ticket.State.PLANNED)
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
+
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.exists()
+
+    def test_a_delivered_ticket_blocks_re_admission(self) -> None:
+        self._ticket_at(Ticket.State.DELIVERED)
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
+
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.exists()
+
+    def test_an_ignored_ticket_leaves_the_issue_re_claimable(self) -> None:
+        # The release valve: IGNORED is how an abandoned or dead ticket hands its
+        # issue back, so the fix above cannot wedge an issue permanently.
+        self._ticket_at(Ticket.State.IGNORED)
         host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
         assert len(self._scanner(host).scan()) == 1
+
+    def test_every_state_but_ignored_blocks_re_admission(self) -> None:
+        blocking = []
+        for state in Ticket.State.values:
+            Ticket.objects.all().delete()
+            ImplementedIssueMarker.objects.all().delete()
+            self._ticket_at(state)
+            host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
+            if self._scanner(host).scan() == []:
+                blocking.append(state)
+
+        assert set(blocking) == set(Ticket.State.values) - {Ticket.State.IGNORED}
 
 
 class IssueIntakePayloadReadersTests(_PublicRepoTestCase):
