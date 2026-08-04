@@ -8,6 +8,7 @@ from django.apps import apps
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
+from teatree.core.forge_push import push_branch
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
@@ -287,7 +288,9 @@ class ShipExecutor(RunnerBase):
         if fence is not None:
             return fence
 
-        git.push(repo=repo_path, remote="origin", branch=branch)
+        pushed = push_branch(repo=repo_path, remote="origin", branch=branch)
+        if not pushed.ok:
+            return RunnerResult(ok=False, detail=f"push refused ({pushed.failure}): {pushed.detail}")
         # Re-fence immediately after the push, before ANY PR-open work — the push and
         # the create are two distinct outward writes and the claim can be lost between.
         fence = self._fleet_claim_lost(repo_path)
@@ -485,7 +488,7 @@ class ShipExecutor(RunnerBase):
         branch: str,
         extra: "TicketExtra",
     ) -> PullRequestSpec:
-        subject, body = git.last_commit_message(repo=repo_path)
+        subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
         overlay = get_overlay()
         # PRODUCE the title via the shared resolver so the ship and the
         # ``ship_preview`` preflight agree on what will ship: a pinned

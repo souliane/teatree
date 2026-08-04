@@ -63,7 +63,7 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
     line can never diverge (the release-notes-pipeline divergence guard).
     """
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
-    subject, body = git.last_commit_message(repo=repo_path)
+    subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
     overlay = get_overlay()
     resolved = resolve_pr_title(
         ticket,
