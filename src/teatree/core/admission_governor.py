@@ -54,6 +54,13 @@ WRITE_CONCURRENCY_PER_CORE = 0.5
 #: per-agent expansion is the melt driver, not the agent count.
 TOTAL_TEST_WORKERS_PER_CORE = 2
 
+#: TOTAL host agent population per core — deliberately its own constant rather than the
+#: per-lane :data:`WRITE_CONCURRENCY_PER_CORE`. A lane's concurrency bounds that lane; the
+#: population a session RESTORE re-creates is a whole-box fact, and pricing it off a lane
+#: setting is exactly the conflation #4108 records (a lane capped at 3 while the box carried
+#: enough agents to reach load 58 on 8 cores).
+HOST_AGENT_POPULATION_PER_CORE = 1.0
+
 #: Load watermarks, as multiples of the core count. Above ``BRAKE`` new admissions are
 #: denied; a braked governor only re-admits once load falls back under ``RESUME``. The
 #: gap is the hysteresis that stops it flapping around one threshold.
@@ -330,6 +337,47 @@ def decide_admission(
     )
 
 
+def resume_agent_ceiling(machine: MachineSignal) -> int:
+    """How many background agents the box can carry RIGHT NOW, floored at 1 (#4108).
+
+    A session resume restores the whole previously-running set in one step: the stagger the
+    orchestrator applied was a property of the DISPATCH, not of the agents, so it is not
+    replayed. The restore is therefore not covered by any dispatch-side ceiling and needs its
+    own bound — and that bound is read live, because the box's spare capacity is what decides
+    whether a fleet is survivable, not a number set when it was quiet.
+
+    ``cores * HOST_AGENT_POPULATION_PER_CORE``, scaled by the load headroom still left under
+    the same :data:`BRAKE_LOAD_PER_CORE` watermark the dispatch lanes brake on, so the two
+    read one machine the same way. The floor of 1 keeps this an admission ceiling rather than
+    a kill switch: a wedged box still gets to carry the one agent that might unwedge it.
+    """
+    cores = max(1, machine.cores)
+    watermark = BRAKE_LOAD_PER_CORE * cores
+    headroom = max(0.0, watermark - machine.load1) / watermark
+    base = max(1, math.floor(cores * HOST_AGENT_POPULATION_PER_CORE))
+    return max(1, math.floor(base * headroom))
+
+
+def resume_shed_directive(*, restored: int, machine: MachineSignal) -> str:
+    """The shed instruction for an over-ceiling restore, or ``""`` when the fleet fits.
+
+    Empty at or under the ceiling, so a resume on an idle host is unchanged. Over it the
+    string names the restored count AND the live ceiling that count is being judged against —
+    a refusal that does not say what it measured is the silent-brake failure the rest of this
+    module exists to avoid.
+    """
+    ceiling = resume_agent_ceiling(machine)
+    if restored <= ceiling:
+        return ""
+    return (
+        f"ADMISSION — RESTORED FLEET OVER CEILING. This resume brought back {restored} background "
+        f"agents; the live machine carries {ceiling} (load {machine.load1:.0f} on {max(1, machine.cores)} "
+        "cores). The ramp that paced this fleet belonged to the dispatch, not the agents, so the "
+        "restore replayed it in one step. Shed down to the ceiling — stop or collect the surplus "
+        "agents — BEFORE dispatching anything new."
+    )
+
+
 def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER_TICKS) -> MergeSignal:
     """Open PRs, and how many of them the merge sweep keeps refusing.
 
@@ -445,5 +493,7 @@ __all__ = [
     "per_agent_test_workers",
     "read_machine_signal",
     "read_quota_signal",
+    "resume_agent_ceiling",
+    "resume_shed_directive",
     "weekly_pace",
 ]
