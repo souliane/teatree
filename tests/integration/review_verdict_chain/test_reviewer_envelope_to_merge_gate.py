@@ -162,13 +162,20 @@ class TestReviewerEnvelopeUnblocksTheMergeSweep:
         assert _run_sweep(sweep) == "pr_sweep.merged"
         assert sweep.merge_calls == [(_SLUG, _PR_ID, _HEAD)]
 
-    def test_verdict_at_a_stale_head_leaves_the_sweep_flagging_no_review(self, sweep: _FakePrApi) -> None:
+    def test_a_stale_self_asserted_head_is_refused_and_the_sweep_keeps_flagging(self, sweep: _FakePrApi) -> None:
+        # #4126: a head the review was not dispatched for is refused outright. Writing it
+        # at the self-asserted head hid the review from the landed-work guard (which reads
+        # the dispatch head); writing it at the dispatch head would vouch for a tree nobody
+        # reviewed. Either way the merge sweep stays blocked at the live head.
         task = _reviewing_task()
         stale = "0" * 39 + "1"
 
-        record_result_envelope(task, _returned_envelope(reviewed_sha=stale), phase="reviewing")
+        attempt = record_result_envelope(task, _returned_envelope(reviewed_sha=stale), phase="reviewing")
 
-        assert ReviewVerdict.objects.filter(reviewed_sha=stale).exists()
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert stale in attempt.error
+        assert not ReviewVerdict.objects.exists()
         assert not has_independent_cold_review(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
         assert _run_sweep(sweep) == "pr_sweep.flag_no_review"
         assert sweep.merge_calls == []

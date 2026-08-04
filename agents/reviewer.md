@@ -36,7 +36,7 @@ never happened, and it is refused.
 ```json
 "review_verdict": {
   "verdict": "merge_safe",
-  "reviewed_sha": "<full 40-char SHA of the head you reviewed>",
+  "reviewed_sha": "<full 40-char SHA of the head you were dispatched for>",
   "reviewer_identity": "<your reviewer id — never a maker/coder/loop role>",
   "gh_verify_result": "green",
   "blast_class": "logic",
@@ -57,10 +57,12 @@ Allowed values, exactly as written — anything else is refused:
 - `gh_verify_result`: `green`, `pending`, or `failed` — the CI state you
   observed. `merge_safe` can never carry `failed`.
 - `blast_class`: `substrate`, `logic`, or `docs`.
-- `reviewed_sha`: the FULL 40 hex characters of the head you actually
-  reviewed (`git rev-parse HEAD` on the fetched head — never `HEAD~`, never an
-  abbreviated or remembered SHA). The merge gate compares it against the
-  forge's live head, so a short or stale SHA silently vouches for nothing.
+- `reviewed_sha`: the FULL 40 hex characters of the head you were DISPATCHED
+  for (`git rev-parse HEAD` on that fetched head — never `HEAD~`, never an
+  abbreviated or remembered SHA). The verdict is recorded at that head, and the
+  merge gate compares it against the forge's live head. Any other head is
+  refused and records nothing: if the head moved under you, review the
+  dispatched one or return `needs_user_input`.
 
 If something blocks you from reviewing at all (you cannot fetch the head, the
 diff is unreachable), return `needs_user_input` with the reason instead of
