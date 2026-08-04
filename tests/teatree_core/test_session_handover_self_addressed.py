@@ -53,10 +53,10 @@ class TestCreationRefusesTheDegenerateHandover(TestCase):
         assert SessionHandover.objects.count() == 0
 
     def test_a_genuine_target_still_creates(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="s1", to_session="s2", payload="state")
+        row = SessionHandover.objects.create_handover(from_session="s1", to_session="s2", payload="state").row
         assert row.pk is not None
         assert row in SessionHandover.objects.claimable_for("s2")
 
     def test_a_parked_handover_still_creates(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="s1", to_session="", payload="state")
+        row = SessionHandover.objects.create_handover(from_session="s1", to_session="", payload="state").row
         assert row in SessionHandover.objects.claimable_for("s2")

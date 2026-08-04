@@ -11,6 +11,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from unittest import mock
 
 from django.test import TestCase
 
@@ -24,6 +25,7 @@ from teatree.core.handover_wrapup import (
     upsert_subagent_section,
 )
 from teatree.core.models import LoopLease, SessionHandover
+from teatree.core.session_handover_manager import SessionHandoverQuerySet
 
 
 @contextlib.contextmanager
@@ -88,7 +90,7 @@ class TestWriteMirror(TestCase):
         self.pointer = Path(self.enterContext(_tmp_env("XDG_STATE_HOME"))) / "latest.md"
 
     def test_mirror_writes_payload_to_unique_file_and_repoints_latest(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="BODY")
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="BODY").row
         written = handover.write_mirror(row, self.pointer)
         # Content lives in a UNIQUE per-session file, not the fixed pointer.
         assert written != self.pointer
@@ -102,7 +104,7 @@ class TestWriteMirror(TestCase):
         assert self.pointer.read_text(encoding="utf-8") == text
 
     def test_next_session_renders_as_next_session(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="BODY")
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="BODY").row
         written = handover.write_mirror(row, self.pointer)
         assert "to: `next-session`" in written.read_text(encoding="utf-8")
 
@@ -115,8 +117,8 @@ class TestUniqueMirrorNoClobber(TestCase):
         self.pointer = Path(self.enterContext(_tmp_env("XDG_STATE_HOME"))) / "latest.md"
 
     def test_two_concurrent_handoffs_write_distinct_files(self) -> None:
-        first = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="FROM-A")
-        second = SessionHandover.objects.create_handover(from_session="sess-B", to_session="y", payload="FROM-B")
+        first = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="FROM-A").row
+        second = SessionHandover.objects.create_handover(from_session="sess-B", to_session="y", payload="FROM-B").row
 
         first_file = handover.write_mirror(first, self.pointer)
         second_file = handover.write_mirror(second, self.pointer)
@@ -128,8 +130,8 @@ class TestUniqueMirrorNoClobber(TestCase):
         assert "FROM-A" in first_file.read_text(encoding="utf-8")
 
     def test_latest_pointer_tracks_the_newest_handover(self) -> None:
-        first = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="FROM-A")
-        second = SessionHandover.objects.create_handover(from_session="sess-B", to_session="y", payload="FROM-B")
+        first = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="FROM-A").row
+        second = SessionHandover.objects.create_handover(from_session="sess-B", to_session="y", payload="FROM-B").row
 
         handover.write_mirror(first, self.pointer)
         handover.write_mirror(second, self.pointer)
@@ -137,7 +139,7 @@ class TestUniqueMirrorNoClobber(TestCase):
         assert "FROM-B" in self.pointer.read_text(encoding="utf-8")
 
     def test_remirroring_same_row_is_idempotent(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="BODY")
+        row = SessionHandover.objects.create_handover(from_session="sess-A", to_session="x", payload="BODY").row
         assert handover.write_mirror(row, self.pointer) == handover.write_mirror(row, self.pointer)
 
 
@@ -263,6 +265,40 @@ class TestMergeSubagentRecords:
     def test_merging_into_nothing_is_the_incoming_set(self) -> None:
         incoming = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
         assert merge_subagent_records([], incoming) == incoming
+
+
+class TestTheAbsorbIsReportedFromTheWriteSeam(TestCase):
+    """The caller reports what the write DID, never what a pre-read predicted it would do."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(_tmp_env("XDG_STATE_HOME"))
+
+    def test_an_absorb_that_lands_via_the_integrity_retry_is_still_reported(self) -> None:
+        """A rival row inserted between the pre-read and the insert made the absorb silent.
+
+        The caller's pre-read saw nothing, so a call that absorbed 11 bytes reported
+        ``updated_existing: false, previous_payload_bytes: 0`` — silent in exactly the
+        way those two fields exist to prevent.
+        """
+        original = SessionHandoverQuerySet._unclaimed_for
+        seen: list[int] = []
+
+        def _rival_wins_the_insert(self: SessionHandoverQuerySet, from_session: str) -> "SessionHandover | None":
+            seen.append(1)
+            if len(seen) == 1:
+                SessionHandover.objects.create(from_session="a", to_session="b", payload="RIVAL-STATE")
+                return None
+            return original(self, from_session)
+
+        with mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", _rival_wins_the_insert):
+            created = handover.create_handover(from_session="a", explicit_to="b", authored="MY-STATE")
+
+        payload = SessionHandover.objects.get().payload
+        assert "RIVAL-STATE" in payload
+        assert "MY-STATE" in payload
+        assert created.updated_existing is True
+        assert created.previous_bytes == len("RIVAL-STATE")
 
 
 class TestUpsertSubagentSection(TestCase):

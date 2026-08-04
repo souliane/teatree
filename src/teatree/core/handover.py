@@ -183,7 +183,10 @@ class CreatedHandover:
 
     ``updated_existing`` / ``previous_bytes`` report that absorb. A session's second
     hand-off lands on its first row, and how much state was already there is the one
-    thing no exit code tells the operator.
+    thing no exit code tells the operator. Both come from the write seam's own
+    :class:`~teatree.core.session_handover_manager.HandoverWrite`, never from a
+    pre-read: a rival insert landing between the read and the write made the absorb
+    report itself as a fresh insert.
     """
 
     handover: "SessionHandover"
@@ -469,19 +472,16 @@ def create_handover(*, from_session: str, explicit_to: str, authored: str = "") 
     from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     resolution = resolve_handover(from_session=from_session, explicit_to=explicit_to, authored=authored)
-    # Read the row this hand-off will land on BEFORE the write, so the caller can
-    # report how much state was already there rather than leaving the absorb silent.
-    previous = SessionHandover.objects.filter(from_session=from_session, claimed_at__isnull=True).order_by("pk").first()
-    handover = SessionHandover.objects.create_handover(
+    write = SessionHandover.objects.create_handover(
         from_session=from_session,
         to_session=resolution.to_session,
         payload=resolution.resolved.text,
     )
     return CreatedHandover(
-        handover=handover,
-        mirror=write_mirror(handover),
+        handover=write.row,
+        mirror=write_mirror(write.row),
         source=resolution.resolved.source,
         resolved=resolution.resolved.text,
-        updated_existing=previous is not None and previous.pk == handover.pk,
-        previous_bytes=len(previous.payload) if previous is not None and previous.pk == handover.pk else 0,
+        updated_existing=write.absorbed,
+        previous_bytes=write.previous_bytes,
     )

@@ -26,10 +26,22 @@ from teatree.core.session_handover_manager import (
 _MARKER = "t3:test:block"
 
 
+def _blind_first_lookup() -> "mock._patch":
+    """Blind the first ``_unclaimed_for`` call, so the insert races and the retry absorbs."""
+    original = SessionHandoverQuerySet._unclaimed_for
+    seen: list[int] = []
+
+    def _blind_once(self: SessionHandoverQuerySet, from_session: str) -> "SessionHandover | None":
+        seen.append(1)
+        return None if len(seen) == 1 else original(self, from_session)
+
+    return mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", _blind_once)
+
+
 class TestClaimAll(TestCase):
     def test_drains_every_claimable_row_targeted_first(self) -> None:
-        targeted = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="p1")
-        broadcast = SessionHandover.objects.create_handover(from_session="c", to_session="", payload="p2")
+        targeted = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="p1").row
+        broadcast = SessionHandover.objects.create_handover(from_session="c", to_session="", payload="p2").row
 
         claimed = SessionHandover.objects.claim_all("b")
 
@@ -46,9 +58,9 @@ class TestClaimAll(TestCase):
         # SessionStart hook before this drain's CAS reaches it must be skipped (its
         # conditional UPDATE matches 0 rows), never delivered twice. Widening the
         # candidate set to include an already-claimed row reproduces that race.
-        already = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="taken")
+        already = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="taken").row
         SessionHandover.objects.filter(pk=already.pk).update(claimed_at=timezone.now(), claimed_by="rival")
-        fresh = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="fresh")
+        fresh = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="fresh").row
 
         def _all_rows(self: SessionHandoverQuerySet, _session_id: str) -> SessionHandoverQuerySet:
             return self.all()
@@ -65,8 +77,8 @@ class TestOneUnclaimedRowPerSession(TestCase):
     """A second ``create`` from one author updates its row instead of adding a sibling (#4194)."""
 
     def test_a_second_create_reuses_the_same_row(self) -> None:
-        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST")
-        second = SessionHandover.objects.create_handover(from_session="a", to_session="c", payload="SECOND")
+        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST").row
+        second = SessionHandover.objects.create_handover(from_session="a", to_session="c", payload="SECOND").row
 
         assert second.pk == first.pk
         assert SessionHandover.objects.filter(from_session="a", claimed_at__isnull=True).count() == 1
@@ -75,7 +87,7 @@ class TestOneUnclaimedRowPerSession(TestCase):
     def test_the_previous_payload_is_kept_not_destroyed(self) -> None:
         """22,224 bytes of state were at stake in the measured incident — nothing is dropped."""
         SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST STATE")
-        merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SECOND STATE")
+        merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SECOND STATE").row
 
         assert "FIRST STATE" in merged.payload
         assert "SECOND STATE" in merged.payload
@@ -84,19 +96,19 @@ class TestOneUnclaimedRowPerSession(TestCase):
 
     def test_an_identical_repeat_is_not_duplicated(self) -> None:
         SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SAME")
-        merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SAME")
+        merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SAME").row
         assert merged.payload.count("SAME") == 1
 
     def test_created_at_is_refreshed_to_the_latest_write(self) -> None:
-        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST")
+        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST").row
         was = first.created_at
-        second = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SECOND")
+        second = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SECOND").row
         assert second.created_at > was
 
     def test_a_claimed_row_is_never_reused(self) -> None:
-        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="DELIVERED")
+        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="DELIVERED").row
         SessionHandover.objects.claim_all("b")
-        second = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="NEW WORK")
+        second = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="NEW WORK").row
 
         assert second.pk != first.pk
         assert SessionHandover.objects.count() == 2
@@ -109,26 +121,48 @@ class TestOneUnclaimedRowPerSession(TestCase):
     def test_a_racing_insert_lands_on_the_update_branch(self) -> None:
         """Two concurrent creates both see no existing row; the loser must merge, not raise."""
         SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="WINNER")
-        original = SessionHandoverQuerySet._unclaimed_for
-        seen: list[int] = []
 
-        def _blind_once(self: SessionHandoverQuerySet, from_session: str) -> SessionHandover | None:
-            seen.append(1)
-            return None if len(seen) == 1 else original(self, from_session)
-
-        with mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", _blind_once):
-            merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LOSER")
+        with _blind_first_lookup():
+            merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LOSER").row
 
         assert SessionHandover.objects.filter(from_session="a", claimed_at__isnull=True).count() == 1
         assert "WINNER" in merged.payload
         assert "LOSER" in merged.payload
+
+    def test_the_manager_reports_the_absorbed_bytes_on_the_integrity_retry(self) -> None:
+        """The absorb is reported from the write seam, so the retry path cannot under-report it.
+
+        A pre-read in the caller saw no row on the retry path (the lookup it copied was
+        the one the race blinded), so an absorb was announced as a fresh insert:
+        ``updated_existing: false, previous_payload_bytes: 0`` — silent in exactly the
+        way those two fields exist to prevent.
+        """
+        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="WINNER").row
+
+        with _blind_first_lookup():
+            write = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LOSER")
+
+        assert write.absorbed is True
+        assert write.previous_bytes == len(first.payload)
+        assert write.row.pk == first.pk
+
+    def test_a_first_write_reports_no_absorb(self) -> None:
+        write = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST")
+        assert write.absorbed is False
+        assert write.previous_bytes == 0
+
+    def test_an_ordinary_absorb_reports_the_bytes_it_landed_on(self) -> None:
+        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST").row
+        write = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SECOND")
+        assert write.absorbed is True
+        assert write.previous_bytes == len(first.payload)
 
 
 class TestATargetAlwaysNamesSomebodyWhoCanClaim(TestCase):
     """No row the DB accepts may be claimable by nobody (#4194)."""
 
     def test_the_loop_runner_principal_is_parked_at_the_write_seam(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="loop-runner", payload="P")
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="loop-runner", payload="P").row
         assert row.to_session == ""
         assert row in SessionHandover.objects.claimable_for("any-starting-session")
 
@@ -156,7 +190,10 @@ class TestATargetAlwaysNamesSomebodyWhoCanClaim(TestCase):
             ("", ""),
         ]
         for from_session, to_session in shapes:
-            row = SessionHandover.objects.create_handover(from_session=from_session, to_session=to_session, payload="P")
+            write = SessionHandover.objects.create_handover(
+                from_session=from_session, to_session=to_session, payload="P"
+            )
+            row = write.row
             candidate = to_session or "some-other-session"
             assert row in SessionHandover.objects.claimable_for(candidate), (
                 f"a row {from_session!r} -> {to_session!r} the DB accepts must be claimable by somebody"
@@ -185,7 +222,7 @@ class TestUpsertPayloadBlock(TestCase):
     """A delimited block a later write REPLACES — never a second copy of the same section."""
 
     def test_upsert_payload_block_replaces_rather_than_appends(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL")
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL").row
 
         upsert_payload_block(row, marker=_MARKER, block="FIRST BLOCK")
         upsert_payload_block(row, marker=_MARKER, block="SECOND BLOCK")
@@ -200,7 +237,7 @@ class TestUpsertPayloadBlock(TestCase):
         assert row.to_session == "b"
 
     def test_the_block_is_written_last_so_a_later_absorb_cannot_bury_it(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL")
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL").row
 
         upsert_payload_block(row, marker=_MARKER, block="BLOCK")
         row.save(update_fields=["payload"])

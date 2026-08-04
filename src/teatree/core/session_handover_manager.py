@@ -13,6 +13,7 @@ gated on ``claimed_at IS NULL``), NOT ``select_for_update(skip_locked=True)``
 0 rows for that row and moves on to the next claimable one.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from django.db import IntegrityError, models, transaction
@@ -106,13 +107,31 @@ def _strip_block(payload: str, *, start: str, end: str) -> str:
     return payload
 
 
-def _absorb(existing: "SessionHandover", *, to_session: str, payload: str) -> "SessionHandover":
+@dataclass(frozen=True, slots=True)
+class HandoverWrite:
+    """What the write seam DID: the row, and whether it landed on an existing one.
+
+    Reported from here rather than predicted by a pre-read in the caller. The caller
+    used to read the row it expected to absorb into BEFORE the write, which is a
+    different instant: a rival insert landing in between made the caller's pre-read
+    empty while the write took the absorb branch via the ``IntegrityError`` retry, so
+    a call that absorbed announced itself as a fresh insert. ``previous_bytes`` is
+    captured inside :func:`_absorb`, from the row actually being absorbed into.
+    """
+
+    row: "SessionHandover"
+    absorbed: bool
+    previous_bytes: int
+
+
+def _absorb(existing: "SessionHandover", *, to_session: str, payload: str) -> HandoverWrite:
     now = timezone.now()
+    previous_bytes = len(existing.payload)
     existing.payload = _absorb_payload(prior=existing.payload, incoming=payload, author=existing.from_session, at=now)
     existing.to_session = to_session
     existing.created_at = now
     existing.save(update_fields=["to_session", "payload", "created_at"])
-    return existing
+    return HandoverWrite(row=existing, absorbed=True, previous_bytes=previous_bytes)
 
 
 class SelfAddressedHandoverError(ValueError):
@@ -126,7 +145,7 @@ class SelfAddressedHandoverError(ValueError):
 
 
 class SessionHandoverQuerySet(models.QuerySet):
-    def create_handover(self, *, from_session: str, to_session: str, payload: str) -> "SessionHandover":
+    def create_handover(self, *, from_session: str, to_session: str, payload: str) -> HandoverWrite:
         """Persist the pending hand-off from ``from_session``, one row per session.
 
         ``to_session == ""`` targets "whichever session starts next". The
@@ -177,7 +196,7 @@ class SessionHandoverQuerySet(models.QuerySet):
         if existing is None:
             try:
                 with transaction.atomic():
-                    return self.create(from_session=from_session, to_session=to_session, payload=payload)
+                    row = self.create(from_session=from_session, to_session=to_session, payload=payload)
             except IntegrityError:
                 # A concurrent create for this author won the unique constraint between
                 # the lookup and the insert. A hand-off must never fail because the
@@ -185,6 +204,8 @@ class SessionHandoverQuerySet(models.QuerySet):
                 existing = self._unclaimed_for(from_session)
                 if existing is None:
                     raise
+            else:
+                return HandoverWrite(row=row, absorbed=False, previous_bytes=0)
         return _absorb(existing, to_session=to_session, payload=payload)
 
     def _unclaimed_for(self, from_session: str) -> "SessionHandover | None":
