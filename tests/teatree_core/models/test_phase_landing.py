@@ -144,9 +144,9 @@ class TestReviewVerdictEvidence(TestCase):
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
     def _verdict(self, *, reviewed_sha: str, pr_id: int = 7) -> ReviewVerdict:
-        # No ``ticket=``: every production path that records a reviewer ticket's verdict
-        # leaves the FK unset (`review record` defaults it away), so a test that stamps it
-        # would certify a lookup nothing can reach.
+        # No ``ticket=``: no path guarantees the FK — the shell `review record` defaults it
+        # away (the envelope path does set it), so a test that stamps it would certify a
+        # lookup that misses every shell-recorded verdict.
         return ReviewVerdict.record(
             pr_id=pr_id,
             slug="o/r",

@@ -101,17 +101,19 @@ def _review_verdict_evidence(task: "Task") -> str:
 
     A verdict binds to the exact tree it judged, so it counts only at the head this review
     is answerable for. The #68 auto-review contract carries both the PR and that head on
-    the linked :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row.
+    the linked :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row —
+    and the envelope writer (``agents.attempt_recorder``) records at that same row's head,
+    refusing a reviewer's divergent self-asserted one, so the two keys cannot drift (#4126).
     Without one, the PR is the one the reviewer ticket IS (its ``issue_url``) and the head
     is the ticket's ``reviewed_sha`` — which a later push REWRITES, so after a head move
     the lookup finds no verdict at the new head and answers "no evidence", or finds the
     verdict for the revision that superseded this one. Either way the answer is about a
     head some reviewer actually judged, never a stale one this task left behind.
 
-    The verdict is keyed by ``(slug, pr_id, reviewed_sha)`` alone: its ``ticket`` FK is
-    unset on every production path that records one for a reviewer ticket (the shell
-    ``review record`` defaults it away, and the envelope path records nothing at all
-    without a dispatch), so keying on it would answer "" for the whole population.
+    The verdict is keyed by ``(slug, pr_id, reviewed_sha)`` alone: no path guarantees its
+    ``ticket`` FK. The shell ``review record`` defaults it away while the envelope path
+    passes ``ticket=task.ticket``, so the FK is present on part of the population and
+    absent on the rest — keying on it would answer "" for every shell-recorded verdict.
     """
     if normalize_phase(task.phase) not in VERDICT_REVIEW_PHASES:
         return ""
