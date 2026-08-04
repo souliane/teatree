@@ -525,14 +525,31 @@ def _record_success(
 def _record_stuck_outcome(task: Task, outcome: HarnessOutcome, *, stuck_reason: str) -> TaskAttempt:
     """Record an interrupted run: the LANDED outcome where its evidence exists, else the failure.
 
-    Only a LOST LEASE qualifies (#3982) — it says the lease lapsed, not that the work
-    failed. A watchdog runtime/turns breach is a genuine runaway with no such alibi, so it
-    stays a recorded failure however far the ticket has advanced.
+    An interruption noticed AFTER the row reached COMPLETED is a no-op, never a failure
+    (#4100): the run had nothing left to hand over, and writing a failure over a finished
+    row buries a real completion, inflates the environmental-failure rate and feeds the
+    auto-repair sweep a "re-do this" signal for work that is done.
+
+    Short of that, only a LOST LEASE qualifies for the landed outcome (#3982) — it says the
+    lease lapsed, not that the work failed. A watchdog runtime/turns breach is a genuine
+    runaway with no such alibi, so it stays a recorded failure however far the ticket has
+    advanced.
     """
-    evidence = phase_landing_evidence(task, trust_shipping_artifact=True) if outcome.lease_lost else ""
+    if Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists():
+        return _record_noop_over_completed_row(task, interruption=stuck_reason)
+    evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
     if evidence:
         return _record_landed(task, evidence=evidence, lease_loss=stuck_reason)
     return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}")
+
+
+def _record_noop_over_completed_row(task: Task, *, interruption: str) -> TaskAttempt:
+    """Record the interruption of a run whose row had already COMPLETED — exit-0, no failure.
+
+    The row is left exactly as it is: this run is the one that has nothing to say about it.
+    """
+    logger.info("Task %s was interrupted after its row completed: %s", task.pk, interruption)
+    return _record_interrupted_attempt(task, summary=f"the row had already completed — {interruption}")
 
 
 def _record_landed(task: Task, *, evidence: str, lease_loss: str) -> TaskAttempt:
@@ -551,15 +568,7 @@ def _record_landed(task: Task, *, evidence: str, lease_loss: str) -> TaskAttempt
     reclaim stops being re-dispatched for work that already shipped. No FSM side effect is
     needed: the evidence IS that the ticket already reached this phase's target state.
     """
-    summary = f"phase landed despite a lost lease — {evidence}; {lease_loss}"
-    attempt = TaskAttempt.objects.create(
-        task=task,
-        execution_target=task.execution_target,
-        ended_at=timezone.now(),
-        exit_code=0,
-        error="",
-        result={"summary": summary},
-    )
+    attempt = _record_interrupted_attempt(task, summary=f"phase landed despite a lost lease — {evidence}; {lease_loss}")
     Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).update(
         status=Task.Status.COMPLETED,
         claimed_at=None,
@@ -570,6 +579,18 @@ def _record_landed(task: Task, *, evidence: str, lease_loss: str) -> TaskAttempt
     )
     logger.warning("Task %s lost its lease but its phase landed: %s", task.pk, evidence)
     return attempt
+
+
+def _record_interrupted_attempt(task: Task, *, summary: str) -> TaskAttempt:
+    """The exit-0 attempt an interruption records when it is not the verdict on the work."""
+    return TaskAttempt.objects.create(
+        task=task,
+        execution_target=task.execution_target,
+        ended_at=timezone.now(),
+        exit_code=0,
+        error="",
+        result={"summary": summary},
+    )
 
 
 def _record_failure(

@@ -265,7 +265,7 @@ class TestEveryGovernorConsumerHasALiveCaller:
         # The derivation must actually find the interactive verdict, the headless deny
         # reason, AND the headless test-worker cap — the three live consumer seams.
         found = set(governor_consumers())
-        assert {"governor_verdict", "headless_admission_denied_reason", "with_test_worker_cap"} <= found, sorted(found)
+        assert {"governor_verdict", "headless_admission_verdict", "with_test_worker_cap"} <= found, sorted(found)
 
 
 class TestHeadlessLaneWiresGovernor:
@@ -274,7 +274,11 @@ class TestHeadlessLaneWiresGovernor:
     _HEADLESS_ADMISSION_MODULE = "core/headless_admission.py"
     _HEADLESS_ENV_MODULE = "agents/_headless_env.py"
     _INTERACTIVE_CONSUMER = "governor_verdict"
-    _HEADLESS_CONSUMER = "headless_admission_denied_reason"
+    #: The module's governor-admission seams. A chokepoint gates on the governor by
+    #: calling EITHER: the single-shot ``…_denied_reason`` (one unit of work, one probe)
+    #: or the ``…_verdict`` a queue walker holds across N rows so the classification
+    #: costs one probe rather than N (#4098). Both resolve the same pure decision.
+    _HEADLESS_CONSUMERS = ("headless_admission_denied_reason", "headless_admission_verdict")
     #: The three headless chokepoints that must gate on the governor: the post_save
     #: auto-enqueue, the drain safety net, and issue intake (#3644 / F9).
     _HEADLESS_CHOKEPOINTS = ("core/signals.py", "core/tasks.py", "loop/scanners/issue_intake.py")
@@ -292,11 +296,22 @@ class TestHeadlessLaneWiresGovernor:
         )
 
     def test_every_headless_chokepoint_gates_on_the_governor(self) -> None:
-        ungated = sorted(rel for rel in self._HEADLESS_CHOKEPOINTS if not module_calls(rel, self._HEADLESS_CONSUMER))
+        ungated = sorted(
+            rel
+            for rel in self._HEADLESS_CHOKEPOINTS
+            if not any(module_calls(rel, consumer) for consumer in self._HEADLESS_CONSUMERS)
+        )
         assert not ungated, (
-            "headless chokepoint(s) that no longer call headless_admission_denied_reason "
+            f"headless chokepoint(s) that no longer call any of {self._HEADLESS_CONSUMERS} "
             "(the governor stops gating that lane): " + str(ungated)
         )
+
+    def test_the_drain_resolves_one_probe_per_row_rather_than_re_probing(self) -> None:
+        # #4098: nothing changes between iterations of the drain loop, so a per-row
+        # re-ask would return the same verdict N times at N times the cost. The drain
+        # must hold the VERDICT, never call the single-shot wrapper inside its loop.
+        assert module_calls("core/tasks.py", "headless_admission_verdict")
+        assert not module_calls("core/tasks.py", "headless_admission_denied_reason")
 
     def test_the_interactive_lane_also_still_gates_on_the_governor(self) -> None:
         # The contract is "BOTH lanes", so the interactive verdict must stay wired too —

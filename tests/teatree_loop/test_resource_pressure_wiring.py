@@ -38,6 +38,14 @@ class DispatchRoutingTests(TestCase):
         assert actions[0].kind == "statusline"
         assert actions[0].zone == "action_needed"
 
+    def test_probe_inert_routes_to_action_needed_statusline(self) -> None:
+        """#4104 — an inert probe is an operator problem: it means the ladder is not protecting the box."""
+        signal = ScanSignal(kind="resource.probe_inert", summary="ram probe inert", payload={"resource": "ram"})
+        actions = dispatch([signal])
+        assert len(actions) == 1
+        assert actions[0].kind == "statusline"
+        assert actions[0].zone == "action_needed", "an unprotected box must not render as routine in_flight noise"
+
     def test_ram_kill_candidate_is_statusline_only_never_agent(self) -> None:
         signal = ScanSignal(kind="resource.ram_kill_candidate", summary="kill candidate", payload={})
         actions = dispatch([signal])

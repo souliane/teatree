@@ -17,6 +17,7 @@ from teatree.agents import _headless_env
 from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
+    MachineBrake,
     MachineSignal,
     MergeSignal,
     QuotaSignal,
@@ -88,11 +89,52 @@ class TestMachinePressureIsSecondary:
 
     def test_load_between_the_watermarks_holds_a_braked_governor_braked(self) -> None:
         mid = _machine(load1=8 * 4.0)
-        assert not _decide(machine=mid, braked=True).admit
-        assert _decide(machine=mid, braked=False).admit
+        assert not _decide(machine=mid, load_brake=MachineBrake(braked=True)).admit
+        assert _decide(machine=mid, load_brake=MachineBrake(braked=False)).admit
 
     def test_falling_below_the_low_watermark_re_admits_a_braked_governor(self) -> None:
-        assert _decide(machine=_machine(load1=8 * 1.0), braked=True).admit
+        assert _decide(machine=_machine(load1=8 * 1.0), load_brake=MachineBrake(braked=True)).admit
+
+
+class TestMachineBrakeExemption:
+    """``load_brake=MachineBrake(applies=False)`` — the cheap class's bounded exemption (#4098).
+
+    The cheap read-only phases are what DRAIN the box, so the load brake that the
+    expensive class caused must not also refuse them. The exemption is from the LOAD
+    brake ONLY: a spent token budget still refuses everything, cheap included.
+    """
+
+    _MELTED = 8 * 5.0 + 1
+
+    def test_the_default_is_todays_behaviour(self) -> None:
+        assert not _decide(machine=_machine(load1=self._MELTED)).admit
+
+    def test_the_exemption_admits_through_a_load_brake(self) -> None:
+        decision = _decide(machine=_machine(load1=self._MELTED), load_brake=MachineBrake(applies=False))
+        assert decision.admit
+        assert not decision.braked
+
+    def test_the_exemption_does_not_survive_a_spent_quota(self) -> None:
+        decision = _decide(
+            quota=_quota(weekly_utilization=0.999),
+            machine=_machine(load1=0.0),
+            load_brake=MachineBrake(applies=False),
+        )
+        assert not decision.admit
+        assert "weekly" in decision.reason
+
+    def test_the_exemption_does_not_survive_exhausted_accounts(self) -> None:
+        decision = _decide(
+            quota=_quota(all_accounts_exhausted=True),
+            machine=_machine(load1=self._MELTED),
+            load_brake=MachineBrake(applies=False),
+        )
+        assert not decision.admit
+        assert "exhausted" in decision.reason
+
+    def test_the_exemption_leaves_the_ceiling_untouched(self) -> None:
+        quiet = _machine(load1=0.0)
+        assert _decide(machine=quiet, load_brake=MachineBrake(applies=False)).ceiling == _decide(machine=quiet).ceiling
 
 
 class TestYieldPerToken:

@@ -106,6 +106,7 @@ from hooks.scripts.gate_result import (
     warn_gate_skipped,
     warn_validator_timed_out,
 )
+from hooks.scripts.git_add_all_guard import handle_block_git_add_all
 from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
 from hooks.scripts.handlers.classifier_denial import (
     handle_classifier_deny_stop_gate,
@@ -144,7 +145,7 @@ from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER as _
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
-from hooks.scripts.plan_edit_gate import skip_plan_gate_token
+from hooks.scripts.plan_edit_gate import handle_block_edit_before_planned, skip_plan_gate_token  # noqa: F401 re-export
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
@@ -1451,53 +1452,6 @@ def _plan_edit_gate_enabled() -> bool:
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
     return _teatree_bool_setting("plan_edit_gate_enabled", default=True)
-
-
-def handle_block_edit_before_planned(data: dict) -> bool:
-    """Deny Edit/Write when the worktree's ticket is still in STARTED state.
-
-    The FSM already prevents ``code()`` from STARTED (TransitionNotAllowed),
-    so this gate provides an earlier, clearer DX signal: edit attempts while
-    the ticket has not yet been planned are denied with an actionable message.
-    Fail-open on every resolution failure so the gate never wedges an agent
-    when the DB is unavailable or the cwd is not a managed worktree.
-
-    **Never-lockout escapes (mirror the skill-loading gate):**
-
-    1. Per-call token ``[skip-plan-gate: <non-empty-reason>]`` in ``new_string``
-        / ``content`` / ``file_path`` (first 512 chars) — the trivial escape.
-    2. Config kill-switch — the DB-home ``plan_edit_gate_enabled = false`` setting
-        (flipped by ``t3 <overlay> gate plan disable``).
-
-    The existing ``_fail_open_or_deny`` safety chain (self-rescue allowlist +
-    master ``danger_gate_fail_open``) is unchanged — the escapes above are
-    ADDITIONS to it, not replacements.
-    """
-    tool_name = data.get("tool_name", "")
-    if tool_name not in {"Edit", "Write"}:
-        return False
-    if not _plan_edit_gate_enabled():
-        return False
-    cwd = data.get("cwd", "") or str(Path.cwd())
-    try:
-        state = _ticket_state_for_cwd(cwd)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return False
-    if state != "started":
-        return False
-    if reason_token := skip_plan_gate_token(data):
-        sys.stderr.write(f"NOTE: plan-gate edit-block skipped via [skip-plan-gate: {reason_token}].\n")
-        return False
-    reason = (
-        f"{tool_name} denied: the worktree's ticket is still in STARTED state — "
-        "a plan must be recorded before coding can begin. "
-        "Run the planning phase first so the ticket advances to PLANNED. "
-        "If this is a trivial mechanical edit, add `[skip-plan-gate: <reason>]` to proceed."
-    )
-    # Stamp the non-privacy ``plan_gate`` marker so the transcript-conformance
-    # eval (``no_code_edit_before_planned``) keys on THIS gate's deny without
-    # reading the raw reason (PR-25 Part A).
-    return _fail_open_or_deny(data, reason, gate_id="plan_gate")
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -5841,6 +5795,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
+        handle_block_git_add_all,
         handle_block_raw_pid_kill,
         handle_block_unbounded_wait,
         handle_block_secret_file_print,

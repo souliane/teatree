@@ -49,10 +49,11 @@ exactly as before, so the flag-off behaviour is byte-identical.
 
 A SUPERSEDED FAILED task — one whose phase output demonstrably landed
 (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder,
-plus the shipping artifact ONLY for a lease-loss failure — an unrelated PR must not excuse a
-deterministic defect) — is NOT escalated: it is a dead artifact of an earlier interrupted run
-while the ticket advanced on its own, retired COMPLETED silently (fixes 3366/3336/3352 and
-the shipping task that opened its PR, reached IN_REVIEW, then lost its lease — #3982).
+plus the phase artifact ONLY for a lease-loss failure — an unrelated PR, or a verdict some
+other reviewer recorded, must not excuse a deterministic defect) — is NOT escalated: it is
+a dead artifact of an earlier interrupted run while the ticket advanced on its own, retired
+COMPLETED silently (fixes 3366/3336/3352 and the shipping task that opened its PR, reached
+IN_REVIEW, then lost its lease — #3982).
 
 A FAILED task WITH A LIVE SUCCESSOR — a newer, still-active (PENDING/CLAIMED) sibling
 Task on the same ``(ticket, phase)`` — is PARKED (left FAILED, stamped out of every
@@ -436,7 +437,7 @@ def _retire_if_dead_artifact(task: Task) -> bool:
     unfinished, so it is parked FAILED by :func:`_park_live_successor` instead.
     """
     if task.ticket.has_completed_phase(task.phase) or phase_landing_evidence(
-        task, trust_shipping_artifact=task.failure_kind == FailureKind.LEASE_LOST
+        task, trust_phase_artifact=task.failure_kind == FailureKind.LEASE_LOST
     ):
         _retire_superseded(task)
         return True

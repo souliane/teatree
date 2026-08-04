@@ -56,6 +56,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "billing_cycle_anchor_day",
         "boost_concurrency",
         "bulk_close_threshold",
+        "cheap_phase_admission_ceiling",
         "check_updates",
         "chrome_devtools_mcp_enabled",
         "chrome_devtools_headless",

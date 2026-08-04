@@ -13,6 +13,8 @@ matter how a gate's detection misbehaves:
     ``t3 <overlay> gate skill-loading disable``,
     ``t3 <overlay> gate config-overwrite disable``,
     ``t3 <overlay> gate main-clone disable``,
+    ``t3 <overlay> gate plan disable``,
+    ``t3 <overlay> gate add-all disable``,
     ``t3 <overlay> gate raw-merge disable``): the orchestrator-Bash,
     skill-loading-on-task, config-overwrite, main-clone, and out-of-band
     raw-merge kill-switches (#1474, #2836) — each must reach its own disable
@@ -107,6 +109,8 @@ SELF_RESCUE_ALLOWLIST: Final[tuple[tuple[_EntryToken, ...], ...]] = (
     ("t3", OVERLAY, "gate", "skill-loading", "disable"),
     ("t3", OVERLAY, "gate", "config-overwrite", "disable"),
     ("t3", OVERLAY, "gate", "main-clone", "disable"),
+    ("t3", OVERLAY, "gate", "plan", "disable"),
+    ("t3", OVERLAY, "gate", "add-all", "disable"),
     ("t3", OVERLAY, "gate", "raw-merge", "disable"),
     ("t3", OVERLAY, "gate", "fail-open", "enable"),
     ("manage.py", "migrate"),

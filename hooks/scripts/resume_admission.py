@@ -9,7 +9,7 @@ dispatch-side gate (#4107) cannot see it either; this is that path's own admissi
 
 Two halves. ``handle_subagent_stop_track_agent`` records each terminating sub-agent, so the
 restored set can be read as "dispatched MINUS terminated" rather than as the append-only
-``<session>.agents`` roster, which outlives the agents and would warn on history.
+``<session>.agents`` ledger, which outlives the agents and would warn on history.
 ``resume_admission_advisory`` compares that count against the LIVE machine ceiling
 (:func:`~teatree.core.admission_governor.resume_agent_ceiling`) and returns the shed directive
 the router merges into its one SessionStart write.
@@ -56,7 +56,7 @@ def live_restored_agents(session_id: str) -> int:
     """How many dispatched sub-agents had NOT terminated — the set a resume brings back.
 
     An id in the stopped ledger that no dispatch recorded subtracts nothing (set difference,
-    not arithmetic), so a stop the roster never saw can never drive the count negative.
+    not arithmetic), so a stop the dispatch ledger never saw can never drive the count negative.
     """
     if not session_id:
         return 0

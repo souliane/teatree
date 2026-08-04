@@ -280,6 +280,12 @@ Usage: t3 push [OPTIONS]
  disabled, so a missing credential fails immediately instead of hanging.
  The pre-push hooks still run.
 
+ Success means the remote was read back with `git ls-remote` and holds the
+ branch at the local tip. Each way that fails exits with its own code, so a
+ caller can branch on the fix it needs: 1 transport, 2 config, 3 credential,
+ 4 gate-refused, 5 non-fast-forward, 6 not-on-remote (and 6 for a
+ remote-sha-mismatch), 7 unverifiable, 8 remote-rejected.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo                    TEXT  Repository to push (defaults to the current  │
 │                                 directory).                                  │
@@ -6752,6 +6758,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ glab-base-remote   Stale `glab-base` remote gate (glab's silent MR-create    │
 │                    no-op) kill-switch (self-rescue).                         │
+│ add-all            Whole-tree `git add -A` / `git add .` gate kill-switch    │
+│                    (self-rescue).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7368,6 +7376,59 @@ Usage: t3 teatree gate glab-base-remote disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate glab-base-remote enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate add-all`
+
+```
+Usage: t3 teatree gate add-all [OPTIONS] COMMAND [ARGS]...
+
+ Whole-tree `git add -A` / `git add .` gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate add-all status`
+
+```
+Usage: t3 teatree gate add-all status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate add-all disable`
+
+```
+Usage: t3 teatree gate add-all disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate add-all enable`
+
+```
+Usage: t3 teatree gate add-all enable [OPTIONS]
 
  Re-enable the gate.
 
