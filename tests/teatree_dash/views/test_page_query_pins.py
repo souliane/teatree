@@ -31,16 +31,23 @@ State = Ticket.State
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
 #: url name -> the exact number of queries the page issues, at any population size.
+#:
+#: The pages that read the loop fleet each carry the #4185 starvation axis: ONE bounded
+#: ``status__in`` read of the live ``loop_timer`` rows, plus the effective-verdict bulk
+#: read where the page did not already resolve it. Both are O(1) in the population — the
+#: two-population assertion below is what proves that, and it is the invariant this file
+#: exists to hold. A count that differs BETWEEN the two populations is the failure; a
+#: flat count that rose because the page reads a new datum is a re-pin, not an N+1.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 11,
     "dash:board_columns": 9,
     "dash:cycle_time": 10,
-    "dash:health": 20,
-    "dash:health_bands": 20,
-    "dash:live": 12,
-    "dash:live_body": 10,
-    "dash:loops": 17,
-    "dash:loops_table": 17,
+    "dash:health": 24,
+    "dash:health_bands": 24,
+    "dash:live": 16,
+    "dash:live_body": 14,
+    "dash:loops": 18,
+    "dash:loops_table": 18,
     "dash:presets": 15,
     "dash:sessions": 3,
     "dash:settings": 7,

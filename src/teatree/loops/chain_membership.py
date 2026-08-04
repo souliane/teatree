@@ -19,6 +19,8 @@ and step-3 admission skips its individual fires.
 
 from typing import TYPE_CHECKING
 
+from teatree.request_cache import cached_per_request
+
 if TYPE_CHECKING:
     from django_tasks_db.models import DBTaskResult
 
@@ -37,6 +39,7 @@ def loop_timers_by_name(status: str) -> "dict[str, list[DBTaskResult]]":
     return grouped
 
 
+@cached_per_request
 def timer_chain_loop_names() -> set[str]:
     """The loops that should carry a timer chain: verdict-admitted, registered, and live-tick.
 
@@ -61,10 +64,26 @@ def starved_loop_names() -> set[str]:
     regression canary — a PERSISTENT ``starved`` reading means the reconcile chain itself
     has stopped, which is exactly what a canary should catch.
     """
+    return timer_chain_loop_names() - driven_loop_names()
+
+
+@cached_per_request
+def driven_loop_names() -> set[str]:
+    """Every loop carrying a READY or RUNNING ``loop_timer`` row — one query, both statuses.
+
+    The dash polls the pages that read this, so the two statuses are one ``status__in``
+    read rather than two round trips.
+    """
     from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    driven = set(loop_timers_by_name(TaskResultStatus.READY)) | set(loop_timers_by_name(TaskResultStatus.RUNNING))
-    return timer_chain_loop_names() - driven
+    from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415 — deferred: loaded at tick time
+
+    live = DBTaskResult.objects.filter(
+        task_path=_loop_timer_path(),
+        status__in=(TaskResultStatus.READY, TaskResultStatus.RUNNING),
+    ).values_list("args_kwargs", flat=True)
+    return {args[0] for payload in live if (args := payload.get("args") or [])}
 
 
-__all__ = ["loop_timers_by_name", "starved_loop_names", "timer_chain_loop_names"]
+__all__ = ["driven_loop_names", "loop_timers_by_name", "starved_loop_names", "timer_chain_loop_names"]
