@@ -641,15 +641,18 @@ gh pr create --base main --head 42-fix-empty-owner --fill --draft   # FORBIDDEN 
 
 Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_draft_default` (`evals/scenarios/subagent_prompt_drift.yaml`).
 
-**A dispatch brief must BOUND the test-worker multiplier (Non-Negotiable).** `-n auto` is in the repo's pytest `addopts` and in the lane runners, so EVERY dispatched agent sizes its own pool from the box's cores regardless of how many agents already run: N agents on a C-core box is N × C workers competing for one machine's RAM. **"Do not run the full suite" is NOT a bound** — it constrains which tests are selected, not how many processes they fork; a narrow node id at `-n auto` still spawns a worker per core. The lane runners' `bound_xdist_workers_to_memory` default is not one either: it reads the container's cgroup cap for **its own** process and cannot see the sibling agents. The only bound is the env var, and it belongs in the brief:
+**A dispatch brief must BOUND the test-worker multiplier (Non-Negotiable).** `-n auto` is in the repo's pytest `addopts` and in the lane runners, so EVERY dispatched agent sizes its own pool from the box's cores regardless of how many agents already run: N agents on a C-core box is N × C workers competing for one machine's RAM. **"Do not run the full suite" is NOT a bound** — it constrains which tests are selected, not how many processes they fork; a narrow node id at `-n auto` still spawns a worker per core. The lane runners' `bound_xdist_workers_to_memory` default is not one either: it reads the container's cgroup cap for **its own** process and cannot see the sibling agents. The only bound is the env var, and it belongs in the brief.
+
+The bound is a **ceiling, not a literal to paste**. Pick a small number, and where the environment already exports `PYTEST_XDIST_AUTO_NUM_WORKERS`, defer to it rather than overwrite it — a headless-dispatched agent already receives a per-agent value the governor computed from the live core count, the active-agent count and free memory (`agents/headless.py` → `with_test_worker_cap` → `core/admission_governor.py::per_agent_test_workers`), and on a loaded box that value is frequently **1**. On 8 cores with 4 agents live and 8 GB available it resolves to exactly 1, so a brief hardcoding `=4` quadruples the parallelism the governor just decided was safe — causing the OOM the rule exists to prevent:
 
 ```bash
-PYTEST_XDIST_AUTO_NUM_WORKERS=4 uv run --no-sync python -m pytest <paths> -q --no-migrations -p no:cacheprovider
+# small ceiling, but NEVER above a value the environment already exported:
+PYTEST_XDIST_AUTO_NUM_WORKERS=${PYTEST_XDIST_AUTO_NUM_WORKERS:-4} uv run --no-sync python -m pytest <paths> -q --no-migrations -p no:cacheprovider
 ```
 
 **Watch AVAILABLE MEMORY, not load average.** Load 30 with 10 GB free is a healthy box; load 12 with 2 GB free is an OOM about to happen — load says how many runnable processes there are, memory says whether the next one survives. Read free memory before dispatching another test-running agent, and wait rather than stack one more.
 
-This prose rule is a **known-weak stopgap**: it binds only the briefs whose author remembers it, which is exactly how the multiplier gets through. The durable fix is a deterministic cap on concurrent test workers across agents, tracked as [#4157](https://github.com/souliane/teatree/issues/4157) and [#4107](https://github.com/souliane/teatree/issues/4107); until one lands, the env var in every brief is the only thing between N agents and an OOM.
+A deterministic cross-agent worker cap HAS landed, but only for the **headless** lane — [#4107](https://github.com/souliane/teatree/issues/4107) and [#4157](https://github.com/souliane/teatree/issues/4157) shipped it, and every headless dispatch now exports the governor's computed per-agent value. The harness `Agent`/`Task` sub-agent path is NOT capped: neither `src/teatree/core/dispatch_admission.py` nor `hooks/scripts/dispatch_admission_gate.py` carries any test-worker or `XDIST` term, so what landed there is an agent-COUNT ceiling, not a worker cap. That is why the brief-level bound above still matters — on the harness dispatch path it remains the only thing between N sub-agents and an OOM.
 
 ## Prefer Native Tool APIs Over Filesystem Heuristics
 
