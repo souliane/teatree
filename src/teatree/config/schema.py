@@ -427,6 +427,7 @@ class TeatreeSettingsSchema(BaseSettings):
     deny_circuit_breaker_threshold: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     dispatch_quote_gate_on_task_create_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     glab_stale_base_remote_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    git_add_all_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     hook_validator_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_COLD_HOOK]
     headless_authoring_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     main_clone_guard_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]

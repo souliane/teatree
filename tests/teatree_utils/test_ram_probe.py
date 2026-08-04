@@ -12,17 +12,18 @@ import pytest
 from teatree.utils import ram_probe
 from teatree.utils.ram_probe import (
     _cgroup_v2_cpu_quota,
-    _cgroup_v2_memory_mib,
     _emit_compose_sizing,
     _linux_ram_used_percent,
     _macos_ram_used_percent,
     available_cpu_count,
+    cgroup_v2_memory_mib,
     default_provision_concurrency,
     derive_worker_cpus,
     derive_worker_mem_limit_mib,
     effective_available_ram_mib,
     host_available_ram_mib,
     host_total_ram_mib,
+    linux_mem_available_kb,
     read_ram_used_percent,
 )
 
@@ -317,52 +318,78 @@ class TestEffectiveAvailableRamMib:
     def test_the_cgroup_headroom_wins_over_a_larger_host_reading(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=20000),
-            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", side_effect=[22000, 16000]),
+            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=[22000, 16000]),
         ):
             assert effective_available_ram_mib() == 6000
 
     def test_the_host_reading_wins_when_the_cgroup_is_roomier(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000),
-            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", side_effect=[64000, 1000]),
+            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=[64000, 1000]),
         ):
             assert effective_available_ram_mib() == 4000
 
     def test_an_uncapped_cgroup_leaves_the_host_reading_alone(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000),
-            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", return_value=None),
+            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", return_value=None),
         ):
             assert effective_available_ram_mib() == 4000
 
     def test_a_cgroup_at_its_limit_reads_zero_not_unreadable(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0),
-            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", side_effect=[16000, 16000]),
+            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=[16000, 16000]),
         ):
             assert effective_available_ram_mib() == 0
 
     def test_nothing_readable_is_none_not_zero(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0),
-            patch("teatree.utils.ram_probe._cgroup_v2_memory_mib", return_value=None),
+            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", return_value=None),
         ):
             assert effective_available_ram_mib() is None
+
+
+class TestLinuxMemAvailableKb:
+    """#4104 — a pressure ladder must tell "unreadable" apart from "no memory left".
+
+    :func:`host_available_ram_mib` collapses both to ``0``, which reads as CRITICAL
+    to a threshold comparison. This reader keeps them distinct.
+    """
+
+    def _meminfo(self, tmp_path: Path, body: str) -> str:
+        path = tmp_path / "meminfo"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def test_reads_mem_available_from_a_real_file(self, tmp_path: Path) -> None:
+        body = "MemTotal:       31457280 kB\nMemFree:          204800 kB\nMemAvailable:    1048576 kB\n"
+        assert linux_mem_available_kb(self._meminfo(tmp_path, body)) == 1048576
+
+    def test_zero_available_is_a_reading_not_a_failure(self, tmp_path: Path) -> None:
+        assert linux_mem_available_kb(self._meminfo(tmp_path, "MemAvailable:          0 kB\n")) == 0
+
+    def test_missing_key_is_none(self, tmp_path: Path) -> None:
+        assert linux_mem_available_kb(self._meminfo(tmp_path, "MemTotal:       31457280 kB\n")) is None
+
+    def test_unreadable_path_is_none(self) -> None:
+        assert linux_mem_available_kb("/nonexistent/meminfo") is None
 
 
 class TestCgroupV2MemoryMib:
     def test_parses_a_byte_count(self) -> None:
         with patch("pathlib.Path.read_text", return_value="17179869184\n"):
-            assert _cgroup_v2_memory_mib("memory.max") == 16384
+            assert cgroup_v2_memory_mib("memory.max") == 16384
 
     def test_unlimited_is_none(self) -> None:
         with patch("pathlib.Path.read_text", return_value="max\n"):
-            assert _cgroup_v2_memory_mib("memory.max") is None
+            assert cgroup_v2_memory_mib("memory.max") is None
 
     def test_missing_file_is_none(self) -> None:
         with patch("pathlib.Path.read_text", side_effect=OSError):
-            assert _cgroup_v2_memory_mib("memory.current") is None
+            assert cgroup_v2_memory_mib("memory.current") is None
 
     def test_unparsable_value_is_none(self) -> None:
         with patch("pathlib.Path.read_text", return_value="not-a-number\n"):
-            assert _cgroup_v2_memory_mib("memory.max") is None
+            assert cgroup_v2_memory_mib("memory.max") is None
