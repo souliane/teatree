@@ -163,10 +163,27 @@ class TestSessionStartBootstrapGating:
 
 
 class TestEnforceLoopOnPromptGating:
-    def test_fresh_session_without_marker_emits_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_unengaged_session_emits_nothing(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #256 default-OFF: no marker AND autoload off => not engaged, so neither
+        # the reactive-slot nag NOR the standing directives (#4166) reach it.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
         handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
         out = capsys.readouterr().out
         assert out == ""
+
+    def test_autoload_engaged_session_gets_directives_but_no_reactive_slot(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``autoload`` is the owner's standing "teatree is on for every session"
+        # opt-in, so an unmarked session under it IS engaged and receives the
+        # standing directives (#4166) — but arming the loops still needs the
+        # marker, so it registers no reactive slot.
+        handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
+        out = capsys.readouterr().out
+        assert "standing directives" in out
+        assert "reactive infra loops" not in out
 
     def test_marked_session_emits_reactive_slot_registrations(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -521,7 +538,13 @@ class TestLoopAutoLoadOptInGate:
     ) -> None:
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         handle_enforce_loop_on_prompt({"session_id": "colleague"})
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+        # The session engaged teatree (the marker) but never armed its loops, so
+        # it registers no reactive slot and claims no ownership. The standing
+        # directives (#4166) are per-session behaviour keyed on ENGAGEMENT, not on
+        # loop-arming, so they are deliberately still delivered here.
+        assert "reactive infra loops" not in out
+        assert "standing directives" in out
         assert _read_loop_registry() == {}
 
     def test_prompt_nag_fires_with_opt_in(
