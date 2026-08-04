@@ -15,7 +15,12 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import SessionHandover
-from teatree.core.session_handover_manager import SelfAddressedHandoverError, SessionHandoverQuerySet
+from teatree.core.session_handover_manager import (
+    SelfAddressedHandoverError,
+    SessionHandoverQuerySet,
+    append_payload,
+    render_fenced_handoffs,
+)
 
 
 class TestClaimAll(TestCase):
@@ -153,3 +158,39 @@ class TestATargetAlwaysNamesSomebodyWhoCanClaim(TestCase):
             assert row in SessionHandover.objects.claimable_for(candidate), (
                 f"a row {from_session!r} -> {to_session!r} the DB accepts must be claimable by somebody"
             )
+
+
+class TestRenderFencedHandoffs:
+    """The one fence shape both the drain and the duplicate-collapse migration emit."""
+
+    def test_a_lone_entry_renders_as_its_bare_payload(self) -> None:
+        assert render_fenced_handoffs([("solo", "2026-08-04T10:00:00", "JUST ME")]) == "JUST ME"
+
+    def test_several_entries_are_each_fenced_with_their_author_and_instant(self) -> None:
+        rendered = render_fenced_handoffs(
+            [("author-a", "2026-08-04T10:00:00", "STATE A"), ("author-b", "2026-08-04T10:30:00", "STATE B")]
+        )
+        assert rendered.index("STATE A") < rendered.index("STATE B")
+        assert "Hand-off 1 of 2 — from `author-a` at 2026-08-04T10:00:00" in rendered
+        assert "Hand-off 2 of 2 — from `author-b` at 2026-08-04T10:30:00" in rendered
+
+    def test_no_entries_render_nothing(self) -> None:
+        assert render_fenced_handoffs([]) == ""
+
+
+class TestAppendPayload(TestCase):
+    def test_a_section_is_appended_and_persisted_without_touching_other_fields(self) -> None:
+        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL")
+
+        append_payload(row, "## Added section")
+
+        row.refresh_from_db()
+        assert row.payload.startswith("ORIGINAL")
+        assert "## Added section" in row.payload
+        assert row.to_session == "b"
+
+    def test_an_empty_payload_becomes_the_section(self) -> None:
+        row = SessionHandover.objects.create(from_session="a", to_session="b", payload="")
+        append_payload(row, "## Only section")
+        row.refresh_from_db()
+        assert row.payload == "## Only section"

@@ -1,8 +1,8 @@
 """Tests for the session hand-off service.
 
 Covers reuse of the PreCompact snapshot file as the payload, target
-resolution (explicit id, live loop owner, parked-for-next), and the XDG
-file mirror.
+resolution (explicit id, live loop owner, parked-for-next), the XDG
+file mirror, and the sub-agent wrap-up section the barrier's returns become.
 """
 
 import contextlib
@@ -14,6 +14,9 @@ from pathlib import Path
 from django.test import TestCase
 
 from teatree.core import handover
+from teatree.core.fast_push import FastPushOutcome, LeakFinding
+from teatree.core.handover import append_subagent_section, render_subagent_section
+from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.models import LoopLease, SessionHandover
 
 
@@ -155,3 +158,56 @@ class TestCreateHandover(TestCase):
         row = handover.create_handover(from_session="hand-er", explicit_to="").handover
         assert row.to_session == ""
         assert row.is_for_next_session is True
+
+
+class TestRenderSubagentSection:
+    """What the barrier collected, as the section the receiver reads (#4194)."""
+
+    def test_each_agent_contributes_what_it_finished_and_what_is_left(self) -> None:
+        pushed = SubagentPush(
+            worktree=Path("/wt/agent-x"),
+            branch="feat/x",
+            driven=True,
+            outcome=FastPushOutcome(ok=True, branch="feat/x", committed=True, pushed=True, pr_url="http://pr/1"),
+        )
+        refused = SubagentPush(
+            worktree=Path("/wt/agent-y"),
+            branch="feat/y",
+            driven=True,
+            outcome=FastPushOutcome(
+                ok=False, branch="feat/y", findings=[LeakFinding(gate="secrets", path="a.py", detail="token in a.py")]
+            ),
+        )
+
+        section = render_subagent_section([pushed, refused])
+
+        assert "Sub-agent wrap-up (2 agents)" in section
+        assert "committed, pushed, PR http://pr/1" in section
+        assert "token in a.py" in section
+
+    def test_an_undriven_agent_reports_its_error_as_what_remains(self) -> None:
+        section = render_subagent_section(
+            [SubagentPush(worktree=Path("/wt/agent-z"), branch="feat/z", driven=False, error="git exploded")]
+        )
+        assert "git exploded" in section
+
+    def test_zero_agents_render_an_explicit_line(self) -> None:
+        """An absent section is indistinguishable from a barrier that never ran."""
+        assert "No in-flight sub-agent worktrees" in render_subagent_section([])
+
+
+class TestAppendSubagentSection(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(_tmp_env("XDG_STATE_HOME"))
+
+    def test_the_section_is_persisted_and_the_same_mirror_file_is_rewritten(self) -> None:
+        created = handover.create_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY")
+
+        rewritten = append_subagent_section(created.handover, render_subagent_section([]))
+
+        assert rewritten == created.mirror, "created_at is untouched, so the unique mirror file is the same one"
+        row = SessionHandover.objects.get(pk=created.handover.pk)
+        assert row.payload.startswith("BODY")
+        assert "Sub-agent wrap-up" in row.payload
+        assert "Sub-agent wrap-up" in rewritten.read_text(encoding="utf-8")
