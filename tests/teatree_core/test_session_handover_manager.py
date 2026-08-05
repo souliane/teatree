@@ -258,3 +258,41 @@ class TestUpsertPayloadBlock(TestCase):
         row.refresh_from_db()
         start, end = block_markers(_MARKER)
         assert row.payload == f"{start}\nONLY BLOCK\n{end}"
+
+    def test_an_unterminated_block_is_truncated_rather_than_left_to_swallow_the_upsert(self) -> None:
+        """A half-written marker must not make the next upsert append a second block."""
+        start, _end = block_markers(_MARKER)
+        row = SessionHandover.objects.create(from_session="a", to_session="b", payload=f"BODY\n\n{start}\ntruncated")
+
+        upsert_payload_block(row, marker=_MARKER, block="FRESH BLOCK")
+
+        assert row.payload.count(start) == 1
+        assert "truncated" not in row.payload
+        assert row.payload.startswith("BODY")
+
+
+class TestAbsorbOntoAnEmptyRow(TestCase):
+    def test_an_incoming_payload_lands_bare_on_a_row_that_holds_nothing(self) -> None:
+        """A raw empty row is the only way in now that an EMPTY create writes no row at all.
+
+        There is nothing to fence the incoming payload BEHIND, so fencing it would
+        open the receiver's hand-off with an empty ``Hand-off update`` header.
+        """
+        SessionHandover.objects.create(from_session="a", to_session="b", payload="")
+
+        merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="THE STATE").row
+
+        assert merged.payload == "THE STATE"
+
+    def test_an_integrity_error_the_retry_cannot_explain_is_re_raised(self) -> None:
+        """Only the duplicate-author race is absorbed; any other constraint failure stays loud."""
+
+        def _always_blind(_self: SessionHandoverQuerySet, _from_session: str) -> None:
+            return None
+
+        with (
+            mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", _always_blind),
+            mock.patch.object(SessionHandoverQuerySet, "create", side_effect=IntegrityError("some other constraint")),
+            pytest.raises(IntegrityError),
+        ):
+            SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="P")

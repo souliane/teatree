@@ -17,6 +17,7 @@ from django.test import TestCase
 
 from teatree.core import handover
 from teatree.core.fast_push import FastPushOutcome, LeakFinding
+from teatree.core.handover import resolve_handover
 from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.handover_wrapup import (
     merge_subagent_records,
@@ -201,6 +202,13 @@ class TestRenderSubagentSection:
         assert "committed, pushed, PR http://pr/1" in section
         assert "token in a.py" in section
 
+    def test_a_driven_agent_with_no_outcome_says_so_rather_than_reading_as_done(self) -> None:
+        """``driven`` with no ``outcome`` is a hole in the barrier's own report, not a clean push."""
+        section = render_subagent_section(
+            _records([SubagentPush(worktree=Path("/wt/agent-q"), branch="feat/q", driven=True)], at=_AT)
+        )
+        assert "no outcome was recorded" in section
+
     def test_an_undriven_agent_reports_its_error_as_what_remains(self) -> None:
         section = render_subagent_section(
             _records(
@@ -265,6 +273,29 @@ class TestMergeSubagentRecords:
     def test_merging_into_nothing_is_the_incoming_set(self) -> None:
         incoming = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
         assert merge_subagent_records([], incoming) == incoming
+
+
+class TestResolveHandover(TestCase):
+    """Where a hand-off would go and what it would carry, decided BEFORE anything is written."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.state_dir = Path(self.enterContext(_tmp_env("TEATREE_CLAUDE_STATUSLINE_STATE_DIR")))
+        self.enterContext(_tmp_env("XDG_STATE_HOME"))
+
+    def test_an_authored_body_resolves_to_its_target_and_source_without_writing(self) -> None:
+        resolution = resolve_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY")
+
+        assert resolution.to_session == "target-Z"
+        assert resolution.resolved.text == "BODY"
+        assert resolution.resolved.source is handover.PayloadSource.AUTHORED
+        assert SessionHandover.objects.count() == 0, "resolving must not persist anything"
+
+    def test_nothing_anywhere_resolves_empty_and_still_writes_nothing(self) -> None:
+        resolution = resolve_handover(from_session="hand-er", explicit_to="")
+
+        assert resolution.resolved.source is handover.PayloadSource.EMPTY
+        assert SessionHandover.objects.count() == 0
 
 
 class TestTheAbsorbIsReportedFromTheWriteSeam(TestCase):
