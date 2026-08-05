@@ -117,13 +117,20 @@ env: `T3_MODE`)** — controls whether the agent
 pauses for confirmation on publishing actions (push, PR create, PR merge, messaging-backend
 posts, remote branch deletion):
 
-| Mode | Default | Meaning |
-|------|---------|---------|
-| `interactive` | ✅ | Canonical default. Confirm before push, PR create, messaging-backend posts, any remote write. Always-gated destructive ops (force-push to default branches, history rewrites on shared defaults, destructive DB ops on non-ticket schemas, unauthorized external writes) stay gated regardless of mode. |
-| `auto` |  | Opt-in per overlay. End-to-end autonomy: push, PR create, clean-all's branch pruning, retro writes, overlay-approved messaging-backend posts run without prompts. Merge is gated by `require_human_approval_to_merge` (default `true`). Always-gated destructive ops still apply. Recommended for personal dogfooding overlays where the user accepts the trust boundary; use `interactive` for client / shared-team overlays. |
+| Mode | Meaning |
+|------|---------|
+| `interactive` | Confirm before push, PR create, messaging-backend posts, any remote write. Recommended for client / shared-team overlays. |
+| `auto` | End-to-end autonomy: push, PR create, clean-all's branch pruning, retro writes, overlay-approved messaging-backend posts run without prompts. Merge is gated by `require_human_approval_to_merge`. |
 
-The env var `T3_MODE` overrides the stored DB-home value. Unknown values raise
-`ValueError` — typos never silently downgrade to a less-safe mode.
+Always-gated destructive ops (force-push to default branches, history rewrites on
+shared defaults, destructive DB ops on non-ticket schemas, unauthorized external
+writes) stay gated in **both** modes.
+
+`src/teatree/config/defaults.toml` is the single authority for which mode — and
+every other setting's value — a fresh install ships with; this table describes the
+postures, not which one is the default. The env var `T3_MODE` overrides the stored
+DB-home value. Unknown values raise `ValueError` — typos never silently downgrade to
+a less-safe mode.
 
 ### 10.1.1 Per-Overlay Setting Overrides
 
@@ -342,7 +349,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
 | `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and `on_behalf_post_mode` for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
-| `wip` | Bounded-WIP throughput dial `slow < medium < full < boost` (default `medium`): how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
+| `wip` | Bounded-WIP throughput dial `slow < medium < full < boost`: how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |

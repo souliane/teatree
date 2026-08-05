@@ -4,6 +4,12 @@ Exits non-zero when source code changes without a corresponding BLUEPRINT
 update, unless the commit type is one that typically doesn't require it
 (test, docs, style, chore, ci, fix, refactor, revert).
 
+That type exemption is withdrawn when the commit stages a surface the docs
+quote value-for-value — the shipped ``config/defaults.toml`` or an enum
+vocabulary (:func:`_is_shipped_contract`). A ``chore:`` that flips a shipped
+default invalidates the prose asserting the old one, and the commit type
+cannot tell anyone whether that prose was corrected.
+
 The "BLUEPRINT" is the top-level ``BLUEPRINT.md`` plus its split appendix
 files under ``docs/blueprint/`` (e.g. ``configuration.md``,
 ``loop-topology.md``) — the appendices ARE the BLUEPRINT, so updating one of
@@ -58,6 +64,11 @@ _EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix", "refactor", "
 # as the commit message only when it ends in one of these — a staged ``src/``
 # path never matches, so it can never be mis-read as the commit type.
 _COMMIT_MSG_FILENAMES = ("COMMIT_EDITMSG", "MERGE_MSG", "SQUASH_MSG")
+
+# Staged paths whose contents the BLUEPRINT and its appendices quote directly:
+# the shipped-defaults table and the enum vocabularies documented alongside it.
+_SHIPPED_CONTRACT_PATHS = ("src/teatree/config/defaults.toml",)
+_SHIPPED_CONTRACT_SUFFIXES = ("_enums.py", "/config/enums.py")
 
 
 def _staged_files() -> list[str]:
@@ -130,6 +141,17 @@ def _is_blueprint(path: str, prefix: str = "") -> bool:
     return path == f"{prefix}BLUEPRINT.md" or (path.startswith(f"{prefix}docs/blueprint/") and path.endswith(".md"))
 
 
+def _is_shipped_contract(path: str, prefix: str = "") -> bool:
+    """A staged path the BLUEPRINT quotes value-for-value.
+
+    A commit type says what KIND of change this is, never whether the prose it
+    invalidated was corrected — so the type exemption is withdrawn for the two
+    surfaces the docs restate literally.
+    """
+    inner = path.removeprefix(prefix)
+    return inner in _SHIPPED_CONTRACT_PATHS or any(inner.endswith(s) for s in _SHIPPED_CONTRACT_SUFFIXES)
+
+
 def _looks_like_commit_msg_file(path: str) -> bool:
     """True when ``path`` is a git commit-message file, not a staged source path.
 
@@ -183,15 +205,15 @@ def main() -> int:
     if _is_merge_commit() or _is_revert_commit():
         return 0
 
-    msg = _commit_message()
-
-    # Skip for commit types that don't need blueprint changes.
-    msg_lower = msg.lower()
-    if any(msg_lower.startswith((f"{prefix}:", f"{prefix}(")) for prefix in _EXEMPT_PREFIXES):
-        return 0
-
     files = _staged_files()
     prefix = _vendoring_prefix()
+    has_shipped_contract = any(_is_shipped_contract(f, prefix) for f in files)
+
+    msg_lower = _commit_message().lower()
+    exempt_by_type = any(msg_lower.startswith((f"{p}:", f"{p}(")) for p in _EXEMPT_PREFIXES)
+    if exempt_by_type and not has_shipped_contract:
+        return 0
+
     has_src = any(f.startswith(f"{prefix}src/") for f in files)
     has_blueprint = any(_is_blueprint(f, prefix) for f in files)
 
@@ -199,11 +221,18 @@ def main() -> int:
         print()
         print("  BLUEPRINT.md reminder:")
         print()
-        print("    Source code changed but BLUEPRINT.md was not updated.")
-        print("    If this change adds/removes/renames endpoints, models,")
-        print("    commands, or config, please update BLUEPRINT.md too.")
-        print()
-        print("    To skip: use a fix/refactor/test/docs/style/chore/ci commit type.")
+        if has_shipped_contract:
+            print("    A shipped default or enum vocabulary changed, but neither")
+            print("    BLUEPRINT.md nor an appendix was updated. The docs quote")
+            print("    those values literally, so no commit type exempts this.")
+            print()
+            print("    To clear: correct the prose the new value invalidated.")
+        else:
+            print("    Source code changed but BLUEPRINT.md was not updated.")
+            print("    If this change adds/removes/renames endpoints, models,")
+            print("    commands, or config, please update BLUEPRINT.md too.")
+            print()
+            print("    To skip: use a fix/refactor/test/docs/style/chore/ci commit type.")
         print()
         return 1
 
