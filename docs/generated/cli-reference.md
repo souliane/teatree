@@ -1101,7 +1101,8 @@ Usage: t3 review checkout [OPTIONS] URL
 │                            [default: .]                                      │
 │    --remote          TEXT  Remote to fetch the head ref from.                │
 │                            [default: origin]                                 │
-│    --base-dir        TEXT  Parent directory for the temp worktree.           │
+│    --base-dir        TEXT  Parent directory for the worktree (default: the   │
+│                            durable checkout root).                           │
 │    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

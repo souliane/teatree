@@ -17,6 +17,7 @@ import tempfile
 
 from teatree.utils.git import head_sha, worktree_remove
 from teatree.utils.run import run_checked
+from teatree.utils.volatile_checkout import resolve_checkout_base_dir
 
 
 class StaleReviewCheckoutError(RuntimeError):
@@ -41,10 +42,12 @@ def add_review_worktree_at_head(
     Forecloses both halves of the stale-checkout path:
 
     1. It fetches ``ref`` from ``remote`` and checks it out with ``git worktree
-    add --detach <dir> FETCH_HEAD`` into a guaranteed-unique temp dir under
-    ``base_dir`` (default: the system temp dir). A detached ``FETCH_HEAD``
-    checkout binds no branch, so it can never collide with an existing branch
-    worktree — the failure mode that triggered the stale fallback disappears.
+    add --detach <dir> FETCH_HEAD`` into a guaranteed-unique dir under
+    ``base_dir`` (default: the durable checkout root, NOT the system temp dir — a
+    dispatched agent's ``TMPDIR`` is routinely its own job scratch, #4194). A
+    detached ``FETCH_HEAD`` checkout binds no branch, so it can never collide
+    with an existing branch worktree — the failure mode that triggered the stale
+    fallback disappears.
     2. After the add, it asserts ``git rev-parse HEAD`` equals ``expected_sha``
     and raises :class:`StaleReviewCheckoutError` on any divergence, removing the
     bad worktree first. It never returns a tree it could not prove is the
@@ -52,9 +55,13 @@ def add_review_worktree_at_head(
 
     Returns the absolute path of the worktree to review. The caller removes it
     with :func:`teatree.utils.git.worktree_remove` when the review is done.
+
+    Raises :class:`~teatree.utils.volatile_checkout.VolatileCheckoutPathError`
+    BEFORE any git call when *base_dir* names a session- or job-scoped directory.
     """
+    parent = resolve_checkout_base_dir(base_dir)
     run_checked(["git", "-C", repo, "fetch", remote, ref])
-    worktree_dir = tempfile.mkdtemp(prefix="t3-review-", dir=base_dir)
+    worktree_dir = tempfile.mkdtemp(prefix="t3-review-", dir=parent)
     run_checked(["git", "-C", repo, "worktree", "add", "--detach", worktree_dir, "FETCH_HEAD"])
     actual_sha = head_sha(worktree_dir)
     if actual_sha != expected_sha:

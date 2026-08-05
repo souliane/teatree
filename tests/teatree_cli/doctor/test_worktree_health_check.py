@@ -15,6 +15,7 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_worktree_health import (
+    _check_no_session_scoped_worktrees,
     _check_one_worktree_root,
     _check_registered_worktrees_are_checkouts,
     check_worktree_health,
@@ -145,7 +146,55 @@ class OneWorktreeRootCheckTest(_TmpTestCase):
         assert out == ""
 
 
+class SessionScopedWorktreeCheckTest(_TmpTestCase):
+    """#4194: the registry knew the five stranded paths; no check read them."""
+
+    def test_a_job_dir_worktree_is_named(self) -> None:
+        stranded = self.tmp / ".claude" / "jobs" / "0e077e62" / "tmp" / "wt4101"
+        stranded.mkdir(parents=True)
+        self._register(stranded, branch="wt4101")
+
+        ok, out = _echoes(_check_no_session_scoped_worktrees)
+
+        # Advisory, like the split-root check — the point is that it is NAMED.
+        assert ok is True
+        assert "WARN" in out
+        assert str(stranded) in out
+        assert "session-scoped path" in out
+        assert "workspace salvage" in out
+
+    def test_a_harness_agent_worktree_is_named(self) -> None:
+        agent_wt = self.tmp / ".claude" / "worktrees" / "agent-abc123"
+        agent_wt.mkdir(parents=True)
+        self._register(agent_wt, branch="agent-abc123")
+
+        ok, out = _echoes(_check_no_session_scoped_worktrees)
+
+        assert ok is True
+        assert str(agent_wt) in out
+
+    def test_a_durable_worktree_is_silent(self) -> None:
+        durable = self.tmp / "teatree-worktrees" / "wt-4194"
+        durable.mkdir(parents=True)
+        self._register(durable, branch="wt-4194")
+
+        ok, out = _echoes(_check_no_session_scoped_worktrees)
+
+        assert ok is True
+        assert out == ""
+
+
 class WorktreeHealthAggregateTest(_TmpTestCase):
+    def test_the_aggregate_names_a_session_scoped_worktree(self) -> None:
+        stranded = self.tmp / ".claude" / "jobs" / "0e077e62" / "tmp" / "wt4101"
+        stranded.mkdir(parents=True)
+        (stranded / ".git").write_text("gitdir: /nonexistent/other/.git/worktrees/x\n", encoding="utf-8")
+        self._register(stranded, branch="wt4101")
+
+        _ok, out = _echoes(check_worktree_health)
+
+        assert "session-scoped path" in out
+
     def test_an_unreadable_registry_degrades_to_unverified_pass(self) -> None:
         boom = mock.patch(
             "teatree.cli.doctor.checks_worktree_health._check_registered_worktrees_are_checkouts",

@@ -17,7 +17,8 @@ Exit codes mirror the sibling ``t3 review run``:
 * ``0`` — the worktree materialised at the expected SHA; its path is on stdout.
 * ``1`` — git was invoked and refused (``checkout_failed``), or the
     materialised HEAD diverged from ``--sha`` (``stale_checkout``).
-* ``2`` — the URL was refused before any git call (``bad_url``).
+* ``2`` — refused before any git call: an unparsable URL (``bad_url``), or a
+    ``--base-dir`` that dies with the session (``volatile_base_dir``, #4194).
 """
 
 import json
@@ -28,6 +29,7 @@ from teatree.cli.review.service import review_app
 from teatree.url_classify import Forge, forge_of, repo_and_iid
 from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head
 from teatree.utils.run import CommandFailedError
+from teatree.utils.volatile_checkout import VolatileCheckoutPathError
 
 
 def head_ref_for(url: str) -> str:
@@ -54,7 +56,9 @@ def checkout(
     sha: str = typer.Option(..., "--sha", help="Full 40-char head SHA the checkout must land on."),
     repo: str = typer.Option(".", "--repo", help="Local clone to add the review worktree from."),
     remote: str = typer.Option("origin", "--remote", help="Remote to fetch the head ref from."),
-    base_dir: str = typer.Option("", "--base-dir", help="Parent directory for the temp worktree."),
+    base_dir: str = typer.Option(
+        "", "--base-dir", help="Parent directory for the worktree (default: the durable checkout root)."
+    ),
 ) -> None:
     """Materialise a detached review worktree at the exact reviewed head.
 
@@ -75,6 +79,9 @@ def checkout(
             remote=remote,
             base_dir=base_dir or None,
         )
+    except VolatileCheckoutPathError as exc:
+        typer.echo(json.dumps({"error": "volatile_base_dir", "url": url, "detail": str(exc)}, sort_keys=True))
+        raise typer.Exit(code=2) from None
     except StaleReviewCheckoutError as exc:
         typer.echo(json.dumps({"error": "stale_checkout", "url": url, "detail": str(exc)}, sort_keys=True))
         raise typer.Exit(code=1) from None

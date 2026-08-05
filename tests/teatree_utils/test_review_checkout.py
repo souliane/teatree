@@ -20,6 +20,7 @@ import pytest
 
 from teatree.utils.git import head_sha
 from teatree.utils.review_checkout import StaleReviewCheckoutError, add_review_worktree_at_head
+from teatree.utils.volatile_checkout import VolatileCheckoutPathError, durable_checkout_root
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -117,3 +118,41 @@ class TestAddReviewWorktreeAtHead:
         assert first != second
         assert head_sha(first) == pushed_head
         assert head_sha(second) == pushed_head
+
+
+class TestCheckoutParentIsDurable:
+    """The dispatch-side half of #4194: a checkout may not die with its author."""
+
+    def test_no_base_dir_lands_under_the_durable_root_not_the_session_temp_dir(
+        self, origin_and_clone: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dispatched agent's ``TMPDIR`` is routinely its own job scratch dir.
+
+        Pre-fix the stdlib default put the review worktree there, so the checkout
+        was pruned with the job — the shape that stranded five worktrees.
+        """
+        _origin, clone = origin_and_clone
+        pushed_head = _push_new_head(tmp_path / "seed")
+        session_tmp = tmp_path / ".claude" / "jobs" / "0e077e62" / "tmp"
+        session_tmp.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("TMPDIR", str(session_tmp))
+
+        wt = Path(add_review_worktree_at_head(str(clone), ref="feature", expected_sha=pushed_head))
+
+        assert wt.parent == durable_checkout_root()
+        assert list(session_tmp.iterdir()) == []
+
+    def test_refuses_an_explicit_session_scoped_base_dir(
+        self, origin_and_clone: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """Refused before any git call — a named directory is never silently redirected."""
+        _origin, clone = origin_and_clone
+        pushed_head = _push_new_head(tmp_path / "seed")
+        session_tmp = tmp_path / ".claude" / "jobs" / "0e077e62" / "tmp"
+        session_tmp.mkdir(parents=True)
+
+        with pytest.raises(VolatileCheckoutPathError):
+            add_review_worktree_at_head(str(clone), ref="feature", expected_sha=pushed_head, base_dir=str(session_tmp))
+
+        assert list(session_tmp.iterdir()) == []

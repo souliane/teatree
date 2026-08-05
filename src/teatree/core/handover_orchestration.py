@@ -22,13 +22,9 @@ from typing import Protocol
 
 from teatree.core.fast_push import FastPusher, FastPushOutcome
 from teatree.utils.git import WorktreeRecord, default_branch, list_worktrees, log_oneline, run, status_porcelain
+from teatree.utils.volatile_checkout import volatile_reason
 
 logger = logging.getLogger(__name__)
-
-_SUBAGENT_WORKTREES_DIRNAME = "worktrees"
-_SUBAGENT_PARENT_DIRNAME = ".claude"
-_SUBAGENT_DIR_PREFIX = "agent-"
-_SUBAGENT_JOBS_DIRNAME = "jobs"
 
 
 class _RunsFastPush(Protocol):
@@ -50,30 +46,14 @@ class SubagentPush:
 
 
 def _is_subagent_worktree(path: Path) -> bool:
-    """True iff *path* is a spawned sub-agent worktree, in either place the harness puts one.
+    """True iff *path* is a spawned sub-agent worktree — one that dies with its session.
 
-    ``.claude/worktrees/agent-*`` is the harness's own worktree dir. The other is
-    anything BELOW a ``.claude/jobs/<session>/`` dir, which a dispatched agent uses
-    as scratch: the five stranded worktrees of the #4194 incident all lived under
-    ``.claude/jobs/<session>/tmp/**``, so the barrier enumerated none of them and
-    could not have rescued their work even had it run. The job dir itself is not a
-    checkout, so only its descendants match.
-
-    The orchestrator's OWN checkout and any human/ticket worktree live elsewhere.
+    The set the barrier must rescue is exactly the set that does not outlive its
+    author, so this reads the shared predicate rather than restating it: the
+    orchestrator's OWN checkout and any human/ticket worktree are durable and live
+    elsewhere.
     """
-    harness_worktree = (
-        path.name.startswith(_SUBAGENT_DIR_PREFIX)
-        and path.parent.name == _SUBAGENT_WORKTREES_DIRNAME
-        and path.parent.parent.name == _SUBAGENT_PARENT_DIRNAME
-    )
-    parts = path.parts
-    # ``jobs`` must be followed by a session id AND at least one more component,
-    # so ``.claude/jobs/<session>`` itself is not mistaken for a checkout.
-    under_job_dir = any(
-        parts[index] == _SUBAGENT_JOBS_DIRNAME and parts[index - 1] == _SUBAGENT_PARENT_DIRNAME
-        for index in range(1, len(parts) - 2)
-    )
-    return harness_worktree or under_job_dir
+    return bool(volatile_reason(path))
 
 
 def _push_base(path: Path) -> str:

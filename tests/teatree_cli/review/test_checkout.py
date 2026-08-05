@@ -114,3 +114,18 @@ class TestReviewCheckoutRefusesBadInput:
 
         assert result.exit_code == 1, f"output={result.output!r} exc={result.exception!r}"
         assert json.loads(result.output.strip())["error"] == "checkout_failed"
+
+    def test_session_scoped_base_dir_exits_two_before_touching_git(self, tmp_path: Path) -> None:
+        """#4194 — a checkout under a job dir is pruned with the job, so it is refused."""
+        clone = make_git_repo(tmp_path / "clone")
+        session_tmp = tmp_path / ".claude" / "jobs" / "0e077e62" / "tmp"
+        session_tmp.mkdir(parents=True)
+
+        result = CliRunner().invoke(
+            review_app,
+            ["checkout", PR_URL, "--sha", "0" * 40, "--repo", str(clone), "--base-dir", str(session_tmp)],
+        )
+
+        assert result.exit_code == 2, f"output={result.output!r} exc={result.exception!r}"
+        assert json.loads(result.output.strip())["error"] == "volatile_base_dir"
+        assert list(session_tmp.iterdir()) == []

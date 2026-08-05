@@ -29,7 +29,9 @@ Work is *work-bearing* from the moment it exists in the working tree. There are 
 
 Every state either advances or leaves a durable record that something else drains. Nothing may exit 0 having observed work and stored nothing.
 
-A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger, so `workspace emit` never surfaces it and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
+A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger, so `workspace emit` never surfaces it and nothing advances it. A checkout under a session's job dir (`.claude/jobs/<session>/**`) is worse: it is removed with the job. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
+
+`teatree.utils.volatile_checkout` is the one predicate for "does this path die with its session?", and three surfaces read it rather than restating it: the hand-off barrier enumerates such worktrees to fast-push them, `teatree.utils.review_checkout` refuses to CREATE one there (and defaults to the durable checkout root rather than the system temp dir, since a dispatched agent's `TMPDIR` is routinely its own job scratch), and `t3 doctor check` WARNs naming any registered `Worktree` already on one — the registry knew the five stranded paths of [#4194](https://github.com/souliane/teatree/issues/4194); no check read them.
 
 ### The mechanisms
 
