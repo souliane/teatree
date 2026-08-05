@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
-from teatree.core.models import ConfigSetting, Loop, Prompt
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt
 from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
 from teatree.loops.loop_staleness import Admission, LoopHealth
@@ -44,7 +44,7 @@ def _healthy_loop_health() -> LoopHealth:
     asserting the flock/pid-file logic under test, not the shard's loop staleness.
     """
     return LoopHealth(
-        admission=Admission(mode="standard", source="default", admitted=("tickets",), enabled_total=1),
+        admission=Admission(mode="standard", source="default", admitted=("tickets",), admitted_total=1),
         stale=(),
         considered=1,
     )
@@ -163,7 +163,7 @@ class TestWorkerStatus(django.test.TestCase):
         ):
             result = runner.invoke(worker_app, ["status"])
         assert result.exit_code == 0
-        assert "enabled loop(s) admitted" in result.stdout
+        assert "admitted loop(s) due" in result.stdout
 
     @staticmethod
     def _frozen_loop() -> None:
@@ -660,3 +660,31 @@ def test_emit_stop_warns_when_the_drain_grace_lapsed(capsys: pytest.CaptureFixtu
     out = capsys.readouterr().out
     assert "WARNING the drain grace lapsed" in out
     assert "7, 9" in out
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestTimerCountsCoverTheChainSet(django.test.TestCase):
+    """The per-loop chain diagnostic counts the loops that SHOULD carry a chain (#4185).
+
+    Keyed on ``Loop.enabled`` it silently omitted every preset-admitted loop — the exact
+    set whose missing chains the diagnostic existed to surface.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(
+            name="inbox",
+            script="src/teatree/loops/inbox/loop.py",
+            delay_seconds=60,
+            enabled=False,
+        )
+        Mode.objects.create(name="preset-4185", entries={"inbox": True})
+        ModeOverride.objects.set_override("preset-4185")
+
+    def test_a_preset_admitted_column_disabled_loop_is_counted(self) -> None:
+        assert "inbox" in worker_cli._timer_counts()
+
+    def test_a_preset_masked_off_loop_is_not_counted(self) -> None:
+        Loop.objects.filter(name="inbox").update(enabled=True)
+        Mode.objects.filter(name="preset-4185").update(entries={"inbox": False})
+        assert "inbox" not in worker_cli._timer_counts()

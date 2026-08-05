@@ -1,9 +1,9 @@
-"""teatree.loops.preset_status — the shared effective-verdict surface (#3159).
+"""teatree.loops.preset_status — the preset/mode observability rendering (#3159).
 
-One source of truth for ``preset show``, ``loops list``, and the statusline: the
-active-preset summary, the per-loop effective verdict + deciding layer, and the
-statusline chunk. Deciding layer mirrors the resolution order (hold > override/
-schedule > base).
+The active-preset summary and the ``schedule:`` / ``mode:`` / ``forced ON/OFF:``
+statusline handles. The per-loop effective verdict they render lives in
+``teatree.loops.enable_verdict`` (see ``test_enable_verdict.py``) — the one seam the
+tick's own admission also reads.
 """
 
 import datetime as dt
@@ -15,7 +15,6 @@ from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverri
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_status import (
     active_summary,
-    effective_verdicts,
     manual_override_chunk,
     manual_override_entries,
     preset_line_chunk,
@@ -30,30 +29,7 @@ def _loop(name: str, *, enabled: bool = True) -> Loop:
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestEffectiveVerdicts(django.test.TestCase):
-    def test_base_layer_when_no_preset(self) -> None:
-        _loop("ps-inbox")
-        verdicts = {v.name: v for v in effective_verdicts()}
-        assert verdicts["ps-inbox"].layer == "base"
-        assert verdicts["ps-inbox"].admitted is True
-
-    def test_hold_layer_wins_over_preset(self) -> None:
-        _loop("ps-review")
-        LoopState.objects.pause("ps-review")
-        Mode.objects.create(name="engaged", entries={"ps-review": True})
-        ModeOverride.objects.set_override("engaged")
-        verdicts = {v.name: v for v in effective_verdicts()}
-        assert verdicts["ps-review"].layer == "hold"
-        assert verdicts["ps-review"].admitted is False
-
-    def test_override_masks_a_loop_off(self) -> None:
-        _loop("ps-review2")
-        Mode.objects.create(name="heads-down", entries={"ps-review2": False})
-        ModeOverride.objects.set_override("heads-down")
-        verdicts = {v.name: v for v in effective_verdicts()}
-        assert verdicts["ps-review2"].layer == "override"
-        assert verdicts["ps-review2"].admitted is False
-
+class TestActiveSummary(django.test.TestCase):
     def test_summary_reports_active_preset(self) -> None:
         Mode.objects.create(name="heads-down", entries={})
         ModeOverride.objects.set_override("heads-down")

@@ -9,7 +9,7 @@ per-loop loops down on a single outage.
 
 This narrows the gate to the loop being run: it preflights ONLY the loop's own
 overlay (derived from ``Loop.overlay``), and only once the loop is actually
-going to run (enabled + due, via the canonical :func:`loop_enabled` verdict). A
+going to run (admitted + due, via the canonical :func:`loop_admits` verdict). A
 disabled/cooling loop — and a loop whose overlay can't be resolved to a single
 registered overlay — preflights nothing, so the per-loop tick stays isolated
 from every overlay it does not depend on. A loop's OWN connector being down
@@ -24,7 +24,7 @@ from django.utils import timezone
 
 from teatree.core.connector_preflight import run_connector_preflight
 from teatree.core.overlay_loader import get_all_overlays, resolve_overlay_name
-from teatree.loop.loop_state_db import loop_enabled
+from teatree.loops.enable_verdict import loop_admits
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def run_loop_connector_preflight(loop_name: str) -> None:
     row = Loop.objects.filter(name=loop_name).first()
     if row is None:
         return
-    if not (loop_enabled(loop_name) and row.is_due(timezone.now())):
+    if not (loop_admits(loop_name) and row.is_due(timezone.now())):
         return
     overlay_name = _scoped_overlay_name(row.overlay)
     if overlay_name is None:
