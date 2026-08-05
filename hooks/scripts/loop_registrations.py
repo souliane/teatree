@@ -233,6 +233,11 @@ def _register_waking_directives(
     machinery, and a host-global slot additionally on the tick-owner election so
     N sessions do not each run it. The slot id is rendered inline so the owner
     can tell which registration a later "stop the loop" would drop.
+
+    A prompt with NO candidates — every waking slot braked by the mode, or switched
+    off — still falls through to the marker rewrite below rather than returning
+    early, since a session held braked past the retention window would otherwise
+    age out its own registrations and re-register them on its return.
     """
     from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
         _claim_loop_ownership,
@@ -242,7 +247,7 @@ def _register_waking_directives(
     from teatree.loop.standing_directives import SCOPE_ATTENDED_SINGLETON  # noqa: PLC0415 deferred cold-hook import
 
     candidates = [d for d in directives if d["wakes_session"]]
-    if not candidates or not _loop_auto_load_active(session_id):
+    if not _loop_auto_load_active(session_id):
         return False
     data = _marker_data(session_id, _REGISTERED_MARKER)
     pending = [d for d in candidates if d["slot_id"] not in data]

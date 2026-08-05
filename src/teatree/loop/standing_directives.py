@@ -238,21 +238,36 @@ def _resolve_text(directive: StandingDirective, overrides: dict[str, str]) -> st
     return override if len(override) <= MAX_DIRECTIVE_CHARS else directive.default_text
 
 
+#: The two resolver layers a mode read spans, each of which logs its own fail-open
+#: WARNING with ``exc_info=True``.
+_MODE_READ_LOGGERS = ("teatree.core.mode_resolution", "teatree.loop.preset_resolution")
+
+
+def _drop_record(_record: logging.LogRecord) -> bool:
+    return False
+
+
 @contextmanager
 def _mode_read_unlogged() -> Iterator[None]:
     """Silence the mode read's own fail-open WARNINGs for the duration of one call.
 
-    Both resolver layers it spans log ``exc_info=True`` when they degrade, and the
-    caller below is documented silent: its only stderr is the delivery hook's, so
-    a degraded store would print a full traceback into the owner's terminal on
+    The caller below is documented silent: its only stderr is the delivery hook's,
+    so a degraded store would print a full traceback into the owner's terminal on
     every prompt, for a probe whose failure is already handled here.
+
+    Named-logger filters rather than ``logging.disable``, which is process-global:
+    :func:`resolve_standing_directives` is a public export reachable from the
+    ``t3 worker``'s pool, where a blanket disable would swallow a concurrent
+    thread's own unrelated logging for the length of this read.
     """
-    previously = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
+    loggers = [logging.getLogger(name) for name in _MODE_READ_LOGGERS]
+    for logger in loggers:
+        logger.addFilter(_drop_record)
     try:
         yield
     finally:
-        logging.disable(previously)
+        for logger in loggers:
+            logger.removeFilter(_drop_record)
 
 
 def _self_pump_paused() -> bool:

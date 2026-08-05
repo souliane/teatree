@@ -73,6 +73,15 @@ def _loop_lines(text: str) -> list[str]:
 _TWO_SESSIONS = ("sess-1", "sess-2")
 _ALTERNATING_ROUNDS = 5
 
+# The retention window scaled from two days down to seconds, so a session can be
+# driven ACROSS it under a single real clock. Faking the clock is not available:
+# the sweep compares its own ``now`` against real filesystem mtimes, so a fake
+# ``now`` measures nothing. The prompt interval keeps ~7x headroom against the
+# window, so only a multi-second scheduling stall could age a refreshed marker out.
+_PROBE_WINDOW_SECONDS = 2.0
+_PROBE_PROMPT_INTERVAL = 0.3
+_PROBE_PROMPTS = 14
+
 
 def _age_out(marker: Path) -> None:
     """Backdate *marker* past the router's retention window and re-arm the sweep throttle."""
@@ -341,6 +350,89 @@ class TestTheInjectionThrottle:
         _emit()
 
         assert not dead.exists()
+
+    def test_control_the_marker_survives_when_the_routers_sweep_is_off(
+        self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # CONTROL — the reaping above is the router's age sweep and nothing else.
+        # With only the sweep disabled, the very same backdated marker survives.
+        monkeypatch.setattr(router, "_sweep_stale_state_files", lambda: None)
+        dead = state_dir / "sess-old.directives-injected"
+        dead.write_text("{}", encoding="utf-8")
+        _age_out(dead)
+
+        _emit()
+
+        assert dead.exists()
+
+
+class TestASessionOutlivingTheRetentionWindow:
+    """A live session may not age its OWN registrations out and re-register them.
+
+    ``directives-registered`` is written once, so its mtime would track the
+    registration instant rather than the session: the router's age sweep would reap
+    a running session's marker and every ``/loop`` slot would be registered afresh,
+    once per retention window, for as long as the session lives — the same unbounded
+    registration growth ``self_woken_turns_per_hour`` exists to bound, at a two-day
+    period instead of a per-prompt one. The rewrite-unchanged is what makes age a
+    true liveness signal for this marker, and only a run ACROSS the window shows it.
+
+    Each test carries its own control for the way this probe can lie — a sweep that
+    never fires reports the same green as a marker that correctly survived it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _scaled_window(self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_STATE_FILE_MAX_AGE_SECONDS", _PROBE_WINDOW_SECONDS)
+        monkeypatch.setattr(router, "_SWEEP_THROTTLE_SECONDS", 0)
+
+    def test_no_slot_is_re_registered_while_the_session_keeps_prompting(self, state_dir: Path) -> None:
+        # CONTROL, in-test: a marker of the SAME suffix written once and never
+        # rewritten — the mutant's behaviour — must be reaped by the end of the run.
+        # It fails with the live marker if no sweep ran, and alone if one did.
+        frozen = state_dir / "sess-frozen.directives-registered"
+        frozen.write_text("{}", encoding="utf-8")
+        started = time.time()
+
+        registered = []
+        for _ in range(_PROBE_PROMPTS):
+            router._ensure_state_dir()  # the sweep every other hook's state write fires
+            registered.append(len(_loop_lines(_emit())))
+            time.sleep(_PROBE_PROMPT_INTERVAL)
+
+        assert time.time() - started > 2 * _PROBE_WINDOW_SECONDS
+        assert not frozen.exists()
+        assert (state_dir / "sess-1.directives-registered").is_file()
+        assert registered == [2, *([0] * (_PROBE_PROMPTS - 1))]
+
+    def test_a_prompt_whose_waking_slots_are_all_braked_still_refreshes_the_marker(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The merged-mode brake drops every waking slot, so the prompt has no
+        # candidates at all. Returning early on that leaves the marker untouched,
+        # so a session held away past the window re-registers on its return.
+        _emit()
+        marker = state_dir / "sess-1.directives-registered"
+        _age_out(marker)
+        monkeypatch.setattr(
+            loop_registrations, "_standing_directives", lambda: [d for d in _FAKE if not d["wakes_session"]]
+        )
+
+        _emit()
+        router._sweep_stale_state_files()
+
+        assert marker.is_file()
+
+    def test_control_an_unrefreshed_marker_is_reaped_by_that_same_sweep(self, state_dir: Path) -> None:
+        # CONTROL for the test above — the sweep it ends on genuinely reaps a
+        # marker of that suffix at that age, so the survival there is the rewrite.
+        _emit()
+        marker = state_dir / "sess-1.directives-registered"
+        _age_out(marker)
+
+        router._sweep_stale_state_files()
+
+        assert not marker.exists()
 
 
 class TestConcurrentLiveSessions:

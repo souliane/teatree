@@ -7,6 +7,7 @@ slash commands, hooks, or session markers — that is the adapter's layer, pinne
 separately in ``tests/test_standing_directives_adapter.py``.
 """
 
+import logging
 import re
 from unittest import mock
 
@@ -275,6 +276,9 @@ class TestTheSelfWokenTurnBudget(TestCase):
         assert self_woken_turns_per_hour() == {"per_session": 2, "per_host_singleton": 0}
 
 
+_DEGRADED_STORE = "no such table: core_modeoverride"
+
+
 class TestTheSelfPumpBrake(TestCase):
     """A self-waking directive IS a self-pump, so the away mode brakes it."""
 
@@ -341,13 +345,33 @@ class TestTheSelfPumpBrake(TestCase):
         # only stderr this path has is a hook's, which the owner reads.
         degraded = mock.patch(
             "teatree.core.mode_resolution._resolve_active_mode",
-            side_effect=OperationalError("no such table: core_modeoverride"),
+            side_effect=OperationalError(_DEGRADED_STORE),
         )
 
         with degraded, self.assertNoLogs("teatree.core.mode_resolution"):
             braked = _self_pump_paused()
 
         assert braked is False
+
+    def test_the_silence_is_scoped_to_the_resolvers_not_the_whole_process(self) -> None:
+        # CONTROL for the silencing above: `resolve_standing_directives` is a public
+        # export reachable from the worker's thread pool, so a process-global
+        # `logging.disable` would swallow a concurrent thread's unrelated records.
+        bystander = logging.getLogger("teatree.tests.bystander")
+        outage = OperationalError(_DEGRADED_STORE)
+
+        def _degrade(*_args: object, **_kwargs: object) -> None:
+            bystander.warning("another thread's own log, emitted mid-read")
+            raise outage
+
+        with (
+            mock.patch("teatree.core.mode_resolution._resolve_active_mode", side_effect=_degrade),
+            self.assertLogs("teatree.tests.bystander", level="WARNING") as captured,
+        ):
+            braked = _self_pump_paused()
+
+        assert braked is False
+        assert captured.output
 
     def test_a_raising_mode_resolver_fails_open_to_delivering(self) -> None:
         # Polarity: never suppress a rule because the brake could not be read.
