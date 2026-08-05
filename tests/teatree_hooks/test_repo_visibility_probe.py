@@ -96,6 +96,39 @@ class TestNegativeVisibilityCaching:
         assert _repo_visibility._read_visibility_cache("github.com/octo/secret") == "PRIVATE"
 
 
+class TestNonPublicVerdictExpiresSooner:
+    """Only private→public staleness can leak, so a NON-PUBLIC verdict expires far sooner.
+
+    A cached ``PRIVATE`` makes every leak gate SKIP the scan for that slug. Once the
+    operator flips the repo public, that skip is an unscanned public egress — so the
+    verdict that authorises the skip must go stale in minutes, while a ``PUBLIC``
+    verdict (whose staleness only ever over-scans) keeps the day-long cache.
+    """
+
+    def test_private_verdict_expires_before_the_public_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
+        _repo_visibility.slug_visibility("github.com/octo/secret")
+        future = time.time() + _repo_visibility._NON_PUBLIC_TTL_S + 1
+        monkeypatch.setattr(_repo_visibility.time, "time", lambda: future)
+        assert _repo_visibility._read_visibility_cache("github.com/octo/secret") is None
+
+    def test_public_verdict_is_still_fresh_at_that_age(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        _repo_visibility.slug_visibility("github.com/octo/open")
+        future = time.time() + _repo_visibility._NON_PUBLIC_TTL_S + 1
+        monkeypatch.setattr(_repo_visibility.time, "time", lambda: future)
+        assert _repo_visibility._read_visibility_cache("github.com/octo/open") == "PUBLIC"
+
+    def test_a_flipped_repo_is_reprobed_within_the_short_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The end-to-end consequence: the next publish after the flip reads PUBLIC, not the cached PRIVATE."""
+        verdicts = iter(["PRIVATE", "PUBLIC"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: next(verdicts))
+        assert _repo_visibility.slug_visibility("github.com/octo/flipped") == "PRIVATE"
+        future = time.time() + _repo_visibility._NON_PUBLIC_TTL_S + 1
+        monkeypatch.setattr(_repo_visibility.time, "time", lambda: future)
+        assert _repo_visibility.slug_visibility("github.com/octo/flipped") == "PUBLIC"
+
+
 class TestGitRemoteResolverTimeoutFailsSafe:
     """The git-remote origin resolver returns ``""`` on a timed-out ``git`` call."""
 

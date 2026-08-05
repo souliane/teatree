@@ -234,7 +234,13 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",
             "properties": {
                 "verdict": {"type": "string", "enum": ["merge_safe", "hold"]},
-                "reviewed_sha": {"type": "string", "description": "Full 40-char hex SHA the review bound to."},
+                "reviewed_sha": {
+                    "type": "string",
+                    "description": (
+                        "Full 40-char hex SHA the review bound to. REQUIRED: an undisclosed head is "
+                        "refused, never read as agreement with the dispatch head (#4168)."
+                    ),
+                },
                 "reviewer_identity": {"type": "string"},
                 "gh_verify_result": {"type": "string", "enum": ["green", "pending", "failed"]},
                 "blast_class": {"type": "string", "enum": ["substrate", "logic", "docs"]},
@@ -252,7 +258,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                     },
                 },
             },
-            "required": ["verdict"],
+            "required": ["verdict", "reviewed_sha"],
         },
         "critic_verdict": {
             "type": "object",

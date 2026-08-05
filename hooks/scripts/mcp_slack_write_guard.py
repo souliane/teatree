@@ -5,8 +5,11 @@ upload) bypasses teatree's Slack egress chokepoint (``src/teatree/backends/slack
 under the on-behalf gate, the voice classifier, the verify-by-re-read contract),
 so a message can land under the user's identity with none of those guarantees.
 This gate closes that bypass at the ``PreToolUse`` boundary: a Slack MCP WRITE is
-denied and redirected to the sanctioned CLI; a Slack MCP READ (history / list /
-search / get) passes through untouched.
+denied and redirected to the sanctioned CLI; a recognised Slack MCP READ (history
+/ list / search / get / info / …) passes through untouched. The classification is
+default-DENY (:func:`is_slack_mcp_write`) — a tool whose shape the READ roster
+does not recognise is a write, so a Slack MCP surface added after this roster
+cannot slip through on a missing verb.
 
 Narrower and complementary to ``handle_block_self_dm_via_mcp`` (which refuses only
 a self-DM write, fail-closed on unreadable config): this gate refuses EVERY Slack
@@ -31,23 +34,33 @@ import sys
 sys.modules.setdefault("mcp_slack_write_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.mcp_slack_write_guard", sys.modules[__name__])
 
-#: Write-verb fragments a Slack MCP write tool's suffix carries. Conservative by
-#: construction — a read tool (``get_channel_history``, ``list_channels``,
-#: ``search_messages``, ``get_users``) carries none of these, so it passes.
-_SLACK_WRITE_VERBS: frozenset[str] = frozenset(
+#: Verbs that make a Slack MCP tool a READ. Everything else — including a tool
+#: whose name this roster has never seen — is treated as a WRITE, so a Slack MCP
+#: surface the roster predates (``slack_create_conversation``,
+#: ``slack_create_canvas``) fails CLOSED instead of passing on a missing write
+#: verb. The inverse (a write-verb roster) also mis-classified the other way: a
+#: pure read whose NOUN carries a write verb (``slack_get_reactions``) was denied
+#: with no CLI equivalent to redirect it to.
+_SLACK_READ_VERBS: frozenset[str] = frozenset(
     {
-        "send",
-        "post",
-        "reply",
-        "reaction",
-        "react",
-        "update",
-        "delete",
-        "upload",
-        "schedule",
-        "write",
+        "fetch",
+        "get",
+        "history",
+        "info",
+        "list",
+        "members",
+        "permalink",
+        "profile",
+        "read",
+        "replies",
+        "search",
+        "view",
     }
 )
+
+#: A tool suffix's words, split on both ``_`` and camelCase (``conversations_list``
+#: and ``conversationsHistory`` are the two spellings live Slack MCP servers use).
+_NAME_WORD_RE = re.compile(r"[a-z]+|[A-Z][a-z]*")
 
 #: Per-call never-lockout escape: ``[slack-mcp-ok: <reason>]`` in any string field
 #: of the tool input allows that single call (a vetted one-off). Empty reason rejects.
@@ -59,8 +72,11 @@ _DENY_REASON = (
     "`t3` CLI instead: DM the user with `t3 teatree notify send -` (bot token); post to "
     "a colleague channel with `t3 <overlay> notify post --channel <id> --text <body>` "
     "(on-behalf gated); react with `t3 slack react`; comment on an MR/PR with "
-    "`t3 <overlay> review post-comment`. Slack MCP READS (history/list/search/get) are "
-    "unaffected. One-off escape: put `[slack-mcp-ok: <reason>]` in the message text."
+    "`t3 <overlay> review post-comment`. Recognised Slack MCP READS "
+    "(get/list/search/history/info/read/view/fetch/replies/members) are unaffected; a "
+    "Slack MCP tool this gate does not recognise is treated as a WRITE, so a genuine "
+    "read it has not seen lands here too. One-off escape: put `[slack-mcp-ok: <reason>]` "
+    "in the message text."
 )
 
 
@@ -70,11 +86,19 @@ def is_slack_mcp_tool(tool_name: str) -> bool:
 
 
 def is_slack_mcp_write(tool_name: str) -> bool:
-    """Whether *tool_name* is a Slack MCP WRITE (a write verb in its suffix)."""
+    """Whether *tool_name* is a Slack MCP WRITE — i.e. anything not a recognised READ.
+
+    Default-DENY: only a suffix carrying a :data:`_SLACK_READ_VERBS` word is a
+    read. A Slack MCP tool this roster has never seen is a write, because the
+    cost of the two errors is not symmetric — an unrecognised read is one denied
+    call the operator escapes with ``[slack-mcp-ok: …]``, an unrecognised write
+    is a post under the user's identity outside the egress chokepoint.
+    """
     if not is_slack_mcp_tool(tool_name):
         return False
-    suffix = tool_name.rsplit("__", 1)[-1].lower()
-    return any(verb in suffix for verb in _SLACK_WRITE_VERBS)
+    suffix = tool_name.rsplit("__", 1)[-1]
+    words = {word.lower() for word in _NAME_WORD_RE.findall(suffix)}
+    return not (words & _SLACK_READ_VERBS)
 
 
 def _has_escape_token(tool_input: dict) -> bool:
@@ -95,8 +119,8 @@ def _gate_enabled() -> bool:
 def handle_block_mcp_slack_write(data: dict) -> bool:
     """Deny a direct MCP Slack WRITE, redirecting to the sanctioned ``t3`` CLI.
 
-    Fires on any ``mcp__*slack*`` tool whose suffix carries a write verb; a Slack
-    READ tool passes through. Never-lockout: the ``[teatree]
+    Fires on any ``mcp__*slack*`` tool that is not a recognised READ; a Slack READ
+    tool passes through. Never-lockout: the ``[teatree]
     mcp_slack_write_gate_enabled = false`` kill-switch disables it, a
     ``[slack-mcp-ok: <reason>]`` token in the tool input allows a single call, and
     the deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
