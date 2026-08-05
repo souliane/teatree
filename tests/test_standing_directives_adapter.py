@@ -86,13 +86,22 @@ _TWO_SESSIONS = ("sess-1", "sess-2")
 _ALTERNATING_ROUNDS = 5
 
 # The retention window scaled from two days down to seconds, so a session can be
-# driven ACROSS it under a single real clock. Faking the clock is not available:
-# the sweep compares its own ``now`` against real filesystem mtimes, so a fake
-# ``now`` measures nothing. The prompt interval keeps ~7x headroom against the
-# window, so only a multi-second scheduling stall could age a refreshed marker out.
+# driven ACROSS it inside one test. Time is advanced by backdating the state files
+# rather than by sleeping: the sweep reads only ``now - mtime``, which moves
+# identically either way, and a wall-clock walk needs just one multi-second
+# scheduling stall on a loaded shard to age a just-refreshed marker out and red the
+# run — a flake that would say nothing about the behaviour under test.
 _PROBE_WINDOW_SECONDS = 2.0
 _PROBE_PROMPT_INTERVAL = 0.3
 _PROBE_PROMPTS = 14
+
+
+def _advance(state_dir: Path, seconds: float) -> None:
+    """Backdate every state file by *seconds* — the sweep's-eye view of that much elapsing."""
+    for entry in state_dir.iterdir():
+        if entry.is_file():
+            aged = entry.stat().st_mtime - seconds
+            os.utime(entry, (aged, aged))
 
 
 def _age_out(marker: Path) -> None:
@@ -430,15 +439,14 @@ class TestASessionOutlivingTheRetentionWindow:
         # It fails with the live marker if no sweep ran, and alone if one did.
         frozen = state_dir / "sess-frozen.directives-registered"
         frozen.write_text("{}", encoding="utf-8")
-        started = time.time()
 
         registered = []
         for _ in range(_PROBE_PROMPTS):
             router._ensure_state_dir()  # the sweep every other hook's state write fires
             registered.append(len(_loop_lines(_emit())))
-            time.sleep(_PROBE_PROMPT_INTERVAL)
+            _advance(state_dir, _PROBE_PROMPT_INTERVAL)
 
-        assert time.time() - started > 2 * _PROBE_WINDOW_SECONDS
+        assert _PROBE_PROMPTS * _PROBE_PROMPT_INTERVAL > 2 * _PROBE_WINDOW_SECONDS
         assert not frozen.exists()
         assert (state_dir / "sess-1.directives-registered").is_file()
         assert registered == [2, *([0] * (_PROBE_PROMPTS - 1))]
