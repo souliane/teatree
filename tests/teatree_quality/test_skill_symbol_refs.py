@@ -118,6 +118,15 @@ class TestGoldenCorpus:
         findings = scan_source(fixture.read_text(encoding="utf-8"), fixture, _REPO_ROOT)
         assert _unresolved(findings), f"{fixture.name} must be flagged but was not"
 
+    def test_a_resolving_reference_does_not_vouch_for_a_broken_one_beside_it(self) -> None:
+        fixture = _FIXTURES / "must_flag" / "bare_module_local.md.txt"
+        findings = scan_source(fixture.read_text(encoding="utf-8"), fixture, _REPO_ROOT)
+        assert len({finding.lineno for finding in findings}) == 1
+        assert {finding.ref: finding.reason is None for finding in findings} == {
+            "src/teatree/core/modelkit/phase_tools.py": True,
+            "phase_tools.PHASE_TOOLS": False,
+        }
+
     @pytest.mark.parametrize("fixture", _MUST_NOT_FLAG, ids=lambda p: p.name)
     def test_must_not_flag(self, fixture: Path) -> None:
         findings = scan_source(fixture.read_text(encoding="utf-8"), fixture, _REPO_ROOT)
