@@ -367,6 +367,7 @@ class TeatreeSettingsSchema(BaseSettings):
     task_sweep_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     task_sweep_recheck_interval_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     target_branch: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    test_worker_ram_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_budget_max_cost_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_transition_prune_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     timezone: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
@@ -413,12 +414,12 @@ class TeatreeSettingsSchema(BaseSettings):
     low_power_preset_name: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_COLD]
     overlay_leak_terms: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_COLD] = []
     private_repos: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_COLD] = []
-    private_tests: Annotated[str, BeforeValidator(_parse_strict_str), _SECRET_COLD] = ""
     slack_user_channel: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     slack_user_id: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     timeouts: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
 
     # --- COLD_HOOK_SETTINGS (pre-Django hook gate flags) ---
+    answer_first_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     banned_terms_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     banned_terms_required: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     completion_claim_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
@@ -446,6 +447,7 @@ class TeatreeSettingsSchema(BaseSettings):
     skill_loading_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     standing_goal_stop_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     stop_snapshotter_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
+    unbacked_claim_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
     unknown_repo_push_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_COLD_HOOK]
 
     # --- REGISTRY_SETTINGS (overlays + e2e_repos definition registries) ---

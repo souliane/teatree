@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dash:board", "Board"),
     ("dash:live", "Live"),
+    ("dash:cycle_time", "Cycle time"),
     ("dash:health", "Health"),
     ("dash:loops", "Loops"),
     ("dash:sessions", "Sessions"),

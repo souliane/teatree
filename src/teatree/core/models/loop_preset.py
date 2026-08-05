@@ -27,12 +27,6 @@ from teatree.core.models.config_setting import ConfigSetting
 
 logger = logging.getLogger(__name__)
 
-# The legacy availability-pin token set — the values the ``availability_mode`` seed
-# field may carry during the #61 merge (mapped to the intrinsic booleans by the
-# migration/seeder). Referenced by the model's ``availability_pin`` property and the
-# ``loop_preset`` command's pin validator — the single source both consult.
-PIN_MODES = frozenset({"present", "away", "autonomous_away"})
-
 # Low-power auto-engage (#3159 build item 6): default-OFF flag + re-pointable target.
 LOW_POWER_AUTO_ENGAGE_SETTING = "low_power_auto_engage"
 LOW_POWER_PRESET_SETTING = "low_power_preset_name"
@@ -58,35 +52,24 @@ class ModeManager(models.Manager["Mode"]):
 class Mode(models.Model):
     """One named operating **mode** (#61 merge).
 
-    A tri-state per-loop opinion, an overlay scope, AND the intrinsic availability
-    posture that used to live in the standalone availability module
-    string modes.
-
-    The three booleans ARE the availability payload — a mode's reachability is
-    fully expressed by them (the merge's key finding: availability adds no state a
-    preset can't carry, only two booleans plus a presence rule):
+    A tri-state per-loop opinion, an overlay scope, AND the intrinsic reachability
+    posture, which the three booleans fully express:
 
     *   ``defers_questions`` — the user is unreachable NOW: ``AskUserQuestion``
         defers to the durable backlog, local TTS is silenced, colleague-facing
         loops are gated off, and returning to a non-deferring mode drains the
-        backlog. Maps to the old ``away`` + ``autonomous_away`` modes.
+        backlog.
     *   ``pauses_self_pump`` — stop self-driving too (holiday): the loop tick parks.
-        Maps to the old ``away`` mode only. Requires ``defers_questions`` (the
-        nonsensical "pump paused but questions answered" 4th point is unrepresentable).
+        Requires ``defers_questions`` (the nonsensical "pump paused but questions
+        answered" 4th point is unrepresentable).
     *   ``presence_sensitive`` — a fresh keystroke upgrades an away-class mode
         reached *by schedule/default* to the configured ``presence_upgrade_mode``.
-        Defaults ``True`` so any scheduled away honours a live keystroke, exactly as
-        the old presence rule did.
-
-    The legacy ``availability_mode`` string is retained during the merge only to
-    seed/back-fill the booleans and to keep the deprecation aliases working; it is
-    scheduled for deletion once every consumer reads the booleans.
+        Defaults ``True`` so any scheduled away honours a live keystroke.
     """
 
     name = models.SlugField(max_length=64, unique=True)
     description = models.TextField(blank=True, default="")
     entries = models.JSONField(default=dict)
-    availability_mode = models.CharField(max_length=32, blank=True, default="")
     defers_questions = models.BooleanField(default=False)
     pauses_self_pump = models.BooleanField(default=False)
     presence_sensitive = models.BooleanField(default=True)
@@ -129,12 +112,6 @@ class Mode(models.Model):
     @property
     def entry_count(self) -> int:
         return len(self.entries) if isinstance(self.entries, dict) else 0
-
-    @property
-    def availability_pin(self) -> str | None:
-        """The availability mode this preset pins when active, or ``None`` for no pin."""
-        mode = self.availability_mode.strip()
-        return mode if mode in PIN_MODES else None
 
     @property
     def overlay_scope_names(self) -> list[str]:

@@ -170,20 +170,99 @@ class TestNoHostProcessHoldsTheDatabaseWritable:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", _sound_db(tmp_path / "db.sqlite3"))
+        monkeypatch.setattr(checks_db_integrity, "DATA_DIR", tmp_path / "data")
 
         assert _check_no_host_process_holds_the_db_writable() is True
-        assert "no host process holds" in capsys.readouterr().out
+        assert "no process holds" in capsys.readouterr().out
 
     def test_a_live_read_write_descriptor_fails_and_names_the_holder(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = _sound_db(tmp_path / "db.sqlite3")
         monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", db)
+        monkeypatch.setattr(checks_db_integrity, "DATA_DIR", tmp_path / "data")
 
         with db.open("r+b"):
             assert _check_no_host_process_holds_the_db_writable() is False
 
         assert "hold" in capsys.readouterr().out
+
+
+class TestNoProcessHoldsAHostCopyOfTheControlDatabase:
+    """The half the canonical-only probe could not reach.
+
+    The canonical database lives in a volume with no host path, so on the host it
+    never exists and the check early-returned OK — inert exactly where the damage
+    happens. What host processes actually hold descriptors on are the copies left
+    under the bind-mounted data dir, and a rename does not close a descriptor, so
+    the file a writer holds may no longer be named ``db.sqlite3`` at all.
+    """
+
+    @staticmethod
+    def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """A data dir with no canonical database — the real host's shape."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setattr(checks_db_integrity, "DATA_DIR", data_dir)
+        monkeypatch.setattr(checks_db_integrity, "TRUE_CANONICAL_DB", tmp_path / "control-db" / "db.sqlite3")
+        return data_dir
+
+    def test_a_held_data_dir_database_fails_even_with_no_canonical_database(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = self._isolate(tmp_path, monkeypatch)
+        legacy = _sound_db(data_dir / "db.sqlite3")
+        assert not (tmp_path / "control-db" / "db.sqlite3").exists(), "control: the volume is unreachable from here"
+
+        with legacy.open("r+b"):
+            assert _check_no_host_process_holds_the_db_writable() is False
+
+        assert str(legacy) in capsys.readouterr().out
+
+    def test_a_held_renamed_database_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The measured shape: `t3 admin` kept fd 4u on `db.sqlite3.precorrupt-inode-…`
+        # for five days. Renaming the file retired the NAME, never the descriptor.
+        data_dir = self._isolate(tmp_path, monkeypatch)
+        renamed = _sound_db(data_dir / "db.sqlite3.precorrupt-inode-20260727")
+
+        with renamed.open("r+b"):
+            assert _check_no_host_process_holds_the_db_writable() is False
+
+        assert str(renamed) in capsys.readouterr().out
+
+    def test_a_held_write_ahead_log_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = self._isolate(tmp_path, monkeypatch)
+        wal = data_dir / "db.sqlite3-wal"
+        wal.write_bytes(b"\x00" * 64)
+
+        with wal.open("r+b"):
+            assert _check_no_host_process_holds_the_db_writable() is False
+
+        assert str(wal) in capsys.readouterr().out
+
+    def test_a_read_only_descriptor_is_not_a_writer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = self._isolate(tmp_path, monkeypatch)
+        legacy = _sound_db(data_dir / "db.sqlite3")
+
+        with legacy.open("rb"):
+            assert _check_no_host_process_holds_the_db_writable() is True
+
+        assert "no process holds" in capsys.readouterr().out
+
+    def test_an_unheld_data_dir_database_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data_dir = self._isolate(tmp_path, monkeypatch)
+        _sound_db(data_dir / "db.sqlite3")
+
+        assert _check_no_host_process_holds_the_db_writable() is True
+        assert "no process holds" in capsys.readouterr().out
 
 
 class TestTheHostProjectionIsCurrent:

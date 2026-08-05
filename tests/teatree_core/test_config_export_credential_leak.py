@@ -17,11 +17,14 @@ from django.test import TestCase
 
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.secret_settings import is_credential_reference
-from teatree.core.config_migration import RedactedRow, export_db_to_toml
+from teatree.core.config_interchange.migration import export_db_to_toml
+from teatree.core.config_interchange.secret_guard import redaction_reason
 from teatree.core.models import ConfigSetting
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from teatree.core.config_interchange.secret_guard import RedactedRow
 
 
 def _teatree(toml: str) -> dict[str, object]:
@@ -32,6 +35,22 @@ def _teatree(toml: str) -> dict[str, object]:
     pass while the key is right there one level down.
     """
     return flatten_settings_table(tomllib.loads(toml).get("teatree", {}))
+
+
+class TestOneWithholdRuleServesBothDirections(TestCase):
+    """The rule the export applies on the way OUT is the one the import applies coming IN.
+
+    Two implementations of "must this row never be shared" would let a dump round-trip the
+    very data the guard exists to keep out, so both directions ask this one function.
+    """
+
+    def test_each_withhold_class_names_itself(self) -> None:
+        assert redaction_reason("anthropic_oauth_pass_paths", ["synthetic/entry"], ()) == "credential-coordinate"
+        assert redaction_reason("slack_user_id", "synthetic-user-ref", ()) == "personal-identifier"
+        assert redaction_reason("mode", "auto", ()) is None
+
+    def test_a_value_carrying_a_scanned_term_is_withheld_whatever_the_key(self) -> None:
+        assert redaction_reason("mode", "acme-internal", ("acme-internal",)) == "banned-term:acme-internal"
 
 
 class TestExportWithholdsCredentialsAndPersonalIds(TestCase):

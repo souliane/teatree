@@ -92,7 +92,19 @@ class _WorkspaceCoreSettings:
 #: (:func:`teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
 #: raised deliberately rather than failing silently. pydantic_ai's Anthropic binding otherwise
 #: defaults to 4096, which truncates a long result envelope mid-JSON.
-PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 16384
+#:
+#: The value is bounded ABOVE by the smallest per-model output limit in
+#: :data:`teatree.agents.model_tiering.TIER_MODELS`, NOT by the frontier model's: this is ONE
+#: global ceiling merged into every request (:func:`teatree.agents.pydantic_ai_config.build_model_settings`)
+#: whatever tier the dispatched phase resolved to, and the Anthropic Messages API rejects a
+#: ``max_tokens`` above the addressed model's own limit with a 400 rather than clamping. The
+#: ``cheap`` tier (Haiku 4.5) caps at 64K output while ``frontier``/``balanced`` (Opus 5 /
+#: Sonnet 5) allow 128K, so 64K is the largest ceiling every tier accepts. Raising past it
+#: requires making the ceiling per-tier first. Safe at this size because the lane STREAMS its
+#: provider request (``event_stream_handler`` in
+#: :meth:`teatree.agents.pydantic_ai_session.PydanticAiHarnessSession.receive_response`), so a
+#: long generation cannot trip the non-streaming request timeout.
+PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 64000
 
 
 @dataclass
@@ -178,11 +190,14 @@ class _ModeHarnessSettings:
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
     # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
     # truncates a long result envelope mid-JSON and destroys it. The default is the owner-chosen
-    # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (16384) — deliberately generous because a ceiling
+    # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (64000) — deliberately generous because a ceiling
     # only bills for tokens actually generated. Should a run STILL hit it, the truncation is
     # recorded FAILED AND escalated to the owner
     # (``teatree.agents.headless_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
-    # deliberately rather than failing silently. Keep it ≤ the model's own output limit. Applies
+    # deliberately rather than failing silently. Keep it ≤ the SMALLEST output limit among the
+    # models a dispatch can resolve to (this one value is merged into every request whatever
+    # tier ran, and the Anthropic API 400s on a ``max_tokens`` above the addressed model's own
+    # limit rather than clamping) — see :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT`. Applies
     # ONLY to the ``pydantic_ai`` harness, so it is inert until an overlay opts into
     # ``agent_harness=pydantic_ai``. ``0`` leaves the binding's own default. Per-overlay overridable.
     pydantic_ai_max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
@@ -1058,6 +1073,14 @@ class _ProvisioningSettings:
     # every class. ``0`` disables the exemption entirely (cheap is braked exactly like
     # expensive): the rollback lever. Per-overlay overridable.
     cheap_phase_admission_ceiling: int = 2
+    # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
+    # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
+    # 2026-07-21..08-04: p50 0.65 GB, p90 1.24 GB, max 23.1 GB. The p90 is the sizing
+    # point — the max is one pathological run, not a budget, and sizing at the p50 is
+    # what put 16 workers x 1.24 GB = 19.8 GB against 19.7 GB usable. A non-positive
+    # value drops the memory term, leaving the cores-derived bound: the rollback lever,
+    # and the same bounded fail-safe an unreadable probe takes. Per-overlay overridable.
+    test_worker_ram_gb: float = 1.25
     # Repos that are ONE branch wide while listed — ``<repo-slug>=<branch>`` entries.
     # While a repo is listed, provisioning a worktree on any OTHER branch is
     # refused, as are the raw ``git worktree add`` / ``checkout -b`` / ``switch

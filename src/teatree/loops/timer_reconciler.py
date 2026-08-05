@@ -1,10 +1,10 @@
 """Deterministic, zero-token reconciler for the loop-timer chains (#1796).
 
 :func:`ensure_loop_timers` is the structural repair arm that keeps the "exactly
-one pending ``loop_timer`` per enabled loop" invariant true against every way it
+one pending ``loop_timer`` per verdict-admitted loop" invariant true against every way it
 can drift: it adds a missing chain head, prunes a surplus timer, repairs a chain
 stuck RUNNING past its deadline (a worker that died mid-tick), and deletes the
-queued timers of a disabled or unknown loop. It dispatches no work and calls no
+queued timers of an un-admitted or unknown loop. It dispatches no work and calls no
 model — pure DB reconciliation — and it is idempotent, so re-running it on a
 healthy set is a no-op.
 
@@ -43,6 +43,7 @@ import os
 from django.tasks import task
 from django.utils import timezone
 
+from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
 from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
 logger = logging.getLogger(__name__)
@@ -72,30 +73,20 @@ HEADLESS_LEASE_SECONDS = 300
 SLACK_ANSWER_LEASE = "loop-slack-answer"
 
 
-def timer_chain_loop_names() -> set[str]:
-    """The loops that should carry a timer chain: enabled, registered, and live-tick.
-
-    Enabled ``Loop`` rows (the row-level ``enabled`` column) intersected with the
-    registered mini-loops that are NOT ``off_live_tick`` — the heavy off-tick loops
-    (``dream``, ``directive_loop``, ``outer_loop``) are driven by
-    :mod:`teatree.loops.off_live_tick_driver` firing their own tick command, never a
-    worker timer, so they never get a chain that would only ever no-op.
-    """
-    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    registered = {loop.name for loop in iter_loops() if not loop.off_live_tick}
-    enabled = set(Loop.objects.enabled().values_list("name", flat=True))
-    return registered & enabled
-
-
 def ensure_loop_timers() -> dict[str, int]:
-    """Reconcile the loop-timer chains to the enabled-loop set; return the repair counts.
+    """Reconcile the loop-timer chains to the ADMITTED loop set; return the repair counts.
 
-    Deterministic and idempotent. Adds a head for an enabled loop with no live
+    Deterministic and idempotent. Adds a head for an admitted loop with no live
     timer, prunes surplus queued timers (keeping the earliest), deletes a stranded
-    RUNNING timer and re-heads its loop, and deletes the queued timers of a
-    disabled/unknown loop. Dispatches nothing.
+    RUNNING timer and re-heads its loop, and deletes the queued timers of an
+    un-admitted/unknown loop. Dispatches nothing.
+
+    The admitted set is :func:`timer_chain_loop_names`, so a preset-forced-ON loop is
+    headed and a preset-masked-off or ``LoopState``-held one loses its chain rather than
+    idle-polling at the cadence floor. Both directions are restored at their own
+    chokepoints — the ``loop_state`` command and the dash loop control call this on
+    resume, :func:`teatree.loops.preset_transitions.apply_preset_transition` calls it on a
+    mode switch, and the 5-minute reconcile chain is the backstop.
     """
     from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
@@ -103,7 +94,6 @@ def ensure_loop_timers() -> dict[str, int]:
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loops.schedule_liveness import (  # noqa: PLC0415 — deferred: breaks the liveness/reconciler import cycle
         is_stranded,
-        loop_timers_by_name,
     )
 
     now = timezone.now()
@@ -132,7 +122,7 @@ def ensure_loop_timers() -> dict[str, int]:
             enqueue_loop_timer(name, run_after=compute_successor_run_after(loop_row, now))
             counts["added"] += 1
 
-    # Disabled / unknown loops: prune their QUEUED fires (a RUNNING one dies on its
+    # Un-admitted / unknown loops: prune their QUEUED fires (a RUNNING one dies on its
     # own next fire — admission fails or the row is gone — and is cleaned up then).
     for name, rows in ready_by_name.items():
         if name in chain_names:

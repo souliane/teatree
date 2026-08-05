@@ -42,9 +42,10 @@ from typer.testing import CliRunner
 from teatree.cli.doctor.checks_loop import _check_loop_schedule_liveness
 from teatree.core.models import ConfigSetting, Loop
 from teatree.loops import timer_chains
+from teatree.loops.chain_membership import timer_chain_loop_names
 from teatree.loops.registry import iter_loops
 from teatree.loops.schedule_liveness import unscheduled_loops
-from teatree.loops.timer_reconciler import ensure_loop_timers, timer_chain_loop_names
+from teatree.loops.timer_reconciler import ensure_loop_timers
 
 #: The production DB backend, so an ``enqueue`` lands a real queryable timer row.
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}

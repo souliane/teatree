@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.core.management.commands._test_plan.state import TestPlanState
+    from teatree.core.management.commands._test_plan.state import PlanState
 
 
 def render_browser_click_first(
-    state: "TestPlanState",
+    state: "PlanState",
     *,
-    workflow_names: "Callable[[TestPlanState], list[str]]",
+    workflow_names: "Callable[[PlanState], list[str]]",
 ) -> list[str]:
     """``browser-click-first`` template: numbered steps then inline screenshots."""
     lines: list[str] = []
@@ -39,10 +39,10 @@ def render_browser_click_first(
 
 
 def render_link_api(
-    state: "TestPlanState",
+    state: "PlanState",
     *,
-    workflow_names: "Callable[[TestPlanState], list[str]]",
-    test_plan_block: "Callable[[TestPlanState, str], list[str]]",
+    workflow_names: "Callable[[PlanState], list[str]]",
+    test_plan_block: "Callable[[PlanState, str], list[str]]",
 ) -> list[str]:
     """``link-api`` template: How-to-test steps then link_md + code_md per workflow, no table, no images."""
     lines: list[str] = []

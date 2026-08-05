@@ -161,7 +161,7 @@ def render_scenario_plan(state: Mapping[str, object]) -> list[str]:
 
     Reads its own keys off the persisted state mapping (``scenarios``,
     ``scenario_intro``, ``environment``) so the render layer dispatches with a
-    single argument and this module needs no back-reference to ``TestPlanState``.
+    single argument and this module needs no back-reference to ``PlanState``.
     """
     lines: list[str] = []
     intro = str(state.get("scenario_intro") or "")

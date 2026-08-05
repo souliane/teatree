@@ -12,14 +12,8 @@ tool-call input, or a judge rationale. The transcript stays in the PRIVATE
 
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher, TokenUsage
 from teatree.eval.pass_at_k import PassAtKResult
-from teatree.eval.report import (
-    JudgeOutcome,
-    MatcherResult,
-    ScenarioResult,
-    _lane_of,
-    _model_of,
-    render_summary_markdown,
-)
+from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
+from teatree.eval.summary_markdown import _lane_of, _model_of, render_summary_markdown
 
 SENTINEL = "SECRET_BUNDLE_SENTINEL_dQw4w9"
 _SENTINEL_MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value=SENTINEL)
@@ -123,7 +117,7 @@ class TestMultiTrialSummary:
 
     def test_pass_fraction_rendered_and_sentinel_absent(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "teatree.eval.report.find_spec",
+            "teatree.eval.summary_markdown.find_spec",
             lambda name: _spec(name, lane="under_load"),
         )
         result = self._pass_at_k("gamma", passes=2, trials=3, lane="under_load")
@@ -135,7 +129,7 @@ class TestMultiTrialSummary:
 
     def test_lane_looked_up_from_spec_when_absent_on_result(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "teatree.eval.report.find_spec",
+            "teatree.eval.summary_markdown.find_spec",
             lambda name: _spec(name, lane="clean_room"),
         )
         result = self._pass_at_k("delta", passes=3, trials=3, lane="clean_room")
@@ -145,7 +139,7 @@ class TestMultiTrialSummary:
 
     def test_failing_multi_trial_shows_fail_verdict(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "teatree.eval.report.find_spec",
+            "teatree.eval.summary_markdown.find_spec",
             lambda name: _spec(name, lane="clean_room"),
         )
         result = self._pass_at_k("eps", passes=0, trials=3, lane="clean_room")
@@ -156,7 +150,7 @@ class TestMultiTrialSummary:
     def test_lane_falls_back_to_unknown_when_spec_not_found(self, monkeypatch) -> None:
         # A pass@k row whose name has no catalog spec renders ``unknown`` for the
         # lane rather than crashing — the publish-safe degraded path.
-        monkeypatch.setattr("teatree.eval.report.find_spec", lambda _name: None)
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", lambda _name: None)
         result = self._pass_at_k("orphan", passes=1, trials=1, lane="clean_room")
         md = render_summary_markdown([result])
         assert "unknown" in md
@@ -170,7 +164,7 @@ class TestModelHeaderFallback:
         assert "0 passed" in md
 
     def test_pass_at_k_with_no_spec_renders_unknown_model(self, monkeypatch) -> None:
-        monkeypatch.setattr("teatree.eval.report.find_spec", lambda _name: None)
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", lambda _name: None)
         result = PassAtKResult(
             spec_name="orphan",
             trials=1,
@@ -192,5 +186,5 @@ class TestLaneOf:
         assert _lane_of("any-name", "under_load") == "under_load"
 
     def test_unknown_when_lane_absent_and_spec_missing(self, monkeypatch) -> None:
-        monkeypatch.setattr("teatree.eval.report.find_spec", lambda _name: None)
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", lambda _name: None)
         assert _lane_of("ghost", None) == "unknown"

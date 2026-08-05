@@ -9,7 +9,7 @@ from inline_snapshot import snapshot
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
-from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
+from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, fake_config
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
@@ -47,7 +47,7 @@ class TestPerOverlayBotRouting:
         # password store are the only true externals and stay real. See the
         # conftest module docstring; do not "fix" this back to real-TOML.
         with (
-            patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
+            patch("teatree.config.load_config", return_value=fake_config({"overlays": cfg_overlays})),
             patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookup.get(k, "")),
             patch.object(backend_factory, "get_overlay", side_effect=ImproperlyConfigured),
         ):
@@ -111,7 +111,7 @@ class TestPerOverlayBotRouting:
             patch.object(backend_factory, "get_backend_provider", return_value=provider),
             patch.object(provider, "get_code_hosts", return_value=[]),
             patch.object(provider, "get_messaging", return_value=None),
-            patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
+            patch("teatree.config.load_config", return_value=fake_config({"overlays": cfg_overlays})),
             patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookup.get(k, "")),
         ):
             result = iter_overlay_backends()

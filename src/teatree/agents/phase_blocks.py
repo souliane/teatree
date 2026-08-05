@@ -50,8 +50,12 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
     ENVELOPE_FINDINGS_RULE,
     "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
-    "`reviewed_sha` MUST be the full 40-char SHA of the head you reviewed (`git rev-parse HEAD`):",
-    "the merge gate compares it against the forge's live head, so a short or stale SHA vouches for nothing.",
+    "`reviewed_sha` MUST be the full 40-char SHA of the head you were DISPATCHED for (`git rev-parse HEAD`):",
+    "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
+    "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
+    "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
+    "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
+    "dispatched one, so a verdict that names no head records nothing at all.",
     "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
 )
 

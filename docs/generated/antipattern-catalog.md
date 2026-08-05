@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**20 entries** — 4 greppable, 16 judgement.
+**24 entries** — 4 greppable, 20 judgement.
 
 ## Index
 
@@ -26,6 +26,8 @@ holistic (`ac-reviewing-codebase`).
 - [Same fact in two co-equal stores with no authority](#multi-store-no-arbiter) — high, judgement
 - [Canonicalization that is not idempotent](#non-idempotent-canonicalization) — high, judgement
 - [Deny handler keyed on a tool no matcher delivers](#phantom-gate) — high, greppable
+- [Test mocks the behaviour it is supposed to exercise](#test-mocks-the-unit-under-test) — high, judgement
+- [File placed outside the package whose concern it shares](#file-outside-its-package) — medium, judgement
 - [Identity matching that depends on the filesystem](#fs-dependent-identity-matching) — medium, judgement
 - [Module past the health threshold](#god-module) — medium, judgement
 - [Business logic in a view or management command](#logic-in-view-or-command) — medium, judgement
@@ -33,6 +35,8 @@ holistic (`ac-reviewing-codebase`).
 - [Signal carrying core domain flow](#signal-for-core-flow) — medium, greppable
 - [Fallback chain that hides the primary failure](#silent-fallback-chain) — medium, judgement
 - [List/fetch reads only the first page](#silent-truncation-pagination) — medium, judgement
+- [Multi-line comment block narrating what the code already says](#comment-block-narrates-code) — low, judgement
+- [Documentation prose that restates the code instead of capturing architecture](#doc-prose-restates-code) — low, judgement
 
 ## Strip a qualifier to force an identity match
 
@@ -172,6 +176,21 @@ holistic (`ac-reviewing-codebase`).
 
 **Preferred.** Baselines are captured deliberately and reviewed; the test asserts against a committed baseline and never rewrites it during a normal run.
 
+## Test mocks the behaviour it is supposed to exercise
+
+<a id="test-mocks-the-unit-under-test"></a>
+
+- **id:** `test-mocks-the-unit-under-test`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** anti-vacuous-eval, test-writing-doctrine
+
+**Anti-pattern.** A test whose subject is replaced by a Mock/patch, asserting on call_args or a MagicMock's return value rather than on real behaviour. It passes against code that never ran, so it survives any regression in the thing it names. Mocking first-party code, Django models, the filesystem under tmp_path, or git itself is this shape. (Distinguishing a legitimate external-boundary mock from one that swallowed the unit under test needs judgement, not a regex.)
+
+**Preferred.** Exercise the real path — Django test client, call_command, a real git repo under tmp_path, an E2E — and mock only unstoppable externals: network, clock, credential stores, third-party subprocesses.
+
 ## Business logic in a view or management command
 
 <a id="logic-in-view-or-command"></a>
@@ -252,6 +271,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A single module accumulating unrelated responsibilities until it exceeds the LOC / module-function / typed-data health thresholds and becomes the place every change has to touch.
 
 **Preferred.** Split by responsibility into cohesive units; prefer methods on classes over module-level functions and typed dataclasses over dict[str, object]. The LOC/function thresholds are mechanized by check_module_health over the diff.
+
+## File placed outside the package whose concern it shares
+
+<a id="file-outside-its-package"></a>
+
+- **id:** `file-outside-its-package`
+- **severity:** medium
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** ac-reviewing-codebase, architecture-design
+- **refs:** file-hierarchy-check, module-health-hook
+
+**Anti-pattern.** A module sitting beside unrelated neighbours instead of in the package whose concern it shares — a scanner outside the scanners package, a CLI command outside the CLI package, a script or config dropped at the repo root — or a cohesive set of siblings that has grown past the point where it should have become its own subpackage. god-module asks what is INSIDE one file; this asks WHERE the files live. Each placement looked reasonable when it was added, so no single diff reads as wrong and the layout degrades only in aggregate.
+
+**Preferred.** A file lives in the package whose concern it shares, and a cohesive set of siblings serving one concern becomes its own subpackage. Every finding names the concrete target path so the fix needs no re-derivation.
 
 ## Lower-level module importing a higher-level one
 
@@ -342,3 +376,33 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** The same fact persisted in two or more co-equal stores with no declared source of truth, so the copies drift and readers disagree with no way to say which is right.
 
 **Preferred.** Name ONE authoritative store; every other copy is a derived cache that refreshes from the authority and is never written independently.
+
+## Multi-line comment block narrating what the code already says
+
+<a id="comment-block-narrates-code"></a>
+
+- **id:** `comment-block-narrates-code`
+- **severity:** low
+- **detection:** judgement
+- **linter:** `check_comment_density`
+- **consumers:** ac-reviewing-codebase, architecture-design
+- **refs:** comments-as-code
+
+**Anti-pattern.** A comment spanning several lines that restates what the code below it plainly does — a section banner, a step-by-step narration, a docstring echoing the signature. Reviewers skim the wall of prose and stop reading, so the one comment that was genuinely load-bearing is lost among the ones restating the next line.
+
+**Preferred.** One line per comment, carrying only a non-obvious why the code cannot say (a threat model, a protocol quirk, a measured constant). A block longer than one line is a refactor signal — rename or split the code instead of explaining it. Adjacent one-liners are fine when each states a separate point; rationale, tickets and history belong in the commit message.
+
+## Documentation prose that restates the code instead of capturing architecture
+
+<a id="doc-prose-restates-code"></a>
+
+- **id:** `doc-prose-restates-code`
+- **severity:** low
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** ac-reviewing-codebase, architecture-design
+- **refs:** comments-as-code, keep-blueprint-tight
+
+**Anti-pattern.** A doc or BLUEPRINT section that walks through what a function does line by line, or that describes a mechanism the code has since renamed, moved or removed. It is a second copy of the code's behaviour, so it drifts the moment the code moves, and then confidently asserts the old design to the next reader. Tests do not catch it — 100% coverage says nothing about stale prose.
+
+**Preferred.** Architectural docs answer why the system is shaped this way; what a function does is the code's own job. A section describing a mechanism the change touched is updated or deleted in the same change, and depth past architectural overview moves to a linked appendix.

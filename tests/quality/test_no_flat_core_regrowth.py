@@ -189,6 +189,30 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # subpackage would separate it from its siblings to satisfy a counter. Its callers are
 # the PreToolUse/TaskCreated gates in hooks/scripts, which tach forbids the platform-layer
 # teatree.hooks node from reaching, so it cannot live there either.
+# 107: -config_migration.py / -config_seed_tables.py (#4147) — the config-store <-> TOML
+# interchange became the subpackage core/config_interchange/ once the withheld-key data-loss fix
+# needed two more modules beside the hub: secret_guard (what must never be shared) and
+# registry_rows (the merge rule that keeps a redacted export from deleting what it redacted).
+# The hub and the rules its two directions must agree on move together — they are one concern,
+# and letting a shared rule drift from the pair that shares it is how export and import came to
+# disagree at all. Two root leaves collapse to one package entry and the two new modules never
+# land at the root, mirroring retention/.
+# 108: +forge_push_refs.py (#4117) — the branch-ref normalization (BranchRef + local_tip)
+# carved out of forge_push.py, which crossed the 500-LOC module-health ceiling once every ref
+# read and write went through one form. It answers "which string names this branch to git", a
+# different question from the credential/classification/verification seam the hub keeps. It
+# lands at the root beside forge_push.py, mirroring speak_cleaning.py beside speak.py and
+# notify_targets.py beside notify.py; no existing subpackage owns it (merge/ is the keystone
+# transition, not a push seam).
+# 109: +handover_wrapup.py (#4194) — the sub-agent barrier's returns: the stored per-agent
+# union, its merge, its renderer and the one-block upsert onto the row. Carved out of
+# handover.py, which crossed the module-health public-function ceiling once the resolve/write
+# split landed. It answers "what does each agent still owe", a different question from the
+# payload/target resolution and XDG mirror the hub keeps. It lands at the root beside
+# handover.py and handover_orchestration.py, the two flat leaves this concern already occupies
+# by the #75 decision above, mirroring forge_push_refs.py beside forge_push.py and
+# speak_cleaning.py beside speak.py; no existing subpackage owns the hand-off (merge/ is the
+# keystone transition, not the hand-off seam).
 PINNED_FLAT_CORE_MODULES = 109
 
 

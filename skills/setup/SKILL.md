@@ -5,7 +5,6 @@ eval_exempt: first-time bootstrap/validation reference; one-shot installation st
 compatibility: macOS/Linux, git, python3.13+, uv.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Teatree Setup
@@ -83,7 +82,6 @@ Useful optional values:
 | `T3_AUTO_PUSH_FORK` | Auto-push retro commits to the user's fork without prompting (requires `T3_PUSH=true` and origin ≠ `T3_UPSTREAM`) | `false` |
 | `T3_MODE` | Effective publishing mode. `auto` opts the pipeline into pushing without pausing for shipping approval; `interactive` (default) gates at shipping. Equivalent DB-home setting: `t3 <overlay> config_setting set mode auto`. (Supersedes the retired `T3_AUTO_SHIP` env var, #2697.) | `interactive` |
 | `T3_UPSTREAM` | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) | empty |
-| `T3_PRIVATE_TESTS` | Private QA repo path | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
 | `T3_ISSUE_TRACKER` | `gitlab` or `github` | detected |
 | `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-codebase` |
@@ -99,7 +97,6 @@ export T3_ISSUE_TRACKER="gitlab"
 export T3_PUSH=false
 export T3_AUTO_PUSH_FORK=false
 export T3_UPSTREAM=""
-export T3_PRIVATE_TESTS=""
 export T3_BRANCH_PREFIX="ac"
 export T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
 ```
@@ -328,17 +325,26 @@ If the user already has a project-local virtualenv, using that is fine too. The 
 
 ## Companion Skills
 
-Offer companion skills by stack, but install them only if they are missing:
+`ac-reviewing-codebase`, `ac-python` and `ac-django` are REQUIRED, not offers. They are
+declared in `apm.yml` `dependencies.apm`, `t3 setup` provisions them, and `t3 doctor check`
+FAILs on any that is absent with its `apm install <spec>` line. Nothing to decide per stack —
+if one is missing, run the line the FAIL prints:
 
-- All stacks: `ac-reviewing-codebase`
-- Django: `ac-django`, `ac-python`
-- Python only: `ac-python`
+```bash
+apm install souliane/skills/ac-reviewing-codebase#<ref>
+```
+
+None of the three is carried in this repo's `skills/` tree: a local copy would satisfy the
+mandate from the plugin-first install path and hide an unreachable source.
+
+Offer the rest by stack, and install only if missing:
+
 - Ruff migration work: `ac-adopting-ruff`
 
 Prefer consumer installs for skills the user does not maintain:
 
 ```bash
-npx skills add <upstream-owner>/skills --skill ac-django --skill ac-python -g -y
+npx skills add <upstream-owner>/skills --skill ac-adopting-ruff -g -y
 ```
 
 ## Rules

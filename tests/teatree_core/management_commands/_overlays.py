@@ -5,6 +5,8 @@ Extracted verbatim from the former monolithic ``test_new_management_commands`` m
 
 import os
 import shutil
+import subprocess
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -264,6 +266,56 @@ class PostDbStepsOverlay(FullOverlay):
     provisioning = _PostDbProvisioning()
 
 
+class _AppMigrateProvisioning(FullProvisioning):
+    """Post-DB sequence carrying ``django-migrate`` between two neighbours.
+
+    The neighbours are the point: ``db migrate-app`` selects one step by name
+    out of the sequence ``db refresh`` runs whole, so a test whose overlay
+    declares only the migrate step cannot tell selection from running the lot.
+    """
+
+    def __init__(self) -> None:
+        self.ran: list[str] = []
+
+    def _recorder(self, name: str) -> Callable[[], None]:
+        def _record() -> None:
+            self.ran.append(name)
+
+        return _record
+
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return [
+            ProvisionStep(name="install-custom-requirements", callable=self._recorder("install-custom-requirements")),
+            ProvisionStep(name="django-migrate", callable=self._recorder("django-migrate")),
+            ProvisionStep(name="ensure-seed-data", callable=self._recorder("ensure-seed-data")),
+        ]
+
+
+class AppMigrateOverlay(FullOverlay):
+    """Overlay declaring the ``django-migrate`` post-DB step ``db migrate-app`` runs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.provisioning = _AppMigrateProvisioning()
+        self.ran = self.provisioning.ran
+
+
+class _FailedAppMigrateProvisioning(FullProvisioning):
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return [
+            ProvisionStep(
+                name="django-migrate",
+                callable=lambda: subprocess.CompletedProcess(args=["migrate"], returncode=1),
+            ),
+        ]
+
+
+class FailedAppMigrateOverlay(FullOverlay):
+    """Overlay whose ``django-migrate`` step exits non-zero — tests failure surfacing."""
+
+    provisioning = _FailedAppMigrateProvisioning()
+
+
 class _FailingImportProvisioning(FullProvisioning):
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — mirrors the OverlayProvisioning.db_import extension-point contract.
@@ -453,6 +505,12 @@ SERVICES_OVERLAY = "tests.teatree_core.management_commands._overlays.ServicesOve
 
 
 POST_DB_OVERLAY = "tests.teatree_core.management_commands._overlays.PostDbStepsOverlay"
+
+
+APP_MIGRATE_OVERLAY = "tests.teatree_core.management_commands._overlays.AppMigrateOverlay"
+
+
+FAILED_APP_MIGRATE_OVERLAY = "tests.teatree_core.management_commands._overlays.FailedAppMigrateOverlay"
 
 
 FAILING_IMPORT_OVERLAY = "tests.teatree_core.management_commands._overlays.FailingImportOverlay"

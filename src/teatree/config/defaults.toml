@@ -74,7 +74,7 @@ envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the re
 headless_max_turns = 250 # int — turn ceiling for one headless run
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
-pydantic_ai_max_tokens = 16384 # int — token ceiling for one pydantic-ai request
+pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request
 pydantic_ai_request_limit = 40 # int — requests one pydantic-ai run may make
 regulated_path_model_allowlist = [] # list — models allowed to touch a regulated path
 subagent_spawn_ceiling = 20 # int — sub-agents one dispatch may spawn
@@ -240,6 +240,7 @@ work_group_generic_scopes = ["build", "chore", "ci", "config", "deps", "docs", "
 work_group_max_members = 12 # int — members above which a work group is surfaced as a question rather than held
 
 [teatree.Gates."Pre-Django hooks"]
+answer_first_gate_enabled = true # bool — refuse a turn that reports a dispatch instead of answering the user's question
 banned_terms_gate_enabled = true # bool — run the banned-term scan before a publish
 banned_terms_required = false # bool — refuse to scan when no banned-term list is configured, instead of warning
 completion_claim_gate_enabled = true # bool — refuse a multi-deliverable completion claim carrying no evidence map
@@ -267,6 +268,7 @@ single_branch_repo_gate_enabled = true # bool — refuse a second branch in a re
 skill_loading_gate_enabled = true # bool — refuse a turn that skipped a skill the loader required
 standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done while a standing goal is unmet
 stop_snapshotter_enabled = true # bool — snapshot session findings before a stop, so context survives
+unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalation that cites no artefact the agent read
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
@@ -320,6 +322,7 @@ single_branch_repos = [] # list — repos that may carry only one branch at a ti
 snapshot_warmer_disabled = false # bool — stop warming the snapshot caches
 snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable
 stale_stack_min_age_minutes = 0 # int — minutes a stack must exist before staleness is judged
+test_worker_ram_gb = 1.25 # float — RAM one pytest worker is sized at when the governor caps test parallelism
 
 [teatree.Registries."Term scanning, agent tables & cold reads"]
 active_loop_schedule = "" # str — name of the weekly schedule deciding when the autonomous loops may run
@@ -502,7 +505,6 @@ default_enabled = false
 description = "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF."
 
 [modes.engaged]
-availability_mode = ""
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
@@ -528,7 +530,6 @@ local_stack_queue = true
 resource_pressure = true
 
 [modes.heads-down]
-availability_mode = ""
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
@@ -554,7 +555,6 @@ eval_local = false
 dogfood = false
 
 [modes.unattended]
-availability_mode = "autonomous_away"
 defers_questions = true
 pauses_self_pump = false
 presence_sensitive = true
@@ -578,7 +578,6 @@ resource_pressure = true
 followup = false
 
 [modes.maintenance]
-availability_mode = ""
 defers_questions = true
 pauses_self_pump = false
 presence_sensitive = true
@@ -605,7 +604,6 @@ audit = false
 issue_implementer = false
 
 [modes.low-power]
-availability_mode = ""
 defers_questions = true
 pauses_self_pump = false
 presence_sensitive = true
@@ -641,7 +639,6 @@ ci_eval_heal = false
 memory_skim = false
 
 [modes.off]
-availability_mode = ""
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
@@ -677,7 +674,6 @@ ci_eval_heal = false
 memory_skim = false
 
 [modes.offline]
-availability_mode = "away"
 defers_questions = true
 pauses_self_pump = true
 presence_sensitive = false

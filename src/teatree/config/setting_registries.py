@@ -321,6 +321,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # phase agents stay admissible while the governor brakes the expensive class. 0
     # disables the exemption (cheap is braked like expensive). Per-overlay overridable.
     "cheap_phase_admission_ceiling": _parse_strict_int,
+    # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
+    # per-agent worker cap — the measured p90 worker RSS. A non-positive value drops
+    # the memory term and leaves the cores-derived bound. Per-overlay overridable.
+    "test_worker_ram_gb": _parse_strict_float,
     # RAM-used-percent ceiling above which a NEW provision is held (queued, not
     # started) rather than admitted — mirrors ``DEFAULT_RAM_USED_CEILING_PCT``
     # in the self-improve budget gate. Per-overlay overridable.

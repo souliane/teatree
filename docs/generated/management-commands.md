@@ -46,6 +46,7 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `query` | Run a read-only SQL query against the control DB; emit rows as JSON |
 | `shell` | Drop into a Django shell against the resolved (gate) control DB |
 | `restore-ci` | Restore the worktree database from the latest CI dump |
+| `migrate-app` | Apply pending migrations to the worktree's APP database, without re-importing it |
 | `reset-passwords` | Reset all user passwords to a known dev value |
 
 ## `db_backup`
@@ -94,7 +95,7 @@ Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
 | Subcommand | Description |
 | --- | --- |
 | `run` | Run E2E tests — the one command that works for every overlay |
-| `external` | Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo) |
+| `external` | Run Playwright tests from an external specs repo (the overlay's own, or --repo) |
 | `project` | Run E2E tests from the project's own test directory |
 | `lanes` | Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329) |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
@@ -211,6 +212,19 @@ Group root — forces sub-commands to be addressed by name.
 | `record-e2e-run` | Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
+## `loop_directive_set`
+
+Switch standing-directive slots off (disable) or back on (enable) (#4166).
+
+| Subcommand | Description |
+| --- | --- |
+| `disable` | Switch each named slot off by writing an empty override body |
+| `enable` | Switch each named slot back on, restoring the owner's own text where there is one |
+
+## `loop_directives`
+
+Print the standing directives with their resolved cadence, scope, cost and text (#4166).
+
 ## `loop_dispatch`
 
 | Subcommand | Description |
@@ -247,10 +261,10 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
 | `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
 | `auto` | Clear the manual override so the active schedule / default mode decides again |
-| `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
-| `edit` | Edit a preset's entries / description / pin / scope in place |
+| `create` | Create a new preset from ``--set`` entries and an optional overlay scope |
+| `edit` | Edit a preset's entries / description / scope in place |
 | `delete` | Delete a preset — refused while anything still names it; a shipped one needs ``--confirm`` |
-| `list` | List every preset with its pin, scope, entry count, and the ACTIVE marker |
+| `list` | List every preset with its scope, entry count, and the ACTIVE marker |
 
 ## `loop_schedule`
 
@@ -355,6 +369,8 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 
 ## `pr`
 
+A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.
+
 | Subcommand | Description |
 | --- | --- |
 | `create` | Validate ship gates and trigger the ship transition |
@@ -383,8 +399,8 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | Subcommand | Description |
 | --- | --- |
 | `record` | Record a deferred question by hand — the agent-facing capture surface |
-| `answer` | Resolve a pending question with a user answer (resumes a parked headless task) |
-| `dismiss` | Dismiss a pending question without answering it |
+| `answer` | Resolve pending questions with a user answer (resumes any parked headless task) |
+| `dismiss` | Dismiss pending questions without answering them |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List pending deferred questions, oldest first |
 

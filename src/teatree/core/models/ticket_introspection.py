@@ -40,6 +40,16 @@ class TicketIntrospectionModel(TicketFacet):
         """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
 
+    @classmethod
+    def phase_producing_state(cls, state: str) -> str:
+        """The phase whose successful output IS *state*, or ``""`` for an off-ladder state.
+
+        The inverse of :attr:`_PHASE_PRODUCES_STATE`, read by the cycle-time layer to
+        name the phase that occupied a ``from_state -> to_state`` span. Derived rather
+        than re-listed so a phase added to the forward map cannot go unnamed here.
+        """
+        return next((phase for phase, produces in cls._PHASE_PRODUCES_STATE.items() if produces == state), "")
+
     def has_completed_phase(self, phase: str) -> bool:
         """True when the FSM state has already reached the state *phase* produces.
 

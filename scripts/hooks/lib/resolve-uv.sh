@@ -56,16 +56,22 @@ _uv_candidates() {
     # Every uv worth probing, in preference order, deduplicated. Version-manager
     # trees come first so a managed install beats the standalone one, and the PATH
     # entry comes last because it is the one most likely to be a shim.
-    local home="${HOME:-/nonexistent}"
+    local home="${HOME:-/nonexistent}" path
     local -a ordered=()
-    mapfile -t -O "${#ordered[@]}" ordered < <(
+    # Read-append rather than `mapfile`: macOS selects /bin/bash 3.2 for these hooks and
+    # `mapfile` is bash 4+, absent there and SILENTLY leaving the array empty. Process
+    # substitution (not a pipe) keeps the loop in this shell so the appends survive. The
+    # `|| [ -n "$path" ]` tail keeps a final line that arrives without its newline, which
+    # `mapfile` would also have kept.
+    while IFS= read -r path || [ -n "$path" ]; do
+        ordered+=("$path")
+    done < <(
         _uv_version_ordered "${PYENV_ROOT:-${home}/.pyenv}"/versions/*/bin/uv
         _uv_version_ordered "${ASDF_DATA_DIR:-${home}/.asdf}"/installs/uv/*/bin/uv
         printf '%s\n' "${home}/.local/bin/uv" "${home}/.cargo/bin/uv"
         type -a -P uv 2>/dev/null || true
     )
 
-    local path
     local -a seen=() natives=() wrappers=()
     for path in "${ordered[@]}"; do
         [ -n "$path" ] && [ -x "$path" ] || continue
@@ -93,7 +99,11 @@ resolve_uv() {
     fi
 
     local -a candidates=()
-    mapfile -t candidates < <(_uv_candidates)
+    local candidate
+    # bash 3.2 has no `mapfile` — see `_uv_candidates`.
+    while IFS= read -r candidate || [ -n "$candidate" ]; do
+        candidates+=("$candidate")
+    done < <(_uv_candidates)
 
     # The candidate SET is the key: a uv installed or removed since the last run
     # changes it, so the stale answer is never handed back.

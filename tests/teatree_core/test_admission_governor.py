@@ -8,6 +8,7 @@ merge loop for weeks.
 """
 
 import datetime as dt
+import math
 
 import pytest
 from django.test import TestCase
@@ -17,6 +18,8 @@ from teatree.agents import _headless_env
 from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
+    RAM_BRAKE_FLOOR_GB,
+    RAM_RESUME_FLOOR_GB,
     MachineBrake,
     MachineSignal,
     MergeSignal,
@@ -30,8 +33,12 @@ from teatree.core.admission_governor import (
     weekly_pace,
 )
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
+from teatree.utils import ram_probe
 
 _WEEK = 7 * 24 * 3600
+
+#: The measured p90 pytest-xdist worker RSS the ``test_worker_ram_gb`` default ships at.
+_P90_WORKER_GB = 1.25
 
 
 def _quota(**kwargs: object) -> QuotaSignal:
@@ -215,6 +222,126 @@ class TestTestWorkerCapWiring:
         monkeypatch.setattr(admission_governor, "governor_enabled", lambda: False)
         assert _headless_env.with_test_worker_cap(None, active_agents=4) is None
         assert _headless_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
+
+
+class TestTheExportedCapRespondsToMemory:
+    """#4163: the seam that reaches the child agent — the cap MOVES with the reading.
+
+    The governor bounded workers on cores alone, so 16 xdist workers at the measured p90
+    RSS of 1.24 GB each is 19.8 GB against 19.7 GB usable — the whole story of 1374 OOM
+    kills in a fortnight. This is the behavioural end of the fix: the same call on a
+    40 GB box and on a 6 GB one must not hand the child the same number.
+    """
+
+    def _exported_workers(self, monkeypatch: pytest.MonkeyPatch, *, available_gb: float) -> int:
+        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: round(available_gb * 1024))
+        capped = with_test_worker_cap(None, active_agents=1)
+        assert capped is not None
+        return int(capped[XDIST_WORKERS_VAR])
+
+    def test_a_memory_tight_box_exports_fewer_workers_than_a_roomy_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        roomy = self._exported_workers(monkeypatch, available_gb=40.0)
+        tight = self._exported_workers(monkeypatch, available_gb=6.0)
+        assert tight < roomy
+
+
+class TestTheWorkerBoundReadsMemory:
+    """#4163: the pure bound, with the reading and the per-worker size passed IN.
+
+    The pure function never reads config — the consumer resolves ``test_worker_ram_gb``
+    and hands it over, so the arithmetic stays testable without a settings store.
+    """
+
+    def test_the_bound_falls_with_the_reading(self) -> None:
+        roomy = per_agent_test_workers(cores=8, active_agents=1, ram_available_gb=40.0, per_worker_gb=_P90_WORKER_GB)
+        tight = per_agent_test_workers(cores=8, active_agents=1, ram_available_gb=6.0, per_worker_gb=_P90_WORKER_GB)
+        assert tight < roomy
+
+    def test_an_unread_reading_returns_exactly_the_cpu_bound(self) -> None:
+        # #4101 restated: an unreadable probe falls back to the bound derived from the
+        # signal that WAS read — never a manufactured clamp to 1, and never 0.
+        assert per_agent_test_workers(
+            cores=8, active_agents=4, ram_available_gb=None, per_worker_gb=_P90_WORKER_GB
+        ) == per_agent_test_workers(cores=8, active_agents=4)
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=None) == 4
+
+    def test_an_unsized_worker_returns_exactly_the_cpu_bound(self) -> None:
+        # No per-worker size is the same missing evidence as no reading.
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=6.0, per_worker_gb=0.0) == 4
+
+    def test_the_total_stays_within_what_memory_pays_for_across_the_agent_range(self) -> None:
+        budget = math.floor((20.0 - RAM_BRAKE_FLOOR_GB) / _P90_WORKER_GB)
+        for agents in range(1, budget + 1):
+            workers = per_agent_test_workers(
+                cores=8, active_agents=agents, ram_available_gb=20.0, per_worker_gb=_P90_WORKER_GB
+            )
+            assert workers * agents <= budget
+
+    def test_a_starved_box_still_gets_one_worker(self) -> None:
+        # The floor wins over the memory bound for the same reason it wins over the
+        # total bound: an agent with zero test workers cannot run its suite at all.
+        assert per_agent_test_workers(cores=8, active_agents=4, ram_available_gb=1.0, per_worker_gb=_P90_WORKER_GB) == 1
+
+
+class TestTheMemoryBrake:
+    """A RAM watermark beside the load one — same hysteresis, same cheap-lane exemption."""
+
+    def test_a_reading_under_the_floor_denies_and_names_the_reading(self) -> None:
+        decision = _decide(machine=_machine(ram_available_gb=3.0))
+        assert not decision.admit
+        assert "3.0 GB" in decision.reason
+
+    def test_an_unread_reading_admits(self) -> None:
+        # Fail-safe is BOUNDED, not closed: denying on an unreadable /proc file is a
+        # kill switch operated by a missing file (#4097).
+        assert _decide(machine=_machine(ram_available_gb=None)).admit
+
+    def test_a_braked_governor_is_held_to_the_higher_floor(self) -> None:
+        between = _machine(ram_available_gb=(RAM_BRAKE_FLOOR_GB + RAM_RESUME_FLOOR_GB) / 2)
+        assert _decide(machine=between).admit
+        assert not _decide(machine=between, load_brake=MachineBrake(braked=True)).admit
+
+    def test_the_cheap_lane_skips_the_memory_brake_as_it_skips_load(self) -> None:
+        starved = _machine(ram_available_gb=1.0)
+        assert not _decide(machine=starved).admit
+        assert _decide(machine=starved, load_brake=MachineBrake(applies=False)).admit
+
+
+class TestResumeCeilingReadsMemory:
+    """#4108's restore bound, now ``min(load headroom, memory headroom)``."""
+
+    def test_a_memory_tight_box_carries_fewer_agents(self) -> None:
+        idle = _machine(cores=8, load1=0.0)
+        roomy = resume_agent_ceiling(idle)
+        tight = resume_agent_ceiling(_machine(cores=8, load1=0.0, ram_available_gb=5.0))
+        assert 1 <= tight < roomy
+
+    def test_an_unread_reading_leaves_the_ceiling_load_derived(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0, ram_available_gb=None)) == 8
+
+    def test_the_recorded_meltdown_reading_leaves_room_for_one(self) -> None:
+        # Load 58 on 8 cores with 1 GB free — the reading taken during the restore.
+        assert resume_agent_ceiling(_machine(cores=8, load1=58.0, ram_available_gb=1.0)) == 1
+
+    def test_memory_alone_never_takes_the_ceiling_to_zero(self) -> None:
+        assert resume_agent_ceiling(_machine(cores=8, load1=0.0, ram_available_gb=0.0)) == 1
+
+
+class TestReadMachineSignalPopulatesMemory:
+    """The field was declared and populated by nothing — every live caller passed no argument."""
+
+    def test_the_default_path_reads_the_cgroup_aware_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: 8 * 1024)
+        assert read_machine_signal().ram_available_gb == pytest.approx(8.0)
+
+    def test_an_unreadable_probe_reports_none_rather_than_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # "Unreadable" and "no headroom left" are different answers and must not collapse.
+        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: None)
+        assert read_machine_signal().ram_available_gb is None
+
+    def test_an_explicit_reading_is_never_overwritten(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: 8 * 1024)
+        assert read_machine_signal(ram_available_gb=12.5).ram_available_gb == pytest.approx(12.5)
 
 
 class TestUnreadableProbeNeverManufacturesAClamp:

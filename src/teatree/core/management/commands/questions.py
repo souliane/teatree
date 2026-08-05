@@ -158,36 +158,64 @@ class Command(MachineOutputCommand):
             str,
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
         ] = "",
+        also: Annotated[
+            list[int] | None,
+            typer.Option("--also", help="Another question this same answer resolves (repeatable)."),
+        ] = None,
     ) -> str:
-        """Resolve a pending question with a user answer (resumes a parked headless task)."""
+        """Resolve pending questions with a user answer (resumes any parked headless task).
+
+        ``--also`` exists because one decision routinely settles several questions:
+        a loop that cannot act on an ambiguous instruction files a clarifying question
+        per facet, and the operator answers all of them with one sentence. Retyping
+        that sentence per id costs a container round-trip each and invites the answers
+        to drift apart in wording, which later reads as four different decisions.
+
+        The id stays positional so ``answer <id> <text>`` is unchanged; the extra ids
+        are options because a greedy list would swallow the answer text.
+
+        Each id is consumed in its OWN transaction, so one already-resolved id skips
+        rather than rolling back the rest.
+        """
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
-        try:
-            with transaction.atomic():
-                row = DeferredQuestion.consume(question_id, answer=text)
-                if row is None:
-                    self.stderr.write(f"question #{question_id} not found or already resolved")
-                    raise SystemExit(1)
-                row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
-                row.save(update_fields=["resolved_via"])
-                DeferredQuestionAudit.objects.create(
-                    question=row,
-                    action="answered",
-                    answer_text=text,
-                    resolver_id=resolver_id,
-                )
-                if row.parked_task is not None:
-                    schedule_headless_resume(row.parked_task, answer=text)
-        except DeferredQuestionError as exc:
-            self.stderr.write(str(exc))
-            raise SystemExit(2) from exc
-        return f"answered #{row.pk}."
+        answered: list[int] = []
+        skipped: list[int] = []
+        for target in [question_id, *(also or [])]:
+            try:
+                with transaction.atomic():
+                    row = DeferredQuestion.consume(target, answer=text)
+                    if row is None:
+                        skipped.append(target)
+                        continue
+                    row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
+                    row.save(update_fields=["resolved_via"])
+                    DeferredQuestionAudit.objects.create(
+                        question=row,
+                        action="answered",
+                        answer_text=text,
+                        resolver_id=resolver_id,
+                    )
+                    if row.parked_task is not None:
+                        schedule_headless_resume(row.parked_task, answer=text)
+                    answered.append(row.pk)
+            except DeferredQuestionError as exc:
+                self.stderr.write(str(exc))
+                raise SystemExit(2) from exc
+        if skipped:
+            self.stderr.write(f"not found or already resolved: {', '.join(str(i) for i in skipped)}")
+        if not answered:
+            raise SystemExit(1)
+        return f"answered {len(answered)}: {', '.join(f'#{pk}' for pk in answered)}."
 
     @command()
     def dismiss(
         self,
-        question_id: int,
+        question_ids: Annotated[
+            list[int],
+            typer.Argument(help="One or more question ids to dismiss with the same reason."),
+        ],
         reason: Annotated[
             str,
             typer.Option("--reason", help="Why the question is being dropped (audit trail)."),
@@ -197,26 +225,45 @@ class Command(MachineOutputCommand):
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
         ] = "",
     ) -> str:
-        """Dismiss a pending question without answering it."""
+        """Dismiss pending questions without answering them.
+
+        Takes MANY ids because a backlog is dismissed by the class, not one at a
+        time. A containerized invocation costs a round-trip of its own, so clearing
+        ninety questions one command each is hours of wall clock — long enough that
+        the sweep gets abandoned half-done, which is how a queue of automated halts
+        buries the handful of questions a human actually needs to answer.
+
+        Each id is consumed in its OWN transaction, so an id that is already resolved
+        skips instead of rolling back the ids around it — partial success is the
+        normal outcome of a sweep, not a failure of one.
+        """
         clean_reason = reason.strip() or "no longer relevant"
-        try:
-            with transaction.atomic():
-                row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
-                if row is None:
-                    self.stderr.write(f"question #{question_id} not found or already resolved")
-                    raise SystemExit(1)
-                row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
-                row.save(update_fields=["resolved_via"])
-                DeferredQuestionAudit.objects.create(
-                    question=row,
-                    action="dismissed",
-                    dismissed_reason=clean_reason,
-                    resolver_id=resolver_id,
-                )
-        except DeferredQuestionError as exc:
-            self.stderr.write(str(exc))
-            raise SystemExit(2) from exc
-        return f"dismissed #{row.pk}."
+        dismissed: list[int] = []
+        skipped: list[int] = []
+        for question_id in question_ids:
+            try:
+                with transaction.atomic():
+                    row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
+                    if row is None:
+                        skipped.append(question_id)
+                        continue
+                    row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
+                    row.save(update_fields=["resolved_via"])
+                    DeferredQuestionAudit.objects.create(
+                        question=row,
+                        action="dismissed",
+                        dismissed_reason=clean_reason,
+                        resolver_id=resolver_id,
+                    )
+                    dismissed.append(row.pk)
+            except DeferredQuestionError as exc:
+                self.stderr.write(str(exc))
+                raise SystemExit(2) from exc
+        if skipped:
+            self.stderr.write(f"not found or already resolved: {', '.join(str(i) for i in skipped)}")
+        if not dismissed:
+            raise SystemExit(1)
+        return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."
 
     @command()
     def resurface(

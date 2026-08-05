@@ -351,7 +351,7 @@ class TestCrashProof:
         def _boom(_path: str) -> list[dict]:
             raise boom
 
-        monkeypatch.setattr("hooks.scripts.hook_router._read_transcript_entries", _boom)
+        monkeypatch.setattr("hooks.scripts.turn_inspect.read_transcript_entries", _boom)
 
         rv, out = _run_hook({"session_id": "s1", "transcript_path": "/tmp/nope.jsonl"}, monkeypatch)
 

@@ -5,7 +5,6 @@ eval_exempt: pure formatting-reference companion auto-loaded for overlay work; c
 compatibility: any
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # Slack Formatting

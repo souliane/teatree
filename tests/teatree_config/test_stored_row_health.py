@@ -7,7 +7,13 @@ import pytest
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS
-from teatree.config.stored_row_health import INTERNAL_STATE_KEYS, internal_state_key, stored_row_note
+from teatree.config.stored_row_health import (
+    INTERNAL_STATE_KEYS,
+    internal_state_key,
+    is_operator_configuration,
+    stored_row_kind,
+    stored_row_note,
+)
 
 
 class TestStoredRowNote:
@@ -56,6 +62,39 @@ class TestStoredRowNote:
         assert "not a declared setting" not in note
 
 
+class TestIsOperatorConfiguration:
+    """Which stored rows an interchange format may carry (#4147).
+
+    The export writes a file the import reads back, and the import refuses the WHOLE file
+    on a key it has no home for. So "may this row be written out" is exactly "will the
+    reader accept it", and that is what this predicate answers.
+    """
+
+    def test_the_note_is_the_kind_in_brackets_so_one_classifier_serves_both_surfaces(self) -> None:
+        # A row listing brackets it; the export report does not. Two spellings of the same
+        # sentence is how the two would drift.
+        kind = stored_row_kind("loop_preset_transition_stamp")
+        assert kind
+        assert not kind.startswith("[")
+        assert stored_row_note("loop_preset_transition_stamp") == f"[{kind}]"
+
+    def test_a_live_setting_and_a_retired_alias_are_both_configuration(self) -> None:
+        # An alias's value still migrates onto its replacement, so dropping it from an
+        # export would lose an opinion the operator still holds.
+        assert is_operator_configuration(next(iter(sorted(ALL_KNOWN_CONFIG_SETTINGS))))
+        assert is_operator_configuration(next(iter(sorted(RENAMED_SETTING_KEYS))))
+
+    @pytest.mark.parametrize(
+        "key",
+        ["host_projection_generation", "loop_preset_transition_stamp", "a_key_no_registry_and_no_retirement_carries"],
+    )
+    def test_internal_state_and_an_orphan_are_not(self, key: str) -> None:
+        assert not is_operator_configuration(key)
+
+    def test_a_removed_key_is_not_configuration_either(self) -> None:
+        assert not is_operator_configuration(next(iter(sorted(REMOVED_SETTING_KEYS))))
+
+
 class TestInternalStateKeysAreNotCalledDead:
     """A deliberate non-setting row has an owner, not a corpse.
 
@@ -101,6 +140,13 @@ class TestInternalStateKeysAreNotCalledDead:
         assert "config_setting clear" not in note
         assert "not a declared setting" not in note
         assert owner in note
+
+    def test_the_projection_counter_is_state_a_publisher_ratchets_not_an_orphan(self) -> None:
+        # It is written through raw sqlite3, so the classification conformance walk never
+        # saw it and every raw-row surface offered `config_setting clear` for a live counter.
+        note = stored_row_note("host_projection_generation")
+        assert "teatree.config.host_projection" in note
+        assert "config_setting clear" not in note
 
     def test_every_registered_key_still_appears_in_the_module_it_names(self) -> None:
         # The carve-out must not become the dead config it exists to prevent: an owner

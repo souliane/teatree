@@ -31,15 +31,30 @@ State = Ticket.State
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
 #: url name -> the exact number of queries the page issues, at any population size.
+#:
+#: The pages that read the loop fleet each carry the #4185 starvation axis: ONE bounded
+#: ``status__in`` read of the live ``loop_timer`` rows, plus the effective-verdict bulk
+#: read where the page did not already resolve it. Both are O(1) in the population — the
+#: two-population assertion below is what proves that, and it is the invariant this file
+#: exists to hold. A count that differs BETWEEN the two populations is the failure; a
+#: flat count that rose because the page reads a new datum is a re-pin, not an N+1.
+#:
+#: #4196 folded the effective verdict onto the resolver the tick itself gates on, and
+#: routed the loop-list/statusline read model through it too. That nets OUT on every page
+#: that already resolved the operating mode — health, the bands and the loop table each
+#: shed the duplicate preset read they used to pay. ``live`` resolved no mode at all, so
+#: it now pays the L0 default lookup its membership read needs. Still flat, still one
+#: bounded read per datum.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 11,
     "dash:board_columns": 9,
+    "dash:cycle_time": 10,
     "dash:health": 20,
     "dash:health_bands": 20,
-    "dash:live": 12,
-    "dash:live_body": 10,
-    "dash:loops": 17,
-    "dash:loops_table": 17,
+    "dash:live": 18,
+    "dash:live_body": 16,
+    "dash:loops": 15,
+    "dash:loops_table": 15,
     "dash:presets": 15,
     "dash:sessions": 3,
     "dash:settings": 7,

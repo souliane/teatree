@@ -44,7 +44,7 @@ from teatree.loops.seed import LoopSeedSpec, load_loop_specs
 from teatree.loops.seed_drift import SlotShape, mode_entry_drift, schedule_slot_drift
 
 if TYPE_CHECKING:
-    from teatree.core.models import Mode, ModeScheduleSlot
+    from teatree.core.models import Loop, Mode, ModeScheduleSlot
 
 KIND_MISSING = "missing"
 KIND_DISABLED_VS_SHIPPED = "disabled_vs_shipped"
@@ -124,6 +124,7 @@ def shipped_inertness(path: Path | None = None, *, now: dt.datetime | None = Non
 
 def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — deferred: ORM-backed read
     from teatree.loops.loop_staleness import (  # noqa: PLC0415 — deferred: ORM-backed read
         STALE_CADENCE_MULTIPLIER,
         stale_loops,
@@ -131,6 +132,12 @@ def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
 
     rows = {row.name: row for row in Loop.objects.all()}
     behind = {loop.name: loop for loop in stale_loops(now)}
+    # The NARROW verdict, not chain membership: the question here is "is the shipped
+    # loop actually working", and membership is the deliberately wider persisted-chain
+    # set — a loop kept a member across the presence flip is NOT running right now
+    # (#4196), so reporting it as live would be the same false-quiet this file exists
+    # to surface.
+    admitted = {verdict.name for verdict in effective_verdicts(now) if verdict.admitted}
     findings = []
     for spec in load_loop_specs(path):
         row = rows.get(spec.name)
@@ -140,8 +147,14 @@ def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
         if not row.enabled:
             findings.append(_disabled(spec))
             continue
+        # A column-enabled loop the verdict refuses is not measured by ``stale_loops``
+        # at all (#4185) — it has no chain to fall behind on. Its standing still is
+        # exactly what the mask or hold asked for, so it earns the same non-fault note
+        # it always did, sourced from the verdict rather than a staleness arm.
         stale = behind.get(spec.name)
-        if stale is not None:
+        if spec.name not in admitted:
+            findings.append(_suppressed(spec, row, now))
+        elif stale is not None:
             findings.append(
                 InertFinding(
                     family="loop",
@@ -151,15 +164,34 @@ def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
                         f"enabled but {stale.age_label} against a {stale.cadence_seconds}s cadence "
                         f"(over {STALE_CADENCE_MULTIPLIER}x) — "
                         + (
-                            "a mode mask, the colleague gate or a LoopState hold accounts for it"
+                            "the colleague gate accounts for it"
                             if stale.suppressed
-                            else "nothing in the mode mask, the colleague gate or a LoopState hold explains it"
+                            else "the colleague gate does not explain it"
                         )
                     ),
                     is_fault=not stale.suppressed,
                 )
             )
     return findings
+
+
+def _suppressed(spec: LoopSeedSpec, row: "Loop", now: dt.datetime) -> InertFinding:
+    """A column-enabled loop the effective verdict refuses — idle exactly as configured."""
+    from teatree.loops.loop_staleness import format_age  # noqa: PLC0415 — deferred: sibling read
+
+    anchor = row.last_run_at or row.created_at
+    age = format_age((now - anchor).total_seconds())
+    ran = f"last ran {age} ago" if row.last_run_at else f"never run (seeded {age} ago)"
+    return InertFinding(
+        family="loop",
+        name=spec.name,
+        kind=KIND_SUPPRESSED,
+        detail=(
+            f"enabled, but the effective verdict does not admit it ({ran}) — "
+            "a mode mask or a LoopState hold accounts for it, so it carries no timer chain."
+        ),
+        is_fault=False,
+    )
 
 
 def _disabled(spec: LoopSeedSpec) -> InertFinding:

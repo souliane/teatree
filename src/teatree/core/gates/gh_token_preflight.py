@@ -46,6 +46,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from teatree.core.forge_pr_probe import forge_cli_env
 from teatree.utils.run import run_allowed_to_fail
 
 # Never-lockout pinning contract — exactly these four, pinned to deploy/entrypoint.sh by a test.
@@ -257,7 +258,7 @@ class GhTokenProbe:
 
 def _default_run(args: list[str]) -> tuple[int, str]:
     """Run ``gh api <args>``; a 4xx is an expected probe outcome, not an error to raise on."""
-    result = run_allowed_to_fail(["gh", "api", *args], expected_codes=None)
+    result = run_allowed_to_fail(["gh", "api", *args], expected_codes=None, env=forge_cli_env())
     return result.returncode, f"{result.stdout}\n{result.stderr}"
 
 

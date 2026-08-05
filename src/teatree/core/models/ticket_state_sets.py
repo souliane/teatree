@@ -135,6 +135,22 @@ class TicketStateSetsModel(TicketFacet):
         return frozenset({cls.State.SHIPPED, cls.State.IN_REVIEW, cls.State.MERGED})
 
     @classmethod
+    def issue_owning_states(cls) -> frozenset[str]:
+        """States in which a ticket OWNS its issue URL, so intake must not re-admit it.
+
+        Derived as the complement of IGNORED rather than enumerated: the hand-written
+        list this replaces silently omitted PLANNED and DELIVERED, and the persistence
+        handler reuses the existing row and returns early for anything past
+        NOT_STARTED — so each re-admission scheduled no work, claimed an
+        ``ImplementedIssueMarker``, held an intake budget slot until the dead grace
+        abandoned it, and re-admitted on the next tick (#4133).
+
+        IGNORED is the one release valve: it is how an abandoned or dead ticket hands
+        its issue back to intake, so no issue can be wedged by a stale row.
+        """
+        return frozenset(cls.State.values) - {cls.State.IGNORED}
+
+    @classmethod
     def merged_states(cls) -> frozenset[str]:
         """States that mean the ticket's PR has landed (merged-or-past).
 

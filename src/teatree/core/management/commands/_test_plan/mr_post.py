@@ -15,7 +15,7 @@ from pathlib import Path
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.evidence.test_plan_blocked_gate import check_blocked_body_from_config
 from teatree.core.management.commands._test_plan.post import _comment_id, _verified_embed, find_existing_note
-from teatree.core.management.commands._test_plan.render import test_plan_marker
+from teatree.core.management.commands._test_plan.render import render_ticket_marker
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
@@ -67,7 +67,7 @@ def _render_mr_note_body(*, title: str, body: str, embeds: list[str], marker_id:
     note_body = f"## {title}\n\n{body}" if body else f"## {title}\n\n_No details provided._"
     if embeds:
         note_body += "\n\n" + "\n\n".join(embeds)
-    return f"{note_body}\n\n{test_plan_marker(ticket_id=marker_id)}"
+    return f"{note_body}\n\n{render_ticket_marker(ticket_id=marker_id)}"
 
 
 def _create_or_update_pr_note(

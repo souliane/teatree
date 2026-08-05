@@ -19,6 +19,7 @@ suggest: :func:`autoload_skill_demand` is the hard-demand half of the same seam.
 
 from collections.abc import Iterable
 
+from hooks.scripts.session_lane import LANE_SDK, session_lane
 from hooks.scripts.teatree_settings import autoload_enabled
 
 # The lifecycle-core skill set seeded into ``<session>.skills`` when an
@@ -54,7 +55,7 @@ def engage(session_id: str, *, seed_skills: bool = False) -> None:
 
 
 def autoload_skill_demand(loaded_skills: Iterable[str]) -> list[str]:
-    """``[PLATFORM_SKILL]`` when ``autoload`` engaged this session and it is not held yet.
+    """``[PLATFORM_SKILL]`` when ``autoload`` engaged this ATTENDED session and it is not held yet.
 
     ``autoload`` is the owner's standing "teatree is on for every session"
     opt-in, so the platform skill is a HARD demand on such a session rather than
@@ -66,11 +67,23 @@ def autoload_skill_demand(loaded_skills: Iterable[str]) -> list[str]:
     lifecycle skill (``.t3-engaged``) made no such standing request, and forcing
     the platform skill on it would be an over-block.
 
+    Scoped to the ATTENDED lanes for the same reason. The platform skill is
+    Claude Code harness wiring plus attended-session hygiene, and the demand is
+    enforced by a ``PreToolUse`` gate that refuses every ``Edit``/``Write``/
+    ``Bash`` until it loads — so on an SDK worker the owner's standing opt-in
+    lands as a hard block on the factory it was meant to run. Only a POSITIVELY
+    identified SDK lane is withheld from: an unknown lane keeps today's demand,
+    because this must never silently disengage an attended session whose env
+    teatree simply does not recognise. That is the mirror of the sibling
+    :func:`headless_authoring_gate.handle_block_interactive_authoring`, which
+    refuses only a positively identified interactive lane — both resolve an
+    unreadable signal toward leaving the factory alone.
+
     Every spelling ``<session>.skills`` can carry — bare, namespaced, or an
     overlay's path-shaped ``skill_path`` — canonicalizes to one token, so a
     session that already holds the skill is never asked for it again.
     """
-    if not autoload_enabled():
+    if not autoload_enabled() or session_lane() == LANE_SDK:
         return []
     from hooks.scripts.hook_router import normalize_skill_name  # noqa: PLC0415 deferred back-import
 

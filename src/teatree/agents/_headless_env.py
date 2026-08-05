@@ -7,7 +7,6 @@ so ``from teatree.agents.headless import _provider_child_env`` stays valid.
 """
 
 import logging
-import os
 from collections.abc import Callable
 
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
@@ -102,15 +101,30 @@ def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> d
     A ``None`` *env* means "inherit the ambient environment"; the cap is still applied,
     as a one-key overlay the SDK merges over the inherited env, so the ambient auth
     state is untouched. Returns *env* unchanged when the governor kill-switch is off.
+
+    The bound reads memory as well as cores (#4163): 16 workers is 19.8 GB at the measured
+    p90 worker RSS against 19.7 GB usable, so a cores-only bound is safe at the median and
+    over the line at the tail. The live reading comes from
+    :func:`~teatree.core.admission_governor.read_machine_signal`, which also supplies the
+    core count it always did — so the CPU term is byte-identical to the ``os.cpu_count()``
+    it replaces. ``test_worker_ram_gb`` is resolved HERE and passed in: the pure bound
+    reads no config.
     """
     from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: avoids a core import at module load
         governor_enabled,
         per_agent_test_workers,
+        read_machine_signal,
     )
 
     if not governor_enabled():
         return env
-    workers = per_agent_test_workers(cores=os.cpu_count() or 1, active_agents=active_agents)
+    machine = read_machine_signal()
+    workers = per_agent_test_workers(
+        cores=machine.cores,
+        active_agents=active_agents,
+        ram_available_gb=machine.ram_available_gb,
+        per_worker_gb=get_effective_settings().test_worker_ram_gb,
+    )
     return {**(env or {}), XDIST_WORKERS_VAR: str(workers)}
 
 

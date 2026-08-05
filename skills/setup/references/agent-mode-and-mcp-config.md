@@ -240,8 +240,8 @@ duplicates the other.
 | Bash standing permissions | plugin `settings.json` (broad allow / narrow deny) | `settings.json` (BLUEPRINT.md § 11.4) |
 | MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |
 | Enabled-MCP connectivity check | n/a — runs at session start / `t3 doctor` / account-switch | `teatree.core.mcp_connectivity.check_mcp_connectivity` (#2282) |
-| Per-server expected provider | overlay's `get_mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayBase` |
-| Per-overlay connector manifest | overlay overrides `get_connector_manifest()` (default `[]`) | `teatree.core.connector_manifest.check_connector_manifest` (PR-19) |
+| Per-server expected provider | overlay's `connectors.mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayConnectors` |
+| Per-overlay connector manifest | overlay overrides `connectors.manifest()` (default `[]`) | `teatree.core.connector_manifest.check_connector_manifest` (PR-19) |
 | Connector reconnect | `t3 mcp reconnect [--open]` / `t3 setup recover-account-switch [--open]` | `teatree.cli.mcp.reconnect` (PR-19) |
 | Token-scope-failure cache | n/a — in-process, per loop tick; cleared by `t3 doctor authorizations` | `teatree.core.intake.scope_cache` (PR-19) |
 | Teatree's own bundled MCP server | n/a — ships in `.mcp.json`, auto-starts with the plugin | `teatree.core.mcp_registration` (#2863) |

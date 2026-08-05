@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+from teatree.core.forge_pr_probe import forge_cli_env
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
@@ -345,9 +346,15 @@ def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str], *, 
     ``subprocess.TimeoutExpired`` is swallowed and ``""`` is returned — the same
     fail-safe "not found / skip" value as every other failure path, so a timeout
     can never produce a positive merged signal and never wrongly reaps work.
+
+    Every failure path being fail-safe is precisely why the credential matters
+    (souliane/teatree#4116): an unauthenticated read of a private repo is
+    indistinguishable here from "no such PR", so the keep that an open PR earns
+    would silently disappear. :func:`~teatree.core.forge_pr_probe.forge_cli_env`
+    gives it the same token the writer path uses.
     """
     try:
-        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None, timeout=timeout)
+        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None, timeout=timeout, env=forge_cli_env())
     except (OSError, TimeoutExpired):
         return ""
     if result.returncode != 0 or result.stdout.strip() in {"", "[]"}:

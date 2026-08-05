@@ -20,8 +20,9 @@ from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
 from teatree.eval.presets import Preset, PresetError, resolve_preset
-from teatree.eval.report import ScenarioResult, render_html, render_summary_markdown
+from teatree.eval.report import ScenarioResult, render_html
 from teatree.eval.summary_json import write_summary_json
+from teatree.eval.summary_markdown import render_summary_markdown
 
 #: The tiers the ``--benchmark`` matrix compares, strongest → cheapest, so the
 #: matrix columns read in capability order. Resolved to concrete models through

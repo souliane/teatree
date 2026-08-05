@@ -7,7 +7,6 @@ requires:
 eval_exempt: thin detail/reference skill — points at the `health` CLI; no standalone agent behaviour to grade.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Health — Global Operational-Health Chip + Known-Issues Registry
@@ -126,7 +125,7 @@ t3 loop preset show heads-down           # a named preset's entries
 t3 loop preset use heads-down            # activate until the next scheduled boundary
 t3 loop preset use unattended --hold     # sticky until cleared; --for 2h / --until <iso> for a TTL
 t3 loop preset auto                      # clear the override — the schedule decides again
-t3 loop preset create|edit <name> --set review=off --set dispatch=on [--pin autonomous_away] [--scope <overlay>]
+t3 loop preset create|edit <name> --set review=off --set dispatch=on [--scope <overlay>]
 t3 loop preset delete <name>
 
 t3 loop schedule list | show [<name>]    # the weekly calendars + their slots

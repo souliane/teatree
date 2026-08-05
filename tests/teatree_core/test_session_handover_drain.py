@@ -26,7 +26,7 @@ _PARKED_COUNT = 8
 
 
 def _park(from_session: str, *, minutes_ago: int, payload: str) -> SessionHandover:
-    row = SessionHandover.objects.create_handover(from_session=from_session, to_session="", payload=payload)
+    row = SessionHandover.objects.create_handover(from_session=from_session, to_session="", payload=payload).row
     SessionHandover.objects.filter(pk=row.pk).update(created_at=timezone.now() - dt.timedelta(minutes=minutes_ago))
     row.refresh_from_db()
     return row

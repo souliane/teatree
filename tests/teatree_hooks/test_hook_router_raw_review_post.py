@@ -16,7 +16,9 @@ import json
 
 import pytest
 
+from hooks.scripts import raw_review_post_guard
 from hooks.scripts.hook_router import handle_block_raw_review_post
+from teatree.hooks import raw_review_post_detect
 
 
 def _bash_event(command: str, tool_name: str = "Bash") -> dict:
@@ -91,14 +93,59 @@ class TestDeniesRawReviewWrites:
         assert "on-behalf approval" in reason
 
     def test_deny_message_names_the_sanctioned_delete_clis(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """A blocked issue-note DELETE points at the sanctioned delete CLIs, not just the post ones."""
+        """A blocked issue-note DELETE points at the sanctioned delete CLI for an issue."""
         command = "glab api projects/42/issues/8568/notes/3456141979 --method DELETE"
         handle_block_raw_review_post(_bash_event(command))
         deny = _parse_deny(capsys)
         assert deny is not None
+        assert "delete-issue-note" in deny["permissionDecisionReason"]
+
+
+class TestRemedyAddressesTheBlockedObject:
+    """The named remedy must work on the surface the caller addressed.
+
+    ``review post-comment`` takes an integer MR IID and posts to
+    ``merge_requests/<iid>/notes``, so naming it for a blocked ISSUE/work-item note
+    sent the caller to a command that cannot address the object at all. The sanctioned
+    create-note-on-issue path is ``t3 <overlay> ticket comment <issue-url>``, which
+    routes the body through the same public-repo leak gate + send-proxy seam.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api projects/42/issues/8568/notes --method POST --field body=hi",
+            "gh api repos/o/r/issues/12/comments --method POST -f body=x",
+        ],
+    )
+    def test_issue_note_create_names_ticket_comment(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_raw_review_post(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
         reason = deny["permissionDecisionReason"]
-        assert "delete-issue-note" in reason
-        assert "delete-discussion" in reason
+        assert "ticket comment" in reason
+        assert "post-draft-note" not in reason
+
+    def test_mr_note_create_still_names_the_review_clis(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = "glab api projects/42/merge_requests/7/discussions -X POST -f body='hi'"
+        handle_block_raw_review_post(_bash_event(command))
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        reason = deny["permissionDecisionReason"]
+        assert "review post-comment" in reason
+        assert "ticket comment" not in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api projects/42/merge_requests/7/discussions -X POST -f body=hi",
+            "glab api projects/42/issues/8568/notes --method POST --field body=hi",
+        ],
+    )
+    def test_cold_guard_and_leaf_emit_the_same_reason(self, command: str) -> None:
+        """The two implementations carry duplicated reason text with no import edge between them."""
+        guard_reason = raw_review_post_guard.review_post_deny_reason(command)
+        assert guard_reason == raw_review_post_detect.raw_review_deny_reason(command)
 
 
 class TestAllowsReadsAndUnrelated:
@@ -136,6 +183,11 @@ class TestAllowsReadsAndUnrelated:
             # it must pass through (it routes through the on-behalf gate itself).
             "t3 teatree review delete-issue-note org/repo 8568 3456141979",
             "t3 teatree review delete-discussion org/repo 7 99",
+            # The sanctioned CREATE-note-on-issue path the deny message names — it must
+            # pass, or the gate blocks and then misdirects to a command it also blocks.
+            "t3 teatree ticket comment https://gitlab.com/org/repo/-/issues/9 --body 'a note'",
+            "t3 teatree ticket comment https://gitlab.com/org/repo/-/work_items/469 --body-file /tmp/n.md",
+            "glab issue note 9 --repo org/repo --message 'a note'",
         ],
     )
     def test_command_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:

@@ -147,7 +147,8 @@ data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatre
 `handover/latest.md` (#3563) — the state dir is runtime-local, so a hand-off created inside
 the worker container wrote its mirror to a filesystem the host could not read and the host's
 `latest.md` stayed pinned to an ancient session, while the data dir is the one directory
-every runtime shares (the deploy already bind-mounts it) — `statusline_chain` —
+every runtime shares (the deploy already bind-mounts it); the mirror is BOOTSTRAP-ONLY, read
+only when the DB is unreachable and never merely because the drain came back empty (#4194) — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
 `json_each` — `statusline_engaged_render` — the #3502 opt-in (strict bool, default OFF)
 that renders the statusline in a hand-engaged session (an engage marker present) even
@@ -840,7 +841,7 @@ subset, because a subset check still passes while a key silently vanishes, which
 failure mode that makes replacing the shipped file dangerous. It renders through
 `defaults_snapshot.render_toml`, the SAME emitter `snapshot_settings_defaults` writes with
 (one emitter, two callers — pinned by an identity assertion), and reproduces the seed tables
-from `core.config_seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
+from `core.config_interchange.seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
 therefore byte-for-byte the shipped file, header and seed tables included:
 `tests/teatree_core/test_config_export_filters.py` asserts it against the real committed
 file, with a control proving a single live override moves exactly one line.

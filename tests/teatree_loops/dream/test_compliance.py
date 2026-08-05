@@ -24,7 +24,7 @@ from teatree.loops.dream.compliance import (
     run_compliance_escalation,
     run_compliance_measurement,
 )
-from teatree.loops.dream.engine import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 
 def _memory_snippet(name: str, body: str) -> WeightedSnippet:
@@ -36,7 +36,7 @@ def _transcript_snippet(name: str, body: str) -> WeightedSnippet:
 
 
 def _extract(*snippets: WeightedSnippet) -> ConsolidationExtract:
-    return ConsolidationExtract(snippets=tuple(snippets), truncated=False)
+    return ConsolidationExtract(snippets=tuple(snippets))
 
 
 #: A memory-backed rule (a feedback_ slug) whose subject recurs in a fresh

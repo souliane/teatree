@@ -25,15 +25,13 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
-from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
-from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 from teatree.request_cache import cached_per_request
 from teatree.utils.singleton import pid_alive
 
 if TYPE_CHECKING:
     from teatree.core.models import Loop
-    from teatree.loop.preset_resolution import ActivePreset
+    from teatree.loops.enable_verdict import EnablePlanes
 
 INFRA_SLOTS: tuple[str, ...] = (
     "loop-tick",
@@ -78,6 +76,10 @@ class LoopStatusEntry:
     #: running, counting-down loop (the drift #3159's single predicate exists to prevent).
     admitted: bool
     held: bool = False
+    #: Admitted, yet carrying no ``loop_timer`` row at all — nothing is driving it
+    #: (#4185). A separate axis from ``admitted``: this loop passed every gate and
+    #: still has no chain. Infra slots are never starved (they carry no timer chain).
+    starved: bool = False
 
     @property
     def never_fired(self) -> bool:
@@ -189,29 +191,33 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     statusline and ``t3 loop list`` since both consume :func:`build_report`.
 
     ``held`` is read from the ``LoopState`` control tier the loop tick gates on
-    (``loop_enabled`` = ``Loop.enabled`` AND not held), so a PAUSED loop — which
+    (the enable verdict's hold arm), so a PAUSED loop — which
     keeps ``Loop.enabled=True`` and a live cadence anchor — is surfaced as held
     rather than masquerading as a running, counting-down loop. The hold set is
-    bulk-resolved ONCE via :func:`teatree.loop.loop_state_db.control_planes_in_db`,
-    not per loop — the live report must not re-introduce the N+1 the tick removed.
+    bulk-resolved ONCE as part of the shared planes, not per loop — the live report
+    must not re-introduce the N+1 the tick removed.
 
-    ``admitted`` folds in the #3159 preset mask on top of held+enabled — the SAME
-    effective verdict the tick gates on. The active preset is resolved ONCE here,
-    so a preset-masked-off loop is reported un-admitted (no live countdown) and a
-    preset-forced-ON base-disabled loop is reported admitted (the tick will fire it).
+    ``admitted`` is the SAME instant verdict the tick gates a fire on, read from the one
+    :class:`~teatree.loops.enable_verdict.EnablePlanes` seam — so a masked-off loop is
+    reported un-admitted (no live countdown) and a mask-forced-ON base-disabled loop is
+    reported admitted. Reading the preset layer here instead let this surface render
+    ``admitted=False`` beside ``starved=True`` in ONE row: starvation is derived from
+    chain membership, and the two answers came from two different resolvers (#4196).
+
+    ``starved`` is resolved ONCE here too (two bulk timer-row reads), so an admitted
+    loop nothing is driving is visible rather than reading as a healthy countdown.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.chain_membership import starved_loop_names  # noqa: PLC0415 — deferred: ORM-backed read
+    from teatree.loops.enable_verdict import EnablePlanes  # noqa: PLC0415 — deferred: ORM-backed resolver
 
-    active = resolve_active_preset()
-    held, forced = control_planes_in_db()
-    entries = [_mini_entry(loop, active, held, forced) for loop in Loop.objects.all()]
+    planes = EnablePlanes.resolve()
+    starved = starved_loop_names()
+    entries = [_mini_entry(loop, planes, starved) for loop in Loop.objects.all()]
     return tuple(sorted(entries, key=operator.attrgetter("name")))
 
 
-def _mini_entry(
-    loop: "Loop", active: "ActivePreset | None", held_names: set[str], forced: dict[str, bool]
-) -> LoopStatusEntry:
-    held = loop.name in held_names
+def _mini_entry(loop: "Loop", planes: "EnablePlanes", starved_names: set[str]) -> LoopStatusEntry:
     return LoopStatusEntry(
         name=loop.name,
         kind=LoopKind.MINI,
@@ -219,13 +225,9 @@ def _mini_entry(
         cadence_seconds=_row_cadence_seconds(loop),
         last_fired_at=loop.last_run_at,
         next_fire_at=loop.next_run_at(),
-        admitted=loop_state_admits(
-            configured_enabled=loop.enabled,
-            held=held,
-            preset_state=preset_state_for(active, loop.name),
-            forced=forced.get(loop.name),
-        ),
-        held=held,
+        admitted=planes.admits(loop.name, configured_enabled=loop.enabled),
+        held=loop.name in planes.held,
+        starved=loop.name in starved_names,
     )
 
 

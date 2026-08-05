@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
-from teatree.backends.loader import issue_is_done
+from teatree.backends.issue_reads import issue_is_done
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
 

@@ -15,11 +15,12 @@ from pathlib import Path
 from pydantic_ai.toolsets.function import FunctionToolset
 
 from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.tool_errors import ToolInputError
 from teatree.agents.lane_b.tool_names import TOOL_BASH
 from teatree.utils.run import run_allowed_to_fail
 
 
-class ShellDeniedError(RuntimeError):
+class ShellDeniedError(ToolInputError, RuntimeError):
     """A command matched the coarse Shell denylist — refused before execution."""
 
 

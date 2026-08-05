@@ -18,6 +18,7 @@ from django.test import TestCase
 from teatree.config import get_effective_settings
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.enums import Mode
+from teatree.config.retired_settings import CLEAR_REMEDY, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.core.models import ConfigSetting
 
@@ -284,6 +285,50 @@ class TestConfigSettingGet(TestCase):
     def test_get_rejects_non_overridable_key(self) -> None:
         with pytest.raises(SystemExit):
             call_command("config_setting", "get", "not_a_real_setting", stderr=StringIO())
+
+
+class TestRetiredKeyRefusalRendersTheRecord(TestCase):
+    """A retired key is answered with its retirement record (souliane/teatree#4094).
+
+    The bare unknown-key refusal is indistinguishable from a typo, so a reader who
+    knows the setting used to exist concludes the mechanism is lost rather than
+    superseded — twice, in one session, from ``issue_implementer_require_label``.
+    """
+
+    def _refusal(self, subcommand: str, key: str) -> str:
+        err = StringIO()
+        args = ["config_setting", subcommand, key] + ([] if subcommand == "get" else ["true"])
+        with pytest.raises(SystemExit):
+            call_command(*args, stderr=err, stdout=StringIO())
+        return err.getvalue()
+
+    def test_get_of_a_removed_key_renders_its_reason_and_remedy(self) -> None:
+        entry = removed_setting("issue_implementer_require_label")
+        rendered = self._refusal("get", "issue_implementer_require_label")
+        assert entry.reason in rendered
+        assert CLEAR_REMEDY.format(key="issue_implementer_require_label") in rendered
+        assert "is not a known config setting" not in rendered
+
+    def test_get_of_a_renamed_key_names_its_replacement(self) -> None:
+        rendered = self._refusal("get", "speed")
+        assert RENAMED_SETTING_KEYS["speed"] in rendered
+        assert "is not a known config setting" not in rendered
+
+    def test_get_of_a_genuinely_unknown_key_is_unchanged(self) -> None:
+        assert "is not a known config setting" in self._refusal("get", "not_a_real_setting")
+
+    def test_set_of_a_removed_key_renders_the_record_and_still_refuses(self) -> None:
+        entry = removed_setting("issue_implementer_require_label")
+        assert entry.reason in self._refusal("set", "issue_implementer_require_label")
+        assert ConfigSetting.objects.filter(key="issue_implementer_require_label").exists() is False
+
+    def test_set_of_a_renamed_key_points_at_the_replacement(self) -> None:
+        assert RENAMED_SETTING_KEYS["speed"] in self._refusal("set", "speed")
+        assert ConfigSetting.objects.filter(key="speed").exists() is False
+
+    def test_seed_of_a_removed_key_renders_the_record(self) -> None:
+        entry = removed_setting("issue_implementer_require_label")
+        assert entry.reason in self._refusal("seed", "issue_implementer_require_label")
 
 
 class TestConfigSettingColdHookGateKey(TestCase):

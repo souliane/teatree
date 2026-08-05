@@ -176,6 +176,30 @@ def removed_setting(key: str) -> RetiredSetting | None:
     return entry if entry is not None and entry.replacement is None else None
 
 
+def retirement_notice(key: str) -> str | None:
+    """What became of *key*, or ``None`` when no retirement is recorded for it.
+
+    souliane/teatree#4094: ``config_setting get``/``set`` answered a retired key with
+    the unknown-key refusal, which reads exactly like the answer for a typo — so a
+    reader who knows the setting used to exist concludes the mechanism was lost
+    rather than superseded. The two outcomes must not read alike either: a rename
+    still has an answer to give (the replacement), while a removal has none, and
+    saying so is the whole point of recording the reason.
+    """
+    entry = _BY_KEY.get(key)
+    if entry is None:
+        return None
+    if entry.replacement is not None:
+        return (
+            f"{key!r} was renamed to {entry.replacement!r} — {entry.reason}. "
+            f"Read and write {entry.replacement!r} instead."
+        )
+    return (
+        f"{key!r} was removed — {entry.reason}. It has no replacement. "
+        f"Clear any stale row with `{CLEAR_REMEDY.format(key=key)}`."
+    )
+
+
 def warn_removed_setting(entry: RetiredSetting) -> None:
     """Report a stored row under a removed key on stderr — the anti-silent-revert line.
 

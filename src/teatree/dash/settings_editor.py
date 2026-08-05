@@ -48,7 +48,8 @@ from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_
 from teatree.config.setting_help import setting_help
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, is_secret, render_value
-from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.types import ConfigImport
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigValue
 from teatree.core.overlay_loader import get_all_overlays

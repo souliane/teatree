@@ -14,7 +14,7 @@ is a corpse — the same predicate :func:`~teatree.loops.timer_reconciler.
 ensure_loop_timers` uses to reap it — so a loop whose only rows are corpses is
 carrying no chain at all and will never fire again on its own.
 
-The enumeration is :func:`~teatree.loops.timer_reconciler.timer_chain_loop_names`,
+The enumeration is :func:`~teatree.loops.chain_membership.timer_chain_loop_names`,
 which already excludes ``off_live_tick`` loops (``directive_loop``, ``dream``,
 ``outer_loop``). Those are driven by :mod:`teatree.loops.off_live_tick_driver`
 firing their own tick command, never by a worker timer, so having no timer row is
@@ -41,22 +41,9 @@ the chain is still named, and the reaper works off the same predicate.
 import datetime as dt
 from dataclasses import dataclass
 
+from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
 from teatree.loops.timer_chains import compute_tick_deadline, loop_runner_enabled
-from teatree.loops.timer_reconciler import STUCK_GRACE_SECONDS, timer_chain_loop_names
-
-
-def loop_timers_by_name(status: str) -> dict[str, list]:
-    """Every ``loop_timer`` row in *status*, grouped by the loop name in its args."""
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-
-    from teatree.loops.timer_chains import _loop_timer_path  # noqa: PLC0415 — deferred: loaded at tick time
-
-    grouped: dict[str, list] = {}
-    for row in DBTaskResult.objects.filter(task_path=_loop_timer_path(), status=status):
-        args = row.args_kwargs.get("args") or []
-        if args:
-            grouped.setdefault(args[0], []).append(row)
-    return grouped
+from teatree.loops.timer_reconciler import STUCK_GRACE_SECONDS
 
 
 def is_stranded(result, loop_row, now: dt.datetime) -> bool:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally

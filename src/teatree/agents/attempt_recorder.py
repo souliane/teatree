@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.agents.action_verification import action_verification_error
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.landing_verification import commits_ahead_or_unknown, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
@@ -65,6 +66,12 @@ class AttemptUsage:
     # that has no dispatch context (e.g. an in-session record-attempt).
     reasoning_effort: str = ""
     skills_loaded: list[str] = dataclasses.field(default_factory=list)
+    # Tool calls the run emitted. ``None`` means UNMEASURED — the in-session
+    # ``record-attempt`` path hands over a sub-agent's envelope and never saw its
+    # tool stream — and is deliberately distinct from a measured ``0``, which is
+    # the positive evidence that the run could not act
+    # (:mod:`teatree.agents.action_verification`).
+    tool_calls: int | None = None
 
 
 class ResultEnvelopeError(ValueError):
@@ -116,10 +123,15 @@ def record_result_envelope(
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
-    Validation order: schema-key check → OUTAGE check (#1764) → per-phase
-    evidence gate (#1284) → LANDING check (coding/debugging must have committed) —
+    Validation order: schema-key check → OUTAGE check (#1764) → ACTION check
+    (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
+    LANDING check (coding/debugging must have committed) —
     a failure on any records a FAILED attempt and fails the task (``exit_code=0``
-    so it reads as a clean refusal, not a crash). The landing check re-reads the
+    so it reads as a clean refusal, not a crash). The action check runs BEFORE the
+    evidence gate so a toolless run never reaches the coding salvage below: on a
+    long-lived branch the salvage would otherwise synthesize ``files_modified``
+    from the whole branch diff and complete a run that never acted
+    (:mod:`teatree.agents.action_verification`). The landing check re-reads the
     ticket worktree's git state so a coder that reported ``files_modified`` while
     nothing was committed (the yield-without-landing stall) lands FAILED with a
     ``landing_unverified`` diagnostic — which the bounded auto-requeue sweep then
@@ -146,25 +158,10 @@ def record_result_envelope(
     transition).
     """
     usage = usage or AttemptUsage()
-    schema_error = validate_result_keys(result)
-    if schema_error:
-        return _record_failure(task, error=schema_error, result=result)
-
-    signature = outage_signature(result)
-    if signature:
-        return _record_failure(task, error=f"outage_death: {signature}", result=result)
-
-    evidence_error = check_evidence(result, phase or task.phase)
-    if evidence_error:
-        salvaged = _salvage_coding_result(task, result, phase=phase)
-        if salvaged is None:
-            diagnosis = evidence_error if envelope_parsed else NO_ENVELOPE_ERROR
-            return _record_failure(task, error=diagnosis, result=result)
-        result = salvaged
-
-    landing_error = landing_verification_error(task, phase=phase)
-    if landing_error:
-        return _record_failure(task, error=landing_error, result=result)
+    checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
+    result = checked.result
+    if checked.error:
+        return _record_failure(task, error=checked.error, result=result)
 
     server_side_error = _record_returned_envelopes(task, result, phase=phase)
     if server_side_error:
@@ -194,6 +191,55 @@ def record_result_envelope(
     )
     task.complete(result_artifact_path="")
     return attempt
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _PreRecordCheck:
+    """The first refusal of the side-effect-free validation chain, and the result to record.
+
+    ``result`` is the possibly-SALVAGED envelope: the #3263 coding salvage replaces a
+    missing ``files_modified`` with the landed commit's paths, and the caller must
+    record that envelope rather than the one it passed in.
+    """
+
+    error: str
+    result: AgentResultBlob
+
+
+def _check_before_recording(
+    task: Task,
+    result: AgentResultBlob,
+    *,
+    phase: str,
+    usage: AttemptUsage,
+    envelope_parsed: bool,
+) -> _PreRecordCheck:
+    """Run the ordered refusal chain that precedes any recording side effect.
+
+    Order is load-bearing and documented on :func:`record_result_envelope`. Split
+    out so that function stays a short record-or-refuse decision over ONE verdict
+    rather than a ladder of early returns.
+    """
+    schema_error = validate_result_keys(result)
+    if schema_error:
+        return _PreRecordCheck(schema_error, result)
+
+    signature = outage_signature(result)
+    if signature:
+        return _PreRecordCheck(f"outage_death: {signature}", result)
+
+    action_error = action_verification_error(phase or task.phase, tool_calls=usage.tool_calls)
+    if action_error:
+        return _PreRecordCheck(action_error, result)
+
+    evidence_error = check_evidence(result, phase or task.phase)
+    if evidence_error:
+        salvaged = _salvage_coding_result(task, result, phase=phase)
+        if salvaged is None:
+            return _PreRecordCheck(evidence_error if envelope_parsed else NO_ENVELOPE_ERROR, result)
+        result = salvaged
+
+    return _PreRecordCheck(landing_verification_error(task, phase=phase), result)
 
 
 def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
@@ -252,11 +298,11 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
     The orchestrator half of the headless review lane: a Bash-denied reviewer
     RETURNS a typed ``review_verdict``; this records the ``ReviewVerdict`` (which
     resolves the per-MR :class:`MRReviewLock`) — maker≠checker holds because THIS
-    actor is not the author. Returns an error string when the verdict is malformed or the
-    reviewer identity is a maker/loop role (the caller fails the task so the
-    block surfaces), else ``""``. A non-reviewing phase, a result without a
-    ``review_verdict``, or a reviewing task with no resolvable PR target is a
-    no-op (``""``).
+    actor is not the author. Returns an error string when the verdict is malformed, the
+    reviewer identity is a maker/loop role, or the reviewer's self-asserted head diverges
+    from the dispatch head (the caller fails the task so the block surfaces), else ``""``.
+    A non-reviewing phase, a result without a ``review_verdict``, or a reviewing task with
+    no resolvable PR target is a no-op (``""``).
     """
     if normalize_phase(phase or task.phase) not in _REVIEW_VERDICT_PHASES:
         return ""
@@ -268,6 +314,11 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         return ""
 
     envelope = cast("ReviewVerdictEnvelope", raw_envelope)
+    binding_error = _head_binding_error(
+        asserted=str(envelope.get("reviewed_sha") or "").strip(), dispatch_head=target.head_sha
+    )
+    if binding_error:
+        return binding_error
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -278,7 +329,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         ReviewVerdict.record(
             pr_id=target.pr_id,
             slug=target.slug,
-            reviewed_sha=str(envelope.get("reviewed_sha") or "").strip() or target.head_sha,
+            reviewed_sha=target.head_sha,
             verdict=str(envelope.get("verdict", "")),
             reviewer_identity=str(envelope.get("reviewer_identity") or _DEFAULT_HEADLESS_REVIEWER),
             findings=findings,
@@ -290,6 +341,47 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
     except ReviewVerdictError as exc:
         return f"review verdict recording refused: {exc}"
     return ""
+
+
+#: Shortest self-asserted prefix that still identifies the dispatch head — git's own
+#: abbreviation floor. Anything shorter is read as a divergence, not an abbreviation.
+_MIN_ABBREVIATED_SHA_LEN = 7
+
+
+def _head_binding_error(*, asserted: str, dispatch_head: str) -> str:
+    """Refuse a verdict that does not bind to the dispatched tree, or ``""`` (#4126, #4168).
+
+    The verdict is recorded at the DISPATCH head because that is the key the landed-work
+    guard (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`) reads: a
+    verdict written at the reviewer's own ``reviewed_sha`` is unreachable there, so the
+    reviewing row stays ``failed`` and is re-dispatched forever. Recording a divergent
+    self-assertion at the dispatch head anyway would be worse — it would vouch for a tree
+    nobody reviewed — so the divergence is surfaced instead, and a reviewer that judged a
+    different tree than it was dispatched for becomes a finding rather than a silent miss.
+    An abbreviated head that prefixes the dispatch head asserts the same tree.
+
+    An OMITTED head is refused on the same reasoning (#4168): treating it as agreement
+    enforced the rule only against reviewers that disclose a head, so a reviewer that said
+    nothing got ``merge_safe`` recorded at the dispatch head with no check performed at all.
+    The shell sibling (``t3 <overlay> review record``) already refuses an empty ``--reviewed-sha``, and
+    ``build_review_contract`` hands the reviewer the literal 40-char head, so disclosing it
+    costs a compliant reviewer nothing.
+    """
+    claimed = asserted.lower()
+    head = dispatch_head.strip().lower()
+    if not claimed:
+        return (
+            "review verdict omits reviewed_sha — the head it bound to is undisclosed, so nothing "
+            f"was checked against the head this review was dispatched for ({dispatch_head}); the "
+            "verdict is not recorded. Return that full 40-char head, which your brief named"
+        )
+    if len(claimed) >= _MIN_ABBREVIATED_SHA_LEN and head.startswith(claimed):
+        return ""
+    return (
+        f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
+        f"({dispatch_head}) — a reviewer that judged a different tree than the one it was "
+        f"dispatched for is itself a finding; the verdict is not recorded"
+    )
 
 
 def _resolve_review_target(task: Task) -> "_ReviewTarget | None":

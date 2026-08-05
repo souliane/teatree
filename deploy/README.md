@@ -211,7 +211,16 @@ match and keeps the self-updating volume.
 The `[slack]` editable install on `teatree_uv` resolves `teatree` through this
 mount path, so the mounted tree supplies the code while the volume supplies the
 dependency set. A working tree whose dependency pins have moved past the image's
-needs a rebuild (`docker compose build`) or an `init` run.
+does NOT need an image rebuild — re-run the `init` role, which reinstalls the
+editable tool from the mounted tree into the `teatree_uv` volume (that volume
+shadows the image-baked install):
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --force-recreate teatree-init
+```
+
+`docker compose build` is only required when the *image* itself must change (a new
+system package, a new baked stage) — not for source or dependency edits.
 
 ### Off-box (an operator laptop)
 

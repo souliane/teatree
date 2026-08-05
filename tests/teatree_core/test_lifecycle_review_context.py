@@ -51,7 +51,7 @@ class TestReviewingRequiresReviewContext(TestCase):
     def _record_context(self, ticket: Ticket) -> None:
         ticket.record_review_context(
             work_item="https://gitlab.example.com/group/repo/-/issues/51",
-            documents=["uploads/abc/Tilgungsplan.pdf"],
+            documents=["uploads/abc/Widgetplan.pdf"],
             analysis="amortization schedule matches the serializer rounding rules",
         )
 
