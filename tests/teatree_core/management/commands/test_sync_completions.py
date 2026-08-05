@@ -21,7 +21,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Ticket
-from teatree.loop.scanners.board_reconcile import BoardAction, BoardTransition
+from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
 
 class _AlwaysDoneOverlay:
@@ -44,7 +44,7 @@ def _run() -> list[BoardTransition]:
             "teatree.core.overlay_loader.get_all_overlays",
             return_value={"fake-overlay": _AlwaysDoneOverlay()},
         ),
-        patch("teatree.backends.loader.get_code_host_for_url", return_value=_FakeHost()),
+        patch("teatree.backends.issue_reads.get_code_host_for_url", return_value=_FakeHost()),
     ):
         return cast("list[BoardTransition]", call_command("ticket", "sync-completions"))
 

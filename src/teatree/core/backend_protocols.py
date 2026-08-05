@@ -63,6 +63,21 @@ class PrOpenState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class IssueReopenState(StrEnum):
+    """Whether an issue was closed and then REOPENED, per the forge's own payload.
+
+    Three-valued because "the issue is open" alone cannot answer it: a delivered
+    ticket whose issue simply never closed is open too, and reviving that one
+    re-does work the factory already shipped. ``UNKNOWN`` is the fail-CLOSED
+    value — a fetch error, an error payload, or a forge whose issue payload
+    carries no reopen marker at all — and no caller may act on it (#4152).
+    """
+
+    REOPENED = "reopened"
+    NOT_REOPENED = "not_reopened"
+    UNKNOWN = "unknown"
+
+
 class DraftState(StrEnum):
     """Whether a pull/merge request is in DRAFT state on the forge.
 
