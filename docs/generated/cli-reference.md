@@ -8908,6 +8908,10 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  ticket to a shippable state once the #788 hollow-ship guard confirms the
  fresh branch has real commits — so already-merged work is never re-shipped.
 
+ A ``Ticket`` row is REQUIRED by design, not by accident: this command IS the
+ FSM ship transition and every gate it runs is keyed on the row. A ticketless
+ checkout that only needs a PR opened uses ``pr ensure-pr`` (#4170).
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
