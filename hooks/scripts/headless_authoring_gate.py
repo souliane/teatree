@@ -19,10 +19,8 @@ WHO IS ACTING, NOT WHAT IS TOUCHED
 The factory's own workers run through the Agent SDK with this SAME hook set. A gate keyed
 on the path would refuse the agents meant to do the implementing, and the failure would
 present as "every headless task refuses" with no obvious cause. So the discriminator is
-the LANE, read from the transport's own env contract: the SDK subprocess sets
-``CLAUDE_CODE_ENTRYPOINT=sdk-py``, sets ``CLAUDE_AGENT_SDK_VERSION``, and strips
-``CLAUDECODE`` from the child env. Only a positively-identified interactive CLI session is
-ever refused.
+the LANE (``session_lane.session_lane``, shared with the engagement seam). Only a
+positively-identified interactive CLI session is ever refused.
 
 FAILS OPEN, INVERTING THE HOUSE RULE
 ------------------------------------
@@ -44,6 +42,7 @@ from pathlib import Path
 
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed, resolve_branch_and_root, teatree_src_on_path
 from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN, session_lane
 
 # Alias both identities so the handler the router registers and a test patching a helper
 # here operate on the SAME module object — the pattern every sibling uses.
@@ -85,11 +84,6 @@ _FILE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit"})
 #: false-negative every sibling accepts, and the right one for a gate that fails OPEN.
 _AUTHORING_BASH_RE = re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?git\s+(?:-C\s+\S+\s+)?(?:commit|push)\b")
 
-# ``session_lane`` vocabulary.
-LANE_INTERACTIVE_CLI = "interactive_cli"
-LANE_SDK = "sdk"
-LANE_UNKNOWN = "unknown"
-
 _REFUSAL = (
     "HEADLESS POSTURE: this session is teatree-engaged and `agent_runtime = headless`, which "
     "means implementation of teatree runs through the factory, not by hand here. This session's "
@@ -110,25 +104,6 @@ _REFUSAL = (
     "To turn the gate off entirely: "
     "`t3 <overlay> config_setting set headless_authoring_gate_enabled false`."
 )
-
-
-def session_lane() -> str:
-    """Which lane this hook is running in — the ONLY thing the refusal keys on.
-
-    Returns :data:`LANE_SDK` for any Agent-SDK embedding (the factory's own headless workers
-    included), :data:`LANE_INTERACTIVE_CLI` for a human-driven Claude Code CLI session, and
-    :data:`LANE_UNKNOWN` when the env carries neither signature.
-
-    The SDK signature is checked FIRST and is the broader test, so a transport that sets both
-    (or an env teatree does not recognise) resolves toward "not interactive" — the direction
-    that cannot take the factory down.
-    """
-    entrypoint = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip().lower()
-    if os.environ.get("CLAUDE_AGENT_SDK_VERSION", "").strip() or entrypoint.startswith("sdk"):
-        return LANE_SDK
-    if entrypoint == "cli" and os.environ.get("CLAUDECODE", "").strip():
-        return LANE_INTERACTIVE_CLI
-    return LANE_UNKNOWN
 
 
 def _gate_enabled() -> bool:

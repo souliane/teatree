@@ -287,7 +287,7 @@ def _check_intent_freshness(
     aborts on this check — same posture as the other DB-reading doctor checks.
     """
     try:
-        from teatree.loops.preset_status import effective_verdicts  # noqa: PLC0415 — deferred: ORM read at call time
+        from teatree.loops.enable_verdict import effective_verdicts  # noqa: PLC0415 — deferred: ORM read at call time
 
         now = timezone.now()
         loop_admits = {verdict.name: verdict.admitted for verdict in effective_verdicts(now)}

@@ -43,11 +43,8 @@ import httpx
 import pytest
 
 from teatree.backends.slack import http as slack_http
-from teatree.config.enums import Autonomy as _Autonomy
-from teatree.config.enums import OnBehalfPostMode as _OnBehalfPostMode
-from teatree.types import DEFAULT_MR_TITLE_REGEX as _DEFAULT_MR_TITLE_REGEX
-from teatree.types import SlackVoiceClassifierMode as _VoiceClassifierMode
-from teatree.types import SpeakConfig as _SpeakConfig
+from teatree.config.enums import Autonomy
+from teatree.config.settings import TeaTreeConfig, UserSettings
 
 # ── Fake Slack transport ──────────────────────────────────────────────
 
@@ -180,52 +177,30 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> FakeSlackTransport:
     return fake
 
 
-# ── Test-side fake config ─────────────────────────────────────────────
+# ── Test-side config ──────────────────────────────────────────────────
 
 
-@dataclass
-class _FakeUserSettings:
-    """Mirror of ``UserSettings`` for ``_resolved_identities()``."""
+def fake_config(raw: dict[str, Any]) -> TeaTreeConfig:
+    """A REAL ``TeaTreeConfig`` carrying synthetic ``[overlays.*]`` tables.
 
-    user_identity_aliases: list[str] = field(default_factory=list)
-    # #1395 The backend factory now resolves the voice/token classifier
-    # mode from ``load_config().user.slack_voice_classifier_mode``;
-    # mirror the new attribute so the test fixture stays a structural
-    # subset of the real ``UserSettings``.
-    slack_voice_classifier_mode: _VoiceClassifierMode = _VoiceClassifierMode.WARN
-    # #1775 ``_resolved_identities()`` now routes through
-    # ``get_effective_settings()``, whose autonomy collapse + per-overlay
-    # speak merge read these fields. Mirror them with the real
-    # ``UserSettings`` defaults so the fixture stays a structural subset.
-    autonomy: _Autonomy = _Autonomy.BABYSIT
-    on_behalf_post_mode: _OnBehalfPostMode = _OnBehalfPostMode.DRAFT_OR_ASK
-    speak: _SpeakConfig = field(default_factory=_SpeakConfig)
-    # #36 / #3115 ``get_effective_settings`` rebuilds settings via
-    # ``dataclasses.replace(base, **layered)`` where ``layered`` carries the
-    # overlay CODE-DEFAULT tier — every key in
-    # ``PROMOTED_OVERLAY_CODE_DEFAULT_KEYS``. ``replace`` re-invokes
-    # ``base.__class__(**changes)``, so each promoted key MUST be a field here or
-    # the rebuild raises ``TypeError`` (surfaces only when the active overlay
-    # resolves and populates the tier — a cwd-basename-dependent path, hence
-    # invisible to CI's ``/app`` checkout; see ``test_fake_config_fidelity``).
-    # Mirror the real ``UserSettings`` defaults so the fixture stays a structural
-    # subset.
-    review_skill: str = ""
-    review_skill_alternates: list[str] = field(default_factory=list)
-    architectural_review_skill: str = "ac-reviewing-codebase"
-    scanning_news_skill: str = "scanning-news"
-    eval_local_skill: str = "eval"
-    backlog_sweep_skill: str = "sweeping-tickets"
-    dogfood_smoke_skill: str = "dogfood-smoke"
-    mr_title_regex: str = _DEFAULT_MR_TITLE_REGEX
+    The synthetic part is only ``raw`` — the per-overlay registry the routing tests
+    inject, which a single real config store cannot express. ``user`` is the genuine
+    ``UserSettings``, not a mirror of it.
 
+    A hand-written mirror dataclass used to stand here and it drifted twice (#3115
+    ``dogfood_smoke_skill``, then ``single_branch_repos``): ``get_effective_settings``
+    rebuilds settings with ``replace(base, **layered)`` where ``layered`` carries every
+    key in ``PROMOTED_OVERLAY_CODE_DEFAULT_KEYS``, and ``replace`` re-invokes
+    ``base.__class__(**changes)``, so any promoted key the mirror had not been updated
+    with raised ``TypeError``. Using the real class makes that whole drift class
+    unrepresentable rather than merely guarded — there is no second field list to keep
+    in sync, so nothing to fall behind.
 
-@dataclass
-class _FakeConfig:
-    """Mirror of ``TeaTreeConfig`` for the backend-factory TOML fallback."""
-
-    raw: dict[str, Any] = field(default_factory=dict)
-    user: _FakeUserSettings = field(default_factory=_FakeUserSettings)
+    ``autonomy`` is the one value pinned away from its shipped default: under
+    :attr:`Autonomy.FULL` the collapse rewrites the approval gates these tests read,
+    so the fortress fixes the babysit posture explicitly instead of inheriting one.
+    """
+    return TeaTreeConfig(raw=raw, user=UserSettings(autonomy=Autonomy.BABYSIT))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

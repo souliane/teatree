@@ -25,8 +25,8 @@ from django.utils import timezone
 
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
 
-_BEFORE = ("core", "0057_remove_mode_availability_mode")
-_AFTER = ("core", "0058_one_unclaimed_handover_per_session")
+_BEFORE = ("core", "0058_merge_vendor_sync_and_availability_removal")
+_AFTER = ("core", "0059_one_unclaimed_handover_per_session")
 
 
 def test_the_migrations_frozen_literal_matches_the_runtime_constant() -> None:

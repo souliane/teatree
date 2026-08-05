@@ -1,4 +1,5 @@
 import hashlib
+import platform
 import socket
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -53,7 +54,11 @@ def host_published_port_host() -> str:
     """
     if not running_in_container():
         return "localhost"
+    return _resolved_host_alias()
 
+
+def _resolved_host_alias() -> str:
+    """The first host alias this container's resolver answers, else the bridge gateway."""
     for alias in _HOST_ALIASES:
         try:
             socket.gethostbyname(alias)
@@ -61,6 +66,25 @@ def host_published_port_host() -> str:
             continue
         return alias
     return _DEFAULT_BRIDGE_GATEWAY
+
+
+def docker_host_address() -> str:
+    """The address a container on this daemon reaches the host by.
+
+    Natively the host OS is a sound proxy for the daemon's: Docker Desktop
+    publishes an alias, a stock Linux daemon publishes none and the bridge
+    gateway is the address.
+
+    Inside a container that proxy breaks. ``platform.system()`` reports Linux
+    whatever the host is, so it answers "what kind of machine is this" when the
+    question is "which side of the boundary am I on" — and a containerized CLI on
+    a macOS host handed out the bridge gateway, which nothing is listening on
+    there. From inside, the daemon's own resolver is the authority, so the alias
+    is PROBED rather than inferred, exactly as in :func:`host_published_port_host`.
+    """
+    if running_in_container():
+        return _resolved_host_alias()
+    return "host.docker.internal" if platform.system() in {"Darwin", "Windows"} else _DEFAULT_BRIDGE_GATEWAY
 
 
 def find_free_port(host: str = "127.0.0.1") -> int:

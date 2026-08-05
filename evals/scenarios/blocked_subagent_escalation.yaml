@@ -36,7 +36,7 @@
 - name: orchestrator_escalates_blocked_subagent_result_not_swallows
   scenario: "the orchestrator escalates a sub-agent's blocked result to the user, never recording the run as done or re-dispatching the same blocked unit"
   agent_path: skills/rules/SKILL.md
-  agent_sections: ["Sub-Agent Limitations"]
+  agent_sections: ["Sub-Agent Limitations", "Always Use AskUserQuestion for Questions", "Ask Before Posting on the User's Behalf (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   cli_stubs: [t3]
@@ -47,6 +47,6 @@
         - tool_call: AskUserQuestion
           args.questions: '~ "(?i)(skill|block|missing|cannot proceed|resolve)"'
         - tool_call: Bash
-          args.command: '~ "(?i)t3 .*notify (send|dm)"'
+          args.command: '~ "(?i)t3 .*(notify (send|dm)|questions record)"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(task .*(complete|done|record-attempt)|re-?dispatch|retry the same|t3 .*ticket clear)"'

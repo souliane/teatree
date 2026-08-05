@@ -52,6 +52,7 @@ def _attempt_usage(
     lane: str = "",
     reasoning_effort: str = "",
     skills_loaded: list[str] | None = None,
+    tool_calls: int | None = None,
 ) -> "AttemptUsage":
     """Map a :class:`~claude_agent_sdk.ResultMessage` to ``AttemptUsage``.
 
@@ -60,15 +61,19 @@ def _attempt_usage(
     ``cache_read_input_tokens``), the billed model from the single key of
     ``model_usage`` (a dated id, optionally ``[1m]``-suffixed), the cost from
     ``total_cost_usd`` (else the price-table estimate). *lane*,
-    *reasoning_effort* and *skills_loaded* are dispatch provenance
-    (souliane/teatree#657, #3673) resolved before the run — independent of the
-    message, so they are stamped even when *message* is ``None``.
+    *reasoning_effort*, *skills_loaded* and *tool_calls* are all observed by the
+    driver rather than carried on the message (souliane/teatree#657, #3673), so
+    they are stamped even when *message* is ``None`` — for *tool_calls* that
+    matters: a run whose stream died before its terminal message still measured
+    its own (possibly zero) tool count, and losing it here would degrade the
+    :mod:`teatree.agents.action_verification` gate to UNMEASURED exactly when it
+    is most needed.
     """
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     skills = list(skills_loaded or [])
     if message is None:
-        return AttemptUsage(lane=lane, reasoning_effort=reasoning_effort, skills_loaded=skills)
+        return AttemptUsage(lane=lane, reasoning_effort=reasoning_effort, skills_loaded=skills, tool_calls=tool_calls)
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = _billed_model(message.model_usage)
     cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
@@ -85,6 +90,7 @@ def _attempt_usage(
         cost_is_estimated=estimated,
         reasoning_effort=reasoning_effort,
         skills_loaded=skills,
+        tool_calls=tool_calls,
     )
 
 

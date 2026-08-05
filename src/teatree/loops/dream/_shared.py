@@ -13,6 +13,19 @@ depend on it without any risk of an import cycle.
 
 from typing import Final
 
+#: The hot index phase 5 regenerates wholesale.
+INDEX_NAME: Final = "MEMORY.md"
+#: The cold archive index the decay phase rebuilds from ``archive/``.
+ARCHIVE_INDEX_NAME: Final = "MEMORY_ARCHIVE.md"
+#: The human-owned preamble emitted verbatim atop the generated index. It shares the
+#: memory dir with the memories, so it needs the same exclusion the two indexes get:
+#: left in the walked set it would be cross-linked, snapshotted as a lesson, and — being
+#: cited by nothing — archived by the stale tier, deleting the block it exists to hold.
+PRIORITY_NAME: Final = "MEMORY_PRIORITY.md"
+#: Every ``*.md`` in a memory dir that is an INDEX rather than a lesson. One answer, so
+#: a phase added later cannot walk a set the others exclude.
+NON_MEMORY_DOCS: Final = frozenset({INDEX_NAME, ARCHIVE_INDEX_NAME, PRIORITY_NAME})
+
 #: Weight floors per member, highest signal first — the ladder the engine ranks
 #: replay members by and the merge phase orders survivors by. Kept here so the two
 #: consumers can never drift. The floors are KIND-AWARE at the call site: the engine
@@ -40,6 +53,10 @@ def is_binding_text(text: str) -> bool:
 
 
 __all__ = [
+    "ARCHIVE_INDEX_NAME",
+    "INDEX_NAME",
+    "NON_MEMORY_DOCS",
+    "PRIORITY_NAME",
     "WEIGHT_BINDING",
     "WEIGHT_COLD_REVIEW",
     "WEIGHT_CORRECTION",

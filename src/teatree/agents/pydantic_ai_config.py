@@ -22,7 +22,7 @@ from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
 from teatree.agents.regulated_path import RegulatedPathPolicy
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicApiKeyCredential, Credential
 from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_openai_compatible_backend
 
 # The dispatch-lane header. Rides every ``pydantic_ai`` request as
@@ -139,6 +139,15 @@ class PydanticAiModelConfig:
         through it. ``None`` means "not resolved here" and the gate reads the stored settings at
         model-build time — the pre-#3980 behaviour, kept so a harness built without an explicit
         policy still enforces what the operator stored.
+    *   ``anthropic_credential`` — the ROUTED metered-key credential the NATIVE Anthropic
+        binding authenticates with, carrying the per-account ``pass`` entry the
+        ``anthropic_api_key_pass_paths`` selector picked. It holds a store PATH, never a key
+        value: the secret is read lazily by :func:`resolve_native_anthropic_model` inside
+        ``open``. It MUST be resolved SYNCHRONOUSLY by :func:`resolve_harness` for the same
+        reason every other field here is — the selector reads ``ConfigSetting`` /
+        ``AnthropicTokenUsage`` rows, and a Django ORM read from inside the ``asyncio.run``
+        event loop raises ``SynchronousOnlyOperation``. ``None`` leaves the credential
+        unrouted (``ANTHROPIC_API_KEY`` from the environment alone).
 
     Prompt-cache breakpoints (the :class:`~teatree.agents.context_plan.ContextPlan`
     → ``cache_control`` path, #3157 E2) are NOT wired into the harness here: nothing
@@ -155,6 +164,7 @@ class PydanticAiModelConfig:
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
     max_tokens: int | None = None
     regulated_path: RegulatedPathPolicy | None = None
+    anthropic_credential: Credential | None = None
 
 
 def native_anthropic_model_name(options: HarnessOptions) -> str:
@@ -172,7 +182,11 @@ def native_anthropic_model_name(options: HarnessOptions) -> str:
     return options.model or resolve_tier(DEFAULT_TIER)
 
 
-def resolve_native_anthropic_model(options: HarnessOptions, regulated_path: RegulatedPathPolicy | None) -> Model:
+def resolve_native_anthropic_model(
+    options: HarnessOptions,
+    regulated_path: RegulatedPathPolicy | None,
+    credential: Credential | None = None,
+) -> Model:
     """Construct the direct Anthropic Messages-API model (#3157 E1b) — the cache_control path.
 
     The one branch that makes real ``cache_control`` reachable: a native ``pydantic_ai``
@@ -184,6 +198,17 @@ def resolve_native_anthropic_model(options: HarnessOptions, regulated_path: Regu
     credential uses. The model id (:func:`native_anthropic_model_name`) is gated by *regulated_path*
     first — the policy resolved SYNCHRONOUSLY when the harness was built, never read here (this
     runs inside the async event loop, where the settings read is refused, #3980).
+
+    *credential* is the ROUTED metered credential :func:`resolve_harness` resolved
+    synchronously (``PydanticAiModelConfig.anthropic_credential``) — it carries the
+    per-account ``pass`` entry the ``anthropic_api_key_pass_paths`` selector picked, so the
+    key is read from the credential store rather than from ``ANTHROPIC_API_KEY`` alone.
+    Constructing a bare :class:`~teatree.llm.credentials.AnthropicApiKeyCredential` here
+    instead is what stranded a whole deployment: that credential has NO built-in ``pass``
+    path, so with the env var unset (the headless worker) it skipped the store entirely and
+    every dispatch died on "no ANTHROPIC_API_KEY credential available" while the configured
+    account sat readable in ``pass``. ``None`` keeps the env-only resolution for a caller
+    with no routing (tests, an operator exporting the key).
     """
     model_name = native_anthropic_model_name(options)
     RegulatedPathPolicy.resolve(regulated_path).assert_allowed(model_name)
@@ -196,7 +221,7 @@ def resolve_native_anthropic_model(options: HarnessOptions, regulated_path: Regu
             "'anthropic' package — install pydantic-ai-slim[anthropic]."
         )
         raise NativeAnthropicUnavailableError(msg) from exc
-    api_key = AnthropicApiKeyCredential().resolve()
+    api_key = (credential or AnthropicApiKeyCredential()).resolve()
     return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
 
 

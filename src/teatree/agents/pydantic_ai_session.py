@@ -1,7 +1,7 @@
 """The ``pydantic_ai`` in-flight session — the ``HarnessSession`` surface over an ``Agent``.
 
 Split out of :mod:`teatree.agents.harness` (module-health LOC cap): the session adapts
-pydantic_ai's streamed output into the SAME ``claude_agent_sdk`` message vocabulary every
+a pydantic_ai run into the SAME ``claude_agent_sdk`` message vocabulary every
 harness backend yields, so the driver (:func:`teatree.agents.headless._collect`) never
 special-cases the transport. It depends on neither the ``Harness`` protocol nor the registry
 — only the message vocabulary and the Lane-B compaction policy — so it lives below the
@@ -12,7 +12,7 @@ back-compat (``from teatree.agents.harness import PydanticAiHarnessSession``).
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Final
 
@@ -20,13 +20,14 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolRes
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
 
 if TYPE_CHECKING:
-    from pydantic_ai.messages import ModelMessage
-    from pydantic_ai.result import StreamedRunResult
+    from pydantic_ai import AgentRunResult
+    from pydantic_ai.messages import AgentStreamEvent, ModelMessage
+    from pydantic_ai.tools import RunContext
 
 #: The response-usage keys A metered OpenAI-compatible endpoint may
 #: carry its own per-request cost under, when pydantic_ai threads it through ``RunUsage.details``.
@@ -69,17 +70,20 @@ def _router_reported_cost(run_usage: object) -> float | None:
     return None
 
 
-def _error_turns(stream: "StreamedRunResult[None, str] | None") -> int:
-    """Turns actually made when a run ERRORED, from the stream's usage — else ``1``.
+async def _drain_events(_ctx: "RunContext[None]", events: "AsyncIterable[AgentStreamEvent]") -> None:
+    """The ``event_stream_handler`` whose PRESENCE keeps the run on the streaming path.
 
-    ``None`` when the error hit ``run_stream`` entry before the first request (no
-    stream bound); a ``0`` request count degrades to ``1`` so a failed attempt
-    always records at least the one turn it attempted.
+    :meth:`~pydantic_ai.agent.AbstractAgent.run` issues a NON-streamed model request
+    unless an ``event_stream_handler`` is supplied (its ``_needs_streaming`` branch),
+    and a long coding turn must stay streamed — the provider rejects a non-streamed
+    request whose token ceiling implies a multi-minute completion. So this exists to
+    select the transport, not to observe it: it only drains, which is exactly what
+    ``run`` does to whatever a handler leaves behind. The turn's tool calls and text
+    are read afterwards off the finished run's own message history
+    (:func:`_tool_blocks_since`), the same vocabulary either transport yields.
     """
-    if stream is None:
-        return 1
-    requests = stream.usage.requests
-    return requests if requests > 0 else 1
+    async for _event in events:
+        pass
 
 
 class _MaxTokensTruncationError(RuntimeError):
@@ -197,21 +201,24 @@ def _model_identity_usage(model_name: str) -> dict[str, Any]:
     return {model_name: {}}
 
 
-def _turns_made(stream: "StreamedRunResult[None, str] | None") -> int:
-    """The model requests a FAILED turn actually made — never zero.
+def _turns_made(run_usage: RunUsage) -> int:
+    """The model requests the turn actually made — never zero.
 
-    ``None`` is the provider refusing the very FIRST request: the error escapes
-    ``run_stream``'s context entry, so no stream ever existed. That is still one
-    attempted turn, and recording zero would under-count the ``LoopWatchdog`` ceiling
-    exactly the way the hardcoded ``1`` over-counted a multi-request run.
+    The caller OWNS the :class:`~pydantic_ai.usage.RunUsage` it hands to
+    :meth:`~pydantic_ai.agent.AbstractAgent.run` (pydantic_ai adopts that instance as
+    the run's own usage state and mutates it in place), so the count survives a run
+    that raised before returning a result. A ``0`` — the provider refusing the very
+    first request — degrades to ``1``: that is still one attempted turn, and recording
+    zero would under-count the ``LoopWatchdog`` ceiling exactly the way the hardcoded
+    ``1`` over-counted a multi-request run.
     """
-    return max(stream.usage.requests, 1) if stream is not None else 1
+    return max(run_usage.requests, 1)
 
 
 class PydanticAiHarnessSession:
     """The ``pydantic_ai`` in-flight session — the ``HarnessSession`` surface over an ``Agent``.
 
-    Adapts pydantic_ai's streamed output into the SAME ``claude_agent_sdk``
+    Adapts a pydantic_ai run into the SAME ``claude_agent_sdk``
     message vocabulary every backend yields (module docstring), so the driver
     never special-cases the transport. ``query``/``receive_response`` are
     decoupled (one queued prompt consumed per turn) so a multi-turn conversation
@@ -236,22 +243,21 @@ class PydanticAiHarnessSession:
     ``1``), and every terminal message carries the stable per-session
     :attr:`session_id`.
 
-    ``interrupt`` cancels the pydantic_ai ``StreamedRunResult`` (stops token
-    generation, closes the underlying connection, records the interrupted state
-    in message history) AND the local drain task, and sets ``_interrupted`` so
-    ``receive_response`` can tell "I was deliberately interrupted" apart from an
-    UNRELATED external cancellation of the awaiting coroutine itself (e.g.
-    :func:`headless._drive_with_heartbeat`'s ``asyncio.wait_for`` runtime
-    ceiling) — awaiting a genuine ``asyncio.Task`` propagates the awaiter's own
-    cancellation straight into it, so both sources raise the identical
-    ``CancelledError`` at the identical ``await task`` line; only the flag
-    disambiguates them. Swallowing the latter would silently report an empty
-    result instead of the runtime-breach ``stuck_reason`` the watchdog contract
-    requires.
+    ``interrupt`` cancels the in-flight run task (which unwinds the streamed
+    provider request, stopping token generation and closing the connection) and
+    sets ``_interrupted`` so ``receive_response`` can tell "I was deliberately
+    interrupted" apart from an UNRELATED external cancellation of the awaiting
+    coroutine itself (e.g. :func:`headless._drive_with_heartbeat`'s
+    ``asyncio.wait_for`` runtime ceiling) — awaiting a genuine ``asyncio.Task``
+    propagates the awaiter's own cancellation straight into it, so both sources
+    raise the identical ``CancelledError`` at the identical ``await task`` line;
+    only the flag disambiguates them. Swallowing the latter would silently report
+    an empty result instead of the runtime-breach ``stuck_reason`` the watchdog
+    contract requires.
 
     ``history`` (#2886) SEEDS ``_history`` from a prior conversation — a
     resumed park carries the rehydrated ``list[ModelMessage]`` in here so the
-    FIRST ``run_stream`` on the resumed session already includes it, matching
+    FIRST run on the resumed session already includes it, matching
     ``ClaudeSDKClient``'s ``--resume`` continuation contract. The
     :attr:`history` property exposes the accumulated conversation so a caller
     (:func:`headless._collect`) can persist it back out on a subsequent park.
@@ -283,8 +289,8 @@ class PydanticAiHarnessSession:
         # sent verbatim, never trimmed.
         self._phase = phase
         # The per-run sequential-request cap (the metered-lane guardrail). A positive
-        # value becomes ``UsageLimits(request_limit=...)`` on each
-        # ``run_stream`` so a cheap-model maker can't drift on a long tool loop;
+        # value becomes ``UsageLimits(request_limit=...)`` on each run so a
+        # cheap-model maker can't drift on a long tool loop;
         # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
         self._request_limit = request_limit
         # A stable per-session id stamped onto EVERY terminal ``ResultMessage``
@@ -293,8 +299,7 @@ class PydanticAiHarnessSession:
         # carries one; pydantic_ai has no server-side session, so teatree mints it.
         self._session_id = uuid.uuid4().hex
         self._pending_prompt: str | None = None
-        self._active_task: asyncio.Task[str] | None = None
-        self._active_stream: StreamedRunResult[None, str] | None = None
+        self._active_task: asyncio.Task[AgentRunResult[str]] | None = None
         self._interrupted = False
 
     @property
@@ -311,7 +316,23 @@ class PydanticAiHarnessSession:
         self._pending_prompt = prompt
 
     async def receive_response(self) -> AsyncIterator[object]:
-        """Drive one queued turn, yielding it in the ``claude_agent_sdk`` vocabulary.
+        """Drive one queued turn TO COMPLETION, yielding it in the ``claude_agent_sdk`` vocabulary.
+
+        Driven by :meth:`~pydantic_ai.agent.AbstractAgent.run` — the graph-to-completion
+        API — with a no-op ``event_stream_handler`` (:func:`_drain_events`) to keep the
+        provider request streamed. NOT ``run_stream``, which pydantic_ai documents as
+        single-shot: it "will consider the first output matching the ``output_type`` to
+        be the final output, [...] stop running the agent graph and [...] not execute any
+        tool calls made by the model after this 'final' output". This lane's
+        ``output_type`` is ``str``, and pydantic_ai raises its ``FinalResultEvent`` on the
+        FIRST ``TextPart`` of a response when text output is allowed
+        (``models._get_final_result_event``) — so under ``run_stream`` a model that opened
+        with one sentence of prose before calling a tool ended the whole run at one model
+        request, its tool results never fed back. That is the shape every Anthropic model
+        emits, so a coding dispatch could not act: it returned its own preamble as the
+        result and the worktree stayed untouched. ``run`` iterates the graph until the
+        model itself stops calling tools, which is the ``ClaudeSDKClient`` contract this
+        seam exists to match.
 
         A provider/run failure (:data:`_RUN_ERRORS`) ends the turn with an
         ``is_error`` :class:`~claude_agent_sdk.ResultMessage` instead of escaping as a
@@ -335,49 +356,55 @@ class PydanticAiHarnessSession:
             if self._phase
             else self._history
         )
-        stream_for_usage: StreamedRunResult[None, str] | None = None
+        # Owned by THIS caller rather than read off the result, because a run that
+        # raises never returns one — pydantic_ai adopts this instance as the run's
+        # usage state and mutates it in place, so the error paths below still report
+        # the requests the failed turn actually made.
+        run_usage = RunUsage()
         try:
-            async with self._agent.run_stream(
-                prompt, message_history=sent_history, usage_limits=self._usage_limits()
-            ) as stream:
-                stream_for_usage = stream
-                self._active_stream = stream
-                task = asyncio.ensure_future(self._drain(stream))
-                self._active_task = task
-                try:
-                    text = await task
-                except asyncio.CancelledError:
-                    if self._interrupted:
-                        return
-                    task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task
-                    raise
-                finally:
-                    self._active_task = None
-                    self._active_stream = None
-                all_messages = stream.all_messages()
-                self._history = all_messages
-                run_usage = stream.usage
+            task = asyncio.ensure_future(
+                self._agent.run(
+                    prompt,
+                    message_history=sent_history,
+                    usage_limits=self._usage_limits(),
+                    usage=run_usage,
+                    event_stream_handler=_drain_events,
+                )
+            )
+            self._active_task = task
+            try:
+                run_result = await task
+            except asyncio.CancelledError:
+                if self._interrupted:
+                    return
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise
+            finally:
+                self._active_task = None
         except UsageLimitExceeded as exc:
             # The run hit its OWN per-run request cap (``_request_limit``) — a genuine
             # FAILED, NOT a park: its message names no rate/usage-limit phrase, so
             # ``classify_limit`` never mistakes it for a recoverable window.
-            yield self._error_result(exc, subtype="error_max_turns", num_turns=_error_turns(stream_for_usage))
+            yield self._error_result(exc, subtype="error_max_turns", num_turns=_turns_made(run_usage))
             return
         except ModelHTTPError as exc:
             yield self._error_result(
                 exc,
                 subtype="error_during_execution",
-                num_turns=_error_turns(stream_for_usage),
+                num_turns=_turns_made(run_usage),
                 api_error_status=exc.status_code,
             )
             return
         except (ModelAPIError, UnexpectedModelBehavior) as exc:
             # A provider/run error with no HTTP status (``ContentFilterError`` is a
             # ``UnexpectedModelBehavior``, ``ModelHTTPError`` is caught above).
-            yield self._error_result(exc, subtype="error_during_execution", num_turns=_error_turns(stream_for_usage))
+            yield self._error_result(exc, subtype="error_during_execution", num_turns=_turns_made(run_usage))
             return
+        all_messages = run_result.all_messages()
+        self._history = all_messages
+        text = run_result.output
         if _hit_max_tokens(all_messages):
             yield self._error_result(
                 _MaxTokensTruncationError(
@@ -454,15 +481,15 @@ class PydanticAiHarnessSession:
             return UsageLimits(request_limit=self._request_limit)
         return None
 
-    @staticmethod
-    async def _drain(stream: "StreamedRunResult[None, str]") -> str:
-        parts = [chunk async for chunk in stream.stream_text(delta=True)]
-        return "".join(parts)
-
     async def interrupt(self) -> None:
+        """Abort the in-flight run, marking the abort as deliberate.
+
+        Cancelling the run task unwinds the streamed provider request, which stops
+        token generation and closes the connection. ``_interrupted`` is what
+        :meth:`receive_response` reads to tell this abort apart from an unrelated
+        external cancellation of the awaiting coroutine (class docstring).
+        """
         if self._active_task is None:
             return
         self._interrupted = True
-        if self._active_stream is not None:
-            await self._active_stream.cancel()
         self._active_task.cancel()

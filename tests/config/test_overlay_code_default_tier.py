@@ -21,7 +21,9 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
+from teatree.core.gates.single_branch_repo_guard import find_second_branch_creation, resolve_pinned_branch
 from teatree.core.models import ConfigSetting
+from teatree.core.overlay_loader import get_overlay
 
 
 class TestOverlayCodeDefaultTier(TestCase):
@@ -60,3 +62,48 @@ class TestOverlayCodeDefaultTier(TestCase):
     def test_field_only_key_db_row_still_overrides(self) -> None:
         ConfigSetting.objects.set_value("scanning_news_skill", "custom-news-skill")
         assert get_effective_settings().scanning_news_skill == "custom-news-skill"
+
+
+class TestSingleBranchReposReachesTheGate(TestCase):
+    """The declaration in ``overlay_settings.py`` is what the gate reads (#3-audit).
+
+    ``single_branch_repos`` was declared on the overlay and resolved ``[]``, so the
+    gate that reads it through ``get_effective_settings`` was inert while the rule
+    it enforces was being violated. The promotion closes that: the overlay's
+    declaration IS the effective value, with no second DB source of truth.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _overlay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_OVERLAY_NAME", "t3-teatree")
+        self.monkeypatch = monkeypatch
+
+    def _declare(self, entries: list[str]) -> None:
+        self.monkeypatch.setattr(get_overlay("t3-teatree").config, "single_branch_repos", entries)
+
+    def test_overlay_declaration_is_the_effective_value(self) -> None:
+        assert ConfigSetting.objects.count() == 0
+        self._declare(["group/widget-core=chore/fork-bootstrap"])
+        assert get_effective_settings().single_branch_repos == ["group/widget-core=chore/fork-bootstrap"]
+
+    def test_declaring_nothing_leaves_the_gate_inert(self) -> None:
+        assert get_effective_settings().single_branch_repos == []
+
+    def test_db_row_still_overrides_the_declaration(self) -> None:
+        self._declare(["group/widget-core=chore/fork-bootstrap"])
+        ConfigSetting.objects.set_value("single_branch_repos", ["group/other=main"], scope="t3-teatree")
+        assert get_effective_settings().single_branch_repos == ["group/other=main"]
+
+    def test_a_declared_repo_refuses_a_second_branch_end_to_end(self) -> None:
+        self._declare(["group/widget-core=chore/fork-bootstrap"])
+        entries = get_effective_settings().single_branch_repos
+        pinned = resolve_pinned_branch("git@example.com:group/widget-core.git", entries)
+        assert pinned == "chore/fork-bootstrap"
+        assert find_second_branch_creation("git checkout -b feature/x", pinned_branch=pinned) is not None
+
+    def test_an_undeclared_repo_is_untouched_end_to_end(self) -> None:
+        self._declare(["group/widget-core=chore/fork-bootstrap"])
+        entries = get_effective_settings().single_branch_repos
+        pinned = resolve_pinned_branch("git@example.com:group/unrelated.git", entries)
+        assert pinned == ""
+        assert find_second_branch_creation("git checkout -b feature/x", pinned_branch=pinned) is None

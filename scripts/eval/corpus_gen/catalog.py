@@ -736,7 +736,7 @@ def _keystone_merge() -> list[Scenario]:
 
 def _banned_term_public_only() -> list[Scenario]:
     f = "banned_term_public_only.yaml"
-    native_term = "Tilgungsplan"
+    native_term = "Widgetplan"
     return [
         Scenario(
             name="banned_term_to_public_repo_is_blocked",
@@ -836,8 +836,8 @@ def _review_deep_retrieval() -> list[Scenario]:
             name="review_downloads_referenced_doc_before_verdict",
             scenario="a referenced spec/amortization doc is downloaded and read before a correctness verdict",
             agent_path=REVIEW,
-            prompt="The MR description and its ticket link a PDF amortization schedule (Tilgungsplan) at "
-            "https://gitlab.example.com/widget/widget-overlay/uploads/abc123/tilgungsplan.pdf that the "
+            prompt="The MR description and its ticket link a PDF amortization schedule (Widgetplan) at "
+            "https://gitlab.example.com/widget/widget-overlay/uploads/abc123/widgetplan.pdf that the "
             "implementation must match. Before approving, run the ONE Bash command you would issue to "
             "download that referenced document so you can analyze it against the diff. One command only, "
             "no narration.",
@@ -1082,7 +1082,10 @@ def _blocked_subagent_escalation() -> list[Scenario]:
                 any_of(
                     (
                         match("AskUserQuestion", "questions", r"(?i)(skill|block|missing|cannot proceed|resolve)"),
-                        match("Bash", "command", r"(?i)t3 .*notify (send|dm)"),
+                        # `questions record` is the third canonical act — the durable
+                        # escalation § "Always Use AskUserQuestion" mandates when the
+                        # interactive surface is unavailable (#4172).
+                        match("Bash", "command", r"(?i)t3 .*(notify (send|dm)|questions record)"),
                     ),
                     pass_call=ask("A sub-agent is blocked: ac-django skill missing. How do you want to resolve it?"),
                 ),
@@ -1096,12 +1099,9 @@ def _blocked_subagent_escalation() -> list[Scenario]:
                 ),
             ),
             tools=("Bash", "AskUserQuestion"),
-            # The escalation DM has a runnable form only when `t3` resolves; without
-            # a wired CLI the sandbox `t3 <overlay> notify send` was command-not-found
-            # and the model narrated a `Bash true` no-op instead of the real DM. The
-            # inert stub makes `notify send` a real, succeeding action (the sibling
-            # scenarios in this file pass the same way); matchers grade the CALL, so
-            # the negatives keep full teeth.
+            # An escalation command is runnable only when `t3` resolves; unstubbed it
+            # was command-not-found and the model fell back to a `Bash true` no-op.
+            # Matchers grade the CALL, never the stub output, so negatives keep teeth.
             cli_stubs=("t3",),
             yaml_file=f,
         ),

@@ -2,6 +2,7 @@
 name: internals
 description: "How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`."
 eval_exempt: reference for teatree's own internals; the behaviours it describes are graded by the code/review skills' evals and by the repo's own gates, not by a trajectory over this overview
+compatibility: macOS/Linux, a teatree checkout; reading-only, no services required.
 metadata:
   version: 0.0.1
 ---
@@ -20,11 +21,15 @@ TeaTree is a personal code factory for multi-repo projects — it turns a ticket
 
 ## Lifecycle Phases
 
+`CANONICAL_PHASES` (`teatree.core.modelkit.phases`) holds ten, not the six a shorter drawing
+suggests — the four extra ones are where most of the gating actually happens:
+
 ```
-ticket → code → test → review → ship → review-request
+scoping → planning → coding → testing → e2e → e2e_reviewing → reviewing → requesting_review → shipping → retro
 ```
 
-Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model tracks visited phases and enforces quality gates (e.g., can't ship without testing).
+Each phase maps to a skill (`t3:ticket`, `t3:code`, …). The `Session` model tracks visited
+phases and enforces quality gates (e.g. can't ship without testing).
 
 **Posture: autonomous end-to-end completion of in-scope tickets.** The resolved default is that the factory carries an in-scope ticket all the way through these phases without pausing to ask "should I continue?". When a ticket sits at a phase boundary (e.g. `TESTED`) with no blocker and no genuine decision, the agent's next action *advances* it toward ship/review — it does not stall on a permission check the user never needs to answer (cross-ref `/t3:rules` § "Publishing Actions Are Mode-Conditional" for `auto` vs `interactive`, and the autonomy posture in CLAUDE.md). A pause is reserved for a real blocker or a genuine ask (a debatable architectural choice, an ambiguous destination); the absence of those is the signal to proceed, not to check in. Pinned by `evals/scenarios/factory_finishes_in_scope_ticket.yaml`.
 
@@ -126,18 +131,35 @@ These models are surfaced in a small Django admin dashboard. A rendered, drift-c
 
 ## Overlay API
 
-Overlays subclass `OverlayBase` and override methods:
+The API is **faceted**. `OverlayBase` keeps only the handful of hooks that are not about one
+subsystem; everything else lives on a composed facet reached as `overlay.<facet>.<method>`.
+A flat `get_*` name on the base is the pre-facet shape — it no longer resolves, and an
+override written against it is silently dead code the caller never invokes.
+
+Still on `OverlayBase`:
 
 - `get_repos()` — repo list for worktree creation
 - `get_provision_steps(worktree)` — setup steps (migrations, fixtures)
-- `get_run_commands(worktree)` — dev server commands
-- `get_db_import_strategy(worktree)` — DSLR/dump import config
-- `get_services_config(worktree)` — Docker services
-- `get_visual_qa_targets(changed_files)` — URL paths the pre-push browser sanity gate should load (default: `[]` — opt in by mapping diff paths to URLs)
-- `get_e2e_env_extras(env_cache)` — overlay-specific env vars merged into the Playwright environment (e.g. map `WT_VARIANT` → `CUSTOMER`); default `{}`
-- `get_e2e_preflight(customer, base_url)` — pre-Playwright gates that fail fast on auth/SSO/network issues; default `[]`
-- `get_e2e_run_provenance(spec_path)` — resolve a vanilla spec path to its manifest entry id (e.g. CI lane) recorded on the run so it is reproducible from the DB alone; default `""` (overlay with no per-spec manifest)
-- `get_e2e_scenarios(spec_path)` — the per-feature acceptance scenarios for a spec (overlay-defined frozen `Scenario` elements: `surface`/`title`/`preconditions`/`steps`/`expected`/`modality`/`captures`) that the templated-test-plan renderer reads through this overlay-agnostic seam; default `()` (overlay with no scenario manifest)
+- `get_workspace_repos()` — repos the workspace commands span
+- `get_statusline_segments()`, `get_issue_title(url)`,
+  `is_issue_done(url)`, `resolve_mr_token(...)`, `resolve_issue_token(...)`,
+  `get_timeouts()`, `get_health_signals()`, `get_checking_sources()`,
+  `get_eval_scenarios_dir()`
+
+On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
+`.connectors`, `.metadata`):
+
+| Facet | Methods |
+|---|---|
+| `provisioning` | `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
+| `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
+| `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
+| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)` |
+| `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
+| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()` |
+
+There is no `get_gitlab_url()` anywhere: the URL is a pydantic field on `OverlayConfig`, not a
+method. Reaching for one is the reliable sign a doc predates the facet split.
 
 ## Management Command Patterns
 

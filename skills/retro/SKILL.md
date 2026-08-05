@@ -9,7 +9,6 @@ requires:
 compatibility: macOS/Linux, any project with teatree skills.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Retro — Retrospective & Skill Improvement
@@ -234,25 +233,11 @@ For an enforcement-gap finding, retro routes it differently from a first occurre
 
 #### Tooling: `t3 <overlay> retro review-findings <pr-url>`
 
-When the recurrence source is a PR's review comments, the deterministic scaffold does the bookkeeping so a class-C finding reliably becomes a tracked gate (the meta-gap this routing addresses):
-
-1. Run `t3 <overlay> retro review-findings <pr-url>` with no `--classification`. It fetches the review comments through the forge client, computes a stable per-finding fingerprint, and lists each finding (marking any fingerprint already recorded on other PRs as `(recurring)` — the strongest class-C signal).
-2. Classify each fingerprint A / B / C yourself after reading the diff and the existing gate set — the command never guesses the verdict, because "is this already enforced?" and "is this recurring?" need judgement the scaffold can't reliably automate. Write the verdicts to a JSON file mapping `fingerprint -> {"class": "C", "enforcement": "<smallest gate/test/hook>"}`.
-3. Re-run with `--classification verdicts.json`. The command records every verdict to a durable per-PR store and files one scoped, banned-terms-safe, clickable-link enforcement issue per class-C finding — deduped by fingerprint, so re-running never refiles. A/B findings file nothing.
-
-The emitted summary (per-class counts + filed-issue links) is the escalation record for the persistence summary above.
-
-This is the durability-in-tooling-not-vigilance principle applied to retro itself: an already-failed behavioral rule failing again is a signal to escalate the *level* of the fix, not to repeat the *same* level.
+The three-step review-findings lane — list fingerprinted findings, classify each A/B/C into a JSON verdict file, re-run to file one deduped enforcement issue per class-C finding — is in [`skills/retro/references/recurrence-escalation-tooling.md`](references/recurrence-escalation-tooling.md).
 
 #### Tooling: `t3 <overlay> retro gate-failures` (#2024)
 
-When the recurrence source is a **quality gate firing on the agent's own output** — the inline-question Stop gate, comment-density, banned-terms, the doc-update gate — the gate-failure feedback loop turns the firing into an eval that stops it firing first-try. In the on-disk session transcript a gate BLOCK is a `hook_blocking_error` attachment whose `blockingError` text leads with a `TEATREE GATE — <phrase>` marker (it carries no `exitCode`; `hookName` is the `Stop` / `PreToolUse:Bash` bucket, never a gate name).
-
-1. Run `t3 <overlay> retro gate-failures` (latest in-scope session) or `--file <path.jsonl>` / `--session <id>`. It reads the single transcript hook-event chokepoint, keys on the attachment type + marker (excluding the `TEATREE LOOP SELF-PUMP` continue-signal), classifies each `preventable` (agent-output-shaped — should never have been produced) or `environmental` (a `hook_non_blocking_error` infra/dependency breakage — a missing plugin dir, a hook-runner traceback — an eval can't change the outcome), records each to the durable store, and lists them with the recurring mark.
-2. For a **preventable + recurring** failure, add or improve the matching AI eval so the agent's first-try output passes the gate. The eval must be **anti-vacuous**: its `_fail` fixture (a transcript reproducing the violating output) goes RED. The canonical example is the near-zero-comments tendency: the `comment_density_writes_sparse_code` scenario (`evals/scenarios/code.yaml`) asserts the agent does NOT write a code-restating comment when adding a small function, so the comment-density gate stops being hit by trial-and-error.
-3. Run with `--escalate --repo <slug> --pr-url <url>` to file one scoped, deduped enforcement issue per recurring preventable failure (fingerprint-deduped, banned-terms-safe, clickable-link safe — re-running never refiles). Environmental and non-recurring failures file nothing.
-
-Privacy: the recorded `GateFailure` carries only the bounded gate-identity slug + the session id — never the blockingError message, the `stderr`, the `command`, or `stdout` (the diff/banned content). See `evals/README.md` § "Gate-failure feedback loop".
+The three-step gate-failures lane — read the transcript's gate BLOCKs, classify each preventable or environmental, add the anti-vacuous eval, then `--escalate` — plus its privacy boundary, is in [`skills/retro/references/recurrence-escalation-tooling.md`](references/recurrence-escalation-tooling.md).
 
 ### 3. Fix Skills
 
@@ -301,33 +286,7 @@ Retro can also modify core teatree skills in the user's fork:
 
 Retro should **remove** overhead with the same confidence it **adds** guardrails. Most skill drift comes from accumulation — rules layered on over time, each defensible in isolation, collectively expensive. Every retro must ask: **did any rule or check create friction this session without preventing a real failure?** If yes, simplify in the same commit as the other findings.
 
-#### Qualifies for removal / consolidation
-
-- **Duplicate rules** — the same guardrail stated in multiple skills, memory files, or `CLAUDE.md`. Keep one canonical home; replace others with a one-line cross-reference.
-- **Stale instructions** — steps describing a workflow the CLI now handles automatically, or referencing removed commands/flags/paths.
-- **Procedural sprawl** — step-by-step commands where `t3` already does the work (see § "Never write CLI procedures into skills" above).
-- **Unused checks** — verification steps that slowed the session down but did not catch a real issue, and never fired across prior retros.
-- **Over-verbose prose** — multi-paragraph explanations where a one-line rule suffices.
-
-#### Never remove
-
-- **Destructive-action rules** — push confirmations, force-push gates, `--no-verify` bans, deletion approvals. Cost is ~0 tokens per turn; blast radius is real.
-- **Rules that prevented a real failure** (this session or a prior retro). When uncertain, leave it.
-- **Rules backed by an explicit user preference** (saved feedback memory, `CLAUDE.md` entry). Ask before removing.
-
-#### How to simplify
-
-- **Prefer consolidation over deletion.** Move the rule to one canonical home (typically `rules/SKILL.md` or the most relevant dedicated skill); replace duplicates with one-line pointers (`See <skill>/SKILL.md § <anchor>`). Keep anchors stable so cross-references don't break.
-- **Delete only when the rule is stale or unused.** A deletion must be justified in the commit message: either "handled by `t3 <command>`" (stale) or "never triggered across N retros" (unused).
-- **Measure the change.** Include the before/after line count delta for touched files in the commit message.
-
-#### Commit convention
-
-Use `refactor(<skill>): simplify <what>` (not `fix(<skill>)`). One commit per coherent simplification so reverts stay surgical. Example: `refactor(ship): drop duplicate push-confirmation rule — canonical in rules/SKILL.md`.
-
-#### When in doubt, ask
-
-If a rule looks like overhead but you cannot confirm it is unused, ask with `AskUserQuestion`. Show the rule, show grep evidence of recent invocations, and propose remove vs. keep. The cost of asking is low; the cost of removing a load-bearing rule is high.
+What qualifies for removal or consolidation, what is never removed, how to simplify (consolidate over delete, justify a deletion, measure the delta), the `refactor(<skill>): simplify <what>` commit convention, and the when-in-doubt ask are in [`skills/retro/references/simplification-pass.md`](references/simplification-pass.md).
 
 ### 4. Quality Rules
 
@@ -350,46 +309,19 @@ If a rule looks like overhead but you cannot confirm it is unused, ask with `Ask
 
 ### 5. Playbook Lifecycle
 
-**WHEN to create a new playbook:**
-
-- A ticket required 4+ files across 2+ repos with a repeatable pattern
-- A new integration point was discovered (webhook, API, document pipeline)
-
-**WHEN to update an existing playbook:**
-
-- A step was missing or wrong, discovered during implementation
-- The codebase evolved and a step is now unnecessary (e.g., config-driven instead of code-driven)
-
-**WHERE to create playbooks:**
-
-- `<project-skill>/references/playbooks/<scope>-<topic>.md`
-- Scope prefixes: `<project>-` (backend), `frontend-` (frontend), `cross-repo-` (multi-repo), none (process)
-- **After creating/updating:** update the playbook `README.md` index with the new entry
-
-**Playbook staleness check:** Before following any playbook, verify instructions against current code. If the codebase has moved to a config-driven approach or the referenced pattern no longer exists, the playbook is stale — fix it immediately.
+When to create a playbook, when to update one, where playbooks live and how they are named, and the staleness check are in [`skills/retro/references/playbook-and-branch-hygiene.md`](references/playbook-and-branch-hygiene.md).
 
 ### 5b. Unpushed Commits & Dirty Repos Check
 
 After completing all retro changes, check for unpushed work across ALL repos touched during the session. The goal is to ensure no work is forgotten — orphaned branches, stashes, and uncommitted changes are all risks.
 
-For each touched repo, collect and display:
-
-1. **Unpushed commits:** `git log --oneline @{u}..HEAD`
-2. **Non-main branches:** detect the main branch via `git config init.defaultBranch` (fallback: `main`), then list all other local branches with `git branch --no-merged <main>` — these may contain in-progress work
-3. **Stashes:** `git stash list` — stashes are easy to forget and may contain important WIP
-4. **Uncommitted changes:** `git status --short` — show the summary, not just "dirty"
-5. Flag any commits with `Co-Authored-By` trailers (should be removed per user's global config)
-6. Flag merge commits that could be rebased away
-7. Suggest consolidating multiple commits targeting the same skill into one
-8. Present a concrete consolidation proposal and ask before acting
-
 #### Squash-merge cross-check (Non-Negotiable)
 
-Before treating any local branch as "unpushed work", **cross-reference against the default branch**. Squash-merges create new SHAs, so `git log --not --remotes` by SHA alone will flag merged branches as unsynced.
+Before treating any local branch as "unpushed work", **cross-reference against the default branch**. Squash-merges create new SHAs, so `git log --not --remotes` by SHA alone flags already-merged branches as unsynced — and acting on that reading is how real work gets discarded.
 
-Delegate this to the CLI: **run `t3 teatree workspace clean-all`**. It classifies each branch's unsynced commits into `squash_merged` (subject matches a commit on `origin/main` after stripping `(#NNN)` suffix and conventional-commit type prefix), `merge_commits` (multi-parent — safe to discard), and `genuinely_ahead` (real pending work). Only genuinely-ahead branches block cleanup.
+Delegate the classification to the CLI: **run `t3 <overlay> workspace clean-all`**. It sorts each branch's unsynced commits into `squash_merged` (the subject matches a commit on `origin/main` once the `(#NNN)` suffix and conventional-commit prefix are stripped), `merge_commits` (multi-parent, safe to discard), and `genuinely_ahead` (real pending work). Only genuinely-ahead branches block cleanup.
 
-Inside a TTY, `clean-all` prompts for each blocked worktree — `[P]ush to remote / [A]bandon (force delete) / [S]kip`. In a non-TTY context it preserves the old skip-and-report behaviour. Reach for the subject-matching Python recipe only when you need to classify raw stashes or stray local branches outside a tracked worktree.
+The eight per-repo collection steps, the TTY prompt behaviour, and the raw subject-matching recipe for stray stashes are in [`skills/retro/references/playbook-and-branch-hygiene.md`](references/playbook-and-branch-hygiene.md).
 
 ### 6. Verification
 
@@ -415,46 +347,7 @@ See [`references/commit-to-fork.md`](references/commit-to-fork.md) for pre-fligh
 
 Before committing to the fork or creating an upstream issue, scan **all public-facing content the agent has authored or is about to author this session** — not just the diff of newly-staged files.
 
-### What to scan
-
-1. **Full branch-vs-base diff, not just the current session's hunks.**
-
-    ```bash
-    git -C "$T3_REPO" diff @{upstream}..HEAD | t3 tool privacy-scan -
-    ```
-
-    The branch may carry older commits from prior sessions or compacted work that the agent never re-read. `git diff @{upstream}..HEAD` covers every commit between the pushed base and HEAD. `git diff --cached` or `git diff HEAD~..HEAD` is **not enough** — it only shows the most recent work.
-
-2. **Commit subjects and bodies on the branch.**
-
-    ```bash
-    git -C "$T3_REPO" log --format='%H %s%n%b' @{upstream}..HEAD | t3 tool privacy-scan -
-    ```
-
-    Commit messages are public and indexed. A subject that names what was scrubbed leaks the fact of the scrub even when the diff itself is clean.
-
-3. **PR, issue, and comment bodies the agent has written this session.** Before declaring retro complete, grep every published artifact — PR descriptions you authored, PR/issue comments you posted, release notes, changelogs, and the branch name itself. Internal IPs, `/Users/…` paths, customer names, ticket IDs, or class-of-data words can slip in here even when the code diff is clean.
-
-4. **Memory and config files written this session.** Fresh memory writes to `MEMORY.md` or per-memory files can repeat a leaked string verbatim ("the leaked value was `…`"). Reference the incident without reproducing the string.
-
-### What to scan for
-
-Run the standard `t3 tool privacy-scan` detectors (emails, `/Users/` and `/home/` paths, private IPs, API keys `glpat-` / `sk-` / `ghp_`, internal hostnames, and `T3_BANNED_TERMS`).
-
-In addition, when the session involved remediating a leak, grep the Streisand-effect word list from `rules/SKILL.md` § "Leak Remediation — Silent Scrubs":
-
-```text
-leak|scrub|redact|real|private|personal|sensitive|accident|phone|email|password|token|credential|secret|address
-```
-
-A hit on those words in a commit subject, branch name, or public comment means the remediation itself amplifies the leak — rewrite or delete before declaring done.
-
-### `T3_PRIVACY` levels
-
-- **`strict`** (default): Exit 1 on ANY finding. Require user to manually resolve before proceeding.
-- **`relaxed`**: Warn on findings but exit 0. Pass `--no-strict` to the script.
-
-When `T3_PRIVACY` is not set, default to `strict`.
+The four surfaces to scan (branch-vs-base diff, commit subjects and bodies, PR/issue/comment bodies, memory and config writes), the detector set plus the Streisand-effect word grep, and the `strict` / `relaxed` `T3_PRIVACY` levels are in [`skills/retro/references/privacy-scan.md`](references/privacy-scan.md).
 
 ## What NOT to Do
 
@@ -471,18 +364,7 @@ When `T3_PRIVACY` is not set, default to `strict`.
 
 During every retro, scan the agent's personal config and memory files.
 
-**Discovery:** Memory files are platform-specific. Discover them dynamically:
-
-- **Claude Code:** glob `~/.claude/projects/*/memory/MEMORY.md` — each match is an index file; read it to find individual memory files in the same directory.
-- **Repo-level:** check for `CLAUDE.md`, `.cursorrules`, `AGENTS.md`, or similar agent config in the project root.
-- If no memory files are found, skip this step and note it in the retro output.
-
-**Actions:**
-
-1. **Promote to skills:** Any guardrail, pattern, or "do this not that" entry that would help other users → move to the appropriate skill file. Leave a one-line safety-net reminder if the rule is critical enough to need early loading.
-2. **Scan for promotable entries:** Read the discovered memory/config files for entries marked `(Also in: ...)` or containing domain knowledge that belongs in a skill file. Propose promoting them — the `(Also in: ...)` marker indicates the entry was intentionally duplicated as a safety net, but the authoritative source should be verified and kept current.
-3. **Remove stale entries:** If a memory entry references old paths, deleted features, or outdated patterns — update or remove it.
-4. **Deduplicate:** If the same rule appears in both a skill AND memory/config, verify the skill version is current, then trim the config copy to a one-line reference.
+How to discover memory and repo-level config files per platform, and the four actions (promote, scan for promotable entries, remove stale entries, deduplicate) are in [`skills/retro/references/personal-config-hygiene.md`](references/personal-config-hygiene.md).
 
 ### 8. Recommend Review Skill
 
@@ -497,14 +379,4 @@ During every retro pass, actively scan for behavior encoded **outside** the teat
 
 The scope includes: personal `~/.claude/settings.json` permissions/hooks, dotfiles hooks, shell rc files, personal memory entries, and overlay-local ad-hoc config that encodes patterns other users would benefit from.
 
-**Classification (apply to every candidate found):**
-
-| Class | Criteria | Action |
-|---|---|---|
-| **(P) Promote to framework** | Framework behavior every teatree installation should get out of the box (e.g., a hook `t3 setup` should wire automatically) | Promote: open a teatree issue or submit the code/docs change |
-| **(C) Model as documented config** | Legitimately instance-specific, but teatree should expose a documented config surface so users don't solve it ad-hoc | Create a teatree issue to add the config knob; document the expected pattern in BLUEPRINT.md or a skill |
-| **(K) Keep personal** | Genuine user preference with no cross-instance value (theme, voice settings, personal path shortcuts) | Leave it; no action |
-
-**Decision rule:** If different instances genuinely need different behavior, that difference **must** be modelled as a documented teatree setting or config option — not left as divergent ad-hoc config. Undocumented divergence silently drifts; documented variation is an explicit choice other users can make too.
-
-This scan complements § 7 "Clean Personal Config". Section 7 covers memory-entry hygiene (promoting guardrails, removing stale entries, deduplicating). This section covers *behavioral* promotion: hooks wired by hand, permission patterns added manually, automation scripts in personal dotfiles that should be first-class teatree features.
+The (P) promote / (C) model-as-config / (K) keep-personal classification table, the decision rule for divergent behaviour, and how this scan complements § 7 are in [`skills/retro/references/personal-config-hygiene.md`](references/personal-config-hygiene.md).

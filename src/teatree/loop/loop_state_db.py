@@ -8,14 +8,13 @@ restart-surviving 'pause everything', including the core ``dispatch`` loop), rea
 here via :func:`loop_held_in_db`.
 
 :func:`loop_state_admits` is the ONE pure predicate that combines them
-(configured-enabled AND not runtime-held). Every enable-decision site resolves a
-loop through it, so the verdict can never drift into a tier-subset: the standalone
-:func:`loop_enabled` single-lookup (the off-live-tick daily loop gates —
-``directive``/``outer``/``dream`` tick commands + the per-loop connector
-preflight) and the live loop-table tick (:func:`teatree.loops.loop_table._loop_admitted`,
-which applies the same predicate over its already-bulk-loaded ``Loop`` rows + one
-bulk ``LoopState`` read) both call it. The timer-chain admission reuses the tick's
-verdict. The review-claim chokepoint
+(configured-enabled AND not runtime-held), and it takes the mask as an ARGUMENT
+rather than resolving one: resolving a mask here is what produced a THIRD variant of
+the enable verdict, blind to the L0 default mode and the live-presence upgrade, which
+is how ``outer_loop``'s own tick gate disagreed with the tick that drives it (#4196).
+The mask is resolved ONCE, in :class:`teatree.loops.enable_verdict.EnablePlanes`, and
+every enable decision — the live tick, chain membership, the off-live-tick daily gates,
+the connector preflight, every observability surface — asks that one object. The review-claim chokepoint
 (:func:`teatree.loop.review_claim_signals.review_loop_enabled`) is the ONE
 deliberate exception: by documented design (#79) it reads the ``LoopState`` arm
 ONLY (:func:`loop_held_in_db`), never ``Loop.enabled`` — a fail-open
@@ -30,7 +29,6 @@ leaf may import it downward.
 
 import logging
 
-from teatree.loop.preset_resolution import resolve_preset_state
 from teatree.request_cache import cached_per_request
 
 logger = logging.getLogger(__name__)
@@ -156,47 +154,9 @@ def control_planes_in_db() -> tuple[set[str], dict[str, bool]]:
         return set(), {}
 
 
-def loop_enabled(name: str) -> bool:
-    """The single-lookup combined enable verdict: ``Loop.enabled`` AND not ``LoopState``-held.
-
-    The single-query form of :func:`loop_state_admits` the off-live-tick daily
-    loop gates use (``directive``/``outer``/``dream`` tick commands + the per-loop
-    connector preflight): a loop is enabled iff its durable ``Loop`` row carries
-    ``enabled=True`` AND no ``LoopState`` pause/disable holds it. The live
-    loop-table tick reaches the SAME verdict through the same predicate over
-    bulk-loaded rows, so no site drifts into a tier-subset.
-
-    A missing row or ``enabled=False`` is a real, deterministic disable (``False``).
-    The read-time preset mask (L3 override / L2 schedule slot) resolves through the
-    SAME predicate, so the off-live-tick daily gates and the connector preflight
-    honour a preset without a code change at each call site.
-    FAIL SAFE: a genuine read error (DB unavailable, Django not configured) resolves
-    to ``True`` so a hiccup never silently disables a loop — symmetric with
-    :func:`loop_held_in_db`, and it WARNS for the same reason its sibling does: a
-    loop silently mis-deciding is a real problem, so the swallowed fail-open must be
-    observable, not whispered at ``debug``.
-    """
-    try:
-        from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        row = Loop.objects.filter(name=name).only("enabled").first()
-    except Exception:
-        logger.warning("Loop.enabled read failed for %r — failing safe to enabled", name, exc_info=True)
-        return True
-    if row is None:
-        return False
-    return loop_state_admits(
-        configured_enabled=row.enabled,
-        held=loop_held_in_db(name),
-        preset_state=resolve_preset_state(name),
-        forced=loop_forced_in_db(name),
-    )
-
-
 __all__ = [
     "forced_loop_map",
     "held_loop_names",
-    "loop_enabled",
     "loop_forced_in_db",
     "loop_held_in_db",
     "loop_state_admits",

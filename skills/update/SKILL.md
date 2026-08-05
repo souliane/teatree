@@ -4,7 +4,6 @@ description: WHEN to bring teatree core and registered overlays up to date with 
 compatibility: macOS/Linux, git, python3.13+, uv.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Teatree Update

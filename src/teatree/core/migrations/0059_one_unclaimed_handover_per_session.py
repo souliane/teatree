@@ -61,7 +61,7 @@ def collapse_duplicate_unclaimed(apps, schema_editor) -> None:
 
 
 class Migration(migrations.Migration):
-    dependencies = [("core", "0057_remove_mode_availability_mode")]
+    dependencies = [("core", "0058_merge_vendor_sync_and_availability_removal")]
 
     operations = [
         migrations.RunPython(park_loop_runner_targets, migrations.RunPython.noop),

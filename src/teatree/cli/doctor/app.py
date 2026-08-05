@@ -82,6 +82,7 @@ from teatree.cli.doctor.checks_session import (
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
 )
+from teatree.cli.doctor.checks_skill_pins import _check_skill_pin_freshness
 from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
@@ -168,6 +169,7 @@ __all__ = (
     "_check_shipped_seed_inertness",
     "_check_single_db",
     "_check_singletons",
+    "_check_skill_pin_freshness",
     "_check_skill_source_drift",
     "_check_skills",
     "_check_slack_socket_mode",
@@ -252,7 +254,10 @@ def _optional_tooling_advisories() -> None:
     runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
     #3668 INFO-suggests each OPTIONAL provider-specific RECOMMENDED skill when absent
     (the Anthropic-specific vendor architecture skill), offered with its caveat rather
-    than installed by default.
+    than installed by default. The skill-pin advisory INFO-suggests a bump for each
+    MANDATED skill whose pin its source has moved past, reading the measurement
+    ``t3 setup`` recorded so the check itself stays offline, and reporting an absent
+    or aged record as UNVERIFIED rather than as agreement.
     (The critical worker gates — skills-present, memory-adequate, and the enabled
     pyright-lsp plugin's langserver being provisioned — are HARD FAILs in
     :func:`run_doctor_checks`, not advisories here.)
@@ -262,6 +267,12 @@ def _optional_tooling_advisories() -> None:
     _check_docker_workflow_wired()
     _check_tmp_tmpfs_headroom()
     _check_recommended_skills()
+    # The other half of the drift gate in `_run_provisioning_gates`: that one asks
+    # whether the INSTALL left the pin, this one whether the PIN left its source.
+    # It reads `t3 setup`'s recorded measurement rather than the network, so it
+    # stays on doctor's offline fast path, and it only ever suggests — a pin may
+    # be held deliberately.
+    _check_skill_pin_freshness()
 
 
 def _run_worker_gates() -> bool:

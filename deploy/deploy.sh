@@ -15,7 +15,33 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
 ENV_FILE="$SCRIPT_DIR/teatree.env"
+
+# The container's fixed HOME, which every mount TARGET in docker-compose.yml is
+# expressed under. When the host home differs, host and container disagree about what
+# a worktree path means — and `t3 <overlay> worktree start` hands the daemon worktree
+# paths it resolved as CONTAINER paths, which the daemon then rejects with "mounts
+# denied: the path ... is not shared from the host". The overlay file adds a second,
+# host-identical view of the worktree tree so one coordinate satisfies both venues.
+# On a host whose home already IS this path the two mount targets would collide, so
+# the overlay is added only when they differ. On the box they always match, so nothing
+# about the box changes.
+# READ from the compose file that declares it rather than restated here, so the two
+# can never drift: the clones volume TARGET is `<container home>/workspace` by
+# construction, which makes it the canonical statement of that home.
+CONTAINER_HOME="$(sed -n 's|^[[:space:]]*-[[:space:]]*teatree_clones:\(.*\)/workspace[[:space:]]*$|\1|p' "$COMPOSE_FILE" | head -n1)"
+
+# Composed at CALL time rather than once at source time: `TEATREE_HOST_HOME` is
+# exported further down, beside the directory pre-creation it must agree with, so the
+# functions defined above that point would otherwise capture it unset.
+compose() {
+    if [ "${TEATREE_HOST_HOME:-$CONTAINER_HOME}" = "$CONTAINER_HOME" ]; then
+        docker compose -f "$COMPOSE_FILE" "$@"
+    else
+        docker compose -f "$COMPOSE_FILE" -f "$HOST_IDENTITY_FILE" "$@"
+    fi
+}
 
 # Single-convergence invariant (host flock). GitHub's `concurrency: deploy` group
 # serializes the WORKFLOW, but a remote deploy.sh can outlive its GitHub job — an
@@ -50,7 +76,7 @@ _clear_quiescing_if_stranded() {
         # not; the real error is further up. One triage of this run was nearly
         # anchored on this very line.
         echo "deploy: [cleanup, NOT the failure cause — see the error above] exiting after a drain but before the swap; clearing worker_quiescing so admission resumes." >&2
-        docker compose -f "$COMPOSE_FILE" exec -T teatree-worker \
+        compose exec -T teatree-worker \
             t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
     fi
 }
@@ -59,13 +85,13 @@ trap _clear_quiescing_if_stranded EXIT
 # The admin can serve while the worker crash-loops, so a converged deploy must
 # confirm the worker process itself is running.
 worker_running() {
-    if docker compose -f "$COMPOSE_FILE" exec -T teatree-worker t3 worker status --json 2>/dev/null \
+    if compose exec -T teatree-worker t3 worker status --json 2>/dev/null \
         | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
         return 0
     fi
     # Fallback when the exec itself fails: a healthy worker is running, no restarts.
     local cid state
-    cid="$(docker compose -f "$COMPOSE_FILE" ps -q teatree-worker 2>/dev/null || true)"
+    cid="$(compose ps -q teatree-worker 2>/dev/null || true)"
     [ -n "$cid" ] || return 1
     state="$(docker inspect -f '{{.State.Status}}/{{.RestartCount}}' "$cid" 2>/dev/null || true)"
     [ "$state" = "running/0" ]
@@ -126,6 +152,34 @@ export TEATREE_HOST_HOME="$HOME"
 # one value. On the box `$REPO_ROOT` IS `/home/teatree/teatree-deploy`, the
 # compose default, so the box is byte-identical to before.
 export TEATREE_DEPLOY_CHECKOUT="$REPO_ROOT"
+
+# Run the WORKING TREE this deploy was invoked from when that tree vendors core —
+# the fork layout `<fork>/vendor/teatree/deploy/deploy.sh`. Without this a deploy
+# from a fork leaves `${TEATREE_SOURCE_MOUNT:-teatree_src}` on the named volume,
+# so the stack runs PUBLIC upstream core: `HOST_ROOT` is empty, entrypoint.sh's
+# `--with-editable "$HOST_ROOT"` never fires, no `teatree.overlays` entry point is
+# registered, and every headless task on an overlay ticket dies at dispatch
+# ("Overlay '<name>' not found"). deploy/t3 already derives this for one-off CLI
+# runs; the STACK needs the same wiring or the two disagree about what is deployed.
+#
+# What gets mounted is the FORK ROOT, not the vendored core alone: entrypoint.sh
+# detects a host project by `$TEATREE_CLONE_DIR` ending in `/vendor/teatree` with a
+# `pyproject.toml` at its parent, so core must sit one level DOWN from the mount.
+# Kept in sync with deploy/t3 by tests/test_deploy_host_project_source_mount.py.
+# An operator-set value always wins. Derived from the container HOME read above, so
+# the source mount target is never a second copy of that path.
+CONTAINER_SOURCE_DIR="$CONTAINER_HOME/teatree"
+if [ -z "${TEATREE_SOURCE_MOUNT:-}" ] &&
+    [ "$(basename "$REPO_ROOT")" = teatree ] &&
+    [ "$(basename "$(dirname "$REPO_ROOT")")" = vendor ]; then
+    HOST_PROJECT_ROOT="$(dirname "$(dirname "$REPO_ROOT")")"
+    if [ -f "$HOST_PROJECT_ROOT/pyproject.toml" ]; then
+        export TEATREE_SOURCE_MOUNT="$HOST_PROJECT_ROOT"
+        export TEATREE_CLONE_DIR="${TEATREE_CLONE_DIR:-$CONTAINER_SOURCE_DIR/vendor/teatree}"
+    else
+        export TEATREE_SOURCE_MOUNT="$REPO_ROOT"
+    fi
+fi
 
 # TEATREE_DOCKER_SOCKET_GID — the group owning the docker socket AS THE CONTAINER
 # SEES IT, which is what docker-compose.yml's `group_add` on teatree-worker reads.
@@ -202,7 +256,7 @@ echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit
 if worker_running; then
     echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
     _DRAINED=true
-    docker compose -f "$COMPOSE_FILE" exec -T teatree-worker \
+    compose exec -T teatree-worker \
         t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}" \
         || echo "deploy: drain window exceeded — proceeding (a stuck task re-queues via its lease lapse)"
 fi
@@ -212,10 +266,10 @@ fi
 # 200 stale container lines below push the real buildkit error hundreds of lines
 # up the Action log, where it reads as unrelated noise. Name the failing step at
 # the top of the dump so triage starts in the right place.
-docker compose -f "$COMPOSE_FILE" up -d --build || {
+compose up -d --build || {
     echo "deploy: FATAL — 'docker compose up -d --build' failed. The cause is the buildkit/compose error ABOVE this line; what follows is stack state for context, not the failure."
-    docker compose -f "$COMPOSE_FILE" ps
-    docker compose -f "$COMPOSE_FILE" logs --tail 200 teatree-init teatree-worker teatree-admin
+    compose ps
+    compose logs --tail 200 teatree-init teatree-worker teatree-admin
     exit 1
 } >&2
 # The swap completed: the fresh worker's init clears worker_quiescing, so the
@@ -240,6 +294,6 @@ if [ "$admin_up" = true ] && worker_running; then
 fi
 
 echo "deploy: convergence check failed — recent logs:" >&2
-docker compose -f "$COMPOSE_FILE" ps >&2 || true
-docker compose -f "$COMPOSE_FILE" logs --tail 50 teatree-init teatree-worker teatree-admin >&2 || true
+compose ps >&2 || true
+compose logs --tail 50 teatree-init teatree-worker teatree-admin >&2 || true
 exit 1

@@ -22,6 +22,13 @@ stably ordered (filename sort), and a header preamble is preserved. A re-run on 
 unchanged memory set produces a BYTE-IDENTICAL file — the property the test pins.
 It NEVER touches the real ``~/.claude``: the caller passes an explicit
 ``memory_dir``; a missing dir is a clean no-op.
+
+Because it regenerates WHOLESALE, a hand-curated block at the top of ``MEMORY.md``
+survives only until the next pass. ``MEMORY_PRIORITY.md`` is the second path that
+makes such a block durable: it is read (never written) and emitted verbatim above
+the generated pointers, so the pointer list stays derived while the priority block
+stays human-owned. Hand-curating the pointers instead buys ~1 KB at a realistic
+corpus and costs a guaranteed drift, which is why only the block is curated.
 """
 
 import re
@@ -29,12 +36,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-_INDEX_NAME = "MEMORY.md"
-
-#: The COLD archive index (#2723), written by the decay phase in the MAIN memory dir.
-#: It is NEVER re-indexed into the hot ``MEMORY.md`` — excluded here exactly like the
-#: hot index — so its one-line-per-archived-entry signatures do not re-bloat the index.
-_ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
+from teatree.loops.dream._shared import INDEX_NAME as _INDEX_NAME
+from teatree.loops.dream._shared import NON_MEMORY_DOCS, PRIORITY_NAME
 
 _HEADER = (
     "# Auto Memory — Index\n\n"
@@ -136,14 +139,34 @@ def index_line_for(name: str) -> str:
     return f"- {Path(name).name}"
 
 
-def render_index_lines(lines: Iterable[str]) -> str:
-    """Wrap already-rendered per-memory index *lines* with the standard preamble.
+def read_priority_preamble(memory_dir: Path) -> str:
+    """The human-owned ``MEMORY_PRIORITY.md`` block, verbatim, or ``""`` when absent.
+
+    Read-only on every path: this phase regenerates the index it is emitted INTO and
+    never the file itself, which is what keeps a hand-curated block from being one
+    pass away from deletion. An unreadable file degrades to the generated header
+    rather than aborting the pass — losing the block for one render is recoverable,
+    failing phase 5 leaves the whole index stale.
+    """
+    path = memory_dir / PRIORITY_NAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return text if text.endswith("\n") or not text else f"{text}\n"
+
+
+def render_index_lines(lines: Iterable[str], preamble: str = "") -> str:
+    """Wrap already-rendered per-memory index *lines* with a preamble.
 
     The pure tail of :func:`render_index`, exposed so the decay phase can render the
-    projected (post-archival) index exactly as it will be written.
+    projected (post-archival) index exactly as it will be written. *preamble* replaces
+    the generated header when non-empty — the human-owned block already opens with its
+    own title, so emitting both would give the index two headings.
     """
+    header = preamble or _HEADER
     body = "\n".join(lines)
-    return f"{_HEADER}{body}\n" if body else _HEADER
+    return f"{header}{body}\n" if body else header
 
 
 def render_index(memory_dir: Path) -> str:
@@ -152,17 +175,19 @@ def render_index(memory_dir: Path) -> str:
     Each line is a bare ``- name.md`` pointer, deduped by filename and stably
     ordered (filename sort), so the output is a pure function of the memory set's
     filenames — a re-run with no changes renders the identical string. Both the hot
-    ``MEMORY.md`` and the cold ``MEMORY_ARCHIVE.md`` are excluded so neither index
-    re-bloats the hot index; non-file ``*.md`` entries (a stray directory) are skipped.
+    ``MEMORY.md``, the cold ``MEMORY_ARCHIVE.md`` and the human-owned
+    ``MEMORY_PRIORITY.md`` are excluded so no index re-bloats the hot index; non-file
+    ``*.md`` entries (a stray directory) are skipped. The priority block is emitted
+    verbatim ABOVE the pointers, so the two owners of this file write to two paths.
     """
     seen: set[str] = set()
     lines: list[str] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME} or md.name in seen or not md.is_file():
+        if md.name in NON_MEMORY_DOCS or md.name in seen or not md.is_file():
             continue
         seen.add(md.name)
         lines.append(index_line_for(md.name))
-    return render_index_lines(lines)
+    return render_index_lines(lines, read_priority_preamble(memory_dir))
 
 
 def reindex_memory(memory_dir: Path, *, dry_run: bool = False) -> ReindexResult:
@@ -189,8 +214,10 @@ def _count_lines(rendered: str) -> int:
 
 
 __all__ = [
+    "PRIORITY_NAME",
     "ReindexResult",
     "index_line_for",
+    "read_priority_preamble",
     "reindex_memory",
     "render_index",
     "render_index_lines",

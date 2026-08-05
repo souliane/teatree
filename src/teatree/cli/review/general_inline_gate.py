@@ -6,11 +6,10 @@ closed the *half-specified* foot-gun: a ``post-draft-note`` that named a
 into a general (MR-wide) note. That validator stops the degradation at the
 typer-wrapper boundary.
 
-This module closes the *other half* of the same discipline, observed on
-!6281: under time pressure a reviewer crammed two distinct per-line
-findings into ONE general note instead of posting each one inline. The
-#72 validator never fired (the call WAS a deliberate ``--general`` post),
-so the multi-finding general note went through.
+This module closes the *other half* of the same discipline: two distinct
+per-line findings crammed into ONE general note instead of posted one per
+line. The #72 validator does not fire there — the call IS a deliberate
+``--general`` post — so the multi-finding general note goes through.
 
 The gate runs only on the **general** path of a publishing method (no
 ``file``+``line`` anchor) and refuses the post — before any GitLab call —
@@ -90,7 +89,7 @@ def looks_like_inline_findings(body: str) -> bool:
     :data:`MIN_DISTINCT_FINDINGS`+ distinct ``path.ext:line`` locations OR
     a numbered finding list has :data:`MIN_DISTINCT_FINDINGS`+ items that
     each name a file. Both are the "this should have been N inline notes"
-    shape (!6281).
+    shape.
     """
     if not body:
         return False
@@ -136,7 +135,7 @@ def _refusal(count: int) -> str:
         f"{count}+ distinct file:line locations or a numbered per-file finding list). "
         "Post them INLINE — one per finding — with:\n"
         '  t3 review post-draft-note <repo> <mr> "<note>" --file <path> --line <n>\n'
-        "Cramming distinct per-line findings into one general note is the !6281 shape "
+        "Cramming distinct per-line findings into one general note is the shape "
         "the #72 discipline guards against. Pass --force-general to override ONLY for a "
         "genuinely MR-wide note (a verdict-only summary with no per-line findings)."
     )

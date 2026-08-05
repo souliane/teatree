@@ -9,6 +9,7 @@ adds safety, never disables a real cleanup. The subprocess CLI is mocked exactly
 like :func:`_branch_pr_is_merged`'s tests.
 """
 
+import os
 import subprocess
 from collections.abc import Callable
 from unittest.mock import patch
@@ -61,3 +62,22 @@ class TestBranchHasOpenPr(TestCase):
             side_effect=_dispatch(gh_stdout="not-json", glab_stdout="also-not-json"),
         ):
             assert _branch_has_open_pr("/repo", "1234-feat-merged") is False
+
+    def test_true_when_only_an_authenticated_read_can_see_the_pr(self) -> None:
+        """#4116: the probe carries the writer path's credential, like every forge read.
+
+        An unauthenticated ``gh`` cannot see a private repo's PR, and this probe
+        fails safe to ``False`` — so a still-open branch reads as reapable.
+        """
+
+        def _needs_a_token(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            env = kwargs.get("env")
+            if not (isinstance(env, dict) and env.get("GH_TOKEN")):
+                return subprocess.CompletedProcess([], 4, stdout="", stderr="gh: authentication required")
+            return subprocess.CompletedProcess([], 0, stdout='[{"number":7}]')
+
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": "tok-writer"}),
+            patch("teatree.utils.run.subprocess.run", side_effect=_needs_a_token),
+        ):
+            assert _branch_has_open_pr("/repo", "1206-feat-review-run") is True

@@ -3,7 +3,7 @@
 ``directive_loop``, ``dream`` and ``outer_loop`` carry ``MiniLoop.off_live_tick``, which
 excludes them from BOTH drivers the live plane offers:
 :func:`teatree.loops.loop_table._loop_admitted` returns ``False`` before the fan-out
-builds a job, and :func:`teatree.loops.timer_reconciler.timer_chain_loop_names`
+builds a job, and :func:`teatree.loops.chain_membership.timer_chain_loop_names`
 intersects ``off_live_tick`` out so the reconciler builds them no ``loop_timer`` chain.
 The "own low-frequency cron" their docstrings promised was never installed — leaving all
 three with no driver at all, for as long as the box has been running.

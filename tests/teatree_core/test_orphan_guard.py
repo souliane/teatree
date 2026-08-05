@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import BranchCommit, SubjectPrefilterResult
@@ -12,7 +13,7 @@ from tests.teatree_core.cleanup._shared import _run_git
 
 _patch_classify = patch("teatree.core.gates.orphan_guard.prefilter_branch_commits_by_subject")
 _patch_tree_match = patch("teatree.core.gates.orphan_guard._branch_tree_matches_squash")
-_patch_open_pr = patch("teatree.core.gates.orphan_guard.find_open_pr")
+_patch_open_pr = patch("teatree.core.gates.orphan_guard.find_open_pr_for_branch")
 _patch_git = patch("teatree.core.gates.orphan_guard.git")
 
 
@@ -56,7 +57,7 @@ class TestClassifyBranch(TestCase):
     ) -> None:
         mock_classify.return_value = _classification([_commit()])
         mock_tree_match.return_value = False
-        mock_open_pr.return_value = "https://github.com/org/repo/pull/42"
+        mock_open_pr.return_value = PrProbe.found("https://github.com/org/repo/pull/42")
         report = classify_branch("/repo", "feature")
         assert report.status is BranchStatus.OPEN_PR
         assert report.open_pr_url == "https://github.com/org/repo/pull/42"
@@ -75,7 +76,7 @@ class TestClassifyBranch(TestCase):
     ) -> None:
         mock_classify.return_value = _classification([_commit(), _commit("def", "feat: y")])
         mock_tree_match.return_value = False
-        mock_open_pr.return_value = ""
+        mock_open_pr.return_value = PrProbe.none()
         mock_git.run.return_value = "abc123\trefs/heads/feature"
         report = classify_branch("/repo", "feature")
         assert report.status is BranchStatus.PUSHED_ORPHAN
@@ -95,11 +96,42 @@ class TestClassifyBranch(TestCase):
     ) -> None:
         mock_classify.return_value = _classification([_commit()])
         mock_tree_match.return_value = False
-        mock_open_pr.return_value = ""
+        mock_open_pr.return_value = PrProbe.none()
         mock_git.run.return_value = ""
         report = classify_branch("/repo", "feature")
         assert report.status is BranchStatus.UNPUSHED_ORPHAN
         assert report.is_orphan
+
+
+class TestClassifyBranchWhenTheProbeCannotAnswer(TestCase):
+    """#4116: a can't-tell probe is its own state, never a confident "no PR".
+
+    Collapsing UNKNOWN into "no open PR" made an unreadable forge look exactly
+    like a branch that owes a PR, so the pre-push gate tried to open one for a
+    branch that already had it and refused the push on the resulting
+    ``already exists``.
+    """
+
+    @_patch_git
+    @_patch_open_pr
+    @_patch_tree_match
+    @_patch_classify
+    def test_unknown_probe_is_not_reported_as_an_orphan(
+        self,
+        mock_classify: MagicMock,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+        mock_git: MagicMock,
+    ) -> None:
+        mock_classify.return_value = _classification([_commit()])
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = PrProbe.unknown()
+        mock_git.run.return_value = "abc123\trefs/heads/feature"
+
+        report = classify_branch("/repo", "feature")
+
+        assert report.status is BranchStatus.PR_UNKNOWN
+        assert not report.is_orphan
 
 
 class TestClassifyBranchWhoseWorkAlreadyLanded:
@@ -147,7 +179,7 @@ class TestClassifyBranchWhoseWorkAlreadyLanded:
         mock_open_pr: MagicMock,
     ) -> None:
         mock_tree_match.return_value = False
-        mock_open_pr.return_value = ""
+        mock_open_pr.return_value = PrProbe.none()
         self._land_the_fix_under_a_different_path()
 
         report = classify_branch(str(self.clone), "fix/parse")
@@ -163,7 +195,7 @@ class TestClassifyBranchWhoseWorkAlreadyLanded:
         mock_open_pr: MagicMock,
     ) -> None:
         mock_tree_match.return_value = False
-        mock_open_pr.return_value = ""
+        mock_open_pr.return_value = PrProbe.none()
 
         report = classify_branch(str(self.clone), "fix/parse")
 
