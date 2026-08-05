@@ -110,7 +110,7 @@ class Task(models.Model):
 
     def save(self, *args: object, **kwargs: object) -> None:
         if self._state.adding and self.execution_target == self.ExecutionTarget.HEADLESS:
-            self._default_loop_dispatched_to_interactive()
+            self._route_loop_dispatched_lane()
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
     def display_subject(self) -> str:
@@ -143,11 +143,11 @@ class Task(models.Model):
 
         Pure registry membership (``SUBAGENT_BY_PHASE``). Whether such a task
         runs in-session or headless is the ``agent_runtime`` setting's call,
-        resolved by ``headless_dispatch.runs_in_session``: under ``interactive``
-        (default) it is dispatched per-phase by the in-session ``/loop`` slot
-        (``loop_dispatch claim-next`` → the ``Agent`` tool); under a headless
-        runtime it runs via ``agents/headless.py``. A pair with no registered
-        agent is free-form headless work and always runs headless.
+        resolved by ``headless_dispatch.runs_in_session``: under the SHIPPED
+        ``headless`` runtime it runs via ``agents/headless.py``; only under
+        ``interactive`` is it dispatched per-phase by the in-session ``/loop``
+        slot (``loop_dispatch claim-next`` → the ``Agent`` tool). A pair with no
+        registered agent is free-form headless work and always runs headless.
         """
         from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415 — deferred: call-time import
 
@@ -175,17 +175,19 @@ class Task(models.Model):
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
         return role_phase & not_under_external_delivery_q()
 
-    def _default_loop_dispatched_to_interactive(self) -> None:
-        """Route a freshly-created loop-dispatched phase task to INTERACTIVE.
+    def _route_loop_dispatched_lane(self) -> None:
+        """Route a freshly-created loop-dispatched phase task to its configured lane.
 
-        The single chokepoint for "phase tasks default to interactive": when the
-        ``agent_runtime`` setting selects ``interactive`` the loop
-        is their sole dispatcher, so every ``schedule_*`` / scanner / CLI creation
-        site inherits the rule here without each having to know it. Under
-        ``agent_runtime=headless`` the row is left HEADLESS so the headless lane
-        takes it. Only an insert-time HEADLESS row is touched; an explicit
-        ``route_to_interactive`` / ``route_to_headless`` after creation goes
-        through ``_route`` (not an insert) and is never overridden here.
+        The single chokepoint for which lane a phase task lands in, so every
+        ``schedule_*`` / scanner / CLI creation site inherits the rule here without
+        each having to know it. Under the SHIPPED ``agent_runtime=headless`` the row
+        is left HEADLESS and the headless lane takes it — that is what a freshly
+        created phase task gets on every shipped install, and this method is a no-op
+        for it. Only an ``interactive`` runtime re-targets the row to INTERACTIVE, for
+        the in-session ``/loop`` slot to dispatch per-phase. Only an insert-time
+        HEADLESS row is touched; an explicit ``route_to_interactive`` /
+        ``route_to_headless`` after creation goes through ``_route`` (not an insert)
+        and is never overridden here.
 
         Mirrors ``headless_dispatch.runs_in_session`` (the predicate the signal /
         drain / refusal gates share). It is inlined here rather than called because

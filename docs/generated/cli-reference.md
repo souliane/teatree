@@ -3104,9 +3104,10 @@ Usage: t3 doctor check [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repair                   Allow doctor to APPLY fixes that mutate state:    │
 │                            re-point a relocated/hijacked t3 editable install │
-│                            (#3231) AND clear a stale entrypoint-seeded       │
-│                            provision_max_concurrency pin (#3434). A plain    │
-│                            run never mutates.                                │
+│                            (#3231), clear a stale entrypoint-seeded          │
+│                            provision_max_concurrency pin (#3434), and        │
+│                            re-register the t3 Claude plugin. A plain run     │
+│                            never mutates.                                    │
 │ --slack-roundtrip          Deep Slack round-trip: additionally run a LIVE    │
 │                            auth.test per Slack backend (#3411).              │
 │ --json                     Emit findings as JSON for the watchdog container. │
@@ -10692,13 +10693,11 @@ Usage: t3 teatree ticket e2e-bypass [OPTIONS] TICKET_ID
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --approver        TEXT  Human user id authorising the bypass; a           │
-│                            maker/coding-agent/loop id is refused (#1967).    │
-│                            [required]                                        │
-│ *  --head-sha        TEXT  Full 40-char hex SHA of the reviewed tree the     │
-│                            bypass authorises.                                │
-│                            [required]                                        │
-│    --help                  Show this message and exit.                       │
+│ --approver        TEXT  Human user id authorising the bypass; a              │
+│                         maker/coding-agent/loop id is refused (#1967).       │
+│ --head-sha        TEXT  Full 40-char hex SHA of the reviewed tree the bypass │
+│                         authorises.                                          │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10741,11 +10740,10 @@ Usage: t3 teatree ticket dod-override [OPTIONS] TICKET_ID
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --reason        TEXT  Why this UI-visible ticket may ship without a       │
-│                          local-stack E2E (#88).                              │
-│                          [required]                                          │
-│    --by            TEXT  Who is recording the override (audit trail).        │
-│    --help                Show this message and exit.                         │
+│ --reason        TEXT  Why this UI-visible ticket may ship without a          │
+│                       local-stack E2E (#88).                                 │
+│ --by            TEXT  Who is recording the override (audit trail).           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12205,17 +12203,14 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --idempotency-key        TEXT  Required dedupe key (the helper enforces   │
-│                                   it).                                       │
-│                                   [required]                                 │
-│    --user-id                TEXT  Slack user id to DM (defaults to the       │
-│                                   configured user).                          │
-│    --kind                   TEXT  Notification kind: info | answer |         │
-│                                   question.                                  │
-│                                   [default: info]                            │
-│    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
-│                                   (per-overlay bot routing).                 │
-│    --help                         Show this message and exit.                │
+│ --idempotency-key        TEXT  Required dedupe key (the helper enforces it). │
+│ --user-id                TEXT  Slack user id to DM (defaults to the          │
+│                                configured user).                             │
+│ --kind                   TEXT  Notification kind: info | answer | question.  │
+│                                [default: info]                               │
+│ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
+│                                bot routing).                                 │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12228,17 +12223,15 @@ Usage: t3 teatree notify post [OPTIONS]
  (exit 0 on ``ok``).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel          TEXT  Destination: the user's own DM (→bot) or a       │
-│                             colleague/channel (→xoxp).                       │
-│                             [required]                                       │
-│ *  --text             TEXT  Slack mrkdwn body. Use ``-`` to read the body    │
-│                             from stdin.                                      │
-│                             [required]                                       │
-│    --thread-ts        TEXT  Thread ``ts`` to reply into (omit to post a new  │
-│                             top-level message).                              │
-│    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
-│                             credentials).                                    │
-│    --help                   Show this message and exit.                      │
+│ --channel          TEXT  Destination: the user's own DM (→bot) or a          │
+│                          colleague/channel (→xoxp).                          │
+│ --text             TEXT  Slack mrkdwn body. Use ``-`` to read the body from  │
+│                          stdin.                                              │
+│ --thread-ts        TEXT  Thread ``ts`` to reply into (omit to post a new     │
+│                          top-level message).                                 │
+│ --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay       │
+│                          credentials).                                       │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12251,16 +12244,13 @@ Usage: t3 teatree notify react [OPTIONS]
  colleague/channel→xoxp (exit 0 on ``ok``).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel        TEXT  Destination the message is in: self-DM (bot) or    │
-│                           colleague/channel (xoxp).                          │
-│                           [required]                                         │
-│ *  --ts             TEXT  Timestamp ``ts`` of the message to react to.       │
-│                           [required]                                         │
-│ *  --emoji          TEXT  Emoji name (with or without surrounding colons).   │
-│                           [required]                                         │
-│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
-│                           credentials).                                      │
-│    --help                 Show this message and exit.                        │
+│ --channel        TEXT  Destination the message is in: self-DM (bot) or       │
+│                        colleague/channel (xoxp).                             │
+│ --ts             TEXT  Timestamp ``ts`` of the message to react to.          │
+│ --emoji          TEXT  Emoji name (with or without surrounding colons).      │
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay         │
+│                        credentials).                                         │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

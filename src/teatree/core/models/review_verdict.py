@@ -137,7 +137,18 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
     """Read surface for the recorded-verdict lookup (``review status``)."""
 
     def for_pr(self, slug: str, pr_id: int) -> "models.QuerySet[ReviewVerdict]":
-        return self.filter(slug=slug.strip(), pr_id=pr_id)
+        """Every recorded verdict for *slug*``#``*pr_id*, matched case-INSENSITIVELY.
+
+        A forge slug is case-insensitive, so a verdict recorded under ``Owner/Repo``
+        vouches for the same PR the merge gate resolves as ``owner/repo``. Matching
+        exactly made such a verdict invisible to
+        :func:`~teatree.core.merge.authorization.assert_review_verdict_gate`, which
+        then refused the merge permanently while ``review status`` still showed the
+        merge_safe verdict. Every sibling resolver in the subsystem — the
+        ``PullRequest`` lookup, the §15 sibling supersede, the merge-quality ticket
+        resolver — reads ``__iexact`` for the same reason.
+        """
+        return self.filter(slug__iexact=slug.strip(), pr_id=pr_id)
 
     def latest_for_pr(self, slug: str, pr_id: int) -> "ReviewVerdict | None":
         """The most recently recorded verdict for a PR, regardless of SHA.

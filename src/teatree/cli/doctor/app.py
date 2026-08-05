@@ -216,8 +216,9 @@ def check(
         "--repair",
         help=(
             "Allow doctor to APPLY fixes that mutate state: re-point a relocated/hijacked "
-            "t3 editable install (#3231) AND clear a stale entrypoint-seeded "
-            "provision_max_concurrency pin (#3434). A plain run never mutates."
+            "t3 editable install (#3231), clear a stale entrypoint-seeded "
+            "provision_max_concurrency pin (#3434), and re-register the t3 Claude plugin. "
+            "A plain run never mutates."
         ),
     ),
     slack_roundtrip: bool = typer.Option(
@@ -405,12 +406,18 @@ def _run_config_posture_advisories() -> None:
     _check_config_rows_shadowing_shipped_defaults()
 
 
-def _run_advisory_finalisers() -> None:
-    """Surfacing-only passes that never gate the exit code."""
+def _run_advisory_finalisers(*, repair: bool) -> None:
+    """Surfacing-only passes that never gate the exit code.
+
+    ``repair`` reaches the plugin-registration pass because it WRITES: a plain run
+    reports the drift and touches nothing, honouring ``--repair``'s own promise that
+    "a plain run never mutates" — this pass used to rewrite the operator's
+    ``~/.claude/settings.json`` on every session start regardless.
+    """
     _check_singletons()
     _check_legacy_overlay_alias()
     report_missing_authorizations(typer.echo)
-    _ensure_plugin_registered()
+    _ensure_plugin_registered(repair=repair)
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -651,7 +658,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # connectivity gate — it reuses the same live `claude mcp list` probe.
     _check_teatree_mcp_registration()
 
-    _run_advisory_finalisers()
+    _run_advisory_finalisers(repair=repair)
 
     if ok:
         typer.echo("All checks passed")

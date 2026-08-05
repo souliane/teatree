@@ -13,7 +13,7 @@ from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.mr_review_lock import MRReviewLock
-from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
+from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict, normalize_reviewer_identity
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.utils.pr_ref import PrRef
 
@@ -132,10 +132,17 @@ def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity
     path in ``ticket.py``) would otherwise smuggle a self-attesting maker through
     the equality check, so the issue-time and merge-time gates re-check identically
     and cannot drift apart (codex #1282 finding 1 / #1283).
+
+    Both identities are compared through :func:`normalize_reviewer_identity` — the
+    same canonicalization ``ReviewVerdict`` keys its uniqueness on. A raw comparison
+    let ``"Worker-Alpha"`` (or an inner double space) slip past an executing loop
+    identity of ``worker-alpha``, so the loop about to execute the merge had
+    self-issued its own clearance: exactly the self-attestation §17.8 clause 3
+    forbids.
     """
     from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415 — deferred: ORM/app-registry
 
-    if clear.reviewer_identity.strip() == executing_loop_identity.strip():
+    if normalize_reviewer_identity(clear.reviewer_identity) == normalize_reviewer_identity(executing_loop_identity):
         msg = (
             f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) equals the "
             f"executing loop identity — a CLEAR must be issued by an independent "
@@ -359,7 +366,10 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
 
     NO-OP when ``require_anti_vacuity_attestation`` is off (opt-in default) or
     the CLEAR carries no ticket (the attestation lives on the ticket's durable
-    ``extra``). The :class:`AntiVacuityAttestationError` raised on a block is
+    ``extra``). A ticketless CLEAR is not thereby ungated: the same gate runs by PR
+    identity in :func:`assert_ticket_scoped_gates` at the shared merge chokepoint,
+    which is where a resolvable-nowhere ticket is REFUSED rather than skipped. The
+    :class:`AntiVacuityAttestationError` raised on a block is
     re-wrapped as a :class:`MergePreconditionError` so the merge command's
     single re-escalation path surfaces it (the loop never self-issues a
     replacement CLEAR).
@@ -382,7 +392,9 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
     """Refuse a merge whose CLEAR ticket's rubric is not fully PASS at ``head_sha`` (#2241).
 
     NO-OP when ``require_rubric_verification`` is off (opt-in default) or the CLEAR
-    carries no ticket (the rubric is FK'd to the ticket). The
+    carries no ticket (the rubric is FK'd to the ticket) — a ticketless CLEAR is
+    graded instead by PR identity in :func:`assert_ticket_scoped_gates` at the shared
+    merge chokepoint, which REFUSES when the ticket resolves nowhere. The
     :class:`RubricNotSatisfiedError` raised on a block is re-wrapped as a
     :class:`MergePreconditionError` so the merge command's single re-escalation
     path surfaces it (the loop never self-issues a replacement CLEAR). Sibling of
