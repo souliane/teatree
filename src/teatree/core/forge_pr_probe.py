@@ -14,14 +14,22 @@ must BLOCK on "unknown" and CLEAR on "none".
 tri-state through :meth:`PrProbe.url_or_empty` (collapse none+unknown) or
 :meth:`PrProbe.url_or_none_on_unknown` (keep them apart, fail closed on unknown) —
 the probe implementation no longer forks per caller.
+
+:func:`forge_cli_env` is the second half of that unification: a forge READ
+authenticates through the same credential chain the writer path already resolves
+(souliane/teatree#4116). A probe shelled without it comes back UNKNOWN for every
+private repo, and a caller reading that as "no PR" refuses the second push to a
+branch whose PR already exists.
 """
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
+from teatree.core.forge_push import resolve_forge_credential
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.run import run_allowed_to_fail
@@ -33,6 +41,26 @@ logger = logging.getLogger(__name__)
 # the forge-specific wrapper (``--head`` on GitHub, ``--source-branch`` on GitLab).
 _GH_OPEN_PR: tuple[str, ...] = ("gh", "pr", "list", "--state", "open", "--json", "url", "--limit", "1")
 _GLAB_OPEN_MR: tuple[str, ...] = ("glab", "mr", "list", "--state", "opened", "--output", "json", "-P", "1")
+
+
+def forge_cli_env() -> dict[str, str] | None:
+    """The subprocess env a forge CLI read needs, or ``None`` when no token resolves.
+
+    :func:`~teatree.core.forge_push.resolve_forge_credential` is the one chain
+    every forge WRITE already goes through (``GH_TOKEN`` env, then the compose
+    ``env_file``'s ``TEATREE_GH_TOKEN``, then the overlay ``pass`` store), so a
+    read routed through here sees exactly what the writer sees.
+
+    ``None`` rather than a copy of ``os.environ``: an ambient ``gh auth login``
+    is a legitimate credential of its own, and handing it an explicit empty
+    ``GH_TOKEN`` would override it. ``glab`` keeps ambient auth either way —
+    teatree resolves no GitLab token, and a GitHub one in ``GITLAB_TOKEN`` would
+    be a credential sent to the wrong forge.
+    """
+    credential = resolve_forge_credential()
+    if not credential.token:
+        return None
+    return {**os.environ, "GH_TOKEN": credential.token}
 
 
 class PrProbeOutcome(Enum):
@@ -131,7 +159,7 @@ def _probe_open_pr(cmd: list[str], repo_dir: str | Path, *, key: str) -> PrProbe
     :attr:`~PrProbeOutcome.UNKNOWN` — the probe could not answer.
     """
     try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir))
+        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=Path(repo_dir), env=forge_cli_env())
     except OSError:
         logger.warning("open-PR probe could not run %r in %s — unknown", cmd[0], repo_dir)
         return PrProbe.unknown()
