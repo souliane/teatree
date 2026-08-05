@@ -47,9 +47,11 @@ skills/platforms/references/gitlab.md::glab mr note
 skills/platforms/references/gitlab.md::glab mr update
 skills/platforms/references/gitlab.md::glab mr view
 skills/platforms/references/gitlab.md::glab prints first
+skills/review/SKILL.md::gh issue view
 skills/review/SKILL.md::gh pr diff
 skills/review/SKILL.md::gh pr list
 skills/review/SKILL.md::gh pr view
+skills/review/SKILL.md::glab issue view
 skills/review/SKILL.md::glab mr diff
 skills/review/SKILL.md::glab mr list
 skills/review/SKILL.md::glab mr view
