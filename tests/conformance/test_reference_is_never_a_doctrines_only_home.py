@@ -33,9 +33,12 @@ parser, over its inline backticks AND its fenced blocks, and a token counts as
 present on any of four one-directional clauses. Every clause can only mark a
 token PRESENT, never absent, so the widening strictly reduces false positives.
 
-``_ORPHANED_ON_MAIN`` is the set already orphaned on ``origin/main``, re-derived
-mechanically by running this module's own sweep over ``git archive origin/main
-skills``. It is a shrink-only ratchet, not a suppression: a NEW orphan fails
+``_ORPHANED_ON_MAIN`` is the set that PREDATES this guard, re-derived
+mechanically by running this module's own sweep over the skills tree as it stood
+BEFORE the vendor-sync branch landed. The five orphans that branch introduced are
+deliberately NOT in it — they are returned to the spines by this change, which is
+why ``origin/main`` reports 29 orphans today and this branch reports 24. It is a
+shrink-only ratchet, not a suppression: a NEW orphan fails
 immediately, ``test_the_baseline_has_not_gone_stale`` fails once an entry is
 fixed without being removed, and ``test_the_baseline_can_only_drain`` fails when
 a row is ADDED. The list can only drain.
@@ -79,9 +82,10 @@ _TOO_GENERIC = frozenset(
     }
 )
 
-#: Already orphaned on ``origin/main`` — pre-existing, and out of scope for the
-#: branch that added this check. SHRINK ONLY: never add a row here to make a new
-#: failure go away; return the command to the spine instead.
+#: Orphaned BEFORE the vendor-sync branch — pre-existing, and out of scope for the
+#: change that added this check. The five that branch introduced are absent by
+#: design: they are fixed in the spines, not recorded here. SHRINK ONLY: never add
+#: a row here to make a new failure go away; return the command to the spine instead.
 _ORPHANED_ON_MAIN: frozenset[tuple[str, str]] = frozenset(
     {
         ("skills/platforms/references/gitlab.md", "glab auth token"),
@@ -118,8 +122,8 @@ _CEILING = 24
 #: Anti-vacuity floor on the corpus the parser recognises, not on the baseline.
 #: Fixing an orphan moves the command INTO the spine and leaves the reference's
 #: mandate in place, so this count does not shrink as the ratchet drains. Measured
-#: 56 on this branch (37 on ``origin/main``); a broken glob or a dead mandate regex
-#: produces 0.
+#: 56 here and 57 on ``origin/main`` — the difference is the one incidental mention
+#: this change de-backticks. A broken glob or a dead mandate regex produces 0.
 _MANDATED_SPAN_FLOOR = 40
 
 
