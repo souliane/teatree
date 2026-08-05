@@ -7,6 +7,7 @@ missing / empty artifact — the JSON is the enforced proof.
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -32,12 +33,27 @@ def _green_payload() -> dict[str, object]:
     }
 
 
+def _catalog_of(size: int):
+    """Pin the expected scenario count the CLI derives from the live catalog."""
+    return patch("teatree.cli.eval.green_proof.discover_specs", return_value=[object()] * size)
+
+
 class TestGreenProofCli:
     def test_green_run_exits_zero(self, tmp_path: Path) -> None:
         path = _write(tmp_path, _green_payload())
-        result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        with _catalog_of(2):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
         assert result.exit_code == 0, result.output
         assert "GREEN PROOF" in result.output
+
+    def test_a_run_covering_less_than_the_catalog_exits_nonzero(self, tmp_path: Path) -> None:
+        # Seven of eight shards uploaded nothing; the survivor is all-green and
+        # proves nothing about the scenarios it never carried.
+        path = _write(tmp_path, _green_payload())
+        with _catalog_of(231):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 1, result.output
+        assert "NOT A GREEN PROOF" in result.output
 
     def test_a_red_run_exits_nonzero(self, tmp_path: Path) -> None:
         payload = _green_payload()
@@ -45,7 +61,8 @@ class TestGreenProofCli:
         payload["scenarios"][1]["verdict"] = "fail"  # type: ignore[index]
         payload["scenarios"][1]["triage_class"] = "behavioral"  # type: ignore[index]
         path = _write(tmp_path, payload)
-        result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        with _catalog_of(2):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
         assert result.exit_code == 1, result.output
         assert "NOT A GREEN PROOF" in result.output
 
