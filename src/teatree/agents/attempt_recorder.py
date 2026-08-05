@@ -268,11 +268,11 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
         return ""
 
     envelope = cast("ReviewVerdictEnvelope", raw_envelope)
-    divergence = _head_divergence(
+    binding_error = _head_binding_error(
         asserted=str(envelope.get("reviewed_sha") or "").strip(), dispatch_head=target.head_sha
     )
-    if divergence:
-        return divergence
+    if binding_error:
+        return binding_error
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -302,8 +302,8 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
 _MIN_ABBREVIATED_SHA_LEN = 7
 
 
-def _head_divergence(*, asserted: str, dispatch_head: str) -> str:
-    """Refuse a verdict for a tree this review was not dispatched for, or ``""`` (#4126).
+def _head_binding_error(*, asserted: str, dispatch_head: str) -> str:
+    """Refuse a verdict that does not bind to the dispatched tree, or ``""`` (#4126, #4168).
 
     The verdict is recorded at the DISPATCH head because that is the key the landed-work
     guard (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`) reads: a
@@ -312,11 +312,24 @@ def _head_divergence(*, asserted: str, dispatch_head: str) -> str:
     self-assertion at the dispatch head anyway would be worse — it would vouch for a tree
     nobody reviewed — so the divergence is surfaced instead, and a reviewer that judged a
     different tree than it was dispatched for becomes a finding rather than a silent miss.
-    An omitted or abbreviated head that prefixes the dispatch head asserts the same tree.
+    An abbreviated head that prefixes the dispatch head asserts the same tree.
+
+    An OMITTED head is refused on the same reasoning (#4168): treating it as agreement
+    enforced the rule only against reviewers that disclose a head, so a reviewer that said
+    nothing got ``merge_safe`` recorded at the dispatch head with no check performed at all.
+    The shell sibling (``t3 <overlay> review record``) already refuses an empty ``--reviewed-sha``, and
+    ``build_review_contract`` hands the reviewer the literal 40-char head, so disclosing it
+    costs a compliant reviewer nothing.
     """
     claimed = asserted.lower()
     head = dispatch_head.strip().lower()
-    if not claimed or (len(claimed) >= _MIN_ABBREVIATED_SHA_LEN and head.startswith(claimed)):
+    if not claimed:
+        return (
+            "review verdict omits reviewed_sha — the head it bound to is undisclosed, so nothing "
+            f"was checked against the head this review was dispatched for ({dispatch_head}); the "
+            "verdict is not recorded. Return that full 40-char head, which your brief named"
+        )
+    if len(claimed) >= _MIN_ABBREVIATED_SHA_LEN and head.startswith(claimed):
         return ""
     return (
         f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
