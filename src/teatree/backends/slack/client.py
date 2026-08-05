@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -217,6 +218,7 @@ class SlackThreadActivityRequest:
     channel_id: str
     thread_ts: str
     timeout: float = 15.0
+    max_pages: int = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +230,13 @@ class ThreadActivityRead:
     when the thread parent is gone (deleted). Slack carries no per-reaction
     timestamp, so ``has_reaction`` reports only presence — the caller treats
     a present reaction as fresh engagement.
+
+    ``replies_complete`` is False when the walk hit its page budget while Slack
+    still reported more. ``conversations.replies`` pages oldest-first, so a
+    truncated walk's newest-seen ``ts`` is NOT the thread's latest reply, and a
+    freshness check built on it would read a busy, actively-discussed thread as
+    stale. A consumer of ``latest_reply_ts`` must require this flag rather than
+    assume the value is authoritative.
     """
 
     ok: bool
@@ -235,6 +244,7 @@ class ThreadActivityRead:
     parent_ts: str = ""
     latest_reply_ts: str = ""
     has_reaction: bool = False
+    replies_complete: bool = True
 
 
 def _ts_key(ts: str) -> float:
@@ -259,16 +269,19 @@ def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityR
     root are both proof of deletion → ``ok=True, exists=False``; every other
     ``ok:false`` body (ratelimited, auth) stays ``ok=False`` so the caller
     suppresses rather than re-posts on an uncertain read (#3292).
+
+    Replies are walked by cursor because the API pages them oldest-first: a
+    single ``limit:200`` read of a 250-reply thread yields the 200th reply as
+    "the newest". A walk that exhausts ``max_pages`` with more still pending
+    reports ``replies_complete=False`` rather than a ``latest_reply_ts`` that is
+    silently not the latest.
     """
     if not request.token or not request.channel_id or not request.thread_ts:
         return ThreadActivityRead(ok=True, exists=False)
 
     client = SlackHttpClient(timeout=request.timeout)
-    data = client.get(
-        "conversations.replies",
-        token=request.token,
-        params={"channel": request.channel_id, "ts": request.thread_ts, "limit": 200},
-    )
+    params: dict[str, str | int] = {"channel": request.channel_id, "ts": request.thread_ts, "limit": 200}
+    data = client.get("conversations.replies", token=request.token, params=params)
 
     if not data.get("ok"):
         # A deleted root/thread comes back as an ``ok:false`` API error
@@ -288,12 +301,62 @@ def read_thread_activity(request: SlackThreadActivityRequest) -> ThreadActivityR
     # ``messages[0]`` as "exists" just because the array is non-empty (#3292).
     if parent.get("subtype") == "tombstone":
         return ThreadActivityRead(ok=True, exists=False)
-    reply_dicts = [cast("RawAPIDict", m) for m in messages[1:] if isinstance(m, dict)]
-    reply_timestamps = [str(m.get("ts", "")) for m in reply_dicts if m.get("ts")]
+    parent_ts = str(parent.get("ts", ""))
+    reply_timestamps = _reply_timestamps(messages[1:], parent_ts=parent_ts)
+    complete = _walk_remaining_replies(client, request, data, reply_timestamps, parent_ts=parent_ts)
     return ThreadActivityRead(
         ok=True,
         exists=True,
-        parent_ts=str(parent.get("ts", "")),
+        replies_complete=complete,
+        parent_ts=parent_ts,
         latest_reply_ts=max(reply_timestamps, key=_ts_key, default=""),
         has_reaction=bool(parent.get("reactions")),
     )
+
+
+def _reply_timestamps(messages: Sequence[object], *, parent_ts: str) -> list[str]:
+    """Every reply ``ts`` in *messages*, minus the thread parent.
+
+    Slack repeats the parent at the head of each cursor page, so excluding it by
+    ``ts`` keeps the parent out of the newest-reply comparison on page two onward.
+    """
+    dicts = [cast("RawAPIDict", m) for m in messages if isinstance(m, dict)]
+    stamps = [str(m.get("ts", "")) for m in dicts if m.get("ts")]
+    return [ts for ts in stamps if ts != parent_ts]
+
+
+def _walk_remaining_replies(
+    client: SlackHttpClient,
+    request: SlackThreadActivityRequest,
+    first_page: RawAPIDict,
+    collected: list[str],
+    *,
+    parent_ts: str,
+) -> bool:
+    """Append every later page's reply ``ts`` to *collected*; True when the walk finished.
+
+    False means the page budget ran out with Slack still reporting more, so the
+    newest reply was never seen.
+    """
+    data = first_page
+    for _ in range(request.max_pages - 1):
+        if not data.get("has_more"):
+            return True
+        cursor = next_cursor(data)
+        if cursor is None:
+            return True
+        data = client.get(
+            "conversations.replies",
+            token=request.token,
+            params={
+                "channel": request.channel_id,
+                "ts": request.thread_ts,
+                "limit": 200,
+                "cursor": cursor,
+            },
+        )
+        if not data.get("ok"):
+            return False
+        messages = data.get("messages")
+        collected.extend(_reply_timestamps(messages if isinstance(messages, list) else [], parent_ts=parent_ts))
+    return not data.get("has_more")

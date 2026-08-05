@@ -16,6 +16,12 @@
 # `default_margin` applies to any scenario that omits its own `margin`. Add a
 # scenario by appending its calibrated `bound_usd` (and an optional per-scenario
 # `margin` when it needs a tighter/looser band than the default).
+#
+# An EMPTY `scenarios` mapping is refused by the gate rather than passed: pinning
+# nothing is the same vacuity as shipping no file at all, which `load_cost_bounds`
+# already treats as a hard error. A `bound_usd` may only be committed from a
+# MEASURED metered run — an invented ceiling is worse than none, because it fails
+# real runs or certifies a doubled cost depending on which way it was guessed.
 
 default_margin: 0.25
 
