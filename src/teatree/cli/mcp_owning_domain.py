@@ -13,36 +13,64 @@ bind-mounted database read-write while the containerized stack wrote it too.
 
 So the routing lives here instead of in ``.mcp.json``: the same decision the
 alias encodes, taken at startup from the observed ownership of the database
-rather than pinned into a committed file. An install whose database no
-container has claimed serves natively and never touches Docker — which is every
-plain teatree clone.
+rather than pinned into a committed file. An install whose database is visible
+from here and carries no claim serves natively and never touches Docker — which
+is every plain teatree clone. An install that cannot SEE the claim at all is a
+third answer, not the second one: see :func:`claim_is_observable`.
 """
 
 import os
 from pathlib import Path
 
 from teatree.cli.setup.clone import find_main_clone
-from teatree.db.boundary import ControlDbBoundary
+from teatree.db.boundary import ControlDbBoundary, control_db_unreachable_reason
 from teatree.docker.workflow import is_running_in_container, wrapper_path
 from teatree.paths import CANONICAL_DB
 
 DELEGATED_ENV_VAR = "T3_MCP_DELEGATED"
 
 
+def claim_is_observable(db_path: Path) -> bool:
+    """Whether a container's ownership claim on *db_path* could be SEEN from here.
+
+    The claim is a file beside the database, so reading "no claim" only means "nobody
+    claimed it" when the directory holding it is visible from this side of the
+    boundary. :data:`~teatree.paths.DEFAULT_CONTROL_DB_DIR` is a container-only mount
+    BY DESIGN — on the host the whole directory is absent, so the claim file cannot be
+    stat'd and :attr:`~teatree.db.boundary.ControlDbBoundary.read_write_allowed`
+    answers ``True`` for a database the container owns outright.
+
+    That is the #4041 class: an absent signal read as a definite verdict. Splitting
+    this read out keeps "I cannot see whether a container claimed it" a distinct
+    answer from "nobody claimed it", which is what lets the caller resolve the first
+    to UNKNOWN instead of collapsing it into the second.
+    """
+    return control_db_unreachable_reason(db_path, env=os.environ) is None
+
+
 def owning_domain_wrapper() -> Path | None:
     """The container-wrapping ``t3`` entry to hand this server to, or ``None`` to serve here.
 
-    ``None`` — serve natively — whenever anything is uncertain: already inside the
-    container, a database no container has claimed, an unresolvable clone, a missing
-    or non-executable wrapper, or a delegation that already happened. Failing to
-    delegate is safe: the boundary guard still refuses the write, loudly and with the
-    remedy. Delegating on a bad guess is not.
+    ``None`` — serve natively — for the cases that are genuinely safe to serve from
+    here: already inside the container, a delegation that already happened, a database
+    whose claim is OBSERVABLE and unclaimed, an unresolvable clone, or a missing /
+    non-executable wrapper.
+
+    An UNOBSERVABLE claim is none of those, and this is where the earlier version was
+    wrong. Its docstring promised that failing to delegate is safe because "the
+    boundary guard still refuses the write, loudly and with the remedy" — false for
+    this process. The boundary guard never gets to speak: the natively-served server
+    dies on ``unable to open database file``, or worse answers ``initialize`` and then
+    fails every ORM-backed tool call, and the client reports only ``Connection
+    closed``. So UNKNOWN delegates — an invisible claim is treated as a claim, and the
+    wrapper resolution below is what keeps that from stranding a plain clone that has
+    no container to delegate to.
     """
     if is_running_in_container() or os.environ.get(DELEGATED_ENV_VAR):
         return None
     # The line above already settled which side of the boundary this process is on, so
     # the domain is passed down rather than re-derived — one detection, one answer.
-    if ControlDbBoundary(CANONICAL_DB, containerized=False).read_write_allowed:
+    if claim_is_observable(CANONICAL_DB) and ControlDbBoundary(CANONICAL_DB, containerized=False).read_write_allowed:
         return None
 
     try:

@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from teatree.cli import mcp_owning_domain
-from teatree.cli.mcp_owning_domain import DELEGATED_ENV_VAR, delegate_to_owning_domain, owning_domain_wrapper
+from teatree.cli.mcp_owning_domain import (
+    DELEGATED_ENV_VAR,
+    claim_is_observable,
+    delegate_to_owning_domain,
+    owning_domain_wrapper,
+)
 from teatree.db.boundary import ControlDbBoundary
 
 _UNRESOLVABLE = RuntimeError("no main clone on this machine")
@@ -66,6 +71,37 @@ class TestRoutingToTheOwningDomain:
         monkeypatch.setenv(DELEGATED_ENV_VAR, "1")
 
         assert owning_domain_wrapper() is None
+
+
+class TestAnInvisibleClaimIsNotAnAbsentClaim:
+    """#4041 class: "I cannot see whether a container claimed it" must not read as "unclaimed".
+
+    On the host the canonical control-DB directory does not exist AT ALL — it is a
+    container-only mount by design — so the claim file cannot be stat'd and
+    ``read_write_allowed`` answers ``True`` for a database the container owns outright.
+    The server then served natively and failed every ORM-backed call on ``unable to
+    open database file``, which the client reports only as ``Connection closed``.
+    """
+
+    @pytest.fixture
+    def unreachable_control_db(self, clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Point the canonical DB at a control-db dir that does not exist on this side."""
+        directory = tmp_path / "container-only" / "control-db"
+        monkeypatch.setattr("teatree.db.boundary.control_db_dir", lambda _env: directory)
+        monkeypatch.setattr(mcp_owning_domain, "CANONICAL_DB", directory / "db.sqlite3")
+        return directory
+
+    def test_an_invisible_claim_is_not_observable(self, unreachable_control_db: Path) -> None:
+        assert claim_is_observable(unreachable_control_db / "db.sqlite3") is False
+
+    def test_an_invisible_claim_delegates_rather_than_serving_here(
+        self, clone: Path, unreachable_control_db: Path
+    ) -> None:
+        assert owning_domain_wrapper() == clone / "deploy" / "t3"
+
+    def test_a_visible_unclaimed_database_is_still_observable(self, clone: Path) -> None:
+        """The fix must not turn every install into a delegating one."""
+        assert claim_is_observable(mcp_owning_domain.CANONICAL_DB) is True
 
 
 class TestServingHereIsTheDefault:

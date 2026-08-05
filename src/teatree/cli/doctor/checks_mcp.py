@@ -4,11 +4,18 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
 """
 
+import os
+import shutil
+import sys
 from pathlib import Path
 
 import typer
 
 _CHROME_DEVTOOLS_MCP_NAME = "chrome-devtools"
+
+#: Set on the child of a skew repair this check performed, so a repair that does not
+#: actually clear the skew reports itself instead of reinstalling on every run.
+_SKEW_REPAIR_ATTEMPTED_ENV = "_T3_MCP_SKEW_REPAIR_ATTEMPTED"
 
 
 def _check_chrome_devtools_mcp_suggestion(*, home: Path | None = None, cwd: Path | None = None) -> bool:
@@ -161,6 +168,112 @@ def _check_teatree_mcp_registration() -> bool:
     if teatree_statuses and not any(status.connected for status in teatree_statuses):
         typer.echo(
             f"WARN  MCP server '{TEATREE_MCP_SERVER_NAME}' is registered but reports NOT "
-            "connected in `claude mcp list` — it may not have started for this session yet.",
+            "connected in `claude mcp list` — it may not have started for this session yet. "
+            "The authoritative verdict is the exercising check below, which spawns the "
+            "server and says WHY.",
         )
     return True
+
+
+def _resolve_registered_mcp_command() -> list[str] | None:
+    """The argv the ``teatree`` MCP registration actually launches, or ``None``.
+
+    ``.mcp.json`` declares ``t3 mcp serve`` as a PATH lookup, so this exercises what a
+    client exercises — the console script on PATH, not this process's own entry point,
+    which on a container-wrapped install is a different program.
+    """
+    t3_bin = shutil.which("t3")
+    if t3_bin is None:
+        return None
+    return [t3_bin, "mcp", "serve"]
+
+
+def _repair_version_skew(source: Path) -> bool:
+    """Reinstall the running env to clear declared-versus-installed skew (#4049).
+
+    Returns whether the skew is gone afterwards. A stale env is a MECHANICAL cause with
+    a deterministic fix, so it is repaired rather than escalated — the operator is
+    interrupted only for the causes that need judgement. Guarded by
+    :data:`_SKEW_REPAIR_ATTEMPTED_ENV` so a repair that does not take reports itself
+    instead of reinstalling on every doctor run.
+    """
+    from teatree.cli.dep_drift_repair import (  # noqa: PLC0415 — deferred: repair path only
+        RepairPlan,
+        resolve_repair_plan,
+    )
+    from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: repair path only
+
+    if os.environ.get(_SKEW_REPAIR_ATTEMPTED_ENV):
+        typer.echo("      Repair already attempted this run and the skew persists — fix it by hand.")
+        return False
+    plan = resolve_repair_plan(["<version skew>"])
+    if not isinstance(plan, RepairPlan):
+        typer.echo(f"      Cannot self-repair: {plan}")
+        return False
+
+    typer.echo(f"      Self-repairing the stale env — running `{plan.label}` …")
+    os.environ[_SKEW_REPAIR_ATTEMPTED_ENV] = "1"
+    result = run_allowed_to_fail(plan.cmd, expected_codes=None)
+    if result.returncode != 0:
+        typer.echo(f"      Repair FAILED: {result.stderr.strip()[:400]}")
+        typer.echo(f"      Manual fix: `{plan.label}`.")
+        return False
+    remaining = find_version_skew(source / "pyproject.toml")
+    if remaining:
+        typer.echo(f"      Repair ran but skew persists: {'; '.join(skew.summary for skew in remaining)}")
+        return False
+    typer.echo("      Repaired — the env now satisfies every declared runtime dependency.")
+    return True
+
+
+def _check_teatree_mcp_liveness() -> bool:
+    """EXERCISE teatree's own MCP server — hard FAIL when it is not usable (#4049).
+
+    The counterpart to :func:`_check_teatree_mcp_registration`, which is structural and
+    a WARN by design. This one spawns the registered ``t3 mcp serve``, speaks a real
+    ``initialize`` frame to it over stdio, and keeps the stderr ``claude mcp list``
+    throws away — so an enabled-but-dead server is a FAIL that names its cause and the
+    exact remedy instead of one advisory line among twenty.
+
+    Declared-versus-installed skew is checked first and REPAIRED where it is mechanical
+    (a stale tool env), because that cause kills the server before it can report
+    anything about itself. Only a genuinely unusable server escalates to the operator.
+
+    Degrades to a WARN only when the check cannot RUN at all (no ``t3`` on PATH, an
+    unresolvable source tree) — never for a server that ran and failed.
+    """
+    from teatree.core.mcp_liveness import exercise_mcp_server, skew_finding  # noqa: PLC0415 — keeps CLI startup light
+    from teatree.utils.dep_drift import editable_source_path  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    ok = True
+    source = editable_source_path()
+    pyproject = source / "pyproject.toml" if source else None
+    if pyproject is not None and pyproject.is_file():
+        skews = find_version_skew(pyproject)
+        if skews:
+            typer.echo(f"FAIL  {skew_finding([skew.summary for skew in skews], source=pyproject)}")
+            ok = _repair_version_skew(source) if source else False
+
+    argv = _resolve_registered_mcp_command()
+    if argv is None:
+        typer.echo("WARN  `t3` is not on PATH, so the registered `t3 mcp serve` could not be exercised.")
+        return ok
+
+    try:
+        outcome = exercise_mcp_server(argv)
+    except OSError as exc:
+        typer.echo(f"WARN  Could not spawn `{' '.join(argv)}` to exercise the MCP server: {exc}")
+        return ok
+
+    if outcome.ok:
+        typer.echo(f"OK    {outcome.finding}")
+        return ok
+    typer.echo(f"FAIL  {outcome.finding}")
+    if outcome.stderr_excerpt:
+        typer.echo("      Captured stderr (`claude mcp list` never shows this):")
+        for line in outcome.stderr_excerpt.splitlines():
+            typer.echo(f"        {line}")
+    typer.echo(f"      Reproduce: `{' '.join(argv)}` — this ran as {sys.executable}.")
+    return False
