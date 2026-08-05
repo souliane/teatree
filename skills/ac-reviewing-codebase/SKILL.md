@@ -28,9 +28,9 @@ You are dispatched by `ArchitecturalReviewScanner` (`src/teatree/loop/scanners/a
 
 ## Environment
 
-Your tool grant is `phase_tools.tools_for_phase("architectural_review")` (`src/teatree/core/modelkit/phase_tools.py`) — read that entry rather than assuming a shape. You start in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` there directly.
+Your tool grant is whatever `teatree.core.modelkit.phase_tools.tools_for_phase("architectural_review")` returns at dispatch time — that accessor is the authority, never prose about it. The pass needs file reads, tree search, web fetch, shell, and write/edit for § 4. You start in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` there directly.
 
-The main-clone guard blocks every mutation of the shared clone, so **all writing happens in your own worktree**: `git worktree add -b review-fixes/<slug> ../ac-review origin/main`. Cut it as soon as the walk turns up its first confirmed finding — the implementation pass below runs there, and a heavy cold read is cheaper there too. If you find yourself with no shell or no checkout, that is a dispatch fault, not a question for the owner: STOP and return `needs_user_input` with the reason (it is classified INTERNAL, never DM'd).
+The main-clone guard blocks every mutation of the shared clone, so **all writing happens in your own worktree**: `git worktree add -b review-fixes/<slug> ../ac-review origin/main`. Cut it as soon as the walk turns up its first confirmed finding — the implementation pass below runs there, and a heavy cold read is cheaper there too. If you find yourself without a checkout, or without one of the tools listed above, that is a dispatch fault, not a question for the owner: STOP and return `needs_user_input` with the reason (it is classified INTERNAL, never DM'd).
 
 ## What to do
 
@@ -76,8 +76,10 @@ In the worktree you cut in § Environment:
 1. Implement each unit of work from § 1 and § 2. Follow `skills/code/SKILL.md` — a failing test first wherever the behaviour is testable, observed RED before the fix; a BLUEPRINT/appendix staleness fix is a prose change with no test.
 2. Commit per unit, so the history reads as one coherent change per root cause. Cite the catalog entry id (and the ticket, where one exists) in the commit body.
 3. Run the affected-tests lane (`bash dev/test-affected.sh`) and `uv run ruff check`, both green, before pushing.
-4. Push the branch and open the PR with `t3 <overlay> pr create` — raw `gh pr create` is forbidden wherever the overlay exposes it (`skills/ship/SKILL.md` § "pr create is mandatory").
-5. Report the branch, the pushed SHA, and the per-finding disposition in your result envelope.
+4. Push the branch — never `--no-verify`. The pre-push hook runs `t3 <overlay> pr ensure-pr`, which on a first push owes a durable `PendingPullRequest` instead of opening a PR against a remote ref that does not exist yet; re-run `t3 <overlay> pr ensure-pr` once the push lands so this pass discharges its own obligation rather than leaving it for the dispatch loop. Raw `gh pr create` stays forbidden (`skills/ship/SKILL.md` § "pr create is mandatory").
+5. Report the branch, the pushed SHA, the PR url, and the per-finding disposition in your result envelope.
+
+`t3 <overlay> pr create` is not this pass's path, and forcing it is not the fix. It IS the FSM ship transition, so it demands a `Worktree` row the § Environment `git worktree add` never creates, and its shipping gate requires the ticket to have visited `testing` and `reviewing` (`teatree.core.management.commands._ship.gates.check_shipping_gate`). A cadence-anchor ticket only visits `architectural_review`, which `teatree.core.modelkit.phases.normalize_phase` maps to itself — so recording a `reviewing` visit here would attest the cold review that § "Maker≠checker" deliberately puts *after* this PR exists. `pr create`'s own docstring names `pr ensure-pr` as the seam for a checkout that needs a PR without the ship transition.
 
 One PR carries the whole batch. `/t3:rules` § "Fewest PRs for Related Work" applies — splitting needs the owner's up-front approval, so the default is one.
 
@@ -86,10 +88,11 @@ One PR carries the whole batch. `/t3:rules` § "Fewest PRs for Related Work" app
 Filing is the **exception**, not the default. A unit of work goes to a ticket instead of the PR only when implementing it needs a decision this pass cannot make alone:
 
 - it turns on an **architectural decision** — two defensible designs, a contract change other overlays consume, a migration whose shape the owner picks;
-- it is **contested** — the catalog's preferred pattern is arguable here, or the code is deliberately the way it is and the reason is not in reach;
-- it is **too large to land coherently** alongside the rest of the batch.
+- it is **contested** — the catalog's preferred pattern is arguable here, or the code is deliberately the way it is and the reason is not in reach.
 
-For those, file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later session does not re-derive your reasoning, **plus the reason it was not implemented here**, or the next reader rediscovers the same blocker. Each ticket needs the owner's approval before it is created (`AGENTS.md` § "Issue Creation"); present that batch and let them decide. "I ran low on budget" is not one of the three reasons — say so plainly in the envelope instead, so the shortfall is visible as a shortfall.
+Both are decidable from the read, before a line is written. Size is not a third reason: "too large to land coherently" is a judgement you cannot reach until you have already implemented the thing, so it would certify whatever you did — including nothing.
+
+For those, file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later session does not re-derive your reasoning, **plus the reason it was not implemented here**, or the next reader rediscovers the same blocker. Each ticket needs the owner's approval before it is created (`AGENTS.md` § "Issue Creation"); present that batch and let them decide. "I ran low on budget" is not one of the two reasons — say so plainly in the envelope instead, so the shortfall is visible as a shortfall.
 
 ## Maker≠checker holds at the merge gate, not at the keyboard
 
@@ -103,6 +106,6 @@ So do not "restore" a rule forbidding this pass from writing code. Refusing to w
 
 - Do not re-check `detection: greppable` catalog entries — `check_antipatterns.py` already covers those on every PR; duplicating that work here wastes the review budget.
 - Do not end the run on a report. A findings list with no pushed branch is an unfinished pass, in the factory and in an attended session alike.
-- Do not file a ticket for a finding you could have implemented. Filing is for the three cases in § 5, and each ticket says which one applies.
+- Do not file a ticket for a finding you could have implemented. Filing is for the two cases in § 5, and each ticket says which one applies.
 - Do not merge your own PR, and do not treat this pass's review as its cold review. The independent reviewer at the merge gate is the whole reason this pass is allowed to write.
 - Do not re-litigate architecture-design's ten checks — those already ran when the reviewed code was written; this pass is about accumulated drift, not re-approving old decisions.
