@@ -25,6 +25,17 @@ The plan must be specific enough that the coder agent can execute it without
 guessing: file-level changes, data-model decisions, API contracts, and test
 strategy. Output the plan in the `plan_text` field of your JSON result.
 
+## Narrowest surface that expresses the variation
+
+Where the plan introduces a setting, a flag, an abstract member or any other
+pluggable seam, state in `plan_text` the narrowest shape that expresses that
+variation, and why nothing narrower works. A value the code can derive needs
+no setting; a hook only one implementation would fill belongs in that
+implementation. Surface is paid at every implementation and every call site,
+so plan the small one — widening later is cheap, narrowing later is not.
+Two settings that are never varied independently are one setting; say so in
+the plan rather than carrying both.
+
 ## Consume the intake landscape survey (do NOT re-derive it)
 
 The ticket-intake FSM step (`execute_provision`, after the worktrees materialise

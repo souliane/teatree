@@ -41,6 +41,7 @@ from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
 from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
+from tests.teatree_agents._sdk_fake import assistant_tool_use as _assistant_tool_use
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
 from tests.teatree_agents._sdk_fake import result_message as _result_message
@@ -170,7 +171,9 @@ class TestRunHeadless(TestCase):
         # envelope. Refusing here would strand a landed branch. Past the salvage the
         # recorder names the omitted ENVELOPE (#3905) — the run emitted no JSON, so
         # "you omitted `files_modified`" would be a false account of what happened.
-        with _fake_sdk([_assistant_text("no structured output"), _result_message()]):
+        # The tool call is what makes this THAT run rather than one that never acted:
+        # a toolless stream is refused earlier, and named for that instead.
+        with _fake_sdk([_assistant_tool_use(), _assistant_text("no structured output"), _result_message()]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -337,7 +340,12 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
             ticket=ticket, repo_path=str(repo_dir), branch=branch, extra={"worktree_path": str(repo_dir)}
         )
 
-        with _fake_sdk([_assistant_text("implemented it, forgot the envelope"), _result_message()]):
+        stream = [
+            _assistant_tool_use("Edit"),
+            _assistant_text("implemented it, forgot the envelope"),
+            _result_message(),
+        ]
+        with _fake_sdk(stream):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
@@ -616,6 +624,7 @@ class TestRunHeadlessMaxTokensTruncationAlert(TestCase):
         return attempt, task, notify
 
     def test_truncation_records_failed_and_alerts_the_owner(self) -> None:
+        from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
         from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — test-local
 
         terminal = _result_message(
@@ -630,7 +639,7 @@ class TestRunHeadlessMaxTokensTruncationAlert(TestCase):
         assert notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_ESCALATION
         # Names the phase and the ceiling so the owner can raise it; never the truncated body.
         assert "coding" in alert_text
-        assert "16384" in alert_text
+        assert str(PYDANTIC_AI_MAX_TOKENS_DEFAULT) in alert_text
         assert "max_tokens" in alert_text
         assert "response truncated at the max_tokens ceiling" not in alert_text
 

@@ -199,7 +199,7 @@ def _check_dream_transcript_visibility() -> bool:
     Complements :func:`_check_dream_staleness` (cadence) — this one names the
     mount as the remedy. Crash-proof: any error degrades to OK.
     """
-    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415 — deferred import
+    from teatree.loops.dream.replay import default_projects_dir  # noqa: PLC0415 — deferred import
 
     try:
         root = default_projects_dir()

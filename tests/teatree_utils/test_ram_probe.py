@@ -11,6 +11,7 @@ import pytest
 
 from teatree.utils import ram_probe
 from teatree.utils.ram_probe import (
+    DockerWorkerSizing,
     _cgroup_v2_cpu_quota,
     _emit_compose_sizing,
     _linux_ram_used_percent,
@@ -18,8 +19,6 @@ from teatree.utils.ram_probe import (
     available_cpu_count,
     cgroup_v2_memory_mib,
     default_provision_concurrency,
-    derive_worker_cpus,
-    derive_worker_mem_limit_mib,
     effective_available_ram_mib,
     host_available_ram_mib,
     host_total_ram_mib,
@@ -199,33 +198,102 @@ class TestHostTotalRamMib:
 
 class TestDeriveWorkerCpus:
     def test_reserves_one_core_for_sidecars(self) -> None:
-        assert derive_worker_cpus(cpu_count=8) == 7
+        assert DockerWorkerSizing.worker_cpus(cpu_count=8) == 7
 
     def test_floors_at_one(self) -> None:
-        assert derive_worker_cpus(cpu_count=1) == 1
-        assert derive_worker_cpus(cpu_count=0) == 1
+        assert DockerWorkerSizing.worker_cpus(cpu_count=1) == 1
+        assert DockerWorkerSizing.worker_cpus(cpu_count=0) == 1
 
     def test_reads_available_cpu_when_unset(self) -> None:
         with patch("teatree.utils.ram_probe.available_cpu_count", return_value=4):
-            assert derive_worker_cpus() == 3
+            assert DockerWorkerSizing.worker_cpus() == 3
 
 
 class TestDeriveWorkerMemLimitMib:
     def test_reserves_siblings_and_headroom(self) -> None:
         # (32000 - 3328) * 0.8 = 22937.
-        assert derive_worker_mem_limit_mib(total_ram_mib=32000) == 22937
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=0) == 22937
 
     def test_floors_at_two_gib(self) -> None:
         # A tiny host still gets a usable worker cap, even above its RAM (a cap only).
-        assert derive_worker_mem_limit_mib(total_ram_mib=1000) == 2048
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=1000, daemon_ram_mib=0) == 2048
 
     def test_unreadable_ram_returns_zero_so_default_holds(self) -> None:
         # 0 signals deploy.sh to keep the compose default rather than cap blindly.
-        assert derive_worker_mem_limit_mib(total_ram_mib=0) == 0
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=0, daemon_ram_mib=0) == 0
 
     def test_reads_host_total_when_unset(self) -> None:
-        with patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000):
-            assert derive_worker_mem_limit_mib() == 22937
+        with (
+            patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000),
+            patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=0),
+        ):
+            assert DockerWorkerSizing.worker_mem_limit_mib() == 22937
+
+
+class TestWorkerCapNeverExceedsTheDockerVm:
+    """Under Docker Desktop the daemon's VM, not host RAM, is the real ceiling.
+
+    A cap derived from a 24 GiB host but applied inside an 8 GiB VM can never
+    bind: the cgroup limit sits above the whole machine, so memory pressure
+    resolves as a GLOBAL oom-kill (``constraint=CONSTRAINT_NONE``) that reaps the
+    worker mid-run and leaves dockerd without an exit event — the container then
+    refuses `stop` and exits 137.
+    """
+
+    def test_daemon_vm_smaller_than_host_wins(self) -> None:
+        # 24 GiB host, 8 GiB Docker Desktop VM: (8192 - 3328) * 0.8 = 3891.
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=24576, daemon_ram_mib=8192) == 3891
+
+    def test_host_wins_when_it_is_the_smaller_of_the_two(self) -> None:
+        # Linux box: the daemon shares the host kernel, so neither figure inflates.
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=32000) == 22937
+
+    def test_unreadable_daemon_falls_back_to_host(self) -> None:
+        # No docker binary / unreachable daemon must not zero out a good host read.
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=0) == 22937
+
+    def test_daemon_alone_still_sizes_when_host_is_unreadable(self) -> None:
+        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=0, daemon_ram_mib=8192) == 3891
+
+    def test_probes_the_daemon_by_default(self) -> None:
+        with (
+            patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=24576),
+            patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=8192),
+        ):
+            assert DockerWorkerSizing.worker_mem_limit_mib() == 3891
+
+
+class TestDockerDaemonTotalRamMib:
+    def test_parses_mem_total_bytes(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/docker"),
+            patch(
+                "subprocess.run",
+                return_value=CompletedProcess(args=[], returncode=0, stdout="8322101248\n", stderr=""),
+            ),
+        ):
+            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 7936
+
+    def test_missing_docker_reads_zero(self) -> None:
+        with patch("shutil.which", return_value=None):
+            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 0
+
+    def test_unreachable_daemon_reads_zero(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/docker"),
+            patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "docker")),
+        ):
+            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 0
+
+    def test_unparsable_output_reads_zero(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/docker"),
+            patch(
+                "subprocess.run",
+                return_value=CompletedProcess(args=[], returncode=0, stdout="<nil>\n", stderr=""),
+            ),
+        ):
+            assert ram_probe.DockerWorkerSizing.daemon_total_ram_mib() == 0
 
 
 class TestComposeSizingMain:
@@ -233,8 +301,8 @@ class TestComposeSizingMain:
 
     def test_emits_shell_assignments(self, capsys) -> None:
         with (
-            patch("teatree.utils.ram_probe.derive_worker_cpus", return_value=7),
-            patch("teatree.utils.ram_probe.derive_worker_mem_limit_mib", return_value=24576),
+            patch("teatree.utils.ram_probe.DockerWorkerSizing.worker_cpus", return_value=7),
+            patch("teatree.utils.ram_probe.DockerWorkerSizing.worker_mem_limit_mib", return_value=24576),
         ):
             _emit_compose_sizing()
         out = capsys.readouterr().out
@@ -243,8 +311,8 @@ class TestComposeSizingMain:
 
     def test_omits_mem_when_ram_unreadable(self, capsys) -> None:
         with (
-            patch("teatree.utils.ram_probe.derive_worker_cpus", return_value=3),
-            patch("teatree.utils.ram_probe.derive_worker_mem_limit_mib", return_value=0),
+            patch("teatree.utils.ram_probe.DockerWorkerSizing.worker_cpus", return_value=3),
+            patch("teatree.utils.ram_probe.DockerWorkerSizing.worker_mem_limit_mib", return_value=0),
         ):
             _emit_compose_sizing()
         out = capsys.readouterr().out

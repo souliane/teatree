@@ -18,6 +18,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.db as db_mod
 import teatree.utils.run as utils_run_mod
+from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import ProvisionStep
 from tests.teatree_core.management_commands._overlays import (
@@ -535,8 +536,7 @@ class TestLifecycleStart(TestCase):
             mock_overlay.provisioning.reset_passwords_command.return_value = None
             mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
@@ -583,8 +583,7 @@ class TestLifecycleStart(TestCase):
             mock_overlay.provisioning.reset_passwords_command.return_value = None
             mock_overlay.provisioning.compose_file.return_value = ""
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
@@ -627,8 +626,7 @@ class TestLifecycleStart(TestCase):
             mock_overlay.provisioning.reset_passwords_command.return_value = None
             mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             call_count = 0
 
@@ -673,7 +671,7 @@ class TestImagePreflight(TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _setup(self, tmp_path: Path) -> tuple[Path, "MagicMock", "MagicMock"]:
+    def _setup(self, tmp_path: Path) -> tuple[Path, "MagicMock", TeaTreeConfig]:
         wt_path = tmp_path / "worktree"
         wt_path.mkdir()
         ticket = Ticket.objects.create(
@@ -701,8 +699,7 @@ class TestImagePreflight(TestCase):
         mock_overlay.provisioning.reset_passwords_command.return_value = None
         mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
-        mock_config = MagicMock()
-        mock_config.user.workspace_dir = tmp_path
+        mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
         return wt_path, mock_overlay, mock_config
 
     @staticmethod

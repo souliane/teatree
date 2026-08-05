@@ -72,6 +72,9 @@ def owning_domain_wrapper() -> Path | None:
         return None
     # The line above already settled which side of the boundary this process is on, so
     # the domain is passed down rather than re-derived — one detection, one answer.
+    # A DB the host cannot REACH is owned by the container even though no claim file is
+    # visible here — the claim lives inside the volume. Asking read_write_allowed alone
+    # inverts the guard exactly where it matters.
     if claim_is_observable(CANONICAL_DB) and ControlDbBoundary(CANONICAL_DB, containerized=False).read_write_allowed:
         return None
 

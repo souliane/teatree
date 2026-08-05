@@ -124,6 +124,7 @@ _GH_PR_CREATE_RE = re.compile(r"\bgh\s+pr\s+create\b")
 _GLAB_SOURCE_BRANCH_FLAGS: Final[tuple[str, ...]] = ("--source-branch", "-s")
 _GH_HEAD_BRANCH_FLAGS: Final[tuple[str, ...]] = ("--head", "-H")
 
+
 # A git probe that hangs blocks the user; these are local ref/config reads.
 _GIT_PROBE_TIMEOUT_S: Final[int] = 5
 

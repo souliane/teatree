@@ -30,7 +30,7 @@ def _echo_overlay() -> object:
 def _build(**ctx_kwargs: object) -> dict[str, str]:
     context = _runners.E2eEnvContext(env_cache_override={}, **ctx_kwargs)
     with patch.object(_runners, "get_overlay", _echo_overlay):
-        return _runners.build_e2e_env("http://localhost:4200", headed=False, target="local", context=context)
+        return _runners.build_e2e_env("http://localhost:4200", target="local", context=context)
 
 
 class TestArtifactsDirExport:

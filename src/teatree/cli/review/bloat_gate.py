@@ -19,7 +19,7 @@ this gate refuses:
 * **Slack timestamp** — quoting a Slack thread by ``ts`` (a 10.6-digit
     Unix timestamp). Pure project-chatter.
 * **Tracker reference + coordination directive** — a ticket/PR id
-    (``#1234`` / ``!567``) paired with social-coordination language
+    (``#1234`` / ``!42``) paired with social-coordination language
     (``ping the author``, ``sync with the team``, ``discuss in
     standup``). A *bare* ``tracked at #1234`` pointer is NOT bloat — it
     is the legitimate non-blocker form the TODO gate
@@ -59,7 +59,7 @@ _HANDLE_RE = re.compile(r"(?<![\w.])@[A-Za-z][\w.-]{1,}\b")
 # ratio, a version, ``3.14``) has far fewer digits and does not match.
 _SLACK_TS_RE = re.compile(r"\b\d{10}\.\d{6}\b")
 
-# A ticket/PR reference by id: ``#1234`` (issue/PR) or ``!567`` (GitLab
+# A ticket/PR reference by id: ``#1234`` (issue/PR) or ``!42`` (GitLab
 # MR). The marker must be followed by 2+ digits so a bare ``#`` (a heading,
 # a lint-suppression token) or a single-digit footnote does not register.
 _TICKET_REF_RE = re.compile(r"(?<![\w/])[#!]\d{2,}\b")
@@ -89,7 +89,7 @@ def references_project_chatter(body: str) -> bool:
     """Whether ``body`` drags in project chatter unrelated to the diff.
 
     True when the body names a stakeholder by ``@handle``, quotes a Slack
-    thread by timestamp, or pairs a tracker id (``#1234`` / ``!567``) with
+    thread by timestamp, or pairs a tracker id (``#1234`` / ``!42``) with
     social-coordination language (``ping``, ``sync with``, ``in standup``,
     ``the team``, ``the author should``). A *bare* tracker reference with no
     coordination directive is NOT chatter — it is the legitimate
@@ -128,7 +128,7 @@ def _chatter_error() -> str:
     """Build the project-chatter refusal naming the diff-only rule."""
     return (
         "Refusing bloated review note: it carries project chatter (an `@handle` "
-        "stakeholder, a Slack timestamp, or a tracker id like `#1234`/`!567` paired with "
+        "stakeholder, a Slack timestamp, or a tracker id like `#1234`/`!42` paired with "
         "a coordinate-with-people directive). A review comment is about the DIFF, not the "
         "project tracker — drop the coordination and state the finding on the code itself. "
         "A bare `tracked at #1234` pointer is fine; the social directive (`ping the "

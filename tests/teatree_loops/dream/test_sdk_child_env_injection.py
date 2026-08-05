@@ -24,7 +24,7 @@ from django.test.testcases import DatabaseOperationForbidden  # ty: ignore[unres
 
 from teatree.agents._headless_env import system_child_env
 from teatree.loops.dream import sdk_distiller, sdk_eval_synthesizer
-from teatree.loops.dream.engine import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
 
 _PINNED = {"T3_AGENT_HARNESS_PROVIDER": "subscription_oauth"}
@@ -33,7 +33,6 @@ _PINNED = {"T3_AGENT_HARNESS_PROVIDER": "subscription_oauth"}
 def _extract() -> ConsolidationExtract:
     return ConsolidationExtract(
         snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
-        truncated=False,
     )
 
 

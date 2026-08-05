@@ -53,7 +53,9 @@ class TestBlocksForbiddenCommands:
             ("createdb mydb", "db"),
             ("dropdb mydb", "db"),
             ("npx playwright test", "e2e"),
-            ("playwright test --headed", "e2e"),
+            # Still denied, by the more specific rule: the headed-browser tier runs
+            # ahead of the t3/read-only allowlist, so it answers first.
+            ("playwright test --headed", "headless"),
             ("npm run serve", "run"),
             ("npm run start", "run"),
             ("pipenv install requests", "worktree provision"),
@@ -99,6 +101,119 @@ class TestBlocksForbiddenCommands:
         deny = _parse_deny(capsys)
         assert deny is not None
         assert "manage.py runserver" in deny["permissionDecisionReason"]
+
+
+class TestHostInterpreterOnARepoPythonPath:
+    """`PYTHONPATH=…src python3 …` is the `.venv/bin/` bypass under another spelling.
+
+    Both hand-build an environment for this tree's packages and run them outside
+    the one `pyproject.toml` resolves, so both answer the same way.
+
+    The rule needs BOTH halves, and that is what keeps it narrow: a `python3` with
+    no source root on its `PYTHONPATH` belongs to some other project, and a
+    `PYTHONPATH` handed to `uv run` or `t3` is already inside the sanctioned
+    environment. Only a source root followed directly by a host interpreter is the
+    bypass.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "PYTHONPATH=vendor/teatree/src:src python3 scripts/hooks/check_module_health.py",
+            "PYTHONPATH=src python3 -m pytest tests/",
+            "PYTHONPATH=src DJANGO_SETTINGS_MODULE=settings python manage.py check",
+            "PYTHONPATH=/checkout/vendor/teatree/src /usr/bin/python3.13 dev/report.py",
+        ],
+    )
+    def test_a_repo_script_behind_a_hand_set_pythonpath_is_denied(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+    ) -> None:
+        assert handle_block_direct_commands(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+        assert "PYTHONPATH" in deny["permissionDecisionReason"]
+        assert "fix the CLI" in deny["permissionDecisionReason"]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python3 -c 'print(1)'",
+            "python3 /tmp/scratch.py",
+            "PYTHONPATH=/opt/vendor/lib python3 report.py",
+            "PYTHONPATH=/usr/src/app python3 app.py",
+            "PYTHONPATH=src uv run python -m pytest",
+            "PYTHONPATH=src t3 teatree run tests",
+            "./deploy/t3 teatree run tests",
+            "grep -rn 'PYTHONPATH=src python3' docs/",
+        ],
+    )
+    def test_an_unrelated_interpreter_or_a_sanctioned_runner_passes(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+    ) -> None:
+        assert handle_block_direct_commands(_bash_event(command)) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestHeadedBrowserRidesNoAllowlist:
+    """A headed browser run is refused whatever leader carries it.
+
+    The ``t3``/read-only leader allowlist short-circuits before the denylist, so a
+    headed-browser deny could be re-issued behind a ``t3 `` prefix and sail
+    through. A flag whose whole point is that it must never run cannot depend on
+    which verb happens to spell it.
+
+    The second block is the symmetric half, and it is not decoration: a first cut
+    matched the bare flag anywhere and blocked writing the very tests below.
+    """
+
+    _FLAG = "--" + "headed"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 myapp e2e run {flag}",
+            "t3 myapp e2e external {flag} spec.ts",
+            "t3 teatree e2e project {flag}",
+            "npx playwright test {flag}",
+            "PWDEBUG=1 t3 myapp e2e run {flag}",
+            "t3 myapp e2e run --headless=false",
+        ],
+    )
+    def test_headed_run_is_denied_behind_any_leader(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+    ) -> None:
+        assert handle_block_direct_commands(_bash_event(command.format(flag=self._FLAG))) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "headless" in deny["permissionDecisionReason"]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 myapp e2e run",
+            "t3 myapp e2e run --update-snapshots",
+            "t3 myapp e2e run --headless",
+            "echo 'never pass {flag} to playwright'",
+            "grep -rn -- {flag} docs/",
+            "git commit -m 'docs: explain why {flag} is banned'",
+            "t3 myapp config_setting set chrome_devtools_headless true",
+            "ruff check --fix src/",
+        ],
+    )
+    def test_the_flag_as_data_is_untouched(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+    ) -> None:
+        assert handle_block_direct_commands(_bash_event(command.format(flag=self._FLAG))) is not True
+        assert capsys.readouterr().out.strip() == ""
 
 
 class TestAllowsLegitimateCommands:

@@ -8,7 +8,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
   last_research_date: "2026-05-20"
 ---
 
@@ -180,7 +179,7 @@ t3 <overlay> config_setting set scanning_news_cadence_hours 24
 t3 <overlay> config_setting set ask_before_creating_news_tickets true
 ```
 
-If the loop scanner is not yet wired on an older install, the fallback path is documented in `references/cron-fallback.md` (same shape as `t3:followup`'s cron block).
+If the loop scanner is not yet wired on an older install, the fallback path is documented in `references/cron-fallback.md` (same shape as `t3:checking`'s cron block).
 
 ## Rules
 
@@ -193,7 +192,7 @@ If the loop scanner is not yet wired on an older install, the fallback path is d
 
 ## Related skills
 
-- `t3:followup` — daily-routine pattern; its cron fallback is the same shape as this skill's.
+- `t3:checking` — daily-routine pattern; its cron fallback is the same shape as this skill's.
 - `t3:contribute` — pushes improvements upstream; may pick up issues filed from this skill's approved candidates.
 - `t3:sweeping-tickets` — consolidation/triage flow; new issues get folded into a tracking epic or kept standalone on the next sweep.
 

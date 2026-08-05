@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from teatree.utils.ram_probe import derive_worker_cpus, derive_worker_mem_limit_mib
+from teatree.utils.ram_probe import DockerWorkerSizing
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = REPO_ROOT / "deploy"
@@ -119,8 +119,8 @@ class TestDeployShRunDerivesWorkerCaps:
         assert record_cpus.exists(), f"docker compose up was never reached:\n{proc.stdout}\n{proc.stderr}"
         # deploy.sh runs uncapped here just as on the host; the value it exported is
         # exactly what ram_probe derives in-process — the host-sized worker cap.
-        assert record_cpus.read_text() == str(derive_worker_cpus())
-        expected_mem = derive_worker_mem_limit_mib()
+        assert record_cpus.read_text() == str(DockerWorkerSizing.worker_cpus())
+        expected_mem = DockerWorkerSizing.worker_mem_limit_mib()
         if expected_mem > 0:
             assert record_mem.read_text() == f"{expected_mem}m"
 

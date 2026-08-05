@@ -11,6 +11,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, 
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
+from teatree.core.management.commands import _pr_control_db
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import (
     PR_UNKNOWN_DEFERRAL,
@@ -656,7 +657,7 @@ class TestEnsurePrReadsTheControlDbTopologyFirst(TestCase):
 
     def test_skips_with_the_topology_reason_when_the_control_db_is_container_only(self) -> None:
         self._monkeypatch.setenv(CONTROL_DB_DIR_ENV, str(self._CONTAINER_ONLY))
-        self._monkeypatch.setattr(pr_command, "_configured_db_path", lambda: self._CONTAINER_ONLY / DB_FILENAME)
+        self._monkeypatch.setattr(_pr_control_db, "configured_db_path", lambda: self._CONTAINER_ONLY / DB_FILENAME)
         classify = MagicMock()
 
         with (

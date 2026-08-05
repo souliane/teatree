@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.loops.dream import reindex
+from teatree.loops.dream._shared import PRIORITY_NAME
 
 if TYPE_CHECKING:
     from teatree.loops.dream.decay import ArchivedMemory
@@ -249,7 +250,11 @@ def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
             continue
         if md.name == _INDEX_NAME:
             index_text = text
-        else:
+        elif md.name != PRIORITY_NAME:
+            # ``MEMORY_ARCHIVE.md`` deliberately STAYS in the snapshot: an archived
+            # memory is answerable through its cold-index signature, so dropping it
+            # would strand every archived probe. Only the human-owned preamble is
+            # excluded — it is an index of memories, never a lesson of its own.
             memories[md.name] = text
     return MemorySnapshot.build(memories=memories, index_text=index_text)
 

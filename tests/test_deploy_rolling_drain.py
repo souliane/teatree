@@ -38,15 +38,38 @@ _OBSERVED_IDLE_TEARDOWN_SECONDS = 276
 _FAIL_SAFE_START = "_DRAINED=false"
 _FAIL_SAFE_END = "trap _clear_quiescing_if_stranded EXIT"
 
+#: Anchors bounding deploy.sh's `compose` helper, which the fail-safe calls (#4193 wired
+#: the host-identity overlay behind it). Lifted verbatim for the same reason the
+#: fail-safe is: a re-typed copy would keep passing after the shipped code changed.
+_COMPOSE_HELPER_START = "CONTAINER_HOME="
+_COMPOSE_HELPER_END = "compose() {"
+
+
+def _slice(body: str, start_anchor: str, end_anchor: str, what: str) -> str:
+    start, end = body.find(start_anchor), body.find(end_anchor)
+    moved = f"deploy.sh's {what} moved — re-anchor this probe"
+    assert start != -1, moved
+    assert end > start, moved
+    return body[start : end + len(end_anchor)]
+
+
+def _compose_helper_block() -> str:
+    """deploy.sh's `compose` wrapper plus the constants it reads, verbatim.
+
+    The fail-safe calls `compose`, not `docker compose`, so the harness has to carry the
+    real definition — otherwise the probe would prove a function it invented.
+    """
+    body = _DEPLOY_SH.read_text(encoding="utf-8")
+    head = _slice(body, _COMPOSE_HELPER_START, _COMPOSE_HELPER_END, "compose helper")
+    rest = body[body.find(_COMPOSE_HELPER_END) + len(_COMPOSE_HELPER_END) :]
+    closing = rest.find("\n}\n")
+    assert closing != -1, "deploy.sh's compose() helper is not closed as expected — re-anchor this probe"
+    return f"{head}{rest[: closing + len('\n}\n')]}\n"
+
 
 def _fail_safe_block() -> str:
     """deploy.sh's stranded-gate fail-safe, verbatim, anchors included."""
-    body = _DEPLOY_SH.read_text(encoding="utf-8")
-    start, end = body.find(_FAIL_SAFE_START), body.find(_FAIL_SAFE_END)
-    moved = "deploy.sh's stranded-gate fail-safe moved — re-anchor this probe"
-    assert start != -1, moved
-    assert end > start, moved
-    return body[start : end + len(_FAIL_SAFE_END)] + "\n"
+    return _slice(_DEPLOY_SH.read_text(encoding="utf-8"), _FAIL_SAFE_START, _FAIL_SAFE_END, "stranded-gate fail-safe")
 
 
 def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> list[str]:
@@ -61,8 +84,9 @@ def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> 
 
     script = tmp_path / "harness.sh"
     script.write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\n"
-        f"{fail_safe}"
+        "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\nHOST_IDENTITY_FILE=/dev/null\n"
+        f"{_compose_helper_block()}"
+        f"{fail_safe}\n"
         f'_DRAINED=true\ntouch "{ready}"\nsleep 5\n',
         encoding="utf-8",
     )

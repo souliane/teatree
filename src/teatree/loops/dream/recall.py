@@ -31,7 +31,7 @@ from pathlib import Path
 # ``MEMORY.md``. Reference those constants directly so a rename in one place can
 # never silently desync the recall reader. Both modules are DB-free at import
 # (stdlib only), so importing them keeps this core hook-importable without Django.
-from teatree.loops.dream.decay import _ARCHIVE_INDEX_NAME as COLD_INDEX_NAME
+from teatree.loops.dream._shared import ARCHIVE_INDEX_NAME as COLD_INDEX_NAME
 from teatree.loops.dream.reindex import _INDEX_NAME as HOT_INDEX_NAME
 
 #: Max hits surfaced per turn.

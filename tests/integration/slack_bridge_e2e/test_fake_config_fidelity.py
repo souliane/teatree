@@ -1,71 +1,71 @@
-"""Guard the ``_FakeUserSettings`` test double against ``UserSettings`` drift.
+"""Guard the fortress config double against ``UserSettings`` drift.
 
-The fortress fakes ``UserSettings`` via ``conftest._FakeUserSettings`` so the
-backend factory can resolve identities / voice-classifier mode without a real
-config store. ``get_effective_settings`` rebuilds the settings with
-``dataclasses.replace(base, **layered)`` where ``layered`` carries the overlay
-CODE-DEFAULT tier — every key in ``PROMOTED_OVERLAY_CODE_DEFAULT_KEYS`` (#36).
-``replace`` re-invokes ``base.__class__(**changes)``, so a promoted key the fake
-does not declare raises ``TypeError`` and reds the fortress.
+The fortress used to fake ``UserSettings`` with a hand-written mirror dataclass so the
+backend factory could resolve identities / voice-classifier mode without a real config
+store. That mirror drifted twice — #3115 promoted ``dogfood_smoke_skill`` and six other
+constants to the overlay code-default tier, and later ``single_branch_repos`` joined
+them — because ``get_effective_settings`` rebuilds settings with
+``dataclasses.replace(base, **layered)`` where ``layered`` carries every key in
+``PROMOTED_OVERLAY_CODE_DEFAULT_KEYS``, and ``replace`` re-invokes
+``base.__class__(**changes)``. A promoted key the mirror had not been taught raised
+``TypeError`` and reddened the whole fortress.
 
-That crash is invisible to CI purely by accident of the checkout directory
-name: the code-default tier is populated only when the active overlay resolves,
-and active-overlay resolution folds the *cwd basename* onto the ``t3-teatree``
-entry point (``discovery._match_canonical_ep`` — the ``-teatree`` suffix rule).
-CI runs from ``/app`` (basename ``app`` — no fold → no active overlay → empty
-code defaults → ``replace`` never sees the promoted keys), so the fortress stays
-green there while a dev clone named ``teatree`` folds, populates the tier, and
-goes red. These guards assert the fake/real-settings contract DIRECTLY so the
-drift is caught deterministically in every environment, cwd-independent.
+That crash was invisible to CI purely by accident of the checkout directory name: the
+code-default tier is populated only when the active overlay resolves, and active-overlay
+resolution folds the *cwd basename* onto the ``t3-teatree`` entry point
+(``discovery._match_canonical_ep`` — the ``-teatree`` suffix rule). CI runs from ``/app``
+(basename ``app`` — no fold → no active overlay → empty code defaults → ``replace`` never
+sees the promoted keys), so the fortress stayed green there while a dev clone named
+``teatree`` folded, populated the tier, and went red.
+
+``conftest.fake_config`` now returns a REAL ``TeaTreeConfig`` carrying a REAL
+``UserSettings``, so there is no second field list to fall behind and the drift is
+unrepresentable rather than merely guarded. These tests pin that property: they go RED
+if anyone reintroduces a stand-in for ``UserSettings`` here.
 """
 
-from dataclasses import fields, replace
+from dataclasses import replace
 
 import pytest
 
 from teatree.config.overlay_code_defaults import PROMOTED_OVERLAY_CODE_DEFAULT_KEYS
-from teatree.config.settings import UserSettings
-from tests.integration.slack_bridge_e2e.conftest import _FakeUserSettings
+from teatree.config.settings import TeaTreeConfig, UserSettings
+from tests.integration.slack_bridge_e2e.conftest import fake_config
 
 pytestmark = pytest.mark.integration
 
 
-class TestFakeUserSettingsFidelity:
-    """``_FakeUserSettings`` must stay a faithful structural subset of ``UserSettings``."""
+class TestFortressConfigFidelity:
+    """The fortress config must BE the production config types, not a mirror of them."""
 
-    def test_declares_every_promoted_overlay_code_default_key(self) -> None:
-        """RED if a promoted code-default key is missing from the fake.
+    def test_is_the_real_config_and_settings_types(self) -> None:
+        """RED if a stand-in dataclass is reintroduced for either config type.
 
-        The exact drift #3115 introduced: promoting ``dogfood_smoke_skill`` (and
-        the six other constants) to the overlay code-default tier without adding
-        them to the fake. ``get_effective_settings`` then feeds every promoted key
-        to ``replace(_FakeUserSettings(), ...)`` and the missing field raises.
+        A mirror is what drifted; using the production classes is what makes the
+        drift impossible, so the type identity is the thing worth pinning.
         """
-        fake_field_names = {f.name for f in fields(_FakeUserSettings)}
-        missing = PROMOTED_OVERLAY_CODE_DEFAULT_KEYS - fake_field_names
-        assert not missing, f"_FakeUserSettings is missing promoted code-default fields: {sorted(missing)}"
-
-    def test_is_a_structural_subset_of_real_user_settings(self) -> None:
-        """RED if the fake grows a field the real ``UserSettings`` does not have.
-
-        A fake that mirrors non-existent settings is not a faithful subset and
-        would let a test pass against a field production never carries.
-        """
-        real_field_names = {f.name for f in fields(UserSettings)}
-        fake_field_names = {f.name for f in fields(_FakeUserSettings)}
-        extra = fake_field_names - real_field_names
-        assert not extra, f"_FakeUserSettings declares fields absent from UserSettings: {sorted(extra)}"
+        config = fake_config({"overlays": {}})
+        assert type(config) is TeaTreeConfig
+        assert type(config.user) is UserSettings
 
     def test_absorbs_the_full_code_default_layer_via_replace(self) -> None:
-        """RED if ``replace(fake, **promoted_defaults)`` raises — the production shape.
+        """RED if the fortress settings cannot take the overlay code-default tier.
 
-        Mirrors ``get_effective_settings``'s ``replace(base, **layered)`` with the
-        real defaults for every promoted key, so this guard fails identically to
-        the fortress whenever the fake cannot absorb the code-default tier —
-        regardless of cwd/overlay resolution.
+        Mirrors ``get_effective_settings``'s ``replace(base, **layered)`` with the real
+        default for every promoted key — the exact call that raised ``TypeError``
+        against the old mirror — so this fails cwd- and overlay-resolution-independently.
         """
-        real = UserSettings()
-        promoted_defaults = {key: getattr(real, key) for key in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS}
-        merged = replace(_FakeUserSettings(), **promoted_defaults)
+        promoted_defaults = {key: getattr(UserSettings(), key) for key in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS}
+        merged = replace(fake_config({}).user, **promoted_defaults)
         for key, value in promoted_defaults.items():
             assert getattr(merged, key) == value
+
+    def test_carries_the_injected_overlay_registry(self) -> None:
+        """RED if the synthetic ``[overlays.*]`` tables stop reaching ``raw``.
+
+        The registry is the ONE genuinely synthetic part of the double — the per-overlay
+        token/bot configs a single real config store cannot express — so it must survive.
+        """
+        assert fake_config({"overlays": {"acme": {"slack_token_ref": "ref-bot"}}}).raw == {
+            "overlays": {"acme": {"slack_token_ref": "ref-bot"}}
+        }

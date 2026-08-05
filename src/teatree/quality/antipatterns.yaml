@@ -177,6 +177,26 @@
   linter: null
   eval_invariant: null
 
+- id: test-mocks-the-unit-under-test
+  name: Test mocks the behaviour it is supposed to exercise
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A test whose subject is replaced by a Mock/patch, asserting on call_args or a
+    MagicMock's return value rather than on real behaviour. It passes against code
+    that never ran, so it survives any regression in the thing it names. Mocking
+    first-party code, Django models, the filesystem under tmp_path, or git itself
+    is this shape. (Distinguishing a legitimate external-boundary mock from one
+    that swallowed the unit under test needs judgement, not a regex.)
+  preferred_pattern: >-
+    Exercise the real path — Django test client, call_command, a real git repo
+    under tmp_path, an E2E — and mock only unstoppable externals: network, clock,
+    credential stores, third-party subprocesses.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["anti-vacuous-eval", "test-writing-doctrine"]
+  linter: null
+  eval_invariant: null
+
 # ── Django fat-model (provenance: ac-django/references/antipatterns.md) ──────
 - id: logic-in-view-or-command
   name: Business logic in a view or management command
@@ -265,6 +285,27 @@
   consumers: [architecture-design, ac-reviewing-codebase, linter]
   refs: ["module-health-hook"]
   linter: check_module_health
+  eval_invariant: null
+
+- id: file-outside-its-package
+  name: File placed outside the package whose concern it shares
+  severity: medium
+  detection: judgement
+  anti_pattern: >-
+    A module sitting beside unrelated neighbours instead of in the package whose
+    concern it shares — a scanner outside the scanners package, a CLI command
+    outside the CLI package, a script or config dropped at the repo root — or a
+    cohesive set of siblings that has grown past the point where it should have
+    become its own subpackage. god-module asks what is INSIDE one file; this asks
+    WHERE the files live. Each placement looked reasonable when it was added, so
+    no single diff reads as wrong and the layout degrades only in aggregate.
+  preferred_pattern: >-
+    A file lives in the package whose concern it shares, and a cohesive set of
+    siblings serving one concern becomes its own subpackage. Every finding names
+    the concrete target path so the fix needs no re-derivation.
+  consumers: [ac-reviewing-codebase, architecture-design]
+  refs: ["file-hierarchy-check", "module-health-hook"]
+  linter: null
   eval_invariant: null
 
 - id: backwards-dependency-edge
@@ -364,5 +405,47 @@
     refreshes from the authority and is never written independently.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["resilience-invariants", "single-source-of-truth-note"]
+  linter: null
+  eval_invariant: null
+
+# ── Comments ───────────────────────────────────────────────────────────────
+- id: comment-block-narrates-code
+  name: Multi-line comment block narrating what the code already says
+  severity: low
+  detection: judgement
+  anti_pattern: >-
+    A comment spanning several lines that restates what the code below it
+    plainly does — a section banner, a step-by-step narration, a docstring
+    echoing the signature. Reviewers skim the wall of prose and stop reading,
+    so the one comment that was genuinely load-bearing is lost among the ones
+    restating the next line.
+  preferred_pattern: >-
+    One line per comment, carrying only a non-obvious why the code cannot say
+    (a threat model, a protocol quirk, a measured constant). A block longer
+    than one line is a refactor signal — rename or split the code instead of
+    explaining it. Adjacent one-liners are fine when each states a separate
+    point; rationale, tickets and history belong in the commit message.
+  consumers: [ac-reviewing-codebase, architecture-design]
+  refs: ["comments-as-code"]
+  linter: check_comment_density
+  eval_invariant: null
+
+- id: doc-prose-restates-code
+  name: Documentation prose that restates the code instead of capturing architecture
+  severity: low
+  detection: judgement
+  anti_pattern: >-
+    A doc or BLUEPRINT section that walks through what a function does line by
+    line, or that describes a mechanism the code has since renamed, moved or
+    removed. It is a second copy of the code's behaviour, so it drifts the moment
+    the code moves, and then confidently asserts the old design to the next
+    reader. Tests do not catch it — 100% coverage says nothing about stale prose.
+  preferred_pattern: >-
+    Architectural docs answer why the system is shaped this way; what a function
+    does is the code's own job. A section describing a mechanism the change
+    touched is updated or deleted in the same change, and depth past
+    architectural overview moves to a linked appendix.
+  consumers: [ac-reviewing-codebase, architecture-design]
+  refs: ["comments-as-code", "keep-blueprint-tight"]
   linter: null
   eval_invariant: null

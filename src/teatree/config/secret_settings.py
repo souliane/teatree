@@ -43,7 +43,6 @@ SECRET_SETTINGS: frozenset[str] = frozenset(
         "internal_publish_namespaces",
         "overlay_leak_terms",
         "private_repos",
-        "private_tests",
         "slack_token_ref",
         "user_token_ref",
     }

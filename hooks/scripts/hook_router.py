@@ -52,6 +52,7 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
+from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
 from hooks.scripts.classifier_relax_gate import (
@@ -187,6 +188,7 @@ from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
 from hooks.scripts.state_files import append_line, read_lines
 from hooks.scripts.stop_snapshot_slot import handle_stop_snapshot_slot
 from hooks.scripts.stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
+from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render_git_state_section
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
@@ -198,6 +200,7 @@ from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_s
 from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
 from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
 from hooks.scripts.turn_inspect import current_turn_tool_commands
+from hooks.scripts.unbacked_claim_gate import handle_unbacked_claim_gate
 from hooks.scripts.unbounded_wait_guard import handle_block_unbounded_wait
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
@@ -3224,43 +3227,6 @@ def handle_read_dedup(data: dict) -> None:
 # ── PreCompact: retro-before-compact ──────────────────────────────
 
 
-def _git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
-    """Best-effort current branch / HEAD / dirty / unpushed for *repo_path*.
-
-    Returns ``None`` if *repo_path* is not a git working tree. All subprocess
-    calls are short-timeout and exceptions are swallowed — the snapshot must
-    never block compaction (#970 / #845 invariant).
-    """
-    if not (repo_path / ".git").exists():
-        return None
-
-    def _git(*args: str) -> str:
-        try:
-            return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-                ["git", "-C", str(repo_path), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation with a fixed argv
-                text=True,
-                timeout=3,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return ""
-
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
-    head = _git("rev-parse", "--short", "HEAD")
-    porcelain = _git("status", "--porcelain")
-    # ``@{u}`` resolves to the configured upstream; absent ⇒ empty output ⇒ 0.
-    unpushed_log = _git("log", "@{u}..HEAD", "--oneline")
-
-    uncommitted_count = len([line for line in porcelain.splitlines() if line.strip()])
-    unpushed_count = len([line for line in unpushed_log.splitlines() if line.strip()])
-    return {
-        "branch": branch or "(detached)",
-        "head": head or "(unknown)",
-        "uncommitted": str(uncommitted_count),
-        "unpushed": str(unpushed_count),
-    }
-
-
 def _resolve_cwd_repo(data: dict) -> Path | None:
     """Resolve the harness-provided ``cwd`` to a directory, if any."""
     cwd = data.get("cwd", "")
@@ -3268,21 +3234,6 @@ def _resolve_cwd_repo(data: dict) -> Path | None:
         return None
     path = Path(cwd)
     return path if path.is_dir() else None
-
-
-def _render_git_state_section(repo: Path) -> list[str]:
-    state = _git_state_for_repo(repo)
-    if state is None:
-        return []
-    return [
-        "",
-        "## Current git state",
-        f"- worktree: `{repo}`",
-        f"- branch: `{state['branch']}`",
-        f"- HEAD: `{state['head']}`",
-        f"- {state['uncommitted']} uncommitted file(s)",
-        f"- {state['unpushed']} unpushed commit(s)",
-    ]
 
 
 def _render_open_prs_section(repo: Path) -> list[str]:
@@ -5753,7 +5704,9 @@ _HANDLERS: dict[str, list] = {
     "Stop": [
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
+        handle_answer_first_gate,
         handle_completion_claim_gate,
+        handle_unbacked_claim_gate,
         handle_standing_goal_stop,
         handle_enforce_answered_questions,
         handle_closure_reverify_stop,

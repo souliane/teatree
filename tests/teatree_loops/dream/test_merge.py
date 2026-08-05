@@ -20,6 +20,7 @@ adds nothing. It is fault-isolated by the command's try/except.
 """
 
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ import pytest
 from django.test import SimpleTestCase
 
 from teatree.loops.dream import merge
+from teatree.loops.dream.decay_corpus import MemoryFile, memory_name
 from teatree.loops.dream.merge import merge_memories
 
 # A long, highly-overlapping topic body so two copies clear the 0.85 near-dup floor.
@@ -73,15 +75,11 @@ class MergeTestCase(SimpleTestCase):
         # carried into the survivor body — appending `name: <absorbed>` would let the
         # survivor NAME resolve to the absorbed slug and skew refcount/score. Only the
         # absorbed LESSON body is distinct-diffed into the survivor.
-        from datetime import UTC, datetime  # noqa: PLC0415
-
-        from teatree.loops.dream.decay import _MemoryFile  # noqa: PLC0415
-
         now = datetime.now(tz=UTC)
-        survivor = _MemoryFile(
+        survivor = MemoryFile(
             path=self.dir / "s.md", name="s", text="---\nname: s\ntype: feedback\n---\nsurvivor body\n", mtime=now
         )
-        absorbed = _MemoryFile(
+        absorbed = MemoryFile(
             path=self.dir / "a.md",
             name="a",
             text="---\nname: absorbed_slug\ntype: feedback\n---\nunique absorbed lesson line\n",
@@ -95,8 +93,6 @@ class MergeTestCase(SimpleTestCase):
     def test_survivor_name_does_not_resolve_to_the_absorbed_slug_after_merge(self) -> None:
         # F6.8 end-to-end: after a real merge the survivor still resolves to its OWN
         # name, never the absorbed file's slug appended into its body.
-        from teatree.loops.dream.decay import _memory_name  # noqa: PLC0415
-
         self._write("feedback_dup_a", _TOPIC + " and the FIRST distinct detail", frontmatter="type: feedback\n")
         self._write("feedback_dup_b", _TOPIC + " and the SECOND distinct detail", frontmatter="type: feedback\n")
         merge_memories(self.dir)
@@ -105,7 +101,7 @@ class MergeTestCase(SimpleTestCase):
         text = (self.dir / survivor_name).read_text(encoding="utf-8")
         absorbed_stem = "feedback_dup_b" if survivor_name == "feedback_dup_a.md" else "feedback_dup_a"
         assert f"name: {absorbed_stem}" not in text
-        assert _memory_name(self.dir / survivor_name, text) == survivor_name.removesuffix(".md")
+        assert memory_name(self.dir / survivor_name, text) == survivor_name.removesuffix(".md")
 
     def test_merely_related_files_are_not_merged(self) -> None:
         # Related enough to cross-link (some shared tokens) but below the near-dup

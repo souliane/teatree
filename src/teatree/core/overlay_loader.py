@@ -77,20 +77,6 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     raise ImproperlyConfigured(msg)
 
 
-def _cwd_overlay_name(overlays: "dict[str, OverlayBase]") -> str | None:
-    """The registered overlay owning the current working directory, or ``None``."""
-    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    try:
-        entry = discover_active_overlay()
-    except Exception:
-        logger.debug("ambient overlay discovery failed; falling through to the multi-overlay error", exc_info=True)
-        return None
-    if entry is None or entry.name not in overlays:
-        return None
-    return entry.name
-
-
 def _canonical_overlay_name(name: str) -> str | None:
     """Fold a stored overlay name onto its canonical registered name, or ``None``.
 

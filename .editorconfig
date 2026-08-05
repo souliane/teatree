@@ -17,6 +17,12 @@ indent_size = 4
 [tests/teatree_eval/test_loader_production_hooks.py]
 indent_size = unset
 
+# Embeds a unified git diff inside a YAML block scalar. A diff's leading column is
+# the context/add/remove MARKER, so a context line sits at block-indent + 1 and can
+# never be a multiple of 2 — the odd column is the data, not a formatting slip.
+[evals/scenarios/comments_as_code_one_line.yaml]
+indent_size = unset
+
 [*.{md,markdown}]
 trim_trailing_whitespace = false
 indent_size = unset
