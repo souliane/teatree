@@ -13,7 +13,7 @@ reaches in-process callers unchanged and only the shell sees a failure.
 """
 
 from collections.abc import Mapping
-from typing import cast
+from typing import ClassVar, cast
 
 from django_typer.management import TyperCommand
 
@@ -32,6 +32,11 @@ def refusal_exit_code(result: object) -> int:
     return REFUSAL_EXIT_CODE if refusal.get(REFUSAL_KEY) else 0
 
 
+def invoked_subcommand(args: tuple[object, ...]) -> str:
+    """The subcommand name in a ``TyperCommand``'s argv remainder — its first bare token."""
+    return next((arg for arg in args if isinstance(arg, str) and not arg.startswith("-")), "")
+
+
 class RefusalExitTyperCommand(TyperCommand):
     """A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.
 
@@ -41,9 +46,16 @@ class RefusalExitTyperCommand(TyperCommand):
     consumer needs the dict.
     """
 
+    #: Subcommands exempt from the seam — loud is the default, so a new refusal is
+    #: loud without being listed anywhere. Exempt one only when its caller depends
+    #: on a SOFT refusal: a pre-push hook must report and let the push through.
+    soft_refusal_commands: ClassVar[frozenset[str]] = frozenset()
+
     def execute(self, *args: object, **options: object) -> object:
         result = super().execute(*args, **options)
+        if not self._called_from_command_line or invoked_subcommand(args) in self.soft_refusal_commands:
+            return result
         code = refusal_exit_code(result)
-        if code and self._called_from_command_line:
+        if code:
             raise SystemExit(code)
         return result

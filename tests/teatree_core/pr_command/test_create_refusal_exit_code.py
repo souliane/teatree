@@ -60,6 +60,20 @@ class TestHostSidePrCreateRefusalExitsNonZero:
         assert "deploy/t3" in str(result["hint"])
 
 
+class TestEnsurePrKeepsItsSoftRefusal:
+    """``ensure-pr`` is the pre-push hook's entry: a refusal reports, never wedges the push."""
+
+    def test_it_is_the_only_exemption(self) -> None:
+        assert Command.soft_refusal_commands == frozenset({"ensure-pr"})
+
+    def test_a_refused_ensure_pr_still_exits_zero(self, tmp_path: Path) -> None:
+        """A real refusal — ``--repo`` is not a git checkout — reports and returns."""
+        in_process = cast("dict[str, object]", call_command("pr", "ensure-pr", repo=str(tmp_path)))
+        assert in_process["error"], "the invocation must actually refuse, or the pin is vacuous"
+
+        assert Command().run_from_argv(["manage.py", "pr", "ensure-pr", "--repo", str(tmp_path)]) is None
+
+
 class TestEveryRefusalCreateCanReturnIsKeyedOnError:
     """The seam keys on ``error``; a refusal shape lacking it would exit 0 again."""
 

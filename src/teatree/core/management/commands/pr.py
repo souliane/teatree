@@ -7,7 +7,7 @@ returns the PR URL once the worker completes.
 """
 
 import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from django_typer.management import command
 
@@ -272,7 +272,11 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
 class Command(PendingPrCommands, RefusalExitTyperCommand):
     # #4210: every refusal below is RETURNED, not raised, so an in-process caller
     # can route on it — the base class is what stops the shell reading that as a
-    # success and running the next command in a `ship && clear` chain.
+    # success and running the next command in a `ship && clear` chain. `ensure-pr`
+    # is the one exemption: it runs inside the pre-push hook, where reporting a
+    # refusal and letting the push through is the designed behaviour (#792).
+    soft_refusal_commands: ClassVar[frozenset[str]] = frozenset({"ensure-pr"})
+
     @command()
     # PLR0913: this signature IS the CLI contract — django-typer derives
     # --title/--dry-run/--skip-validation/--skip-visual-qa/--sync by

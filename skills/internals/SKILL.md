@@ -178,6 +178,7 @@ A refusal that an in-process caller must route on (the `mcp` write tools, the lo
 
 - The predicate is one pure function, `refusal_exit_code(result)` — non-zero iff the result is a mapping with a truthy `error`. A new refusal shape therefore needs an `error` key and nothing else; a shape without one silently exits 0 again.
 - The gate is `_called_from_command_line`, the flag Django's `run_from_argv` sets and `call_command` does not — so the shell and the in-process consumer get opposite, correct answers from one refusal.
+- Loud is the default; `soft_refusal_commands` exempts named subcommands, so a *new* refusal is loud without being listed anywhere. Exempt one only when its caller depends on a *soft* refusal: `pr ensure-pr` is the pre-push hook's entry point, where reporting and letting the push through is the designed behaviour (#792).
 - Canonical example: `src/teatree/core/management/commands/pr.py` `Command` — its control-DB, missing-ticket, missing-worktree and ship-gate refusals all exit non-zero, so `t3 <overlay> ship <id> && t3 <overlay> ticket clear …` stops on a refused ship.
 - A command that has no in-process consumer of its failure still uses `raise SystemExit(N)` — that is simpler and stays the default.
 
