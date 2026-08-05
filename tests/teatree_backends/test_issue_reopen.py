@@ -6,8 +6,8 @@ factory already shipped. These lanes pin the discriminator and, just as load-bea
 every shape that must collapse to UNKNOWN rather than be guessed at.
 """
 
+from teatree.backends.issue_reopen import reopen_state_from_payload
 from teatree.core.backend_protocols import IssueReopenState
-from teatree.core.issue_reopen import reopen_state_from_payload
 
 
 class TestReopenedIsDistinctFromMerelyOpen:

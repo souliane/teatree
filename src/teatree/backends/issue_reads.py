@@ -13,9 +13,9 @@ two are reads performed THROUGH one.
 import logging
 from typing import TYPE_CHECKING
 
+from teatree.backends.issue_reopen import reopen_state_from_payload
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.backend_protocols import IssueReopenState
-from teatree.core.issue_reopen import reopen_state_from_payload
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -50,7 +50,7 @@ def issue_reopen_state(overlay: "OverlayBase", issue_url: str) -> IssueReopenSta
     """Whether *issue_url* was closed and then REOPENED, via that same ``get_issue`` seam.
 
     Fail-CLOSED: an unresolvable host, a fetch failure, or any payload
-    :func:`~teatree.core.issue_reopen.reopen_state_from_payload` cannot classify all
+    :func:`~teatree.backends.issue_reopen.reopen_state_from_payload` cannot classify all
     return ``UNKNOWN``. The board reconcile revives a delivered ticket on this verdict,
     so an unreachable forge must never read as "reopened" (#4152).
     """
