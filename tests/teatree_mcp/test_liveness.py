@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.mcp_liveness import (
+from teatree.mcp.liveness import (
     HANDSHAKE_BUDGET_SECONDS,
     ExerciseRun,
     McpFailureCause,
@@ -101,11 +101,28 @@ class TestTheFalseGreen:
 
 
 class TestTheBudget:
-    def test_a_slow_but_successful_handshake_still_fails(self) -> None:
-        outcome = classify_exercise(_run(stdout=_GOOD_STDOUT, elapsed=HANDSHAKE_BUDGET_SECONDS + 0.5))
+    """Slow and broken are different verdicts — a transient must not lock the factory out."""
+
+    def test_a_slow_but_successful_handshake_warns_rather_than_failing(self) -> None:
+        """An 11.6s handshake was observed from a server that was coming up perfectly healthy."""
+        outcome = classify_exercise(_run(stdout=_GOOD_STDOUT, elapsed=HANDSHAKE_BUDGET_SECONDS + 1.6))
+
+        assert outcome.ok is True, "a server that ANSWERED is usable — over-budget is a warning"
+        assert outcome.slow is True
+        assert outcome.cause is McpFailureCause.SLOW_STARTUP
+
+    def test_the_slow_finding_names_the_elapsed_time_and_the_remedy(self) -> None:
+        outcome = classify_exercise(_run(stdout=_GOOD_STDOUT, elapsed=HANDSHAKE_BUDGET_SECONDS + 1.6))
+
+        assert "11.6s" in outcome.finding
+        assert "AppConfig.ready()" in outcome.finding
+
+    def test_a_server_that_never_answered_is_still_a_failure(self) -> None:
+        """The distinction is answered-late versus never-answered, not fast versus slow."""
+        outcome = classify_exercise(_run(elapsed=HANDSHAKE_BUDGET_SECONDS * 3, timed_out=True))
 
         assert outcome.ok is False
-        assert outcome.cause is McpFailureCause.SLOW_STARTUP
+        assert outcome.slow is False
 
     def test_a_prompt_clean_handshake_passes(self) -> None:
         outcome = classify_exercise(_run(stdout=_GOOD_STDOUT, elapsed=HANDSHAKE_BUDGET_SECONDS - 0.5))

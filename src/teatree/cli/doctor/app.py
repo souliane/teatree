@@ -415,7 +415,7 @@ def _run_advisory_finalisers() -> None:
     _ensure_plugin_registered()
 
 
-def _run_mcp_checks() -> bool:
+def _run_mcp_checks(*, repair: bool = False) -> bool:
     """Every MCP gate, in dependence order; ``False`` when any of them hard-FAILs.
 
     Grouped so ``run_doctor_checks`` reads as a list of concerns rather than a list of
@@ -430,11 +430,14 @@ def _run_mcp_checks() -> bool:
     the registered `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause
     (stale tool env / delegation failure / startup over the handshake budget) and the
     remedy, because `claude mcp list` only ever says `Connection closed` (#4049).
+
+    ``repair`` reaches the liveness check alone: it is the only MCP gate that can mutate
+    the operator's env, and it reinstalls the running tool env only when asked.
     """
     ok = _check_mcp_connectivity()
     ok = _check_connector_manifest() and ok
     _check_teatree_mcp_registration()
-    return _check_teatree_mcp_liveness() and ok
+    return _check_teatree_mcp_liveness(repair=repair) and ok
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -657,7 +660,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = _check_claude_session_posture() and ok
 
-    ok = _run_mcp_checks() and ok
+    ok = _run_mcp_checks(repair=repair) and ok
 
     _run_advisory_finalisers()
 

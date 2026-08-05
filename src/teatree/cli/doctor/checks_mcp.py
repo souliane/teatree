@@ -4,7 +4,6 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
 """
 
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -12,10 +11,6 @@ from pathlib import Path
 import typer
 
 _CHROME_DEVTOOLS_MCP_NAME = "chrome-devtools"
-
-#: Set on the child of a skew repair this check performed, so a repair that does not
-#: actually clear the skew reports itself instead of reinstalling on every run.
-_SKEW_REPAIR_ATTEMPTED_ENV = "_T3_MCP_SKEW_REPAIR_ATTEMPTED"
 
 
 def _check_chrome_devtools_mcp_suggestion(*, home: Path | None = None, cwd: Path | None = None) -> bool:
@@ -188,46 +183,37 @@ def _resolve_registered_mcp_command() -> list[str] | None:
     return [t3_bin, "mcp", "serve"]
 
 
-def _repair_version_skew(source: Path) -> bool:
-    """Reinstall the running env to clear declared-versus-installed skew (#4049).
+def _check_version_skew(*, repair: bool) -> bool:
+    """FAIL on declared-versus-installed drift in the env that runs ``t3`` (#4049).
 
-    Returns whether the skew is gone afterwards. A stale env is a MECHANICAL cause with
-    a deterministic fix, so it is repaired rather than escalated — the operator is
-    interrupted only for the causes that need judgement. Guarded by
-    :data:`_SKEW_REPAIR_ATTEMPTED_ENV` so a repair that does not take reports itself
-    instead of reinstalling on every doctor run.
+    True when there is nothing to report — including when there is no editable source
+    tree to measure against, which is an absent question rather than a clean answer.
     """
-    from teatree.cli.dep_drift_repair import (  # noqa: PLC0415 — deferred: repair path only
-        RepairPlan,
-        resolve_repair_plan,
+    from teatree.cli.doctor.skew_repair import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        repair_version_skew,
+        report_version_skew,
     )
+    from teatree.mcp.liveness import skew_finding  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.dep_drift import editable_source_path  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: repair path only
 
-    if os.environ.get(_SKEW_REPAIR_ATTEMPTED_ENV):
-        typer.echo("      Repair already attempted this run and the skew persists — fix it by hand.")
-        return False
-    plan = resolve_repair_plan(["<version skew>"])
-    if not isinstance(plan, RepairPlan):
-        typer.echo(f"      Cannot self-repair: {plan}")
-        return False
-
-    typer.echo(f"      Self-repairing the stale env — running `{plan.label}` …")
-    os.environ[_SKEW_REPAIR_ATTEMPTED_ENV] = "1"
-    result = run_allowed_to_fail(plan.cmd, expected_codes=None)
-    if result.returncode != 0:
-        typer.echo(f"      Repair FAILED: {result.stderr.strip()[:400]}")
-        typer.echo(f"      Manual fix: `{plan.label}`.")
-        return False
-    remaining = find_version_skew(source / "pyproject.toml")
-    if remaining:
-        typer.echo(f"      Repair ran but skew persists: {'; '.join(skew.summary for skew in remaining)}")
-        return False
-    typer.echo("      Repaired — the env now satisfies every declared runtime dependency.")
-    return True
+    source = editable_source_path()
+    if source is None:
+        return True
+    pyproject = source / "pyproject.toml"
+    if not pyproject.is_file():
+        return True
+    skews = find_version_skew(pyproject)
+    if not skews:
+        return True
+    typer.echo(f"FAIL  {skew_finding([skew.summary for skew in skews], source=pyproject)}")
+    if repair:
+        return repair_version_skew(source, skews)
+    report_version_skew(skews)
+    return False
 
 
-def _check_teatree_mcp_liveness() -> bool:
+def _check_teatree_mcp_liveness(*, repair: bool = False) -> bool:
     """EXERCISE teatree's own MCP server — hard FAIL when it is not usable (#4049).
 
     The counterpart to :func:`_check_teatree_mcp_registration`, which is structural and
@@ -236,25 +222,19 @@ def _check_teatree_mcp_liveness() -> bool:
     throws away — so an enabled-but-dead server is a FAIL that names its cause and the
     exact remedy instead of one advisory line among twenty.
 
-    Declared-versus-installed skew is checked first and REPAIRED where it is mechanical
-    (a stale tool env), because that cause kills the server before it can report
-    anything about itself. Only a genuinely unusable server escalates to the operator.
+    Declared-versus-installed skew is checked first, because that cause kills the server
+    before it can report anything about itself. It is REPAIRED only under ``repair`` —
+    the flag every other mutating check threads — because a reinstall replaces the
+    console script the calling session is running under, which a read-only
+    ``t3 doctor check`` must never do; without it the skew is reported with the exact
+    command that clears it.
 
     Degrades to a WARN only when the check cannot RUN at all (no ``t3`` on PATH, an
     unresolvable source tree) — never for a server that ran and failed.
     """
-    from teatree.core.mcp_liveness import exercise_mcp_server, skew_finding  # noqa: PLC0415 — keeps CLI startup light
-    from teatree.utils.dep_drift import editable_source_path  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.mcp.liveness import exercise_mcp_server  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    ok = True
-    source = editable_source_path()
-    pyproject = source / "pyproject.toml" if source else None
-    if pyproject is not None and pyproject.is_file():
-        skews = find_version_skew(pyproject)
-        if skews:
-            typer.echo(f"FAIL  {skew_finding([skew.summary for skew in skews], source=pyproject)}")
-            ok = _repair_version_skew(source) if source else False
+    ok = _check_version_skew(repair=repair)
 
     argv = _resolve_registered_mcp_command()
     if argv is None:
@@ -267,6 +247,9 @@ def _check_teatree_mcp_liveness() -> bool:
         typer.echo(f"WARN  Could not spawn `{' '.join(argv)}` to exercise the MCP server: {exc}")
         return ok
 
+    if outcome.slow:
+        typer.echo(f"WARN  {outcome.finding}")
+        return ok
     if outcome.ok:
         typer.echo(f"OK    {outcome.finding}")
         return ok

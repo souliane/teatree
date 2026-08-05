@@ -57,21 +57,30 @@ def _installed_version(name: str) -> str | None:
         return None
 
 
+def _applies_here(requirement: Requirement) -> bool:
+    """Does *requirement*'s environment marker select THIS interpreter?
+
+    ``extra`` is defined empty so a marker naming it evaluates instead of raising — a
+    top-level dependency is never resolved under an extra.
+    """
+    return requirement.marker is None or requirement.marker.evaluate({"extra": ""})
+
+
 def find_version_skew(pyproject_path: Path) -> list[VersionSkew]:
     """Declared requirements this interpreter's installed dists do not satisfy.
 
-    Environment markers are honoured only in the sense that an unparsable
-    requirement is skipped — a requirement whose marker excludes this platform
-    resolves to "not installed", which is the same signal the caller needs anyway
-    (a dep the code imports but the env does not carry). Extras are ignored: the
-    version of the base dist is what a stale ``uv tool`` env gets wrong.
+    A requirement whose environment marker excludes this interpreter is skipped
+    whatever its install state: the verdict drives a self-repair, so reporting a dep
+    this platform was never meant to carry reinstalls the env to chase nothing. An
+    unparsable requirement is skipped too. Extras are ignored: the version of the base
+    dist is what a stale ``uv tool`` env gets wrong.
     """
     skew: list[VersionSkew] = []
     for requirement in _requirements(pyproject_path):
+        if not _applies_here(requirement):
+            continue
         installed = _installed_version(requirement.name)
         if installed is not None and requirement.specifier.contains(installed, prereleases=True):
-            continue
-        if installed is None and requirement.marker is not None:
             continue
         skew.append(
             VersionSkew(

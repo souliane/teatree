@@ -45,6 +45,13 @@ from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 #: default, so this is deliberately tighter than the client's own patience: a startup
 #: already past this is one contended box away from being intermittently dead, and the
 #: whole point of the finding is to catch it BEFORE it presents as a mystery.
+#:
+#: Exceeding it is a WARNING, not a failure — see :attr:`McpExerciseOutcome.slow`. A
+#: server that ANSWERED is usable, and the delegated path pays a `docker compose exec`
+#: per run: steady state measured 4.4-5.2s, but a container-restart window produced an
+#: 11.6s handshake from a server that was coming up perfectly healthy. Hard-failing that
+#: would lock the factory out of teatree over a transient — the anti-pattern this whole
+#: module exists to catch, inverted.
 HANDSHAKE_BUDGET_SECONDS = 10.0
 
 _INITIALIZE_FRAME = json.dumps(
@@ -125,15 +132,27 @@ class ExerciseRun:
 
 @dataclass(frozen=True, slots=True)
 class McpExerciseOutcome:
-    """Whether the exercised server is usable, and if not, why and what to do."""
+    """Whether the exercised server is usable, and if not, why and what to do.
+
+    ``ok`` and ``slow`` are independent: a server that answered late is ``ok`` (it
+    works) AND ``slow`` (it is one contended box away from presenting as dead). The
+    caller renders the second as a warning, so a transient never gates the exit code.
+    """
 
     ok: bool
     elapsed: float
     cause: McpFailureCause | None = None
     stderr_excerpt: str = ""
+    slow: bool = False
 
     @property
     def finding(self) -> str:
+        if self.slow:
+            return (
+                f"teatree MCP server answered `initialize`, but took {self.elapsed:.1f}s — over the "
+                "handshake budget. It is usable now and one contended box away from a client giving "
+                f"up first and reporting only `Connection closed`. {McpFailureCause.SLOW_STARTUP.remedy}"
+            )
         if self.ok:
             return f"teatree MCP server answered `initialize` in {self.elapsed:.1f}s."
         cause = self.cause
@@ -179,6 +198,10 @@ def classify_exercise(run: ExerciseRun, *, budget: float = HANDSHAKE_BUDGET_SECO
     fix first. The DB signature is checked EVEN WHEN the handshake succeeded, because
     that is the shape the false green takes: ``initialize`` touches no ORM, so a server
     whose every real tool call fails still reports connected.
+
+    Over-budget is the one signal that does NOT fail: a run that ANSWERED, however late,
+    proves the server works, so it is reported ``slow`` and left ``ok``. Only a run that
+    never answered at all is unusable.
     """
     excerpt = _excerpt(run.stderr)
     if run.timed_out:
@@ -200,10 +223,11 @@ def classify_exercise(run: ExerciseRun, *, budget: float = HANDSHAKE_BUDGET_SECO
         return McpExerciseOutcome(ok=False, elapsed=run.elapsed, cause=db_cause, stderr_excerpt=excerpt)
     if run.elapsed > budget:
         return McpExerciseOutcome(
-            ok=False,
+            ok=True,
             elapsed=run.elapsed,
             cause=McpFailureCause.SLOW_STARTUP,
             stderr_excerpt=excerpt,
+            slow=True,
         )
     return McpExerciseOutcome(ok=True, elapsed=run.elapsed)
 

@@ -60,3 +60,27 @@ class TestInstalledButTooOld:
         pyproject.write_text('[project]\ndependencies = ["=== nonsense ==="]\n', encoding="utf-8")
 
         assert find_version_skew(pyproject) == []
+
+
+class TestAMarkerThatExcludesThisEnvironment:
+    """A requirement this interpreter is not meant to satisfy is not skew — installed or not.
+
+    The verdict feeds a self-repair, so a false skew reinstalls the operator's env to
+    chase a dependency the marker says this platform never needed.
+    """
+
+    def test_an_excluded_dist_that_is_installed_out_of_range_is_not_skew(self, pyproject: Path) -> None:
+        deps = "pytest>=9999; sys_platform == 'nonesuch'"
+
+        assert find_version_skew(_write(pyproject, deps)) == []
+
+    def test_an_excluded_dist_that_is_absent_is_not_skew(self, pyproject: Path) -> None:
+        deps = "definitely-not-installed-xyz>=1; sys_platform == 'nonesuch'"
+
+        assert find_version_skew(_write(pyproject, deps)) == []
+
+    def test_a_marker_that_selects_this_environment_still_reports_skew(self, pyproject: Path) -> None:
+        """Otherwise the fix would be indistinguishable from ignoring every marked dep."""
+        deps = "pytest>=9999; python_version >= '3'"
+
+        assert [skew.name for skew in find_version_skew(_write(pyproject, deps))] == ["pytest"]

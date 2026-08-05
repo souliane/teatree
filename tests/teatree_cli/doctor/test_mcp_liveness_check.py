@@ -13,11 +13,14 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.cli.doctor.app import _run_mcp_checks
 from teatree.cli.doctor.checks_mcp import _check_teatree_mcp_liveness
-from teatree.core.mcp_liveness import McpExerciseOutcome, McpFailureCause
+from teatree.mcp.liveness import McpExerciseOutcome, McpFailureCause
 from teatree.utils.dep_skew import VersionSkew
 
 _LIVENESS = "teatree.cli.doctor.checks_mcp"
+_SKEW_REPAIR = "teatree.cli.doctor.skew_repair"
+_SKEW = [VersionSkew(name="mcp", declared=">=2,<3", installed="1.28.1")]
 
 
 @pytest.fixture
@@ -33,7 +36,7 @@ def no_skew(tmp_path: Path):
 
 
 def _exercise(outcome: McpExerciseOutcome):
-    return patch("teatree.core.mcp_liveness.exercise_mcp_server", return_value=outcome)
+    return patch("teatree.mcp.liveness.exercise_mcp_server", return_value=outcome)
 
 
 class TestADeadServerIsAHardFail:
@@ -80,10 +83,8 @@ class TestADeadServerIsAHardFail:
 
 class TestVersionSkewIsFailedAndRepaired:
     def test_skew_fails_and_names_the_side_it_found(self, no_skew: Path, capsys) -> None:
-        skew = [VersionSkew(name="mcp", declared=">=2,<3", installed="1.28.1")]
         with (
-            patch("teatree.utils.dep_skew.find_version_skew", return_value=skew),
-            patch(f"{_LIVENESS}._repair_version_skew", return_value=False),
+            patch("teatree.utils.dep_skew.find_version_skew", return_value=_SKEW),
             _exercise(McpExerciseOutcome(ok=True, elapsed=1.0)),
         ):
             result = _check_teatree_mcp_liveness()
@@ -95,16 +96,62 @@ class TestVersionSkewIsFailedAndRepaired:
         assert "HOST tool env" in out or "CONTAINER env" in out, "the operator must know which side is stale"
 
     def test_a_successful_self_repair_clears_the_failure(self, no_skew: Path) -> None:
-        """A stale env is mechanical — repaired, not escalated."""
-        skew = [VersionSkew(name="mcp", declared=">=2,<3", installed="1.28.1")]
+        """A stale env is mechanical — under ``--repair`` it is repaired, not escalated."""
         with (
-            patch("teatree.utils.dep_skew.find_version_skew", return_value=skew),
-            patch(f"{_LIVENESS}._repair_version_skew", return_value=True) as repair,
+            patch("teatree.utils.dep_skew.find_version_skew", return_value=_SKEW),
+            patch(f"{_SKEW_REPAIR}.repair_version_skew", return_value=True) as repair,
             _exercise(McpExerciseOutcome(ok=True, elapsed=1.0)),
         ):
-            assert _check_teatree_mcp_liveness() is True
+            assert _check_teatree_mcp_liveness(repair=True) is True
 
         assert repair.call_count == 1
+
+
+class TestARepairOnlyRunsWhenAsked:
+    """A read-only check must not replace the console script its caller is running under.
+
+    A bare ``t3 doctor check`` runs at ``SessionStart``; reinstalling the tool env there
+    swaps the program out from under the session that only asked a question.
+    """
+
+    def test_a_bare_run_reports_the_remedy_and_reinstalls_nothing(self, no_skew: Path, capsys) -> None:
+        with (
+            patch("teatree.utils.dep_skew.find_version_skew", return_value=_SKEW),
+            patch(f"{_SKEW_REPAIR}.repair_version_skew") as repair,
+            _exercise(McpExerciseOutcome(ok=True, elapsed=1.0)),
+        ):
+            assert _check_teatree_mcp_liveness() is False
+
+        assert repair.call_count == 0, "a read-only doctor run must never mutate the operator's env"
+        out = capsys.readouterr().out
+        assert "Fix it by running: `" in out, "the report must be pasteable"
+        assert "--repair" in out, "and must name the flag that runs it for the operator"
+
+    def test_the_flag_reaches_the_check_from_the_mcp_group(self) -> None:
+        """The threading itself — nothing else carries ``repair`` to the only mutating gate."""
+        with (
+            patch("teatree.cli.doctor.app._check_mcp_connectivity", return_value=True),
+            patch("teatree.cli.doctor.app._check_connector_manifest", return_value=True),
+            patch("teatree.cli.doctor.app._check_teatree_mcp_registration", return_value=True),
+            patch("teatree.cli.doctor.app._check_teatree_mcp_liveness", return_value=True) as liveness,
+        ):
+            _run_mcp_checks(repair=True)
+            _run_mcp_checks()
+
+        assert [call.kwargs["repair"] for call in liveness.call_args_list] == [True, False]
+
+
+class TestASlowServerWarnsInsteadOfFailing:
+    def test_an_over_budget_but_answering_server_does_not_gate_the_exit_code(self, no_skew: Path, capsys) -> None:
+        """A container-restart window produced an 11.6s handshake from a healthy server."""
+        outcome = McpExerciseOutcome(ok=True, elapsed=11.6, cause=McpFailureCause.SLOW_STARTUP, slow=True)
+        with _exercise(outcome):
+            assert _check_teatree_mcp_liveness() is True
+
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "FAIL" not in out, "a transient must not lock the factory out of its own MCP server"
+        assert "11.6s" in out
 
 
 class TestOnlyAnUnrunnableCheckDegrades:
@@ -118,7 +165,7 @@ class TestOnlyAnUnrunnableCheckDegrades:
         assert "WARN" in capsys.readouterr().out
 
     def test_an_unspawnable_server_warns_rather_than_failing(self, no_skew: Path, capsys) -> None:
-        with patch("teatree.core.mcp_liveness.exercise_mcp_server", side_effect=OSError("no fork")):
+        with patch("teatree.mcp.liveness.exercise_mcp_server", side_effect=OSError("no fork")):
             assert _check_teatree_mcp_liveness() is True
 
         assert "WARN" in capsys.readouterr().out
