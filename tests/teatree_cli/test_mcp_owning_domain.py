@@ -17,10 +17,13 @@ from teatree.cli import mcp_owning_domain
 from teatree.cli.mcp_owning_domain import (
     DELEGATED_ENV_VAR,
     claim_is_observable,
+    declare_cwd_insensitive_invocation,
     delegate_to_owning_domain,
     owning_domain_wrapper,
 )
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.db.boundary import ControlDbBoundary
+from teatree.paths import DEFAULT_CONTROL_DB_DIR
 
 _UNRESOLVABLE = RuntimeError("no main clone on this machine")
 
@@ -65,6 +68,27 @@ class TestRoutingToTheOwningDomain:
         delegate_to_owning_domain()
 
         assert replaced == [(str(clone / "deploy" / "t3"), [str(clone / "deploy" / "t3"), "mcp", "serve"])]
+
+    def test_delegation_declares_a_container_side_cwd(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without it the wrapper REFUSES: a client's cwd is routinely a checkout it cannot see.
+
+        Trading a server that cannot open the DB for one the wrapper declines to start
+        is no fix at all — both present to the client as a bare closed connection.
+        """
+        monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
+        monkeypatch.setattr(os, "execv", lambda path, argv: None)
+
+        delegate_to_owning_domain()
+
+        assert os.environ[INVOCATION_CWD_ENV] == str(DEFAULT_CONTROL_DB_DIR)
+
+    def test_an_operator_declared_cwd_is_left_alone(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(INVOCATION_CWD_ENV, "/container/side/declared")
+        monkeypatch.setattr(os, "execv", lambda path, argv: None)
+
+        delegate_to_owning_domain()
+
+        assert os.environ[INVOCATION_CWD_ENV] == "/container/side/declared"
 
     def test_the_delegation_marker_stops_a_second_hop(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Insurance against an exec loop if container detection ever failed inside one."""
@@ -140,3 +164,19 @@ class TestServingHereIsTheDefault:
         monkeypatch.setattr(os, "execv", lambda path, argv: pytest.fail(f"delegated to {path} {argv}"))
 
         delegate_to_owning_domain()
+
+
+class TestTheDeclaredInvocationCwd:
+    def test_it_names_the_container_side_control_db_directory(self) -> None:
+        env: dict[str, str] = {}
+
+        declare_cwd_insensitive_invocation(env)
+
+        assert env[INVOCATION_CWD_ENV] == str(DEFAULT_CONTROL_DB_DIR)
+
+    def test_it_never_overwrites_an_existing_declaration(self) -> None:
+        env = {INVOCATION_CWD_ENV: "/somewhere/else"}
+
+        declare_cwd_insensitive_invocation(env)
+
+        assert env[INVOCATION_CWD_ENV] == "/somewhere/else"

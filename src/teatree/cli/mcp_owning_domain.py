@@ -20,12 +20,14 @@ third answer, not the second one: see :func:`claim_is_observable`.
 """
 
 import os
+from collections.abc import MutableMapping
 from pathlib import Path
 
 from teatree.cli.setup.clone import find_main_clone
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.db.boundary import ControlDbBoundary, control_db_unreachable_reason
 from teatree.docker.workflow import is_running_in_container, wrapper_path
-from teatree.paths import CANONICAL_DB
+from teatree.paths import CANONICAL_DB, DEFAULT_CONTROL_DB_DIR
 
 DELEGATED_ENV_VAR = "T3_MCP_DELEGATED"
 
@@ -87,6 +89,27 @@ def owning_domain_wrapper() -> Path | None:
     return wrapper if wrapper.is_file() and os.access(wrapper, os.X_OK) else None
 
 
+def declare_cwd_insensitive_invocation(env: MutableMapping[str, str]) -> None:
+    """Declare a container-side cwd for the handoff, unless the operator already set one.
+
+    ``deploy/t3`` REFUSES to dispatch when its host cwd is inside a checkout the
+    container cannot see, because for a cwd-SENSITIVE command that would silently
+    resolve against the container's own copy of the source — a wrong tree, with no
+    error to surface. A client launches this server from whatever directory the
+    session happens to sit in, which is routinely such a checkout, so delegating
+    without this would trade a server that cannot open the DB for one the wrapper
+    declines to start: still a bare ``Connection closed``.
+
+    ``mcp serve`` is the cwd-INSENSITIVE case the wrapper's own comment carves out —
+    a stdio server over the control DB, resolving no tree from cwd — so the honest
+    answer is the escape the refusal names: declare a container-side path. The
+    control-DB directory is the one used because it is the very directory this
+    delegation exists to reach: container-only, always mounted there, and carrying no
+    checkout to be wrong about. An operator-set value is left alone.
+    """
+    env.setdefault(INVOCATION_CWD_ENV, str(DEFAULT_CONTROL_DB_DIR))
+
+
 def delegate_to_owning_domain() -> None:
     """Replace this process with the containerized server when the container owns the DB.
 
@@ -99,4 +122,5 @@ def delegate_to_owning_domain() -> None:
     if wrapper is None:
         return
     os.environ[DELEGATED_ENV_VAR] = "1"
+    declare_cwd_insensitive_invocation(os.environ)
     os.execv(str(wrapper), [str(wrapper), "mcp", "serve"])  # noqa: S606 — argv list, no shell; path from the clone
