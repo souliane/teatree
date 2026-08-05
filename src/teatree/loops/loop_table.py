@@ -116,11 +116,12 @@ class _TickAdmission:
 class LoopDispatch:
     """One loop's outcome in a loop-table pass — its jobs, or why it did not run (#3843).
 
-    ``blocked_reason`` is the empty string exactly when the loop dispatched, and
-    otherwise a one-line, operator-actionable statement of what refused it. It is
-    the fact a bare job list cannot carry: a refused loop and a loop that fanned
-    out and found no work both contribute zero jobs, so a caller reading only the
-    list renders both as a healthy quiet tick.
+    ``blocked_reason`` is the empty string exactly when the loop fanned at least one
+    scanner out, and otherwise a one-line, operator-actionable statement of what
+    stopped it — the control plane refusing it, or (one level down) every scanner
+    factory declining so it built nothing to run. It is the fact a bare job list
+    cannot carry: both of those contribute zero jobs, so a caller reading only the
+    list renders either as a healthy quiet tick.
     """
 
     name: str
@@ -345,5 +346,31 @@ def dispatch_loop_table(
                 LoopDispatch(name=loop.name, blocked_reason="its build_jobs raised — see the loop log"),
             )
             continue
-        outcomes.append(LoopDispatch(name=loop.name, jobs=tuple(built)))
+        outcomes.append(_dispatched(loop.name, tuple(built)))
     return outcomes
+
+
+#: The reason a loop that PASSED admission still scanned nothing (#3843, one level down).
+NO_SCANNER_BUILT_REASON = (
+    "it built no scanner at all: a feature flag it needs is off, or the backend its scanners require is absent"
+)
+
+
+def _dispatched(name: str, built: tuple["_ScannerJob", ...]) -> LoopDispatch:
+    """The outcome of a loop that passed admission — carrying a reason when it built nothing.
+
+    A loop can be gated one level BELOW the loop gate: every one of its scanner
+    factories declines (an off feature flag, an absent messaging/host backend) and it
+    fans out zero scanners. The tick then claimed the cadence anchor, reported ``ran
+    … 0 signal(s)``, advanced ``last_run_at`` — and every staleness surface, which
+    measures only that anchor, read green while the loop did nothing. That is the
+    #3843 false-green moved from the loop gate to the scanner gate, and it is the
+    reason no operator could tell an inert ``issue_disposition`` from a quiet one.
+
+    Zero jobs is never a healthy steady state here: a job is one SCANNER, not one
+    unit of work, so a loop with work to look for always builds at least one.
+    """
+    if built:
+        return LoopDispatch(name=name, jobs=built)
+    logger.warning("Loop %r was admitted but built no scanner jobs — %s", name, NO_SCANNER_BUILT_REASON)
+    return LoopDispatch(name=name, blocked_reason=NO_SCANNER_BUILT_REASON)

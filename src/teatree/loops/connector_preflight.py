@@ -15,6 +15,13 @@ registered overlay — preflights nothing, so the per-loop tick stays isolated
 from every overlay it does not depend on. A loop's OWN connector being down
 still ``SystemExit``-s that loop's tick (fail loud), unchanged from the fleet
 gate.
+
+The unresolvable case is REPORTED rather than silently skipped. ``Loop.overlay``
+defaults to ``""`` and the shipped seed table never sets it, so on a multi-overlay
+install with no ambient ``T3_OVERLAY_NAME`` this gate — the only thing standing
+between a down connector and a tick of silent no-ops — switched itself off for every
+loop, with nothing saying so. "I cannot tell which overlay this loop uses" is
+configuration drift an operator must see, not a quiet default.
 """
 
 import logging
@@ -25,6 +32,7 @@ from django.utils import timezone
 from teatree.core.connector_preflight import run_connector_preflight
 from teatree.core.overlay_loader import get_all_overlays, resolve_overlay_name
 from teatree.loops.enable_verdict import loop_admits
+from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,15 @@ def run_loop_connector_preflight(loop_name: str) -> None:
         return
     overlay_name = _scoped_overlay_name(row.overlay)
     if overlay_name is None:
+        warn_throttled(
+            logger,
+            f"loop-preflight-unscoped:{loop_name}",
+            "loop %r has no resolvable overlay (Loop.overlay is %r and no single overlay / T3_OVERLAY_NAME "
+            "resolves it) — its connector preflight is SKIPPED, so a down connector will read as a quiet "
+            "0-signal tick. Set the loop's overlay to close the gap.",
+            loop_name,
+            row.overlay,
+        )
         return
     run_connector_preflight(overlay_name)
 

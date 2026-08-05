@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 import pytest
 from django.test import TestCase
 
+from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.phases.scan import scan_phase
+from teatree.loop.phases.scan import job_label, scan_phase
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -100,6 +101,33 @@ def test_timed_out_scanner_error_is_labelled_abandoned() -> None:
     outcome = scan_phase(jobs, per_job_timeout=0.1)
     assert "abandoned" in outcome.errors["hung"].lower()
     assert "still running" in outcome.errors["hung"].lower()
+
+
+def test_two_overlays_timing_out_are_recorded_separately() -> None:
+    """Both stalled overlays are named — the same scanner name must not collapse to one key.
+
+    The timeout branch has no returned label to read, so it built its key from the
+    bare ``scanner.name`` while every success and every non-timeout error was keyed
+    on the overlay-qualified label. Two overlays' ``my_prs`` stalling in one tick
+    therefore wrote ``errors["my_prs"]`` twice, the second silently overwriting the
+    first: one report entry for two degraded overlays, and no way to tell which.
+    """
+    jobs = [
+        _ScannerJob(scanner=_HungScanner(name="my_prs"), overlay="alpha"),
+        _ScannerJob(scanner=_HungScanner(name="my_prs"), overlay="beta"),
+    ]
+
+    outcome = scan_phase(jobs, per_job_timeout=0.1)
+
+    assert set(outcome.errors) == {"my_prs[alpha]", "my_prs[beta]"}
+
+
+def test_timeout_label_matches_the_label_a_completed_job_reports() -> None:
+    """The timeout key and the success key are ONE label, so they cannot drift apart."""
+    for overlay in ("", "acme"):
+        job = _ScannerJob(scanner=_FixedScanner(name="my_prs", out=[]), overlay=overlay)
+        reported, _signals, _error = _run_job(job)
+        assert job_label(job) == reported
 
 
 def test_scan_phase_bounds_all_jobs_under_one_shared_deadline() -> None:

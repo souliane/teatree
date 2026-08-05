@@ -255,12 +255,20 @@ def _idle_successor_run_after(row: "Loop", now: dt.datetime) -> dt.datetime:
 def compute_tick_deadline(row: "Loop") -> float:
     """The hard subprocess-tick deadline.
 
-    An interval loop gets ``max(300 s, 3 x cadence)``. A ``daily_at`` loop has no
-    ``delay_seconds`` (so ``3 x cadence`` would collapse to the 300 s floor and
-    SIGKILL a legitimately long daily scan after its anchor was already consumed) —
-    it gets the dedicated :data:`DAILY_TICK_DEADLINE_SECONDS` instead.
+    An interval loop gets ``max(300 s, 3 x cadence)``. A ``daily_at`` loop gets the
+    dedicated :data:`DAILY_TICK_DEADLINE_SECONDS` instead — ``3 x cadence`` over a
+    day is 72 h, which is not a deadline: a hung daily tick would pin one of the two
+    floor ``loops`` executor threads for three days, ``_escalate_tick_timeout`` would
+    never fire, and :func:`teatree.loops.timer_reconciler._is_stranded` (which reuses
+    this number) would refuse to repair the RUNNING timer for just as long.
+
+    Keyed on ``daily_at`` ALONE, the way :meth:`Loop.is_due` / :meth:`Loop.next_run_at`
+    already key on it. Requiring ``delay_seconds is None`` too made the branch
+    structurally unreachable: every seeded loop carries a ``delay_seconds`` and the
+    model constraint REQUIRES one for any script-backed loop, so the shipped ``news``
+    row (``delay_seconds=86400, daily_at=08:00``) took the interval branch.
     """
-    if row.delay_seconds is None and row.daily_at is not None:
+    if row.daily_at is not None:
         return DAILY_TICK_DEADLINE_SECONDS
     cadence = row.delay_seconds or 0
     return max(MIN_TICK_DEADLINE_SECONDS, DEADLINE_CADENCE_MULTIPLIER * float(cadence))

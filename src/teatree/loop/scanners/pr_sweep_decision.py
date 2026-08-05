@@ -88,20 +88,54 @@ def classify_sweep_ci(
     A ``None`` *required_names* (indeterminate branch-protection lookup) fails CLOSED
     with the ``required_checks_indeterminate`` skip. ``failing_required`` lets
     ``_ci_block`` tell a repo-state-only red apart from a genuine test failure.
+
+    A DETERMINATE-EMPTY *required_names* (branch protection removed or never
+    configured) is put through the SAME ``expected_required_contexts`` floor the
+    keystone applies, because :func:`classify_required_rollup` reads an empty
+    required set as "nothing to satisfy" → ``green``. Without the floor the sweep
+    called a repo with zero enforced checks mergeable while the chokepoint refused
+    the very same PR — so the solo path re-attempted the merge every tick and
+    surfaced only the opaque ``solo_overlay_gh_fallback_failed``.
     """
     if required_names is None:
         return "required_checks_indeterminate", False, set()
+    if not required_names and _floor_refuses_empty_required():
+        return "required_checks_missing_floor", False, set()
     verdict = classify_required_rollup(rollup, required_names)
     failing = failing_required_names(rollup, required_names)
     if verdict == "pending":
         return "ci_pending", False, failing
     if verdict == "failed":
-        if failing == {UV_AUDIT_CHECK_NAME}:
-            if main_uv_audit_red():
-                return None, True, failing
-            return "uv_audit_red_but_clean_on_main", False, failing
-        return "ci_red", False, failing
+        return _failed_verdict(failing, main_uv_audit_red=main_uv_audit_red)
     return None, False, failing
+
+
+def _failed_verdict(
+    failing: set[str],
+    *,
+    main_uv_audit_red: Callable[[], bool],
+) -> tuple[str | None, bool, set[str]]:
+    """A red required set's sweep decision — the uv-audit fallback, else a plain red skip."""
+    if failing == {UV_AUDIT_CHECK_NAME}:
+        if main_uv_audit_red():
+            return None, True, failing
+        return "uv_audit_red_but_clean_on_main", False, failing
+    return "ci_red", False, failing
+
+
+def _floor_refuses_empty_required() -> bool:
+    """True iff a repo reporting NO required checks must fail closed for the sweep.
+
+    Reads the floor through the keystone's own accessor rather than re-reading
+    ``expected_required_contexts`` here, so the two consumers cannot re-diverge on
+    what an unreadable floor means: ``None`` is indeterminate (fail closed), a
+    non-empty floor over an empty required set is a removed branch-protection gate
+    (fail closed), and only a determinate-empty floor is genuinely "no gate".
+    """
+    from teatree.core.merge.ci_rollup import _expected_required_contexts_floor  # noqa: PLC0415 — deferred config read
+
+    floor = _expected_required_contexts_floor()
+    return floor is None or bool(floor)
 
 
 def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:

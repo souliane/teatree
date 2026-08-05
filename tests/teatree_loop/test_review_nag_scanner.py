@@ -120,6 +120,10 @@ class FakeHost:
     open_state: Any = PrOpenState.OPEN
     draft_state: DraftState = DraftState.NOT_DRAFT
     approved_by: list[str] = field(default_factory=list)
+    #: Model a forge that reports the AGGREGATE only: GitHub exposes no approver
+    #: list, so its ``approved_by`` is always ``[]`` whatever the review decision.
+    #: ``None`` derives the count from ``approved_by`` — the GitLab shape.
+    approvals_left: int | None = None
     raise_on_lookup: Exception | None = None
     raise_on_approvals: Exception | None = None
     user: str = ""
@@ -139,8 +143,9 @@ class FakeHost:
         _ = (repo, pr_iid)
         if self.raise_on_approvals is not None:
             raise self.raise_on_approvals
+        left = self.approvals_left if self.approvals_left is not None else (0 if self.approved_by else 1)
         return {
-            "approvals_left": 0 if self.approved_by else 1,
+            "approvals_left": left,
             "approved_by": self.approved_by,
             "unresolved_resolvable": 0,
         }
@@ -313,6 +318,34 @@ class TestMrStateGate(_EnableReviewNagMixin, TestCase):
         assert len(slack.posts) == 1
         assert [s.kind for s in signals] == ["review_nag.ping"]
 
+    def test_an_approved_pr_on_a_forge_with_no_approver_list_is_skipped(self) -> None:
+        """GitHub reports the AGGREGATE only, so approval must be read from ``approvals_left``.
+
+        ``pr_reads.approval_state`` hard-codes ``approved_by=[]`` because GitHub exposes
+        only ``reviewDecision`` — so deciding approval from that list made the
+        approved-skip branch unreachable on this deployment's forge, and colleagues were
+        re-pinged forever about PRs they had already approved.
+        """
+        post = _seed(days_old=3.0)
+        slack = FakeSlack()
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(approvals_left=0, approved_by=[])).scan()
+
+        assert slack.posts == []
+        post.refresh_from_db()
+        assert post.last_nag_at is None
+        assert [s.kind for s in signals] == ["review_nag.mr_approved"]
+
+    def test_an_outstanding_approval_still_pings(self) -> None:
+        """The control: a non-zero count is a real "not approved", not a read failure."""
+        _seed(days_old=3.0)
+        slack = FakeSlack()
+
+        signals = ReviewNagScanner(messaging=slack, host=FakeHost(approvals_left=1, approved_by=[])).scan()
+
+        assert len(slack.posts) == 1
+        assert [s.kind for s in signals] == ["review_nag.ping"]
+
 
 class TestUnreadableMrStateFailsClosed(_EnableReviewNagMixin, TestCase):
     """An unverifiable merge request is never @-mentioned to the group.
@@ -350,6 +383,24 @@ class TestUnreadableMrStateFailsClosed(_EnableReviewNagMixin, TestCase):
         assert post.done_at is None
         assert post.last_nag_at is None
         assert post.nag_count == 0
+        assert [s.kind for s in signals] == ["review_nag.mr_approval_unknown"]
+
+    def test_an_absent_approval_count_skips_the_group_ping(self) -> None:
+        """A payload with no ``approvals_left`` cannot answer the question — so no nag.
+
+        "I cannot tell" must stay distinguishable from "not approved": reading a
+        missing count as unapproved re-pings the group about a finished review.
+        """
+        post = _seed(days_old=3.0)
+        slack = FakeSlack()
+        host = FakeHost()
+
+        with patch.object(host, "get_mr_approvals", return_value={"approved_by": [], "unresolved_resolvable": 0}):
+            signals = ReviewNagScanner(messaging=slack, host=host).scan()
+
+        assert slack.posts == []
+        post.refresh_from_db()
+        assert post.last_nag_at is None
         assert [s.kind for s in signals] == ["review_nag.mr_approval_unknown"]
 
     def test_unknown_open_state_skips_the_group_ping(self) -> None:

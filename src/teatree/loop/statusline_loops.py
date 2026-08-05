@@ -57,7 +57,7 @@ def overlays_anchor() -> list[str]:
 
 
 def health_chip(*, colorize: bool = False) -> list[str]:
-    """Return the single global-health chip line, or ``[]`` (PR-17).
+    """Return the single global-health chip line — never ``[]`` (PR-17).
 
     Reads the persisted operational-health verdict (read-only —
     :func:`teatree.core.factory.operational_health.read_health`, never a reconcile at
@@ -65,15 +65,21 @@ def health_chip(*, colorize: bool = False) -> list[str]:
     ``health: ●`` when green and clean, ``health: ● 3`` when three issues are
     open. The dot is green/yellow/red per the verdict; when *colorize* is set it
     resets to the loop line's dim baseline (not a full reset) so the ``health:``
-    label and count stay dim around it. Fails open to ``[]`` so a broken read
-    never blanks the statusline.
+    label and count stay dim around it.
+
+    A failed read renders ``health: ? (t3 doctor check)`` rather than dropping the
+    segment: a vanished chip is byte-identical to a box that never had one, and the
+    read most likely to fail is the one on an actually-red box — so the chip whose
+    whole purpose is to make RED impossible to miss disappeared exactly then. The
+    segment only ever changes VALUE; it never disappears (the #4197 fix, applied to
+    the segment next to the one it fixed).
     """
     try:
         from teatree.core.factory.operational_health import HealthStatus, read_health  # noqa: PLC0415 — deferred read
 
         report = read_health()
-    except Exception:  # noqa: BLE001 — fail-open: a broken health read never blanks the statusline
-        return []
+    except Exception:  # noqa: BLE001 — an unreadable verdict is reported as unknown, never as absent
+        return [f"health: {_colorize_chunk('?', _ANSI_YELLOW, colorize=colorize)} (t3 doctor check)"]
     color = {
         HealthStatus.GREEN: _ANSI_GREEN,
         HealthStatus.YELLOW: _ANSI_YELLOW,
@@ -90,9 +96,10 @@ def dashboard_head_anchor(*, colorize: bool = False) -> list[str]:
     Folds the live-loops line (which already carries the merged ``mode:`` handle,
     #61), the configured-overlays summary, and the global-health chip onto
     ONE line joined by the loop line's own `` · `` separator — so overlays and
-    health stop each wasting a whole row. Every source is individually
-    fail-open, so a broken read drops only its own segment; the line is ``[]``
-    only when all three are empty.
+    health stop each wasting a whole row. The loop and overlay segments are
+    individually fail-open (a broken read drops only its own segment); the health
+    chip instead degrades to ``health: ?``, so a red box never renders as a box
+    with no chip.
     """
     parts = [*live_loops_anchor(colorize=colorize), *overlays_anchor(), *health_chip(colorize=colorize)]
     if not parts:

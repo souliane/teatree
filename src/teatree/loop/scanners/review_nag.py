@@ -450,12 +450,25 @@ def _draft_state(host: CodeHostBackend, slug: str, pr_id: int) -> DraftState:
 
 
 def _approval_state(host: CodeHostBackend, slug: str, pr_id: int) -> ApprovalReadState:
+    """Whether the forge says this PR/MR's approval threshold is satisfied.
+
+    Decided from ``approvals_left`` — the one field BOTH backends populate, and the
+    one each fails CLOSED to ``1`` on an unreadable read. ``approved_by`` is a
+    display list GitHub cannot fill at all (it exposes only the aggregate
+    ``reviewDecision``, so ``pr_reads.approval_state`` hard-codes ``[]``), which made
+    the approved-skip branch unreachable there and nagged approved PRs forever. A
+    missing or negative count is "cannot tell", never "not approved".
+    """
     try:
         state = host.get_mr_approvals(repo=slug, pr_iid=pr_id)
     except Exception as exc:  # noqa: BLE001 — an approval probe must never crash a tick.
         logger.warning("review_nag: approval probe failed for %s#%s: %s", slug, pr_id, exc)
         return ApprovalReadState.UNKNOWN
-    return ApprovalReadState.APPROVED if state.get("approved_by") else ApprovalReadState.NOT_APPROVED
+    left = state.get("approvals_left")
+    if not isinstance(left, int) or isinstance(left, bool) or left < 0:
+        logger.warning("review_nag: approvals_left unreadable for %s#%s: %r", slug, pr_id, left)
+        return ApprovalReadState.UNKNOWN
+    return ApprovalReadState.APPROVED if left == 0 else ApprovalReadState.NOT_APPROVED
 
 
 def _engineers_mention(messaging: MessagingBackend) -> str:

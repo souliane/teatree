@@ -14,7 +14,7 @@ import pytest
 from teatree.core.factory.operational_health import HealthReport, HealthStatus
 from teatree.core.models.known_issue import KnownIssue
 from teatree.loop.rendering import zones_for
-from teatree.loop.statusline import health_chip
+from teatree.loop.statusline import dashboard_head_anchor, health_chip
 from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED
 from teatree.loop.tick import TickRequest, run_tick
 
@@ -41,9 +41,20 @@ class TestHealthChipFormatter:
         assert _ANSI_RED in red
         assert _ANSI_GREEN in green
 
-    def test_fails_open_on_read_error(self) -> None:
+    def test_an_unreadable_verdict_renders_unknown_rather_than_vanishing(self) -> None:
+        """The chip changes VALUE on a failed read; it never disappears.
+
+        A dropped segment is byte-identical to a box that has no health chip at all —
+        and the read most likely to fail (a locked control DB, a mid-write record) is
+        the one on an actually-red box. The chip whose whole job is to make RED
+        impossible to miss must not vanish exactly then.
+        """
         with patch("teatree.core.factory.operational_health.read_health", side_effect=RuntimeError("boom")):
-            assert health_chip(colorize=False) == []
+            chip = health_chip(colorize=False)
+
+        assert len(chip) == 1, chip
+        assert chip[0].startswith("health: ?"), chip
+        assert "t3 doctor check" in chip[0], chip
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -54,6 +65,13 @@ class TestHealthChipWiring:
             zones = zones_for([], colorize=False)
         anchor_text = "\n".join(item if isinstance(item, str) else item.text for item in zones.anchors)
         assert "health: ● 1" in anchor_text, anchor_text
+
+    def test_the_unknown_chip_still_appears_on_the_dashboard_head_line(self) -> None:
+        with patch("teatree.core.factory.operational_health.read_health", side_effect=RuntimeError("boom")):
+            line = dashboard_head_anchor(colorize=False)
+
+        assert len(line) == 1, line
+        assert "health: ?" in line[0], line
 
     def test_empty_jobs_tick_renders_health_chip(self) -> None:
         with (

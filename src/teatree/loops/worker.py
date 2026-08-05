@@ -212,6 +212,48 @@ def _release_t3_master() -> None:
     LoopLease.objects.release_ownership(T3_MASTER_SLOT, session_id=LOOP_RUNNER_SESSION_ID)
 
 
+def _run_startup_step(what: str, step: Callable[[], object]) -> None:
+    """Run one pre-executor startup step; a failure is escalated, never fatal.
+
+    These three steps ran outside any try, so one poison row — a ``Loop`` deleted
+    mid-reconcile, an ``OperationalError`` on a locked result — propagated out of
+    :meth:`LoopWorker.run` BEFORE any executor spawned. ``restart: on-failure`` then
+    restarted the worker into the same row: a machine-wide freeze with zero executors,
+    whose only signal was the container restart counter, and which named no failing
+    step. Every one of them is recoverable once executors run (the 5-minute reconcile
+    chain repairs the timers and re-seeds the maintenance chains), so the pool must
+    come up regardless.
+    """
+    try:
+        step()
+    except Exception:
+        logger.exception("Worker startup step failed: could not %s — starting executors anyway.", what)
+        _escalate_startup_failure(what)
+
+
+def _escalate_startup_failure(what: str) -> None:
+    """Record a durable escalation naming the startup step that failed.
+
+    A log line in a restarting container is not an operator-visible surface — the
+    failure this covers previously showed up only as a restart counter. A
+    ``DeferredQuestion`` puts the failing step on the waiting-on-you lane, deduped per
+    step so a persistently-failing one escalates once while its question is open. Its
+    own failure is swallowed: an escalation that cannot be written must not become the
+    crash the escalation exists to prevent.
+    """
+    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM import
+
+    try:
+        DeferredQuestion.record(
+            f"The loop worker could not {what} at startup; it started its executors anyway, so loop ticks are "
+            "running but that step's state may be stale. Check the worker log for the traceback.",
+            session_id="",
+            dedupe_marker=f"worker-startup-failure step={what}",
+        )
+    except Exception:
+        logger.exception("Could not escalate the worker startup failure (%s); the log line is the only record.", what)
+
+
 def _spawn_executor_thread(executor: _Executor) -> _Handle:
     """Run *executor* in a daemon thread that closes its DB connection on exit.
 
@@ -363,12 +405,12 @@ class LoopWorker:
         # chains that fire ticks exist, so `t3 loop owner` can never report "unclaimed"
         # while this process drives loops.
         self._claim_t3_master()
-        seams.reconcile()
-        seams.seed_chains()
+        _run_startup_step("reconcile the loop-timer chains", seams.reconcile)
+        _run_startup_step("seed the maintenance chains", seams.seed_chains)
         # Expire the stale `default`-queue backlog BEFORE any executor spawns, so a box
         # that queued days-old provision/ship jobs while no worker ran never blind-fires
         # them the instant the worker starts (the default-ON flip's load-jam class).
-        seams.expire()
+        _run_startup_step("expire the stale default-queue backlog", seams.expire)
 
         self._slots = [self._spawn_slot(queue, index) for index, queue in enumerate(seams.executor_queues)]
 

@@ -26,6 +26,19 @@ class ScanOutcome:
     errors: dict[str, str] = field(default_factory=dict)
 
 
+def job_label(job: _ScannerJob) -> str:
+    """The overlay-qualified label a job's outcome is recorded under.
+
+    The SAME string :func:`teatree.loop.domain_jobs._run_job` returns, so the
+    timeout branch — which has no returned label to read — attributes the stall to
+    exactly the job that stalled. Keyed on the bare scanner name, two overlays'
+    same scanner timing out in one tick collapsed onto one key and the second
+    silently overwrote the first, reporting ONE stalled scanner where two overlays
+    were degraded. ``tests/teatree_loop/phases/test_scan.py`` pins the parity.
+    """
+    return f"{job.scanner.name}[{job.overlay}]" if job.overlay else job.scanner.name
+
+
 def _run_job_closing_connections(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     """Run one scan job on a pool worker, then close that worker's DB connections.
 
@@ -76,17 +89,17 @@ def scan_phase(
     max_workers = min(len(jobs), cpu * _POOL_WORKERS_PER_CPU)
     pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
     future_to_label: dict[Future[tuple[str, list[ScanSignal], str]], str] = {
-        pool.submit(_run_job_closing_connections, job): job.scanner.name for job in jobs
+        pool.submit(_run_job_closing_connections, job): job_label(job) for job in jobs
     }
     deadline = time.monotonic() + per_job_timeout
     try:
         for future, label in future_to_label.items():
             try:
                 remaining = max(0.0, deadline - time.monotonic())
-                job_label, signals, error = future.result(timeout=remaining)
+                reported_label, signals, error = future.result(timeout=remaining)
                 outcome.signals.extend(signals)
                 if error:
-                    outcome.errors[job_label] = error
+                    outcome.errors[reported_label] = error
             except TimeoutError:
                 # F5.9: the thread is not cancelled — it is abandoned and keeps
                 # running in the background. Label it so the error output makes the

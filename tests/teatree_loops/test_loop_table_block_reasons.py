@@ -113,23 +113,42 @@ class TestBlockedLoopsStateTheirReason(django.test.TestCase):
         assert outcomes[0].jobs == ("job-br-ok",)
 
     def test_blocked_and_quiet_are_distinguishable(self) -> None:
-        """The whole point: an empty job list alone cannot tell the two apart."""
+        """The whole point: an empty SIGNAL list alone cannot tell the two apart."""
         now = timezone.now()
         Loop.objects.create(name="br-quiet", delay_seconds=60, prompt=_prompt())
         Loop.objects.create(name="br-blocked", delay_seconds=60, prompt=_prompt())
         LoopState.objects.override("br-blocked", on=False, reason="emergency")
-        quiet = MiniLoop(name="br-quiet", default_cadence_seconds=60, build_jobs=lambda **_: [])
 
         with (
-            patch("teatree.loops.loop_table.iter_loops", return_value=(quiet, _mini("br-blocked"))),
+            patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("br-quiet"), _mini("br-blocked"))),
             patch(_MODE_SEAM, return_value=_resolved()),
         ):
             outcomes = {outcome.name: outcome for outcome in dispatch_loop_table({}, now=now)}
 
-        assert outcomes["br-quiet"].jobs == ()
         assert outcomes["br-blocked"].jobs == ()
-        assert outcomes["br-quiet"].dispatched, "a loop that ran and found nothing is NOT blocked"
+        assert outcomes["br-quiet"].dispatched, "a loop whose scanners ran and found nothing is NOT blocked"
         assert not outcomes["br-blocked"].dispatched, "a force-skipped loop must not read as a quiet run"
+
+    def test_a_loop_that_built_no_scanner_says_so(self) -> None:
+        """The gate one level BELOW the loop gate: admitted, anchor claimed, zero scanners.
+
+        Every scanner factory declining (an off feature flag, an absent backend) yields
+        the same empty job list a healthy quiet tick yields, so the loop reported ``ran
+        … 0 signal(s)`` while scanning nothing at all — and ``last_run_at`` advanced, so
+        every staleness surface read green. That is a refusal too, and it must say so.
+        """
+        now = timezone.now()
+        Loop.objects.create(name="br-inert", delay_seconds=60, prompt=_prompt())
+        inert = MiniLoop(name="br-inert", default_cadence_seconds=60, build_jobs=lambda **_: [])
+
+        with (
+            patch("teatree.loops.loop_table.iter_loops", return_value=(inert,)),
+            patch(_MODE_SEAM, return_value=_resolved()),
+        ):
+            outcomes = dispatch_loop_table({}, now=now, only="br-inert")
+
+        assert not outcomes[0].dispatched, "a loop that built no scanner must not read as a quiet run"
+        assert "no scanner" in outcomes[0].blocked_reason, outcomes[0].blocked_reason
 
 
 @django.test.override_settings(USE_TZ=True)

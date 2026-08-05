@@ -39,6 +39,7 @@ restart re-arms them.
 import datetime as dt
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from django.tasks import task
 from django.utils import timezone
@@ -50,6 +51,11 @@ from teatree.loops.timer_chains import (
     compute_tick_deadline,
     enqueue_loop_timer,
 )
+
+if TYPE_CHECKING:
+    from django_tasks_db.models import DBTaskResult
+
+    from teatree.core.models import Loop
 
 logger = logging.getLogger(__name__)
 
@@ -112,37 +118,78 @@ def ensure_loop_timers() -> dict[str, int]:
     ready_by_name = loop_timers_by_name(TaskResultStatus.READY)
     running_by_name = loop_timers_by_name(TaskResultStatus.RUNNING)
 
-    counts = {"added": 0, "pruned": 0, "repaired": 0}
+    counts = {"added": 0, "pruned": 0, "repaired": 0, "failed": 0}
 
     for name in chain_names:
-        loop_row = loops[name]
-        ready = sorted(ready_by_name.get(name, []), key=lambda r: r.run_after)
-        running = running_by_name.get(name, [])
-        stranded = [r for r in running if _is_stranded(r, loop_row, now)]
-        live_running = [r for r in running if r not in stranded]
-
-        for result in stranded:
-            DBTaskResult.objects.filter(id=result.id).delete()
-            counts["repaired"] += 1
-        for surplus in ready[1:]:
-            DBTaskResult.objects.filter(id=surplus.id).delete()
-            counts["pruned"] += 1
-
-        if not ready and not live_running:
-            enqueue_loop_timer(name, run_after=compute_successor_run_after(loop_row, now))
-            counts["added"] += 1
+        # Per-loop fault isolation: this is the ONE repair sweep in the subsystem that
+        # lacked it, and it is the sweep every OTHER chain depends on. A loop row
+        # deleted between the two reads above, or an OperationalError on a locked
+        # DBTaskResult, aborted the whole pass — so every loop later in iteration order
+        # kept whatever broken timer state it had, forever, because the 5-minute retry
+        # died at the same row each time. A failure is counted so a partially-repaired
+        # sweep is distinguishable from a clean one.
+        try:
+            repaired = _reconcile_one_loop(
+                loops[name],
+                ready=sorted(ready_by_name.get(name, []), key=lambda r: r.run_after),
+                running=running_by_name.get(name, []),
+                now=now,
+            )
+        except Exception:
+            counts["failed"] += 1
+            logger.exception("ensure_loop_timers: loop %r failed to reconcile; the other loops are unaffected", name)
+            continue
+        for key, value in repaired.items():
+            counts[key] += value
 
     # Un-admitted / unknown loops: prune their QUEUED fires (a RUNNING one dies on its
     # own next fire — admission fails or the row is gone — and is cleaned up then).
     for name, rows in ready_by_name.items():
         if name in chain_names:
             continue
-        for result in rows:
-            DBTaskResult.objects.filter(id=result.id).delete()
-            counts["pruned"] += 1
+        try:
+            for result in rows:
+                DBTaskResult.objects.filter(id=result.id).delete()
+                counts["pruned"] += 1
+        except Exception:
+            counts["failed"] += 1
+            logger.exception("ensure_loop_timers: pruning un-admitted loop %r failed; the sweep continues", name)
 
     if any(counts.values()):
         logger.info("ensure_loop_timers: %s", counts)
+    return counts
+
+
+def _reconcile_one_loop(
+    loop_row: "Loop",
+    *,
+    ready: "list[DBTaskResult]",
+    running: "list[DBTaskResult]",
+    now: dt.datetime,
+) -> dict[str, int]:
+    """Repair ONE loop's timer set; return its repair counts.
+
+    Drops stranded RUNNING timers and surplus queued ones, and re-heads a loop left
+    with neither. Returning the counts rather than mutating the caller's is what lets
+    the caller isolate this loop's fault: a raise contributes nothing, instead of
+    leaving a half-applied tally behind.
+    """
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+
+    stranded = [r for r in running if _is_stranded(r, loop_row, now)]
+    live_running = [r for r in running if r not in stranded]
+    counts = {"added": 0, "pruned": 0, "repaired": 0}
+
+    for result in stranded:
+        DBTaskResult.objects.filter(id=result.id).delete()
+        counts["repaired"] += 1
+    for surplus in ready[1:]:
+        DBTaskResult.objects.filter(id=surplus.id).delete()
+        counts["pruned"] += 1
+
+    if not ready and not live_running:
+        enqueue_loop_timer(loop_row.name, run_after=compute_successor_run_after(loop_row, now))
+        counts["added"] += 1
     return counts
 
 
@@ -163,15 +210,30 @@ def reconcile_timers() -> dict[str, int]:
     exception cannot orphan the chain. This is the repair chain for every OTHER
     chain, so orphaning it would strand the whole maintenance mesh until a worker
     restart — the body therefore runs in a try that records-but-never-propagates.
+
+    It re-seeds the MAINTENANCE chains too, not only the per-loop timers. Those were
+    armed once at worker startup and nowhere else, so a single lost head — a body
+    that terminated the chain on an unconfirmable read, an ``.enqueue()`` that raised
+    outside its body's try — left its work (dream / directive / outer, the headless
+    drain, the statusline refresh) undriven until the next worker restart, with no
+    surface reporting it. Seeding is a per-chain "if not pending" check, so the
+    healthy case is a handful of cheap queries and re-seeding is idempotent.
     """
     if _pending_for_path(reconcile_timers.module_path):
         return {"deduped": 1}
     reconcile_timers.using(run_after=timezone.now() + dt.timedelta(seconds=RECONCILE_INTERVAL_SECONDS)).enqueue()
+    counts: dict[str, int] = {}
     try:
-        return ensure_loop_timers()
+        counts = ensure_loop_timers()
     except Exception:
         logger.exception("reconcile_timers body failed; successor already queued, the chain survives")
-        return {"error": 1}
+        counts = {"error": 1}
+    try:
+        ensure_maintenance_chains()
+    except Exception:
+        logger.exception("reconcile_timers could not re-seed the maintenance chains; the loop timers were reconciled")
+        counts["error"] = counts.get("error", 0) + 1
+    return counts
 
 
 @task(queue_name=LOOPS_QUEUE)
