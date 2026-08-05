@@ -50,6 +50,29 @@ class TestDeniesSlackMcpWrites:
         assert "t3" in json.dumps(deny)
 
 
+class TestDeniesUnrecognisedSlackTools:
+    """An unrecognised Slack MCP tool is a WRITE until its READ shape is recognised.
+
+    Every one of these carries no write verb, so the old verb-substring
+    classifier passed them through — a channel created and a canvas published
+    under the user's OAuth identity, outside the egress chokepoint.
+    """
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__claude_ai_Slack__slack_create_conversation",
+            "mcp__claude_ai_Slack__slack_create_canvas",
+            "mcp__slack__conversations_invite",
+            "mcp__slack__slack_pin_message",
+            "mcp__slack__admin_conversations_archive",
+        ],
+    )
+    def test_unrecognised_slack_tool_is_denied(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_mcp_slack_write(_event(tool_name)) is True
+        assert _parse_deny(capsys) is not None
+
+
 class TestAllowsReadsAndNonSlack:
     @pytest.mark.parametrize(
         "tool_name",
@@ -58,6 +81,11 @@ class TestAllowsReadsAndNonSlack:
             "mcp__slack__conversations_list",
             "mcp__slack__search_messages",
             "mcp__slack__slack_get_users",
+            "mcp__slack__conversationsHistory",
+            "mcp__slack__users_info",
+            # A pure READ whose noun happens to carry a write verb — the
+            # substring classifier blocked it and pointed at no CLI equivalent.
+            "mcp__claude_ai_Slack__slack_get_reactions",
             "mcp__glab__glab_mr_create",
             "mcp__notion__create_page",
             "Bash",
@@ -73,6 +101,9 @@ class TestClassifier:
         assert is_slack_mcp_write("mcp__slack__slack_send_message") is True
         assert is_slack_mcp_write("mcp__slack__slack_get_channel_history") is False
         assert is_slack_mcp_write("mcp__glab__glab_mr_create") is False
+
+    def test_unknown_slack_tool_fails_closed(self) -> None:
+        assert is_slack_mcp_write("mcp__slack__slack_frobnicate_workspace") is True
 
 
 class TestNeverLockout:
