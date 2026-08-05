@@ -180,21 +180,6 @@ class TestFetchPrMergeStateConflictAxis:
         assert state.conflict is MergeConflictState.UNKNOWN
 
 
-class TestFetchPrIsDraft:
-    def test_draft_flag(self) -> None:
-        assert _rpc(get={"draft": True}).fetch_pr_is_draft(slug=_SLUG, pr_id=_IID) is True
-
-    def test_legacy_work_in_progress_flag_still_counts(self) -> None:
-        assert _rpc(get={"work_in_progress": True}).fetch_pr_is_draft(slug=_SLUG, pr_id=_IID) is True
-
-    def test_not_draft(self) -> None:
-        assert _rpc(get={"draft": False}).fetch_pr_is_draft(slug=_SLUG, pr_id=_IID) is False
-
-    @pytest.mark.parametrize("failure", _READ_FAILURES)
-    def test_not_draft_on_any_forge_failure(self, failure: Exception) -> None:
-        assert _rpc(raises=failure).fetch_pr_is_draft(slug=_SLUG, pr_id=_IID) is False
-
-
 class TestFetchPrAuthor:
     def test_username(self) -> None:
         assert _rpc(get={"author": {"username": "souliane"}}).fetch_pr_author(slug=_SLUG, pr_id=_IID) == "souliane"

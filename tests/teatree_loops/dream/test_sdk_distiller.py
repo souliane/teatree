@@ -18,7 +18,8 @@ from teatree.agents.model_tiering import resolve_tier
 from teatree.core.models import ConfigSetting
 from teatree.llm.credentials import CredentialError
 from teatree.loops.dream import sdk_distiller
-from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
+from teatree.loops.dream.engine import DistillEmptyReason
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.sdk_distiller import deterministic_cluster_key, sdk_distill
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
 

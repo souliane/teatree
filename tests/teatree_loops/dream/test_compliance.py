@@ -24,7 +24,7 @@ from teatree.loops.dream.compliance import (
     run_compliance_escalation,
     run_compliance_measurement,
 )
-from teatree.loops.dream.engine import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 
 def _memory_snippet(name: str, body: str) -> WeightedSnippet:

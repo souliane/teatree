@@ -27,7 +27,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, Distiller, DistillResult, WeightedSnippet
+from teatree.loops.dream.engine import DistilledCluster, Distiller, DistillResult
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 logger = logging.getLogger(__name__)
 

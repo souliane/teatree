@@ -37,7 +37,8 @@ from enum import Enum
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, cluster_is_grounded, normalize_ws
+from teatree.loops.dream.engine import DistilledCluster, cluster_is_grounded, normalize_ws
+from teatree.loops.dream.replay import ConsolidationExtract
 from teatree.loops.dream.transcript_extract import _ASK_CUES
 
 #: The dream-automation-gap label carried in a promoted ask gap's brief — the lineage

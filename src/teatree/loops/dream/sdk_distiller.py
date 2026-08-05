@@ -37,8 +37,9 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from teatree.agents.model_tiering import resolve_tier
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DistillEmptyReason, DistillResult
+from teatree.loops.dream.engine import DistilledCluster, DistillEmptyReason, DistillResult
 from teatree.loops.dream.json_scan import first_object_bearing_array
+from teatree.loops.dream.replay import ConsolidationExtract
 
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions

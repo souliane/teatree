@@ -16,15 +16,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.loops.dream import distill
-from teatree.loops.dream.engine import (
-    ConsolidationExtract,
-    DistilledCluster,
-    DistillEmptyReason,
-    Distiller,
-    DistillResult,
-    TranscriptMember,
-    build_extract,
-)
+from teatree.loops.dream.engine import DistilledCluster, DistillEmptyReason, Distiller, DistillResult
+from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, build_extract
 
 _CITATION = "the agent force-pushed to main and lost the branch"
 

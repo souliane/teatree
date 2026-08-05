@@ -40,8 +40,9 @@ from pathlib import Path
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RuleSource
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, WeightedSnippet
+from teatree.loops.dream.engine import DistilledCluster
 from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL, points_at_core_fix
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.transcript_extract import looks_like_user_correction
 
 logger = logging.getLogger(__name__)

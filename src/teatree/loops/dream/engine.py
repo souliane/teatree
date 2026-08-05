@@ -79,18 +79,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from django.db import transaction
 
-# Phase 1 lives in the sibling `replay` module; its vocabulary is re-exported here so
-# every existing `from teatree.loops.dream.engine import ...` caller is unaffected by
-# the split, and `__all__` below still names the whole pipeline's surface.
-from teatree.loops.dream.replay import (
-    ConsolidationExtract,
-    TranscriptMember,
-    WeightedSnippet,
-    build_extract,
-    default_projects_dir,
-    enumerate_members,
-    looks_like_user_correction,
-)
+from teatree.loops.dream.replay import ConsolidationExtract, build_extract, enumerate_members
 
 if TYPE_CHECKING:
     from teatree.loops.dream.eval_proposer import EvalProposalRequest
@@ -411,20 +400,13 @@ def run_consolidation(
 
 
 __all__ = [
-    "ConsolidationExtract",
     "DistillEmptyReason",
     "DistillResult",
     "DistilledCluster",
     "Distiller",
     "DreamRunResult",
-    "TranscriptMember",
-    "WeightedSnippet",
     "WriteOutcome",
-    "build_extract",
     "cluster_is_grounded",
-    "default_projects_dir",
-    "enumerate_members",
-    "looks_like_user_correction",
     "normalize_ws",
     "run_consolidation",
     "write_clusters",

@@ -131,14 +131,6 @@ class GitLabApiMergeRpc:
         oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
         return PrMergeState(state=state, merge_commit_oid=oid, conflict=_conflict_state(mr))
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return False
-        # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the legacy
-        # field kept for compatibility — accept either.
-        return bool(mr.get("draft") or mr.get("work_in_progress"))
-
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The MR author ``username`` — the §17.4.3 author-gate input (#1773).
 

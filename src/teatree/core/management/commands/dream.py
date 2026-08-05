@@ -42,8 +42,9 @@ from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
-    from teatree.loops.dream.engine import ConsolidationExtract, DreamRunResult
+    from teatree.loops.dream.engine import DreamRunResult
     from teatree.loops.dream.phase_runner import MemoryPhaseRunner
+    from teatree.loops.dream.replay import ConsolidationExtract
 
 
 @dataclass(frozen=True, slots=True)

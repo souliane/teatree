@@ -21,15 +21,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
-from teatree.loops.dream.engine import (
-    ConsolidationExtract,
-    DistilledCluster,
-    DreamRunResult,
-    TranscriptMember,
-    WeightedSnippet,
-)
+from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
 
 _COMMAND = "teatree.core.management.commands.dream.Command"
 

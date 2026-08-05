@@ -12,7 +12,8 @@ from django.test import TestCase
 
 from teatree.core.models import ConsolidatedMemory, InstructionComplianceRecord, RuleSource
 from teatree.loops.dream.compliance import reclassify_recurring_memory_clusters
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, WeightedSnippet, write_clusters
+from teatree.loops.dream.engine import DistilledCluster, write_clusters
+from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 _SLUG = "feedback_askuserquestion_overuse"
 _MEMORY_PATH = f"/memory/{_SLUG}.md"

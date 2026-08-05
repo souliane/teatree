@@ -15,22 +15,24 @@ from django.test import TestCase, TransactionTestCase
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker
 from teatree.loops.dream import distill, engine, replay, sdk_distiller
 from teatree.loops.dream.engine import (
-    ConsolidationExtract,
     DistilledCluster,
     DistillEmptyReason,
     DistillResult,
     DreamRunResult,
-    TranscriptMember,
-    WeightedSnippet,
     WriteOutcome,
-    build_extract,
     cluster_is_grounded,
-    enumerate_members,
     normalize_ws,
     run_consolidation,
     write_clusters,
 )
 from teatree.loops.dream.eval_proposer import EvalProposalRequest, ProposedEval
+from teatree.loops.dream.replay import (
+    ConsolidationExtract,
+    TranscriptMember,
+    WeightedSnippet,
+    build_extract,
+    enumerate_members,
+)
 
 
 class DreamRunResultTestCase(TestCase):
