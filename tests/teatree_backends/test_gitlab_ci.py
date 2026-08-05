@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
-from teatree.backends.gitlab.ci import GitLabCIService, _extract_error_tail
+from teatree.backends.gitlab.ci import GitLabCIService, JobTrace, _extract_error_tail
 
 
 def _make_client(*, project: ProjectInfo | None = None) -> tuple[GitLabAPI, MagicMock]:
@@ -83,7 +83,9 @@ def test_fetch_pipeline_errors_extracts_from_failed_jobs() -> None:
         {"id": 2, "name": "lint", "status": "success"},
     ]
 
-    with patch.object(service := GitLabCIService(client=client), "_get_job_trace", return_value="FAILED in test_foo"):
+    with patch.object(
+        service := GitLabCIService(client=client), "_get_job_trace", return_value=JobTrace(text="FAILED in test_foo")
+    ):
         result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
     assert len(result) == 1
@@ -201,15 +203,17 @@ def test_fetch_pipeline_errors_returns_empty_when_no_jobs() -> None:
     assert result == []
 
 
-def test_fetch_pipeline_errors_skips_empty_trace() -> None:
+def test_fetch_pipeline_errors_reports_a_failed_job_whose_trace_is_unreadable() -> None:
+    """An unread trace is a visible error — dropping the job reads as "no failures"."""
     client, mock = _make_client(project=_project())
     mock.get_json.return_value = [{"id": 600}]  # latest pipeline
     mock.get_json_paginated.return_value = [{"id": 1, "name": "test", "status": "failed"}]
 
-    with patch.object(service := GitLabCIService(client=client), "_get_job_trace", return_value=""):
+    unreadable = JobTrace(unreadable_reason="HTTP 403")
+    with patch.object(service := GitLabCIService(client=client), "_get_job_trace", return_value=unreadable):
         result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
-    assert result == []
+    assert result == ["Job test failed: trace unreadable (HTTP 403)"]
 
 
 def test_fetch_failed_tests_returns_empty_for_unknown_project() -> None:
@@ -320,14 +324,15 @@ def test_quality_check_returns_status_when_report_not_a_dict() -> None:
     assert result == {"pipeline_id": 800, "status": "running"}
 
 
-def test_get_job_trace_returns_empty_without_token() -> None:
+def test_get_job_trace_is_unreadable_without_token() -> None:
     client, mock = _make_client(project=_project())
     mock.token = ""
     service = GitLabCIService(client=client)
 
     result = service._get_job_trace(42, 1)
 
-    assert result == ""
+    assert not result.ok
+    assert "no GitLab token" in result.unreadable_reason
 
 
 def test_get_job_trace_returns_text_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,10 +351,11 @@ def test_get_job_trace_returns_text_on_success(monkeypatch: pytest.MonkeyPatch) 
 
     result = service._get_job_trace(42, 1)
 
-    assert result == "Job output trace here"
+    assert result.ok
+    assert result.text == "Job output trace here"
 
 
-def test_get_job_trace_returns_empty_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_job_trace_reports_the_status_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx as _httpx  # noqa: PLC0415
 
     client, _mock = _make_client(project=_project())
@@ -358,13 +364,15 @@ def test_get_job_trace_returns_empty_on_failure(monkeypatch: pytest.MonkeyPatch)
     def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> MagicMock:
         resp = MagicMock()
         resp.is_success = False
+        resp.status_code = 403
         return resp
 
     monkeypatch.setattr(_httpx, "get", fake_get)
 
     result = service._get_job_trace(42, 1)
 
-    assert result == ""
+    assert not result.ok
+    assert result.unreadable_reason == "HTTP 403"
 
 
 def test_default_client_is_created_when_none_provided() -> None:
@@ -403,7 +411,7 @@ def test_fetch_pipeline_errors_paginates_jobs_beyond_first_page() -> None:
         patch.object(api, "resolve_project", return_value=_project()),
     ):
         service = GitLabCIService(client=api)
-        with patch.object(service, "_get_job_trace", return_value="FAILED in test_foo"):
+        with patch.object(service, "_get_job_trace", return_value=JobTrace(text="FAILED in test_foo")):
             result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
     assert len(result) == 1
