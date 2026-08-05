@@ -51,10 +51,14 @@ others' and a shared emit-once marker would strand it.
 
 Both seams are read BEFORE the directive resolver, which bootstraps Django
 (measured 1.67s cold) on a hook budgeted at 30s. The loop-arming seam implies the
-engagement one, so an unengaged session is out on the first check; an engaged
-session that arms no loop has only the cadence-throttled context slots, and
-``directives-injected`` carries their earliest next-due epoch alongside the
-per-slot instants so that throttle is decidable without the store too.
+engagement one, so an unengaged session is out on the first check; every engaged
+session's context slots are cadence-throttled, and ``directives-injected`` carries
+their earliest next-due epoch alongside the per-slot instants so that throttle is
+decidable without the store too. A loop-arming session is the owner's OWN session
+and the one that prompts most, so it is decided here too rather than exempted:
+``directives-registered`` holds the instant its waking candidates were all
+registered, and a settled session skips the resolver until a context slot next
+falls due. Both markers therefore gate the resolver, and neither is read after it.
 
 Neither marker is reaped from here. N engaged sessions is the normal operating
 mode, and a session cannot tell a dead peer's marker from a running one's, so a
@@ -185,27 +189,40 @@ _REGISTERED_MARKER = "directives-registered"
 #: next falls due. Slot ids are ``standing-*``, so it can never collide with one.
 _NEXT_DUE_KEY = "__next_due__"
 
+#: Reserved key in the registered marker: the instant every waking candidate was
+#: found already registered. Its presence is what lets the settled check below
+#: decide a loop-arming session without the resolver.
+_SETTLED_KEY = "__settled__"
 
-def _marker_data(session_id: str, suffix: str) -> dict[str, float]:
-    """The per-slot delivery data in *suffix*, or ``{}`` when absent/unreadable."""
+
+def _marker_data(session_id: str, suffix: str) -> dict[str, float] | None:
+    """The delivery data in *suffix*: ``{}`` when the file is absent, ``None`` when unreadable.
+
+    An emission that ACCUMULATES needs "known not delivered", which a missing
+    marker is and an unreadable one is not — each re-emitted ``/loop``
+    registration creates one more running loop, so the two cannot share a return.
+    """
     from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
 
     try:
         parsed = json.loads(_state_file(session_id, suffix).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    except (OSError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
-def _write_marker_data(session_id: str, suffix: str, data: dict[str, float]) -> None:
-    """Persist *data*; an unwritable state dir is silent, never a raise."""
+def _write_marker_data(session_id: str, suffix: str, data: dict[str, float]) -> bool:
+    """Persist *data* and report whether it landed; an unwritable state dir is silent, never a raise."""
     from hooks.scripts.hook_router import _ensure_state_dir, _state_file  # noqa: PLC0415 deferred back-import
 
     try:
         _ensure_state_dir()
         _state_file(session_id, suffix).write_text(json.dumps(data), encoding="utf-8")
     except OSError:
-        return
+        return False
+    return True
 
 
 def _inject_context_directives(
@@ -222,7 +239,7 @@ def _inject_context_directives(
     candidates = [d for d in directives if not d["wakes_session"]]
     if not candidates or not _teatree_engaged(session_id):
         return False
-    data = _marker_data(session_id, _INJECTED_MARKER)
+    data = _marker_data(session_id, _INJECTED_MARKER) or {}
     now = time.time()
     due = [d for d in candidates if now - data.get(d["slot_id"], 0.0) >= d["cadence_seconds"]]
     if not due:
@@ -247,9 +264,14 @@ def _register_waking_directives(
     can tell which registration a later "stop the loop" would drop.
 
     A prompt with NO candidates — every waking slot braked by the mode, or switched
-    off — still falls through to the marker rewrite below rather than returning
+    off — still falls through to the marker write below rather than returning
     early, since a session held braked past the retention window would otherwise
     age out its own registrations and re-register them on its return.
+
+    The registration is stored BEFORE it is emitted, and a store that did not
+    land suppresses the emission: this emission accumulates, so an owner handed a
+    registration the marker never took would be handed it again on the next
+    prompt, and each one of those is one more running loop.
     """
     from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
         _claim_loop_ownership,
@@ -259,31 +281,34 @@ def _register_waking_directives(
     from teatree.loop.standing_directives import SCOPE_ATTENDED_SINGLETON  # noqa: PLC0415 deferred cold-hook import
 
     candidates = [d for d in directives if d["wakes_session"]]
-    if not _loop_auto_load_active(session_id):
-        return False
     data = _marker_data(session_id, _REGISTERED_MARKER)
+    if not _loop_auto_load_active(session_id) or data is None:
+        return False
     pending = [d for d in candidates if d["slot_id"] not in data]
     if any(d["scope"] == SCOPE_ATTENDED_SINGLETON for d in pending):
         _claim_loop_ownership(session_id)
         if not _session_owns_loop(session_id):
             pending = [d for d in pending if d["scope"] != SCOPE_ATTENDED_SINGLETON]
-    if not pending:
-        if data:
-            # Rewritten unchanged so the mtime tracks the SESSION rather than the
-            # registration instant: the router's age sweep is what reaps this
-            # marker, and reaping a running session's re-registers its slots.
-            _write_marker_data(session_id, _REGISTERED_MARKER, data)
+    now = time.time()
+    for directive in pending:
+        data[directive["slot_id"]] = now
+    if all(d["slot_id"] in data for d in candidates):
+        data[_SETTLED_KEY] = now
+    else:
+        data.pop(_SETTLED_KEY, None)
+    # Written each time, unchanged when nothing is pending, so the mtime tracks
+    # the SESSION rather than the registration instant: the router's age sweep is
+    # what reaps this marker, and reaping a running session's re-registers its slots.
+    persisted = _write_marker_data(session_id, _REGISTERED_MARKER, data)
+    if not pending or not persisted:
         return False
     stream.write(
         f"Session setup: register the {len(pending)} recurring standing slots so they keep firing. "
         f"Run each slash command in this session:\n"
     )
-    now = time.time()
     for directive in pending:
         cadence = _duration_token(directive["cadence_seconds"])
         stream.write(f"  - /loop {cadence} [{directive['slot_id']}] {directive['text']}\n")
-        data[directive["slot_id"]] = now
-    _write_marker_data(session_id, _REGISTERED_MARKER, data)
     return True
 
 
@@ -296,16 +321,37 @@ def _nothing_deliverable(session_id: str) -> bool:
     keep that budget; a resolver called before its own gates reverses that.
 
     The loop-arming seam implies the engagement one, so an unengaged session can
-    reach neither shape. An engaged session that arms no loop has only the
-    cadence-throttled context slots, and their next-due epoch is in the marker.
+    reach neither shape. Every session's context slots are cadence-throttled, and
+    their next-due epoch is in the injected marker; a loop-arming session addition-
+    ally settles once every waking candidate is registered, which the registration
+    marker holds for it. The owner's OWN session is the loop-arming one and the
+    one that prompts most, so deciding it here is where the budget is actually won.
+
+    A newly enabled waking slot is picked up on the next context refresh, which
+    re-enters the resolver — no separate re-check horizon, and none longer than a
+    context cadence.
     """
     from hooks.scripts.hook_router import _loop_auto_load_active, _teatree_engaged  # noqa: PLC0415 deferred back-import
 
     if not _teatree_engaged(session_id):
         return True
-    if _loop_auto_load_active(session_id):
+    if time.time() >= (_marker_data(session_id, _INJECTED_MARKER) or {}).get(_NEXT_DUE_KEY, 0.0):
         return False
-    return time.time() < _marker_data(session_id, _INJECTED_MARKER).get(_NEXT_DUE_KEY, 0.0)
+    if not _loop_auto_load_active(session_id):
+        return True
+    return bool((_marker_data(session_id, _REGISTERED_MARKER) or {}).get(_SETTLED_KEY))
+
+
+def _keep_registrations_alive(session_id: str) -> None:
+    """Rewrite the registration marker unchanged so its mtime keeps tracking the session.
+
+    The settled short-circuit skips :func:`_register_waking_directives`, which owned
+    that rewrite; the router's age sweep reaps on mtime, and a reaped marker
+    re-registers every slot once per retention window for as long as the session lives.
+    """
+    data = _marker_data(session_id, _REGISTERED_MARKER)
+    if data:
+        _write_marker_data(session_id, _REGISTERED_MARKER, data)
 
 
 def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
@@ -318,7 +364,10 @@ def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
     try:
         from hooks.scripts.headless_authoring_gate import LANE_SDK, session_lane  # noqa: PLC0415 deferred back-import
 
-        if not session_id or session_lane() == LANE_SDK or _nothing_deliverable(session_id):
+        if not session_id or session_lane() == LANE_SDK:
+            return False
+        if _nothing_deliverable(session_id):
+            _keep_registrations_alive(session_id)
             return False
         directives = _standing_directives()
         if not directives:

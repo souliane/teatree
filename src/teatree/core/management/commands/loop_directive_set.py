@@ -40,14 +40,16 @@ class Command(TyperCommand):
     def _resolve_slots(self, slot_ids: list[str] | None, *, every: bool) -> list[str]:
         """The slots to act on, or exit non-zero naming the valid ids."""
         requested = list(slot_ids or [])
+        # Validated BEFORE --all is honoured: an unknown id alongside --all is a
+        # typo the owner is owed, not a licence to act on every slot instead.
+        unknown = [slot for slot in requested if slot not in _KNOWN_SLOT_IDS]
+        if unknown:
+            self.stderr.write(f"  unknown slot(s) {', '.join(unknown)}. Valid: {', '.join(_KNOWN_SLOT_IDS)}")
+            raise SystemExit(2)
         if every:
             return list(_KNOWN_SLOT_IDS)
         if not requested:
             self.stderr.write(f"  name at least one slot, or pass --all. Valid: {', '.join(_KNOWN_SLOT_IDS)}")
-            raise SystemExit(2)
-        unknown = [slot for slot in requested if slot not in _KNOWN_SLOT_IDS]
-        if unknown:
-            self.stderr.write(f"  unknown slot(s) {', '.join(unknown)}. Valid: {', '.join(_KNOWN_SLOT_IDS)}")
             raise SystemExit(2)
         return requested
 

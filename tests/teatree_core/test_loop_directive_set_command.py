@@ -122,6 +122,18 @@ class TestRefusals(django.test.TestCase):
         assert exc.value.code == 2
         assert "standing-golden-rule" in err.getvalue()
 
+    def test_an_unknown_slot_alongside_all_is_still_refused(self) -> None:
+        # --all honoured first would silently disable every slot on a typo, which
+        # is the opposite of what the owner asked for.
+        err = io.StringIO()
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("loop_directive_set", "disable", "standing-nope", "--all", stderr=err)
+
+        assert exc.value.code == 2
+        assert "standing-nope" in err.getvalue()
+        assert _resolved_slots() == [d.slot_id for d in STANDING_DIRECTIVES]
+
     def test_naming_no_slot_and_no_all_exits_non_zero(self) -> None:
         err = io.StringIO()
 

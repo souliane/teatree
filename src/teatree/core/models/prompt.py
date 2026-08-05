@@ -24,9 +24,11 @@ is durable and auditable. An identical revise is a no-op — no version churn.
 **An empty body is legal, and only where it means something (#4166).** A standing
 directive is switched off by giving its override prompt an empty body, so the
 field allows blank and the admin change form accepts it. That would otherwise let
-a live :class:`~teatree.core.models.loop.Loop` tick an empty instruction, so
-:meth:`Prompt.clean` refuses an empty body on a prompt a loop references — empty
-means "off", never "run nothing".
+a live :class:`~teatree.core.models.loop.Loop` tick an empty instruction, so both
+write surfaces refuse an empty body on a prompt a loop references — empty means
+"off", never "run nothing". :meth:`Prompt.clean` covers the admin form and any
+``full_clean`` caller; :meth:`Prompt.revise` runs the same guard, because it is
+the versioned content-change path and a form-only guard does not reach it.
 """
 
 from typing import ClassVar
@@ -73,7 +75,12 @@ class Prompt(models.Model):
 
     def clean(self) -> None:
         """Refuse an empty body on a prompt a :class:`Loop` runs."""
-        if self.body.strip() or self.pk is None or not self.loops.exists():  # ty: ignore[unresolved-attribute]
+        self._refuse_empty_body_a_loop_would_tick(self.body)
+
+    def _refuse_empty_body_a_loop_would_tick(self, body: str) -> None:
+        # ``loops`` is the reverse accessor of Loop.prompt's related_name — ty resolves
+        # forward FKs only, so the same suppression sits on ``versions`` below.
+        if body.strip() or self.pk is None or not self.loops.exists():  # ty: ignore[unresolved-attribute]
             return
         msg = "A prompt a loop runs needs a body — an empty body would tick an empty instruction."
         raise ValidationError({"body": msg})
@@ -121,7 +128,12 @@ class Prompt(models.Model):
         snapshots nor bumps ``updated_at``. Otherwise the OLD content is captured
         as the next :class:`PromptVersion` row, THEN the live row is rewritten —
         all in one transaction so a snapshot can never be orphaned from its edit.
+
+        Raises the same :class:`ValidationError` :meth:`clean` does when the new
+        body would leave a :class:`Loop` ticking an empty instruction: this is the
+        write path, and a guard only the admin form runs does not hold there.
         """
+        self._refuse_empty_body_a_loop_would_tick(body)
         new_params = list(params if params is not None else self.params or [])
         if body == self.body and new_params == list(self.params or []):
             return None

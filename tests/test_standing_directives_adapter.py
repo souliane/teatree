@@ -341,6 +341,32 @@ class TestTheGateMatrix:
         assert _emit() == ""
         resolver.assert_not_called()
 
+    def test_a_settled_loop_arming_prompt_never_reaches_the_resolver(
+        self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The EXPENSIVE case, and the one the owner's own session is in: loop-arming
+        # sessions prompt the most, so exempting them pays the 1.67s bootstrap on
+        # every prompt of the session that has it most often. Once every waking slot
+        # is registered and every context slot throttled, nothing can be delivered.
+        assert _loop_lines(_emit())
+        resolver = mock.Mock(return_value=_FAKE)
+        monkeypatch.setattr(loop_registrations, "_standing_directives", resolver)
+
+        assert _emit() == ""
+        resolver.assert_not_called()
+
+    def test_a_loop_arming_prompt_with_a_slot_left_to_register_still_delivers(
+        self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The requirement the settled check may not cost: a session whose singleton
+        # slot lost the election is NOT settled, so it keeps re-entering the resolver
+        # and registers that slot the moment it wins.
+        monkeypatch.setattr(router, "_session_owns_loop", lambda _sid: False)
+        assert "[slot-c]" not in _emit()
+        monkeypatch.setattr(router, "_session_owns_loop", lambda _sid: True)
+
+        assert "  - /loop 10m [slot-c] Gamma rule." in _emit()
+
     def test_the_sdk_lane_is_excluded(self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch) -> None:
         # Factory workers are FSM-governed and have no user-request channel.
         monkeypatch.setenv("CLAUDE_AGENT_SDK_VERSION", "0.1.0")
@@ -388,6 +414,29 @@ class TestTheInjectionThrottle:
         monkeypatch.setattr(router, "_ensure_state_dir", mock.Mock(side_effect=OSError("read-only")))
 
         assert "Alpha rule." in _emit()
+
+    def test_an_unwritable_state_dir_never_repeats_the_accumulating_registration(
+        self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The polarity DIFFERS by slot type: a re-delivered context rule costs only
+        # context, while every re-emitted `/loop` line the owner runs is another live
+        # recurring loop. So with no way to record that it was delivered, the zero-turn
+        # slot keeps going out and the accumulating one does not go out at all.
+        monkeypatch.setattr(router, "_ensure_state_dir", mock.Mock(side_effect=OSError("read-only")))
+
+        emitted = [_emit() for _ in range(6)]
+
+        assert [len(_loop_lines(text)) for text in emitted] == [0] * 6
+        assert [text.count("Alpha rule.") for text in emitted] == [1] * 6
+
+    def test_an_unreadable_marker_never_repeats_the_accumulating_registration(
+        self, state_dir: Path, engaged: None
+    ) -> None:
+        # The read side of the same can't-tell: a corrupt marker says nothing about
+        # what was already registered, and "cannot tell" is not "was not delivered".
+        (state_dir / "sess-1.directives-registered").write_text("{ not json", encoding="utf-8")
+
+        assert _loop_lines(_emit()) == []
 
     def test_a_dead_sessions_markers_age_out(self, state_dir: Path, engaged: None) -> None:
         dead = state_dir / "sess-old.directives-injected"
@@ -459,6 +508,9 @@ class TestASessionOutlivingTheRetentionWindow:
         # so a session held away past the window re-registers on its return.
         _emit()
         marker = state_dir / "sess-1.directives-registered"
+        # Backdate the context slot's recorded instant so the prompt is past the
+        # settled short-circuit and genuinely re-enters the braked resolver.
+        (state_dir / "sess-1.directives-injected").write_text('{"slot-a": 1.0}', encoding="utf-8")
         _age_out(marker)
         monkeypatch.setattr(
             loop_registrations, "_standing_directives", lambda: [d for d in _FAKE if not d["wakes_session"]]
@@ -467,6 +519,24 @@ class TestASessionOutlivingTheRetentionWindow:
         _emit()
         router._sweep_stale_state_files()
 
+        assert marker.is_file()
+
+    def test_the_settled_short_circuit_keeps_refreshing_the_marker(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A settled prompt skips _register_waking_directives, which owned the
+        # rewrite — so the skip has to carry it, or a live session ages its own
+        # registrations out and re-registers them once per retention window.
+        _emit()
+        marker = state_dir / "sess-1.directives-registered"
+        _age_out(marker)
+        resolver = mock.Mock(return_value=_FAKE)
+        monkeypatch.setattr(loop_registrations, "_standing_directives", resolver)
+
+        _emit()
+        router._sweep_stale_state_files()
+
+        resolver.assert_not_called()
         assert marker.is_file()
 
     def test_control_an_unrefreshed_marker_is_reaped_by_that_same_sweep(self, state_dir: Path) -> None:
