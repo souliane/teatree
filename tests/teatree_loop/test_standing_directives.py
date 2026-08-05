@@ -14,6 +14,7 @@ import pytest
 from django.db.utils import OperationalError
 from django.test import TestCase
 
+from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Mode, Prompt
 from teatree.loop.preset_resolution import ActivePreset
 from teatree.loop.standing_directives import (
@@ -274,62 +275,85 @@ class TestTheSelfWokenTurnBudget(TestCase):
         assert self_woken_turns_per_hour() == {"per_session": 2, "per_host_singleton": 0}
 
 
-class TestThePresetBrake(TestCase):
-    """A self-waking directive IS a self-pump, so the away preset brakes it."""
+class TestTheSelfPumpBrake(TestCase):
+    """A self-waking directive IS a self-pump, so the away mode brakes it."""
 
     @staticmethod
-    def _away_preset() -> ActivePreset:
-        mode = Mode(name="holiday", defers_questions=True, pauses_self_pump=True)
-        return ActivePreset(preset=mode, layer="override", reason="test", until=None)
+    def _resolved(*, pauses: bool, source: str = "override") -> ResolvedMode:
+        mode = Mode(name="holiday" if pauses else "reachable", defers_questions=pauses, pauses_self_pump=pauses)
+        return ResolvedMode(mode=mode, source=source, until=None, reason="test")
 
     def test_a_paused_self_pump_drops_the_waking_slots_and_keeps_the_zero_turn_rule(self) -> None:
-        with mock.patch("teatree.loop.standing_directives.resolve_active_preset", return_value=self._away_preset()):
+        with mock.patch(
+            "teatree.loop.standing_directives.resolve_active_mode", return_value=self._resolved(pauses=True)
+        ):
             resolved = resolve_standing_directives()
             budget = self_woken_turns_per_hour()
 
         assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
         assert budget == {"per_session": 0, "per_host_singleton": 0}
 
-    def test_a_preset_that_does_not_pause_the_pump_delivers_everything(self) -> None:
-        mode = Mode(name="reachable", defers_questions=False, pauses_self_pump=False)
-        active = ActivePreset(preset=mode, layer="schedule", reason="test", until=None)
-
-        with mock.patch("teatree.loop.standing_directives.resolve_active_preset", return_value=active):
+    def test_a_mode_that_does_not_pause_the_pump_delivers_everything(self) -> None:
+        with mock.patch(
+            "teatree.loop.standing_directives.resolve_active_mode",
+            return_value=self._resolved(pauses=False, source="schedule"),
+        ):
             braked = _self_pump_paused()
             resolved = resolve_standing_directives()
 
         assert braked is False
         assert len(resolved) == len(STANDING_DIRECTIVES)
 
-    def test_no_resolved_waking_slot_never_reads_the_preset(self) -> None:
+    def test_the_brake_reads_the_merged_mode_never_the_preset_layer(self) -> None:
+        # #4196: the L3/L2 layer cannot see the live-presence upgrade, so braking
+        # on it suppresses the rule at an away slot the owner is typing into.
+        away_slot = ActivePreset(
+            preset=Mode(name="holiday", defers_questions=True, pauses_self_pump=True),
+            layer="schedule",
+            reason="test",
+            until=None,
+        )
+        present = self._resolved(pauses=False, source="live")
+
+        with (
+            mock.patch("teatree.loop.preset_resolution._resolve_active_preset", return_value=away_slot),
+            mock.patch("teatree.core.mode_resolution._apply_presence_upgrade", return_value=present),
+        ):
+            braked = _self_pump_paused()
+            resolved = resolve_standing_directives()
+
+        assert braked is False
+        assert len(resolved) == len(STANDING_DIRECTIVES)
+
+    def test_no_resolved_waking_slot_never_reads_the_mode(self) -> None:
         for directive in STANDING_DIRECTIVES:
             if directive.wakes_session:
                 Prompt.objects.create(name=override_prompt_name(directive.slot_id), body="")
 
-        with mock.patch("teatree.loop.standing_directives.resolve_active_preset") as resolver:
+        with mock.patch("teatree.loop.standing_directives.resolve_active_mode") as resolver:
             resolved = resolve_standing_directives()
 
         assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
         resolver.assert_not_called()
 
     def test_a_degraded_store_logs_no_traceback_on_this_silent_path(self) -> None:
-        # The resolver's own fail-open WARNING carries exc_info, and the only
-        # stderr this path has is a hook's, which the owner reads.
+        # Each resolver layer's own fail-open WARNING carries exc_info, and the
+        # only stderr this path has is a hook's, which the owner reads.
         degraded = mock.patch(
-            "teatree.loop.preset_resolution._resolve_active_preset",
+            "teatree.core.mode_resolution._resolve_active_mode",
             side_effect=OperationalError("no such table: core_modeoverride"),
         )
 
-        with degraded, self.assertNoLogs("teatree.loop.preset_resolution"):
+        with degraded, self.assertNoLogs("teatree.core.mode_resolution"):
             braked = _self_pump_paused()
 
         assert braked is False
 
-    def test_a_raising_preset_resolver_fails_open_to_delivering(self) -> None:
+    def test_a_raising_mode_resolver_fails_open_to_delivering(self) -> None:
         # Polarity: never suppress a rule because the brake could not be read.
         with mock.patch(
-            "teatree.loop.standing_directives.resolve_active_preset",
-            side_effect=RuntimeError("no preset table"),
+            "teatree.loop.standing_directives.resolve_active_mode",
+            side_effect=RuntimeError("no mode table"),
         ):
             braked = _self_pump_paused()
             resolved = resolve_standing_directives()

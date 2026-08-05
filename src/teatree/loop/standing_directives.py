@@ -40,8 +40,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TypedDict
 
-from teatree.loop import preset_resolution
-from teatree.loop.preset_resolution import resolve_active_preset
+from teatree.core.mode_resolution import resolve_active_mode
 
 
 class StandingDirectivePayload(TypedDict):
@@ -240,34 +239,39 @@ def _resolve_text(directive: StandingDirective, overrides: dict[str, str]) -> st
 
 
 @contextmanager
-def _preset_read_unlogged() -> Iterator[None]:
-    """Silence the resolver's own fail-open WARNING for the duration of one read.
+def _mode_read_unlogged() -> Iterator[None]:
+    """Silence the mode read's own fail-open WARNINGs for the duration of one call.
 
-    It logs ``exc_info=True``, and the caller below is documented silent: on a
-    degraded store its only stderr is the delivery hook's, so an unread probe
-    would print a full traceback into the owner's terminal on every prompt.
+    Both resolver layers it spans log ``exc_info=True`` when they degrade, and the
+    caller below is documented silent: its only stderr is the delivery hook's, so
+    a degraded store would print a full traceback into the owner's terminal on
+    every prompt, for a probe whose failure is already handled here.
     """
-    logger = logging.getLogger(preset_resolution.__name__)
-    was_disabled = logger.disabled
-    logger.disabled = True
+    previously = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
     try:
         yield
     finally:
-        logger.disabled = was_disabled
+        logging.disable(previously)
 
 
 def _self_pump_paused() -> bool:
-    """Whether the active preset pauses the self-pump — a self-waking directive IS one.
+    """Whether the active mode pauses the self-pump — a self-waking directive IS one.
+
+    Reads the MERGED mode (#4196), never the L3/L2 preset layer: that layer stops
+    at ``None`` when neither an override nor a schedule slot governs, so it cannot
+    see the L0 default mode and — the case that matters here — cannot see the
+    live-presence upgrade. Braking a self-waking directive on it would suppress
+    the rule at a scheduled away slot the owner is demonstrably typing into.
 
     Fails OPEN to delivering. The polarity matches this module's doctrine
     everywhere else: an unresolvable state degrades to delivering the rule, never
-    to silently suppressing it. Only a positively-resolved away preset brakes.
+    to silently suppressing it. Only a positively-resolved away mode brakes.
     """
     try:
-        with _preset_read_unlogged():
-            active = resolve_active_preset()
-        return bool(active is not None and active.preset.pauses_self_pump)
-    except Exception:  # noqa: BLE001 — an unresolvable preset degrades to delivering.
+        with _mode_read_unlogged():
+            return resolve_active_mode().pauses_self_pump
+    except Exception:  # noqa: BLE001 — an unresolvable mode degrades to delivering.
         return False
 
 
@@ -276,7 +280,7 @@ def resolve_standing_directives() -> list[ResolvedDirective]:
 
     Fails open to the compiled defaults: a directive that cannot be looked up is
     still worth delivering, and a store outage must not silently drop the golden
-    rule from every session. A preset that pauses the self-pump drops the
+    rule from every session. A mode that pauses the self-pump drops the
     self-waking slots and only those — the zero-turn rule keeps reaching a session
     that is deliberately idle, because it costs that session nothing. The brake is
     read only once a self-waking slot has survived text resolution: with the
