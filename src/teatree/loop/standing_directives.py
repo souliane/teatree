@@ -33,11 +33,14 @@ degrades to the compiled defaults, so the directives resolve on a box with no
 database at all.
 """
 
+import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TypedDict
 
+from teatree.loop import preset_resolution
 from teatree.loop.preset_resolution import resolve_active_preset
 
 
@@ -236,6 +239,23 @@ def _resolve_text(directive: StandingDirective, overrides: dict[str, str]) -> st
     return override if len(override) <= MAX_DIRECTIVE_CHARS else directive.default_text
 
 
+@contextmanager
+def _preset_read_unlogged() -> Iterator[None]:
+    """Silence the resolver's own fail-open WARNING for the duration of one read.
+
+    It logs ``exc_info=True``, and the caller below is documented silent: on a
+    degraded store its only stderr is the delivery hook's, so an unread probe
+    would print a full traceback into the owner's terminal on every prompt.
+    """
+    logger = logging.getLogger(preset_resolution.__name__)
+    was_disabled = logger.disabled
+    logger.disabled = True
+    try:
+        yield
+    finally:
+        logger.disabled = was_disabled
+
+
 def _self_pump_paused() -> bool:
     """Whether the active preset pauses the self-pump — a self-waking directive IS one.
 
@@ -244,7 +264,8 @@ def _self_pump_paused() -> bool:
     to silently suppressing it. Only a positively-resolved away preset brakes.
     """
     try:
-        active = resolve_active_preset()
+        with _preset_read_unlogged():
+            active = resolve_active_preset()
         return bool(active is not None and active.preset.pauses_self_pump)
     except Exception:  # noqa: BLE001 — an unresolvable preset degrades to delivering.
         return False
@@ -257,30 +278,29 @@ def resolve_standing_directives() -> list[ResolvedDirective]:
     still worth delivering, and a store outage must not silently drop the golden
     rule from every session. A preset that pauses the self-pump drops the
     self-waking slots and only those — the zero-turn rule keeps reaching a session
-    that is deliberately idle, because it costs that session nothing.
+    that is deliberately idle, because it costs that session nothing. The brake is
+    read only once a self-waking slot has survived text resolution: with the
+    waking slots switched off there is nothing for it to drop, and this runs on
+    every prompt of every engaged session.
     """
     try:
         overrides = _override_texts()
     except Exception:  # noqa: BLE001 — an unreachable store degrades to the compiled defaults.
         overrides = {}
-    paused = _self_pump_paused()
-    resolved: list[ResolvedDirective] = []
-    for directive in STANDING_DIRECTIVES:
-        if paused and directive.wakes_session:
-            continue
-        text = _resolve_text(directive, overrides)
-        if text is None:
-            continue
-        resolved.append(
-            ResolvedDirective(
-                directive.slot_id,
-                directive.cadence_seconds(),
-                text,
-                scope=directive.scope,
-                wakes_session=directive.wakes_session,
-            )
+    resolved = [
+        ResolvedDirective(
+            directive.slot_id,
+            directive.cadence_seconds(),
+            text,
+            scope=directive.scope,
+            wakes_session=directive.wakes_session,
         )
-    return resolved
+        for directive in STANDING_DIRECTIVES
+        if (text := _resolve_text(directive, overrides)) is not None
+    ]
+    if not any(directive.wakes_session for directive in resolved):
+        return resolved
+    return [directive for directive in resolved if not directive.wakes_session] if _self_pump_paused() else resolved
 
 
 def self_woken_turns_per_hour() -> dict[str, int]:

@@ -806,9 +806,9 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     Emit-once per session, keyed on the ``loop-pending`` marker (also the
     ``_skill_loading_exempt`` bootstrap signal), so a repeated prompt does not re-nag.
 
-    It ALSO delivers the standing directives (#4166) — same sibling, wider scope:
-    they go to every engaged session, so they are emitted BEFORE the owner
-    election; the sibling decides per slot which gate applies and which marker.
+    It ALSO delivers the standing directives (#4166) — same sibling, emitted
+    BEFORE the owner election because the INJECTED shape reaches every engaged
+    session; the sibling gates the self-waking shape itself, per slot.
     """
     session_id = data.get("session_id", "")
     if not session_id:

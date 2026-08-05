@@ -49,6 +49,15 @@ Each shape keeps its OWN per-session marker holding per-slot data
 singleton slot's eligibility is decided later in the same handler than the
 others' and a shared emit-once marker would strand it.
 
+Neither marker is reaped from here. N engaged sessions is the normal operating
+mode, and a session cannot tell a dead peer's marker from a running one's, so a
+sweep on every prompt deletes the state its peers throttle on — re-registering
+their self-waking slots once per prompt, the runaway the turn budget bounds.
+Both suffixes are left to the router's own throttled age sweep, which reaps on
+mtime and so reaps only what has stopped being written. ``directives-registered``
+is therefore rewritten unchanged on each prompt of its own session, since it is
+otherwise written once and would age out underneath the session that holds it.
+
 This half is the Claude-plugin ADAPTER of a harness-neutral model: policy, text,
 cadence, scope and delivery cost all belong to
 :mod:`teatree.loop.standing_directives`, and this module only maps them onto this
@@ -188,23 +197,6 @@ def _write_marker_data(session_id: str, suffix: str, data: dict[str, float]) -> 
         return
 
 
-def _drop_foreign_markers(session_id: str) -> None:
-    """Remove other sessions' directive markers — this module's own housekeeping.
-
-    The router's sweep is capped to shrink-only, so the markers this module mints
-    are reaped here rather than by growing it.
-    """
-    from hooks.scripts.hook_router import STATE_DIR  # noqa: PLC0415 deferred back-import
-
-    try:
-        for suffix in (_INJECTED_MARKER, _REGISTERED_MARKER):
-            for stale in STATE_DIR.glob(f"*.{suffix}"):
-                if stale.stem != session_id:
-                    stale.unlink(missing_ok=True)
-    except OSError:
-        return
-
-
 def _inject_context_directives(
     session_id: str, directives: "list[StandingDirectivePayload]", stream: _Writable
 ) -> bool:
@@ -259,6 +251,11 @@ def _register_waking_directives(
         if not _session_owns_loop(session_id):
             pending = [d for d in pending if d["scope"] != SCOPE_ATTENDED_SINGLETON]
     if not pending:
+        if data:
+            # Rewritten unchanged so the mtime tracks the SESSION rather than the
+            # registration instant: the router's age sweep is what reaps this
+            # marker, and reaping a running session's re-registers its slots.
+            _write_marker_data(session_id, _REGISTERED_MARKER, data)
         return False
     stream.write(
         f"Session setup: register the {len(pending)} recurring standing slots so they keep firing. "
@@ -288,7 +285,6 @@ def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
         directives = _standing_directives()
         if not directives:
             return False
-        _drop_foreign_markers(session_id)
         injected = _inject_context_directives(session_id, directives, stream)
         registered = _register_waking_directives(session_id, directives, stream)
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.

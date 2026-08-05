@@ -11,6 +11,7 @@ import re
 from unittest import mock
 
 import pytest
+from django.db.utils import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import Mode, Prompt
@@ -299,6 +300,30 @@ class TestThePresetBrake(TestCase):
 
         assert braked is False
         assert len(resolved) == len(STANDING_DIRECTIVES)
+
+    def test_no_resolved_waking_slot_never_reads_the_preset(self) -> None:
+        for directive in STANDING_DIRECTIVES:
+            if directive.wakes_session:
+                Prompt.objects.create(name=override_prompt_name(directive.slot_id), body="")
+
+        with mock.patch("teatree.loop.standing_directives.resolve_active_preset") as resolver:
+            resolved = resolve_standing_directives()
+
+        assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
+        resolver.assert_not_called()
+
+    def test_a_degraded_store_logs_no_traceback_on_this_silent_path(self) -> None:
+        # The resolver's own fail-open WARNING carries exc_info, and the only
+        # stderr this path has is a hook's, which the owner reads.
+        degraded = mock.patch(
+            "teatree.loop.preset_resolution._resolve_active_preset",
+            side_effect=OperationalError("no such table: core_modeoverride"),
+        )
+
+        with degraded, self.assertNoLogs("teatree.loop.preset_resolution"):
+            braked = _self_pump_paused()
+
+        assert braked is False
 
     def test_a_raising_preset_resolver_fails_open_to_delivering(self) -> None:
         # Polarity: never suppress a rule because the brake could not be read.

@@ -14,7 +14,9 @@ asserted CLEAN, so every green here is one whose red has been observed.
 
 import io
 import operator
+import os
 import re
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from unittest import mock
@@ -66,6 +68,17 @@ def _emit(session_id: str = "sess-1") -> str:
 
 def _loop_lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if "/loop " in line]
+
+
+_TWO_SESSIONS = ("sess-1", "sess-2")
+_ALTERNATING_ROUNDS = 5
+
+
+def _age_out(marker: Path) -> None:
+    """Backdate *marker* past the router's retention window and re-arm the sweep throttle."""
+    stale = time.time() - router._STATE_FILE_MAX_AGE_SECONDS - 1
+    os.utime(marker, (stale, stale))
+    (marker.parent / router._SWEEP_SENTINEL).unlink(missing_ok=True)
 
 
 # ── minor 6: the policy-leak check, derived from layer 1 ─────────────
@@ -320,13 +333,47 @@ class TestTheInjectionThrottle:
 
         assert "Alpha rule." in _emit()
 
-    def test_another_sessions_markers_are_reaped(self, state_dir: Path, engaged: None) -> None:
-        stale = state_dir / "sess-old.directives-injected"
-        stale.write_text("{}", encoding="utf-8")
+    def test_a_dead_sessions_markers_age_out(self, state_dir: Path, engaged: None) -> None:
+        dead = state_dir / "sess-old.directives-injected"
+        dead.write_text("{}", encoding="utf-8")
+        _age_out(dead)
 
         _emit()
 
-        assert not stale.exists()
+        assert not dead.exists()
+
+
+class TestConcurrentLiveSessions:
+    """N>=2 engaged sessions is the normal operating mode, so one prompt may not undo another's.
+
+    Every assertion here is on a SECOND live session's state, which the
+    single-session throttle tests above cannot reach: they hold for a solo
+    session whether or not a prompt destroys everyone else's markers.
+    """
+
+    def test_each_sessions_markers_survive_the_others_prompts(self, state_dir: Path, engaged: None) -> None:
+        for _ in range(_ALTERNATING_ROUNDS):
+            _emit("sess-1")
+            _emit("sess-2")
+
+        assert sorted(p.name for p in state_dir.glob("*.directives-*")) == [
+            "sess-1.directives-injected",
+            "sess-1.directives-registered",
+            "sess-2.directives-injected",
+            "sess-2.directives-registered",
+        ]
+
+    def test_the_waking_slots_are_registered_once_per_session(self, state_dir: Path, engaged: None) -> None:
+        registered = [len(_loop_lines(_emit(sid))) for _ in range(_ALTERNATING_ROUNDS) for sid in _TWO_SESSIONS]
+
+        assert registered == [2, 2, *([0] * 8)]
+
+    def test_the_zero_turn_rule_is_injected_once_per_cadence_not_once_per_prompt(
+        self, state_dir: Path, engaged: None
+    ) -> None:
+        injected = [_emit(sid).count("Alpha rule.") for _ in range(_ALTERNATING_ROUNDS) for sid in _TWO_SESSIONS]
+
+        assert injected == [1, 1, *([0] * 8)]
 
 
 class TestFailOpen:
