@@ -13,14 +13,100 @@ gated on ``claimed_at IS NULL``), NOT ``select_for_update(skip_locked=True)``
 0 rows for that row and moves on to the next claimable one.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.session_identity import is_loop_runner_session
+
 if TYPE_CHECKING:
+    import datetime as dt
+    from collections.abc import Sequence
+
     from teatree.core.models.session_handover import SessionHandover
+
+
+def render_fenced_handoffs(entries: "Sequence[tuple[str, str, str]]") -> str:
+    """Concatenate ``(author, iso_instant, payload)`` entries, each behind its own fence.
+
+    A lone entry renders as its bare payload. Several render fenced, so a reader
+    handed N authors' state never reads it as one narrative — the shape both the
+    drain (:func:`teatree.core.handover.render_claimed_payload`) and the
+    duplicate-collapse migration emit.
+    """
+    if len(entries) == 1:
+        return entries[0][2]
+    return "\n\n".join(
+        f"## Hand-off {index} of {len(entries)} — from `{author}` at {instant}\n\n{payload}"
+        for index, (author, instant, payload) in enumerate(entries, start=1)
+    )
+
+
+def _absorb_payload(*, prior: str, incoming: str, author: str, at: "dt.datetime") -> str:
+    """*prior* with *incoming* appended behind a fence — never *incoming* alone.
+
+    The one-row-per-session rule replaces the ROW, not the state it carries: the
+    measured incident had 22,224 bytes of hand-off in flight, and a session that
+    hands off twice is adding to what it already said, not retracting it. An
+    incoming payload already present in *prior* (a re-run over the same snapshot)
+    is dropped rather than duplicated.
+    """
+    if not incoming.strip() or incoming.strip() in prior:
+        return prior
+    if not prior.strip():
+        return incoming
+    return f"{prior.rstrip()}\n\n## Hand-off update — from `{author}` at {at.isoformat()}\n\n{incoming}"
+
+
+@dataclass(frozen=True, slots=True)
+class HandoverWrite:
+    """What the write seam DID: the row, and whether it landed on an existing one.
+
+    Reported from here rather than predicted by a pre-read in the caller. The caller
+    used to read the row it expected to absorb into BEFORE the write, which is a
+    different instant: a rival insert landing in between made the caller's pre-read
+    empty while the write took the absorb branch via the ``IntegrityError`` retry, so
+    a call that absorbed announced itself as a fresh insert. ``previous_bytes`` is
+    captured inside :func:`_absorb`, from the row actually being absorbed into.
+
+    ``payload_appended`` is false when the incoming bytes were already in the row and
+    were dropped as a duplicate. The receiver gets them either way, so this is not data
+    loss — but "appended" and "discarded" otherwise report identically (``ok``, and
+    ``payload_bytes == previous_payload_bytes``), leaving the operator no way to tell a
+    hand-off that added state from one that added none.
+    """
+
+    row: "SessionHandover"
+    absorbed: bool
+    previous_bytes: int
+    payload_appended: bool
+
+
+def _absorb(existing: "SessionHandover", *, to_session: str, payload: str) -> HandoverWrite:
+    """Append *payload* to *existing*'s row, re-reading the prior bytes under the write lock.
+
+    The append is a read-modify-write, so two absorbs for one author that resolved the
+    same row would each extend the payload THEY read and the later write would carry no
+    trace of the earlier one — the lost update this seam exists to prevent, reintroduced
+    one level down. ``atomic()`` + ``select_for_update()`` is the shape the other
+    shared-state RMW sites use: a row lock on Postgres, and connection-level writer
+    serialization under the production SQLite's ``BEGIN IMMEDIATE``
+    (:data:`~teatree.settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`). The claim CAS
+    upstream cannot serve here — a conditional UPDATE gated on the prior payload would
+    have to retry against bytes that changed again, where the lock simply waits.
+    """
+    with transaction.atomic():
+        locked = existing.__class__.objects.select_for_update().filter(pk=existing.pk).first() or existing
+        now = timezone.now()
+        prior = locked.payload
+        locked.payload = _absorb_payload(prior=prior, incoming=payload, author=locked.from_session, at=now)
+        locked.to_session = to_session
+        locked.created_at = now
+        locked.save(update_fields=["to_session", "payload", "created_at"])
+    return HandoverWrite(row=locked, absorbed=True, previous_bytes=len(prior), payload_appended=locked.payload != prior)
 
 
 class SelfAddressedHandoverError(ValueError):
@@ -34,20 +120,46 @@ class SelfAddressedHandoverError(ValueError):
 
 
 class SessionHandoverQuerySet(models.QuerySet):
-    def create_handover(self, *, from_session: str, to_session: str, payload: str) -> "SessionHandover":
-        """Persist a new pending hand-off from ``from_session``.
+    def create_handover(self, *, from_session: str, to_session: str, payload: str) -> HandoverWrite:
+        """Persist the pending hand-off from ``from_session``, one row per session.
 
         ``to_session == ""`` targets "whichever session starts next". The
         row is the source of truth; the caller mirrors ``payload`` to the
         XDG file separately.
 
-        A hand-off addressed to its own author is REFUSED
+        A session gets ONE unclaimed row, ABSORBING each later hand-off. Repeated
+        ``create`` calls used to insert siblings, so a session that learned
+        something after its first hand-off left the receiver several rows to
+        reconcile — one session produced three in fourteen minutes, each
+        superseding the last in prose ("Supersedes the previous addendum. Read all
+        three."). The receiver cannot diff prose, so the newest row is not reliably
+        the whole story. The later payload is appended behind a fence rather than
+        written over the earlier one: replacing the ROW must not replace the STATE.
+        ``created_at`` is refreshed so the parked tier's oldest-first delivery order
+        reflects the latest write rather than the first.
+
+        Only UNCLAIMED rows are reused: once a receiver has taken a hand-off, that
+        row is its delivered record and a later hand-off from the same session is
+        genuinely new work.
+
+        This is the single write seam for hand-offs, so both degenerate targets are
+        normalised HERE rather than at any one caller — the CLI, the orchestration
+        path, and any future one all get the same treatment.
+
+        The ``t3 worker``'s durable principal
+        (:data:`~teatree.core.session_identity.LOOP_RUNNER_SESSION_ID`) is a slot
+        alias no receiver can ever have, so it is PARKED (``""``) for the next
+        session; four rows had accumulated addressed there, claimable by nobody. A
+        target equal to the author is REFUSED
         (:class:`SelfAddressedHandoverError`): :meth:`claimable_for` admits only the
         session named by ``to_session``, and excludes the session named by
-        ``from_session``, so a row where the two are equal is claimable by nobody.
-        This is the single write seam for hand-offs, so the refusal holds for every
-        caller — the CLI, the orchestration path, and any future one.
+        ``from_session``, so such a row is claimable by nobody.
+
+        Both are also DB constraints on :class:`~teatree.core.models.SessionHandover`,
+        so a raw ``.create()`` cannot reintroduce either shape.
         """
+        if is_loop_runner_session(to_session):
+            to_session = ""
         if from_session and to_session == from_session:
             msg = (
                 f"session {from_session!r} cannot hand off to itself — a self-addressed hand-off is "
@@ -55,7 +167,29 @@ class SessionHandoverQuerySet(models.QuerySet):
                 "Name a different target, or omit it to park the hand-off for the next session."
             )
             raise SelfAddressedHandoverError(msg)
-        return self.create(from_session=from_session, to_session=to_session, payload=payload)
+        existing = self._unclaimed_for(from_session)
+        if existing is None:
+            try:
+                with transaction.atomic():
+                    row = self.create(from_session=from_session, to_session=to_session, payload=payload)
+            except IntegrityError:
+                # A concurrent create for this author won the unique constraint between
+                # the lookup and the insert. A hand-off must never fail because the
+                # session raced itself, so re-read and take the absorb branch instead.
+                existing = self._unclaimed_for(from_session)
+                if existing is None:
+                    raise
+            else:
+                return HandoverWrite(row=row, absorbed=False, previous_bytes=0, payload_appended=True)
+        return _absorb(existing, to_session=to_session, payload=payload)
+
+    def _unclaimed_for(self, from_session: str) -> "SessionHandover | None":
+        """This author's single unclaimed row, or ``None``.
+
+        Ordered by pk so the OLDEST wins on any DB that predates the partial unique
+        constraint — the choice stays deterministic rather than resting on it.
+        """
+        return self.filter(from_session=from_session, claimed_at__isnull=True).order_by("pk").first()
 
     def claimable_for(self, session_id: str) -> "SessionHandoverQuerySet":
         """Unclaimed hand-offs this session may take over.

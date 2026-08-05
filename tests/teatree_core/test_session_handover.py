@@ -14,14 +14,14 @@ from teatree.core.models import SessionHandover
 
 class TestSessionHandoverCreate(TestCase):
     def test_create_to_explicit_session(self) -> None:
-        h = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="P")
+        h = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="P").row
         assert h.from_session == "a"
         assert h.to_session == "b"
         assert h.is_for_next_session is False
         assert h.claimed_at is None
 
     def test_create_for_next_session_has_empty_target(self) -> None:
-        h = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="P")
+        h = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="P").row
         assert h.is_for_next_session is True
 
 
@@ -53,7 +53,7 @@ class TestSessionHandoverClaim(TestCase):
 
     def test_already_claimed_row_yields_nothing_to_second_claimant(self) -> None:
         # The CAS keystone: claiming an already-claimed row matches 0 rows.
-        h = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="P")
+        h = SessionHandover.objects.create_handover(from_session="a", to_session="", payload="P").row
         first = SessionHandover.objects.claim_all("b")
         assert [row.pk for row in first] == [h.pk]
         assert SessionHandover.objects.claim_all("c") == []

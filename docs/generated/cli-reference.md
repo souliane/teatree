@@ -9965,11 +9965,14 @@ Usage: t3 teatree handover create [OPTIONS]
  failure this command is supposed to make impossible.
 
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
- for whichever session starts next. Always persists the
- :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
- directive #8, drives every in-flight sub-agent worktree through
- leak-gated fast-push so their work is committed/pushed/PR'd BEFORE the
- orchestrator terminates them.
+ for whichever session starts next. Per directive #8, every in-flight
+ sub-agent worktree is driven through leak-gated fast-push so their work is
+ committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
+ barrier runs on the refused path too, since a session with nothing to hand
+ over is the one most likely to be stranding a sub-agent's work.
+
+ A resolve that finds NOTHING writes nothing: no row, no mirror, and no
+ mutation of this author's existing unclaimed row.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --to                                         TEXT  Target session id. Omit   │
