@@ -45,7 +45,7 @@ class Command(TyperCommand):
         spec = render_env_cache(worktree)
         if spec is None:
             self.stderr.write(f"  {worktree.repo_path}: no worktree_path — not provisioned.")
-            return 1
+            raise SystemExit(1)
 
         pairs = {}
         for line in spec.content.splitlines():
@@ -73,14 +73,14 @@ class Command(TyperCommand):
         """
         if "=" not in key_value:
             self.stderr.write("  expected KEY=VALUE")
-            return 2
+            raise SystemExit(2)
         key, _, value = key_value.partition("=")
         worktree = resolve_worktree(path)
         try:
             set_override(worktree, key, value)
         except ValueError as exc:
             self.stderr.write(f"  {exc}")
-            return 1
+            raise SystemExit(1) from None
         self.stdout.write(f"  set {key} on {worktree.repo_path}")
         return 0
 
@@ -98,7 +98,7 @@ class Command(TyperCommand):
             self.stdout.write(f"  removed {key} from {worktree.repo_path}")
             return 0
         self.stderr.write(f"  no override named {key} on {worktree.repo_path}")
-        return 1
+        raise SystemExit(1)
 
     @command()
     def overrides(
@@ -133,7 +133,7 @@ class Command(TyperCommand):
             self.stderr.write(
                 f"  env cache stale at {cache_path} — rerun `t3 <overlay> worktree start`",
             )
-            return 1
+            raise SystemExit(1)
         self.stdout.write(f"  {worktree.repo_path}: env cache in sync with DB")
         return 0
 
