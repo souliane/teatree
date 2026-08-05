@@ -20,6 +20,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,15 +28,33 @@ import django.test
 from django.core.management import call_command
 
 from teatree.core.models import Loop, LoopState
+from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loops.base import MiniLoop
 
 _LOOP = "review"
 
 
+@dataclass(slots=True)
+class _QuietScanner:
+    """A real scanner that fans out and finds nothing — the healthy quiet tick."""
+
+    name: str = "quiet"
+
+    def scan(self) -> list[ScanSignal]:
+        return []
+
+
 @contextmanager
-def _tick_env() -> Iterator[Path]:
-    """The live tick pipeline over a stub ``review`` mini-loop that scans nothing."""
-    stub = MiniLoop(name=_LOOP, default_cadence_seconds=60, build_jobs=lambda **_: [])
+def _tick_env(*, builds_a_scanner: bool = True) -> Iterator[Path]:
+    """The live tick pipeline over a stub ``review`` mini-loop.
+
+    By default it fans ONE scanner out that finds nothing — the healthy quiet tick.
+    *builds_a_scanner* off is the loop gated one level below the loop gate: admitted,
+    anchor claimed, and no scanner constructed at all.
+    """
+    jobs = [_ScannerJob(scanner=_QuietScanner(), overlay="")] if builds_a_scanner else []
+    stub = MiniLoop(name=_LOOP, default_cadence_seconds=60, build_jobs=lambda **_: list(jobs))
     with (
         tempfile.TemporaryDirectory() as tmp,
         patch("teatree.loops.loop_table.iter_loops", return_value=(stub,)),
@@ -46,9 +65,9 @@ def _tick_env() -> Iterator[Path]:
         yield Path(tmp) / "statusline.txt"
 
 
-def _run(*, json_output: bool = False) -> str:
+def _run(*, json_output: bool = False, builds_a_scanner: bool = True) -> str:
     out, err = io.StringIO(), io.StringIO()
-    with _tick_env() as statusline:
+    with _tick_env(builds_a_scanner=builds_a_scanner) as statusline:
         call_command(
             "loops_tick",
             loop=_LOOP,
@@ -128,3 +147,22 @@ class TestBlockedLoopVerdict(django.test.TestCase):
 
         assert payload["skipped"] is False
         assert payload["skipped_reason"] == ""
+
+    def test_a_loop_that_built_no_scanner_is_reported_as_skipped_not_run(self) -> None:
+        """The same false-green one level down: the loop gate passed, the scanner gate did not.
+
+        Every scanner factory declining — an off feature flag, an absent backend —
+        handed the tick the same empty job list a healthy quiet tick hands it, so an
+        inert loop printed ``ran ... 0 signal(s)`` while its cadence anchor advanced and
+        every staleness surface stayed green. This is live today on the intake path.
+        """
+        output = _run(builds_a_scanner=False)
+
+        assert "SKIP" in output, output
+        assert "no scanner" in output, output
+
+    def test_the_structured_report_marks_a_scannerless_loop_as_skipped(self) -> None:
+        payload = json.loads(_run(json_output=True, builds_a_scanner=False))
+
+        assert payload["skipped"] is True
+        assert "no scanner" in payload["skipped_reason"]

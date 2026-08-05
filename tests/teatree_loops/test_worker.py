@@ -146,6 +146,49 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     assert order.count("spawn") == len(build_executor_queues())
 
 
+def test_a_failing_startup_step_still_brings_the_executor_pool_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One poison row must not crash-loop the worker before a single executor spawns.
+
+    The three startup steps ran outside any try, so an exception propagated out of
+    ``run`` ahead of the pool: no executor, no ``t3-master`` release, a non-zero exit,
+    and ``restart: on-failure`` restarting straight into the same row — a machine-wide
+    freeze whose only signal was the container restart counter. Every one of those
+    steps is recoverable once executors run, so the pool must come up regardless.
+    """
+    escalated: list[str] = []
+    monkeypatch.setattr(worker_mod, "_escalate_startup_failure", escalated.append)
+
+    def _boom() -> None:
+        msg = "no such table: teatree_loop"
+        raise RuntimeError(msg)
+
+    worker, built, _handles = _make_worker(enabled=lambda: False, sleep=lambda _s: None, reconcile=_boom)
+    worker.run()
+
+    assert len(built) == len(build_executor_queues()), "the pool came up despite the failed step"
+    assert escalated == ["reconcile the loop-timer chains"], "the failing step is named, not merely logged"
+
+
+def test_a_failing_startup_step_does_not_skip_the_steps_after_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_mod, "_escalate_startup_failure", lambda _what: None)
+    ran: list[str] = []
+
+    def _boom() -> None:
+        msg = "locked"
+        raise RuntimeError(msg)
+
+    worker, _built, _handles = _make_worker(
+        enabled=lambda: False,
+        sleep=lambda _s: None,
+        reconcile=_boom,
+        seed_chains=lambda: ran.append("seed"),
+        expire=lambda: ran.append("expire"),
+    )
+    worker.run()
+
+    assert ran == ["seed", "expire"]
+
+
 def test_both_pools_scale_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     # 4 loops + 4 default executors on a host whose shared PR-01 ceiling is 4 (an 8-core
     # box). Scaling the loops pool too means two slow ticks no longer stall every OTHER loop.

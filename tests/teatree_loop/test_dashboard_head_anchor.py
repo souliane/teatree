@@ -58,13 +58,20 @@ class TestDashboardHeadAnchor:
             lines = dashboard_head_anchor(colorize=False)
         assert lines == ["overlays: alpha · beta · health: ●"], repr(lines)
 
-    def test_empty_when_nothing_to_show(self) -> None:
+    def test_an_unreadable_health_read_leaves_the_chip_and_nothing_else(self) -> None:
+        """The other two segments still drop out; the health chip only changes value.
+
+        This used to assert an EMPTY line, which was only reachable by making the
+        health read RAISE — so the "nothing to show" case was really the vanished-chip
+        defect: a red box whose verdict could not be read rendered exactly like a box
+        with no health chip at all.
+        """
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch("teatree.loop.statusline_loops._configured_overlay_names", return_value=[]),
             patch("teatree.core.factory.operational_health.read_health", side_effect=RuntimeError("boom")),
         ):
-            assert dashboard_head_anchor(colorize=False) == []
+            assert dashboard_head_anchor(colorize=False) == ["health: ? (t3 doctor check)"]
 
     def test_fails_open_per_segment(self) -> None:
         # A broken overlays read drops only its segment; loops + health survive.

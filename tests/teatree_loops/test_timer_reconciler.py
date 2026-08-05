@@ -90,6 +90,37 @@ class TestEnsureLoopTimers(django.test.TestCase):
         assert timer_chains.running_loop_timers("inbox") == []
         assert len(timer_chains.pending_loop_timers("inbox")) == 1
 
+    def test_one_raising_loop_does_not_abort_the_rest_of_the_sweep(self) -> None:
+        """Per-loop fault isolation: the sweep every OTHER chain depends on had none.
+
+        A ``Loop`` deleted between the membership read and the row read (a ``KeyError``),
+        or an ``OperationalError`` on a locked result row, aborted the whole pass — so
+        every loop after it in iteration order kept whatever broken timer state it had,
+        and the 5-minute retry died at the same row each time. A loop with no live timer
+        then never gets its head added, and simply stops ticking.
+        """
+        self._enable("inbox")
+        self._enable("tickets")
+        real = timer_reconciler._reconcile_one_loop
+
+        def _explode_on_inbox(loop_row: Loop, **kwargs: object) -> dict[str, int]:
+            if loop_row.name == "inbox":
+                raise KeyError(loop_row.name)
+            return real(loop_row, **kwargs)
+
+        with mock.patch.object(timer_reconciler, "_reconcile_one_loop", _explode_on_inbox):
+            counts = timer_reconciler.ensure_loop_timers()
+
+        assert counts["failed"] == 1
+        assert counts["added"] == 1, "the loops after the failing one were still repaired"
+        assert len(timer_chains.pending_loop_timers("tickets")) == 1
+
+    def test_a_clean_sweep_reports_no_failures(self) -> None:
+        """The control: ``failed`` distinguishes a partial sweep from a clean one."""
+        self._enable()
+
+        assert timer_reconciler.ensure_loop_timers()["failed"] == 0
+
     def test_off_live_tick_loop_gets_no_chain(self) -> None:
         # ``dream`` is off_live_tick — the driver chain fires its tick command, never a timer.
         Loop.objects.create(
@@ -253,6 +284,16 @@ class TestMaintenanceChains(django.test.TestCase):
     def setUp(self) -> None:
         DBTaskResult.objects.all().delete()
 
+    def _seed_then_claim_this_fire(self) -> None:
+        """Seed every chain, then drop the reconcile head THIS fire represents.
+
+        A live ``reconcile_timers`` fire is a row the worker already flipped out of
+        READY, so its own self-dedup does not see it. Leaving the seeded READY row in
+        place would make the body dedup and never run.
+        """
+        timer_reconciler.ensure_maintenance_chains()
+        DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).delete()
+
     def test_seeds_reconcile_prune_and_expiry_heads_once(self) -> None:
         timer_reconciler.ensure_maintenance_chains()
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
@@ -316,6 +357,44 @@ class TestMaintenanceChains(django.test.TestCase):
         timer_reconciler.reconcile_timers.using(run_after=timezone.now()).enqueue()
         result = timer_reconciler.reconcile_timers.func()
         assert result == {"deduped": 1}
+
+    def test_reconcile_timers_re_seeds_a_lost_maintenance_chain(self) -> None:
+        """A maintenance chain head lost between restarts self-heals within five minutes.
+
+        The maintenance chains were armed at worker startup and nowhere else, so one
+        chain body that terminated itself — on a read it could not confirm, or on an
+        ``.enqueue()`` that raised outside its own try — left its work undriven until
+        the next restart, with no surface reporting the gap.
+        """
+        self._seed_then_claim_this_fire()
+        DBTaskResult.objects.filter(task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path).delete()
+
+        timer_reconciler.reconcile_timers.func()
+
+        assert (
+            DBTaskResult.objects.filter(task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path).count()
+            == 1
+        )
+
+    def test_reconcile_timers_does_not_duplicate_the_chains_it_re_seeds(self) -> None:
+        """The control: re-seeding on every fire must stay idempotent."""
+        self._seed_then_claim_this_fire()
+
+        timer_reconciler.reconcile_timers.func()
+
+        for path in (
+            timer_reconciler.prune_task_results.module_path,
+            timer_reconciler.drain_headless_chain.module_path,
+            off_live_tick_driver.drive_off_live_tick_loops.module_path,
+        ):
+            assert DBTaskResult.objects.filter(task_path=path).count() == 1, path
+
+    def test_a_failing_re_seed_still_returns_the_timer_repair_counts(self) -> None:
+        with mock.patch.object(timer_reconciler, "ensure_maintenance_chains", side_effect=RuntimeError("locked")):
+            result = timer_reconciler.reconcile_timers.func()
+
+        assert result["error"] == 1
+        assert "added" in result, "the loop-timer reconcile ran; its counts survive a re-seed failure"
 
     def test_run_slack_answer_reschedules_itself(self) -> None:
         result = timer_reconciler.run_slack_answer.func()

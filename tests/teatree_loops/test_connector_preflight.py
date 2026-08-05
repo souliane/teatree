@@ -124,3 +124,42 @@ class TestRunLoopConnectorPreflight(TestCase):
         _seed("probe-beta", overlay="ghost")
         with _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}):
             assert run_loop_connector_preflight("probe-beta") is None
+
+
+class TestAnUnresolvableOverlayIsReported(TestCase):
+    """Switching the only connector gate off is a decision an operator must see.
+
+    ``Loop.overlay`` defaults to ``""`` and the shipped seed table never sets it, so on
+    a multi-overlay install with no ambient ``T3_OVERLAY_NAME`` this gate — the one
+    thing standing between a down connector and a tick of silent no-ops — disabled
+    itself for every loop, silently. "I cannot tell which overlay this loop uses" is
+    configuration drift, not a quiet default.
+    """
+
+    def setUp(self) -> None:
+        # The throttle keys per site, so a warning from an earlier test in the same
+        # process would demote this one to DEBUG and the assertion would be vacuous.
+        from teatree.utils import throttled_log  # noqa: PLC0415 — test-local reset of a process-global
+
+        throttled_log._last_warned.clear()
+
+    def test_an_unresolvable_overlay_warns_rather_than_skipping_in_silence(self) -> None:
+        _seed("probe-beta", overlay="")
+        with (
+            _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}),
+            patch.dict(os.environ, {}, clear=False),
+            self.assertLogs("teatree.loops.connector_preflight", level="WARNING") as logs,
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            run_loop_connector_preflight("probe-beta")
+
+        assert any("probe-beta" in line and "SKIPPED" in line for line in logs.output), logs.output
+
+    def test_a_resolvable_overlay_warns_about_nothing(self) -> None:
+        """The control: the report fires on the unresolvable case only."""
+        _seed("probe-alpha", overlay="alpha")
+        with (
+            _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}),
+            self.assertNoLogs("teatree.loops.connector_preflight", level="WARNING"),
+        ):
+            run_loop_connector_preflight("probe-alpha")

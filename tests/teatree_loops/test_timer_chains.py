@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops import timer_chains
+from teatree.loops.seed import load_loop_specs
 
 
 def _fire(name: str, *, task_id: uuid.UUID | None = None) -> dict:
@@ -83,11 +84,31 @@ class TestComputeTickDeadline(django.test.SimpleTestCase):
         assert timer_chains.compute_tick_deadline(Loop(name="n", delay_seconds=None)) == pytest.approx(300.0)
 
     def test_daily_loop_gets_the_generous_daily_deadline_not_the_300s_floor(self) -> None:
-        # A ``daily_at`` loop has no ``delay_seconds``; ``3 x cadence`` would collapse to
-        # 300s and SIGKILL a legitimately long daily scan after its anchor was consumed.
-        row = Loop(name="dly", delay_seconds=None, daily_at=dt.time(8, 0))
+        """Built the way the seed builds one: a daily slot AND a day-long interval.
+
+        Keyed on ``delay_seconds is None`` as well, this branch was unreachable for
+        every loop that exists — the seed spec requires a ``delay_seconds`` and the
+        model constraint requires one for any script-backed loop — so the shipped
+        ``news`` row took the interval branch and got ``3 x 86400`` = 72 h. That is not
+        a deadline: a hung daily tick would pin one of two floor executor threads for
+        three days, the timeout escalation would never fire, and the reconciler (which
+        reuses this number) would refuse to repair the stranded timer for just as long.
+        """
+        row = Loop(name="dly", delay_seconds=86400, daily_at=dt.time(8, 0))
+
         assert timer_chains.compute_tick_deadline(row) == pytest.approx(timer_chains.DAILY_TICK_DEADLINE_SECONDS)
         assert timer_chains.DAILY_TICK_DEADLINE_SECONDS > timer_chains.MIN_TICK_DEADLINE_SECONDS
+
+    def test_every_shipped_daily_loop_gets_the_daily_deadline(self) -> None:
+        """Read off the shipped seed table, so no hand-built shape can make this pass."""
+        daily = [spec for spec in load_loop_specs() if spec.daily_at is not None]
+
+        assert daily, "no daily loop is shipped — this guard would pass vacuously"
+        for spec in daily:
+            row = Loop(name=spec.name, delay_seconds=spec.delay_seconds, daily_at=spec.daily_at)
+            assert timer_chains.compute_tick_deadline(row) == pytest.approx(timer_chains.DAILY_TICK_DEADLINE_SECONDS), (
+                spec.name
+            )
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
