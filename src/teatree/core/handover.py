@@ -34,7 +34,9 @@ sub-agent barrier's returns are a separate concern living in
 A resolve that finds NOTHING writes nothing — no row, no mirror. Persist-first
 (:func:`create_handover` before the barrier) protects state that exists; an
 empty hand-off has none, and the row it would leave behind is a delivery no
-receiver can act on.
+receiver can act on. That promise holds only while ONE resolve decides both the
+refusal and the write, which is why :func:`create_handover` takes a
+:class:`ResolvedHandover` instead of taking its own.
 
 Target resolution (``create``):
 
@@ -199,12 +201,13 @@ class CreatedHandover:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedHandover:
-    """Where a hand-off would go and what it would carry — decided before anything is written.
+    """Where a hand-off would go and what it would carry — decided once, before anything is written.
 
     :func:`create_handover` used to be the only way to learn a payload's source, so
     the caller could not refuse a hand-off until the row already existed. An
     :attr:`PayloadSource.EMPTY` resolve must write nothing at all, which needs the
-    answer first.
+    answer first — and then the SAME answer must be what is written, so this travels
+    from the refusal check into :func:`create_handover` rather than being re-derived.
     """
 
     to_session: str
@@ -456,22 +459,25 @@ def resolve_handover(*, from_session: str, explicit_to: str, authored: str = "")
     )
 
 
-def create_handover(*, from_session: str, explicit_to: str, authored: str = "") -> "CreatedHandover":
-    """Persist a hand-off from *from_session* and mirror it to the XDG file.
+def create_handover(*, from_session: str, resolution: ResolvedHandover) -> "CreatedHandover":
+    """Persist *resolution* as a hand-off from *from_session* and mirror it to the XDG file.
 
-    *authored* is the payload the handing session supplied; omitted, the payload
-    is derived per :meth:`HandoverPayload.resolve`. The target is resolved per
-    :func:`resolve_target_session`.
+    The resolution is threaded in rather than taken here, so the one the caller
+    GATED on is the one that gets written. Re-resolving made the two different
+    instants with the caller's slow sub-agent barrier between them: live state
+    settling across that barrier resolved non-empty for the gate and EMPTY for the
+    write, and the row that landed carried only the barrier's own boilerplate. It
+    also closed the same window on the PreCompact snapshot, which a rotation across
+    the barrier could downgrade, and halved the ``LoopLease`` reads per create.
 
     Raises :class:`SelfAddressedHandoverError` when the resolved target is the
     handing session itself — including via the no-``--to`` path, where the live
-    ``t3-master`` slot holder can BE the session handing off. Refusing here rather
-    than in the CLI keeps the check on the resolved target, which is the only
-    value that decides claimability.
+    ``t3-master`` slot holder can BE the session handing off. Refusing at the write
+    seam keeps the check on the resolved target, which is the only value that
+    decides claimability.
     """
     from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    resolution = resolve_handover(from_session=from_session, explicit_to=explicit_to, authored=authored)
     write = SessionHandover.objects.create_handover(
         from_session=from_session,
         to_session=resolution.to_session,

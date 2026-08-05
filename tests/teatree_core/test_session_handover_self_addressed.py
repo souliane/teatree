@@ -17,7 +17,7 @@ import pytest
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from teatree.core.handover import create_handover
+from teatree.core.handover import create_handover, resolve_handover
 from teatree.core.models import SessionHandover
 from teatree.core.session_handover_manager import SelfAddressedHandoverError
 
@@ -49,7 +49,9 @@ class TestCreationRefusesTheDegenerateHandover(TestCase):
 
     def test_service_refuses_an_explicit_self_target(self) -> None:
         with pytest.raises(SelfAddressedHandoverError):
-            create_handover(from_session="s1", explicit_to="s1", authored="state")
+            create_handover(
+                from_session="s1", resolution=resolve_handover(from_session="s1", explicit_to="s1", authored="state")
+            )
         assert SessionHandover.objects.count() == 0
 
     def test_a_genuine_target_still_creates(self) -> None:

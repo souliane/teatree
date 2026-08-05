@@ -152,7 +152,9 @@ class TestCreateHandover(TestCase):
 
     def test_create_persists_row_and_mirror_to_loop_owner(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-        created = handover.create_handover(from_session="hand-er", explicit_to="")
+        created = handover.create_handover(
+            from_session="hand-er", resolution=resolve_handover(from_session="hand-er", explicit_to="")
+        )
         row, mirror = created.handover, created.mirror
         assert row.to_session == "owner-X"
         assert SessionHandover.objects.filter(pk=row.pk).exists()
@@ -160,11 +162,15 @@ class TestCreateHandover(TestCase):
         assert "hand-er" in mirror.read_text(encoding="utf-8")
 
     def test_create_with_explicit_to_targets_that_session(self) -> None:
-        row = handover.create_handover(from_session="hand-er", explicit_to="target-Z").handover
+        row = handover.create_handover(
+            from_session="hand-er", resolution=resolve_handover(from_session="hand-er", explicit_to="target-Z")
+        ).handover
         assert row.to_session == "target-Z"
 
     def test_create_no_owner_parks_for_next(self) -> None:
-        row = handover.create_handover(from_session="hand-er", explicit_to="").handover
+        row = handover.create_handover(
+            from_session="hand-er", resolution=resolve_handover(from_session="hand-er", explicit_to="")
+        ).handover
         assert row.to_session == ""
         assert row.is_for_next_session is True
 
@@ -323,7 +329,9 @@ class TestTheAbsorbIsReportedFromTheWriteSeam(TestCase):
             return original(self, from_session)
 
         with mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", _rival_wins_the_insert):
-            created = handover.create_handover(from_session="a", explicit_to="b", authored="MY-STATE")
+            created = handover.create_handover(
+                from_session="a", resolution=resolve_handover(from_session="a", explicit_to="b", authored="MY-STATE")
+            )
 
         payload = SessionHandover.objects.get().payload
         assert "RIVAL-STATE" in payload
@@ -338,7 +346,10 @@ class TestUpsertSubagentSection(TestCase):
         self.enterContext(_tmp_env("XDG_STATE_HOME"))
 
     def test_the_section_is_persisted_and_the_same_mirror_file_is_rewritten(self) -> None:
-        created = handover.create_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY")
+        created = handover.create_handover(
+            from_session="hand-er",
+            resolution=resolve_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY"),
+        )
 
         rewritten = upsert_subagent_section(created.handover, [])
 
@@ -349,7 +360,10 @@ class TestUpsertSubagentSection(TestCase):
         assert "Sub-agent wrap-up" in rewritten.read_text(encoding="utf-8")
 
     def test_the_records_are_stored_on_the_row_rather_than_re_parsed_from_the_payload(self) -> None:
-        created = handover.create_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY")
+        created = handover.create_handover(
+            from_session="hand-er",
+            resolution=resolve_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY"),
+        )
         records = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
 
         upsert_subagent_section(created.handover, records)

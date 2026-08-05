@@ -491,6 +491,54 @@ class TestEmptyHandoverIsRefused(_PinnedSessionTestCase):
         assert SessionHandover.objects.count() == 0
 
 
+class TestOneResolutionDecidesBothTheGateAndTheWrite(_PinnedSessionTestCase):
+    """The gate and the write must agree, across a barrier long enough for state to move (#4194).
+
+    The barrier is the slow part — N worktrees, git pushes, network PR upserts — so a
+    concurrent actor settling the last in-flight ticket lands INSIDE it. The gate was
+    decided on a resolution taken before it and the row was written from a second
+    resolution taken after, so the value that passed the gate was not the value
+    persisted: the row that landed carried nothing but the barrier's own boilerplate,
+    was mirrored, and reached a receiver under the ``SESSION HAND-OFF RECEIVED``
+    directive. Every other empty-path test resolves EMPTY at BOTH instants, so none of
+    them can see this.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").unlink()
+        ticket = Ticket.objects.create(issue_url="https://github.com/o/r/issues/1", short_description="real work")
+
+        def _settle_the_last_in_flight_ticket(*_a, **_k) -> list:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+            return []
+
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            _settle_the_last_in_flight_ticket,
+        )
+
+    def _run(self) -> tuple[dict, int]:
+        out, err = StringIO(), StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", stdout=out, stderr=err, json_output=True)
+        return json.loads(out.getvalue()), int(excinfo.value.code or 0)
+
+    def test_state_settling_across_the_barrier_writes_no_row(self) -> None:
+        data, code = self._run()
+
+        assert SessionHandover.objects.count() == 0, "the resolution that decided the gate is the one written"
+        assert code == 1
+        assert data["payload_source"] == "empty"
+        assert data["empty_payload"] is True
+        assert data["row_written"] is False, "a row cannot be written for a payload reported as empty"
+
+    def test_state_settling_across_the_barrier_delivers_nothing_to_a_receiver(self) -> None:
+        self._run()
+
+        assert claim_handovers("some-receiving-session") == ("", "")
+
+
 class TestTheJsonAndExitCodesAreOtherwiseUnchanged(_PinnedSessionTestCase):
     """Control test — GREEN before AND after; a red here means a contract broke."""
 

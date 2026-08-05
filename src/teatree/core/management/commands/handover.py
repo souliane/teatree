@@ -6,7 +6,9 @@ the ``t3-master`` slot for the default target. ``create`` persists a
 mirrors it to the XDG file, runs the sub-agent barrier and folds its returns
 into the persisted payload, then re-reads the row and asserts it complete
 before reporting anything — unless the payload resolves EMPTY, in which case
-the barrier still runs and NO row is written; ``whoami`` prints this session's id;
+the barrier still runs and NO row is written — a refusal decided by the SAME
+resolution the write uses, taken once after the barrier, since live state can
+settle across it. ``whoami`` prints this session's id;
 ``claim-on-start`` is the SessionStart-hook entry point that atomically
 claims an unclaimed hand-off for a starting session and returns its payload.
 
@@ -101,19 +103,22 @@ class Command(TyperCommand):
             self._refuse(msg, json_output=json_output, code=2)
 
         authored = self._read_authored(from_file=from_file, body=body, json_output=json_output)
-        resolution = resolve_handover(from_session=from_session, explicit_to=to, authored=authored)
 
         # The barrier runs BEFORE the write on every path, including the refused one:
         # rescuing a sub-agent's unpushed work is orthogonal to whether this session
         # has a payload, and a session with nothing to hand over is the profile most
         # likely to be stranding some. Do not "restore" persist-first — an EMPTY
         # resolve has no state to protect, only a dead row to avoid writing.
+        # Resolve AFTER it, ONCE, and thread that answer into the write: the barrier is
+        # long enough for the last ticket to settle or the snapshot to rotate underneath
+        # it, so a gate decided on one side of it cannot speak for a write on the other.
         pushes = self._drive_subagents() if drive_subagents else []
+        resolution = resolve_handover(from_session=from_session, explicit_to=to, authored=authored)
         if resolution.resolved.source is PayloadSource.EMPTY:
             self._refuse_empty(from_session, pushes=pushes, json_output=json_output)
 
         try:
-            created = create_handover(from_session=from_session, explicit_to=to, authored=authored)
+            created = create_handover(from_session=from_session, resolution=resolution)
         except SelfAddressedHandoverError as exc:
             self._refuse(str(exc), json_output=json_output, code=1)
 
@@ -130,6 +135,9 @@ class Command(TyperCommand):
         # (#3551, #3888). Only a VETTED source whose row survives the re-read may
         # report OK, and the re-read happens BEFORE the line is written.
         ok = source.is_vetted and not failures
+        # Read off the resolution that decided the refusal, never asserted: as constants
+        # they reported `payload_source: "empty"` beside `row_written: true`.
+        empty_payload = source is PayloadSource.EMPTY
         status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
         human_lines = [
             f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); mirror written to {mirror}."
@@ -146,8 +154,8 @@ class Command(TyperCommand):
                 "ok": ok,
                 "handover_id": handover.pk,
                 "payload_source": source.value,
-                "empty_payload": False,
-                "row_written": True,
+                "empty_payload": empty_payload,
+                "row_written": not empty_payload,
                 "from_session": handover.from_session,
                 "to_session": handover.to_session,
                 "parked_for_next": handover.is_for_next_session,
