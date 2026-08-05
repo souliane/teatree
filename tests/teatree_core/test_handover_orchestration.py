@@ -79,6 +79,19 @@ class TestIsSubagentWorktree:
     def test_agent_dir_elsewhere_is_not(self, tmp_path: Path) -> None:
         assert not _is_subagent_worktree(tmp_path / "somewhere" / "agent-abc")
 
+    def test_a_worktree_under_a_session_job_dir_is_a_subagent(self, tmp_path: Path) -> None:
+        """The five stranded worktrees in the #4194 incident all lived here, unseen by the barrier."""
+        assert _is_subagent_worktree(tmp_path / ".claude" / "jobs" / "0e077e62" / "tmp" / "wt4101")
+
+    def test_a_job_dirs_direct_child_is_a_subagent(self, tmp_path: Path) -> None:
+        assert _is_subagent_worktree(tmp_path / ".claude" / "jobs" / "0e077e62" / "wt")
+
+    def test_the_job_dir_itself_is_not_a_worktree(self, tmp_path: Path) -> None:
+        assert not _is_subagent_worktree(tmp_path / ".claude" / "jobs" / "0e077e62")
+
+    def test_a_jobs_dir_outside_claude_is_not(self, tmp_path: Path) -> None:
+        assert not _is_subagent_worktree(tmp_path / "elsewhere" / "jobs" / "0e077e62" / "tmp" / "wt")
+
 
 class TestHasPendingWork:
     def test_dirty_tree_is_pending(self, clone: Path, tmp_path: Path) -> None:
@@ -154,3 +167,25 @@ class TestDriveSubagents:
         (dirty / "scratch.txt").write_text("uncommitted\n")
         records = list(in_flight_subagent_worktrees(str(clone), exclude=(clone,)))
         assert [r.path.resolve() for r in records] == [dirty.resolve()]
+
+    def test_a_worktree_named_in_exclude_is_skipped_even_when_the_cwd_is_below_it(
+        self, clone: Path, tmp_path: Path
+    ) -> None:
+        """CHARACTERISATION, NOT a fix guard — green before the caller's fix and after it.
+
+        ``exclude`` matches on the resolved worktree ROOT, so naming that root skips the
+        worktree whatever subdirectory the caller happens to be sitting in, while naming
+        only the subdirectory does not. The bug was the CALLER passing its cwd alone;
+        this pins the contract the caller now relies on, and would have stayed green
+        throughout — do not mistake it for the guard.
+        """
+        own = _add_subagent_worktree(clone, tmp_path, "agent-own", "feat/own")
+        (own / "scratch.txt").write_text("uncommitted\n")
+        subdirectory = own / "src" / "deep"
+        subdirectory.mkdir(parents=True)
+
+        by_root = list(in_flight_subagent_worktrees(str(clone), exclude=(clone, own)))
+        by_subdirectory = list(in_flight_subagent_worktrees(str(clone), exclude=(clone, subdirectory)))
+
+        assert by_root == []
+        assert [record.path.resolve() for record in by_subdirectory] == [own.resolve()]

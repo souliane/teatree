@@ -226,7 +226,10 @@ depends_on = []
 [[modules]]
 path = "teatree.core.session_handover_manager"
 layer = "domain"
-depends_on = []
+# The hand-off write seam parks the runner principal, so it asks the
+# zero-dependency identity leaf what that principal is — the same downward edge
+# teatree.loop.session_identity already takes.
+depends_on = ["teatree.core.session_identity"]
 
 [[modules]]
 path = "teatree.core.loop_lease_liveness"
@@ -311,6 +314,9 @@ depends_on = [
   "teatree.core.managers",
   "teatree.core.models.errors",
   "teatree.core.repair_loop",
+  # SessionHandover's check constraint names the runner principal, so the value
+  # comes from the identity leaf rather than a second literal to drift from.
+  "teatree.core.session_identity",
   "teatree.instance_id",
   "teatree.url_classify",
   "teatree.verification"

@@ -76,13 +76,13 @@ class TestAuthoringPath(_SessionCase):
     def test_from_file_persists_the_file_bytes_verbatim(self) -> None:
         path = self.tmp_path / "handover.md"
         path.write_text(_AUTHORED, encoding="utf-8")
-        data, _err, code = self._create(from_file=str(path), to="other-session")
+        data, _err, code = self._create(from_file=str(path), to="other-session", drive_subagents=False)
         assert code == 0
         assert data["payload_source"] == PayloadSource.AUTHORED.value
         assert SessionHandover.objects.get().payload == _AUTHORED, "the author's bytes, not a derived string"
 
     def test_body_persists_the_given_text(self) -> None:
-        data, _err, code = self._create(body=_AUTHORED, to="other-session")
+        data, _err, code = self._create(body=_AUTHORED, to="other-session", drive_subagents=False)
         assert code == 0
         assert data["ok"] is True
         assert SessionHandover.objects.get().payload == _AUTHORED
@@ -90,7 +90,7 @@ class TestAuthoringPath(_SessionCase):
     def test_authored_content_survives_create_then_claim(self) -> None:
         """The assertion that matters: what the receiver reads is what the author wrote."""
         self._seed_snapshot()  # present, and must lose to the authored body
-        self._create(body=_AUTHORED, to="other-session")
+        self._create(body=_AUTHORED, to="other-session", drive_subagents=False)
         payload, origin = claim_handovers("other-session")
         assert payload == _AUTHORED
         assert origin == "this-session"
