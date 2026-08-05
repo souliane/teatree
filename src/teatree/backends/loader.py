@@ -166,29 +166,6 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     return _host_backend(overlay, forge)
 
 
-def issue_is_done(overlay: "OverlayBase", issue_url: str) -> bool:
-    """Whether *issue_url*'s upstream issue is done per *overlay*'s ``is_issue_done``.
-
-    The single completion-detection seam the ``sync-completions`` sweep and the
-    ``TicketCompletionScanner`` both consult before advancing a post-ship ticket.
-    Fail-SKIP: an unresolvable host, a fetch failure, an error payload, or a
-    non-dict response all return ``False`` (never advance on uncertainty) and a
-    fetch failure is logged, never raised — it must not abort the sweep or wedge
-    the scan.
-    """
-    host = get_code_host_for_url(overlay, issue_url)
-    if host is None:
-        return False
-    try:
-        issue_data = host.get_issue(issue_url)
-    except Exception:  # noqa: BLE001 — a fetch failure skips the ticket, never aborts the caller
-        logger.warning("Failed to fetch issue %s — skipping completion check", issue_url)
-        return False
-    if not isinstance(issue_data, dict) or "error" in issue_data:
-        return False
-    return bool(overlay.is_issue_done(issue_data))
-
-
 def pr_open_state(pr_url: str) -> PrOpenState:
     """Live OPEN / MERGED / CLOSED state of the PR/MR at *pr_url*, per the forge.
 
