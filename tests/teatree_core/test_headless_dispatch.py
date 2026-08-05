@@ -40,11 +40,23 @@ class TestLoopDispatchRefusal(TestCase):
 
 
 class TestHeadlessRunnerRegistry:
-    def test_agents_ready_registers_the_real_runner(self) -> None:
-        """``AgentsConfig.ready()`` ran at django.setup() — the runner resolves."""
-        from teatree.agents.headless import run_headless  # noqa: PLC0415
+    def test_agents_ready_registers_a_runner_that_reaches_the_real_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``AgentsConfig.ready()`` ran at django.setup() — the runner resolves and dispatches.
 
-        assert headless_dispatch.get_headless_runner() is run_headless
+        Identity moved: what is registered is the deferring thunk (#4049 — importing
+        ``run_headless`` at app-ready pulled the openai SDK into every
+        ``django.setup()``), so this asserts the property that actually matters — the
+        registered runner reaches ``run_headless`` — instead of the object it is.
+        """
+        reached: list[str] = []
+        monkeypatch.setattr(
+            "teatree.agents.headless.run_headless",
+            lambda task, *, phase, overlay_skill_metadata: reached.append(phase),
+        )
+
+        headless_dispatch.get_headless_runner()("task", phase="coding", overlay_skill_metadata={})
+
+        assert reached == ["coding"]
 
     def test_register_then_get_round_trips(self) -> None:
         def _fake_runner(task: object, *, phase: str, overlay_skill_metadata: object) -> object:

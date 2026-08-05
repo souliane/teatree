@@ -56,6 +56,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
     _check_connector_manifest,
     _check_mcp_connectivity,
+    _check_teatree_mcp_liveness,
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
@@ -176,6 +177,7 @@ __all__ = (
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
     "_check_t3_shim_receipt",
+    "_check_teatree_mcp_liveness",
     "_check_teatree_mcp_registration",
     "_check_tmp_tmpfs_headroom",
     "_check_ttyd_for_dashboard",
@@ -413,6 +415,31 @@ def _run_advisory_finalisers() -> None:
     _ensure_plugin_registered()
 
 
+def _run_mcp_checks(*, repair: bool = False) -> bool:
+    """Every MCP gate, in dependence order; ``False`` when any of them hard-FAILs.
+
+    Grouped so ``run_doctor_checks`` reads as a list of concerns rather than a list of
+    calls. The order is load-bearing: connectivity and the connector manifest run after
+    the account-switch gate (a `/login` invalidates the backend cache), and they share
+    one live `claude mcp list` probe; the exercising liveness check runs last so its
+    spawn sees the post-recovery state.
+
+    Two of the four are advisory by design. `_check_teatree_mcp_registration` is
+    structural — the resolved main clone can legitimately lag a merged change until the
+    next `t3 update`. `_check_teatree_mcp_liveness` is the authoritative one: it spawns
+    the registered `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause
+    (stale tool env / delegation failure / startup over the handshake budget) and the
+    remedy, because `claude mcp list` only ever says `Connection closed` (#4049).
+
+    ``repair`` reaches the liveness check alone: it is the only MCP gate that can mutate
+    the operator's env, and it reinstalls the running tool env only when asked.
+    """
+    ok = _check_mcp_connectivity()
+    ok = _check_connector_manifest() and ok
+    _check_teatree_mcp_registration()
+    return _check_teatree_mcp_liveness(repair=repair) and ok
+
+
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
     """Run every doctor check; return ``False`` if any hard-FAILs.
 
@@ -633,23 +660,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = _check_claude_session_posture() and ok
 
-    # Enabled-MCP connectivity + declared-provider check (#2282). Runs after the
-    # account-switch gate (which invalidates the backend cache on a `/login`), so
-    # the live `claude mcp list` probe reflects the post-recovery state. An
-    # enabled-but-disconnected MCP is a hard FAIL; `claude` absent degrades to a WARN.
-    ok = _check_mcp_connectivity() and ok
-
-    # Per-overlay claude.ai connector manifest (PR-19). Runs after the general MCP
-    # connectivity gate — it reuses the same live `claude mcp list` probe. A REQUIRED
-    # declared connector that is down is a hard FAIL with mode-correct guidance +
-    # RECONNECT lines; an optional one WARNs; `claude` absent degrades to a WARN.
-    ok = _check_connector_manifest() and ok
-
-    # Teatree's own structured-search MCP server registration (#2863). WARN-only
-    # (never gates the exit code) — the resolved main clone can legitimately lag
-    # a merged change until the next `t3 update`. Runs after the general MCP
-    # connectivity gate — it reuses the same live `claude mcp list` probe.
-    _check_teatree_mcp_registration()
+    ok = _run_mcp_checks(repair=repair) and ok
 
     _run_advisory_finalisers()
 
