@@ -87,10 +87,13 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "agent_tier_effort": _parse_registry_dict,
     "agent_phase_fanout": _parse_registry_dict,
     "agent_phase_harness": _parse_registry_dict,
+    # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
+    "agent_compaction_keep_recent": _parse_registry_dict,
     # Per-model price overrides for ``t3 cost`` (model-id substring -> in/out rates).
     "cost_model_prices": _parse_registry_dict,
     "agent_session_model": _parse_strict_str,
     "agent_session_effort": _parse_strict_str,
+    "agent_session_permission_mode": _parse_strict_str,
     "agent_honesty_model": _parse_strict_str,
     # Tunables that used to live in the file: the availability schedule / timeouts /
     # loops sub-tables, the operator's Slack id, and the master fail-open gate switch

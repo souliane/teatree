@@ -33,10 +33,13 @@ Django-free — so the declaration is authoritative on both surfaces and there i
 no second place to state it.
 """
 
+import logging
 from collections.abc import Callable
 from importlib import import_module
 from importlib.metadata import entry_points
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: The module every overlay states its constants in, sitting beside the module its
 #: ``teatree.overlays`` entry point names. ``OverlayConfig._load_settings`` reads it
@@ -108,14 +111,25 @@ def cold_overlay_code_defaults(overlay_name: str) -> dict[str, Any]:
     never introduce a value the overlay did not state — it can only carry one it did.
 
     Fails safe to ``{}`` on everything: an overlay with no entry point, a settings
-    module that is missing or raises on import, an unreadable entry-point table.
+    module that is missing or raises on import, an unreadable entry-point table. The
+    empty return is right and the SILENCE is not: this is the last tier that can carry a
+    declaration a gate enforces, so a settings module that stopped importing takes the
+    rule down to its shipped default with nothing anywhere saying so. Logged at WARNING
+    with the overlay and the module path, never raised.
     """
+    module_path = ""
     try:
         module_path = _overlay_settings_module(overlay_name)
         if not module_path:
             return {}
         module = import_module(module_path)
-    except Exception:  # noqa: BLE001 — a cold read that cannot resolve contributes no tier, never a traceback.
+    except Exception:
+        logger.warning(
+            "overlay %r: cold read of %r failed; promoted code defaults fall through to the shipped values",
+            overlay_name,
+            module_path or "<unresolved entry point>",
+            exc_info=True,
+        )
         return {}
     return {
         key: getattr(module, key.upper()) for key in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS if hasattr(module, key.upper())

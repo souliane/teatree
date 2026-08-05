@@ -391,6 +391,7 @@ class TeatreeSettingsSchema(BaseSettings):
 
     # --- COLD_SETTINGS (cold-read DB tier) ---
     active_loop_schedule: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_COLD]
+    agent_compaction_keep_recent: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_honesty_model: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     agent_phase_fanout: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_phase_harness: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
@@ -398,6 +399,7 @@ class TeatreeSettingsSchema(BaseSettings):
     agent_pydantic_ai_tier_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_session_effort: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     agent_session_model: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
+    agent_session_permission_mode: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     agent_skill_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_tier_effort: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_tier_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
