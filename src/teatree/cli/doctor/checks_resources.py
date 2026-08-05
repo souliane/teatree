@@ -26,6 +26,8 @@ from typing import cast
 
 import typer
 
+from teatree.utils.ram_scope import agent_workload_floor_gib
+
 # A parsed JSON object (``~/.claude`` settings / installed_plugins). Values are
 # arbitrary JSON, so the leaves stay ``object``; the alias names the shape and keeps
 # the module-health dataclass/TypedDict rule satisfied (mirrors cli/setup/claude_settings).
@@ -55,7 +57,6 @@ _CLAUDE_PLUGIN_ID = "t3@souliane"
 _PYRIGHT_PLUGIN_ID = "pyright-lsp@claude-plugins-official"
 _PYRIGHT_LANGSERVER = "pyright-langserver"
 _PYRIGHT_INSTALL_CMD = "npm install -g --prefix ~/.local pyright"
-_DEFAULT_WORKER_FLOOR_GIB = 4
 _BYTES_PER_GIB = 1024**3
 # cgroup v1's "unlimited" is a near-2**63 page-aligned sentinel, and cgroup v2 uses
 # the literal "max"; any cap at/above this floor is treated as no real cap.
@@ -193,15 +194,13 @@ def _check_tmp_tmpfs_headroom(
 
 
 def _worker_floor_bytes(raw: str | None) -> int:
-    """Parse ``TEATREE_WORKER_MEMORY_FLOOR_GIB`` (a positive int) into a byte floor; default on garbage."""
-    gib = _DEFAULT_WORKER_FLOOR_GIB
-    if raw is not None:
-        try:
-            value = int(raw)
-        except ValueError:
-            value = _DEFAULT_WORKER_FLOOR_GIB
-        gib = value if value > 0 else _DEFAULT_WORKER_FLOOR_GIB
-    return gib * _BYTES_PER_GIB
+    """Parse ``TEATREE_WORKER_MEMORY_FLOOR_GIB`` (a positive int) into a byte floor; default on garbage.
+
+    The GiB figure is :func:`~teatree.utils.ram_scope.agent_workload_floor_gib`, shared with
+    the scope test that decides whether a cgroup's memory reading describes the box at all
+    — this FAIL and that test must name the same floor (#4217).
+    """
+    return agent_workload_floor_gib(raw) * _BYTES_PER_GIB
 
 
 def _read_cgroup_memory_cap(v2: Path, v1: Path) -> int | None:
