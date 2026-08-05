@@ -2501,6 +2501,20 @@ class TestReapHonorsPerOverlayCleanIgnore(TestCase):
             assert any("SKIP" in c and "spike-x" in c for c in cleaned)
 
 
+def _stash_listing(*legacy_lines: str) -> str:
+    """Render ``stash@{i}: <subject>`` lines in the ``--format`` shape the reaper reads.
+
+    The reaper lists identity, selector and subject in ONE ``git stash list``, so a
+    fake must answer in that shape. Each row gets a distinct synthetic sha; the
+    test data stays in the readable legacy form.
+    """
+    rows: list[str] = []
+    for index, line in enumerate("\n".join(legacy_lines).splitlines()):
+        selector, _, subject = line.partition(": ")
+        rows.append(f"{index:040x}\t{selector}\t{subject}")
+    return "\n".join(rows)
+
+
 class TestDropOrphanedStashes(TestCase):
     def test_drops_stash_for_deleted_branch(self) -> None:
         stash_output = "stash@{0}: WIP on deleted-branch: abc123 some work"
@@ -2509,8 +2523,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2537,8 +2551,8 @@ class TestDropOrphanedStashes(TestCase):
         branches_output = "* main"
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             return ""
@@ -2558,8 +2572,8 @@ class TestDropOrphanedStashes(TestCase):
         branches_output = "* main"
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             return ""
@@ -2579,8 +2593,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2609,8 +2623,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             return ""
@@ -2631,8 +2645,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2661,8 +2675,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2681,6 +2695,88 @@ class TestDropOrphanedStashes(TestCase):
         assert "already merged" in result[0]
         assert ["stash", "drop", "stash@{0}"] in calls
 
+    def test_a_concurrent_push_elsewhere_never_drops_the_wrong_entry(self) -> None:
+        # `refs/stash` lives in the COMMON dir, so a sibling worktree's `git stash
+        # push` renumbers every entry for every other checkout with no action by it.
+        # A selector resolved at time-of-check therefore names a DIFFERENT commit by
+        # the time the drop runs: the reaper judges the orphan merged-and-safe and
+        # drops whatever now sits at that index — here, unmerged work from elsewhere.
+        orphan, live, newcomer = "a" * 40, "b" * 40, "c" * 40
+        pushed_elsewhere = {"yet": False}
+        calls: list[list[str]] = []
+
+        def _rows() -> list[tuple[str, str]]:
+            rows = [(orphan, "WIP on deleted-branch: abc123 merged work"), (live, "WIP on main: abc123 live work")]
+            if pushed_elsewhere["yet"]:
+                rows.insert(0, (newcomer, "WIP on other: abc123 UNMERGED work from a sibling worktree"))
+            return rows
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            # Both listing protocols, so the RED shows the DEFECT (an index-keyed
+            # drop landing on the newcomer) rather than an unparsed format.
+            if args == ["stash", "list"]:
+                return "\n".join(f"stash@{{{i}}}: {subject}" for i, (_sha, subject) in enumerate(_rows()))
+            if args[:2] == ["stash", "list"]:
+                return "\n".join(f"{sha}\tstash@{{{i}}}\t{subject}" for i, (sha, subject) in enumerate(_rows()))
+            if args == ["branch", "--no-color"]:
+                return "* main"
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                # The sibling worktree pushes its stash while the probe runs — the
+                # exact window between judging an entry and dropping it.
+                pushed_elsewhere["yet"] = True
+                return "- abc123def merged work"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
+            ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        drops = [a for a in calls if a[:2] == ["stash", "drop"]]
+        assert drops == [["stash", "drop", "stash@{1}"]], (
+            f"must drop the JUDGED entry at its current selector, not a stale index: {drops}"
+        )
+
+    def test_an_entry_that_vanished_between_check_and_drop_is_kept(self) -> None:
+        # Someone else dropped it in the window. Identity no longer resolves, so the
+        # reaper reports and moves on rather than dropping whatever took its place.
+        orphan_subject = "WIP on deleted-branch: abc123 merged work"
+        replacement_subject = "WIP on other: abc123 someone else's work"
+        vanished = {"yet": False}
+        calls: list[list[str]] = []
+        fixed = {
+            ("branch", "--no-color"): "* main",
+            ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+        }
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args[:2] == ["stash", "list"]:
+                sha = "d" * 40 if vanished["yet"] else "a" * 40
+                subject = replacement_subject if vanished["yet"] else orphan_subject
+                # Both listing protocols, so the RED shows the DEFECT rather than
+                # an unparsed format (see the sibling test).
+                if len(args) == 2:
+                    return f"stash@{{0}}: {subject}"
+                return f"{sha}\tstash@{{0}}\t{subject}"
+            if args[:1] == ["cherry"]:
+                vanished["yet"] = True
+                return "- abc123def merged work"
+            return fixed.get(tuple(args), "")
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "run_strict", side_effect=fake_run),
+        ):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        assert not [a for a in calls if a[:2] == ["stash", "drop"]]
+        assert any("no longer resolves" in line for line in result), result
+
     def test_dry_run_previews_a_merged_orphan_without_dropping(self) -> None:
         # #3489: the preview reports the SAME drop a live run would perform, but
         # never issues `stash drop`.
@@ -2689,8 +2785,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return "* main"
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2720,8 +2816,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2750,8 +2846,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
@@ -2782,8 +2878,8 @@ class TestDropOrphanedStashes(TestCase):
 
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
             calls.append(args)
-            if args == ["stash", "list"]:
-                return stash_output
+            if args[:2] == ["stash", "list"]:
+                return _stash_listing(stash_output)
             if args == ["branch", "--no-color"]:
                 return branches_output
             return ""

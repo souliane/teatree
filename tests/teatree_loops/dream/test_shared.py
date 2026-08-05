@@ -7,7 +7,7 @@ three consumers read it, so the ladder and the binding rule can never drift apar
 
 from django.test import SimpleTestCase
 
-from teatree.loops.dream import _shared
+from teatree.loops.dream import _shared, merge, replay
 
 
 class IsBindingTextTestCase(SimpleTestCase):
@@ -41,10 +41,9 @@ class WeightLadderTestCase(SimpleTestCase):
 
     def test_engine_and_merge_read_the_same_ladder(self) -> None:
         # The consumers import the shared floors under their local aliases, so a change
-        # to the leaf reaches both — no per-module copy to drift.
-        from teatree.loops.dream import engine, merge  # noqa: PLC0415
-
-        assert engine._WEIGHT_BINDING == _shared.WEIGHT_BINDING
-        assert engine._WEIGHT_OTHER == _shared.WEIGHT_OTHER
+        # to the leaf reaches both — no per-module copy to drift. The replay phase is
+        # where the engine's half of the ladder lives since #4193 split phase 1 out.
+        assert replay._WEIGHT_BINDING == _shared.WEIGHT_BINDING
+        assert replay._WEIGHT_OTHER == _shared.WEIGHT_OTHER
         assert merge._WEIGHT_BINDING == _shared.WEIGHT_BINDING
         assert merge._WEIGHT_FEEDBACK == _shared.WEIGHT_FEEDBACK

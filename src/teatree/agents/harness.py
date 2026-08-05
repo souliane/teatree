@@ -64,6 +64,7 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import RegulatedPathPolicy
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
+from teatree.llm.credentials import Credential
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,7 @@ class PydanticAiHarness:
         self._binding = cfg.binding
         self._max_tokens = cfg.max_tokens
         self._regulated_path = cfg.regulated_path
+        self._anthropic_credential = cfg.anthropic_credential
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -269,7 +271,7 @@ class PydanticAiHarness:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
-            return resolve_native_anthropic_model(options, self._regulated_path)
+            return resolve_native_anthropic_model(options, self._regulated_path, self._anthropic_credential)
         # Normalise the resolved id to what the configured endpoint actually serves:
         # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
         # (the :data:`TIER_MODELS` form) an OpenAI-compatible provider does NOT carry, so it maps
@@ -335,16 +337,42 @@ def _build_claude_sdk_harness(context: HarnessBuildContext) -> Harness:  # noqa:
     return ClaudeSdkHarness()
 
 
+def _routed_anthropic_credential(binding: PydanticAiBinding, task: "Task | None") -> Credential | None:
+    """The per-account metered credential the NATIVE Anthropic binding authenticates with.
+
+    ``None`` for the ROUTER binding, which authenticates through the OpenAI-compatible
+    credential entry instead and must never pay for an Anthropic account probe. For the
+    native binding this is the SAME ``anthropic_api_key_pass_paths`` selector the
+    ``claude_sdk`` lane routes through (:func:`~teatree.credential_config.resolve_api_key_credential`),
+    at the task's overlay scope — one routing seam for both transports, never a second,
+    weaker lookup. Returns a credential carrying only the selected store PATH.
+    """
+    if binding is not PydanticAiBinding.NATIVE_ANTHROPIC:
+        return None
+    from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415 — deferred: ORM-backed selector
+
+    return resolve_api_key_credential(scope=_task_overlay(task) or "")
+
+
 def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
     """The built-in ``pydantic_ai`` factory ([#2885](https://github.com/souliane/teatree/issues/2885)).
 
     Resolves the OpenAI-compatible backend knobs SYNCHRONOUSLY (the ``x-lane`` value, the
     endpoint, the model id, the per-run step cap, the credential-store entry) rather than
     inside the async ``open`` where a DB read fails safe to defaults, rehydrates any
-    resumable ancestor's parked thread (a DB read only, never a network call — so selecting
-    this backend never itself requires a live credential), and selects the model binding from
+    resumable ancestor's parked thread, and selects the model binding from
     ``agent_harness_provider``: ``anthropic_api`` → the native Anthropic Messages-API binding
     (#3157 E1b, real ``cache_control``), else the generic OpenAI-compatible binding.
+
+    The NATIVE binding's metered credential is routed here for that same reason, and it is
+    the ONLY reason it cannot be left to ``open``: the per-account selector reads
+    ``ConfigSetting`` / ``AnthropicTokenUsage`` rows, and a Django ORM read inside
+    ``asyncio.run`` raises ``SynchronousOnlyOperation``. It yields a credential carrying the
+    selected ``pass`` PATH — no secret and no network read here; the key itself is resolved
+    lazily by :func:`~teatree.agents.pydantic_ai_config.resolve_native_anthropic_model`
+    inside ``open``, where the existing ``CredentialError`` seam records the failure. Routing
+    is resolved at the TASK's OVERLAY scope, the same scope the settings above come from, so
+    the transport and its credential can never be read from two different scopes.
 
     The rehydration POPS the ancestor's entry (single-use), so the built harness's
     ``resume_source`` records which ancestor it came from — a caller that refuses the
@@ -366,6 +394,7 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
             binding=binding,
             max_tokens=settings.pydantic_ai_max_tokens,
             regulated_path=RegulatedPathPolicy.from_settings(settings),
+            anthropic_credential=_routed_anthropic_credential(binding, context.task),
             backend=OpenAICompatibleLaneConfig(
                 lane=settings.openai_compatible_lane,
                 request_limit=settings.pydantic_ai_request_limit,

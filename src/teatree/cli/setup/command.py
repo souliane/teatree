@@ -25,6 +25,7 @@ from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
 from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
+from teatree.cli.setup.skill_pin_audit import SkillPinAuditor
 from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline
 from teatree.cli.setup.tool_installer import ToolInstaller
 from teatree.cli.slack.dm_provisioning import provision_all_overlay_dm_channels
@@ -32,6 +33,7 @@ from teatree.cli.slack.provision import slack_provision
 from teatree.cli.slack.setup import slack_bot_setup
 from teatree.cli.slack.user_token_setup import slack_user_token_setup
 from teatree.paths import get_data_dir
+from teatree.provisioning.skill_pin import default_record_path
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -208,6 +210,14 @@ def run(
     # already-loadable skill is skipped, so the entrypoint's every-start `t3 setup`
     # converges without re-fetching.
     MandatedSkillProvisioner(repo, claude_skills, get_data_dir("skill-sources")).provision(typer.echo)
+
+    # The provisioner above installs what the manifest pins; this asks whether the
+    # PIN itself is still where the source is. Setup is the one place that can ask:
+    # the answer needs a remote read, and doctor is the offline lane — so the
+    # measurement is taken here and RECORDED, and `t3 doctor check` reports the
+    # record. Suggestion-only, and a source it cannot reach is reported unknown
+    # rather than current.
+    SkillPinAuditor(repo, default_record_path()).audit(typer.echo)
 
     if not skip_plugin:
         PluginRegistrar(repo).install()

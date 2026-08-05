@@ -7,11 +7,14 @@ about the descriptors that were already open when it was written.
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from teatree.db.write_domain import ControlDbWriteDomain
+from teatree.db import write_domain
+from teatree.db.write_domain import ControlDbWriteDomain, read_write_holders_across
 from teatree.paths import CONTROL_DB_DIR_ENV
+from teatree.utils.run import CommandFailedError
 
 
 class TestDatabaseIsOffTheHostFilesystem:
@@ -91,3 +94,67 @@ def test_every_writable_open_mode_counts_as_a_writer(tmp_path: Path, mode: str) 
 
     with db.open(mode):
         assert domain.read_write_holders()
+
+
+class TestReadWriteHoldersAcrossManyPaths:
+    """One descriptor-table read answers for every path.
+
+    Asking per path re-reads the whole table per path. A real data dir holds 52
+    control-DB artifacts — the ``-wal``/``-shm`` sidecars plus every dated rename —
+    so the per-path shape turned one probe into 52 and a doctor run into a
+    20-second one.
+    """
+
+    def test_writers_on_several_files_are_all_reported_and_attributed(self, tmp_path: Path) -> None:
+        held = [tmp_path / "db.sqlite3", tmp_path / "db.sqlite3-wal", tmp_path / "db.sqlite3.precorrupt-20260727"]
+        unheld = tmp_path / "db.sqlite3-shm"
+        for path in [*held, unheld]:
+            path.write_bytes(b"x")
+
+        with held[0].open("r+b"), held[1].open("r+b"), held[2].open("r+b"):
+            found = read_write_holders_across([*held, unheld])
+
+        assert {path for path, _ in found} == set(held)
+        assert {holder.pid for _, holder in found} == {os.getpid()}
+
+    def test_a_read_only_descriptor_is_not_a_writer(self, tmp_path: Path) -> None:
+        database = tmp_path / "db.sqlite3"
+        database.write_bytes(b"x")
+
+        with database.open("rb"):
+            assert read_write_holders_across([database]) == []
+
+    def test_one_process_with_several_descriptors_on_one_file_is_reported_once(self, tmp_path: Path) -> None:
+        database = tmp_path / "db.sqlite3"
+        database.write_bytes(b"x")
+
+        with database.open("r+b"), database.open("r+b"), database.open("r+b"):
+            assert len(read_write_holders_across([database])) == 1
+
+    def test_an_empty_path_set_reads_nothing_at_all(self, tmp_path: Path) -> None:
+        assert read_write_holders_across([]) == []
+
+    def test_the_descriptor_table_is_read_once_for_every_path(self, tmp_path: Path) -> None:
+        # The whole point. Forced onto the lsof branch (the non-Linux view) because it
+        # is the one whose cost is a subprocess, and the one a call count can observe.
+        # ``which`` is stubbed too: the branch returns BEFORE spawning anything when the
+        # host has no lsof, so without this the count is 0 on a box that lacks one (this
+        # container does) and the guard only holds where lsof happens to be installed.
+        paths = [tmp_path / f"db.sqlite3.copy-{index}" for index in range(12)]
+        for path in paths:
+            path.write_bytes(b"x")
+        invocations: list[list[str]] = []
+
+        def record(command: list[str], **_: object) -> object:
+            invocations.append(command)
+            raise CommandFailedError(command, 1, "", "")
+
+        with (
+            patch.object(write_domain, "_PROC", tmp_path / "no-procfs"),
+            patch.object(write_domain.shutil, "which", return_value="/usr/bin/lsof"),
+            patch.object(write_domain, "run_allowed_to_fail", record),
+        ):
+            read_write_holders_across(paths)
+
+        assert len(invocations) == 1, f"one read must cover every path, got {len(invocations)}"
+        assert {str(path) for path in paths} <= set(invocations[0])

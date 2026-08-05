@@ -16,8 +16,10 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils.approval import ApprovalRefusedError
 from tests.teatree_core.management_commands._overlays import (
+    APP_MIGRATE_OVERLAY,
     DB_ENV_PROBE,
     ENV_CAPTURE_OVERLAY,
+    FAILED_APP_MIGRATE_OVERLAY,
     FAILING_IMPORT_OVERLAY,
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
@@ -454,6 +456,68 @@ class TestDbResetPasswords(TestCase):
 
             with pytest.raises(SystemExit) as exc_info:
                 call_command("db", "reset-passwords", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
+
+
+class TestDbMigrateApp(TestCase):
+    """``db migrate-app`` catches an app DB's schema up WITHOUT destroying its data.
+
+    ``db migrate`` targets teatree's own control DB and ``db refresh`` re-imports
+    the app DB from a dump before migrating it, so a worktree whose data is good
+    and whose schema is one migration behind — the ordinary state after pulling a
+    branch that adds one — had no verb at all: the only route to it destroyed the
+    data first.
+    """
+
+    @staticmethod
+    def _worktree_at(wt_dir: Path) -> Worktree:
+        wt_dir.mkdir()
+        ticket = Ticket.objects.create(overlay="test")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="/tmp/test",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+    @_patch_overlays(APP_MIGRATE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runs_the_app_migrate_step_and_nothing_else(self) -> None:
+        """Seeding and password resets are the importer's job, not a schema catch-up's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            worktree = self._worktree_at(wt_dir)
+
+            result = cast("str", call_command("db", "migrate-app", path=str(wt_dir)))
+
+            assert get_overlay().ran == ["django-migrate"]
+            assert worktree.db_name in result
+
+    @_patch_overlays(POST_DB_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_declaring_no_such_step_raises_system_exit_1(self) -> None:
+        """An overlay with post-DB steps but no ``django-migrate`` fails loud, never silently no-ops."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            self._worktree_at(wt_dir)
+
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "migrate-app", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
+
+    @_patch_overlays(FAILED_APP_MIGRATE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_non_zero_migrate_raises_system_exit_1(self) -> None:
+        """A migrate that exits non-zero must not report the schema as caught up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            self._worktree_at(wt_dir)
+
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("db", "migrate-app", path=str(wt_dir))
 
             assert exc_info.value.code == 1
 

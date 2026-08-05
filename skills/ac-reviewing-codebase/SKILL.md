@@ -8,7 +8,6 @@ requires:
 compatibility: macOS/Linux, any teatree-managed repo.
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # ac-reviewing-codebase — Periodic Holistic Architectural Review

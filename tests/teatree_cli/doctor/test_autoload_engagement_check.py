@@ -7,10 +7,16 @@ token it is written as, and the resolver the skill-loading gate consults —
 every one of which degrades SILENTLY into a session that looks exactly like one
 where autoload was never switched on. These tests pin the probe that turns that
 recurring hand-diagnosis into one doctor line.
+
+The demand itself is lane-scoped — an SDK worker is deliberately never handed
+the platform skill, because the gate enforcing it would block the factory — so
+an empty demand means two opposite things depending on where the doctor ran.
+:class:`TestTheCheckIsLaneScoped` pins both readings against each other.
 """
 
 import contextlib
 import io
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -18,14 +24,17 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import teatree
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN, session_lane
 from teatree.cli.doctor.checks_cold_hooks import (
     _ENGAGEMENT_PROBE,
+    _LANE_SDK,
     _check_autoload_engages_platform_skill,
     _run_hook_probe,
 )
 
 _PROBE = "teatree.cli.doctor.checks_cold_hooks._run_hook_probe"
 _SETTINGS = "teatree.config.get_effective_settings"
+_INTERACTIVE_LANE_ENV = {"T3_AUTOLOAD": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"}
 
 
 def _run_check() -> tuple[bool, str]:
@@ -45,11 +54,17 @@ class TestProbeRunsAgainstTheRealShim(TestCase):
 
     def test_live_hook_path_reports_an_enforceable_platform_skill(self) -> None:
         repo_root = Path(teatree.__file__).resolve().parents[2]
-        with patch.dict("os.environ", {"T3_AUTOLOAD": "1"}):
+        # The probe inherits this process's env, so the lane must be STATED: run
+        # under an SDK runner the demand is legitimately empty and an inherited
+        # lane would read as a broken engagement chain.
+        with patch.dict("os.environ", _INTERACTIVE_LANE_ENV):
+            os.environ.pop("CLAUDE_AGENT_SDK_VERSION", None)
+            assert session_lane() == LANE_INTERACTIVE_CLI
             parsed = _run_hook_probe(repo_root, _ENGAGEMENT_PROBE.format(plugin_root=str(repo_root)))
 
         assert parsed is not None, "the hook shim probe did not run at all"
         assert parsed["status"] == "ok", parsed
+        assert parsed["lane"] == LANE_INTERACTIVE_CLI, parsed
         # The whole chain: seam -> demand -> canonical token -> resolvable.
         assert parsed["enforceable"], parsed
 
@@ -106,6 +121,46 @@ class TestSilentlyDegradedEngagementFails(TestCase):
         assert verdict is False
         assert "FAIL" in output
         assert "ImportError: boom" in output
+
+
+class TestTheCheckIsLaneScoped(TestCase):
+    """An empty demand is a defect in an attended lane and the contract in an SDK one."""
+
+    def _run_in_lane(self, lane: str) -> tuple[bool, str]:
+        with (
+            patch(_SETTINGS, return_value=_Settings(autoload=True)),
+            patch(_PROBE, return_value={"status": "ok", "lane": lane, "demand": [], "enforceable": []}),
+        ):
+            return _run_check()
+
+    def test_a_positively_sdk_lane_engaging_nothing_is_not_a_failure(self) -> None:
+        # `t3 doctor check` run from inside a headless worker: the platform skill
+        # is withheld on purpose, so reporting a broken chain here is the bug.
+        verdict, output = self._run_in_lane(LANE_SDK)
+
+        assert verdict is True
+        assert "FAIL" not in output
+
+    def test_an_interactive_lane_engaging_nothing_still_fails(self) -> None:
+        # The check's whole reason to exist — do not weaken it.
+        verdict, output = self._run_in_lane(LANE_INTERACTIVE_CLI)
+
+        assert verdict is False
+        assert "FAIL" in output
+        assert "never opted in" in output
+
+    def test_an_unknown_lane_engaging_nothing_still_fails(self) -> None:
+        # A doctor run from a plain shell carries no Claude markers; treating
+        # that as SDK would silently retire the check on most hosts.
+        verdict, output = self._run_in_lane(LANE_UNKNOWN)
+
+        assert verdict is False
+        assert "FAIL" in output
+
+    def test_the_sdk_sentinel_tracks_the_hook_leafs_own_vocabulary(self) -> None:
+        # The check compares against a value the hook leaf owns but cannot export
+        # across the packaging boundary, so the two copies are bound here.
+        assert _LANE_SDK == LANE_SDK
 
 
 class TestUnaskableProbeWarns(TestCase):

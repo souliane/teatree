@@ -13,6 +13,16 @@ and no negative may forbid it (a negative widened past the mandated command reds
 the row). The rows are deliberately literal — this pins the specific commands the
 issue names, not a general "grep every backticked command" sweep, which would grade
 prose rather than doctrine.
+
+The mandate is checked against the SLICE the scenario grades, not the whole file.
+A scenario declaring ``agent_sections`` sends only those sections to the model, so
+a command sitting elsewhere in the same SKILL.md — or moved out to a
+``references/`` file — is unreachable by the agent being graded even though a
+whole-file read still finds it. That is not hypothetical: the ``t3 slack react``
+row below went exactly that way, out of the graded section and into a reference,
+while a whole-file assertion stayed green. The slice is resolved through the
+harness's own ``load_agent_definition`` so this test and the runner can never
+disagree about what the agent actually saw.
 """
 
 import re
@@ -20,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import AnyOf, EvalSpec, Matcher
 
@@ -35,6 +46,7 @@ _MANDATED: tuple[tuple[str, str, str], ...] = (
     ("skills/ship/SKILL.md", "t3 push", "safety_no_force_push_to_shared_branch"),
     ("skills/ship/SKILL.md", "t3 push", "container_push_uses_the_supported_seam"),
     ("skills/test/SKILL.md", "bash dev/test-affected.sh", "scoped_test_not_local_full_suite"),
+    ("skills/rules/SKILL.md", "t3 slack react --channel", "approved_colleague_reaction_fires_and_dms_receipt"),
 )
 
 
@@ -58,9 +70,15 @@ def _accepts(matcher: Matcher, command: str) -> bool:
 
 
 @pytest.mark.parametrize(("skill", "command", "scenario"), _MANDATED)
-def test_the_skill_still_mandates_the_command(skill: str, command: str, scenario: str) -> None:
-    assert command in (_REPO_ROOT / skill).read_text(encoding="utf-8"), (
-        f"{skill} no longer names {command!r}; re-derive what {scenario} should grade"
+def test_the_graded_slice_still_mandates_the_command(skill: str, command: str, scenario: str) -> None:
+    spec = _spec(scenario)
+    assert spec.agent_path == skill, f"{scenario} grades {spec.agent_path}, not {skill} — the row is stale"
+    graded = load_agent_definition(spec.agent_path, spec.agent_sections)
+    sections = ", ".join(spec.agent_sections) or "the whole file"
+    assert command in graded, (
+        f"{skill} no longer names {command!r} inside the slice {scenario} grades ({sections}). "
+        "Present elsewhere in the file, or in a references/ page, does not count — the agent "
+        "being graded is only sent this slice."
     )
 
 

@@ -9,7 +9,6 @@ requires:
   - verification-before-completion
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Batch Review Requests
@@ -35,7 +34,7 @@ Run the review request discovery to find all open non-draft PRs, check CI, and v
 t3 review-request discover
 ```
 
-Uses the overlay's `get_followup_repos()` (same as `t3:followup`) for repo list. Use `--json` for machine-readable output.
+Uses the overlay's `get_followup_repos()` (same as `t3:checking`) for repo list. Use `--json` for machine-readable output.
 
 The script outputs a summary table with CI status, validation results, and readiness. For PRs that fail validation:
 
@@ -56,6 +55,17 @@ t3 review-request check --mr-url <PR_URL>
 - `{"action": "post"}` → you may post this PR's review request (this turn).
 - `{"action": "suppress", "permalink": "...", "author": "..."}` → **do not post**. A message for this PR already exists in the channel (a prior agent post, or the user's own out-of-band post — any author suppresses). Record the returned `permalink` in the summary table as the existing request and move on. The guard has already reconciled the DB so the loop will not nag.
 - `{"action": "suppress", "reason": "read_failed_failsafe"}` → the live read could not complete; **do not post** (bias to not double-posting). The obligation stays open — a later tick retries.
+- `{"action": "refused", "reason": ...}` → **do not post**, and the reason says why. Four of them:
+  - `review_exempt_repo` — the repo is exempt from review requests. **Exits 2**, deliberately: a
+    `typer.Exit` under `call_command` exits 0, which would report a refusal as a success.
+  - `draft_mr` — the PR is still a draft.
+  - `draft_state_unknown` — the draft state could not be read, so it is treated as a draft.
+  - `work_group_*` — the PR is outside the configured work group.
+- `{"action": "refused", "reason": "no_review_channel_or_token"}` → no review channel or no token is
+  configured for this overlay. A configuration gap, not a per-PR verdict.
+
+An unenumerated verdict must never be read as "not ready yet". `refused` is terminal for this PR on
+this tick; only `post` authorises a post.
 
 The guard is the single source of truth for "already requested?". Do not second-guess a `suppress` with a manual search.
 

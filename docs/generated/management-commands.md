@@ -46,6 +46,7 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `query` | Run a read-only SQL query against the control DB; emit rows as JSON |
 | `shell` | Drop into a Django shell against the resolved (gate) control DB |
 | `restore-ci` | Restore the worktree database from the latest CI dump |
+| `migrate-app` | Apply pending migrations to the worktree's APP database, without re-importing it |
 | `reset-passwords` | Reset all user passwords to a known dev value |
 
 ## `db_backup`
@@ -94,7 +95,7 @@ Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
 | Subcommand | Description |
 | --- | --- |
 | `run` | Run E2E tests — the one command that works for every overlay |
-| `external` | Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo) |
+| `external` | Run Playwright tests from an external specs repo (the overlay's own, or --repo) |
 | `project` | Run E2E tests from the project's own test directory |
 | `lanes` | Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329) |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
@@ -383,8 +384,8 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | Subcommand | Description |
 | --- | --- |
 | `record` | Record a deferred question by hand — the agent-facing capture surface |
-| `answer` | Resolve a pending question with a user answer (resumes a parked headless task) |
-| `dismiss` | Dismiss a pending question without answering it |
+| `answer` | Resolve pending questions with a user answer (resumes any parked headless task) |
+| `dismiss` | Dismiss pending questions without answering them |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List pending deferred questions, oldest first |
 

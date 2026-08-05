@@ -16,7 +16,7 @@ from teatree.cli.doctor.checks_loop import _check_dream_transcript_visibility
 
 
 def _patch_root(root: Path):
-    return patch("teatree.loops.dream.engine.default_projects_dir", return_value=root)
+    return patch("teatree.loops.dream.replay.default_projects_dir", return_value=root)
 
 
 class TestDreamTranscriptVisibility:
@@ -57,7 +57,7 @@ class TestDreamTranscriptVisibility:
         buf = io.StringIO()
         with (
             patch(
-                "teatree.loops.dream.engine.default_projects_dir",
+                "teatree.loops.dream.replay.default_projects_dir",
                 side_effect=RuntimeError("boom"),
             ),
             redirect_stdout(buf),

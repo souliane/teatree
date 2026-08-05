@@ -1,4 +1,4 @@
-"""``autoload`` makes the platform skill a HARD demand on every engaged session.
+"""``autoload`` makes the platform skill a HARD demand on every engaged ATTENDED session.
 
 ``autoload`` is the owner's standing "teatree is on for every session" opt-in.
 Engagement alone only armed the suggester and the loop: nothing ever put the
@@ -7,6 +7,14 @@ hand on every fresh session. The demand is computed at the engagement seam
 (``hooks.scripts.engagement``) and merged into the ``UserPromptSubmit`` hard
 suggestion set, so it lands in ``<session>.pending`` and the ``PreToolUse``
 skill-loading gate enforces it.
+
+That gate refuses every ``Edit``/``Write``/``Bash`` until the demand is
+satisfied, and the factory's own SDK workers run the same hooks — so an
+un-laned demand made the owner's opt-in a hard block on a skill that is Claude
+Code harness wiring plus attended-session hygiene. Hence :class:`TestTheDemandIsLaneScoped`,
+whose SDK cases are the ones that would go green on a uniformly-demanding seam
+and whose attended cases are the ones that would go green on a uniformly-silent
+one.
 
 Integration-leaning: the end-to-end class drives the live
 ``handle_user_prompt_submit`` handler against a real state dir under
@@ -21,6 +29,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.engagement import PLATFORM_SKILL, autoload_skill_demand
 from hooks.scripts.hook_router import handle_user_prompt_submit
+from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN, session_lane
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -28,30 +37,65 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from lib import skill_loader as skill_loader_mod  # noqa: E402 — import follows the sys.path insert above
 
+_LANE_ENV: dict[str, dict[str, str]] = {
+    LANE_INTERACTIVE_CLI: {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"},
+    LANE_SDK: {"CLAUDE_CODE_ENTRYPOINT": "sdk-py", "CLAUDE_AGENT_SDK_VERSION": "0.2.95"},
+    LANE_UNKNOWN: {},
+}
 
-class TestAutoloadSkillDemand:
-    def test_autoload_off_demands_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_AUTOLOAD", "0")
+
+def _pin_lane(monkeypatch: pytest.MonkeyPatch, lane: str) -> None:
+    # Every lane key is cleared first, then only that lane's own are set: this
+    # suite runs under a real session whose markers are already in the env, and
+    # a patch that merely ADDS keys inherits the runner's lane rather than
+    # stating one. The assertion is the control — without it a mis-stated env
+    # would let a case pass by testing the wrong lane.
+    for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_AGENT_SDK_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in _LANE_ENV[lane].items():
+        monkeypatch.setenv(key, value)
+    assert session_lane() == lane
+
+
+class TestTheDemandIsLaneScoped:
+    def test_a_headless_sdk_run_is_never_demanded_the_platform_skill(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_SDK)
         assert autoload_skill_demand([]) == []
 
-    def test_autoload_on_demands_the_platform_skill(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_interactive_cli_session_is_demanded_the_platform_skill(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
         assert autoload_skill_demand([]) == [PLATFORM_SKILL]
+
+    def test_an_unknown_lane_keeps_the_attended_demand(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_UNKNOWN)
+        assert autoload_skill_demand([]) == [PLATFORM_SKILL]
+
+    @pytest.mark.parametrize("lane", [LANE_SDK, LANE_INTERACTIVE_CLI, LANE_UNKNOWN])
+    def test_autoload_off_demands_nothing_in_any_lane(self, monkeypatch: pytest.MonkeyPatch, lane: str) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "0")
+        _pin_lane(monkeypatch, lane)
+        assert autoload_skill_demand([]) == []
+
+
+class TestAutoloadSkillDemand:
+    @pytest.fixture(autouse=True)
+    def _attended(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
 
     @pytest.mark.parametrize(
         "loaded",
         [PLATFORM_SKILL, f"t3:{PLATFORM_SKILL}", f"skills/{PLATFORM_SKILL}/SKILL.md"],
     )
-    def test_an_already_loaded_platform_skill_is_not_re_demanded(
-        self, monkeypatch: pytest.MonkeyPatch, loaded: str
-    ) -> None:
-        monkeypatch.setenv("T3_AUTOLOAD", "1")
+    def test_an_already_loaded_platform_skill_is_not_re_demanded(self, loaded: str) -> None:
         # Every spelling the session's skills file can carry canonicalizes to the
         # same token, so none of them re-demands an already-held skill.
         assert autoload_skill_demand([loaded]) == []
 
-    def test_an_unrelated_loaded_skill_does_not_satisfy_the_demand(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_AUTOLOAD", "1")
+    def test_an_unrelated_loaded_skill_does_not_satisfy_the_demand(self) -> None:
         assert autoload_skill_demand(["t3:code", "ac-python"]) == [PLATFORM_SKILL]
 
 
@@ -75,6 +119,23 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
     def _canonical_platform_skill(self) -> str:
         return router.normalize_skill_name(PLATFORM_SKILL)
 
+    def test_a_headless_sdk_worker_gets_no_pending_platform_skill(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``<session>.pending`` is what the PreToolUse skill-loading gate reads,
+        # so this is where the demand becomes a hard block on the factory.
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_SDK)
+        monkeypatch.setattr(
+            skill_loader_mod,
+            "suggest_skills",
+            lambda _input: {"suggestions": [], "advisory": [], "companions": []},
+        )
+
+        handle_user_prompt_submit({"session_id": "sess-sdk", "prompt": "implement the fix"})
+
+        assert self._canonical_platform_skill() not in self._pending("sess-sdk")
+
     def test_autoload_session_hard_demands_the_platform_skill(
         self, state_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -83,6 +144,7 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         # overlay's companion list needs a live overlay import the hook
         # interpreter cannot perform.
         monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",
@@ -101,6 +163,7 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         # A suggester that raises used to degrade the whole prompt hook to
         # silence — indistinguishable from "the operator never opted in".
         monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
 
         def _boom(_input: dict) -> dict:
             msg = "suggester exploded"
@@ -135,6 +198,7 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
+        _pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
         canonical = self._canonical_platform_skill()
         (state_dir / "sess-held.skills").write_text(f"{canonical}\n", encoding="utf-8")
         monkeypatch.setattr(

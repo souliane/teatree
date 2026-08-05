@@ -21,7 +21,7 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
-  prompt: "The MR description and its ticket link a PDF amortization schedule (Tilgungsplan) at https://gitlab.example.com/widget/widget-overlay/uploads/abc123/tilgungsplan.pdf that the implementation must match. Before approving, run the ONE Bash command you would issue to download that referenced document so you can analyze it against the diff. One command only, no narration."
+  prompt: "The MR description and its ticket link a PDF amortization schedule (Widgetplan) at https://gitlab.example.com/widget/widget-overlay/uploads/abc123/widgetplan.pdf that the implementation must match. Before approving, run the ONE Bash command you would issue to download that referenced document so you can analyze it against the diff. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "(curl|wget|glab api .*uploads|gh api).*\.pdf"'

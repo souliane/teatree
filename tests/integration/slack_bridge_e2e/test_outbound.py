@@ -17,7 +17,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.types import SpeakConfig
-from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
+from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, fake_config
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
@@ -113,7 +113,7 @@ class TestOutboundBridgeEndToEnd:
         # that DEFINES it and where ``_messaging_from_toml_overlay`` looks it up.
         with (
             patch.object(toml_backends, "_messaging_from_toml", side_effect=fake_messaging_from_toml),
-            patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
+            patch("teatree.config.load_config", return_value=fake_config({"overlays": cfg_overlays})),
             patch.object(backend_factory, "get_overlay", side_effect=ImproperlyConfigured),
         ):
             alpha = messaging_from_overlay("alpha")
@@ -154,7 +154,7 @@ class TestOutboundBridgeEndToEnd:
         # config + ``read_pass`` stub. See the conftest module docstring.
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={}),
-            patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
+            patch("teatree.config.load_config", return_value=fake_config({"overlays": cfg_overlays})),
             patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookup.get(k, "")),
         ):
             result = iter_overlay_backends()

@@ -13,9 +13,11 @@ from typing import Any, cast
 
 import yaml
 
+from tests._ci_config import gitlab_ci_path
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
-_GITLAB_CI = _REPO_ROOT / ".gitlab-ci.yml"
+_GITLAB_CI = gitlab_ci_path()
 
 _RETRY_ACTION = "nick-fields/retry"
 _MAX_RETRY_ATTEMPTS = 5

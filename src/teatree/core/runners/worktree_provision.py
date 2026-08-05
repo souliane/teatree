@@ -48,14 +48,26 @@ def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> boo
     that exact gap and re-runs the idempotent provision runner to recreate the DB.
 
     Returns ``True`` when a re-provision ran and succeeded, ``False`` when nothing
-    needed healing (no DB strategy, no ``db_name``, DB already present, or an
-    unresolvable connection probe — fail-safe: an ambiguous probe never triggers
-    a needless re-import). Raises ``RuntimeError`` when the re-provision itself
-    fails, so the caller can surface a hard failure rather than start a broken
-    stack.
+    needed healing (not ``PROVISIONED``, no DB strategy, no ``db_name``, DB already
+    present, or an unresolvable connection probe — fail-safe: an ambiguous probe
+    never triggers a needless re-import). Raises ``RuntimeError`` when the
+    re-provision itself fails, so the caller can surface a hard failure rather than
+    start a broken stack.
+
+    The ``PROVISIONED`` guard is load-bearing, not a restatement of the name. The
+    repair is a DB import — it DROPS the database and rebuilds it from a snapshot —
+    and the trigger is only ever "the name on the row resolves to nothing". On a
+    ``SERVICES_UP``/``READY`` row those two facts combine badly: a stack is serving
+    from a database whose name has drifted away from the row (a re-bound ticket
+    re-derives ``db_name``), so the missing-DB probe is really evidence the ROW is
+    stale, and healing it silently replaces the live data with a snapshot. An
+    interrupted provision cannot be in either state — it died before
+    ``start_services`` — so nothing #1038 describes is lost by scoping it here.
     """
     from teatree.utils.db import db_exists  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
+    if worktree.state != Worktree.State.PROVISIONED:
+        return False
     if not worktree.db_name or overlay.provisioning.db_import_strategy(worktree) is None:
         return False
     try:
@@ -197,10 +209,7 @@ class WorktreeProvisionRunner(RunnerBase):
         additionally fires the best-effort out-of-band user alert so a
         provisioning-speed regression is never silently absorbed.
         """
-        extra = self.worktree.extra or {}
-        extra["provision_report"] = report.to_dict()
-        self.worktree.extra = extra
-        self.worktree.save(update_fields=["extra"])
+        self.worktree.merge_extra(set_keys={"provision_report": report.to_dict()})
         logger.info(
             "provision(%s): %d step(s), %.1fs total, %s",
             self.worktree.repo_path,

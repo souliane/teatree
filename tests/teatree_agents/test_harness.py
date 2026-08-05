@@ -15,7 +15,7 @@ import asyncio
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 from unittest.mock import patch
 
@@ -276,15 +276,20 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
     def test_pydantic_ai_harness_completes_a_real_run(self) -> None:
         # No `claude` binary check, no Anthropic credential needed — the
         # pydantic_ai harness is injected directly with a TestModel double.
-        # ``files_modified`` is the phase-evidence gate's required key for
-        # ``coding`` (#1282-6) — unrelated to the harness under test.
-        result_json = '{"summary": "test summary", "files_modified": ["a.py"]}'
+        # ``plan_text`` is the phase-evidence gate's required key for ``planning``
+        # (#1282-6) — unrelated to the harness under test. The phase is dispatched
+        # as ``planning`` rather than ``coding`` because the injected harness is
+        # built with no phase, so it carries no tool layer and the double emits no
+        # tool call. On an ACTING phase that is refused
+        # (:mod:`teatree.agents.action_verification`) and rightly so; a toolless
+        # double can only honestly stand in for a phase that need not act.
+        result_json = '{"summary": "test summary", "plan_text": "the plan"}'
         fake_harness = PydanticAiHarness(model=TestModel(custom_output_text=result_json))
         with (
             patch.object(headless_mod, "resolve_harness", return_value=fake_harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            attempt = run_headless(self.task, phase="planning", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -837,15 +842,19 @@ class TestPydanticAiHarnessSession:
 
         assert asyncio.run(drive()) == []
 
-    def test_interrupt_cancels_the_underlying_stream_not_just_the_local_task(self) -> None:
-        # stream.cancel() (not just cancelling the local drain asyncio.Task)
-        # stops token generation, closes the connection, and records the
-        # interrupted state — pydantic_ai's own StreamedRunResult.is_complete
-        # flips True as a direct side effect of THAT call.
+    def test_interrupt_stops_token_generation_not_just_the_local_consumer(self) -> None:
+        # The property that matters is that the PROVIDER REQUEST unwinds — token
+        # generation ceases and the connection closes — rather than the run
+        # continuing to bill in the background while a local consumer walks away.
+        # Asserted on the producer's own emission count, which is what "stopped"
+        # means on any transport; a private handle on whichever object happens to
+        # carry the in-flight stream is an implementation detail, not the contract.
         chunk_seen = asyncio.Event()
+        produced: list[str] = []
 
         async def slow_stream(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
             for i in range(50):
+                produced.append(f"chunk{i}")
                 yield f"chunk{i} "
                 chunk_seen.set()
                 await asyncio.sleep(0.05)
@@ -853,17 +862,26 @@ class TestPydanticAiHarnessSession:
         agent = Agent(FunctionModel(stream_function=slow_stream))
         session = PydanticAiHarnessSession(agent, model_name="test")
 
-        async def drive() -> bool:
+        async def drive() -> int:
             await session.query("hello")
             consumer = asyncio.ensure_future(_collect_all(session))
             await chunk_seen.wait()
-            stream = session._active_stream
-            assert stream is not None
+            # Sampled BEFORE the interrupt and re-read after a wait, never after
+            # awaiting the consumer: an interrupt that only set a flag would leave
+            # the consumer blocked until the run finished naturally, and a delta
+            # measured from THAT point is zero either way — an assertion that
+            # cannot fail. Measured against a flag-only interrupt, this window
+            # sees 5 further chunks.
+            at_interrupt = len(produced)
             await session.interrupt()
-            await consumer
-            return stream.is_complete
+            await asyncio.sleep(0.3)  # six further 0.05s chunk intervals
+            emitted_after = len(produced) - at_interrupt
+            consumer.cancel()
+            with suppress(asyncio.CancelledError):
+                await consumer
+            return emitted_after
 
-        assert asyncio.run(drive()) is True
+        assert asyncio.run(drive()) == 0, "the provider must stop generating, not keep billing in the background"
 
     def test_external_cancellation_propagates_instead_of_being_swallowed(self) -> None:
         # A timeout unrelated to interrupt() (e.g. headless._drive_with_heartbeat's
@@ -1095,10 +1113,35 @@ class TestPydanticAiMaxTokens(TestCase):
     def test_default_setting_is_the_owner_chosen_ceiling(self) -> None:
         from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
 
-        # The owner chose 16384 (a generous ceiling paired with a truncation alert), carried
+        # The owner chose 64000 (a generous ceiling paired with a truncation alert), carried
         # in a named constant, not a magic literal on the field.
-        assert PYDANTIC_AI_MAX_TOKENS_DEFAULT == 16384
+        assert PYDANTIC_AI_MAX_TOKENS_DEFAULT == 64000
         assert get_effective_settings().pydantic_ai_max_tokens == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+
+    def test_default_ceiling_fits_every_tier_models_own_output_limit(self) -> None:
+        """The one global ceiling is accepted by the SMALLEST tier model, not just the frontier one.
+
+        ``build_model_settings`` merges this single value into every request whatever tier the
+        dispatched phase resolved to, and the Anthropic Messages API rejects a ``max_tokens``
+        above the addressed model's own limit with a 400 rather than clamping it. A ceiling
+        chosen against the frontier model's 128K would therefore 400 every ``cheap``-tier
+        dispatch (Haiku 4.5 caps at 64K) while looking correct on ``frontier``.
+        """
+        from teatree.agents.model_tiering import TIER_MODELS  # noqa: PLC0415 — test-local
+        from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT  # noqa: PLC0415 — test-local
+
+        # Published per-model output ceilings for the ids TIER_MODELS resolves to.
+        max_output_tokens = {
+            "claude-opus-5": 128_000,
+            "claude-sonnet-5": 128_000,
+            "claude-haiku-4-5": 64_000,
+        }
+        assert set(TIER_MODELS.values()) <= max_output_tokens.keys(), (
+            "TIER_MODELS gained a model with no known output limit — confirm its ceiling before "
+            "trusting PYDANTIC_AI_MAX_TOKENS_DEFAULT against it"
+        )
+        smallest = min(max_output_tokens[model] for model in TIER_MODELS.values())
+        assert smallest >= PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
     def test_resolve_harness_reads_the_configured_max_tokens_synchronously(self) -> None:
         # Resolved SYNC in resolve_harness (before asyncio.run) — a read inside the

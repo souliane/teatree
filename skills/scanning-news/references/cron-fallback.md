@@ -1,6 +1,6 @@
 # Cron Fallback — read when the scanning-news scanner is not yet wired into the main loop
 
-Until the dedicated `scanning_news` scanner ships (the architectural-review-style scanner that queues a daily Task for this skill), fall back to the same crontab pattern documented by `t3:followup`.
+Until the dedicated `scanning_news` scanner ships (the architectural-review-style scanner that queues a daily Task for this skill), fall back to the same crontab pattern documented by `t3:checking`.
 
 ## Local crontab
 

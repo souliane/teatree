@@ -5,7 +5,6 @@ eval_exempt: in-session driver for the eval harness itself; its commands are cov
 compatibility: any
 metadata:
   version: 0.0.1
-  subagent_safe: false
 requires:
   - rules
 ---

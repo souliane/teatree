@@ -51,11 +51,13 @@ skills/review/SKILL.md::gh issue view
 skills/review/SKILL.md::gh pr diff
 skills/review/SKILL.md::gh pr list
 skills/review/SKILL.md::gh pr view
-skills/review/SKILL.md::glab api
 skills/review/SKILL.md::glab issue view
 skills/review/SKILL.md::glab mr diff
 skills/review/SKILL.md::glab mr list
 skills/review/SKILL.md::glab mr view
+skills/review/references/giving-review-investigation.md::gh issue view
+skills/review/references/giving-review-investigation.md::glab api
+skills/review/references/giving-review-investigation.md::glab issue view
 skills/rules/SKILL.md::gh api
 skills/rules/SKILL.md::gh issue create
 skills/rules/SKILL.md::gh issue view
@@ -67,6 +69,7 @@ skills/rules/SKILL.md::glab api
 skills/rules/SKILL.md::glab ci status
 skills/rules/SKILL.md::glab issue view
 skills/rules/SKILL.md::glab mr view
+skills/rules/references/worked-dispatch-examples.md::gh pr create
 skills/scanning-news/SKILL.md::gh issue list
 skills/setup/SKILL.md::gh auth status
 skills/setup/SKILL.md::glab auth status
@@ -82,6 +85,7 @@ skills/ship/SKILL.md::glab mr create
 skills/ship/SKILL.md::glab mr list
 skills/ship/SKILL.md::glab mr update
 skills/ship/SKILL.md::glab mr view
+skills/ship/references/pr-siblings-and-bundling.md::gh pr list
 skills/sweeping-prs/SKILL.md::gh pr view
 skills/sweeping-prs/SKILL.md::glab mr view
 skills/sweeping-tickets/SKILL.md::gh issue close

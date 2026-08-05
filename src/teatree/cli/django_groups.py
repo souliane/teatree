@@ -132,7 +132,6 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("verify", "Verify worktree state and return URLs."),
             ("services", "Return configured run commands."),
             ("backend", "Start the backend dev server."),
-            ("frontend", "Start the frontend dev server."),
             ("build-frontend", "Build the frontend for production/testing."),
             ("tests", "Run the project test suite."),
             ("lint", "Run the overlay's lint pipeline on this worktree."),
@@ -142,8 +141,9 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "E2E test commands.",
         [
             ("run", "Run E2E tests — dispatches to project or external runner based on overlay config."),
+            ("lanes", "Emit the {lane: [spec, ...]} CI matrix folded from the overlay's registered specs."),
             ("trigger-ci", "Trigger E2E tests on a remote CI pipeline."),
-            ("external", "Run Playwright tests from the external test repo (T3_PRIVATE_TESTS)."),
+            ("external", "Run Playwright tests from the external specs repo (the overlay's own, or --repo)."),
             ("project", "Run E2E tests from the project's own test directory."),
             (
                 "post-test-plan",
@@ -165,6 +165,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         [
             ("migrate", "Apply pending migrations to the runtime self-DB (non-destructive self-rescue)."),
             ("refresh", "Re-import the worktree database from dump/DSLR."),
+            ("migrate-app", "Apply pending migrations to the worktree's app DB, without re-importing it."),
             ("approve", "Record a single-use DbApproval that satisfies the #777 fresh-dump gate without a TTY (#953)."),
             ("restore-ci", "Restore database from the latest CI dump."),
             ("reset-passwords", "Reset all user passwords to a known dev value."),
@@ -191,6 +192,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("create", "Create a pull request for the ticket's branch."),
             ("merge", "[Removed] Refuses with a redirect to the §17.4 keystone (`ticket clear` + `ticket merge`)."),
             ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
+            ("discharge-pending", "Drop a deferred-PR obligation the drain can never discharge."),
             ("check-gates", "Check whether session gates allow a phase transition."),
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
@@ -216,6 +218,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("complete", "Mark a claimed task COMPLETED for work finished out-of-band."),
             ("create", "Enqueue the next-phase task for a ticket."),
             ("list", "List tasks with optional filters; --session scopes to the current harness session's todos."),
+            ("reconcile-checklist", "Emit the in-session harness-TODO reconciliation checklist (read-only)."),
+            ("record-attempt", "Record an in-session sub-agent's result back onto a Task."),
             ("start", "Claim and run the next interactive task in the current terminal."),
             (
                 "work-next-headless",
@@ -296,6 +300,9 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Session-lifecycle operations.",
         [
             ("prepare-stop", "Refresh the durable recovery artifacts (TODO mirror, resume plan, at-risk worktrees)."),
+            ("todo-add", "Append an item to this session's durable working list."),
+            ("todo-list", "List this session's working items, in working order."),
+            ("todo-set", "Move one working item to a new status."),
         ],
         # ``prepare-stop`` reads the teatree-core control DB (open PRs, deferred
         # questions) — dispatch via ``python -m teatree`` so a cwd inside a ticket
@@ -339,12 +346,20 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLANNED (--human-authorize)."),
             ("skip-planning", "Mark a trivial ticket to skip planning and advance to PLANNED (--reason, no artifact)."),
             ("plan-reconcile-inflight", "Retroactively advance STARTED tickets to PLANNED after the gate was added."),
+            ("plan-reaffirm", "Re-bind a plan to a new base — the plan-currency gate's never-lockout escape."),
             ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
+            (
+                "integration-review-override",
+                "Record the audited escape hatch for the cross-repo integration-review gate.",
+            ),
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
+            ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
+            ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
             ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
+            ("reconcile-overlay", "Backfill `overlay` for rows whose attribution disagrees with inference."),
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("create-sub", "Create a child work item nested under a parent issue/work item."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
@@ -361,6 +376,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Persist + look up cold-review verdicts per MR.",
         [
             ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
+            ("record-evidence", "Record a review-evidence artifact for a ticket."),
             ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
             ("lock-acquire", "Acquire the per-MR review-dispatch lock before a manual review."),
             ("lock-status", "Report the current MRReviewLock state for an MR (read-only)."),

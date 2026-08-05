@@ -13,11 +13,34 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.loops.dream.phase_runner import MemoryPhaseRunner
+from teatree.loops.dream.decay import ArchivedMemory
+from teatree.loops.dream.phase_runner import MemoryPhaseRunner, _broken_citation_warnings
 
 
 def _no_host() -> tuple[None, str]:
     return None, "souliane/teatree"
+
+
+def _archived(name: str, *breaks: str) -> ArchivedMemory:
+    return ArchivedMemory(
+        name=name,
+        source=Path(f"/mem/{name}.md"),
+        destination=Path(f"/mem/archive/{name}.md"),
+        reason="over-budget, lowest-signal",
+        broken_inbound=breaks,
+    )
+
+
+class BrokenCitationWarningTestCase(TestCase):
+    """Budget pressure may archive a cited memory — it may never do so silently."""
+
+    def test_each_cited_archival_names_the_citations_it_breaks(self) -> None:
+        # _inbound_citers hands the citers over already sorted.
+        warnings = _broken_citation_warnings((_archived("feedback_meta_rule", "MEMORY.md", "feedback_a.md"),))
+        assert warnings == ["; WARN archived feedback_meta_rule still cited by MEMORY.md, feedback_a.md"]
+
+    def test_an_uncited_archival_warns_nothing(self) -> None:
+        assert _broken_citation_warnings((_archived("feedback_orphan"),)) == []
 
 
 class MemoryPhaseRunnerTestCase(TestCase):
