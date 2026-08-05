@@ -1,4 +1,4 @@
-"""The sub-agent barrier's returns, as the ONE payload section a receiver reads.
+"""The sub-agent barrier's returns, as ROW STATE rendered onto the delivery surface.
 
 Split out of :mod:`teatree.core.handover` (which owns payload resolution, target
 resolution and the XDG mirror) so the wrap-up is one self-describing unit: what a
@@ -13,19 +13,28 @@ worktree: "where is that agent's work now, and what is still owed?" — one answ
 per agent, not N snapshots to reconcile.
 
 So the row carries a stored UNION of every agent any of its barriers enumerated
-(:attr:`~teatree.core.models.SessionHandover.subagent_wrapup`), and the section is
-rendered from it. Bounded by the number of distinct agents rather than the number
-of hand-offs, and lossless: an agent enumerated at hand-off #1 and absent at #5 is
-still named, because absence is ambiguous — it either finished cleanly or its
-worktree is gone, and the second is the highest-risk thing a hand-off carries.
+(:attr:`~teatree.core.models.SessionHandover.subagent_wrapup`). Bounded by the number
+of distinct agents rather than the number of hand-offs, and lossless: an agent
+enumerated at hand-off #1 and absent at #5 is still named, because absence is
+ambiguous — it either finished cleanly or its worktree is gone, and the second is the
+highest-risk thing a hand-off carries.
+
+The union is DELIVERY state rendered ONTO the payload at delivery
+(:func:`delivered_payload`), never spliced INTO it. Splicing had to decide which bytes
+were the harness's own by matching marker text, which is a claim about somebody else's
+prose: an authored body quoting a marker had that region deleted, and an unterminated
+quote took the whole tail with it. Nothing here reads the payload to learn a fact about
+the harness, and nothing writes into it.
+
+The row also records whether and when a barrier ran
+(:attr:`~teatree.core.models.SessionHandover.last_barrier_at`,
+:attr:`~teatree.core.models.SessionHandover.barrier_ran_at_latest_handoff`), because
+``[]`` means "no agents" and NULL means "nobody looked". Conflating them is what let a
+hand-off that ran no barrier state an earlier barrier's finding as its own.
 """
 
 from operator import itemgetter
-from pathlib import Path
 from typing import TYPE_CHECKING
-
-from teatree.core.handover import write_mirror
-from teatree.core.session_handover_manager import block_markers, upsert_payload_block
 
 if TYPE_CHECKING:
     import datetime as dt
@@ -35,22 +44,16 @@ if TYPE_CHECKING:
     from teatree.core.models.session_handover import SessionHandover
 
 __all__ = [
-    "SUBAGENT_BLOCK_MARKER",
-    "SUBAGENT_MARKER_END",
-    "SUBAGENT_MARKER_START",
     "SUBAGENT_SECTION_HEADER",
-    "carries_subagent_section",
+    "delivered_payload",
     "merge_subagent_records",
+    "record_barrier_returns",
     "render_subagent_section",
     "subagent_record",
-    "upsert_subagent_section",
+    "wrapup_section_for",
 ]
 
 SUBAGENT_SECTION_HEADER = "## Sub-agent wrap-up"
-#: One home for the delimiter, so the renderer, the upsert and the completeness
-#: assertion can never disagree about what bounds the block.
-SUBAGENT_BLOCK_MARKER = "t3:handover:subagents"
-SUBAGENT_MARKER_START, SUBAGENT_MARKER_END = block_markers(SUBAGENT_BLOCK_MARKER)
 
 
 def subagent_record(push: "SubagentPush", *, at: "dt.datetime") -> dict:
@@ -71,17 +74,6 @@ def subagent_record(push: "SubagentPush", *, at: "dt.datetime") -> dict:
     }
 
 
-def carries_subagent_section(handover: "SessionHandover") -> bool:
-    """Whether *handover*'s payload already carries a wrap-up block from some earlier barrier.
-
-    A row that carries one has to be re-rendered by every later hand-off, barrier or
-    no barrier: the block asserts which agents the LATEST barrier saw, so leaving it
-    untouched across a hand-off that ran none re-states that freshness for a barrier
-    that never happened.
-    """
-    return SUBAGENT_MARKER_START in handover.payload
-
-
 def merge_subagent_records(existing: "Sequence[dict]", incoming: "Sequence[dict]") -> list[dict]:
     """The union of *existing* and *incoming*, keyed on worktree — pure, no ORM.
 
@@ -97,23 +89,43 @@ def merge_subagent_records(existing: "Sequence[dict]", incoming: "Sequence[dict]
     return sorted(merged.values(), key=itemgetter("first_seen_at", "worktree"))
 
 
-def render_subagent_section(records: "Sequence[dict]") -> str:
-    """The union as the section the receiver reads.
+def render_subagent_section(
+    records: "Sequence[dict]", *, last_barrier_at: "dt.datetime | None", barrier_ran_at_latest_handoff: bool
+) -> str:
+    """The union as the section the receiver reads — ``""`` when no barrier has ever run.
 
     Each agent contributes what it finished and what is left, because "remaining"
     is the half the receiver has to act on. An agent absent from the latest barrier
     is marked as such rather than silently dropped OR silently presented as current.
 
-    Zero agents renders an explicit line rather than nothing: an ABSENT section is
-    indistinguishable from a barrier that never ran, which is the reported symptom.
+    Every case NAMES the barrier its counts belong to. A row whose latest hand-off ran
+    none says so and gives the instant of the last one that did, so a reader can see
+    what has not been re-checked since — the alternative is a hand-off restating an
+    earlier barrier's finding as its own. Silence is reserved for the one case where it
+    is the true statement: nobody has ever looked.
     """
-    if not records:
+    if not records and last_barrier_at is None:
+        return ""
+    if not records and barrier_ran_at_latest_handoff:
         return (
             f"{SUBAGENT_SECTION_HEADER} (0 agents)\n\n"
-            "No in-flight sub-agent worktrees carried pending work at hand-off time."
+            "A sub-agent barrier ran at this hand-off and found no in-flight sub-agent "
+            "worktree carrying pending work."
         )
-    latest = sum(1 for record in records if record["in_latest_barrier"])
-    lines = [f"{SUBAGENT_SECTION_HEADER} ({len(records)} agents seen; {latest} enumerated at the latest barrier)", ""]
+    since = last_barrier_at.isoformat() if last_barrier_at else "an unrecorded instant"
+    if not records:
+        return (
+            f"{SUBAGENT_SECTION_HEADER} (0 agents; NO barrier ran at this hand-off)\n\n"
+            f"The last barrier ran at {since} and found none. This hand-off ran none, so "
+            "nothing has been re-checked since — a sub-agent started after that instant is "
+            "NOT covered by this line."
+        )
+    if barrier_ran_at_latest_handoff:
+        latest = sum(1 for record in records if record["in_latest_barrier"])
+        header = f"{len(records)} agents seen; {latest} enumerated at THIS hand-off's barrier"
+    else:
+        header = f"{len(records)} agents seen; NO barrier ran at this hand-off — the last was at {since}"
+    lines = [f"{SUBAGENT_SECTION_HEADER} ({header})", ""]
     for record in records:
         lines += [
             f"- `{record['branch'] or '(no branch)'}` at {record['worktree']}",
@@ -128,17 +140,39 @@ def render_subagent_section(records: "Sequence[dict]") -> str:
     return "\n".join(lines)
 
 
-def upsert_subagent_section(handover: "SessionHandover", records: "Sequence[dict]") -> Path:
-    """Store *records* on *handover*, re-render its ONE wrap-up block, re-mirror.
+def record_barrier_returns(
+    handover: "SessionHandover", records: "Sequence[dict]", *, at: "dt.datetime", barrier_ran: bool
+) -> None:
+    """Store the barrier's returns AND the barrier fact on *handover*. Touches no payload byte.
 
-    ``unique_mirror_path`` keys on ``created_at``, which this does not touch, so the
-    re-mirror OVERWRITES the same file and leaves ``latest`` pointed at it — one
-    hand-off stays one file, with no pointer churn.
+    Unconditional: recording is a non-destructive row write, so there is no branch left
+    for an authored body to forge the harness into taking.
     """
     handover.subagent_wrapup = list(records)
-    upsert_payload_block(handover, marker=SUBAGENT_BLOCK_MARKER, block=render_subagent_section(records))
-    handover.save(update_fields=["payload", "subagent_wrapup"])
-    return write_mirror(handover)
+    handover.barrier_ran_at_latest_handoff = barrier_ran
+    if barrier_ran:
+        handover.last_barrier_at = at
+    handover.save(update_fields=["subagent_wrapup", "last_barrier_at", "barrier_ran_at_latest_handoff"])
+
+
+def wrapup_section_for(handover: "SessionHandover") -> str:
+    """*handover*'s wrap-up section, rendered from the ROW — never from its payload text."""
+    return render_subagent_section(
+        handover.subagent_wrapup,
+        last_barrier_at=handover.last_barrier_at,
+        barrier_ran_at_latest_handoff=handover.barrier_ran_at_latest_handoff,
+    )
+
+
+def delivered_payload(handover: "SessionHandover") -> str:
+    """The row's payload with the wrap-up section appended — the bytes a receiver reads.
+
+    One seam, so the XDG mirror and the claimed payload can never disagree about what
+    was delivered, and the section is last by construction rather than by a caller
+    contract a later absorb could falsify.
+    """
+    section = wrapup_section_for(handover)
+    return f"{handover.payload.rstrip()}\n\n{section}" if section else handover.payload
 
 
 def _push_done(push: "SubagentPush") -> str:

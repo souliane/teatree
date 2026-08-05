@@ -20,10 +20,12 @@ from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover import resolve_handover
 from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.handover_wrapup import (
+    delivered_payload,
     merge_subagent_records,
+    record_barrier_returns,
     render_subagent_section,
     subagent_record,
-    upsert_subagent_section,
+    wrapup_section_for,
 )
 from teatree.core.models import LoopLease, SessionHandover
 from teatree.core.session_handover_manager import SessionHandoverQuerySet
@@ -183,6 +185,10 @@ def _records(pushes: "list[SubagentPush]", *, at: dt.datetime) -> list[dict]:
     return [subagent_record(push, at=at) for push in pushes]
 
 
+def _render(records: list[dict], *, last_barrier_at: dt.datetime | None = _AT, barrier_ran: bool = True) -> str:
+    return render_subagent_section(records, last_barrier_at=last_barrier_at, barrier_ran_at_latest_handoff=barrier_ran)
+
+
 class TestRenderSubagentSection:
     """What the barrier collected, as the section the receiver reads (#4194)."""
 
@@ -202,21 +208,19 @@ class TestRenderSubagentSection:
             ),
         )
 
-        section = render_subagent_section(_records([pushed, refused], at=_AT))
+        section = _render(_records([pushed, refused], at=_AT))
 
-        assert "Sub-agent wrap-up (2 agents seen; 2 enumerated at the latest barrier)" in section
+        assert "Sub-agent wrap-up (2 agents seen; 2 enumerated at THIS hand-off's barrier)" in section
         assert "committed, pushed, PR http://pr/1" in section
         assert "token in a.py" in section
 
     def test_a_driven_agent_with_no_outcome_says_so_rather_than_reading_as_done(self) -> None:
         """``driven`` with no ``outcome`` is a hole in the barrier's own report, not a clean push."""
-        section = render_subagent_section(
-            _records([SubagentPush(worktree=Path("/wt/agent-q"), branch="feat/q", driven=True)], at=_AT)
-        )
+        section = _render(_records([SubagentPush(worktree=Path("/wt/agent-q"), branch="feat/q", driven=True)], at=_AT))
         assert "no outcome was recorded" in section
 
     def test_an_undriven_agent_reports_its_error_as_what_remains(self) -> None:
-        section = render_subagent_section(
+        section = _render(
             _records(
                 [SubagentPush(worktree=Path("/wt/agent-z"), branch="feat/z", driven=False, error="git exploded")],
                 at=_AT,
@@ -224,9 +228,42 @@ class TestRenderSubagentSection:
         )
         assert "git exploded" in section
 
-    def test_zero_agents_render_an_explicit_line(self) -> None:
-        """An absent section is indistinguishable from a barrier that never ran."""
-        assert "No in-flight sub-agent worktrees" in render_subagent_section([])
+
+class TestTheRenderedSectionNamesWhichBarrierItSpeaksFor:
+    """Four cases, each stating whose barrier its counts belong to (#4194).
+
+    ``[]`` means "no agents" and NULL means "nobody looked"; a section that cannot tell
+    those apart is how a hand-off that ran no barrier restates an earlier one's finding
+    as its own.
+    """
+
+    def test_no_barrier_has_ever_run_renders_nothing_at_all(self) -> None:
+        assert _render([], last_barrier_at=None, barrier_ran=False) == ""
+
+    def test_a_barrier_that_ran_here_and_found_none_says_exactly_that(self) -> None:
+        section = _render([], barrier_ran=True)
+        assert "(0 agents)" in section
+        assert "barrier ran at this hand-off and found no in-flight sub-agent worktree" in section
+
+    def test_no_barrier_at_this_hand_off_names_the_last_one_that_did(self) -> None:
+        section = _render([], barrier_ran=False)
+        assert "(0 agents; NO barrier ran at this hand-off)" in section
+        assert _AT.isoformat() in section
+        assert "NOT covered by this line" in section
+
+    def test_agents_enumerated_here_are_attributed_to_this_hand_offs_barrier(self) -> None:
+        records = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
+        assert "1 agents seen; 1 enumerated at THIS hand-off's barrier" in _render(records, barrier_ran=True)
+
+    def test_agents_carried_across_a_barrier_less_hand_off_say_nothing_was_re_checked(self) -> None:
+        records = merge_subagent_records(
+            _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT), []
+        )
+
+        section = _render(records, barrier_ran=False)
+
+        assert f"1 agents seen; NO barrier ran at this hand-off — the last was at {_AT.isoformat()}" in section
+        assert "NOT enumerated at the latest barrier" in section
 
 
 class TestMergeSubagentRecords:
@@ -271,9 +308,9 @@ class TestMergeSubagentRecords:
             _records([SubagentPush(worktree=Path("/wt/c"), branch="feat/c", driven=False, error="boom")], at=_LATER),
         )
 
-        section = render_subagent_section(merged)
+        section = _render(merged)
 
-        assert "Sub-agent wrap-up (2 agents seen; 1 enumerated at the latest barrier)" in section
+        assert "Sub-agent wrap-up (2 agents seen; 1 enumerated at THIS hand-off's barrier)" in section
         assert "NOT enumerated at the latest barrier" in section
 
     def test_merging_into_nothing_is_the_incoming_set(self) -> None:
@@ -340,32 +377,71 @@ class TestTheAbsorbIsReportedFromTheWriteSeam(TestCase):
         assert created.previous_bytes == len("RIVAL-STATE")
 
 
-class TestUpsertSubagentSection(TestCase):
+class TestRecordBarrierReturns(TestCase):
+    """The barrier's returns land as ROW STATE — the payload is not a place the harness writes."""
+
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(_tmp_env("XDG_STATE_HOME"))
 
-    def test_the_section_is_persisted_and_the_same_mirror_file_is_rewritten(self) -> None:
-        created = handover.create_handover(
+    def _row(self, payload: str = "BODY") -> SessionHandover:
+        return handover.create_handover(
             from_session="hand-er",
-            resolution=resolve_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY"),
-        )
+            resolution=resolve_handover(from_session="hand-er", explicit_to="target-Z", authored=payload),
+        ).handover
 
-        rewritten = upsert_subagent_section(created.handover, [])
-
-        assert rewritten == created.mirror, "created_at is untouched, so the unique mirror file is the same one"
-        row = SessionHandover.objects.get(pk=created.handover.pk)
-        assert row.payload.startswith("BODY")
-        assert "Sub-agent wrap-up" in row.payload
-        assert "Sub-agent wrap-up" in rewritten.read_text(encoding="utf-8")
-
-    def test_the_records_are_stored_on_the_row_rather_than_re_parsed_from_the_payload(self) -> None:
-        created = handover.create_handover(
-            from_session="hand-er",
-            resolution=resolve_handover(from_session="hand-er", explicit_to="target-Z", authored="BODY"),
-        )
+    def test_the_records_and_the_barrier_fact_are_stored_and_the_payload_is_untouched(self) -> None:
+        row = self._row()
         records = _records([SubagentPush(worktree=Path("/wt/a"), branch="feat/a", driven=False, error="x")], at=_AT)
 
-        upsert_subagent_section(created.handover, records)
+        record_barrier_returns(row, records, at=_AT, barrier_ran=True)
 
-        assert SessionHandover.objects.get(pk=created.handover.pk).subagent_wrapup == records
+        persisted = SessionHandover.objects.get(pk=row.pk)
+        assert persisted.subagent_wrapup == records
+        assert persisted.last_barrier_at == _AT
+        assert persisted.barrier_ran_at_latest_handoff is True
+        assert persisted.payload == "BODY", "the barrier records state; it never edits what the author handed over"
+
+    def test_a_barrier_that_did_not_run_leaves_the_last_instant_where_it_was(self) -> None:
+        row = self._row()
+        record_barrier_returns(row, [], at=_AT, barrier_ran=True)
+
+        record_barrier_returns(row, [], at=_LATER, barrier_ran=False)
+
+        persisted = SessionHandover.objects.get(pk=row.pk)
+        assert persisted.last_barrier_at == _AT, "only a barrier that RAN moves the instant"
+        assert persisted.barrier_ran_at_latest_handoff is False
+
+
+class TestTheWrapUpDecisionKeysOnTheRowNotThePayloadText(TestCase):
+    """The forgeability kill: an authored body quoting a marker decides nothing (#4194).
+
+    The marker string below is a LITERAL, and deliberately so — there is no exported
+    marker constant any more, and a test written from one would only prove the scheme
+    recognises its own bytes.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(_tmp_env("XDG_STATE_HOME"))
+
+    _QUOTES_A_MARKER = "# Reasoning\n\n<!-- t3:handover:subagents -->\nquoted\n<!-- /t3:handover:subagents -->\n"
+
+    def test_a_payload_quoting_a_marker_renders_no_section_while_the_row_says_nobody_looked(self) -> None:
+        row = SessionHandover.objects.create(from_session="a", to_session="b", payload=self._QUOTES_A_MARKER)
+
+        assert wrapup_section_for(row) == ""
+        assert delivered_payload(row) == self._QUOTES_A_MARKER
+
+    def test_the_same_payload_renders_a_section_once_the_row_itself_records_a_barrier(self) -> None:
+        row = SessionHandover.objects.create(
+            from_session="a",
+            to_session="b",
+            payload=self._QUOTES_A_MARKER,
+            last_barrier_at=_AT,
+            barrier_ran_at_latest_handoff=True,
+        )
+
+        assert "(0 agents)" in wrapup_section_for(row)
+        assert delivered_payload(row).startswith(self._QUOTES_A_MARKER.rstrip())
+        assert delivered_payload(row).rstrip().endswith("carrying pending work.")

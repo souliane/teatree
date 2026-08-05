@@ -61,52 +61,6 @@ def _absorb_payload(*, prior: str, incoming: str, author: str, at: "dt.datetime"
     return f"{prior.rstrip()}\n\n## Hand-off update — from `{author}` at {at.isoformat()}\n\n{incoming}"
 
 
-def block_markers(marker: str) -> tuple[str, str]:
-    """The opening and closing HTML comments delimiting the *marker* block."""
-    return f"<!-- {marker} -->", f"<!-- /{marker} -->"
-
-
-def upsert_payload_block(handover: "SessionHandover", *, marker: str, block: str) -> None:
-    """Replace *handover*'s *marker* block with *block*, in memory — the caller saves.
-
-    Payload mutation lives beside :func:`_absorb_payload` rather than at the call
-    site, so both ways a row grows — a second hand-off absorbed, the barrier's
-    returns re-rendered — are written in one module. Appending was the bug: a
-    session that handed off five times left the receiver five wrap-up sections, each
-    a snapshot of a different moment.
-
-    The delimiters are EXPLICIT markers rather than "the ``##`` header to the next
-    ``##``", because :func:`_absorb_payload` appends later hand-offs AFTER the block
-    and an authored body may legitimately contain that header. The refreshed block
-    is written at the END for the same reason: the receiver then always finds the
-    barrier report last, even after a later absorb.
-
-    Mutation without the write so the caller persists this and its own fields in one
-    save; the block and the records it renders from must never land separately.
-    """
-    start, end = block_markers(marker)
-    body = _strip_block(handover.payload, start=start, end=end)
-    fenced = f"{start}\n{block}\n{end}"
-    handover.payload = f"{body.rstrip()}\n\n{fenced}" if body.strip() else fenced
-
-
-def _strip_block(payload: str, *, start: str, end: str) -> str:
-    """*payload* with every delimited block removed — every one, not the first.
-
-    A payload that somehow accumulated two blocks (a row written before the marker
-    existed, an authored body quoting one) collapses to zero here and to exactly one
-    after the upsert, rather than leaving a stale copy the receiver has to reconcile.
-    """
-    while (opened := payload.find(start)) != -1:
-        closed = payload.find(end, opened)
-        head = payload[:opened].rstrip()
-        if closed == -1:
-            return head
-        tail = payload[closed + len(end) :].lstrip()
-        payload = f"{head}\n\n{tail}" if head and tail else head or tail
-    return payload
-
-
 @dataclass(frozen=True, slots=True)
 class HandoverWrite:
     """What the write seam DID: the row, and whether it landed on an existing one.

@@ -18,12 +18,8 @@ from teatree.core.models import SessionHandover
 from teatree.core.session_handover_manager import (
     SelfAddressedHandoverError,
     SessionHandoverQuerySet,
-    block_markers,
     render_fenced_handoffs,
-    upsert_payload_block,
 )
-
-_MARKER = "t3:test:block"
 
 
 def _blind_first_lookup() -> "mock._patch":
@@ -216,59 +212,6 @@ class TestRenderFencedHandoffs:
 
     def test_no_entries_render_nothing(self) -> None:
         assert render_fenced_handoffs([]) == ""
-
-
-class TestUpsertPayloadBlock(TestCase):
-    """A delimited block a later write REPLACES — never a second copy of the same section."""
-
-    def test_upsert_payload_block_replaces_rather_than_appends(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL").row
-
-        upsert_payload_block(row, marker=_MARKER, block="FIRST BLOCK")
-        upsert_payload_block(row, marker=_MARKER, block="SECOND BLOCK")
-        row.save(update_fields=["payload"])
-
-        row.refresh_from_db()
-        start, _end = block_markers(_MARKER)
-        assert row.payload.count(start) == 1, "a second write updates the block; it does not accumulate another"
-        assert "FIRST BLOCK" not in row.payload
-        assert "SECOND BLOCK" in row.payload
-        assert row.payload.startswith("ORIGINAL"), "the surrounding body is untouched"
-        assert row.to_session == "b"
-
-    def test_the_block_is_written_last_so_a_later_absorb_cannot_bury_it(self) -> None:
-        row = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="ORIGINAL").row
-
-        upsert_payload_block(row, marker=_MARKER, block="BLOCK")
-        row.save(update_fields=["payload"])
-        SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LATER HAND-OFF")
-        row.refresh_from_db()
-        upsert_payload_block(row, marker=_MARKER, block="REFRESHED BLOCK")
-        row.save(update_fields=["payload"])
-
-        row.refresh_from_db()
-        start, _end = block_markers(_MARKER)
-        assert row.payload.count(start) == 1
-        assert row.payload.index("LATER HAND-OFF") < row.payload.index("REFRESHED BLOCK")
-
-    def test_an_empty_payload_becomes_the_block(self) -> None:
-        row = SessionHandover.objects.create(from_session="a", to_session="b", payload="")
-        upsert_payload_block(row, marker=_MARKER, block="ONLY BLOCK")
-        row.save(update_fields=["payload"])
-        row.refresh_from_db()
-        start, end = block_markers(_MARKER)
-        assert row.payload == f"{start}\nONLY BLOCK\n{end}"
-
-    def test_an_unterminated_block_is_truncated_rather_than_left_to_swallow_the_upsert(self) -> None:
-        """A half-written marker must not make the next upsert append a second block."""
-        start, _end = block_markers(_MARKER)
-        row = SessionHandover.objects.create(from_session="a", to_session="b", payload=f"BODY\n\n{start}\ntruncated")
-
-        upsert_payload_block(row, marker=_MARKER, block="FRESH BLOCK")
-
-        assert row.payload.count(start) == 1
-        assert "truncated" not in row.payload
-        assert row.payload.startswith("BODY")
 
 
 class TestAbsorbOntoAnEmptyRow(TestCase):

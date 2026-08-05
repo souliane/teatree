@@ -3,8 +3,9 @@
 Reuses the PreCompact durable-state snapshot as the hand-off payload and
 the ``t3-master`` slot for the default target. ``create`` persists a
 :class:`~teatree.core.models.SessionHandover` row (the delivery surface),
-mirrors it to the XDG file, runs the sub-agent barrier and folds its returns
-into the persisted payload, then re-reads the row and asserts it complete
+mirrors it to the XDG file, runs the sub-agent barrier and records its returns
+as ROW STATE — never editing the payload, which the barrier would otherwise have
+to read to find "its own" bytes — then re-reads the row and asserts it complete
 before reporting anything — unless the payload resolves EMPTY, in which case
 the barrier still runs and NO row is written — a refusal decided by the SAME
 resolution the write uses, taken once after the barrier, since live state can
@@ -17,6 +18,7 @@ the project's "anything touching the ORM is a management command" rule.
 """
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Annotated, NoReturn, cast
 
@@ -30,20 +32,39 @@ from teatree.core.handover import (
     claim_handovers,
     create_handover,
     resolve_handover,
+    write_mirror,
 )
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
-from teatree.core.handover_wrapup import (
-    SUBAGENT_MARKER_START,
-    carries_subagent_section,
-    merge_subagent_records,
-    subagent_record,
-    upsert_subagent_section,
-)
+from teatree.core.handover_wrapup import merge_subagent_records, record_barrier_returns, subagent_record
 from teatree.core.machine_output import emit
 from teatree.core.models import SessionHandover
 from teatree.core.session_identity import is_loop_runner_session
 from teatree.loop.session_identity import current_session_id
 from teatree.utils.git import run
+
+
+@dataclass(frozen=True, slots=True)
+class _RecordedBarrier:
+    """What recording the barrier's returns DID: the union, the re-mirror, and the re-read row.
+
+    ``row`` is the ONE fresh fetch taken after the write. Both the completeness checks
+    and the flags the command reports read it, so a row that vanished between the two
+    cannot be reported present by one and missing by the other.
+    """
+
+    records: list[dict]
+    mirror: Path
+    row: "SessionHandover | None"
+
+    @property
+    def payload_is_empty(self) -> bool:
+        """Whether the PERSISTED payload holds nothing — ``True`` when the row is gone."""
+        return not (self.row.payload.strip() if self.row else "")
+
+    @property
+    def last_barrier_at(self) -> str | None:
+        """When a barrier last completed on the persisted row, ISO-formatted, or ``None``."""
+        return self.row.last_barrier_at.isoformat() if self.row and self.row.last_barrier_at else None
 
 
 class Command(TyperCommand):
@@ -113,7 +134,7 @@ class Command(TyperCommand):
         # Resolve AFTER it, ONCE, and thread that answer into the write: the barrier is
         # long enough for the last ticket to settle or the snapshot to rotate underneath
         # it, so a gate decided on one side of it cannot speak for a write on the other.
-        pushes = self._drive_subagents() if drive_subagents else []
+        barrier_ran, pushes = self._drive_subagents(enabled=drive_subagents)
         resolution = resolve_handover(from_session=from_session, explicit_to=to, authored=authored)
         if resolution.resolved.source is PayloadSource.EMPTY:
             self._refuse_empty(from_session, pushes=pushes, json_output=json_output)
@@ -123,17 +144,12 @@ class Command(TyperCommand):
         except SelfAddressedHandoverError as exc:
             self._refuse(str(exc), json_output=json_output, code=1)
 
-        handover, mirror, source = created.handover, created.mirror, created.source
+        handover, source = created.handover, created.source
         recipient = handover.to_session or "next-session"
-        # Fold on a barrier-less hand-off TOO, whenever the row already carries a block:
-        # `in_latest_barrier` is a freshness claim about THIS hand-off, so a block left
-        # untouched keeps asserting that a barrier which never ran enumerated its agents.
-        # Re-rendering against zero returns is what flips them to NOT-enumerated, which is
-        # the true statement — and it puts the block back at the end of an absorbed payload.
-        folded = drive_subagents or carries_subagent_section(handover)
-        if folded:
-            mirror = self._fold_subagent_wrapup(handover, pushes)
-        failures = self._completeness_failures(pk=handover.pk, expected=created.resolved, folded=folded)
+        recorded = self._record_barrier(handover, pushes, barrier_ran=barrier_ran)
+        failures = self._completeness_failures(
+            row=recorded.row, expected=created.resolved, records=recorded.records, barrier_ran=barrier_ran
+        )
         # A hand-off that reports OK while transferring nothing usable is worse
         # than one that fails: the operator moves on believing state was carried
         # over, and the receiving session claims a row that does not hold it
@@ -142,7 +158,10 @@ class Command(TyperCommand):
         ok = source.is_vetted and not failures
         status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
         human_lines = [
-            f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); mirror written to {mirror}."
+            (
+                f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); "
+                f"mirror written to {recorded.mirror}."
+            )
         ]
         if created.updated_existing:
             human_lines.append(
@@ -156,16 +175,18 @@ class Command(TyperCommand):
                 "ok": ok,
                 "handover_id": handover.pk,
                 "payload_source": source.value,
-                # Literal, not derived: an EMPTY resolution exited through `_refuse_empty`
-                # above, which emits its own line. This one is only ever reached by a row
-                # that was written, so the pair that once read `empty` beside `row_written:
-                # true` cannot recur — the two paths now each state their own facts.
-                "empty_payload": False,
-                "row_written": True,
+                # Derived from the same re-read the completeness checks ran against, so the
+                # pair that once read `empty` beside `row_written: true` cannot recur by
+                # asserting itself: a row that vanished between the write and the read
+                # reports `row_written: false`, and the checks fail alongside it.
+                "empty_payload": recorded.payload_is_empty,
+                "row_written": recorded.row is not None,
+                "barrier_ran": barrier_ran,
+                "last_barrier_at": recorded.last_barrier_at,
                 "from_session": handover.from_session,
                 "to_session": handover.to_session,
                 "parked_for_next": handover.is_for_next_session,
-                "mirror_path": str(mirror),
+                "mirror_path": str(recorded.mirror),
                 "updated_existing": created.updated_existing,
                 "previous_payload_bytes": created.previous_bytes,
                 "payload_bytes": len(handover.payload),
@@ -193,30 +214,48 @@ class Command(TyperCommand):
             raise SystemExit(3)
 
     @staticmethod
-    def _fold_subagent_wrapup(handover: SessionHandover, pushes: list[SubagentPush]) -> Path:
-        """Merge this barrier's returns into the row's union and re-render its one block.
+    def _record_barrier(
+        handover: SessionHandover, pushes: list[SubagentPush], *, barrier_ran: bool
+    ) -> _RecordedBarrier:
+        """Merge this barrier's returns into the row's union, record the fact, re-mirror, re-read.
 
-        The union is what makes a second hand-off UPDATE the wrap-up rather than
-        append a second one, while still naming an agent this barrier no longer sees.
+        Unconditional, on the barrier-less path too: ``in_latest_barrier`` is a freshness
+        claim about THIS hand-off, so leaving the union untouched keeps asserting that a
+        barrier which never ran enumerated its agents. Merging against zero returns flips
+        them to NOT-enumerated and records ``barrier_ran=False``, which is the true
+        statement. There is no branch left to forge, because nothing here reads the payload.
+
+        ``unique_mirror_path`` keys on ``created_at``, which none of this touches, so the
+        re-mirror OVERWRITES the same file — one hand-off stays one file, no pointer churn.
         """
         now = timezone.now()
-        records = merge_subagent_records(handover.subagent_wrapup, [subagent_record(push, at=now) for push in pushes])
-        return upsert_subagent_section(handover, records)
+        records = merge_subagent_records(handover.subagent_wrapup, [subagent_record(p, at=now) for p in pushes])
+        record_barrier_returns(handover, records, at=now, barrier_ran=barrier_ran)
+        return _RecordedBarrier(
+            records=records,
+            mirror=write_mirror(handover),
+            row=SessionHandover.objects.filter(pk=handover.pk).first(),
+        )
 
     @staticmethod
-    def _completeness_failures(*, pk: int, expected: str, folded: bool) -> list[str]:
-        """What is wrong with the PERSISTED row, read fresh from the DB — ``[]`` when nothing is.
+    def _completeness_failures(
+        *, row: SessionHandover | None, expected: str, records: list[dict], barrier_ran: bool
+    ) -> list[str]:
+        """What is wrong with the PERSISTED *row* — ``[]`` when nothing is.
 
-        Verify-by-re-read: the in-memory row is what the command believes it wrote,
-        so checking it proves only that the command agrees with itself. Every check
-        here runs against a fresh fetch, before any success line is written.
+        Verify-by-re-read: the in-memory row is what the command believes it wrote, so
+        checking it proves only that the command agrees with itself. *row* is the
+        caller's single fresh fetch, taken before any success line is written and shared
+        with the flags the command reports, so the two can never disagree.
         """
-        row = SessionHandover.objects.get(pk=pk)
+        if row is None:
+            return ["the row is gone from the DB — nothing was persisted"]
         unclaimed = SessionHandover.objects.filter(from_session=row.from_session, claimed_at__isnull=True).count()
-        sections = row.payload.count(SUBAGENT_MARKER_START)
         checks = (
             (isinstance(row.pk, int) and row.pk > 0, f"the row id {row.pk!r} is not a positive integer"),
             (bool(row.payload.strip()), "the persisted payload is empty"),
+            # With nothing splicing the payload this is the MAJOR-2 guard: it can only
+            # fail if something destroyed the bytes the author handed over.
             (
                 not expected.strip() or expected.strip() in row.payload,
                 "the persisted payload does not carry the bytes this hand-off resolved",
@@ -230,21 +269,20 @@ class Command(TyperCommand):
                 not is_loop_runner_session(row.to_session),
                 f"the row is addressed to {row.to_session!r}, an id no receiving session can have",
             ),
-            # Keyed on whether the FOLD ran, not on whether the barrier did: a barrier-less
-            # hand-off onto a row that already carries a block folds too, and gating on the
-            # barrier let exactly that path through vacuously — the one path where the block
-            # in the row is one no barrier of this hand-off produced.
+            # The wrap-up is checked as ROW STATE, which is strictly stronger than counting
+            # markers in text: the union either equals what this hand-off merged or it does
+            # not, and no authored body can make either answer come out differently.
             (
-                not folded or sections == 1,
-                "the sub-agent wrap-up was folded in but its block is not in the payload",
+                row.subagent_wrapup == list(records),
+                "the persisted sub-agent wrap-up is not the union this hand-off merged",
             ),
-            # Verify-by-re-read must catch THIS bug class too: the wrap-up used to be
-            # appended, so N hand-offs left N sections. An authored body that itself
-            # quotes the marker trips this loudly rather than silently — loud-over-
-            # silent is the intended polarity.
             (
-                sections <= 1,
-                f"the payload carries {sections} sub-agent wrap-up sections — exactly one is allowed",
+                row.barrier_ran_at_latest_handoff == barrier_ran,
+                "the row does not record whether this hand-off ran a sub-agent barrier",
+            ),
+            (
+                not barrier_ran or row.last_barrier_at is not None,
+                "a sub-agent barrier ran but the row records none",
             ),
             (unclaimed == 1, f"this session holds {unclaimed} unclaimed hand-offs — exactly one is allowed"),
         )
@@ -324,19 +362,26 @@ class Command(TyperCommand):
         except OSError as exc:
             self._refuse(f"could not read --from-file {from_file}: {exc}", json_output=json_output, code=2)
 
-    def _drive_subagents(self) -> list[SubagentPush]:
+    def _drive_subagents(self, *, enabled: bool) -> tuple[bool, list[SubagentPush]]:
         """Fast-push in-flight sub-agent worktrees; a failure here never fails the hand-off.
 
-        The hand-off row + mirror are already durable, so the orchestration
-        step is best-effort: a git/network hiccup is logged and swallowed
-        rather than losing the recorded hand-off.
+        Returns ``(completed, pushes)``. ``(False, [])`` when the barrier was SKIPPED or
+        RAISED, which the empty list alone cannot distinguish from "ran and found none" —
+        recording a crash as a clean sweep is how the row comes to claim a barrier that
+        never finished.
+
+        The hand-off row + mirror are already durable, so the orchestration step is
+        best-effort: a git/network hiccup is logged and swallowed rather than losing the
+        recorded hand-off.
         """
+        if not enabled:
+            return False, []
         cwd = Path.cwd()
         try:
-            return drive_subagents_to_fast_push(str(cwd), exclude=self._own_worktree_roots(cwd))
+            return True, drive_subagents_to_fast_push(str(cwd), exclude=self._own_worktree_roots(cwd))
         except Exception:  # noqa: BLE001 — the hand-off is already persisted; sub-agent driving must not fail it
             self.stderr.write(f"WARN  could not drive sub-agents to fast-push from {cwd} (hand-off still recorded).")
-            return []
+            return False, []
 
     @staticmethod
     def _own_worktree_roots(cwd: Path) -> tuple[Path, ...]:

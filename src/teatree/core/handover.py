@@ -29,7 +29,10 @@ An author holds at most one unclaimed row and a later hand-off is ABSORBED into
 it behind a fence, so a receiver is handed one row per author carrying
 everything that author said, rather than N partially-contradictory ones. The
 sub-agent barrier's returns are a separate concern living in
-:mod:`teatree.core.handover_wrapup`.
+:mod:`teatree.core.handover_wrapup`: they are ROW STATE, RENDERED onto the
+delivery surface here (:func:`write_mirror`, :func:`render_claimed_payload`) at
+delivery time, so ``payload`` only ever holds the author's or derived bytes and
+no authored byte can be mistaken for the harness's own and removed.
 
 A resolve that finds NOTHING writes nothing — no row, no mirror. Persist-first
 (:func:`create_handover` before the barrier) protects state that exists; an
@@ -55,6 +58,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
+from teatree.core.handover_wrapup import delivered_payload
 from teatree.core.session_handover_manager import SelfAddressedHandoverError, render_fenced_handoffs
 from teatree.core.session_identity import is_loop_runner_session
 
@@ -412,7 +416,7 @@ def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
         f"- created: {handover.created_at.isoformat()}\n\n"
         "---\n\n"
     )
-    unique.write_text(header + handover.payload + "\n", encoding="utf-8")
+    unique.write_text(header + delivered_payload(handover) + "\n", encoding="utf-8")
     _update_latest_pointer(pointer, unique)
     return unique
 
@@ -425,7 +429,9 @@ def render_claimed_payload(claimed: "Sequence[SessionHandover]") -> str:
     creation time — otherwise the receiving session reads N authors' state as
     one narrative. A lone hand-off renders as its bare payload, unchanged.
     """
-    return render_fenced_handoffs([(row.from_session, row.created_at.isoformat(), row.payload) for row in claimed])
+    return render_fenced_handoffs(
+        [(row.from_session, row.created_at.isoformat(), delivered_payload(row)) for row in claimed]
+    )
 
 
 def claim_handovers(session_id: str) -> tuple[str, str]:

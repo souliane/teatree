@@ -43,21 +43,34 @@ class SessionHandover(models.Model):
     want: a row whose payload just changed is the newest state, and its mirror
     file is named after the write that produced it.
 
-    A row carries exactly ONE sub-agent wrap-up block, whatever the number of
-    hand-offs that landed on it; :attr:`subagent_wrapup` is that block's source.
+    The sub-agent barrier's returns are STATE on this row — :attr:`subagent_wrapup`
+    plus :attr:`last_barrier_at` and :attr:`barrier_ran_at_latest_handoff` — rendered
+    onto the delivery surface at delivery time. They are never spliced into
+    :attr:`payload`, which therefore only ever holds the author's or derived bytes.
     """
 
     from_session = models.CharField(max_length=255)
     to_session = models.CharField(max_length=255, blank=True, default="")
     payload = models.TextField()
     #: Every sub-agent worktree this row's barrier has EVER enumerated, keyed by
-    #: worktree path, with each agent's latest known status. The payload's wrap-up
-    #: block is RENDERED from this, so a second hand-off updates one section instead
+    #: worktree path, with each agent's latest known status. The delivered wrap-up
+    #: section is RENDERED from this, so a second hand-off updates one section instead
     #: of appending another — and an agent that has since disappeared is still named,
     #: which is the highest-risk thing a hand-off carries. Stored rather than
     #: re-parsed out of the rendered markdown: a text round-trip is a data model in
     #: disguise, and it breaks the first time an authored body quotes the section.
     subagent_wrapup = models.JSONField(default=list, blank=True)
+    #: When the most recent COMPLETED sub-agent barrier that landed on this row ran.
+    #: NULL means no barrier has ever run at any hand-off absorbed into this row — which
+    #: is why the zero-agent case can be honest: ``[]`` means "no agents", NULL means
+    #: "nobody looked".
+    last_barrier_at = models.DateTimeField(null=True, blank=True)
+    #: Whether the hand-off that MOST RECENTLY wrote this row ran a barrier. Stored,
+    #: never derived from (``last_barrier_at`` vs ``created_at``): ``created_at`` is
+    #: refreshed on every absorb and the barrier is recorded after the write, so the
+    #: ordering happens to encode this today and would silently stop the moment either
+    #: moves. A fact that was inferred instead of recorded was wrong four times.
+    barrier_ran_at_latest_handoff = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
     claimed_at = models.DateTimeField(null=True, blank=True)
     claimed_by = models.CharField(max_length=255, blank=True, default="")
