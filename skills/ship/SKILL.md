@@ -260,7 +260,13 @@ The two stores (`Session.visited_phases` and the `Ticket.state` FSM), how the sh
 
 #### How to satisfy the gate (the only sanctioned path)
 
-The numbered path — locate the reviewing task, acquire the per-MR review-dispatch lock (`t3 <overlay> review lock-acquire`), apply every finding, drive the `review` transition, verify before pushing — is in [`skills/ship/references/review-gate-fsm.md`](references/review-gate-fsm.md). The dispatch itself stays here, because a reference file never reaches a spawned agent:
+The numbered path — locate the reviewing task, acquire the per-MR review-dispatch lock (`t3 <overlay> review lock-acquire`), apply every finding, drive the `review` transition, verify before pushing — is in [`skills/ship/references/review-gate-fsm.md`](references/review-gate-fsm.md). Its three commands are named here too, because a reference file never reaches a spawned agent:
+
+- **Record a phase** with `t3 <overlay> lifecycle visit-phase <ticket_id> <phase>`. Do **NOT** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review: since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why recording `reviewing` without a reviewer having actually read the diff defeats the quality gate. Earn the phase, then record it.
+- **Transition directly** with `t3 <overlay> ticket transition <ticket_id> review` when the task id isn't to hand. The FSM still requires a completed `reviewing` task as a `conditions=` predicate, so this only works once one exists.
+- **Verify before pushing** with `t3 <overlay> ticket list --state reviewed` (the `mcp__teatree__ticket_search` tool is preferred; this is the fallback when the MCP server isn't connected). It filters on `--state`/`--overlay` only — there is no `--id` flag.
+
+The reviewer dispatch itself likewise stays here:
 
 **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool. The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
 
