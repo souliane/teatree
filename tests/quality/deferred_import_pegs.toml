@@ -120,11 +120,10 @@
 # PullRequest` — the merge-landed ledger write needs the app registry, same as every
 # other ORM read in this file's group.
 "src/teatree/core/merge/execution.py" = 3
-# souliane/teatree#3840: the keystone post hook moved to its own module and took its two
-# call-time ORM imports with it — the retry helper and the `MergeClear` the atomic block
-# re-reads under the row lock. Same edges, new home; the pair below is execution.py's old
-# 4 split, not a new one.
-"src/teatree/core/merge/post_hook.py" = 2
+# souliane/teatree#3840: the keystone post hook moved to its own module and took its
+# call-time ORM imports with it. Only the retry helper is left deferred — `MergeClear`
+# is now a module-level import, the same edge `ci_rollup` already declares.
+"src/teatree/core/merge/post_hook.py" = 1
 # substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
 # so resolving a repo's owning overlay stays a call-time read of the live overlay
 # registry — the edge moved here verbatim from merge/authorization.py (#3648).

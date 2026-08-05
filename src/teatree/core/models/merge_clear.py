@@ -147,6 +147,27 @@ def is_non_reviewer_role(identity: str) -> bool:
     return bool(parts & _COMPONENT_ROLE_WORDS)
 
 
+def normalize_reviewer_identity(identity: str) -> str:
+    """The canonical, idempotency-keyed form of a free-text reviewer identity (F8).
+
+    The recorded ``reviewer_identity`` is free text — 187 distinct values on the
+    live box, with the SAME logical reviewer spelled many ways ("Codex", "codex ",
+    "codex"). That made "has this sha been reviewed by this identity?" unanswerable
+    by query and let the dispatcher re-review one sha 17 times. The normalized form
+    collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
+    runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
+    genuinely distinct identities stay distinct (no role-prefix stripping, which
+    would over-merge two real reviewers). It is the canonical key at every boundary:
+    the ``ReviewVerdict`` write, its uniqueness constraint, and the maker≠checker
+    comparison at CLEAR issuance and at merge time.
+
+    It sits beside :func:`is_non_reviewer_role` rather than next to ``ReviewVerdict``
+    because CLEAR issuance validates through it and ``review_verdict`` imports this
+    module — the reviewer-identity primitives are the shared lower layer.
+    """
+    return " ".join(identity.split()).casefold()
+
+
 def is_commit_sha(value: str) -> bool:
     """True iff ``value`` is a full 40-char hex commit SHA (§17.4.2, #1162).
 
@@ -332,10 +353,6 @@ class MergeClear(models.Model):
         if not reviewer:
             msg = "reviewer_identity is required and must be non-empty (§17.4.2)"
             raise ClearIssuanceError(msg)
-        from teatree.core.models.review_verdict import (  # noqa: PLC0415 — deferred: review_verdict imports this module
-            normalize_reviewer_identity,
-        )
-
         if normalize_reviewer_identity(reviewer) == normalize_reviewer_identity(request.executing_loop_identity):
             msg = (
                 f"reviewer_identity {reviewer!r} equals the executing loop identity "

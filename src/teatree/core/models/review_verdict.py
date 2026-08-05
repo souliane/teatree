@@ -34,25 +34,15 @@ from django.utils import timezone
 
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha, is_non_reviewer_role
+from teatree.core.models.merge_clear import (
+    SHA_FULL_LEN,
+    MergeClear,
+    is_commit_sha,
+    is_non_reviewer_role,
+    normalize_reviewer_identity,
+)
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.ticket import Ticket
-
-
-def normalize_reviewer_identity(identity: str) -> str:
-    """The canonical, idempotency-keyed form of a free-text reviewer identity (F8).
-
-    The recorded ``reviewer_identity`` is free text — 187 distinct values on the
-    live box, with the SAME logical reviewer spelled many ways ("Codex", "codex ",
-    "codex"). That made "has this sha been reviewed by this identity?" unanswerable
-    by query and let the dispatcher re-review one sha 17 times. The normalized form
-    collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
-    runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
-    genuinely distinct identities stay distinct (no role-prefix stripping, which
-    would over-merge two real reviewers). It is the canonical key at both boundaries:
-    the record write and the uniqueness constraint.
-    """
-    return " ".join(identity.split()).casefold()
 
 
 class ReviewVerdictError(ValueError):

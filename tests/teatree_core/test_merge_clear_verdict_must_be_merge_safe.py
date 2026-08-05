@@ -23,6 +23,7 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear
+from tests._forge_stub import changed_files_stdout
 from tests.factories import _FORTY_HEX, MergeClearFactory, TicketFactory
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
@@ -60,9 +61,7 @@ def _gh_stub_live_green(argv: list[str]) -> tuple[int, str, str]:
         return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
-    # A real open PR always changes >=1 file, so an empty list is a failed read
-    # the substrate gate holds on.
-    return (0, "README.md\n" if "/files" in joined else "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 class TestNonGreenVerdictNeverIssuable(TestCase):

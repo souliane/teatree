@@ -21,6 +21,7 @@ from django.test import TestCase
 
 from teatree.core.merge import MergeOutcome, MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear, MRReviewLock, ReviewVerdict, Ticket
+from tests._forge_stub import changed_files_stdout
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -69,7 +70,7 @@ def _gh_green(argv: list[str]) -> tuple[int, str, str]:
             return (0, out, "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "merged0deadbeef"}', "")
-    return (0, "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 @pytest.fixture(autouse=True)

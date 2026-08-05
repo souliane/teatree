@@ -31,6 +31,7 @@ from teatree.core.merge import MergePreconditionError, merge_ticket_pr, resolve_
 from teatree.core.merge.authorization import assert_review_verdict_gate
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import MergeAudit, MergeClear, ReviewVerdict, Ticket
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -109,9 +110,7 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str = _OVERLAY_REPO):
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "merged0deadbeef"}', "")
-        # A real open PR always changes >=1 file, so an empty list is a failed read
-        # the substrate gate holds on.
-        return (0, "README.md\n" if "/files" in joined else "", "")
+        return (0, changed_files_stdout(joined), "")
 
     return _gh
 
@@ -201,9 +200,7 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (0, _GREEN, "")
-            # A real open PR always changes >=1 file, so an empty list is a failed read
-            # the substrate gate holds on.
-            return (0, "README.md\n" if "/files" in joined else "", "")
+            return (0, changed_files_stdout(joined), "")
 
         def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
             del remote
@@ -267,9 +264,7 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return (0, '{"state": "OPEN", "mergeCommit": null}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            # A real open PR always changes >=1 file, so an empty list is a failed read
-            # the substrate gate holds on.
-            return (0, "README.md\n" if "/files" in joined else "", "")
+            return (0, changed_files_stdout(joined), "")
 
         def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
             del remote
@@ -381,7 +376,11 @@ class TestUrlFormCrossRepoClearVerdictStaysConsistent(TestCase):
         )
         # The CLEAR slug is a bare workstream name; the real repo (Y) is resolved
         # from the ticket issue_url, NOT the running clone's origin (X).
-        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN):
+        issue_calls: list[list[str]] = []
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_keyed_by_repo(issue_calls)),
+            patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN),
+        ):
             issued = cast(
                 "dict[str, object]",
                 call_command(
@@ -421,17 +420,21 @@ class TestTicketlessWorkstreamCrossRepoClearFailsClosed(TestCase):
 
     A TICKETLESS CLEAR with a workstream slug for a PR that lives in a downstream
     overlay repo resolves (``resolve_pr_repo_slug``) only to the running clone's
-    ``origin`` (X) — the real repo (Y) is discoverable solely by the forge-probing
-    ``_reconcile_slug_against_reviewed_sha`` at merge time. So the by-product
-    verdict is recorded under X while the #2829 gate looks it up under the
-    reconciled Y — a miss. Closing this consistently would need the forge probe to
-    run at CLEAR-issue time (coupling issuance to forge connectivity and breaking
-    the forge-free clear contract), so it is out of the tactical scope. It fails
-    CLOSED (a refusal, never a silent mismerge), which this pins.
+    ``origin`` (X). Issuance now runs the same forge-probing
+    ``_reconcile_slug_against_reviewed_sha`` the merge runs, so the two agree
+    whenever the probe can SEE the real repo (Y) — but the probe enumerates
+    candidates from the overlays discoverable in the issuing process, and here that
+    set is empty. So the by-product verdict is recorded under X while the #2829 gate
+    looks it up under the Y the merge-time probe recovers — a miss. That residual
+    window fails CLOSED (a refusal, never a silent mismerge), which this pins.
     """
 
     def test_cross_repo_merge_refuses_when_verdict_is_under_clone_origin(self) -> None:
-        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN):
+        issue_calls: list[list[str]] = []
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_keyed_by_repo(issue_calls)),
+            patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN),
+        ):
             issued = cast(
                 "dict[str, object]",
                 call_command(

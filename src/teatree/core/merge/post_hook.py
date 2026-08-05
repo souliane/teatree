@@ -8,7 +8,6 @@ atomic DB write. :func:`record_merge_and_advance` is what
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from django.apps import apps
 from django.db import transaction
@@ -16,9 +15,8 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.merge.errors import MergePreconditionError, MergeReplayError
-
-if TYPE_CHECKING:
-    from teatree.core.models import MergeClear
+from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolved_repo_slug
+from teatree.core.models import MergeClear
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +36,7 @@ class MergeAuditAuthorizers:
     standing_delegation_by: str = ""
 
 
-def _supersede_siblings(locked: "MergeClear", *, repo_slug: str) -> None:
+def _supersede_siblings(locked: MergeClear, *, repo_slug: str) -> None:
     """§15: consume every sibling unconsumed CLEAR for the SAME repo's PR.
 
     A re-review at a moved head issues a fresh CLEAR at the new SHA, leaving the
@@ -57,12 +55,6 @@ def _supersede_siblings(locked: "MergeClear", *, repo_slug: str) -> None:
     An ``owner/repo``-shaped slug is already repo-scoped and keeps the plain
     case-insensitive match a forge slug's case-insensitivity requires.
     """
-    from teatree.core.merge.pr_slug_resolution import (  # noqa: PLC0415 — deferred: core.merge package cycle
-        normalize_repo_slug,
-        resolved_repo_slug,
-    )
-    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
     siblings = (
         MergeClear.objects.filter(slug__iexact=locked.slug, pr_id=locked.pr_id, consumed_at__isnull=True)
         .exclude(pk=locked.pk)
@@ -131,7 +123,6 @@ def record_merge_and_advance(
     idempotent DB write retries).
     """
     from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
-    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     stamps = authorizers or MergeAuditAuthorizers()
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller

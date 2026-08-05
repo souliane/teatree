@@ -131,11 +131,9 @@ def assert_merge_preconditions(
     slug, pr_id = ref.slug, ref.pr_id
 
     # Attach the live diff paths so the substrate authorization guard can detect
-    # a mislabeled substrate diff (path-based classifier — invariant 4). A forge
-    # error degrades to no paths: the path detector only WIDENS substrate over the
-    # recorded ``blast_class``, never narrows it, so a missing diff never weakens
-    # the label-based gate. Set BEFORE the authorize call so the substrate branch
-    # reads it.
+    # a mislabeled substrate diff (path-based classifier — invariant 4). A diff
+    # that cannot be read to completion holds as substrate rather than merging
+    # unclassified. Set BEFORE the authorize call so the substrate branch reads it.
     attach_touched_paths(clear, query)
 
     authorized_clear = _assert_clear_authorized(

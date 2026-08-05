@@ -10,15 +10,22 @@ ticket from the PR identity instead makes both gates reachable from the one chok
 every merge path crosses.
 """
 
+from teatree.core.gates.anti_vacuity_gate import (
+    AntiVacuityAttestationError,
+    anti_vacuity_required,
+    check_anti_vacuity_attestation,
+)
+from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied, rubric_gate_required
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity
+from teatree.core.merge.ticket_resolution import resolve_gated_ticket
 
 
 def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
     """Run the anti-vacuity + rubric gates at the SHARED merge chokepoint, by PR identity.
 
     The ticket is resolved through the SAME
-    :func:`~teatree.core.gates.merge_quality_gate._resolve_gated_ticket` the sibling
+    :func:`~teatree.core.merge.ticket_resolution.resolve_gated_ticket` the sibling
     quality gate already calls at this chokepoint (PR ledger first, CLEAR second, both
     case-insensitive) — a second resolver here is how the four-way slug divergence got
     built, so there is deliberately only one.
@@ -30,19 +37,7 @@ def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
     settings off (the shipped default) an unresolvable ticket is a plain no-op, so
     nothing that merges today stops merging.
     """
-    from teatree.core.gates import merge_quality_gate  # noqa: PLC0415 avoids a core.merge/core.gates cycle
-    from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
-        AntiVacuityAttestationError,
-        anti_vacuity_required,
-        check_anti_vacuity_attestation,
-    )
-    from teatree.core.gates.rubric_gate import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
-        RubricNotSatisfiedError,
-        check_rubric_satisfied,
-        rubric_gate_required,
-    )
-
-    ticket = merge_quality_gate._resolve_gated_ticket(slug=slug, pr_id=pr_id)  # noqa: SLF001 — one resolver, not two
+    ticket = resolve_gated_ticket(slug=slug, pr_id=pr_id)
     if ticket is None:
         overlay = resolve_overlay_by_repo_identity(slug, fallback="") or None
         required = [
