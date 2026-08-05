@@ -126,6 +126,51 @@ class TestSeesTheQuestionBehindAToolCall:
         assert result is not True
 
 
+class TestAnAnswerWrittenBeforeTheDispatchIsSeen:
+    """The mirror defect: the turn is cut at the tool result, so the answer is lost.
+
+    ``_last_user_text`` learned to walk past a tool-result user entry;
+    ``last_assistant_turn`` did not, and it reads the OTHER half of the same
+    transcript. So an answer written in the assistant block BEFORE the dispatch
+    tool call fell outside the turn text the detector scanned, and the gate
+    blocked a turn that had answered in its first sentence. Four measured false
+    fires had this shape — including an explicit "because", a polarity opener,
+    and an honest "I don't know yet", which are the exact three shapes the
+    gate's own block message tells the agent to use.
+    """
+
+    @staticmethod
+    def _turn_answering_before_the_dispatch(tmp_path: Path, answer: str) -> Path:
+        return _write_transcript(
+            tmp_path,
+            [
+                _user(_QUESTION),
+                _tool_call(answer),
+                _tool_result(),
+                _assistant("Dispatched a lane to merge it.\n"),
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "Because the eval lane is red.",
+            "No — the shard is red.",
+            "I don't know yet.",
+            "It was blocked by a failing shard.",
+        ],
+    )
+    def test_an_answer_written_before_the_dispatch_tool_call_is_seen(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], answer: str
+    ) -> None:
+        transcript = self._turn_answering_before_the_dispatch(tmp_path, answer)
+
+        result = handle_answer_first_gate({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+
 class TestPoliteImperativesAreNotQuestions:
     """A polite imperative asks for the WORK — a dispatch report answers it.
 

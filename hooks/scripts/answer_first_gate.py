@@ -81,11 +81,6 @@ def _user_words_only(text: str) -> str:
     return prose
 
 
-def _is_tool_result_only(content: list) -> bool:
-    """True for a ``user`` entry that is a tool RESULT rather than the user typing."""
-    return bool(content) and all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
-
-
 def _last_user_text(transcript_path: str) -> str:
     """What the user actually said in the most recent user message, else ``""``.
 
@@ -97,7 +92,10 @@ def _last_user_text(transcript_path: str) -> str:
     then yields ``""``. Those entries are walked past. Any odd entry contributes
     nothing rather than raising.
     """
-    from hooks.scripts.question_gates import read_transcript_entries  # noqa: PLC0415 deferred cold-hook import
+    from hooks.scripts.question_gates import (  # noqa: PLC0415 deferred cold-hook import
+        is_tool_result_only,
+        read_transcript_entries,
+    )
 
     for entry in reversed(read_transcript_entries(transcript_path)):
         message = entry.get("message")
@@ -109,7 +107,7 @@ def _last_user_text(transcript_path: str) -> str:
             return _user_words_only(content)
         if not isinstance(content, list):
             return ""
-        if _is_tool_result_only(content):
+        if is_tool_result_only(content):
             continue
         return _user_words_only(
             "\n".join(

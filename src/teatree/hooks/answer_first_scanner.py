@@ -15,13 +15,20 @@ list of words:
     or an interrogative carrying a second-person / state cue;
 2. the final assistant turn reports a DELEGATION — the work was handed to a lane,
     a sub-agent, a task;
-3. that turn carries NO answer — no polarity opener, no causal explanation, and
-    no honest "I do not know yet".
+3. that turn carries NO answer — no polarity opener, no causal explanation, no
+    honest "I do not know yet", and nothing left once the delegation report and
+    its boilerplate are stripped out.
 
-A turn that answers and then dispatches clears leg 3 on one word, which is the
-whole behaviour being asked for. A dispatch report following a non-question
-clears leg 1. An answer with no delegation clears leg 2. Fail-safe-to-silent:
-empty or odd input yields ``None``.
+A turn that answers and then dispatches clears leg 3, which is the whole
+behaviour being asked for. A dispatch report following a non-question clears
+leg 1. An answer with no delegation clears leg 2. Fail-safe-to-silent: empty or
+odd input yields ``None``.
+
+Leg 3 fails OPEN by design (see :func:`_declarative_residue`) — it blocks only a
+turn that is nothing but the dispatch line. This gate deliberately does not skip
+an attended turn, so every false fire lands on the owner mid-conversation:
+missing a real case costs one unanswered question, while talking over an honest
+answer costs trust in the gate itself.
 """
 
 import re
@@ -98,6 +105,39 @@ _EXPLANATION_GIVEN_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# One sentence, bounded the same way the question scanner bounds its span (:34).
+_SENTENCE_RE: Final[re.Pattern[str]] = re.compile(r"[^.!?\n]{1,300}")
+
+# Prose that rides along with a dispatch and talks only ABOUT the dispatch: a
+# bare acknowledgement, a promise to come back, or the dispatched work's own
+# lifecycle state. This one CAN be an allowlist where leg 3's could not, and the
+# asymmetry is the design: dispatch-report vocabulary is a small closed domain
+# the agent itself writes, while the ways to phrase an ANSWER are open natural
+# language. Enumerate the side we control; fail open on the side we do not.
+_DISPATCH_BOILERPLATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\s>*_+-]*(?:ok(?:ay)?|sure|got it|done|on it|understood|will do|noted)\b|"
+    # Narrating the work rather than reporting a finding — "let me get a lane on
+    # it", "reading the ticket". First-person process talk, which is what the
+    # widened turn (§B.1) now surfaces from BEFORE the dispatch tool call.
+    r"^[\s>*_+-]*(?:let me|let'?s|let us)\b|"
+    r"^[\s>*_+-]*(?:reading|checking|looking|inspecting|fetching|pulling|opening|"
+    r"reviewing|investigating|digging|starting|kicking off)\b|"
+    r"\b(?:i'?ll|i will|we'?ll|we will) (?:report|update|let you know|come back|follow up)\b|"
+    r"\b(?:reporting|report|updating|updated|update) back\b|\bstand(?:ing)? by\b|"
+    r"\bwaiting (?:for|on) (?:it|them|the (?:lane|agent|run|result|report))\b|"
+    r"\bqueued behind\b|"
+    r"\b(?:it|that|this|the (?:lane|agent|sub-?agent|worker|task|job|run|dispatch))\s+"
+    r"(?:is|was|has been|will be)\s+(?:now\s+)?"
+    r"(?:queued|running|in progress|under ?way|pending|working|picked up|started)\b",
+    re.IGNORECASE,
+)
+
+#: A fragment shorter than this is punctuation noise or a bare id, not the turn
+#: telling the asker something. Deliberately low: real answers are often two or
+#: three words ("Conflicts with main"), and it is the boilerplate pattern above,
+#: not the length, that excludes a short acknowledgement.
+_MIN_RESIDUE_WORDS: Final[int] = 2
+
 
 class AnswerVerdict(NamedTuple):
     """The question that went unanswered and the delegation that stood in for it."""
@@ -123,8 +163,38 @@ def _delegation_report(agent_text: str) -> str | None:
     return match.group(0).strip() if match is not None else None
 
 
+def _declarative_residue(agent_text: str) -> bool:
+    """Did the turn say anything BEYOND reporting the dispatch?
+
+    A keyword allowlist can only recognise causal answers phrased in words
+    somebody thought of in advance, so it fails CLOSED on every honest wording
+    outside the list — "It was blocked by a failing shard", "Conflicts with
+    main", "It is still waiting on CI" all read as silence and get blocked.
+    Adding more keywords does not close a structural under-inclusion; the next
+    honest phrasing misses again.
+
+    Residue inverts the polarity instead. Strip the delegation sentences and the
+    dispatch boilerplate; whatever survives is the turn telling the asker
+    something. BLOCK is then reserved for the turn that is nothing BUT the
+    dispatch line — the recorded failure verbatim. The gate can now miss a real
+    case; it can no longer talk over an answer, and for a Stop gate that does
+    not skip attended turns, that is the safe direction to fail in.
+    """
+    prose = _FENCED_CODE_RE.sub(" ", agent_text)
+    return any(
+        len(sentence.split()) >= _MIN_RESIDUE_WORDS
+        and not _DELEGATION_REPORT_RE.search(sentence)
+        and not _DISPATCH_BOILERPLATE_RE.search(sentence)
+        for sentence in _SENTENCE_RE.findall(prose)
+    )
+
+
 def _carries_an_answer(agent_text: str) -> bool:
-    return bool(_POLARITY_OPENER_RE.search(agent_text) or _EXPLANATION_GIVEN_RE.search(agent_text))
+    return bool(
+        _POLARITY_OPENER_RE.search(agent_text)
+        or _EXPLANATION_GIVEN_RE.search(agent_text)
+        or _declarative_residue(agent_text)
+    )
 
 
 def find_unanswered_question(user_text: str, agent_text: str) -> AnswerVerdict | None:
