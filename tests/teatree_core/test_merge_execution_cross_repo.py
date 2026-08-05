@@ -109,7 +109,9 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str = _OVERLAY_REPO):
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, "", "")
+        # A real open PR always changes >=1 file, so an empty list is a failed read
+        # the substrate gate holds on.
+        return (0, "README.md\n" if "/files" in joined else "", "")
 
     return _gh
 
@@ -199,7 +201,9 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (0, _GREEN, "")
-            return (0, "", "")
+            # A real open PR always changes >=1 file, so an empty list is a failed read
+            # the substrate gate holds on.
+            return (0, "README.md\n" if "/files" in joined else "", "")
 
         def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
             del remote
@@ -263,7 +267,9 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return (0, '{"state": "OPEN", "mergeCommit": null}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            return (0, "", "")
+            # A real open PR always changes >=1 file, so an empty list is a failed read
+            # the substrate gate holds on.
+            return (0, "README.md\n" if "/files" in joined else "", "")
 
         def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
             del remote

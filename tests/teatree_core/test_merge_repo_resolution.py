@@ -115,7 +115,9 @@ class TestMergeUsesResolvedRepo(TestCase):
                 return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            return (0, "", "")
+            # A real open PR always changes >=1 file, so an empty list is a failed read
+            # the substrate gate holds on.
+            return (0, "README.md\n" if "/files" in joined else "", "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
@@ -215,7 +217,9 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
                 return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            return (0, "", "")
+            # A real open PR always changes >=1 file, so an empty list is a failed read
+            # the substrate gate holds on.
+            return (0, "README.md\n" if "/files" in joined else "", "")
 
         return _gh
 

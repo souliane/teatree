@@ -46,7 +46,9 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
         return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
-    return (0, "", "")
+    # A real open PR always changes >=1 file, so an empty list is a failed read
+    # the substrate gate holds on.
+    return (0, "README.md\n" if "/files" in joined else "", "")
 
 
 class TestIsNonReviewerRoleUnit(TestCase):
@@ -112,6 +114,23 @@ class TestIssueTimeMergeLoopBlockedIntegration(TestCase):
                     reviewed_sha=_SHA,
                     reviewer_identity="merge-loop",
                     executing_loop_identity="other-loop",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                )
+            )
+        assert MergeClear.objects.count() == 0
+
+    def test_issue_with_differently_cased_executing_loop_raises(self) -> None:
+        # Issue-time and merge-time canonicalize the identity identically, so a
+        # re-spelling of the executor's own name cannot self-issue a clearance.
+        with pytest.raises(ClearIssuanceError, match="equals the executing loop identity"):
+            MergeClear.issue(
+                ClearRequest(
+                    pr_id=1602,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="Worker-Alpha",
+                    executing_loop_identity="worker-alpha",
                     gh_verify_result="green",
                     blast_class="logic",
                 )

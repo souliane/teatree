@@ -152,20 +152,25 @@ class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
         PullRequestFactory(ticket=ticket, repo=_REPO, iid="9003")
         with (
             patch("teatree.core.gates.anti_vacuity_gate.anti_vacuity_required", return_value=True),
-            pytest.raises(MergePreconditionError),
+            pytest.raises(MergePreconditionError, match="require_anti_vacuity_attestation"),
         ):
             assert_ticket_scoped_gates(slug=_REPO, pr_id=9003, head_sha=_SHA)
 
     def test_bound_merge_runs_the_ticket_scoped_gates(self) -> None:
-        """The solo-overlay bypass reaches the forge with no CLEAR — the gate must still fire."""
+        """The solo-overlay bypass reaches the forge with no CLEAR — the gate must still fire.
+
+        The refusal is matched on the ATTESTATION message, not merely on the error type:
+        the not-draft and CI floors below also refuse on an unreachable forge, so a
+        type-only assertion would pass with this gate deleted.
+        """
         ticket = TicketFactory()
         PullRequestFactory(ticket=ticket, repo=_REPO, iid="9004")
         with (
-            patch("teatree.core.merge.authorization.assert_merge_provenance_trusted"),
+            patch("teatree.core.merge.execution.assert_merge_provenance_trusted"),
             patch("teatree.core.merge.execution.assert_review_verdict_gate"),
             patch("teatree.core.merge.execution.assert_no_active_review_lock"),
             patch("teatree.core.gates.merge_quality_gate.assert_merge_quality_verdict"),
             patch("teatree.core.gates.anti_vacuity_gate.anti_vacuity_required", return_value=True),
-            pytest.raises(MergePreconditionError),
+            pytest.raises(MergePreconditionError, match="require_anti_vacuity_attestation"),
         ):
             execute_bound_merge(ref=PrRef(slug=_REPO, pr_id=9004), expected_head_oid=_SHA)
