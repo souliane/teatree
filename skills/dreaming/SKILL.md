@@ -43,7 +43,7 @@ The umbrella-checkbox upsert + `schedule_coding` runs under `t3 dream run --full
 ## Drive the rest of the output
 
 - Core-gap fixes are auto-scheduled and merge via the keystone; you don't hand-work them. Watch #2663 for the checkbox trend (checked = its fix merged).
-- Commit any auto-promoted eval scenarios (`evals/scenarios/promoted_drift.yaml`) and ratify staged ones via PR.
+- Commit any auto-promoted eval scenarios (`evals/scenarios/promoted_drift.yaml`) and ratify staged ones via PR. <!-- skill-symbol-ref: the promotion destination, written on the first promotion -->
 - A binding-reconciliation conflict still files a deduped `dream-binding-reconcile` issue for a human (distinct from the gap pile-up the umbrella replaces).
 
 ## Trigger surface

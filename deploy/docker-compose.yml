@@ -228,8 +228,7 @@ services:
     # the host socket is authoritative), while Docker Desktop serves the socket
     # from its own VM where it is root:root — gid 0. The default is therefore 0,
     # correct on Docker Desktop with nothing exported; on Linux
-    # deploy/docker-socket-gid.sh resolves the real gid and both deploy.sh and
-    # deploy/t3 export it. Adding a supplementary group is strictly narrower than
+    # both deploy.sh and deploy/t3 resolve the real gid and export it. Adding a supplementary group is strictly narrower than
     # the watchdog's `user: "0:0"` — the process keeps its own UID.
     #
     # Handing a container the host docker socket IS root-equivalent on the host,

@@ -22,7 +22,7 @@ Teatree now has two layers:
 - The **skill repo** you are in now. It provides the workflow skills (`skills/*/`), references, hooks, and the `teatree` Django extension package.
 - An **overlay package** created with `t3 startoverlay`. The overlay subclasses `OverlayBase` and registers via entry points. Teatree itself owns the Django settings.
 
-Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlays. Those are legacy migration artifacts.
+Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlays. Those are legacy migration artifacts. <!-- skill-symbol-ref: a legacy artifact named so it is never re-created; it must NOT exist -->
 
 ## What This Skill Does
 
