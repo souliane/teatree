@@ -179,8 +179,10 @@ A refusal that an in-process caller must route on (the `mcp` write tools, the lo
 - The predicate is one pure function, `refusal_exit_code(result)` — non-zero iff the result is a mapping with a truthy `error`. A new refusal shape therefore needs an `error` key and nothing else; a shape without one silently exits 0 again.
 - The gate is `_called_from_command_line`, the flag Django's `run_from_argv` sets and `call_command` does not — so the shell and the in-process consumer get opposite, correct answers from one refusal.
 - Loud is the default; `soft_refusal_commands` exempts named subcommands, so a *new* refusal is loud without being listed anywhere. Exempt one only when its caller depends on a *soft* refusal: `pr ensure-pr` is the pre-push hook's entry point, where reporting and letting the push through is the designed behaviour (#792).
-- Canonical example: `src/teatree/core/management/commands/pr.py` `Command` — its control-DB, missing-ticket, missing-worktree and ship-gate refusals all exit non-zero, so `t3 <overlay> ship <id> && t3 <overlay> ticket clear …` stops on a refused ship.
+- Seven groups carry it (#4234 drained the class): `pr`, `ticket`, `review`, `repro`, `lifecycle`, `e2e`, `followup`. `ticket` is the sharpest — `t3 <overlay> ship <id> && t3 <overlay> ticket clear …` now stops on a refused ship, and `ticket merge` still hands `CallCommandMergeKeystone.merge_clear` the five keys it routes on.
+- Give the `Command` a one-line class docstring. Without one, `docs/generated/management-commands.*` and `--help` inherit the *base class's* docstring and advertise the seam's internals as the command group's description.
 - A command that has no in-process consumer of its failure still uses `raise SystemExit(N)` — that is simpler and stays the default.
+- The guard is `tests/teatree_core/management_commands/test_exit_contract_seam.py`: an AST ratchet refuses a `{"error": …}` return in a class that does not inherit the seam (and any `return <non-zero int>` anywhere), plus a live `run_from_argv` case per refusing subcommand.
 
 ### Annotated typer options must have defaults for `call_command`
 

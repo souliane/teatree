@@ -18,6 +18,7 @@ from teatree.core.management.commands import _e2e_runners as _runners
 from teatree.core.management.commands._test_plan import from_seams as _from_seams
 from teatree.core.management.commands._test_plan import post as _test_plan_post
 from teatree.core.management.commands._test_plan import tracked as _tracked_manifest
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.worktree_env import compose_project
@@ -64,7 +65,9 @@ class DispatchOptions:
     branch: str = ""
 
 
-class Command(MachineOutputCommand):
+# #4234: `trigger-ci` RETURNS its refusal — the seam is what stops a CI lane treating an
+# un-triggered pipeline as triggered.
+class Command(MachineOutputCommand, RefusalExitTyperCommand):
     """Run E2E specs and post their evidence — the overlay-agnostic e2e verbs."""
 
     @command()

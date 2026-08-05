@@ -6,10 +6,11 @@ from typing import Annotated, TypedDict
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
 from teatree.core.gates.review_context_gate import ReviewContextError, check_review_context
 from teatree.core.gates.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.modelkit.phases import normalize_phase, phase_transition
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
@@ -37,7 +38,11 @@ class ReviewerAttestationError(RuntimeError):
     """A ``reviewing`` phase visit was attempted without a valid reviewer identity."""
 
 
-class Command(TyperCommand):
+# #4234: `record-e2e-run` RETURNS its refusal so the MCP twin keeps the dict; the base
+# class stops the shell reading an unrecorded attestation as recorded.
+class Command(RefusalExitTyperCommand):
+    """Session lifecycle: phase visits, E2E attestations, and ticket state reporting."""
+
     @initialize()
     def init(self) -> None:
         """Group root — forces sub-commands to be addressed by name."""

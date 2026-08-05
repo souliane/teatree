@@ -270,6 +270,8 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
 
 
 class Command(PendingPrCommands, RefusalExitTyperCommand):
+    """Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan posting."""
+
     # #4210: every refusal below is RETURNED, not raised, so an in-process caller
     # can route on it — the base class is what stops the shell reading that as a
     # success and running the next command in a `ship && clear` chain. `ensure-pr`
