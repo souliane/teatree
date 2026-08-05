@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from django.apps import apps
 
-from teatree.agents import apps as agents_apps
+from teatree.agents.apps import run_headless_deferred, run_short_describe_deferred
 
 _HEAVY_MODULES = ["openai", "pydantic_ai.models.openai", "teatree.agents.harness", "teatree.agents.headless"]
 
@@ -75,7 +75,7 @@ class TestReadyDoesNotImportTheAgentSdks:
 
         monkeypatch.setattr("teatree.agents.headless.run_headless", fake_run_headless)
 
-        result = agents_apps.run_headless_deferred("task", phase="coding", overlay_skill_metadata={})
+        result = run_headless_deferred("task", phase="coding", overlay_skill_metadata={})
 
         assert seen == [("task", "coding")]
         assert result == "attempt"
@@ -86,7 +86,7 @@ class TestReadyDoesNotImportTheAgentSdks:
             lambda task: f"OK    {task}",
         )
 
-        assert agents_apps.run_short_describe_deferred("task-7") == "OK    task-7"
+        assert run_short_describe_deferred("task-7") == "OK    task-7"
 
     def test_ready_registers_both_runners(self) -> None:
         from teatree.core.deterministic_phases import deterministic_phase_runner  # noqa: PLC0415 — post-setup read
@@ -95,5 +95,5 @@ class TestReadyDoesNotImportTheAgentSdks:
 
         apps.get_app_config("agents").ready()
 
-        assert get_headless_runner() is agents_apps.run_headless_deferred
-        assert deterministic_phase_runner(SHORT_DESCRIBE_PHASE) is agents_apps.run_short_describe_deferred
+        assert get_headless_runner() is run_headless_deferred
+        assert deterministic_phase_runner(SHORT_DESCRIBE_PHASE) is run_short_describe_deferred

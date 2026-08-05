@@ -8,6 +8,8 @@ call fails on ``unable to open database file``.
 """
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,9 @@ from teatree.core.mcp_liveness import (
     McpFailureCause,
     classify_exercise,
     exercise_mcp_server,
+    installed_side_label,
+    skew_finding,
+    spawn_mcp_server,
 )
 
 _GOOD_STDOUT = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}})
@@ -141,3 +146,44 @@ class TestTheSpawnSeam:
 
         assert seen == [["t3", "mcp", "serve"]]
         assert outcome.ok is True
+
+
+class TestTheRealSpawn:
+    """The one part that cannot be a pure function — pinned against real child processes."""
+
+    def test_a_server_that_answers_is_captured_and_timed(self) -> None:
+        answer = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})
+        stub = f"import sys; sys.stdin.readline(); print({answer!r}); sys.stderr.write('warming up')"
+
+        run = spawn_mcp_server([sys.executable, "-c", stub])
+
+        assert run.timed_out is False
+        assert "warming up" in run.stderr
+        assert classify_exercise(run).ok is True
+
+    def test_the_initialize_frame_actually_reaches_the_child(self) -> None:
+        """A spawn that never writes the frame would look identical to a mute server."""
+        echo = "import sys; sys.stderr.write(sys.stdin.readline())"
+
+        run = spawn_mcp_server([sys.executable, "-c", echo])
+
+        assert '"method": "initialize"' in run.stderr
+
+    def test_a_server_that_never_answers_times_out_rather_than_hanging(self) -> None:
+        run = spawn_mcp_server([sys.executable, "-c", "import time; time.sleep(30)"], budget=0.5)
+
+        assert run.timed_out is True
+        assert classify_exercise(run, budget=0.5).cause is McpFailureCause.SLOW_STARTUP
+
+
+class TestTheSkewReport:
+    def test_the_side_is_always_named(self) -> None:
+        """Host and container drift independently — an unnamed side sends the operator to the wrong env."""
+        assert installed_side_label() in {"the HOST tool env", "the CONTAINER env"}
+
+    def test_the_finding_carries_the_source_the_skew_was_measured_against(self) -> None:
+        finding = skew_finding(["mcp declares '>=2,<3' but 1.28.1 is installed"], source=Path("/x/pyproject.toml"))
+
+        assert "/x/pyproject.toml" in finding
+        assert "1.28.1" in finding
+        assert installed_side_label() in finding
