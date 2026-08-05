@@ -383,17 +383,19 @@ class TestTheRowLevelCompletenessChecksAreNonVacuous(_PinnedSessionTestCase):
         return json.loads(out.getvalue())["completeness_failures"]
 
     def test_a_union_that_is_not_what_this_hand_off_merged_is_refused(self) -> None:
+        """Every OTHER field is recorded correctly, so only the union check can refuse this row."""
         self._patch(
             "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
             lambda *a, **k: [_push("/wt/a", "feat/a", error="boom")],
         )
         self._patch(
-            "teatree.core.management.commands.handover.record_barrier_returns", _record_wrongly(subagent_wrapup=[])
+            "teatree.core.management.commands.handover.record_barrier_returns",
+            _record_wrongly(subagent_wrapup=[], barrier_ran_at_latest_handoff=True, last_barrier_at=timezone.now()),
         )
 
         failures = self._refused(body="BODY")
 
-        assert any("not the union this hand-off merged" in failure for failure in failures)
+        assert failures == ["the persisted sub-agent wrap-up is not the union this hand-off merged"]
 
     def test_a_barrier_that_ran_while_the_row_records_no_instant_is_refused(self) -> None:
         self._patch(
