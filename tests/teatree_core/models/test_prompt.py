@@ -6,10 +6,11 @@ seeded production prompt names.
 """
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from teatree.core.models import Prompt
+from teatree.core.models import Loop, Prompt
 
 
 class TestPromptDefaults(TestCase):
@@ -40,3 +41,46 @@ class TestPromptManager(TestCase):
 
     def test_by_name_returns_none_when_absent(self) -> None:
         assert Prompt.objects.by_name("demo-missing") is None
+
+
+class TestAnEmptyBody(TestCase):
+    """Empty is legal exactly where it means "switched off" (#4166)."""
+
+    def test_an_unreferenced_prompt_may_have_an_empty_body(self) -> None:
+        prompt = Prompt.objects.create(name="demo-off", body="")
+
+        prompt.full_clean()
+
+        assert prompt.body == ""
+
+    def test_a_prompt_a_loop_runs_refuses_an_empty_body(self) -> None:
+        prompt = Prompt.objects.create(name="demo-loop-body", body="do the thing")
+        Loop.objects.create(name="demo-loop", prompt=prompt)
+        prompt.body = "   "
+
+        with pytest.raises(ValidationError) as exc:
+            prompt.full_clean()
+
+        assert "body" in exc.value.message_dict
+
+    def test_revising_a_prompt_a_loop_runs_to_empty_is_refused(self) -> None:
+        # `clean` runs only under `full_clean`, so the versioned write path needs
+        # the guard of its own — otherwise a loop is left ticking an empty body.
+        prompt = Prompt.objects.create(name="demo-loop-revise", body="do the thing")
+        Loop.objects.create(name="demo-loop-r", prompt=prompt)
+
+        with pytest.raises(ValidationError) as exc:
+            prompt.revise(body="  ")
+
+        assert "body" in exc.value.message_dict
+        assert Prompt.objects.get(pk=prompt.pk).body == "do the thing"
+        assert prompt.versions.count() == 0
+
+    def test_revising_an_unreferenced_prompt_to_empty_is_the_off_switch(self) -> None:
+        # A standing-directive override is referenced by no loop, so the disable
+        # the guard must not touch keeps working.
+        prompt = Prompt.objects.create(name="demo-override", body="Owner rule.")
+
+        prompt.revise(body="")
+
+        assert Prompt.objects.get(pk=prompt.pk).body == ""

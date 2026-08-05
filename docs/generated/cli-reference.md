@@ -4170,6 +4170,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  then drains a bounded batch of the fresh remainder, and     │
 │                  stands down while a live worker holds either worker         │
 │                  singleton.                                                  │
+│ directives       Read the standing directives, or switch a slot off and back │
+│                  on (#4166).                                                 │
 │ preset           Named loop-state presets — mode switching (#3159).          │
 │ schedule         Weekly preset schedules — the L2 calendar (#3159).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4771,6 +4773,77 @@ Usage: t3 loop drain-queue start [OPTIONS]
  (seconds; floor 10).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop directives`
+
+```
+Usage: t3 loop directives [OPTIONS] COMMAND [ARGS]...
+
+ Read the standing directives, or switch a slot off and back on (#4166).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show     Print the standing directives, their scope, their delivery cost and │
+│          the turn budget.                                                    │
+│ disable  Switch each named slot off by writing an empty, versioned override  │
+│          body.                                                               │
+│ enable   Switch each named slot back on, restoring the owner's own text      │
+│          where there is one.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop directives show`
+
+```
+Usage: t3 loop directives show [OPTIONS]
+
+ Print the standing directives, their scope, their delivery cost and the turn
+ budget.
+
+ Read-only. The ``--json`` payload — ``{slot_id, cadence_seconds, text, scope,
+ wakes_session}`` per directive — is the harness-neutral contract: a non-Claude
+ harness reads it and writes only its own delivery adapter.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the standing directives as JSON.                        │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop directives disable`
+
+```
+Usage: t3 loop directives disable [OPTIONS] [SLOT_IDS]...
+
+ Switch each named slot off by writing an empty, versioned override body.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   slot_ids      [SLOT_IDS]...  Slot ids to switch off.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all           Switch every slot off.                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop directives enable`
+
+```
+Usage: t3 loop directives enable [OPTIONS] [SLOT_IDS]...
+
+ Switch each named slot back on, restoring the owner's own text where there is
+ one.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   slot_ids      [SLOT_IDS]...  Slot ids to switch back on.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all           Switch every slot back on.                                   │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

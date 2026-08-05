@@ -12,9 +12,18 @@ prose while cross-referencing the spine, which is exactly what progressive
 disclosure should look like, and every one of those must stay green. Only a
 HEADING is a claim to own the rule, so only an orphaned heading fails.
 
+A matching TITLE is not enough. ``_orphans`` compares heading titles, so gutting
+the section under a spine heading while leaving the heading in place restores
+nothing and stays green — the same loss, re-inflicted in heading-preserving form.
+A spine heading therefore only counts as OWNING the rule when the section under
+it (down to the next heading of the same or higher level) is NON-TRIVIAL: enough
+prose to carry a rule, and at least one mandate word. A heading followed only by
+a pointer link no longer satisfies the check.
+
 The baseline is the set already orphaned on ``origin/main``. Shrink-only:
 ``test_the_baseline_has_not_gone_stale`` fails once an entry is fixed without
-being removed, so the list can only drain.
+being removed, and ``test_the_baseline_can_only_drain`` fails when a row is
+ADDED, so the list can only drain.
 """
 
 import re
@@ -23,7 +32,12 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SKILLS = _REPO_ROOT / "skills"
 
-_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+_MANDATE_RE = re.compile(r"\b(?:must|never|only|non-negotiable|do NOT|always|forbidden|refuse)\b", re.IGNORECASE)
+
+#: A restored rule needs a body, not just a heading. Below this many non-blank
+#: characters the section is a stub or a bare pointer link, which binds nobody.
+_MIN_SECTION_CHARS = 120
 
 #: Already orphaned on ``origin/main`` — pre-existing, out of scope for the branch
 #: that added this check. SHRINK ONLY: never add a row to silence a new failure.
@@ -37,9 +51,29 @@ _BASELINE: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+#: The ratchet's real invariant: the list may DRAIN, never GROW. Lower this number
+#: when rows are fixed; raising it is the change reviewers must refuse.
+_CEILING = 5
+
 
 def _headings(path: Path) -> list[str]:
-    return [title.strip() for title in _HEADING_RE.findall(path.read_text(encoding="utf-8"))]
+    return [title.strip() for _, title in _HEADING_RE.findall(path.read_text(encoding="utf-8"))]
+
+
+def _substantive_headings(body: str) -> set[str]:
+    """Titles whose own section carries a rule, not just a heading and a pointer."""
+    matches = list(_HEADING_RE.finditer(body))
+    owning: set[str] = set()
+    for index, match in enumerate(matches):
+        level = len(match.group(1))
+        end = next(
+            (later.start() for later in matches[index + 1 :] if len(later.group(1)) <= level),
+            len(body),
+        )
+        section = body[match.end() : end]
+        if len(section.replace("\n", "").strip()) >= _MIN_SECTION_CHARS and _MANDATE_RE.search(section):
+            owning.add(match.group(2).strip())
+    return owning
 
 
 def _orphans() -> set[tuple[str, str]]:
@@ -48,10 +82,10 @@ def _orphans() -> set[tuple[str, str]]:
         spine = page.parents[1] / "SKILL.md"
         if not spine.is_file():
             continue
-        spine_titles = set(_headings(spine))
+        owning = _substantive_headings(spine.read_text(encoding="utf-8"))
         rel = page.relative_to(_REPO_ROOT).as_posix()
         found.update(
-            (rel, title) for title in _headings(page) if "non-negotiable" in title.lower() and title not in spine_titles
+            (rel, title) for title in _headings(page) if "non-negotiable" in title.lower() and title not in owning
         )
     return found
 
@@ -85,4 +119,12 @@ def test_the_baseline_has_not_gone_stale() -> None:
     assert not fixed, (
         "these baseline rows are no longer orphaned — delete them from _BASELINE so the ratchet "
         "keeps its teeth:\n" + "\n".join(f'  "{title}" in {page}' for page, title in fixed)
+    )
+
+
+def test_the_baseline_can_only_drain() -> None:
+    assert len(_BASELINE) <= _CEILING, (
+        "a row was ADDED to the orphan baseline. Return the rule's trigger and verdict to the "
+        "spine instead; if the addition is genuinely pre-existing on origin/main, say so in "
+        "review and lower nothing."
     )

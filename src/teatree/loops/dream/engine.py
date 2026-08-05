@@ -373,6 +373,10 @@ def run_consolidation(
     # separate autocommit BEFORE the write — which is what the distiller used to do —
     # let anything raising in between strand that claim against no rows at all, and the
     # rotation does not revisit a window it skipped until it has wrapped the whole corpus.
+    # Its regression test pins the ORDERING, not the atomicity: dropping this `atomic()`
+    # while still writing the rows before the cursor keeps that test green. What stays
+    # uncovered is a REDO — rows committed, cursor lost, window replayed — never the loss
+    # above; proving atomicity needs a forced mid-transaction failure.
     with transaction.atomic():
         write_outcome = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
         if outcome.next_cursor is not None:
