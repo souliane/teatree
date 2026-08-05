@@ -10,12 +10,9 @@ ticket from the PR identity instead makes both gates reachable from the one chok
 every merge path crosses.
 """
 
-from teatree.core.gates.anti_vacuity_gate import (
-    AntiVacuityAttestationError,
-    anti_vacuity_required,
-    check_anti_vacuity_attestation,
-)
-from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied, rubric_gate_required
+from teatree.core.gates import anti_vacuity_gate, rubric_gate
+from teatree.core.gates.anti_vacuity_gate import AntiVacuityAttestationError
+from teatree.core.gates.rubric_gate import RubricNotSatisfiedError
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
@@ -43,8 +40,8 @@ def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
         required = [
             name
             for name, in_force in (
-                ("require_anti_vacuity_attestation", anti_vacuity_required(overlay)),
-                ("require_rubric_verification", rubric_gate_required(overlay)),
+                ("require_anti_vacuity_attestation", anti_vacuity_gate.anti_vacuity_required(overlay)),
+                ("require_rubric_verification", rubric_gate.rubric_gate_required(overlay)),
             )
             if in_force
         ]
@@ -58,7 +55,7 @@ def assert_ticket_scoped_gates(*, slug: str, pr_id: int, head_sha: str) -> None:
             raise MergePreconditionError(msg)
         return
     try:
-        check_anti_vacuity_attestation(ticket, head_sha, transition="merge")
-        check_rubric_satisfied(ticket, head_sha, transition="merge")
+        anti_vacuity_gate.check_anti_vacuity_attestation(ticket, head_sha, transition="merge")
+        rubric_gate.check_rubric_satisfied(ticket, head_sha, transition="merge")
     except (AntiVacuityAttestationError, RubricNotSatisfiedError) as exc:
         raise MergePreconditionError(str(exc)) from exc
