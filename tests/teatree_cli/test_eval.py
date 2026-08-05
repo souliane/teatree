@@ -18,6 +18,7 @@ from teatree.cli.eval.run_modes import RunGuards, with_model
 from teatree.cli.eval.verdict import LaneResult
 from teatree.eval.api_runner import ApiRunnerParams
 from teatree.eval.coverage import CoverageReport, SkillCoverage
+from teatree.eval.discovery import ScenarioCatalog
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
@@ -1007,13 +1008,17 @@ class TestEvalCostRegressionGate:
         assert result.exit_code == 0, result.output
         assert "COST REGRESSED" not in result.output
 
-    def test_no_baseline_recorded_reports_and_passes(self) -> None:
+    def test_a_requested_gate_with_no_baseline_fails_rather_than_certifying(self) -> None:
+        # The control DB is a docker volume recreated on a rebuild, so "no baseline
+        # for any model" is the state right after every reset. Reporting a gate that
+        # compared zero scenarios as green is "I cannot tell" read as "nothing
+        # regressed" — the caller asked for a comparison and got none.
         specs = [_spec("alpha")]
 
         result = self._run_candidate(specs, cost_usd=0.50, extra=["--gate-cost-regression"])
 
-        assert result.exit_code == 0, result.output
-        assert "no cost baseline" in result.output
+        assert result.exit_code == 1, result.output
+        assert "compared zero scenarios" in result.output
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -1087,13 +1092,16 @@ class TestEvalCostBoundsGate:
         assert "COST MISSING beta" in result.output
         assert "COST OVER BOUND" not in result.output
 
-    def test_unpinned_scenario_is_unbounded(self, tmp_path: Path) -> None:
-        # The run carries `alpha`, but the ceilings file pins nothing — un-bounded, green.
+    def test_an_empty_ceiling_set_refuses_rather_than_certifying(self, tmp_path: Path) -> None:
+        # `load_cost_bounds` makes an ABSENT file a hard error precisely because no
+        # ceilings would make the gate vacuously green. A committed file pinning
+        # zero scenarios is the same vacuity by another door, so a requested gate
+        # with nothing to gate is a refusal — not a $99 run passing.
         specs = [_spec("alpha")]
         with self._bounds_file(tmp_path, "default_margin: 0.25\nscenarios: {}\n"):
             result = self._run_candidate(specs, cost_usd=99.0)
-        assert result.exit_code == 0, result.output
-        assert "nothing to gate" in result.output
+        assert result.exit_code == 1, result.output
+        assert "pins zero scenarios" in result.output
 
     def test_rejected_in_docker(self) -> None:
         with (
@@ -1824,7 +1832,7 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per model-free lane the b
 ) -> "Iterator[None]":
     """Patch every model-free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
-        patch("teatree.cli.eval.all.discover_specs", return_value=specs),
+        patch("teatree.cli.eval.all.discover_catalog", return_value=ScenarioCatalog(specs=specs, degraded={})),
         patch("teatree.cli.eval.all.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
         patch("teatree.cli.eval.all.run_regression_corpus", return_value=_regression(ok=regression_ok)),
         patch("teatree.cli.eval.all.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
@@ -2032,11 +2040,22 @@ class TestEvalAll:
             assert lane in result.output, f"missing lane {lane!r}: {result.output}"
         assert "skill-prose-judge" not in result.output, result.output
 
-    def test_coverage_gap_is_warn_first_exit_zero(self, tmp_path: Path) -> None:
+    def test_a_coverage_gap_fails_the_suite(self, tmp_path: Path) -> None:
+        # Phase-B enforcement shipped: `test_no_shipped_skill_is_an_uncovered_gap`
+        # is a hard RED on the same corpus, so a lane hard-coded to pass reported
+        # the gap in green while the pytest gate failed on it. The two agree now.
         with _patch_all_lanes([_spec("worktree_first")], coverage_gaps=("loops",)):
             result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "skill-coverage" in result.output
+        assert "loops" in result.output
+
+    def test_a_covered_corpus_leaves_the_suite_green(self, tmp_path: Path) -> None:
+        # The anti-vacuity control for the line above: the lane fails on the GAP,
+        # not on being run.
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
 
     def test_model_free_drops_the_ai_lane(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):

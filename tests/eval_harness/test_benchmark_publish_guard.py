@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.benchmark_publish_guard import UnmeteredShardError, contaminated_shards, verify_publishable
+from teatree.eval.benchmark_publish_guard import (
+    IncompleteDashboardError,
+    UnmeteredShardError,
+    contaminated_shards,
+    verify_publishable,
+)
 from teatree.eval.matrix import MatrixRow, render_matrix_html
 from teatree.eval.models import EvalSpec
 
@@ -64,7 +69,7 @@ class TestContaminationDetection:
         _write_shard(tmp_path, "under_load-2-5", rows, models)
 
         with pytest.raises(UnmeteredShardError) as excinfo:
-            verify_publishable(tmp_path)
+            verify_publishable(tmp_path, expected_shards=1)
 
         message = str(excinfo.value)
         assert "under_load-2-5" in message
@@ -81,7 +86,7 @@ class TestContaminationDetection:
         _write_shard(tmp_path, "under_load-3-5", rows, models)
 
         with pytest.raises(UnmeteredShardError) as excinfo:
-            verify_publishable(tmp_path)
+            verify_publishable(tmp_path, expected_shards=1)
 
         message = str(excinfo.value)
         assert "under_load-3-5" in message
@@ -95,7 +100,7 @@ class TestContaminationDetection:
         shard = _write_shard(tmp_path, "clean_room-1-16", rows, models)
         before = shard.read_text(encoding="utf-8")
 
-        verify_publishable(tmp_path)
+        verify_publishable(tmp_path, expected_shards=1)
 
         assert contaminated_shards(tmp_path) == []
         assert shard.read_text(encoding="utf-8") == before
@@ -104,7 +109,7 @@ class TestContaminationDetection:
         models = ["claude-opus-4-8", "claude-sonnet-5"]
         _write_shard(tmp_path, "under_load-5-5", [], models)
 
-        verify_publishable(tmp_path)
+        verify_publishable(tmp_path, expected_shards=1)
 
     def test_all_skipped_shard_is_not_contaminated(self, tmp_path: Path) -> None:
         """No verdicts recorded means no metered work was owed."""
@@ -121,7 +126,7 @@ class TestContaminationDetection:
         ]
         _write_shard(tmp_path, "clean_room-2-16", rows, ["claude-opus-4-8"])
 
-        verify_publishable(tmp_path)
+        verify_publishable(tmp_path, expected_shards=1)
 
     def test_one_bad_shard_refuses_the_whole_publish(self, tmp_path: Path) -> None:
         """A partially-published dashboard that looks complete is the failure mode."""
@@ -130,13 +135,16 @@ class TestContaminationDetection:
         _write_shard(tmp_path, "under_load-4-5", _unmetered_rows("claude-opus-4-8"), models)
 
         with pytest.raises(UnmeteredShardError) as excinfo:
-            verify_publishable(tmp_path)
+            verify_publishable(tmp_path, expected_shards=2)
 
         assert "under_load-4-5" in str(excinfo.value)
         assert "clean_room-1-16" not in str(excinfo.value)
 
-    def test_empty_directory_is_publishable(self, tmp_path: Path) -> None:
-        verify_publishable(tmp_path)
+    def test_an_empty_directory_is_refused_not_published(self, tmp_path: Path) -> None:
+        # The publish job runs `if: always()`, so "no shard uploaded" is a state it
+        # actually reaches; an empty dir must never read as "nothing contaminated".
+        with pytest.raises(IncompleteDashboardError):
+            verify_publishable(tmp_path, expected_shards=8)
 
 
 class TestShardReport:

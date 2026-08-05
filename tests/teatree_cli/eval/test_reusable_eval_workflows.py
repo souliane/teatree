@@ -97,13 +97,19 @@ class TestPublishGuard:
 
     def test_guard_runs_before_the_dashboard_is_written_or_committed(self) -> None:
         names = self._publish_step_names()
-        guard = next(i for i, name in enumerate(names) if "not backed by metered spend" in name)
+        guard = next(i for i, name in enumerate(names) if "incomplete or unmetered dashboard" in name)
         collect = next(i for i, name in enumerate(names) if "Collect the shard matrices" in name)
         commit = next(i for i, name in enumerate(names) if name.startswith("Commit and push"))
         assert guard < collect < commit
 
     def test_guard_invokes_the_cli_primitive(self) -> None:
         assert "t3 eval verify-benchmark-publish" in _WEEKLY.read_text(encoding="utf-8")
+
+    def test_the_guard_is_told_how_many_shards_the_run_planned(self) -> None:
+        # Without the planned count the guard can only inspect the artifacts that
+        # ARRIVED, so a run whose legs timed out publishes a smaller dashboard as
+        # the week's complete benchmark.
+        assert "--expected-shards" in _WEEKLY.read_text(encoding="utf-8")
 
 
 class TestInjectionSafety:

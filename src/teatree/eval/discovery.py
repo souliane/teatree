@@ -15,16 +15,24 @@ Two surfaces are walked, in order:
     catalog remains overlay-agnostic.
 
 Discovery is best-effort with respect to overlay failures: a broken
-overlay (import error, missing directory) is skipped with a debug log
-rather than failing the whole catalog. This mirrors
+overlay (import error, missing directory) is skipped rather than failing
+the whole catalog. This mirrors
 ``teatree.core.overlay_loader.infer_overlay_for_url`` which uses the
 same isolation discipline.
+
+Best-effort is not silent. Every skipped overlay is logged at WARNING and
+recorded on the catalog (:func:`discover_catalog`), because a fallback that
+hides its own primary failure produces the shape every other guard here is
+built to refuse: a run that meters real spend, executes scenarios, and reports
+green while the overlay half of the suite — tenant identities, banned-jargon
+lists — silently stopped being evaluated.
 
 Scenario names are unique across all three surfaces: a collision is a
 hard :class:`~teatree.eval.loader.EvalSpecError` surfaced at discovery so
 ``t3 eval run <name>`` can never resolve ambiguously.
 """
 
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -32,6 +40,25 @@ from teatree.eval.loader import EvalSpecError, load_eval_yaml
 from teatree.eval.models import EvalSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class ScenarioCatalog:
+    """The discovered scenarios plus every overlay surface that failed to contribute.
+
+    ``degraded`` is the reason-per-overlay map for surfaces that raised: an entry
+    means the catalog is SMALLER than the tree defines, which no downstream guard
+    can detect (``--require-executed`` still sees executions, a metered run still
+    meters spend). ``"*"`` keys the whole-registry failure, where not even the
+    overlay names are known.
+    """
+
+    specs: list[EvalSpec]
+    degraded: dict[str, str]
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.degraded
 
 
 class ScenarioCatalogError(RuntimeError):
@@ -54,7 +81,8 @@ SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 
-def discover_specs() -> list[EvalSpec]:
+def discover_catalog() -> ScenarioCatalog:
+    """The full catalog plus the overlay surfaces that failed to contribute to it."""
     if not SCENARIOS_DIR.is_dir():
         msg = (
             f"scenario catalog directory is missing: {SCENARIOS_DIR}. A missing dir would yield an "
@@ -64,9 +92,14 @@ def discover_specs() -> list[EvalSpec]:
     specs: list[EvalSpec] = []
     for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
         specs.extend(load_eval_yaml(path))
-    specs.extend(_discover_overlay_specs())
+    degraded: dict[str, str] = {}
+    specs.extend(_discover_overlay_specs(degraded))
     _reject_duplicate_names(specs)
-    return specs
+    return ScenarioCatalog(specs=specs, degraded=degraded)
+
+
+def discover_specs() -> list[EvalSpec]:
+    return discover_catalog().specs
 
 
 def _reject_duplicate_names(specs: list[EvalSpec]) -> None:
@@ -89,14 +122,15 @@ def find_spec(name: str) -> EvalSpec | None:
     return None
 
 
-def _discover_overlay_specs() -> list[EvalSpec]:
+def _discover_overlay_specs(degraded: dict[str, str]) -> list[EvalSpec]:
     from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded per eval run
 
     specs: list[EvalSpec] = []
     try:
         overlays = get_all_overlays()
-    except Exception:
-        logger.debug("eval-discovery: get_all_overlays() failed", exc_info=True)
+    except Exception as exc:
+        logger.warning("eval-discovery: get_all_overlays() failed — no overlay scenario ran", exc_info=True)
+        degraded["*"] = f"overlay registry unreadable: {type(exc).__name__}: {exc}"
         return specs
     for name, overlay in overlays.items():
         getter = getattr(overlay, "get_eval_scenarios_dir", None)
@@ -110,21 +144,14 @@ def _discover_overlay_specs() -> list[EvalSpec]:
             if not scenarios_path.is_dir():
                 continue
             yaml_paths = sorted(scenarios_path.glob("*.yaml"))
-        except Exception:
-            logger.debug(
-                "eval-discovery: overlay %r get_eval_scenarios_dir() failed",
-                name,
-                exc_info=True,
-            )
+        except Exception as exc:
+            logger.warning("eval-discovery: overlay %r get_eval_scenarios_dir() failed", name, exc_info=True)
+            degraded[name] = f"get_eval_scenarios_dir() failed: {type(exc).__name__}: {exc}"
             continue
         for yaml_path in yaml_paths:
             try:
                 specs.extend(load_eval_yaml(yaml_path))
-            except Exception:
-                logger.warning(
-                    "eval-discovery: overlay %r scenario %s failed to load",
-                    name,
-                    yaml_path,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.warning("eval-discovery: overlay %r scenario %s failed to load", name, yaml_path, exc_info=True)
+                degraded[name] = f"{yaml_path.name} failed to load: {type(exc).__name__}: {exc}"
     return specs
