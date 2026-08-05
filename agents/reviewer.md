@@ -62,7 +62,9 @@ Allowed values, exactly as written — anything else is refused:
   abbreviated or remembered SHA). The verdict is recorded at that head, and the
   merge gate compares it against the forge's live head. Any other head is
   refused and records nothing: if the head moved under you, review the
-  dispatched one or return `needs_user_input`.
+  dispatched one or return `needs_user_input`. Omitting the field is refused
+  too — an undisclosed head is not read as agreement with the dispatched one,
+  so a verdict that names no head records nothing at all.
 
 If something blocks you from reviewing at all (you cannot fetch the head, the
 diff is unreachable), return `needs_user_input` with the reason instead of

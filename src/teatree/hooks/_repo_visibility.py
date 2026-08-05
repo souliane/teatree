@@ -7,9 +7,12 @@ private?" question and nothing about command classification:
 - the DB-home ``private_repos`` slug-namespace allowlist (the reliable,
     network-free, recommended mechanism), read from the canonical
     ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`,
-- the day-cached ``gh``/``glab`` live-visibility probe (best-effort
-    fallback; the binary is resolved against an augmented PATH so it works
-    inside the restricted PreToolUse subprocess), and
+- the cached ``gh``/``glab`` live-visibility probe (best-effort fallback; the
+    binary is resolved against an augmented PATH so it works inside the
+    restricted PreToolUse subprocess). The cache TTL is asymmetric by risk
+    (:func:`_verdict_ttl`): a PUBLIC verdict is held for a day, a non-public one
+    for minutes, since only a stale non-public verdict can skip the scan on a
+    now-public surface.
 - the slug resolution from a repo ``cwd``.
 
 Detection is conservative and offline-first; an unknown/unresolvable repo is
@@ -38,15 +41,25 @@ class _VisibilityEntry(TypedDict):
 # A slug must have at least ``owner/repo`` (host-prefixed slugs add more).
 _MIN_SLUG_PARTS: Final[int] = 2
 
-# How long a cached POSITIVE visibility verdict stays fresh. Repo visibility
-# changes rarely; a day-long cache keeps the offline path fast.
-_VISIBILITY_TTL_S: Final[int] = 24 * 60 * 60
+# How long a cached PUBLIC verdict stays fresh. Repo visibility changes rarely;
+# a day-long cache keeps the offline path fast. Staleness in this direction is
+# harmless -- a repo that went private is merely scanned as if it were still
+# public, which over-scans and never leaks.
+_PUBLIC_VERDICT: Final[str] = "PUBLIC"
+_PUBLIC_TTL_S: Final[int] = 24 * 60 * 60
+
+# How long a cached NON-PUBLIC verdict (PRIVATE, INTERNAL, ...) stays fresh.
+# Far shorter, because this is the only dangerous staleness direction: a
+# non-public verdict makes every leak gate SKIP the scan for that slug, so once
+# the operator flips the repo public, each minute the stale verdict survives is
+# a minute of unscanned public egress.
+_NON_PUBLIC_TTL_S: Final[int] = 15 * 60
 
 # Sentinel + TTL for a NEGATIVE cache entry: a probe that RAN but could not
 # resolve visibility (tool absent, auth differs, slug unrecognised). Without it,
 # every unresolved slug re-probes at the full 5s budget PER segment on every
 # publish, stacking toward the 30s hook ceiling. The negative entry is short-
-# lived (distinct from the 24h positive TTL) because an unresolvable repo may
+# lived (distinct from the 24h PUBLIC TTL) because an unresolvable repo may
 # become resolvable soon (auth fixed, tool installed).
 _UNKNOWN_VERDICT: Final[str] = "UNKNOWN"
 _UNKNOWN_TTL_S: Final[int] = 5 * 60
@@ -244,10 +257,16 @@ def _read_visibility_cache(slug: str) -> str | None:
     verdict = entry.get("visibility")
     if not isinstance(ts, (int, float)) or not isinstance(verdict, str):
         return None
-    ttl = _UNKNOWN_TTL_S if verdict == _UNKNOWN_VERDICT else _VISIBILITY_TTL_S
-    if time.time() - ts > ttl:
+    if time.time() - ts > _verdict_ttl(verdict):
         return None
     return verdict
+
+
+def _verdict_ttl(verdict: str) -> int:
+    """How long a cached ``verdict`` stays fresh, per its staleness risk."""
+    if verdict == _UNKNOWN_VERDICT:
+        return _UNKNOWN_TTL_S
+    return _PUBLIC_TTL_S if verdict == _PUBLIC_VERDICT else _NON_PUBLIC_TTL_S
 
 
 def _write_visibility_cache(slug: str, verdict: str) -> None:

@@ -117,6 +117,39 @@ class TestBlocksUnknownRepoPush:
         assert deny["permissionDecision"] == "deny"
         assert "owned_repos" in deny["permissionDecisionReason"]
 
+    def test_git_dash_c_push_is_classified_by_the_named_repo(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``git -C <dir> push`` names the repo; the ambient cwd does not."""
+        owned = _repo_with_remote(tmp_path / "session", "git@github.com:souliane/teatree.git")
+        unknown = _repo_with_remote(tmp_path / "elsewhere", "git@github.com:randomuser/randomrepo.git")
+        event = _push_event(f"git -C {unknown} push origin main", owned)
+        assert router.handle_block_unknown_repo_push(event) is True
+        assert _parse_deny(capsys) is not None
+
+    def test_cd_prefixed_push_is_classified_by_the_cd_target(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        owned = _repo_with_remote(tmp_path / "session2", "git@github.com:souliane/teatree.git")
+        unknown = _repo_with_remote(tmp_path / "elsewhere2", "git@github.com:randomuser/randomrepo.git")
+        event = _push_event(f"cd {unknown} && git push origin main", owned)
+        assert router.handle_block_unknown_repo_push(event) is True
+        assert _parse_deny(capsys) is not None
+
+    def test_dash_c_push_to_an_owned_repo_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """The other direction: the named repo is owned even though the session sits elsewhere."""
+        unknown = _repo_with_remote(tmp_path / "session3", "git@github.com:randomuser/randomrepo.git")
+        owned = _repo_with_remote(tmp_path / "elsewhere3", "git@github.com:souliane/teatree.git")
+        event = _push_event(f"git -C {owned} push origin main", unknown)
+        assert router.handle_block_unknown_repo_push(event) is False
+        assert _parse_deny(capsys) is None
+
+    def test_push_inside_a_quoted_string_is_not_a_push(self, tmp_path: Path) -> None:
+        """The verb is read off the quote-stripped skeleton, as in every sibling gate."""
+        repo = _repo_with_remote(tmp_path / "quoted", "git@github.com:randomuser/randomrepo.git")
+        event = _push_event("git commit -m 'do not git push this yet'", repo)
+        assert router.handle_block_unknown_repo_push(event) is False
+
     def test_non_push_command_is_ignored(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "unknown2", "git@github.com:randomuser/randomrepo.git")
         assert router.handle_block_unknown_repo_push(_push_event("git status", repo)) is False
@@ -124,6 +157,48 @@ class TestBlocksUnknownRepoPush:
     def test_dry_run_push_is_ignored(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "unknown3", "git@github.com:randomuser/randomrepo.git")
         assert router.handle_block_unknown_repo_push(_push_event("git push --dry-run origin HEAD", repo)) is False
+
+    def test_dash_c_dry_run_push_is_ignored(self, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / "unknown4", "git@github.com:randomuser/randomrepo.git")
+        event = _push_event(f"git -C {repo} push --dry-run origin HEAD", repo)
+        assert router.handle_block_unknown_repo_push(event) is False
+
+
+class TestDegradedPathIsAudible:
+    """An allow the gate could not actually evaluate must not read like a cleared push."""
+
+    def test_missing_django_says_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _repo_with_remote(tmp_path / "nodjango", "git@github.com:randomuser/randomrepo.git")
+        monkeypatch.setattr(scope_gate, "bootstrap_teatree_django", lambda: False)
+
+        assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
+
+        assert "SKIPPED is not PASSED" in capsys.readouterr().err
+
+    def test_broken_resolver_says_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _repo_with_remote(tmp_path / "brokenresolver", "git@github.com:randomuser/randomrepo.git")
+
+        registry_down = RuntimeError("overlay registry unavailable")
+
+        def _boom(_cwd: Path) -> str:
+            raise registry_down
+
+        monkeypatch.setattr("teatree.core.gates.owned_repo_guard.classify_active_push", _boom)
+
+        assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
+
+        assert "SKIPPED is not PASSED" in capsys.readouterr().err
+
+    def test_a_cleared_push_stays_silent(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        repo = _repo_with_remote(tmp_path / "cleared", "git@github.com:souliane/teatree.git")
+
+        assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
+
+        assert "SKIPPED is not PASSED" not in capsys.readouterr().err
 
 
 class TestNeverLockout:
