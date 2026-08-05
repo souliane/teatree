@@ -31,11 +31,22 @@ from teatree.config import (
     dark_flags,
     is_feature_flag,
 )
-from teatree.config.feature_flags import REMOVE_STAGE_BANNER, flag_trailer, render_flags_audit
+from teatree.config.feature_flags import (
+    REMOVE_STAGE_BANNER,
+    UNTRACKED_BANNER,
+    flag_trailer,
+    render_flags_audit,
+    tracking_reference,
+    untracked_flags,
+)
 
 
 def _user_settings_field_names() -> set[str]:
     return {f.name for f in dataclasses.fields(UserSettings)}
+
+
+def _flag(tracking_issue: str) -> FeatureFlag:
+    return FeatureFlag(field="x_enabled", stage=FlagStage.DARK, tracking_issue=tracking_issue, summary="s")
 
 
 def _mixed_stage_fixture() -> dict[str, FeatureFlag]:
@@ -257,8 +268,11 @@ class TestDirectiveIntakeGraduation:
         assert UserSettings().directive_loop_enabled is True
 
     def test_the_graduated_flag_left_the_dark_set(self) -> None:
-        # The stage move is what releases the key from `pinned_fail_closed_keys()`; a
-        # flag still in `dark_flags()` cannot ship default-ON at all.
+        # The stage move is what lets the key ship default-ON — `TestDarkDefaultsOff` holds
+        # every DARK flag equal to its own off_value. It does NOT release the key from
+        # `pinned_fail_closed_keys()`: a graduated flag's ON default is a code-reviewed
+        # decision, and a snapshot carrying a live box's OFF back into the shipped file
+        # would undo that graduation for every fresh install.
         assert "directive_loop_enabled" not in dark_flags()
 
     def test_the_execution_arc_guards_did_not_graduate(self) -> None:
@@ -307,6 +321,42 @@ class TestAuditRenderSurfacesRemoveLoud:
         rendered = render_flags_audit(FEATURE_FLAGS)
         # The live registry has no REMOVE flag, so the loud banner must not appear.
         assert REMOVE_STAGE_BANNER not in rendered
+
+
+class TestATrackingIssueThatResolvesToNothingIsSaidSo:
+    """A flag is meant to DIE, and only a resolvable reference lets anyone ask if it has.
+
+    Five live entries carry a workstream label — ``souliane/teatree — SELFCATCH-3
+    plan_gate hardening`` — that reads exactly like a citation and resolves to no issue.
+    Rendered bare as ``tracking <text>`` beside the ones that DO resolve, a stalled DARK
+    flag reads as governed, and the only anti-rot guard on the field
+    (:meth:`TestLifecycleFields.test_every_flag_has_non_empty_tracking_issue`) is satisfied
+    by any prose at all.
+    """
+
+    def test_a_reference_is_extracted_in_both_written_forms(self) -> None:
+        assert tracking_reference(_flag("souliane/teatree#118")) == "souliane/teatree#118"
+        assert tracking_reference(_flag("fixes #42 in the next pass")) == "#42"
+
+    def test_prose_naming_no_issue_extracts_nothing(self) -> None:
+        assert tracking_reference(_flag("souliane/teatree — SELFCATCH-3 plan_gate hardening")) == ""
+        assert tracking_reference(_flag("souliane/teatree — autoresearch outer-loop (T4)")) == ""
+
+    def test_untracked_flags_filters_over_a_mixed_fixture(self) -> None:
+        fixture = {"tracked": _flag("souliane/teatree#3691"), "untracked": _flag("north-star PR-3 debt_delta_gate")}
+        assert set(untracked_flags(fixture)) == {"untracked"}
+
+    def test_the_audit_shouts_an_unresolvable_tracking_issue(self) -> None:
+        rendered = render_flags_audit({"stalled": _flag("souliane/teatree — SELFCATCH-3 plan_gate hardening")})
+        assert UNTRACKED_BANNER in rendered
+
+    def test_the_audit_stays_quiet_for_a_resolvable_one(self) -> None:
+        assert UNTRACKED_BANNER not in render_flags_audit({"governed": _flag("souliane/teatree#118")})
+
+    def test_the_live_registry_reports_exactly_the_entries_that_resolve_to_nothing(self) -> None:
+        rendered = render_flags_audit(FEATURE_FLAGS)
+        assert set(untracked_flags()) < set(FEATURE_FLAGS), "a mixed live registry is what makes this non-vacuous"
+        assert rendered.count(UNTRACKED_BANNER) == len(untracked_flags())
 
     def test_audit_lists_every_live_flag(self) -> None:
         rendered = render_flags_audit(FEATURE_FLAGS)

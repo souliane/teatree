@@ -17,9 +17,13 @@ must name a real ``bool``-or-``StrEnum`` ``UserSettings`` field (most flags are
 on/off bools; ``critic_gate_mode`` is a tri-state ``StrEnum``) registered in
 ``OVERLAY_OVERRIDABLE_SETTINGS``, carry a non-empty ``tracking_issue`` and a valid
 ``stage``, and (for a ``DARK`` flag) default to its own ``off_value`` so a dark
-feature can never ship default-ON without a code-reviewed stage demotion.
+feature can never ship default-ON without a code-reviewed stage demotion. Non-empty
+is all that guard can ask for, since a workstream label is a legitimate
+``tracking_issue``; :func:`tracking_reference` is what tells one that resolves to a
+real issue from one that only reads like it does.
 """
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -28,6 +32,13 @@ from teatree.config.enums import CriticGateMode, SendProxyMode
 # The loud banner the audit view prints for a ``REMOVE``-stage flag: the gated
 # code is permanent, so the toggle is dead weight whose only job left is deletion.
 REMOVE_STAGE_BANNER = "DEAD TOGGLE — REMOVE (gated code is permanent)"
+
+# The loud banner for a flag whose ``tracking_issue`` names no resolvable issue: the
+# text READS as a citation, so rendered bare it certifies a stall no one can look up.
+UNTRACKED_BANNER = "UNTRACKED — tracking_issue names no resolvable issue"
+
+# ``<owner>/<repo>#<n>`` or a bare ``#<n>`` anywhere in the tracking prose.
+_ISSUE_REFERENCE = re.compile(r"(?:[\w.-]+/[\w.-]+)?#\d+")
 
 
 class FlagStage(StrEnum):
@@ -216,6 +227,29 @@ DURABLE_GATE_SETTINGS: frozenset[str] = frozenset(
 )
 
 
+def tracking_reference(flag: FeatureFlag) -> str:
+    """The issue reference inside *flag*'s ``tracking_issue``, or ``""`` when it names none.
+
+    A flag is meant to DIE, and the only way to ask whether the gated work landed is to
+    look the issue up — which needs a reference, not prose. Half the live registry carries
+    a workstream label (``souliane/teatree — SELFCATCH-3 plan_gate hardening``) that reads
+    exactly like a citation and resolves to nothing, so the audit view has to be able to
+    tell the two apart rather than render both as ``tracking <text>``.
+    """
+    match = _ISSUE_REFERENCE.search(flag.tracking_issue)
+    return match.group() if match else ""
+
+
+def untracked_flags(flags: dict[str, FeatureFlag] | None = None) -> dict[str, FeatureFlag]:
+    """The subset of *flags* whose ``tracking_issue`` carries no resolvable issue reference.
+
+    Pure over its argument (like :func:`dark_flags`) so the discrimination is proven over a
+    mixed fixture rather than over the live set's composition.
+    """
+    registry = FEATURE_FLAGS if flags is None else flags
+    return {key: flag for key, flag in registry.items() if not tracking_reference(flag)}
+
+
 def is_feature_flag(key: str) -> bool:
     """True when *key* is a governed feature flag rather than a durable setting."""
     return key in FEATURE_FLAGS
@@ -251,16 +285,22 @@ def render_flags_audit(flags: dict[str, FeatureFlag]) -> str:
 
     One line per flag naming its stage, off-value and tracking issue; a
     ``REMOVE``-stage flag is surfaced LOUD (:data:`REMOVE_STAGE_BANNER`) so a dead
-    toggle cannot hide as a decorative registry entry. Pure over its argument so
-    the conformance suite can prove the loud path with a ``REMOVE`` fixture without
-    a ``REMOVE`` flag in the live registry.
+    toggle cannot hide as a decorative registry entry, and a flag whose tracking prose
+    resolves to no issue is surfaced LOUD too (:data:`UNTRACKED_BANNER`) — an
+    unresolvable reference rendered as ``tracking <text>`` is the shape that lets a
+    stalled DARK flag read as governed. Pure over its argument so the conformance suite
+    can prove both loud paths from a fixture.
     """
     if not flags:
         return "  (no feature flags registered)"
     lines: list[str] = []
     for key in sorted(flags):
         flag = flags[key]
-        loud = f"  <<< {REMOVE_STAGE_BANNER} >>>" if flag.stage is FlagStage.REMOVE else ""
+        banners = [
+            *([REMOVE_STAGE_BANNER] if flag.stage is FlagStage.REMOVE else []),
+            *([UNTRACKED_BANNER] if not tracking_reference(flag) else []),
+        ]
+        loud = "".join(f"  <<< {banner} >>>" for banner in banners)
         lines.append(
             f"  {key}: stage={flag.stage.value}, off_value={flag.off_value}, "
             f"tracking {flag.tracking_issue}{loud}\n      {flag.summary}"
