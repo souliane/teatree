@@ -35,6 +35,7 @@ from teatree.core.merge.authorization import (
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.head_read_diagnosis import unreadable_head_advisory
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
@@ -160,7 +161,10 @@ def assert_merge_preconditions(
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
     live_sha = query.live_head_sha()
     if not live_sha:
-        msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
+        msg = (
+            f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2). "
+            f"{unreadable_head_advisory(ref.host_kind)}"
+        )
         raise MergePreconditionError(msg)
     if not verify_sha_bound(cleared_sha=authorized_clear.reviewed_sha, live_sha=live_sha):
         # A SHA mismatch fails CLOSED: the merge is REFUSED here and now, never
