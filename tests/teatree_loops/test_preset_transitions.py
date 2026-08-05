@@ -13,11 +13,13 @@ from unittest.mock import patch
 import django.test
 from django.utils import timezone
 
+from teatree.core.mode_resolution import DEFAULT_MODE_SETTING
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.loops.preset_transitions import apply_preset_transition
 
 _STAMP_KEY = "loop_preset_transition_stamp"
 _DRAIN = "teatree.loops.preset_transitions.drain_deferred_questions"
+_ENSURE_TIMERS = "teatree.loops.timer_reconciler.ensure_loop_timers"
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
@@ -92,3 +94,68 @@ class TestApplyPresetTransition(django.test.TestCase):
         with patch("teatree.loops.preset_transitions.notify_user") as notify:
             apply_preset_transition(timezone.now())
         notify.assert_called_once()
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestTransitionReconcilesTheChains(django.test.TestCase):
+    """A switch re-heads the chains it just changed membership of (#4185).
+
+    Chain membership is the preset verdict, so a switch that forces a loop ON leaves it
+    driverless — and one that masks a loop OFF leaves a chain to prune — until something
+    reconciles. The 5-minute reconcile chain would eventually, but this 60s chain is the
+    switch's own chokepoint, so the new membership takes effect at the switch.
+    """
+
+    def test_a_switch_reconciles_the_timer_chains(self) -> None:
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
+        with (
+            patch("teatree.loops.preset_transitions.notify_user"),
+            patch(_ENSURE_TIMERS) as ensure,
+        ):
+            apply_preset_transition(timezone.now())
+        ensure.assert_called_once()
+
+    def test_an_unchanged_pass_does_not_reconcile(self) -> None:
+        # The FIRST pass always reconciles: an unstamped box has no recorded mode, and a
+        # worker that just started must not assume the chains match whatever governs now.
+        # Idempotence is the claim about the SECOND pass.
+        with patch("teatree.loops.preset_transitions.notify_user"):
+            apply_preset_transition(timezone.now())
+            with patch(_ENSURE_TIMERS) as ensure:
+                apply_preset_transition(timezone.now())
+        ensure.assert_not_called()
+
+    def test_an_l0_default_mode_change_reconciles(self) -> None:
+        # The chokepoint was DEAD for this whole class of change: the preset layer returns
+        # the same ``None`` before and after an L0 ``default_mode`` flip, so a stamp keyed
+        # on it never fired while the mask — and therefore chain membership — moved (#4196).
+        Mode.objects.create(name="l0-target", entries={})
+        with patch("teatree.loops.preset_transitions.notify_user"):
+            apply_preset_transition(timezone.now())
+            ConfigSetting.objects.set_value(DEFAULT_MODE_SETTING, "l0-target")
+            with patch(_ENSURE_TIMERS) as ensure:
+                outcome = apply_preset_transition(timezone.now())
+        ensure.assert_called_once()
+        assert outcome["reconciled"] == "l0-target"
+
+    def test_an_l0_change_does_not_post_a_switch_line(self) -> None:
+        # The two stamps are separate on purpose: the drain and the Slack line are about
+        # the OWNER's reachability, so a mode change the owner never made must not post.
+        Mode.objects.create(name="l0-quiet", entries={})
+        with patch("teatree.loops.preset_transitions.notify_user") as notify:
+            apply_preset_transition(timezone.now())
+            ConfigSetting.objects.set_value(DEFAULT_MODE_SETTING, "l0-quiet")
+            notify.reset_mock()
+            apply_preset_transition(timezone.now())
+        notify.assert_not_called()
+
+    def test_a_reconcile_failure_never_breaks_the_transition(self) -> None:
+        Mode.objects.create(name="heads-down", entries={})
+        ModeOverride.objects.set_override("heads-down")
+        with (
+            patch("teatree.loops.preset_transitions.notify_user"),
+            patch(_ENSURE_TIMERS, side_effect=RuntimeError("db down")),
+        ):
+            outcome = apply_preset_transition(timezone.now())
+        assert outcome["switched"] == "heads-down"

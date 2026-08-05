@@ -11,7 +11,7 @@ from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash import loop_control
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.preset_status import LoopVerdict
+from teatree.loops.enable_verdict import LoopVerdict
 
 
 def _make_loop(name: str = "dashloop") -> Loop:

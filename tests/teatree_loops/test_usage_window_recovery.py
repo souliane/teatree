@@ -257,7 +257,7 @@ class TestSideEffectsAreBestEffort(django.test.TestCase):
             calls.append(name)
 
         with (
-            mock.patch("teatree.loops.timer_reconciler.timer_chain_loop_names", return_value={"dispatch"}),
+            mock.patch("teatree.loops.chain_membership.timer_chain_loop_names", return_value={"dispatch"}),
             mock.patch("teatree.loops.timer_chains.refine_successor", _record),
         ):
             _due_window()
@@ -272,7 +272,7 @@ class TestSideEffectsAreBestEffort(django.test.TestCase):
 
     def test_pump_failure_never_breaks_recovery(self) -> None:
         window = _due_window()
-        with mock.patch("teatree.loops.timer_reconciler.timer_chain_loop_names", _raise_down):
+        with mock.patch("teatree.loops.chain_membership.timer_chain_loop_names", _raise_down):
             outcome = recover_windows(timezone.now())
         assert outcome.cleared == [window.pk]  # cleared despite the loop pump blowing up
 

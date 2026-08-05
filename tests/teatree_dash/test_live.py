@@ -36,6 +36,8 @@ from tests.factories import TaskFactory, TicketFactory
 State = Ticket.State
 _SECRET = "hunter2-live-view-token"
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+#: Patched where it is DEFINED — the read model reaches it through a deferred import.
+_STARVED_SEAM = "teatree.loops.chain_membership.starved_loop_names"
 
 
 def _running(**kwargs: object) -> TaskAttempt:
@@ -202,3 +204,38 @@ class LiveViewIsBoundedTestCase(TestCase):
 
     def test_the_generated_at_stamp_is_present_so_a_frozen_page_is_obvious(self) -> None:
         assert isinstance(build_live_view().generated_at, dt.datetime)
+
+
+class LoopStarvationIsItsOwnAxisTestCase(TestCase):
+    """Admitted with no driver renders as ``starved``, not as a healthy row (#4185).
+
+    Deliberately separate from ``blocked_reason``: that explains a REFUSAL, and a starved
+    loop is genuinely admitted — the tick would dispatch it if anything ever fired.
+    """
+
+    @staticmethod
+    def _admitted_loop() -> str:
+        name = iter_loops()[0].name
+        Loop.objects.filter(name=name).delete()
+        Loop.objects.create(name=name, script=f"{name}/run.py", delay_seconds=60, enabled=True, last_run_at=None)
+        return name
+
+    def test_a_driverless_admitted_loop_is_starved(self) -> None:
+        name = self._admitted_loop()
+        with patch(_STARVED_SEAM, return_value={name}):
+            row = next(row for row in build_live_view().loops if row.name == name)
+        assert row.starved
+        # Still admitted — starvation is a second axis, never a block reason.
+        assert row.blocked_reason == ""
+
+    def test_a_driven_admitted_loop_is_not_starved(self) -> None:
+        name = self._admitted_loop()
+        with patch(_STARVED_SEAM, return_value=set()):
+            row = next(row for row in build_live_view().loops if row.name == name)
+        assert not row.starved
+
+    def test_the_loops_panel_renders_a_starved_chip(self) -> None:
+        name = self._admitted_loop()
+        with patch(_STARVED_SEAM, return_value={name}):
+            response = self.client.get(reverse("dash:live"), **_LOOPBACK)
+        assert "starved" in response.content.decode()

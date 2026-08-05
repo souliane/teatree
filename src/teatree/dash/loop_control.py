@@ -1,7 +1,7 @@
 """Loop-control read model: each loop's effective verdict + the layer that decided it (#3162).
 
 The dashboard reads the SAME effective verdict the tick gates on — from the one
-shared source ``teatree.loops.preset_status.effective_verdicts`` that ``t3 loops
+shared source ``teatree.loops.enable_verdict.effective_verdicts`` that ``t3 loops
 list``, ``t3 loop preset show`` and the statusline also read — so it can never
 recompute a verdict that drifts from the fleet. That verdict folds all four layers:
 the durable ``LoopState`` hold (L4), the active preset's L3 override / L2 schedule
@@ -19,9 +19,9 @@ from teatree.core.mode_resolution import POSTURE_TOKENS, posture_label, resolve_
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
+from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts
 from teatree.loops.live import LoopStatusEntry, build_report
 from teatree.loops.loop_cadence_editing import CADENCE_STEP_SECONDS, CadenceBounds, cadence_bounds_for, is_off_grid
-from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 from teatree.loops.registry import iter_loops
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ def build_loop_rows() -> tuple[LoopRow, ...]:
     """Every ``Loop`` row with its effective verdict and deciding layer.
 
     The verdict + deciding layer come from the shared canonical source
-    :func:`teatree.loops.preset_status.effective_verdicts`, so the dashboard never
+    :func:`teatree.loops.enable_verdict.effective_verdicts`, so the dashboard never
     recomputes an admission verdict that could drift from the tick. Display fields
     (description, cadence, the paused-vs-disabled hold status) are joined by name
     from one ``Loop`` and one ``LoopState`` read; a verdict whose ``Loop`` row
@@ -174,19 +174,30 @@ def _loop_row(loop: Loop, status: str, verdict: LoopVerdict, tags: tuple[str, ..
     )
 
 
+#: How each layer that can supply the active mode's mask is named in the table. Keyed on
+#: :attr:`~teatree.core.mode_resolution.ResolvedMode.source`, so the L0 default row and
+#: the live-presence upgrade are nameable too rather than falling through to L1 (#4185).
+_MODE_LAYER_LABELS = {
+    "override": "L3 override",
+    "schedule": "L2 schedule",
+    "live": "L2 presence upgrade",
+    "default": "L0 default mode",
+}
+
+
 def _deciding_layer(verdict: LoopVerdict, *, enabled: bool, status: str) -> str:
     """Which control layer decides the loop's verdict — answers "why isn't it running".
 
     Reads the shared verdict's ``layer`` so the precedence mirrors the resolver
-    exactly: an L4 ``LoopState`` hold (paused/disabled) always wins, then the active
-    preset's L3 override / L2 schedule mask (#3159), else the base L1 ``Loop.enabled``.
+    exactly: an L4 ``LoopState`` hold (paused/disabled) always wins, then whichever
+    layer supplied the active mode's mask (#3159, #4185), else the base L1
+    ``Loop.enabled``.
     """
     if verdict.layer == "hold":
         return "L4 hold — paused" if status == LoopStatus.PAUSED.value else "L4 hold — disabled"
-    if verdict.layer == "override":
-        return f"L3 override — {_preset_effect(verdict)}"
-    if verdict.layer == "schedule":
-        return f"L2 schedule — {_preset_effect(verdict)}"
+    label = _MODE_LAYER_LABELS.get(verdict.layer)
+    if label is not None:
+        return f"{label} — {_preset_effect(verdict)}"
     if not enabled:
         return "L1 — Loop.enabled off"
     return "L1 — enabled"

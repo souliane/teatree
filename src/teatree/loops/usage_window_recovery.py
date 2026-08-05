@@ -115,14 +115,14 @@ def _release_parked_tasks(now: dt.datetime) -> int:
 
 
 def _wake_loops(now: dt.datetime) -> None:
-    """Pump every enabled loop's timer to fire now so the released tasks get re-claimed.
+    """Pump every verdict-admitted loop's timer to fire now so the released tasks get re-claimed.
 
     Best-effort — a pump failure must never break recovery; the released tasks are picked up
     on the next ordinary loop tick regardless (the idle poll floor caps the latency).
     """
     try:
+        from teatree.loops.chain_membership import timer_chain_loop_names  # noqa: PLC0415 — deferred (cycle-safe)
         from teatree.loops.timer_chains import refine_successor  # noqa: PLC0415 — deferred (cycle-safe)
-        from teatree.loops.timer_reconciler import timer_chain_loop_names  # noqa: PLC0415 — deferred (cycle-safe)
 
         for name in timer_chain_loop_names():
             refine_successor(name, run_after=now)

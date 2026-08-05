@@ -269,7 +269,7 @@ class TestCheckIntentFreshness(TestCase):
         assert f"directive #{directive.pk}" in out
 
     def test_a_crashing_read_degrades_to_ok_without_reddening_the_run(self) -> None:
-        with mock.patch("teatree.loops.preset_status.effective_verdicts", side_effect=RuntimeError("no such table")):
+        with mock.patch("teatree.loops.enable_verdict.effective_verdicts", side_effect=RuntimeError("no such table")):
             ok, out = _run()
         assert ok is True
         assert "WARN" in out

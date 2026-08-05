@@ -8,6 +8,7 @@ against the seeded :class:`Loop` table, asserting the rendered text columns
 import datetime as dt
 import io
 import json
+from unittest.mock import patch
 
 import django.test
 import pytest
@@ -15,7 +16,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
+
+#: Patched where it is DEFINED — the command reaches it through a deferred import.
+_STARVED_SEAM = "teatree.loops.chain_membership.starved_loop_names"
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -262,3 +266,55 @@ class TestLoopsListReadOnly(django.test.TestCase):
         _run()
         _run("--json")
         assert Loop.objects.count() == before
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListRendersTheVerdictNotTheRawColumn(django.test.TestCase):
+    """State and Next come from the effective verdict, not ``Loop.enabled`` (#4185).
+
+    A preset-forced-on loop rendered ``disabled`` with a Next of ``—`` while the tick
+    was about to fire it — the raw column deciding both columns is the same defect the
+    timer chain had, on the read side.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(name="audit", delay_seconds=60, prompt=_prompt(), enabled=False)
+        Mode.objects.create(name="engaged", entries={"audit": True})
+        ModeOverride.objects.set_override("engaged")
+
+    def _line(self) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
+
+    def test_a_forced_on_loop_renders_an_admitted_state(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = self._line()
+        assert "disabled" not in line
+        assert "enabled" in line
+
+    def test_a_forced_on_loop_renders_a_real_next_countdown(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = self._line()
+        assert "next —" not in line
+
+    def test_a_starved_loop_is_marked(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            line = self._line()
+        assert "starved" in line
+
+    def test_a_driven_loop_is_not_marked_starved(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            assert "starved" not in self._line()
+
+    def test_a_masked_off_loop_still_renders_disabled_with_no_countdown(self) -> None:
+        Loop.objects.filter(name="audit").update(enabled=True)
+        Mode.objects.filter(name="engaged").update(entries={"audit": False})
+        line = self._line()
+        assert "disabled" in line
+        assert "next —" in line
+
+    def test_json_carries_the_starved_flag(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            payload = json.loads(_run("--json"))
+        audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
+        assert audit["starved"] is True
