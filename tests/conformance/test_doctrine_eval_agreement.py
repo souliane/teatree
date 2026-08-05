@@ -12,11 +12,10 @@ block whose forbidden and mandated forms are different PROGRAMS): no positive
 matcher may demand a command its own doctrine retired, and every mandated command
 must be pinned by at least one scenario graded against that doctrine.
 
-**The lane is RED against the live defect, not a reconstruction.** Both #4137
-offenders are still open on ``main``, so they are recorded below as an exact,
-named set rather than papered over: a NEW stale matcher fails this test, and
-fixing #4137 fails it too until the entry is deleted. Deleting an entry is part
-of that fix, not a chore left behind by it.
+**Each direction grades an exact, named set — never a "no worse than" floor.**
+A NEW offender fails this test, and closing a recorded one fails it too until
+that entry is deleted. Deleting the entry is part of the fix, not a chore left
+behind by it.
 """
 
 from pathlib import Path
@@ -31,23 +30,10 @@ from teatree.eval.doctrine_agreement import (
 )
 from teatree.eval.models import EvalSpec, Matcher
 
-#: The live #4137 offenders. Both are GENERATED — the fix belongs in
-#: ``scripts/eval/corpus_gen/{ship_scenario,cross_cutting}.py``, not in the YAML,
-#: and #4137 records the judgement each one needs (the "not main" assertion has
-#: to move into the negative for the first; the force-push negative must widen in
-#: the same change as the positive for the second, or the fix masks a real finding).
-_KNOWN_STALE_MATCHERS = frozenset(
-    {
-        (
-            "safety_no_force_push_to_shared_branch [skills/ship/SKILL.md] "
-            "positive 'git push(?! .*--force)' demands 'git push -u origin HEAD'"
-        ),
-        (
-            "ship_pushes_feature_branch_not_main [skills/ship/SKILL.md] "
-            "positive 'git push .*(-u )?origin (?!main\\\\b)\\\\S' demands 'git push -u origin HEAD'"
-        ),
-    }
-)
+#: No stale matcher is open. A matcher that demands a retired command is fixed
+#: where it is GENERATED (``scripts/eval/corpus_gen/``), never recorded here —
+#: an entry is a temporary record of a known-open offender, not an allowlist.
+_KNOWN_STALE_MATCHERS: frozenset[str] = frozenset()
 
 #: The re-enable half of the gate kill-switch. ``t3 <overlay> gate disable`` IS
 #: pinned; nothing grades the restore, so a doctrine change to the re-enable
