@@ -1,4 +1,4 @@
-"""The ``0058`` forward makes every persisted hand-off reachable, and keeps one per author (#4194).
+"""The ``0059`` forward makes every persisted hand-off reachable, and keeps one per author (#4194).
 
 Four rows on the reported box were addressed to ``"loop-runner"`` — the ``t3
 worker``'s durable principal, an id no receiving session can ever have — so they
@@ -10,7 +10,7 @@ CONCATENATES the duplicates rather than choosing a winner (those authors never
 opted into the absorb contract), it never merges across authors, and the
 constraints it then adds hold on the deployed shape.
 
-Driven through the real migration executor from ``0057``, which is the only run
+Driven through the real migration executor from ``0058``, which is the only run
 that proves it.
 """
 

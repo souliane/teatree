@@ -34,7 +34,7 @@ hand-off that ran no barrier state an earlier barrier's finding as its own.
 """
 
 from operator import itemgetter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     import datetime as dt
@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SUBAGENT_SECTION_HEADER",
+    "SubagentRecord",
     "delivered_payload",
     "merge_subagent_records",
     "record_barrier_returns",
@@ -56,7 +57,23 @@ __all__ = [
 SUBAGENT_SECTION_HEADER = "## Sub-agent wrap-up"
 
 
-def subagent_record(push: "SubagentPush", *, at: "dt.datetime") -> dict:
+class SubagentRecord(TypedDict):
+    """One agent's entry in the union stored on :attr:`SessionHandover.subagent_wrapup`.
+
+    JSON round-trips as a plain ``dict``, so the persisted row compares equal to the
+    records the command merged — which is the completeness check.
+    """
+
+    worktree: str
+    branch: str
+    done: str
+    remaining: str
+    first_seen_at: str
+    last_seen_at: str
+    in_latest_barrier: bool
+
+
+def subagent_record(push: "SubagentPush", *, at: "dt.datetime") -> SubagentRecord:
     """One agent's barrier return, as the record the union is keyed on.
 
     The resolved worktree path is the identity: it is stable across barriers,
@@ -74,7 +91,9 @@ def subagent_record(push: "SubagentPush", *, at: "dt.datetime") -> dict:
     }
 
 
-def merge_subagent_records(existing: "Sequence[dict]", incoming: "Sequence[dict]") -> list[dict]:
+def merge_subagent_records(
+    existing: "Sequence[SubagentRecord]", incoming: "Sequence[SubagentRecord]"
+) -> list[SubagentRecord]:
     """The union of *existing* and *incoming*, keyed on worktree — pure, no ORM.
 
     An agent in *incoming* takes that barrier's branch/done/remaining and keeps its
@@ -82,15 +101,21 @@ def merge_subagent_records(existing: "Sequence[dict]", incoming: "Sequence[dict]
     except for ``in_latest_barrier``, which goes false: its status is the last known
     one, and its worktree may since have been pruned.
     """
-    merged = {record["worktree"]: {**record, "in_latest_barrier": False} for record in existing}
+    merged: dict[str, SubagentRecord] = {}
+    for record in existing:
+        stale = record.copy()
+        stale["in_latest_barrier"] = False
+        merged[record["worktree"]] = stale
     for record in incoming:
         prior = merged.get(record["worktree"])
-        merged[record["worktree"]] = {**record, "first_seen_at": (prior or record)["first_seen_at"]}
+        fresh = record.copy()
+        fresh["first_seen_at"] = (prior or record)["first_seen_at"]
+        merged[record["worktree"]] = fresh
     return sorted(merged.values(), key=itemgetter("first_seen_at", "worktree"))
 
 
 def render_subagent_section(
-    records: "Sequence[dict]", *, last_barrier_at: "dt.datetime | None", barrier_ran_at_latest_handoff: bool
+    records: "Sequence[SubagentRecord]", *, last_barrier_at: "dt.datetime | None", barrier_ran_at_latest_handoff: bool
 ) -> str:
     """The union as the section the receiver reads — ``""`` when no barrier has ever run.
 
@@ -141,7 +166,7 @@ def render_subagent_section(
 
 
 def record_barrier_returns(
-    handover: "SessionHandover", records: "Sequence[dict]", *, at: "dt.datetime", barrier_ran: bool
+    handover: "SessionHandover", records: "Sequence[SubagentRecord]", *, at: "dt.datetime", barrier_ran: bool
 ) -> None:
     """Store the barrier's returns AND the barrier fact on *handover*. Touches no payload byte.
 

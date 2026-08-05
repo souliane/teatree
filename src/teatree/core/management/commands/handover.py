@@ -27,6 +27,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.handover import (
+    CreatedHandover,
     PayloadSource,
     SelfAddressedHandoverError,
     claim_handovers,
@@ -35,7 +36,7 @@ from teatree.core.handover import (
     write_mirror,
 )
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
-from teatree.core.handover_wrapup import merge_subagent_records, record_barrier_returns, subagent_record
+from teatree.core.handover_wrapup import SubagentRecord, merge_subagent_records, record_barrier_returns, subagent_record
 from teatree.core.machine_output import emit
 from teatree.core.models import SessionHandover
 from teatree.core.session_identity import is_loop_runner_session
@@ -52,7 +53,7 @@ class _RecordedBarrier:
     cannot be reported present by one and missing by the other.
     """
 
-    records: list[dict]
+    records: list[SubagentRecord]
     mirror: Path
     row: "SessionHandover | None"
 
@@ -164,10 +165,7 @@ class Command(TyperCommand):
             )
         ]
         if created.updated_existing:
-            human_lines.append(
-                f"WARN  absorbed into this session's existing unclaimed hand-off, which already carried "
-                f"{created.previous_bytes} bytes — one row per session, and nothing it held was dropped."
-            )
+            human_lines.append(self._absorb_note(created))
         human_lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
         human_lines += [f"ERROR completeness: {failure}" for failure in failures]
         emit(
@@ -189,6 +187,9 @@ class Command(TyperCommand):
                 "mirror_path": str(recorded.mirror),
                 "updated_existing": created.updated_existing,
                 "previous_payload_bytes": created.previous_bytes,
+                # False when the row already held these bytes: a duplicate drop, which
+                # otherwise reads exactly like an append that added nothing.
+                "payload_appended": created.payload_appended,
                 "payload_bytes": len(handover.payload),
                 "subagent_count": len(pushes),
                 "subagent_pushes": [self._push_json(push) for push in pushes],
@@ -212,6 +213,21 @@ class Command(TyperCommand):
                 f"`--from-file <path>` (or `--body`) to hand over what this session actually knows."
             )
             raise SystemExit(3)
+
+    @staticmethod
+    def _absorb_note(created: CreatedHandover) -> str:
+        """How much state the absorbed-into row already held, and whether these bytes added to it.
+
+        A payload the row already carried is dropped as a duplicate rather than repeated.
+        The receiver gets those bytes either way, but the JSON otherwise reads exactly like
+        an append that happened to add nothing.
+        """
+        landed = "appended behind a fence" if created.payload_appended else "ALREADY PRESENT, so nothing was added"
+        return (
+            f"WARN  absorbed into this session's existing unclaimed hand-off, which already carried "
+            f"{created.previous_bytes} bytes — one row per session, and nothing it held was dropped. "
+            f"This hand-off's bytes were {landed}."
+        )
 
     @staticmethod
     def _record_barrier(
@@ -239,7 +255,7 @@ class Command(TyperCommand):
 
     @staticmethod
     def _completeness_failures(
-        *, row: SessionHandover | None, expected: str, records: list[dict], barrier_ran: bool
+        *, row: SessionHandover | None, expected: str, records: list[SubagentRecord], barrier_ran: bool
     ) -> list[str]:
         """What is wrong with the PERSISTED *row* — ``[]`` when nothing is.
 

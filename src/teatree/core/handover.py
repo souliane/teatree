@@ -192,7 +192,9 @@ class CreatedHandover:
     thing no exit code tells the operator. Both come from the write seam's own
     :class:`~teatree.core.session_handover_manager.HandoverWrite`, never from a
     pre-read: a rival insert landing between the read and the write made the absorb
-    report itself as a fresh insert.
+    report itself as a fresh insert. ``payload_appended`` distinguishes an absorb that
+    ADDED bytes from one whose payload the row already carried, which report identically
+    otherwise.
     """
 
     handover: "SessionHandover"
@@ -201,6 +203,7 @@ class CreatedHandover:
     resolved: str = ""
     updated_existing: bool = False
     previous_bytes: int = 0
+    payload_appended: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,4 +499,5 @@ def create_handover(*, from_session: str, resolution: ResolvedHandover) -> "Crea
         resolved=resolution.resolved.text,
         updated_existing=write.absorbed,
         previous_bytes=write.previous_bytes,
+        payload_appended=write.payload_appended,
     )

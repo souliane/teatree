@@ -25,7 +25,7 @@ from teatree.core.session_handover_manager import SelfAddressedHandoverError
 class TestSelfAddressedRowIsUnreachable(TestCase):
     """The property that motivates the refusal, now unrepresentable rather than only refused (#4194).
 
-    The pre-``0058`` proof built the degenerate row by hand and asserted no session
+    The pre-``0059`` proof built the degenerate row by hand and asserted no session
     id could claim it. The DB no longer accepts that row at all, on INSERT or on
     UPDATE, so the refusal itself is the assertion — the shape it forbids is the
     same one ``claimable_for`` could never admit anybody for.

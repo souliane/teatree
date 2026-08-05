@@ -20,6 +20,7 @@ from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover import resolve_handover
 from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.handover_wrapup import (
+    SubagentRecord,
     delivered_payload,
     merge_subagent_records,
     record_barrier_returns,
@@ -181,11 +182,13 @@ _AT = dt.datetime(2026, 8, 4, 12, 0, tzinfo=dt.UTC)
 _LATER = dt.datetime(2026, 8, 4, 13, 0, tzinfo=dt.UTC)
 
 
-def _records(pushes: "list[SubagentPush]", *, at: dt.datetime) -> list[dict]:
+def _records(pushes: "list[SubagentPush]", *, at: dt.datetime) -> list[SubagentRecord]:
     return [subagent_record(push, at=at) for push in pushes]
 
 
-def _render(records: list[dict], *, last_barrier_at: dt.datetime | None = _AT, barrier_ran: bool = True) -> str:
+def _render(
+    records: list[SubagentRecord], *, last_barrier_at: dt.datetime | None = _AT, barrier_ran: bool = True
+) -> str:
     return render_subagent_section(records, last_barrier_at=last_barrier_at, barrier_ran_at_latest_handoff=barrier_ran)
 
 

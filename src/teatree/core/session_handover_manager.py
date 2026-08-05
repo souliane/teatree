@@ -71,21 +71,42 @@ class HandoverWrite:
     empty while the write took the absorb branch via the ``IntegrityError`` retry, so
     a call that absorbed announced itself as a fresh insert. ``previous_bytes`` is
     captured inside :func:`_absorb`, from the row actually being absorbed into.
+
+    ``payload_appended`` is false when the incoming bytes were already in the row and
+    were dropped as a duplicate. The receiver gets them either way, so this is not data
+    loss — but "appended" and "discarded" otherwise report identically (``ok``, and
+    ``payload_bytes == previous_payload_bytes``), leaving the operator no way to tell a
+    hand-off that added state from one that added none.
     """
 
     row: "SessionHandover"
     absorbed: bool
     previous_bytes: int
+    payload_appended: bool
 
 
 def _absorb(existing: "SessionHandover", *, to_session: str, payload: str) -> HandoverWrite:
-    now = timezone.now()
-    previous_bytes = len(existing.payload)
-    existing.payload = _absorb_payload(prior=existing.payload, incoming=payload, author=existing.from_session, at=now)
-    existing.to_session = to_session
-    existing.created_at = now
-    existing.save(update_fields=["to_session", "payload", "created_at"])
-    return HandoverWrite(row=existing, absorbed=True, previous_bytes=previous_bytes)
+    """Append *payload* to *existing*'s row, re-reading the prior bytes under the write lock.
+
+    The append is a read-modify-write, so two absorbs for one author that resolved the
+    same row would each extend the payload THEY read and the later write would carry no
+    trace of the earlier one — the lost update this seam exists to prevent, reintroduced
+    one level down. ``atomic()`` + ``select_for_update()`` is the shape the other
+    shared-state RMW sites use: a row lock on Postgres, and connection-level writer
+    serialization under the production SQLite's ``BEGIN IMMEDIATE``
+    (:data:`~teatree.settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`). The claim CAS
+    upstream cannot serve here — a conditional UPDATE gated on the prior payload would
+    have to retry against bytes that changed again, where the lock simply waits.
+    """
+    with transaction.atomic():
+        locked = existing.__class__.objects.select_for_update().filter(pk=existing.pk).first() or existing
+        now = timezone.now()
+        prior = locked.payload
+        locked.payload = _absorb_payload(prior=prior, incoming=payload, author=locked.from_session, at=now)
+        locked.to_session = to_session
+        locked.created_at = now
+        locked.save(update_fields=["to_session", "payload", "created_at"])
+    return HandoverWrite(row=locked, absorbed=True, previous_bytes=len(prior), payload_appended=locked.payload != prior)
 
 
 class SelfAddressedHandoverError(ValueError):
@@ -159,7 +180,7 @@ class SessionHandoverQuerySet(models.QuerySet):
                 if existing is None:
                     raise
             else:
-                return HandoverWrite(row=row, absorbed=False, previous_bytes=0)
+                return HandoverWrite(row=row, absorbed=False, previous_bytes=0, payload_appended=True)
         return _absorb(existing, to_session=to_session, payload=payload)
 
     def _unclaimed_for(self, from_session: str) -> "SessionHandover | None":

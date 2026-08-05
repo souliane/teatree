@@ -34,6 +34,11 @@ def _blind_first_lookup() -> "mock._patch":
     return mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", _blind_once)
 
 
+def _resolving_to(stale: "SessionHandover") -> "mock._patch":
+    """Resolve the absorb target to *stale*, an instance read before a rival's write landed."""
+    return mock.patch.object(SessionHandoverQuerySet, "_unclaimed_for", return_value=stale)
+
+
 class TestClaimAll(TestCase):
     def test_drains_every_claimable_row_targeted_first(self) -> None:
         targeted = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="p1").row
@@ -95,6 +100,22 @@ class TestOneUnclaimedRowPerSession(TestCase):
         merged = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SAME").row
         assert merged.payload.count("SAME") == 1
 
+    def test_a_duplicate_drop_is_reported_apart_from_an_append(self) -> None:
+        """A dropped duplicate and an append are otherwise indistinguishable in the report.
+
+        Both land ``ok`` on the same row; the byte counts match too, since the drop adds
+        none. The receiver gets the bytes either way — they were already there — but the
+        operator has no way to tell a hand-off that added state from one that added none.
+        """
+        first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SAME")
+        repeat = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SAME")
+        added = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="NEW")
+
+        assert first.payload_appended is True
+        assert repeat.payload_appended is False
+        assert repeat.previous_bytes == len(repeat.row.payload), "the drop is invisible in the byte counts alone"
+        assert added.payload_appended is True
+
     def test_created_at_is_refreshed_to_the_latest_write(self) -> None:
         first = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="FIRST").row
         was = first.created_at
@@ -152,6 +173,39 @@ class TestOneUnclaimedRowPerSession(TestCase):
         write = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="SECOND")
         assert write.absorbed is True
         assert write.previous_bytes == len(first.payload)
+
+    def test_an_absorb_onto_a_row_a_rival_absorb_already_extended_keeps_both(self) -> None:
+        """Two absorbs for one author that resolved the same prior row must both survive.
+
+        The absorb reads the payload, appends to it and writes the result back. Two
+        calls that resolved the same row read the same prior bytes, so the later write
+        carries no trace of the earlier one and drops it — the lost update the absorb
+        exists to prevent, at the seam that implements it. The prior payload has to come
+        from a read taken UNDER the write lock, never from the instance the caller
+        resolved before the rival landed.
+        """
+        SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="PRIOR")
+        stale = SessionHandover.objects.get(from_session="a")
+        SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="RIVAL")
+
+        with _resolving_to(stale):
+            SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LATER")
+
+        payload = SessionHandover.objects.get(from_session="a").payload
+        assert "PRIOR" in payload
+        assert "RIVAL" in payload, "the rival absorb's bytes were overwritten by a stale read-modify-write"
+        assert "LATER" in payload
+
+    def test_the_absorbed_bytes_are_reported_from_the_locked_read_not_the_stale_one(self) -> None:
+        """``previous_payload_bytes`` names what the write landed ON, so it counts the rival too."""
+        SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="PRIOR")
+        stale = SessionHandover.objects.get(from_session="a")
+        rival = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="RIVAL").row
+
+        with _resolving_to(stale):
+            write = SessionHandover.objects.create_handover(from_session="a", to_session="b", payload="LATER")
+
+        assert write.previous_bytes == len(rival.payload)
 
 
 class TestATargetAlwaysNamesSomebodyWhoCanClaim(TestCase):
