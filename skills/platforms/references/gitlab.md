@@ -220,7 +220,7 @@ t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> -
 
 # General (non-inline) comment — --general is REQUIRED (souliane/teatree#72)
 # Without --general, the CLI refuses the call rather than silently degrading an
-# intended-inline draft into a general note (foot-gun observed on !6220).
+# intended-inline draft into a general note.
 t3 review post-draft-note <REPO> <MR_IID> "Comment text" --general
 
 # List existing draft notes

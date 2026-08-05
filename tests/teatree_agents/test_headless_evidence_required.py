@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, Self
 from unittest.mock import patch
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
@@ -28,7 +28,13 @@ from teatree.core.models import Session, Task, Ticket
 
 
 class _FakeSdkClient:
-    """Async-context SDK stand-in yielding a fixed assistant-text + result stream."""
+    """Async-context SDK stand-in yielding a tool call, fixed assistant text, and a result.
+
+    The tool call keeps the stream a run that could have happened: these tests
+    exercise the EVIDENCE gate on agents that did the work and reported it badly,
+    and a toolless stream is refused one gate earlier
+    (:mod:`teatree.agents.action_verification`) before the evidence gate is reached.
+    """
 
     def __init__(self, agent_text: str) -> None:
         self._agent_text = agent_text
@@ -43,6 +49,7 @@ class _FakeSdkClient:
         return None
 
     async def receive_response(self) -> AsyncIterator[Any]:
+        yield AssistantMessage(content=[ToolUseBlock(id="t1", name="Read", input={})], model="claude-opus-4-8[1m]")
         yield AssistantMessage(content=[TextBlock(text=self._agent_text)], model="claude-opus-4-8[1m]")
         yield ResultMessage(
             subtype="success",

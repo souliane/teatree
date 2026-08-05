@@ -8,7 +8,6 @@ requires:
   - writing-plans
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Ticket Intake & Kickoff

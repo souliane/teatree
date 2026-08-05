@@ -392,3 +392,77 @@ class TestStatuslineReadsTheProjectionWhenTheDbIsNotOnThisHost:
         # The shell must READ the published value, not merely notice the file exists.
         self._publish(sandbox, {"autoload": False})
         assert "projection chip" not in self._render(sandbox)
+
+
+class TestAnUnreadableStoreRendersUnknownNotOff:
+    """Could-not-read and is-off must not render alike (#4041).
+
+    The live defect: the control DB moved into a container-only volume (#4001) and the
+    migration left a 0-byte stub at the old host path. ``[ -f "$db" ]`` saw a file, so the
+    projection fallback never ran; the sqlite read then failed with "no such table", the
+    failure collapsed to an empty value, and the bar announced ``statusline off (autoload
+    disabled)`` while the DB held ``autoload = True``. A confident verdict the reader has
+    no way to distrust is worse than no verdict at all.
+
+    The foils carry this lane: a script that rendered "?" whenever it felt uncertain would
+    pass the unknown case and fail every determinate one, which is the #256 colleague
+    guarantee (a plain clone must get the neutral off hint, never a diagnostic).
+    """
+
+    _UNKNOWN = "UNKNOWN"
+    _OFF = "statusline off"
+
+    def _render(self, sandbox: Path, config_db: Path) -> str:
+        target = sandbox / "zones" / "statusline.txt"
+        target.parent.mkdir(exist_ok=True)
+        render(StatuslineZones(anchors=["[acme] degraded chip"]), target=target, colorize=False)
+        result = _run_shell(sandbox, statusline_file=target, autoload_env=None, config_db=config_db)
+        assert result.returncode == 0, result.stderr
+        return _strip_ansi(result.stdout)
+
+    def _unreadable_db(self, sandbox: Path) -> Path:
+        # Present and non-empty, yet no sqlite reader can open it — the same observable
+        # state as the 0-byte stub and the volume the host cannot reach.
+        db = sandbox / "unreadable.sqlite3"
+        db.write_text("this is not a sqlite database")
+        return db
+
+    def _publish(self, sandbox: Path, body: str) -> None:
+        data_dir = sandbox / "xdg" / "teatree"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "host-projection.json").write_text(body)
+
+    def test_an_unreadable_store_says_unknown_and_never_off(self, sandbox: Path) -> None:
+        out = self._render(sandbox, self._unreadable_db(sandbox))
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out, "a read that failed was rendered as a stored 'off'"
+
+    def test_an_unparseable_projection_is_unknown_too(self, sandbox: Path) -> None:
+        # The second tier failing is still a failure to READ, not evidence of absence.
+        self._publish(sandbox, "{not json")
+        out = self._render(sandbox, self._unreadable_db(sandbox))
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out
+
+    def test_a_host_with_no_store_at_all_still_says_off(self, sandbox: Path) -> None:
+        # Foil for #256: a plain clone stored nothing, so "off" is determinate, not a guess.
+        out = self._render(sandbox, sandbox / "absent.sqlite3")
+        assert self._OFF in out, out
+        assert self._UNKNOWN not in out
+
+    def test_a_readable_stored_false_still_says_off(self, sandbox: Path) -> None:
+        # Foil: a store that answers is never unknown, whatever it answers.
+        db = sandbox / "db.sqlite3"
+        _seed_config_db(db, {"autoload": False})
+        out = self._render(sandbox, db)
+        assert self._OFF in out, out
+        assert self._UNKNOWN not in out
+
+    def test_the_projection_still_resolves_past_an_unreadable_db(self, sandbox: Path) -> None:
+        # The root repair: an unreadable DB must fall THROUGH to the published projection
+        # rather than stop at it. Without this the fix above would render an honest "?" on
+        # a host whose projection could have answered the question outright.
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": True}}}))
+        out = self._render(sandbox, self._unreadable_db(sandbox))
+        assert "degraded chip" in out, out
+        assert self._UNKNOWN not in out

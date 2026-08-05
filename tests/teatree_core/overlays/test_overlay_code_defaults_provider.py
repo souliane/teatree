@@ -46,3 +46,30 @@ def test_provider_fails_safe_when_overlay_unresolvable() -> None:
         assert overlay_code_defaults("missing-overlay") == {}
     finally:
         register_overlay_code_default_provider(original)
+
+
+def test_single_branch_repos_declared_in_overlay_settings_reaches_the_tier() -> None:
+    original = seam._provider
+    config = OverlayConfig()
+    # The shape ``OverlayConfig._load_settings`` produces from a
+    # ``SINGLE_BRANCH_REPOS`` constant in the overlay's ``overlay_settings.py``.
+    config.single_branch_repos = ["group/widget-core=chore/fork-bootstrap"]
+    try:
+        build_and_register(lambda name: SimpleNamespace(config=config))
+        resolved = overlay_code_defaults("declaring-overlay")
+    finally:
+        register_overlay_code_default_provider(original)
+    assert resolved["single_branch_repos"] == ["group/widget-core=chore/fork-bootstrap"]
+
+
+def test_overlay_declaring_nothing_keeps_every_other_promoted_key() -> None:
+    original = seam._provider
+    config = OverlayConfig()
+    try:
+        build_and_register(lambda name: SimpleNamespace(config=config))
+        resolved = overlay_code_defaults("silent-overlay")
+    finally:
+        register_overlay_code_default_provider(original)
+    assert set(resolved) == set(PROMOTED_OVERLAY_CODE_DEFAULT_KEYS)
+    assert resolved["single_branch_repos"] == []
+    assert resolved["scanning_news_skill"] == "scanning-news"

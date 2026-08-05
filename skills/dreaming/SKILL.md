@@ -9,7 +9,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # Dreaming — end-to-end memory consolidation
@@ -50,5 +49,5 @@ The umbrella-checkbox upsert + `schedule_coding` runs under `t3 dream run --full
 ## Trigger surface
 
 - Manually: `/t3:dreaming` or `t3 dream run --full`.
-- In a sub-agent: this skill is `subagent_safe` — load it and run the same command.
+- In a sub-agent: load this skill and run the same command.
 - Unattended: `t3 dream tick` fires on the nightly cadence (no `--full`; it promotes grounded evals but leaves the default-OFF ticket-filing / LLM-derivation phases off).

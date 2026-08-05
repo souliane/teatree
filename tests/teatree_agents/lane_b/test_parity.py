@@ -99,7 +99,15 @@ def _lane_a_pid_kill_denies(command: str) -> bool:
 
 
 def _streaming_model(*, tool_command: str) -> FunctionModel:
-    """A streaming FunctionModel: call ``Bash`` with *tool_command*, then text."""
+    """A streaming FunctionModel: narrate, call ``Bash`` with *tool_command*, then text.
+
+    The preamble is load-bearing, not decoration. Every Anthropic model emits a
+    sentence of prose before its first tool call, and a double that opened straight
+    on the call made this whole parity claim vacuous: ``Agent.run_stream`` ends the
+    graph at the first text part, so the call-first shape iterated while the real
+    shape ended the run at one model request with the tool results never fed back.
+    Scripting the preamble is what makes the assertions below discriminate.
+    """
     state = {"n": 0}
 
     def stream_fn(messages: object, info: object) -> object:
@@ -109,6 +117,7 @@ def _streaming_model(*, tool_command: str) -> FunctionModel:
         async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
             if turn == 1:
                 args = json.dumps({"command": tool_command})
+                yield "I'll start by running that."
                 yield {0: DeltaToolCall(name="Bash", json_args=args, tool_call_id="c1")}
             else:
                 yield "done"

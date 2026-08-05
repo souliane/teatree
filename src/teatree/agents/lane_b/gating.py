@@ -34,7 +34,10 @@ divergence fails CI.
 :class:`HardDenyToolset` wraps a toolset and raises the refusal into the model as
 a ``RetryPromptPart`` (the model sees the reason and must adapt) exactly as a
 Lane-A PreToolUse deny surfaces its message — under a per-run retry cap so a
-predicate false-positive aborts the run cleanly instead of looping the model.
+predicate false-positive aborts the run cleanly instead of looping the model. It
+routes a tool's OWN failure on the model's input
+(:mod:`teatree.agents.lane_b.tool_errors`) down that same bounded path, because
+an uncaught one escapes ``Agent.run`` and kills the entire dispatch.
 
 Soft-gate — a command that needs a human's approval (the ask-gate).
 :func:`make_soft_gate_predicate` builds the ``approval_required`` predicate; a
@@ -55,6 +58,7 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
+from teatree.agents.lane_b.tool_errors import CORRECTABLE_TOOL_ERRORS
 from teatree.agents.lane_b.tool_names import TOOL_BASH
 
 #: Tools whose primary argument is a shell command — keyed on the MODEL-VISIBLE tool
@@ -222,18 +226,39 @@ class HardDenyToolset(WrapperToolset[None]):
     ) -> Any:  # noqa: ANN401 — the ``WrapperToolset.call_tool`` contract is ``-> Any``; matched here.
         reason = hard_deny_reason(name, tool_args, cwd=self.cwd)
         if reason is not None:
-            run_key = getattr(ctx, "run_id", "") or f"anon-{id(ctx)}"
-            count = self.denial_counts.get(run_key, 0) + 1
-            self.denial_counts[run_key] = count
-            _bound_denial_counts(self.denial_counts)
-            if count >= self.max_denials:
-                cap_reached = (
-                    f"Lane-B hard-deny retry cap reached ({self.max_denials} refusals this run); "
-                    f"aborting rather than looping. Last refusal — {reason}"
-                )
-                raise UnexpectedModelBehavior(cap_reached)
-            raise ModelRetry(reason)
-        return await super().call_tool(name, tool_args, ctx, tool)
+            self._refuse(reason, ctx)
+        try:
+            return await super().call_tool(name, tool_args, ctx, tool)
+        except CORRECTABLE_TOOL_ERRORS as exc:
+            # A tool failing on the model's OWN input (:mod:`teatree.agents.lane_b.tool_errors`)
+            # is the same situation as a hard deny — the model named something it may not or
+            # cannot have — so it takes the same bounded path: the reason goes back as a
+            # ``ModelRetry`` the model can correct from, and a model that keeps getting it
+            # wrong ends the run at the shared cap. Uncaught, it escaped ``Agent.run`` and
+            # killed the whole dispatch with a traceback: one jailed path, and a coding run
+            # that was otherwise working lost everything it had done.
+            self._refuse(f"{name} failed: {exc}", ctx)
+        return None  # unreachable: _refuse always raises. ty needs the terminator.
+
+    def _refuse(self, reason: str, ctx: RunContext[None]) -> None:
+        """Send *reason* back to the model as a ``ModelRetry``, under the per-run cap.
+
+        Past :attr:`max_denials` the refusal is terminal
+        (:class:`~pydantic_ai.exceptions.UnexpectedModelBehavior`, which the session
+        maps to an ``is_error`` result) rather than another retry, so neither a
+        predicate false-positive nor a model stuck on an impossible path can loop.
+        """
+        run_key = getattr(ctx, "run_id", "") or f"anon-{id(ctx)}"
+        count = self.denial_counts.get(run_key, 0) + 1
+        self.denial_counts[run_key] = count
+        _bound_denial_counts(self.denial_counts)
+        if count >= self.max_denials:
+            cap_reached = (
+                f"Lane-B hard-deny retry cap reached ({self.max_denials} refusals this run); "
+                f"aborting rather than looping. Last refusal — {reason}"
+            )
+            raise UnexpectedModelBehavior(cap_reached)
+        raise ModelRetry(reason)
 
 
 def make_soft_gate_predicate(

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.agents.action_verification import action_verification_error
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.landing_verification import commits_ahead_or_unknown, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
@@ -65,6 +66,12 @@ class AttemptUsage:
     # that has no dispatch context (e.g. an in-session record-attempt).
     reasoning_effort: str = ""
     skills_loaded: list[str] = dataclasses.field(default_factory=list)
+    # Tool calls the run emitted. ``None`` means UNMEASURED — the in-session
+    # ``record-attempt`` path hands over a sub-agent's envelope and never saw its
+    # tool stream — and is deliberately distinct from a measured ``0``, which is
+    # the positive evidence that the run could not act
+    # (:mod:`teatree.agents.action_verification`).
+    tool_calls: int | None = None
 
 
 class ResultEnvelopeError(ValueError):
@@ -116,10 +123,15 @@ def record_result_envelope(
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
-    Validation order: schema-key check → OUTAGE check (#1764) → per-phase
-    evidence gate (#1284) → LANDING check (coding/debugging must have committed) —
+    Validation order: schema-key check → OUTAGE check (#1764) → ACTION check
+    (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
+    LANDING check (coding/debugging must have committed) —
     a failure on any records a FAILED attempt and fails the task (``exit_code=0``
-    so it reads as a clean refusal, not a crash). The landing check re-reads the
+    so it reads as a clean refusal, not a crash). The action check runs BEFORE the
+    evidence gate so a toolless run never reaches the coding salvage below: on a
+    long-lived branch the salvage would otherwise synthesize ``files_modified``
+    from the whole branch diff and complete a run that never acted
+    (:mod:`teatree.agents.action_verification`). The landing check re-reads the
     ticket worktree's git state so a coder that reported ``files_modified`` while
     nothing was committed (the yield-without-landing stall) lands FAILED with a
     ``landing_unverified`` diagnostic — which the bounded auto-requeue sweep then
@@ -146,25 +158,10 @@ def record_result_envelope(
     transition).
     """
     usage = usage or AttemptUsage()
-    schema_error = validate_result_keys(result)
-    if schema_error:
-        return _record_failure(task, error=schema_error, result=result)
-
-    signature = outage_signature(result)
-    if signature:
-        return _record_failure(task, error=f"outage_death: {signature}", result=result)
-
-    evidence_error = check_evidence(result, phase or task.phase)
-    if evidence_error:
-        salvaged = _salvage_coding_result(task, result, phase=phase)
-        if salvaged is None:
-            diagnosis = evidence_error if envelope_parsed else NO_ENVELOPE_ERROR
-            return _record_failure(task, error=diagnosis, result=result)
-        result = salvaged
-
-    landing_error = landing_verification_error(task, phase=phase)
-    if landing_error:
-        return _record_failure(task, error=landing_error, result=result)
+    checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
+    result = checked.result
+    if checked.error:
+        return _record_failure(task, error=checked.error, result=result)
 
     server_side_error = _record_returned_envelopes(task, result, phase=phase)
     if server_side_error:
@@ -194,6 +191,55 @@ def record_result_envelope(
     )
     task.complete(result_artifact_path="")
     return attempt
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _PreRecordCheck:
+    """The first refusal of the side-effect-free validation chain, and the result to record.
+
+    ``result`` is the possibly-SALVAGED envelope: the #3263 coding salvage replaces a
+    missing ``files_modified`` with the landed commit's paths, and the caller must
+    record that envelope rather than the one it passed in.
+    """
+
+    error: str
+    result: AgentResultBlob
+
+
+def _check_before_recording(
+    task: Task,
+    result: AgentResultBlob,
+    *,
+    phase: str,
+    usage: AttemptUsage,
+    envelope_parsed: bool,
+) -> _PreRecordCheck:
+    """Run the ordered refusal chain that precedes any recording side effect.
+
+    Order is load-bearing and documented on :func:`record_result_envelope`. Split
+    out so that function stays a short record-or-refuse decision over ONE verdict
+    rather than a ladder of early returns.
+    """
+    schema_error = validate_result_keys(result)
+    if schema_error:
+        return _PreRecordCheck(schema_error, result)
+
+    signature = outage_signature(result)
+    if signature:
+        return _PreRecordCheck(f"outage_death: {signature}", result)
+
+    action_error = action_verification_error(phase or task.phase, tool_calls=usage.tool_calls)
+    if action_error:
+        return _PreRecordCheck(action_error, result)
+
+    evidence_error = check_evidence(result, phase or task.phase)
+    if evidence_error:
+        salvaged = _salvage_coding_result(task, result, phase=phase)
+        if salvaged is None:
+            return _PreRecordCheck(evidence_error if envelope_parsed else NO_ENVELOPE_ERROR, result)
+        result = salvaged
+
+    return _PreRecordCheck(landing_verification_error(task, phase=phase), result)
 
 
 def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:

@@ -119,7 +119,7 @@ class Command(TyperCommand):
         confirm: bool = False,
         reason: Annotated[
             str,
-            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'superseded by !6219')."),
+            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'superseded by !42')."),
         ] = "",
     ) -> None:
         """Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
@@ -171,7 +171,7 @@ class Command(TyperCommand):
         *,
         note: Annotated[
             str,
-            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'work landed via !6219')."),
+            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'work landed via !42')."),
         ] = "",
     ) -> None:
         """Mark a claimed or failed task COMPLETED for work finished out-of-band.
@@ -187,7 +187,7 @@ class Command(TyperCommand):
 
         Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
         outcome (merged / posted / shipped / deployed) it must also carry a
-        resolvable artifact pointer (URL / SHA / ``!123`` / ``#123`` / note id /
+        resolvable artifact pointer (URL / SHA / ``!42`` / ``#42`` / note id /
         path / Slack ts), so a phantom "done" claim cannot be recorded without
         proof. A Slack post recorded as ``slack:<channel>:<ts>`` or
         ``<channel>:<ts>`` is normalized to its archives permalink before the gate

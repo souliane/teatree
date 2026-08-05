@@ -7,7 +7,6 @@ requires:
   - rules
 metadata:
   version: 0.0.2
-  subagent_safe: false
 ---
 
 # t3:handover

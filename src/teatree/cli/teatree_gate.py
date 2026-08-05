@@ -39,6 +39,8 @@ SKILL_GATE_KEY = "skill_loading_gate_enabled"
 PLAN_GATE_KEY = "plan_edit_gate_enabled"
 CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
+ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
+UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
 MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
 MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
@@ -245,6 +247,20 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="completion-claim",
         key=COMPLETION_CLAIM_GATE_KEY,
         label="Completion-claim gate (on-target evidence before done)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="answer-first",
+        key=ANSWER_FIRST_GATE_KEY,
+        label="Answer-first gate (answer the user's question, do not only dispatch)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="unbacked-claim",
+        key=UNBACKED_CLAIM_GATE_KEY,
+        label="Evidence gate (a diagnosis or an escalation cites what was read)",
     )
 
     _register_keyed_gate(

@@ -79,7 +79,7 @@ _FORCE_GENERAL_HELP = (
 _ALLOW_BLOAT_HELP = (
     "Escape the comment-bloat gate (souliane/teatree#2663) for ONE post — the documented "
     "over-deny escape (#126). A note longer than a small sentence cap, or one that "
-    "references project chatter (a ticket/PR id like #1234/!567, an @handle, or a Slack "
+    "references project chatter (a ticket/PR id like #1234/!42, an @handle, or a Slack "
     "timestamp) is refused by default — a review comment is about the diff, not the "
     "tracker. Use ONLY for a genuinely justified long nit or a load-bearing reference."
 )
@@ -134,9 +134,8 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
 
     The inline-vs-general decision is explicit: pass ``--general`` for an
     MR-wide note, or pass both ``--file`` and ``--line`` for an inline
-    draft. Pre-#72 the default silently degraded a missing flag pair into
-    a general note — observed in !6220 where 4 of 5 cold-review drafts
-    intended as inline became general. The validator
+    draft. A missing flag pair would otherwise degrade into a general note,
+    silently dropping the line anchor the draft was meant to carry:
     :func:`teatree.cli.review.drafts.validate_inline_or_general` refuses
     both half-specified-inline and contradictory invocations before any
     GitLab API call is attempted.

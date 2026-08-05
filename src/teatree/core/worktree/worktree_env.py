@@ -13,7 +13,6 @@ truth.
 
 import logging
 import os
-import platform
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.utils import secrets
+from teatree.utils.ports import docker_host_address
 from teatree.utils.postgres_secret import (
     PASS_KEY_ENV,
     POSTGRES_PASSWORD_ENV,
@@ -111,13 +111,6 @@ def env_cache_path(worktree: "Worktree") -> Path | None:
     if not wt_path:
         return None
     return _cache_path_for(Path(wt_path))
-
-
-def _docker_host_address() -> str:
-    """Return the address Docker containers should use to reach the host."""
-    if platform.system() in {"Darwin", "Windows"}:
-        return "host.docker.internal"
-    return "172.17.0.1"
 
 
 def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
@@ -244,7 +237,7 @@ def render_env_cache(worktree: "Worktree", *, overlay: "OverlayBase | None" = No
 
     db_strategy = overlay.provisioning.db_import_strategy(worktree)
     if db_strategy and db_strategy.get("shared_postgres"):
-        pairs["POSTGRES_HOST"] = _docker_host_address()
+        pairs["POSTGRES_HOST"] = docker_host_address()
 
     _check_overlay_does_not_collide_with_core(overlay)
     pairs.update(overlay.provisioning.env_extra(worktree))

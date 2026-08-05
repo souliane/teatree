@@ -6,8 +6,9 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, TranscriptMember, build_extract
+from teatree.loops.dream.engine import DistilledCluster
 from teatree.loops.dream.eval_proposer import ProposedEval, default_eval_proposer, propose_evals, write_eval_proposals
+from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, build_extract
 
 _CITATION = "pushed without running the gate, CI went red"
 

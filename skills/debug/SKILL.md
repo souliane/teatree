@@ -7,7 +7,6 @@ requires:
   - systematic-debugging
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Troubleshooting & Fixing

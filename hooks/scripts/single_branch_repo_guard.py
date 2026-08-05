@@ -94,8 +94,8 @@ def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotati
     return core
 
 
-def _target_repo_slug(command: str, cwd: "Path | None") -> str:
-    """The remote slug of the repo *command* targets, or ``""`` when unresolvable.
+def _target_repo_dir(command: str, cwd: "Path | None") -> "Path | None":
+    """The dir whose repo *command* targets, or ``None`` when unresolvable.
 
     Keys off the command's EFFECTIVE dir (honouring a leading ``cd`` and git's
     ``-C``/``--git-dir`` redirection) rather than the ambient cwd, for the same
@@ -106,15 +106,47 @@ def _target_repo_slug(command: str, cwd: "Path | None") -> str:
     try:
         with teatree_src_on_path():
             from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415, PLC2701 — cold-hook import
-            from teatree.utils.git import remote_url  # noqa: PLC0415 — deferred: cold-hook import
 
             resolved = resolve_commit_dir(command, cwd)
             if not isinstance(resolved, Path):
-                return ""
-            repo_dir = resolved.parent if resolved.name == ".git" else resolved
+                return None
+            return resolved.parent if resolved.name == ".git" else resolved
+    except Exception:  # noqa: BLE001 — cannot pin the repo → fail OPEN.
+        return None
+
+
+def _target_repo_slug(command: str, cwd: "Path | None") -> str:
+    """The remote slug of the repo *command* targets, or ``""`` when unresolvable."""
+    repo_dir = _target_repo_dir(command, cwd)
+    if repo_dir is None:
+        return ""
+    try:
+        with teatree_src_on_path():
+            from teatree.utils.git import remote_url  # noqa: PLC0415 — deferred: cold-hook import
+
             return remote_url(str(repo_dir)) or ""
     except Exception:  # noqa: BLE001 — cannot pin the repo → fail OPEN.
         return ""
+
+
+def _push_branch_is_local_to(repo_dir: "Path | None", branch: str) -> bool:
+    """Whether *branch* is a real local ref in *repo_dir* — the push gate's premise check.
+
+    A push is the one surface whose premise can be CHECKED rather than inferred.
+    The cwd a hook is handed is the SESSION dir, not the command's, so a push of
+    another repo's branch would otherwise be refused as a second branch here.
+    An unproven premise fails OPEN: a push of a nonexistent branch fails anyway.
+    """
+    if repo_dir is None or not branch:
+        return False
+    try:
+        with teatree_src_on_path():
+            from teatree.utils.run import run_checked  # noqa: PLC0415 — deferred: cold-hook import
+
+            run_checked(["git", "-C", str(repo_dir), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
+    except Exception:  # noqa: BLE001 — no such ref, not a repo, or git unavailable → premise unproven.
+        return False
+    return True
 
 
 def _finding(core, data: dict) -> "tuple[SingleBranchFinding, str, str] | None":  # noqa: ANN001 — duck-typed handle passed positionally
@@ -127,14 +159,19 @@ def _finding(core, data: dict) -> "tuple[SingleBranchFinding, str, str] | None":
     entries = _declared_entries()
     if not entries:
         return None
-    repo = _target_repo_slug(command, _resolve_cwd_repo(data))
+    cwd = _resolve_cwd_repo(data)
+    repo_dir = _target_repo_dir(command, cwd)
+    repo = _target_repo_slug(command, cwd)
     if not repo:
         return None
     pinned = core.resolve_pinned_branch(repo, entries)
     if not pinned:
         return None
     found = core.find_second_branch_creation(command, pinned_branch=pinned)
-    return None if found is None else (found, pinned, repo)
+    # A push is the one surface whose premise can be CHECKED rather than inferred.
+    if found is None or (found.surface == "push" and not _push_branch_is_local_to(repo_dir, found.target)):
+        return None
+    return found, pinned, repo
 
 
 def _gate_should_skip(data: dict) -> bool:

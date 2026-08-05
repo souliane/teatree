@@ -217,11 +217,7 @@ def schedule_gap_fix(*, umbrella_url: str, gap_key: str, title: str, cluster_key
         issue_url=issue_url,
         defaults={"role": Ticket.Role.AUTHOR, "short_description": title.strip()[:80]},
     )
-    extra = dict(ticket.extra or {})
-    extra.update({_GAP_KEY: gap_key, _CLUSTER_KEY: cluster_key, _UMBRELLA_KEY: umbrella_url})
-    if extra != ticket.extra:
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+    ticket.merge_extra(set_keys={_GAP_KEY: gap_key, _CLUSTER_KEY: cluster_key, _UMBRELLA_KEY: umbrella_url})
     if Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists():
         return None
     if ticket.state != Ticket.State.NOT_STARTED:
@@ -328,13 +324,16 @@ def _stamp_ticket_reconciled(ticket: Ticket) -> None:
     :func:`_in_flight_gap_tickets` scan excludes it, so a merged gap is reconciled once,
     not re-read from the forge on every pass forever. Idempotent — an already-stamped
     ticket is left untouched.
+
+    The unstamped read is a fast path, not the guard: it keeps the common already-stamped
+    case from taking the write lock at all. The write itself goes through
+    :meth:`Ticket.merge_extra`, so a concurrent writer's keys survive instead of being
+    clobbered by this snapshot. Two passes racing the first stamp both write, and the
+    later timestamp wins — harmless, because what the scan reads is the key's presence.
     """
-    extra = dict(ticket.extra or {})
-    if extra.get(_RECONCILED_KEY):
+    if (ticket.extra or {}).get(_RECONCILED_KEY):
         return
-    extra[_RECONCILED_KEY] = timezone.now().isoformat()
-    ticket.extra = extra
-    ticket.save(update_fields=["extra"])
+    ticket.merge_extra(set_keys={_RECONCILED_KEY: timezone.now().isoformat()})
 
 
 def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:

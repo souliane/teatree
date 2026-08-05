@@ -9,6 +9,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
+import teatree.core.management.commands._e2e_runners as e2e_runners_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -285,8 +286,8 @@ class TestE2eExternalCommand(TestCase):
         """e2e external reads frontend port from docker compose and variant from the env cache."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            private_tests_dir = tmp_path / "private-tests"
-            private_tests_dir.mkdir()
+            specs_dir = tmp_path / "specs"
+            specs_dir.mkdir()
 
             worktree_dir = tmp_path / "workspace" / "backend"
             worktree_dir.mkdir(parents=True)
@@ -315,11 +316,11 @@ class TestE2eExternalCommand(TestCase):
                 patch.dict(
                     "os.environ",
                     {
-                        "T3_PRIVATE_TESTS": str(private_tests_dir),
                         "T3_ORIG_CWD": str(worktree_dir),
                     },
                 ),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(e2e_runners_mod, "resolve_external_specs_path", return_value=specs_dir),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4299),
                 patch.object(utils_run_mod, "Popen", _popen_capturing(commands)),
             ):
@@ -336,8 +337,8 @@ class TestE2eExternalCommand(TestCase):
         """e2e external must exit 1 when the frontend service is not running (#932)."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            private_tests_dir = tmp_path / "private-tests"
-            private_tests_dir.mkdir()
+            specs_dir = tmp_path / "specs"
+            specs_dir.mkdir()
 
             worktree_dir = tmp_path / "workspace" / "backend"
             worktree_dir.mkdir(parents=True)
@@ -357,10 +358,10 @@ class TestE2eExternalCommand(TestCase):
                 patch.dict(
                     "os.environ",
                     {
-                        "T3_PRIVATE_TESTS": str(private_tests_dir),
                         "T3_ORIG_CWD": str(worktree_dir),
                     },
                 ),
+                patch.object(e2e_runners_mod, "resolve_external_specs_path", return_value=specs_dir),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=None),
                 patch.object(e2e_disc_mod, "detect_local_port", return_value=None),
                 pytest.raises(SystemExit) as exc_info,

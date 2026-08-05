@@ -7,7 +7,6 @@ requires:
   - workspace
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Wip — the bounded-WIP throughput dial

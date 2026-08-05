@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
-from teatree.core.forge_pr_probe import probe_github_open_pr, probe_gitlab_open_pr
+from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
@@ -87,11 +87,12 @@ class GhForge:
         result = run_checked(
             ["gh", "pr", "create", "--head", branch, "--title", title, "--body", body],
             cwd=self._repo,
+            env=forge_cli_env(),
         )
         return result.stdout.strip()
 
     def update_pr(self, *, url: str, body: str) -> None:
-        run_checked(["gh", "pr", "edit", url, "--body", body], cwd=self._repo)
+        run_checked(["gh", "pr", "edit", url, "--body", body], cwd=self._repo, env=forge_cli_env())
 
 
 class GlabForge:
@@ -105,12 +106,17 @@ class GlabForge:
         result = run_checked(
             ["glab", "mr", "create", "--source-branch", branch, "--title", title, "--description", body, "--yes"],
             cwd=self._repo,
+            env=forge_cli_env(),
         )
         urls = [token for token in result.stdout.split() if token.startswith("http")]
         return urls[-1] if urls else ""
 
     def update_pr(self, *, url: str, body: str) -> None:
-        run_checked(["glab", "mr", "update", url.rsplit("/", 1)[-1], "--description", body], cwd=self._repo)
+        run_checked(
+            ["glab", "mr", "update", url.rsplit("/", 1)[-1], "--description", body],
+            cwd=self._repo,
+            env=forge_cli_env(),
+        )
 
 
 def forge_for_repo(repo: Path) -> ForgeClient | None:
@@ -142,6 +148,7 @@ def _public_github_slug(repo: Path) -> str | None:
         ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
         expected_codes=None,
         cwd=repo,
+        env=forge_cli_env(),
     )
     if result.returncode != 0:
         return None

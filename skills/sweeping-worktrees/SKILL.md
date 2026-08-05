@@ -7,7 +7,6 @@ requires:
   - rules
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Cleanup Sweep — Judgment Over Stale Worktrees, Branches, and Stashes

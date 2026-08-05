@@ -37,12 +37,14 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.management.commands._dream_report import _ResultFragments
 from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
-    from teatree.loops.dream.engine import ConsolidationExtract
+    from teatree.loops.dream.engine import DreamRunResult
     from teatree.loops.dream.phase_runner import MemoryPhaseRunner
+    from teatree.loops.dream.replay import ConsolidationExtract
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,23 +239,28 @@ class Command(TyperCommand):
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
             return PassOutcome.FAILED
 
-        evals = f"; {result.evals_proposed} eval candidate(s)" if result.evals_proposed else ""
-        empty = (
-            f"; WARN {result.empty_batches} batch(es) returned 0 clusters from non-empty input"
-            if result.empty_batches
-            else ""
-        )
-        distilled = f"; distilled {result.snippets_distilled} snippet(s)" if result.snippets_distilled else ""
-        rejected = (
-            f"; WARN {result.clusters_rejected} ungrounded cluster(s) rejected" if result.clusters_rejected else ""
-        )
+        clauses = _ResultFragments.of(result)
+
+        # A broken/raised batch means PART of the corpus was not folded in, so the pass
+        # may never stamp success — but it must not short-circuit the rest of the pass
+        # either. `write_clusters` has ALREADY persisted the rows the HEALTHY batches
+        # produced by the time this is known, so returning here left those rows behind and
+        # skipped the very phases that reconcile them: cross-link, re-index, decay, and the
+        # §4 acceptance gates. Report it loudly and carry on; the marker is withheld at the
+        # bottom, where every other "do not stamp" verdict is already decided.
+        if result.distillation_broken:
+            self._report_broken_distillation(result)
+
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
-                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}; "
+                f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"
+                f"{clauses.empty}{clauses.rejected}{clauses.deferred}{clauses.broken}; "
                 "no rows or marker written.",
             )
-            return PassOutcome.DRY_RUN
+            # A preview wrote nothing, so there are no rows to reconcile — the carry-on
+            # above buys nothing here, and the outcome stays what it has always been.
+            return PassOutcome.FAILED if result.distillation_broken else PassOutcome.DRY_RUN
 
         if result.members_replayed == 0:
             # No transcript was replayed, so nothing was distilled — the
@@ -295,26 +302,53 @@ class Command(TyperCommand):
 
         # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
         # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
-        # success — staleness keeps firing until a faithful pass lands (#2545).
-        if not gates_passed:
+        # success — staleness keeps firing until a faithful pass lands (#2545). A
+        # broken/raised distiller batch joins them here rather than short-circuiting
+        # above, so the maintenance phases still run over the rows that WERE written
+        # while the marker is still withheld.
+        if not gates_passed or result.distillation_broken:
+            reason = "acceptance gate(s) FAILED" if not gates_passed else "the distiller FAILED on some batch(es)"
             DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
-                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
+                f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"
+                f"{clauses.empty}{clauses.rejected}"
                 f"{promoted}{compliance}{automation_asks}"
-                f"{memory_phases}{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped "
-                f"succeeded.",
+                f"{memory_phases}{memory_promote}{gates_summary}{clauses.deferred}{clauses.broken}; {reason} — marker "
+                f"NOT stamped succeeded.",
             )
             return PassOutcome.FAILED
 
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
+            f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"
+            f"{clauses.empty}{clauses.rejected}"
             f"{promoted}{compliance}{automation_asks}"
-            f"{memory_phases}{memory_promote}{gates_summary}.",
+            f"{memory_phases}{memory_promote}{gates_summary}{clauses.deferred}.",
         )
         return PassOutcome.STAMPED
+
+    def _report_broken_distillation(self, result: "DreamRunResult") -> None:
+        """Print WHY the distiller produced nothing, quoting the reply it could not parse.
+
+        The reply is the actionable part: ``Not logged in · Please run /login`` names an
+        auth gap the operator fixes in one step, where a bare ``unparsable`` reads like a
+        model formatting slip and cost a full debugging session to tell apart.
+
+        Says "on N batch(es)", not "NO consolidation happened": the failure is per-batch,
+        the healthy batches' clusters are already in the ledger, and the pass carries on
+        through the maintenance phases that reconcile them. The marker is still withheld.
+        """
+        self.stdout.write(
+            f"FAIL  dream distiller could not do its job on "
+            f"{result.broken_batches} broken + {result.failed_batches} raised batch(es) "
+            f"over {result.snippets_distilled} snippet(s); those batches were NOT consolidated, "
+            "the distill cursor is HELD so they are re-reached next pass, and the marker is "
+            "NOT stamped succeeded.",
+        )
+        for line in result.distill_diagnostics:
+            self.stdout.write(f"      {line}")
 
     def _run_compliance_measurement(
         self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool

@@ -11,6 +11,11 @@ is named by its own file (self-documenting hierarchy).
 
 from typing import TypedDict
 
+from teatree.core.management.commands._pr_control_db import (
+    ControlDbUnreachableError,
+    control_db_unreachable_error,
+    unreachable_control_db_reason,
+)
 from teatree.core.models import Ticket
 
 
@@ -40,13 +45,39 @@ def ticket_not_found_error(ref: str) -> TicketNotFoundError:
     overlay-managed PR invariants (title format, FSM transitions,
     on-behalf gates). Name the missing reference and the command that
     provisions the row instead.
+
+    #4170: both supported routes are named, because the refusal reads as a dead end
+    otherwise and a dead end is what sends the next agent to ``gh pr create``. Either
+    provision the row and ship through the FSM, or open the PR ticketlessly via the
+    orphan-branch path — ``pr create`` itself requires a ticket by design, since its
+    gates are keyed on the row.
     """
     hint = f"t3 <overlay> workspace ticket <issue-url> (no Ticket row for {ref!r})"
     return TicketNotFoundError(
         error=(
             f"No Ticket row for {ref!r} in the canonical DB. "
             f"Create one with `t3 <overlay> workspace ticket <issue-url>` "
-            f"(or pass the internal DB pk)."
+            f"(or pass the internal DB pk). To open a PR with no ticket at all, use "
+            f"`t3 <overlay> pr ensure-pr --repo <path> --branch <branch>`."
         ),
         hint=hint,
     )
+
+
+def resolve_ticket_or_refusal(ref: str) -> Ticket | ControlDbUnreachableError | TicketNotFoundError:
+    """The CLI ``ticket_id`` as a ``Ticket``, or the refusal saying why it is not one.
+
+    Two preconditions in a fixed order, because they need different remedies and one
+    error collapsing both would hide which applies (#4170). REACHABILITY is a topology
+    fact — a host process cannot open the container-only control-DB volume, ever — so
+    it is read BEFORE any ORM touch rather than inferred from the ``OperationalError``
+    the first query would otherwise raise. EXISTENCE is a state fact, answerable only
+    once the database is open.
+    """
+    unreachable = unreachable_control_db_reason()
+    if unreachable is not None:
+        return control_db_unreachable_error(unreachable)
+    try:
+        return resolve_ticket(ref)
+    except Ticket.DoesNotExist:
+        return ticket_not_found_error(ref)

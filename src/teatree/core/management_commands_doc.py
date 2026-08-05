@@ -36,7 +36,10 @@ class ManagementCommandsDocPayload(TypedDict):
 
 
 # Commands that exist as helper modules but are not real management commands.
-_EXCLUDED = frozenset({"tasks_session_view"})
+# Django keys the registry by FILENAME (every ``*.py`` not starting with ``_``), so a
+# helper parked here is registered and then explodes in ``load_command_class`` — which
+# takes the whole generator down rather than skipping one entry.
+_EXCLUDED = frozenset({"tasks_session_view", "tasks_interactive_launch"})
 
 # App label that owns core's own commands — the default the checked-in doc builds against.
 _APP_LABEL = "teatree.core"

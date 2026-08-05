@@ -21,15 +21,12 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
-from teatree.loops.dream.engine import (
-    ConsolidationExtract,
-    DistilledCluster,
-    DreamRunResult,
-    TranscriptMember,
-    WeightedSnippet,
-)
+from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
+
+_COMMAND = "teatree.core.management.commands.dream.Command"
 
 
 def _enable_dream_loop(*, last_run_at: "dt.datetime | None" = None) -> None:
@@ -68,7 +65,7 @@ def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
     # — which now runs on EVERY pass and reuses ``result.extract`` — has something to
     # measure. No correction turn ⇒ 0 violations ⇒ an empty compliance summary clause.
     snippet = WeightedSnippet(path=Path("/memory/feedback_x.md"), kind="memory", weight=90, text="a durable lesson")
-    extract = ConsolidationExtract(snippets=(snippet,), truncated=False)
+    extract = ConsolidationExtract(snippets=(snippet,))
     return DreamRunResult(
         clusters_recorded=1,
         members_replayed=3,
@@ -1152,7 +1149,6 @@ def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
                 path=Path("/sessions/session-a.jsonl"), kind="main", weight=80, text=_COMPLIANCE_VIOLATION_TURN
             ),
         ),
-        truncated=False,
     )
     return DreamRunResult(
         clusters_recorded=1, members_replayed=5, dry_run=dry_run, snippets_distilled=2, extract=extract
@@ -1479,6 +1475,100 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
             call_command("dream", "run", stdout=StringIO())
         marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
         assert marker.last_succeeded_at is not None
+
+
+def _broken_distillation_result(*, dry_run: bool = False) -> DreamRunResult:
+    """A pass whose distiller produced nothing BECAUSE it was broken, not because it was quiet."""
+    return DreamRunResult(
+        clusters_recorded=0,
+        members_replayed=407,
+        dry_run=dry_run,
+        snippets_distilled=20,
+        empty_batches=1,
+        broken_batches=1,
+        distill_diagnostics=("batch of 20 member(s): unparsable — reply: 'Not logged in · Please run /login'",),
+    )
+
+
+class DreamBrokenDistillerFailsLoudTestCase(TestCase):
+    """A distiller that could not do its job fails the pass — it never reports success.
+
+    The pass that motivated this printed a WARNING and exited 0 while its `claude`
+    subprocess was unauthenticated, so nothing distinguished a broken consolidation
+    from a night with nothing to consolidate.
+    """
+
+    def test_broken_distillation_exits_non_zero(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert exc.value.code == 1
+
+    def test_broken_distillation_on_a_dry_run_also_exits_non_zero(self) -> None:
+        broken = _broken_distillation_result(dry_run=True)
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=broken),
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
+        assert exc.value.code == 1
+
+    def test_broken_distillation_reports_the_raw_reply(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=stdout)
+        assert "Not logged in" in stdout.getvalue()
+
+    def test_broken_distillation_does_not_stamp_succeeded(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
+        assert marker is None or marker.last_succeeded_at is None
+
+    def test_broken_distillation_still_runs_the_maintenance_phases(self) -> None:
+        """It must not short-circuit: `write_clusters` already wrote the healthy batches' rows.
+
+        Returning at the broken check left those rows behind AND skipped cross-link,
+        re-index, decay and the §4 gates — the phases that reconcile them. `main`
+        counted the failures and carried on; the pass still refuses to stamp succeeded,
+        which is the part that has to hold.
+        """
+        broken = _broken_distillation_result()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=broken),
+            patch(f"{_COMMAND}._run_memory_phases_and_gates", return_value=("; phases ran", True, "")) as phases,
+            pytest.raises(SystemExit) as exc,
+        ):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert exc.value.code == 1, "a broken distiller must still fail the pass"
+        phases.assert_called_once()
+
+    def test_broken_distillation_names_itself_on_the_final_line(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_broken_distillation_result()),
+            patch(f"{_COMMAND}._run_memory_phases_and_gates", return_value=("", True, "")),
+            pytest.raises(SystemExit),
+        ):
+            call_command("dream", "run", stdout=stdout)
+
+        out = stdout.getvalue()
+        assert "the distiller FAILED on some batch(es)" in out
+        assert "NOT stamped succeeded" in out
+
+    def test_healthy_quiet_pass_still_exits_zero(self) -> None:
+        quiet = DreamRunResult(clusters_recorded=0, members_replayed=407, dry_run=True, snippets_distilled=20)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=quiet):
+            call_command("dream", "run", "--dry-run", stdout=StringIO())
 
 
 class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):

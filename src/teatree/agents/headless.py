@@ -23,7 +23,14 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    RateLimitEvent,
+    ResultMessage,
+    TextBlock,
+    ToolUseBlock,
+)
 from claude_agent_sdk.types import RateLimitInfo
 from django.utils import timezone
 
@@ -121,6 +128,11 @@ class HarnessOutcome:
     #: typed flag, not a phrase match on the reason: the reason now names the actual
     #: reclaimer, so any discriminator built on its wording would drift with it.
     lease_lost: bool = False
+    #: ``ToolUseBlock``s the run emitted. Both backends yield tool use in this same
+    #: vocabulary, so the count is lane-agnostic evidence that the agent ACTED —
+    #: what :mod:`teatree.agents.action_verification` gates an acting phase on. A
+    #: watchdog breach leaves it at the count observed before the breach.
+    tool_calls: int = 0
 
 
 def run_headless(
@@ -258,7 +270,7 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
     """Resolve the headless transport, or a recorded failure for an unimplemented backend."""
     try:
         return resolve_harness(task, phase=phase or None)
-    except (NotImplementedError, UnknownHarnessError, InvalidHarnessProviderError) as exc:
+    except (NotImplementedError, UnknownHarnessError, InvalidHarnessProviderError, CredentialError) as exc:
         return _record_failure(task, error=str(exc))
 
 
@@ -474,9 +486,11 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     text_parts: list[str] = []
     result_message: ResultMessage | None = None
     rate_limit_info: RateLimitInfo | None = None
+    tool_calls = 0
     async for message in session.receive_response():
         if isinstance(message, AssistantMessage):
             text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
+            tool_calls += sum(1 for block in message.content if isinstance(block, ToolUseBlock))
         elif isinstance(message, ResultMessage):
             result_message = message
         elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
@@ -487,6 +501,7 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
         stuck_reason=None,
         rate_limit_info=rate_limit_info,
         thread=pydantic_ai_thread(session),  # (#2886) captured while `session` is still open
+        tool_calls=tool_calls,
     )
 
 
@@ -518,6 +533,7 @@ def _record_success(
         lane=lane,
         reasoning_effort=provenance.reasoning_effort,
         skills_loaded=list(provenance.skills_loaded),
+        tool_calls=outcome.tool_calls,
     )
     return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))
 

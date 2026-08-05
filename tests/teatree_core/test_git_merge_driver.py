@@ -19,16 +19,19 @@ import pytest
 
 import teatree
 from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
+from teatree.core import git_merge_driver as merge_driver
 from teatree.core.git_merge_driver import install_merge_driver
 from tests._git_repo import make_git_repo, run_git
 
 # The literal git config value the driver contract is pinned to. Asserting the
 # installed value against the production constant would be tautological — both
 # sides would read the same string, so a broken command could never fail here.
-# The script path is ABSOLUTE: git runs a merge driver from the top of the working
-# tree, which in a fork that vendors core is the fork root, where the repo-relative
-# path names nothing. The root is re-derived here from the installed package rather
-# than through `teatree_source_root`, so the shape stays independently pinned.
+# The script path is ABSOLUTE here because the checkouts these tests install into are
+# scratch repos that do not contain the driver script — the fallback arm. The relative
+# arm, which is what a real clone or fork takes, is pinned by
+# `TestDriverCommandIsCheckoutRelative`. The root is re-derived here from the installed
+# package rather than through `teatree_source_root`, so the shape stays independently
+# pinned.
 _TEATREE_ROOT = Path(teatree.__file__).resolve().parents[2]
 _EXPECTED_DRIVER_COMMAND = f"uv run python {_TEATREE_ROOT}/scripts/hooks/git_merge_generated.py %O %A %B %P"
 
@@ -151,8 +154,60 @@ class TestDriverCommandNamesARealScript:
         configured = run_git(repo, "config", "--get", "merge.generated.driver")
         script = Path(configured.split()[3])
 
-        assert script.is_absolute(), f"driver script must be absolute, got {script}"
+        assert script.is_absolute(), f"driver script outside the checkout must be absolute, got {script}"
         assert script.is_file(), f"driver script does not exist: {script}"
+
+
+class TestDriverCommandIsCheckoutRelative:
+    """A driver script INSIDE the checkout is named relative to it.
+
+    ``.git/config`` is per-clone, and a clone bind-mounted into a container is one
+    config file reachable at two different absolute paths. An absolute command let
+    whichever side registered the driver last point the other side's merges at a path
+    that does not exist there — and git answers a missing driver by falling back to a
+    textual 3-way merge, hand-resolving a generated doc, which is precisely what
+    marking these paths ``merge=generated`` exists to prevent.
+    """
+
+    def _fake_source_root(self, monkeypatch, root: Path) -> Path:
+        (root / "scripts" / "hooks").mkdir(parents=True)
+        (root / "scripts" / "hooks" / "git_merge_generated.py").touch()
+        monkeypatch.setattr(merge_driver, "teatree_source_root", lambda: root)
+        return root
+
+    def test_a_vendored_script_is_named_relative_to_the_fork_root(self, tmp_path, monkeypatch):
+        checkout = tmp_path / "fork"
+        self._fake_source_root(monkeypatch, checkout / "vendor" / "teatree")
+
+        assert merge_driver.driver_command(checkout) == (
+            "uv run python vendor/teatree/scripts/hooks/git_merge_generated.py %O %A %B %P"
+        )
+
+    def test_a_plain_clone_names_the_script_at_its_own_root(self, tmp_path, monkeypatch):
+        checkout = tmp_path / "clone"
+        self._fake_source_root(monkeypatch, checkout)
+
+        assert merge_driver.driver_command(checkout) == (
+            "uv run python scripts/hooks/git_merge_generated.py %O %A %B %P"
+        )
+
+    def test_a_script_outside_the_checkout_stays_absolute(self, tmp_path, monkeypatch):
+        self._fake_source_root(monkeypatch, tmp_path / "elsewhere")
+
+        script = Path(merge_driver.driver_command(tmp_path / "repo").split()[3])
+
+        assert script.is_absolute(), f"a script outside the checkout has no relative form, got {script}"
+
+    def test_the_two_checkouts_of_one_bind_mount_agree(self, tmp_path, monkeypatch):
+        """The host path and the container path of the same tree yield ONE command."""
+        host = tmp_path / "host" / "downstream-fork"
+        self._fake_source_root(monkeypatch, host / "vendor" / "teatree")
+        host_command = merge_driver.driver_command(host)
+
+        container = tmp_path / "home" / "teatree" / "teatree"
+        self._fake_source_root(monkeypatch, container / "vendor" / "teatree")
+
+        assert merge_driver.driver_command(container) == host_command
 
 
 class TestInstallMergeDriver:

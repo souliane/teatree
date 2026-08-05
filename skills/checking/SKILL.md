@@ -8,7 +8,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Checking — the check-in surface
@@ -210,7 +209,7 @@ When invoked with `--periodic` (e.g., from a cron job or scheduler), run in **no
 **Cron setup** (add to `crontab -e`):
 
 ```bash
-## Run t3:followup every 2 hours during work hours (Mon-Fri, 9-18)
+## Run t3:checking every 2 hours during work hours (Mon-Fri, 9-18)
 0 9-18/2 * * 1-5 <agent-cli-command> "/t3:checking --periodic" >> $T3_DATA_DIR/followup.log 2>&1
 ```
 

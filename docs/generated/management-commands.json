@@ -100,6 +100,10 @@
           "name": "restore-ci"
         },
         {
+          "help": "Apply pending migrations to the worktree's APP database, without re-importing it",
+          "name": "migrate-app"
+        },
+        {
           "help": "Reset all user passwords to a known dev value",
           "name": "reset-passwords"
         }
@@ -182,7 +186,7 @@
           "name": "run"
         },
         {
-          "help": "Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo)",
+          "help": "Run Playwright tests from an external specs repo (the overlay's own, or --repo)",
           "name": "external"
         },
         {
@@ -756,11 +760,11 @@
           "name": "record"
         },
         {
-          "help": "Resolve a pending question with a user answer (resumes a parked headless task)",
+          "help": "Resolve pending questions with a user answer (resumes any parked headless task)",
           "name": "answer"
         },
         {
-          "help": "Dismiss a pending question without answering it",
+          "help": "Dismiss pending questions without answering them",
           "name": "dismiss"
         },
         {
