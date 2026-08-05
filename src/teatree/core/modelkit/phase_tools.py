@@ -137,19 +137,20 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # producers, so an EXPLICIT entry here is REQUIRED, never the deny-by-default
     # read-only fallback resolving a dispatchable phase silently.
     #
-    # ``architectural_review`` (the periodic ``ac-reviewing-codebase`` pass) is a
-    # genuine review-WORK phase, so it gets the SAME read-mostly-with-shell shape as
-    # the reviewer phases: its skill walks the whole tree (Read/Grep), does git/PR
-    # archaeology (``git log``, merge-count since the last review), runs
-    # ``t3 tool verify-gates``, and files findings through the normal ticket pipeline
-    # — none of which the earlier NO-shell grant could do, which is exactly why a
-    # dispatched review stalled and leaked an "I lack shell + have no checkout"
-    # question to the owner. It keeps NO write/edit — a review produces tickets, not
-    # commits (a BLUEPRINT staleness fix goes through the normal pipeline) — so it
-    # stays least-privilege while being ABLE to complete the review. The dispatch
-    # resolves its ``cwd`` to the overlay's main clone (``_resolve_task_cwd``), the
-    # checkout the shell then reads and cold-worktrees from.
-    "architectural_review": _READ_ONLY | _WEB | {"shell"},
+    # ``architectural_review`` (the periodic ``ac-reviewing-codebase`` pass) walks the
+    # whole tree, then IMPLEMENTS what it finds and pushes one PR — so it needs the
+    # read+search+web+shell a review takes AND write/edit to author the fix. It is not
+    # a :data:`VERDICT_REVIEW_PHASES` member: those record a verdict on someone else's
+    # diff, this one authors its own, and maker≠checker is held at the merge gate by
+    # the independent cold review its PR still needs, not by denying the pen.
+    # ``dispatch_subtask`` is deliberately withheld: the skill implements its batch
+    # serially on one branch, and a cadence-fired phase that could fan out would
+    # multiply unattended agents past the admission governor, which does not meter the
+    # sub-agent path. The dispatch resolves its ``cwd`` to the overlay's main clone
+    # (``_resolve_task_cwd``), which the write tools may NOT mutate —
+    # ``core.gates.main_clone_guard`` denies an Edit/Write landing there, so the
+    # authoring happens in the worktree the phase cuts off that clone.
+    "architectural_review": _READ_ONLY | _WEB | _WRITE | {"shell"},
     # ``dogfood_smoke`` shells out to ``t3 dogfood overlay-provision-smoke`` to run
     # the provision smoke, so it needs the shell (read-only+shell, mirroring
     # ``bughunt``/``shipping``); it never mutates source through the write tools.
