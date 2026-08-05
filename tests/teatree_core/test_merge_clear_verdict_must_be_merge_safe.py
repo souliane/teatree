@@ -60,7 +60,9 @@ def _gh_stub_live_green(argv: list[str]) -> tuple[int, str, str]:
         return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
-    return (0, "", "")
+    # A real open PR always changes >=1 file, so an empty list is a failed read
+    # the substrate gate holds on.
+    return (0, "README.md\n" if "/files" in joined else "", "")
 
 
 class TestNonGreenVerdictNeverIssuable(TestCase):
