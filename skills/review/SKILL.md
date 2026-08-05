@@ -334,9 +334,13 @@ When the PR under review belongs to the **user themselves**, do NOT post review 
 
 **Step 0 — Gather Ticket Context:**
 
-Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior.
+Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior. Extract the ticket URL from the PR title/description, then fetch it via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool — falling back to the issue-tracker CLI (`gh issue view`, `glab issue view`) when the MCP server is not connected. Fetch every attached spec and linked external requirement too; attachments are the authoritative spec, and an author's docstring summarising them is not a substitute.
 
-Steps 0 through 0h — fetching the ticket and every attachment, reviewing all commits, discussing before posting, answering your own questions, not policing another author's title format, respecting the overlay's auto-close policy, cross-service verification, and choosing PR over chat as the venue — are in [`skills/review/references/giving-review-investigation.md`](references/giving-review-investigation.md).
+**Hard rule — refuse blind reviews.** If a ticket references a spec attachment or external requirements document you cannot retrieve, **STOP**. Do not post review notes. Report back to the user: which document you could not fetch, what you tried, and what access is needed. An overlay MAY declare specific sources out of scope (a partner portal behind SSO); honour those exceptions. For anything else, a review with missing spec context is not a review — it is guessing, and guessing attached to the user's account damages the author's trust.
+
+**The reviewer does the verification, not the author (Non-Negotiable).** Every comment goes out under the user's name, so one that boils down to "I'm unsure, please confirm" makes the user look like they do not know their own codebase. If a draft comment names a file, function, schema, enum, or downstream caller reachable from the local checkout, open it and read it before posting. "Worth checking `foo.py`" is not a review comment — it is the reviewer outsourcing their job. Either the file says the code is wrong (post a verified finding) or it says the code is fine (post nothing).
+
+The rest of steps 0 through 0h — the attachment-fetching recipes and annotation reading, reviewing all commits individually, discussing before posting, the full investigation ladder behind the rule above, not policing another author's title format, the overlay's auto-close policy, cross-service verification, and choosing PR over chat as the venue — are in [`skills/review/references/giving-review-investigation.md`](references/giving-review-investigation.md).
 
 **Step 1 — Structured Review Checklist:**
 

@@ -37,8 +37,6 @@ For each touched repo, collect and display:
 
 ### Squash-merge cross-check (Non-Negotiable)
 
-Before treating any local branch as "unpushed work", **cross-reference against the default branch**. Squash-merges create new SHAs, so `git log --not --remotes` by SHA alone will flag merged branches as unsynced.
-
-Delegate this to the CLI: **run `t3 teatree workspace clean-all`**. It classifies each branch's unsynced commits into `squash_merged` (subject matches a commit on `origin/main` after stripping `(#NNN)` suffix and conventional-commit type prefix), `merge_commits` (multi-parent — safe to discard), and `genuinely_ahead` (real pending work). Only genuinely-ahead branches block cleanup.
+The rule and the `t3 <overlay> workspace clean-all` delegation are in `skills/retro/SKILL.md` § 5b; this page carries the runtime behaviour behind them.
 
 Inside a TTY, `clean-all` prompts for each blocked worktree — `[P]ush to remote / [A]bandon (force delete) / [S]kip`. In a non-TTY context it preserves the old skip-and-report behaviour. Reach for the subject-matching Python recipe only when you need to classify raw stashes or stray local branches outside a tracked worktree.

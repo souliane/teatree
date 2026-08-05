@@ -423,7 +423,14 @@ Then watch CI (§ 6 Monitor Pipeline). Re-reviewing already-reviewed work just b
 
 ## Merging the Default Branch into a PR (Non-Negotiable)
 
-The 3-way reasoning to do before touching the branch, the JSON conflict-resolution semantics, and the post-resolution verification are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).
+**Do NOT use `git checkout --ours` on whole files.** A whole-file take discards every removal the default branch made and reintroduces whatever it had cleaned up — silently, because the merge then reports success. Resolve hunk by hunk. Where a whole-file take genuinely is right, read BOTH sides first and state which of your branch's semantics the other side already carries, so the take is a verified claim rather than a reflex.
+
+Two more verdicts before you touch the branch:
+
+- **The default branch removed lines the PR still has?** A clean 3-way merge applies those removals on its own. A preemptive cleanup commit adds noise and risks side effects.
+- **Both branches added the same key with different values?** That is a true add/add conflict — but read the merge result first. If it already resolved correctly, there is no decision to make, so do not ask the user for one.
+
+The 3-way reasoning behind those, the JSON conflict-resolution semantics, and the post-resolution verification are in [`skills/ship/references/merge-and-history-mechanics.md`](references/merge-and-history-mechanics.md).
 
 ## Isolate Unrelated Fixes (Non-Negotiable)
 

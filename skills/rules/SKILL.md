@@ -508,7 +508,9 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 
 The gate covers colleague-**VISIBLE** posts only. A **draft** (`post_draft_note`) is colleague-invisible — only the user can submit it — so it is **exempt under every mode** and never needs approval; that exemption is the whole point of the setting.
 
-The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver, and the three chokepoints that enforce them are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
+`teatree.core.on_behalf_egress.OnBehalfSlackEgress` is the single owner of **every colleague-surface Slack post AND react** under the user's identity — review-DONE reactions, the `:merge:` reaction, broadcast outcome reactions, review-nag posts, the `notify post` / `notify react` CLI, and `t3 slack react`. All of them run gate→route→emit→audit in one place, so a colleague reaction can never slip past the gate; a self-DM short-circuits ungated, so a self-ack stays free.
+
+The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver, and the other two chokepoints are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
 
 When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent makes **under the user's identity to a colleague or customer surface** — a GitLab/GitHub PR/MR comment, an issue comment, a PR/MR approve or unapprove, a Slack channel or thread message, a Notion page or comment, an emoji reaction on someone else's message — the agent must obtain the user's explicit approval **first** (via `AskUserQuestion` for ad-hoc agent posts, or by recording an `OnBehalfApproval` for teatree code paths — see below) and publish only after the user confirms.
 
@@ -519,6 +521,8 @@ How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it
 ```bash
 # colleague channel (or a colleague's DM) — gated, then routed to the user's own identity:
 t3 <overlay> notify post --channel <channel> --text '<message>'
+# an emoji reaction on a colleague's message — the same gated egress:
+t3 slack react --channel <channel> --ts <timestamp> --emoji <name>
 # the user's OWN DM (bot→user self-DM) — exempt from the gate, never on-behalf:
 t3 <overlay> notify send '<body>' --idempotency-key <key>
 ```
@@ -911,6 +915,17 @@ The mirror image of the rule above. That one governs the agent ASKING; this one 
 ```
 
 Enforced by the BLOCKING Stop gate `handle_answer_first_gate` (`hooks/scripts/answer_first_gate.py`, detector `teatree.hooks.answer_first_scanner`): it refuses turn-end when the last user message is answer-seeking, the final turn reports a delegation, and that turn carries no polarity opener, no explanation, and no honest unknown. It is the inverse of the `handle_enforce_structured_question` gate above, and unlike its siblings it does NOT skip an attended turn — a waiting human is exactly who this failure costs. Never-lockout escapes: the `[skip-answer-gate: <reason>]` token in the turn text and the `[teatree] answer_first_gate_enabled = false` kill-switch (`t3 <overlay> gate answer-first disable`).
+
+### Receiving a structured answer (apply X — never apply a stale Y)
+
+Asking is half the contract; **applying the right answer** is the other half. A structured answer arrives one of two ways: as `additionalContext` injected this turn ("Your AskUserQuestion (#N) was answered by the user on Slack: `<value>`. Apply it now.") or as the local TTY result of the call. When it arrives:
+
+1. **Apply ONLY the answer that cites the currently-live question** — match the cited `#N` to the question you actually have open this turn, then act on it directly (run the command with the chosen value). Do NOT re-ask a question that has already been answered.
+2. **Ignore a stale already-answered reply.** A raw Slack DM that arrives as ordinary chat ("User replied on Slack at `<ts>`: `1`") AFTER you already resolved that question locally found **no live row** — it is NOT the AskUserQuestion result. Do not switch course on the strength of it; continue the action you already started from the real answer.
+3. **Ignore a superseded-generation reply.** If you asked Q1, then replaced it with a newer Q2 (Q1 marked stale), a reply citing the OLD Q1 is dead — apply only the answer to the current Q2. The cited `#N` disambiguates which generation the answer belongs to.
+4. **One answer resolves one question.** A single injected answer applies to exactly the one question it cites — never fan it out across other open or already-closed questions.
+
+The failure mode this prevents: flipping a deploy target / region mid-action because a late or superseded "1"/"yes" landed in chat after the real decision was already made and acted on. Pinned by `evals/scenarios/askuserquestion_slack_resolution.yaml` (`applies_injected_askuserquestion_answer`, `does_not_apply_stale_locally_answered_reply`, `does_not_apply_superseded_generation_reply`).
 
 ## Never Introduce Tech Debt; Reduce It (Non-Negotiable)
 

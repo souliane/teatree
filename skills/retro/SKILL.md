@@ -315,7 +315,13 @@ When to create a playbook, when to update one, where playbooks live and how they
 
 After completing all retro changes, check for unpushed work across ALL repos touched during the session. The goal is to ensure no work is forgotten — orphaned branches, stashes, and uncommitted changes are all risks.
 
-The eight per-repo collection steps and the `t3 teatree workspace clean-all` squash-merge cross-check they delegate to are in [`skills/retro/references/playbook-and-branch-hygiene.md`](references/playbook-and-branch-hygiene.md).
+#### Squash-merge cross-check (Non-Negotiable)
+
+Before treating any local branch as "unpushed work", **cross-reference against the default branch**. Squash-merges create new SHAs, so `git log --not --remotes` by SHA alone flags already-merged branches as unsynced — and acting on that reading is how real work gets discarded.
+
+Delegate the classification to the CLI: **run `t3 <overlay> workspace clean-all`**. It sorts each branch's unsynced commits into `squash_merged` (the subject matches a commit on `origin/main` once the `(#NNN)` suffix and conventional-commit prefix are stripped), `merge_commits` (multi-parent, safe to discard), and `genuinely_ahead` (real pending work). Only genuinely-ahead branches block cleanup.
+
+The eight per-repo collection steps, the TTY prompt behaviour, and the raw subject-matching recipe for stray stashes are in [`skills/retro/references/playbook-and-branch-hygiene.md`](references/playbook-and-branch-hygiene.md).
 
 ### 6. Verification
 
