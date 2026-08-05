@@ -351,16 +351,18 @@ class TestZeroMutantsFailsLoud:
         with pytest.raises(mutation_run.ZeroMutantsError, match="zero mutants"):
             run_scoped(changed_files=("src/teatree/a.py",), settings=self._SETTINGS, registry=self._REGISTRY)
 
-    def test_scoped_run_with_only_inconclusive_mutants_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # An inconclusive-only run DID execute mutmut (it produced mutants, they
-        # just timed out/segfaulted) — that is not the zero-mutant crash case.
+    def test_scoped_run_with_only_inconclusive_mutants_is_a_tool_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An inconclusive-only run DID execute mutmut — that is not the zero-mutant
+        # case — but it graded nothing, so its "0 survivors" is the absence of a
+        # measurement. Reported as the same whole-run environment artifact a tool
+        # timeout is, which the warn-first CLI passes without touching the baseline.
         monkeypatch.setattr(
             mutation_run,
             "_run_mutmut",
             lambda _modules, **_kwargs: MutationResult(killed=(), survived=(), inconclusive=("a: timeout",)),
         )
-        outcome = run_scoped(changed_files=("src/teatree/a.py",), settings=self._SETTINGS, registry=self._REGISTRY)
-        assert outcome.total_mutants == 1
+        with pytest.raises(mutation_run.MutationToolCrashError, match="measured nothing"):
+            run_scoped(changed_files=("src/teatree/a.py",), settings=self._SETTINGS, registry=self._REGISTRY)
 
     def test_no_op_run_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No safety module in scope → no_op, run_scoped returns before _run_mutmut,

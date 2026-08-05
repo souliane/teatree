@@ -7,6 +7,13 @@ and unlike a stale import or a stale patch target, nothing mechanical catches it
 :class:`TestLiveTree` is the gate: it resolves every teatree-shaped reference in
 ``skills/**/*.md`` and asserts zero unresolved ones.
 
+:class:`TestCharterDocs` extends the same walk to the documents every agent loads
+BEFORE any skill — ``BLUEPRINT.md``, ``AGENTS.md``, ``CLAUDE.md`` and the
+``docs/blueprint/`` appendices — which the skills-only scan could not see at all.
+Their currently-unresolved references are pinned in
+:data:`_KNOWN_UNRESOLVED_CHARTER_REFS`, a shrink-only ratchet: the listed ones are
+visible instead of invisible, and a NEW stale citation reds.
+
 :class:`TestGoldenCorpus` proves the scanner is neither vacuous nor
 over-blocking against a committed ``*.md.txt`` corpus — a must-FLAG set (absent
 path, absent module, absent attribute, absent imported name) and a symmetric
@@ -22,6 +29,7 @@ from teatree.quality.skill_symbol_refs import (
     SymbolRefFinding,
     resolve_dotted,
     resolve_repo_path,
+    scan_file,
     scan_source,
     scan_tree,
 )
@@ -44,6 +52,58 @@ class TestLiveTree:
         assert not unresolved, "skill reference(s) naming a symbol the tree does not have:\n" + "\n".join(
             f"  {f.path.relative_to(_REPO_ROOT)}:{f.lineno}: {f.ref} — {f.reason}" for f in unresolved
         )
+
+
+#: The charter documents an agent reads before any skill. A stale symbol here is
+#: read as a work item exactly as one in a skill is — more so, since these load first.
+_CHARTER_DOCS: list[Path] = [
+    _REPO_ROOT / "BLUEPRINT.md",
+    _REPO_ROOT / "AGENTS.md",
+    _REPO_ROOT / "CLAUDE.md",
+    *sorted((_REPO_ROOT / "docs" / "blueprint").glob("*.md")),
+]
+
+#: ``(document, reference)`` pairs that do not resolve today. Some are genuinely
+#: stale citations, some are tokens the scanner cannot yet tell apart from an
+#: importable name (an entry-point group, a config-section header) — the remedy for
+#: the latter is a ``skill-symbol-ref:`` pragma on the citing line. Either way the
+#: set may only ever SHRINK: fixing an entry means deleting its line here, and a NEW
+#: unresolved reference fails the ratchet.
+_KNOWN_UNRESOLVED_CHARTER_REFS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("AGENTS.md", "teatree.overlays"),
+        ("BLUEPRINT.md", "teatree.env"),
+        ("BLUEPRINT.md", "teatree.harnesses"),
+        ("BLUEPRINT.md", "teatree.overlays"),
+        ("BLUEPRINT.md", "teatree.teams"),
+        ("BLUEPRINT.md", "teatree.utils.django_db.refresh_reference_snapshot"),
+        ("CLAUDE.md", "teatree.overlays"),
+        ("docs/blueprint/configuration.md", "teatree.Gates.Quality"),
+        ("docs/blueprint/configuration.md", "teatree.log"),
+        ("docs/blueprint/loop-topology.md", "teatree.loops.master.build_loop_table_jobs"),
+    },
+)
+
+
+class TestCharterDocs:
+    def test_no_new_charter_document_reference_is_unresolved(self) -> None:
+        unresolved = {
+            (str(doc.relative_to(_REPO_ROOT)), finding.ref)
+            for doc in _CHARTER_DOCS
+            if doc.is_file()
+            for finding in _unresolved(scan_file(doc, _REPO_ROOT))
+        }
+        new = unresolved - _KNOWN_UNRESOLVED_CHARTER_REFS
+        assert new == set(), (
+            "charter document(s) naming a symbol the tree does not have — an agent reads "
+            f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
+        )
+
+    def test_the_charter_documents_are_actually_walked(self) -> None:
+        # The ratchet above is satisfied by scanning nothing, so pin that the walk
+        # reaches real content: BLUEPRINT.md alone cites dozens of live symbols.
+        resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT) if f.reason is None]
+        assert len(resolved) > 10, "BLUEPRINT.md yielded almost no teatree-shaped references — the walk is broken"
 
 
 class TestResolver:

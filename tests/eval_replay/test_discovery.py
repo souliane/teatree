@@ -86,7 +86,7 @@ class TestDiscoverOverlaySpecs:
         _seed_scenarios(overlay_scenarios, ["over_one", "over_two"])
         overlay = _fake_overlay(overlay_scenarios)
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-fake": overlay}):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert sorted(s.name for s in specs) == ["over_one", "over_two"]
 
     def test_skips_overlay_without_hook(self) -> None:
@@ -95,19 +95,19 @@ class TestDiscoverOverlaySpecs:
         # with older overlay classes that predate the hook.
         overlay = SimpleNamespace()
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-old": overlay}):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert specs == []
 
     def test_skips_overlay_returning_none(self) -> None:
         overlay = _fake_overlay(None)
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-none": overlay}):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert specs == []
 
     def test_skips_overlay_pointing_at_missing_dir(self, tmp_path: Path) -> None:
         overlay = _fake_overlay(tmp_path / "does-not-exist")
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-missing": overlay}):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert specs == []
 
     def test_returns_empty_when_overlay_hook_raises(self, tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ class TestDiscoverOverlaySpecs:
 
         overlay = SimpleNamespace(get_eval_scenarios_dir=_bad)
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-bad": overlay}):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert specs == []
 
     def test_returns_empty_when_overlay_loader_raises(self) -> None:
@@ -126,7 +126,7 @@ class TestDiscoverOverlaySpecs:
             raise RuntimeError(msg)
 
         with patch("teatree.core.overlay_loader.get_all_overlays", side_effect=_explode):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert specs == []
 
     def test_logs_warning_on_malformed_overlay_yaml(self, tmp_path: Path) -> None:
@@ -138,7 +138,7 @@ class TestDiscoverOverlaySpecs:
         _seed_scenarios(overlay_scenarios, ["good_one"])
         overlay = _fake_overlay(overlay_scenarios)
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-mixed": overlay}):
-            specs = _discover_overlay_specs()
+            specs = _discover_overlay_specs({})
         assert [s.name for s in specs] == ["good_one"]
 
 

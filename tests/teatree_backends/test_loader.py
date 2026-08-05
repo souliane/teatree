@@ -20,7 +20,6 @@ from teatree.backends.loader import (
     get_code_host_for_url,
     get_code_hosts,
     get_messaging,
-    issue_is_done,
     pr_is_merged_or_closed,
     pr_open_state,
     reset_backend_caches,
@@ -590,58 +589,6 @@ class TestGetCodeHostForRepoGithubAmbientAuth:
 
         with pytest.raises(BackendResolutionError, match="github"):
             get_code_host_for_repo(overlay, repo)
-
-
-class _IssueHost:
-    """A code host whose issue fetch is scripted per URL."""
-
-    def __init__(self, payload: object, *, raises: bool = False) -> None:
-        self._payload = payload
-        self._raises = raises
-
-    def get_issue(self, issue_url: str) -> object:
-        _ = issue_url
-        if self._raises:
-            msg = "boom"
-            raise RuntimeError(msg)
-        return self._payload
-
-
-def _done_overlay(*, verdict: bool) -> OverlayBase:
-    overlay = _build_overlay()
-    overlay.is_issue_done = lambda _data: verdict  # type: ignore[method-assign]
-    return overlay
-
-
-class TestIssueIsDone:
-    """The shared completion-detection seam consumed by the sweep and the scanner."""
-
-    def _patch_host(self, monkeypatch: pytest.MonkeyPatch, host: object | None) -> None:
-        monkeypatch.setattr("teatree.backends.loader.get_code_host_for_url", lambda _overlay, _url: host)
-
-    def test_true_when_host_and_overlay_agree(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_host(monkeypatch, _IssueHost({"state": "closed"}))
-        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is True
-
-    def test_false_when_overlay_says_not_done(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_host(monkeypatch, _IssueHost({"state": "closed"}))
-        assert issue_is_done(_done_overlay(verdict=False), "https://x/1") is False
-
-    def test_false_when_no_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_host(monkeypatch, None)
-        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
-
-    def test_false_on_fetch_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_host(monkeypatch, _IssueHost(None, raises=True))
-        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
-
-    def test_false_on_error_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_host(monkeypatch, _IssueHost({"error": "not found"}))
-        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
-
-    def test_false_on_non_dict_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_host(monkeypatch, _IssueHost("nope"))
-        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
 
 
 class _OpenStateHost:
