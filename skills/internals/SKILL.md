@@ -172,6 +172,16 @@ Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperComma
 - `typer.Exit` is still correct in `src/teatree/cli/*.py` files that go through the typer runner directly (different call site).
 - Anti-pattern: returning an error string from a management command instead of raising. The CLI exits 0 and CI reports green on real failures.
 
+### Structured refusals: return the dict, inherit the non-zero exit
+
+A refusal that an in-process caller must route on (the `mcp` write tools, the loop) is RETURNED as `{"error": …, "hint": …}`, not raised — raising would destroy the value those callers read. That is the one sanctioned form of the anti-pattern above, and it is only sanctioned because the exit code is restored at the boundary: inherit `teatree.core.management.refusal_exit.RefusalExitTyperCommand` instead of `TyperCommand`, and a returned refusal exits `1` on the argv path while `call_command` still gets the dict verbatim.
+
+- The predicate is one pure function, `refusal_exit_code(result)` — non-zero iff the result is a mapping with a truthy `error`. A new refusal shape therefore needs an `error` key and nothing else; a shape without one silently exits 0 again.
+- The gate is `_called_from_command_line`, the flag Django's `run_from_argv` sets and `call_command` does not — so the shell and the in-process consumer get opposite, correct answers from one refusal.
+- Loud is the default; `soft_refusal_commands` exempts named subcommands, so a *new* refusal is loud without being listed anywhere. Exempt one only when its caller depends on a *soft* refusal: `pr ensure-pr` is the pre-push hook's entry point, where reporting and letting the push through is the designed behaviour (#792).
+- Canonical example: `src/teatree/core/management/commands/pr.py` `Command` — its control-DB, missing-ticket, missing-worktree and ship-gate refusals all exit non-zero, so `t3 <overlay> ship <id> && t3 <overlay> ticket clear …` stops on a refused ship.
+- A command that has no in-process consumer of its failure still uses `raise SystemExit(N)` — that is simpler and stays the default.
+
 ### Annotated typer options must have defaults for `call_command`
 
 `Annotated[str, typer.Option(help="...")]` parameters without a default value make the command unusable via Django's `call_command` — it raises `Missing parameter: <name>` even when the caller passes the kwarg. Give every `typer.Option`-annotated parameter a default (e.g. `= ""`) and validate at runtime (`if not phase.strip(): raise SystemExit(1)`). This keeps both CLI and `call_command` call sites happy.
