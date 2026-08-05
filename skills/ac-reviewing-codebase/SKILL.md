@@ -28,7 +28,7 @@ You are dispatched by `ArchitecturalReviewScanner` (`src/teatree/loop/scanners/a
 
 ## Environment
 
-Your tool grant is `phase_tools.PHASE_TOOLS["architectural_review"]` (`src/teatree/core/modelkit/phase_tools.py`) — read that entry rather than assuming a shape. You start in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` there directly.
+Your tool grant is `phase_tools.tools_for_phase("architectural_review")` (`src/teatree/core/modelkit/phase_tools.py`) — read that entry rather than assuming a shape. You start in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` there directly.
 
 The main-clone guard blocks every mutation of the shared clone, so **all writing happens in your own worktree**: `git worktree add -b review-fixes/<slug> ../ac-review origin/main`. Cut it as soon as the walk turns up its first confirmed finding — the implementation pass below runs there, and a heavy cold read is cheaper there too. If you find yourself with no shell or no checkout, that is a dispatch fault, not a question for the owner: STOP and return `needs_user_input` with the reason (it is classified INTERNAL, never DM'd).
 
