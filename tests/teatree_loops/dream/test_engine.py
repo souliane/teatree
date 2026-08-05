@@ -10,9 +10,9 @@ from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
-from teatree.core.models import ConsolidatedMemory
+from teatree.core.models import ConsolidatedMemory, DreamRunMarker
 from teatree.loops.dream import distill, engine, replay, sdk_distiller
 from teatree.loops.dream.engine import (
     ConsolidationExtract,
@@ -39,6 +39,11 @@ class DreamRunResultTestCase(TestCase):
         assert result.dry_run is True
         assert result.clusters_recorded == 0
         assert result.members_replayed == 0
+
+
+#: Any two distinct values — the assertion is that the cursor did not move.
+_SEEDED_CURSOR = 3
+_ADVANCED_CURSOR = 7
 
 
 def _no_clusters(_extract: ConsolidationExtract) -> list[DistilledCluster]:
@@ -1278,3 +1283,51 @@ class RunConsolidationEvalProposalTestCase(TestCase):
         assert result.evals_proposed == 1
         assert out.exists()
         assert len(out.read_text(encoding="utf-8").splitlines()) == 1
+
+
+class DistillCursorAtomicityTestCase(TransactionTestCase):
+    """The cursor and the rows it CLAIMS exist commit together, or neither does.
+
+    ``TransactionTestCase``, not ``TestCase``, and that is the whole point: a
+    plain ``TestCase`` wraps the test in an outer atomic, which turns the inner
+    ``transaction.atomic()`` into a savepoint whose rollback the test cannot
+    observe — so the assertion passes with OR without the fix, and the defect
+    ships. That is precisely the trap that let it through the first time.
+
+    The seam under test is ``run_consolidation`` itself: the sibling test in
+    ``test_distill.py`` hand-rolls the caller's half and never drives the engine
+    with a write that raises, so reverting the ``atomic()`` wrapper leaves it
+    green.
+    """
+
+    def _run_with_a_raising_write(self) -> None:
+        outcome = distill.BatchDistillOutcome(
+            clusters=[],
+            empty_batches=0,
+            next_cursor=_ADVANCED_CURSOR,
+        )
+        with (
+            patch.object(distill, "distill_in_batches", return_value=outcome),
+            patch.object(engine, "write_clusters", side_effect=RuntimeError("ledger write failed")),
+            pytest.raises(RuntimeError, match="ledger write failed"),
+        ):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+
+    def test_a_raising_write_leaves_the_distill_cursor_unadvanced(self) -> None:
+        DreamRunMarker.objects.update_or_create(name=DreamRunMarker.NAME, defaults={"distill_cursor": _SEEDED_CURSOR})
+
+        self._run_with_a_raising_write()
+
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.distill_cursor == _SEEDED_CURSOR, (
+            "the cursor advanced over a window whose clusters were never written — the rotation "
+            "does not revisit a skipped window until it has wrapped the whole corpus, so that is "
+            "permanent memory loss"
+        )
+
+    def test_a_raising_write_lands_no_consolidated_memory_row(self) -> None:
+        DreamRunMarker.objects.update_or_create(name=DreamRunMarker.NAME, defaults={"distill_cursor": _SEEDED_CURSOR})
+
+        self._run_with_a_raising_write()
+
+        assert ConsolidatedMemory.objects.count() == 0

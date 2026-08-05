@@ -189,7 +189,15 @@ def install(wt_path: str) -> StepResult:
     """
     _clear_redundant_hooks_path(wt_path)
     dropped = drop_foreign_config_hooks(wt_path)
-    result = run_step("prek-install", ["prek", "install", "-f"], cwd=_install_cwd(wt_path))
+    # A RAISED install leaves the clone exactly as ungated as a failed one — the binary
+    # missing, the cwd gone, the subprocess timing out — so both paths restore. Not a
+    # bare ``finally``: on SUCCESS the drop is precisely what the install replaced, and
+    # putting the old shims back would undo the repair.
+    try:
+        result = run_step("prek-install", ["prek", "install", "-f"], cwd=_install_cwd(wt_path))
+    except BaseException:
+        _restore(dropped)
+        raise
     if not result.success:
         _restore(dropped)
         return result
