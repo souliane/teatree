@@ -78,8 +78,10 @@ kept apart on purpose.
    Actions Are Mode-Conditional". The only class that may close without a
    per-issue confirmation is **high-confidence "shipped by merged PR #X"**: a
    still-open issue whose exact ask is demonstrably shipped by a *merged*
-   PR, with the PR citation posted on the issue. Every fold-into-epic close
-   and every regressive close always waits for explicit approval.
+   PR, with the PR citation posted on the issue **and the check of rule 6
+   run** — skipping the per-issue confirmation never also skips the check.
+   Every fold-into-epic close and every regressive close always waits for
+   explicit approval.
 6. **Close-as-completed only if the work is actually implemented.** Use
    `--reason completed` only when a merged PR actually delivers the
    ticket's ask — cite it. If the ticket is NOT implemented, it is never
@@ -89,6 +91,22 @@ kept apart on purpose.
    level — not because the work is done — and that its checklist item
    stays readable and the ticket itself stays reopenable if the epic ever
    needs to split back out.
+
+   **A code read is not the check (Non-Negotiable).** Closing an issue as
+   fixed requires *executing the check the issue describes*. Reading the
+   diff and seeing the fix present is not that check, and neither is the
+   fixer's own passing test — that test was written to pass, so it proves
+   the author's model of the bug, not the behaviour the issue reports.
+   Round-trip and inverse pairs (export→import, encode→decode,
+   serialise→parse) can never be verified from one side: an export that
+   looks right closes nothing until something imports it. When the check
+   cannot be run, the issue does **not** close as shipped — naming what was
+   and was not exercised is a disclosure, and a disclosure is not a
+   substitute for running the check. Leave it OPEN as *believed* fixed with
+   the belief and its basis stated; the only other honest outcome is a close
+   under a different, named disposition (the fold-into-epic
+   `--reason "not planned"` above), never `--reason completed`. Never let
+   "the code looks correct" render as "verified fixed".
 7. **No silent closes.** Every close posts a one-line reason plus a link (to
    the shipping PR, or to the owning epic) before the issue is closed. An
    operator reading the issue later sees *why* it went and *where its
@@ -115,7 +133,7 @@ For each open issue, assign exactly one verdict with its evidence:
 
 | Verdict | Test | Evidence to cite | Action |
 |---------|------|------------------|--------|
-| **Shipped** | The ask is already implemented on `main` | the merged PR / issue that did it | close `--reason completed` (auto-close only if the PR is *merged* and the match is exact — rule 5) |
+| **Shipped** | The ask is already implemented on `main` **and the check the issue describes has been run** (rule 6) — no exception, the rule-5 auto-close class included | the merged PR / issue that did it, plus what the check exercised | close `--reason completed` (auto-close only if the PR is *merged*, the match is exact, **and** that check has been run — rule 5) |
 | **Consolidate into an existing ticket** | Related to another OPEN ticket that already covers most of its scope | the existing ticket it now belongs to (never a new one) | merge its substance into that ticket's body, then close the standalone `--reason "not planned"` (approval-gated — rule 6) |
 | **Regressive** | Implementing it now would contradict a since-adopted design | the conflicting decision, named (e.g. "pre-#2385 single-tach-node assumption") | record as a "won't do" note on the host ticket, or close `--reason "not planned"` with the citation (approval-gated) |
 | **Still standalone** | Genuinely distinct scope, no existing ticket fits, and the operator's cap has room | — | keep open; it counts toward the operator's max. Never create a container to absorb it |

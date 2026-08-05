@@ -252,7 +252,7 @@ def _check_config_override_tier_healthy() -> bool:
         "frame (deterministic — fix the caller, not the DB), SQLite lock contention against a "
         "large control DB, an exhausted file-handle budget, or a full disk. Fix the underlying "
         "fault; the record clears itself once no further read fails for "
-        f"{MARKER_TTL_SECONDS // 3600}h, or delete {marker_path()} to acknowledge it now."
+        f"{MARKER_TTL_SECONDS // 3600}h, or delete {report.path or marker_path()} to acknowledge it now."
     )
     return False
 

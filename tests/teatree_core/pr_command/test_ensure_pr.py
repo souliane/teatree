@@ -12,7 +12,12 @@ from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.management.commands._ensure_pr import create_or_defer_pr
+from teatree.core.management.commands._ensure_pr import (
+    PR_UNKNOWN_DEFERRAL,
+    create_or_defer_pr,
+    defer_unreadable_pr_state,
+    skip_for_classified,
+)
 from teatree.core.models import ConfigSetting, PullRequest, Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME
@@ -212,6 +217,48 @@ class TestEnsurePr(TestCase):
         assert "pre-push race" in str(result["skipped"])
         assert "feat-q" in str(result["hint"])
         host.create_pr.assert_called_once()
+
+    def test_defers_and_owes_when_the_open_pr_probe_could_not_answer(self) -> None:
+        """#4116: a can't-tell probe never becomes a create attempt.
+
+        Creating on an unreadable probe is what refused the SECOND push to a
+        branch whose PR already existed: ``gh pr create`` answered ``already
+        exists`` and the hook aborted the push. The push proceeds instead, and
+        the PR stays owed as a durable obligation the drain settles.
+        """
+        host = MagicMock()
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-u"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-u",
+                    status=BranchStatus.PR_UNKNOWN,
+                    ahead_count=2,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert result["owed"] is True
+        assert "could not be read" in str(result["skipped"])
+        host.create_pr.assert_not_called()
+
+    def test_unreadable_pr_state_maps_to_a_deferral_that_owes_the_pr(self) -> None:
+        """The classification→answer mapping itself, at the seam the command calls."""
+        report = BranchReport(repo=".", branch="feat-v", status=BranchStatus.PR_UNKNOWN, ahead_count=1)
+
+        answer = skip_for_classified(report, ".", "feat-v")
+
+        assert answer == defer_unreadable_pr_state(".", "feat-v")
+        assert answer is not None
+        assert answer["skipped"] == PR_UNKNOWN_DEFERRAL
+        assert answer["owed"] is True
 
     def test_repo_flag_with_forge_slug_rejected_before_touching_classification(self) -> None:
         """#2937.
