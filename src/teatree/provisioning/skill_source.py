@@ -55,6 +55,14 @@ class SkillSource:
         """
         return f"{self.owner_repo.replace('/', '-')}@{self.ref or 'default'}"
 
+    def remote_url(self, base: str) -> str:
+        """Where this source is fetched from under *base* — the one URL shape.
+
+        Shared by the installer that clones it and the pin check that reads its
+        head, so the two can never disagree about what a declaration points at.
+        """
+        return f"{base}{self.owner_repo}"
+
 
 def parse_skill_source(spec: str) -> SkillSource | None:
     """Split ``<owner>/<repo>/<subpath>[#<ref>]``; ``None`` when it names no single skill."""
@@ -122,7 +130,7 @@ class MandatedSkillInstaller:
         destination = self.cache_root / source.cache_name
         if not (destination / ".git").exists():
             self.cache_root.mkdir(parents=True, exist_ok=True)
-            url = f"{self.remote_base}{source.owner_repo}"
+            url = source.remote_url(self.remote_base)
             result = run_allowed_to_fail(
                 ["git", "clone", "--quiet", url, str(destination)],
                 expected_codes=None,

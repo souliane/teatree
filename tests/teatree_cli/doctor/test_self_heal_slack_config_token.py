@@ -1,9 +1,11 @@
 """``check_slack_config_token_fresh`` — the SessionStart auto-rotation of the Slack app-config pair.
 
 Runs on a plain ``t3 doctor`` (no ``--repair``) because the owner's rule is that the
-doctor fixes Slack tokens silently. Surfacing-only on every outcome except a lost
-write: the app-config token authorises manifest edits during ``t3 setup`` and nothing
-on the delivery path, so a dead one must not redden a box whose factory is healthy.
+doctor fixes Slack tokens silently. Surfacing-only on every outcome except the two
+STORE faults: the app-config token authorises manifest edits during ``t3 setup`` and
+nothing on the delivery path, so a dead one must not redden a box whose factory is
+healthy — but a ``pass`` store teatree can neither write nor read back is teatree's
+own credential plane failing, and it freezes the pair on a 12-hour fuse.
 """
 
 import io
@@ -76,6 +78,22 @@ class TestSlackConfigTokenSelfHeal:
 
         assert ok is False
         assert out.startswith("FAIL")
+
+    def test_an_unwritable_store_reports_and_fails(self) -> None:
+        """A refused rotation must never pass silently — the pair is frozen on a 12h fuse.
+
+        Nothing was spent, so the pair is intact right now; but nothing CAN be
+        rotated either, so staying green here is a green that holds until the
+        credential expires for good and needs a hand-minted replacement.
+        """
+        report = RotationReport(RotationOutcome.STORE_UNWRITABLE, "the write reported success but ... gpg-agent")
+
+        with patch(_TARGET, return_value=report):
+            ok, out = _echoes(check_slack_config_token_fresh)
+
+        assert ok is False
+        assert out.startswith("FAIL")
+        assert "gpg-agent" in out
 
     def test_an_unexpected_crash_never_breaks_the_doctor_run(self) -> None:
         with patch(_TARGET, side_effect=RuntimeError("gpg-agent unavailable")):

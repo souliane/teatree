@@ -31,7 +31,7 @@ Resolvable pointer (the evidence)
     Once a note asserts an outcome, it MUST also contain something an auditor
     could actually follow: a full URL, a git SHA carrying a commit cue
     (``commit``/``sha``/``rev``/``@`` adjacent to the hex run), an MR/PR/issue
-    reference (``!123`` / ``#123``), a forge note id (``note_xxx``), or a
+    reference (``!42`` / ``#42``), a forge note id (``note_xxx``), or a
     real-looking file/module path (filesystem-rooted, carrying a known file
     extension, or a dotted module path anchored on a known top-level package).
     A bare two-word ``a/b``, a bare hex/digit run with no commit cue (an
@@ -319,7 +319,7 @@ def check_completion_evidence(note: str) -> None:
         f"Refusing to complete: the note asserts an external outcome "
         f"({evidence.claim_kind!r}) but carries no resolvable artifact pointer. "
         f"Add a pointer the claim can be verified against — a URL, a git SHA, "
-        f"an MR/PR/issue reference (!123 / #123), a forge note id, or a file "
+        f"an MR/PR/issue reference (!42 / #42), a forge note id, or a file "
         f"path — e.g. `--note '{evidence.claim_kind} via <url-or-!id-or-sha>'`."
     )
     raise CompletionEvidenceError(msg)

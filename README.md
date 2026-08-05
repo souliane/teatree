@@ -280,6 +280,7 @@ stateDiagram-v2
     provisioned --> services_up : start_services
     services_up --> created : teardown
     services_up --> provisioned : db_refresh
+    services_up --> provisioned : start_failed
     services_up --> provisioned : stop_services
     services_up --> services_up : start_services
     services_up --> ready : verify
@@ -840,7 +841,7 @@ pytest-playwright runner or an external playwright repo based on the overlay's
 
 ```bash
 t3 <overlay> e2e run                          # CI default
-t3 <overlay> e2e run --headed                 # interactive debug
+t3 <overlay> e2e run --no-docker              # run against the local stack
 t3 <overlay> e2e run --update-snapshots       # accept new snapshots
 ```
 

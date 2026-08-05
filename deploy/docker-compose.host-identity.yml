@@ -1,0 +1,42 @@
+# Path-identity mount for the worktree tree, added ONLY on a host whose home is
+# not `/home/teatree` (deploy/t3 and deploy/deploy.sh add this `-f` themselves).
+#
+# WHY. docker-compose.yml gives up path identity off-box on purpose: mount
+# TARGETS are fixed container paths under HOME=/home/teatree while the host-side
+# SOURCE root follows the real host home. That is correct for everything the
+# container reads itself — but NOT for what it hands the docker DAEMON.
+#
+# `t3 <overlay> worktree start` runs `docker compose up` for a worktree stack
+# through the mounted host socket, so the daemon resolves that stack's bind-mount
+# sources on the HOST. Compose (running in this container) resolves the worktree
+# compose file's relative `volumes:` against its own cwd — a container path — and
+# hands the daemon e.g.
+#     /home/teatree/workspace/t3-workspaces/<ticket>/<repo>/.data
+# which does not exist on the host. Docker Desktop answers
+#     mounts denied: the path ... is not shared from the host
+# and every worktree stack fails to start, while the same compose file works when
+# run from the host. On the box the two coordinates coincide, so this never fires
+# there — which is exactly why it stayed invisible.
+#
+# Mounting the worktree tree AT ITS OWN HOST PATH gives the container one
+# coordinate both venues agree on: a worktree path is then valid as a container
+# path AND as a host path, so anything the container passes to the daemon names a
+# real host directory. This is the same "path identity" device the credential
+# plane and the watchdog checkout already rely on.
+#
+# The canonical `/home/teatree/workspace/t3-workspaces` target in the base file is
+# kept, not replaced: it is what `teatree.paths` resolves and what every existing
+# Worktree row records. This file only ADDS the second, host-identical view. On a
+# host where the homes match, the two targets would collide, so the file is not
+# added there at all.
+services:
+  teatree-worker:
+    volumes:
+      - type: bind
+        source: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
+        target: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
+  teatree-admin:
+    volumes:
+      - type: bind
+        source: ${TEATREE_HOST_HOME}/workspace/t3-workspaces
+        target: ${TEATREE_HOST_HOME}/workspace/t3-workspaces

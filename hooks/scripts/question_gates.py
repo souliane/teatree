@@ -374,22 +374,38 @@ def _entry_message_blocks(entry: dict) -> list:
     return content if isinstance(content, list) else []
 
 
+def is_tool_result_only(content: list) -> bool:
+    """True for a ``user`` entry that is a tool RESULT rather than the user typing."""
+    return bool(content) and all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
+
+
 def last_assistant_turn(transcript_path: str) -> tuple[str, bool] | None:
     """Return ``(final_assistant_text, used_question_tool)`` for the last turn.
 
-    The "last turn" is every assistant message after the most recent user
+    The "last turn" is every assistant message after the most recent GENUINE user
     message in the transcript JSONL. ``final_assistant_text`` is the concatenated
     text blocks of those messages; ``used_question_tool`` is ``True`` if any
     ``AskUserQuestion`` ``tool_use`` block appears in the turn. Returns ``None``
     when the transcript is missing, unreadable, empty, or has no trailing
     assistant turn (fail-safe to "do nothing"). Owned here (the transcript-parsing
     home) and imported back into ``hook_router`` to keep that god-module shrinking.
+
+    A tool RESULT is recorded as a ``user`` entry whose blocks are all
+    ``tool_result``, so stopping at the first ``user`` entry cuts the turn at the
+    first tool call and drops everything the assistant said BEFORE dispatching —
+    which is where an answer lands whenever the turn both answers and delegates.
+    Those entries are walked past; only a real user message ends the turn. This is
+    the mirror of the same walk in ``answer_first_gate._last_user_text``, and both
+    read the ONE predicate above so the two halves can never disagree about what
+    counts as the user speaking.
     """
     texts: list[str] = []
     used_tool = False
     for entry in reversed(read_transcript_entries(transcript_path)):
         role = _entry_message_role(entry)
         if role == "user":
+            if is_tool_result_only(_entry_message_blocks(entry)):
+                continue
             break
         if role != "assistant":
             continue

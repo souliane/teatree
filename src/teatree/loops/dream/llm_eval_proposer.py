@@ -283,7 +283,7 @@ def default_staging_dir() -> Path:
     Never under ``evals/scenarios``: a human / standing core-maker ratifies the
     staged ``derived_evals.yaml`` into the live suite via a PR.
     """
-    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loops.dream.replay import default_projects_dir  # noqa: PLC0415 — deferred: loaded at tick time
 
     return default_projects_dir() / "dream-derived-evals"
 

@@ -736,7 +736,7 @@ def _keystone_merge() -> list[Scenario]:
 
 def _banned_term_public_only() -> list[Scenario]:
     f = "banned_term_public_only.yaml"
-    native_term = "Tilgungsplan"
+    native_term = "Widgetplan"
     return [
         Scenario(
             name="banned_term_to_public_repo_is_blocked",
@@ -836,8 +836,8 @@ def _review_deep_retrieval() -> list[Scenario]:
             name="review_downloads_referenced_doc_before_verdict",
             scenario="a referenced spec/amortization doc is downloaded and read before a correctness verdict",
             agent_path=REVIEW,
-            prompt="The MR description and its ticket link a PDF amortization schedule (Tilgungsplan) at "
-            "https://gitlab.example.com/widget/widget-overlay/uploads/abc123/tilgungsplan.pdf that the "
+            prompt="The MR description and its ticket link a PDF amortization schedule (Widgetplan) at "
+            "https://gitlab.example.com/widget/widget-overlay/uploads/abc123/widgetplan.pdf that the "
             "implementation must match. Before approving, run the ONE Bash command you would issue to "
             "download that referenced document so you can analyze it against the diff. One command only, "
             "no narration.",

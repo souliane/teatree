@@ -1,10 +1,17 @@
 """Tests for the anti-prose lint hook (souliane/teatree#140 Stage 0).
 
-The hook fails when ``skills/**/SKILL.md`` or ``skills/**/references/*.md``
-grow new imperative rules (``Non-Negotiable``, leading ``Always``/``Never``
-bullets) without an accompanying change in ``src/``, ``hooks/scripts/``, or
-``tests/``.
+The hook fails when a ``**/skills/**/SKILL.md`` or ``**/skills/**/references/*.md``
+grows new imperative rules (``Non-Negotiable``, leading ``Always``/``Never``
+bullets) without an accompanying change under ``src/``, ``tests/``,
+``hooks/scripts/`` or ``scripts/hooks/``.
+
+Every pattern is anchored at ``(?:^|/)`` rather than at the repo root, so one
+implementation serves a flat checkout and one that mounts its skills under
+``overlay/skills/`` or ``vendor/<core>/skills/``. These tests carry both layouts
+so a root-anchored regression turns them red.
 """
+
+import subprocess
 
 import pytest
 
@@ -52,6 +59,35 @@ diff --git a/docs/notes.md b/docs/notes.md
 +++ b/docs/notes.md
 @@ -10,0 +11 @@
 +- **Always be polite.** Non-Negotiable.
+"""
+
+_OVERLAY_SKILL_DIFF = """\
+diff --git a/overlay/skills/t3-widget/references/playbook.md b/overlay/skills/t3-widget/references/playbook.md
+--- a/overlay/skills/t3-widget/references/playbook.md
++++ b/overlay/skills/t3-widget/references/playbook.md
+@@ -10,0 +11 @@
++- **Always re-provision before running the suite (Non-Negotiable).**
+"""
+
+_VENDORED_SKILL_DIFF = """\
+diff --git a/vendor/teatree/skills/ship/SKILL.md b/vendor/teatree/skills/ship/SKILL.md
+--- a/vendor/teatree/skills/ship/SKILL.md
++++ b/vendor/teatree/skills/ship/SKILL.md
+@@ -50,0 +51 @@
++- **Never force-push a shared branch.** Open a new one instead.
+"""
+
+# The path is the whole point of the fixture below — the gate must exclude a
+# skill-shaped catalogue that is test data. Hoisted so the diff header stays
+# under the line limit without altering the path it asserts on.
+_FIXTURE_SKILL_PATH = "evals/fixtures/skill_catalog/skills/ac-python/SKILL.md"
+
+_FIXTURE_SKILL_DIFF = f"""\
+diff --git a/{_FIXTURE_SKILL_PATH} b/{_FIXTURE_SKILL_PATH}
+--- a/{_FIXTURE_SKILL_PATH}
++++ b/{_FIXTURE_SKILL_PATH}
+@@ -10,0 +11 @@
++- **Always annotate every parameter (Non-Negotiable).**
 """
 
 
@@ -105,6 +141,15 @@ class TestCountNewRuleLines:
         result = count_new_rule_lines(_NON_SKILL_FILE_DIFF)
         assert result == []
 
+    @pytest.mark.parametrize("diff", [_OVERLAY_SKILL_DIFF, _VENDORED_SKILL_DIFF])
+    def test_counts_skills_mounted_below_the_repo_root(self, diff: str) -> None:
+        assert len(count_new_rule_lines(diff)) == 1
+
+    def test_skips_a_skill_shaped_test_fixture(self) -> None:
+        # A fixture skill catalogue is test data, not authored prose — the
+        # (?:^|/) anchoring reaches it, so it must be excluded by path.
+        assert count_new_rule_lines(_FIXTURE_SKILL_DIFF) == []
+
 
 class TestHasCompanionCodeChange:
     @pytest.mark.parametrize(
@@ -114,6 +159,10 @@ class TestHasCompanionCodeChange:
             ["hooks/scripts/hook_router.py"],
             ["tests/test_check_skill_prose.py"],
             ["src/teatree/cli/setup.py", "skills/ship/SKILL.md"],
+            ["vendor/teatree/src/teatree/core/models/ticket.py"],
+            ["vendor/teatree/hooks/scripts/hook_router.py"],
+            ["overlay/tests/test_overlay_config.py"],
+            ["scripts/hooks/check_skill_prose.py"],
         ],
     )
     def test_returns_true_for_code_paths(self, files: list[str]) -> None:
@@ -126,11 +175,35 @@ class TestHasCompanionCodeChange:
             ["skills/ship/SKILL.md", "skills/test/SKILL.md"],
             ["skills/ship/references/foo.md"],
             ["docs/notes.md"],
+            ["overlay/skills/t3-widget/SKILL.md"],
+            ["vendor/teatree/skills/ship/references/foo.md"],
             [],
         ],
     )
     def test_returns_false_for_doc_only(self, files: list[str]) -> None:
         assert has_companion_code_change(files) is False
+
+
+class TestStagedDiffSelection:
+    """The pathspec must be a strict SUPERSET of what the regex then selects.
+
+    A pathspec narrower than the regex short-circuits ``main`` before the regex
+    is ever consulted — the failure mode that made this gate return 0 while a
+    violation sat staged.
+    """
+
+    def test_pathspec_selects_every_markdown_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import scripts.hooks.check_skill_prose as mod  # noqa: PLC0415
+
+        captured: list[list[str]] = []
+
+        def _capture(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod.subprocess, "run", _capture)
+        mod._staged_diff()
+        assert captured[0][captured[0].index("--") + 1 :] == ["*.md"]
 
 
 class TestMain:

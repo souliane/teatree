@@ -1,10 +1,10 @@
-"""External/private-test repo resolution and Playwright env construction.
+"""External specs repo resolution and Playwright env construction.
 
 Split out of ``e2e.py`` (mirroring the ``_e2e_discovery`` and
 ``_test_plan`` splits) to keep that module under the project's per-file
 LOC cap. These are the pure helpers the ``external``/``project`` runners
-lean on: cloning the external test repo, resolving the private-tests
-directory, and building the Playwright environment dict.
+lean on: cloning the external specs repo and building the Playwright
+environment dict.
 """
 
 import os
@@ -83,7 +83,6 @@ class PlaywrightOptions:
 
     test_path: str = ""
     update_snapshots: bool = False
-    headed: bool = False
     extra: list[str] = field(default_factory=list)
 
     def to_args(self) -> list[str]:
@@ -93,8 +92,6 @@ class PlaywrightOptions:
         args.append("--reporter=list")
         if self.update_snapshots:
             args.append("--update-snapshots")
-        if self.headed:
-            args.append("--headed")
         args.extend(self.extra)
         return args
 
@@ -126,16 +123,10 @@ class E2eSpecsResolutionError(RuntimeError):
         )
 
     @classmethod
-    def branch_needs_repo(cls) -> "E2eSpecsResolutionError":
-        msg = "--branch/--ref applies only to a --repo clone; T3_PRIVATE_TESTS is checked out by you."
-        return cls(msg, exit_code=2)
-
-    @classmethod
-    def no_private_tests(cls) -> "E2eSpecsResolutionError":
+    def no_specs_source(cls) -> "E2eSpecsResolutionError":
         msg = (
-            "private_tests not configured (set it with "
-            "`t3 <overlay> config_setting set private_tests <path>` or the T3_PRIVATE_TESTS env var), "
-            "or the directory is missing."
+            "No E2E specs source: this overlay declares no e2e repo (a `url` + `ref` from "
+            "get_e2e_config), so pass an explicit --repo <name> from the e2e_repos config."
         )
         return cls(msg, exit_code=1)
 
@@ -232,9 +223,8 @@ def _remote_lacks_ref(url: str, ref: str) -> bool:
 def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
     """Install dependencies for a TeaTree-managed external Playwright checkout.
 
-    ``--repo`` clones live under TeaTree's cache, so the runner owns making them
-    executable. User-provided ``T3_PRIVATE_TESTS`` directories remain
-    user-managed and do not go through this helper.
+    Every resolved specs source is a clone under TeaTree's cache, so the runner
+    owns making them executable.
     """
     package_json = playwright_root / "package.json"
     if not package_json.is_file():
@@ -284,45 +274,18 @@ def _ensure_playwright_browsers(playwright_root: Path) -> None:
     run_checked(["npx", "playwright", "install", "chromium"], cwd=playwright_root)
 
 
-def resolve_private_tests_path() -> Path | None:
-    """Resolve the private tests directory from the ``T3_PRIVATE_TESTS`` env or the DB config."""
-    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps command import light
-
-    private_tests = os.environ.get("T3_PRIVATE_TESTS", "") or cold_reader.str_setting("private_tests", default="")
-    return _existing_dir(private_tests)
-
-
-def _exported_private_tests_path() -> Path | None:
-    """The ``T3_PRIVATE_TESTS`` directory, env var ONLY — never the DB setting.
-
-    Split out from :func:`resolve_private_tests_path` because the two sources rank
-    differently against an overlay's declared repo (see
-    :func:`resolve_external_specs_path`): the export is an instruction about this
-    run, the DB row is a standing preference.
-    """
-    return _existing_dir(os.environ.get("T3_PRIVATE_TESTS", ""))
-
-
-def _existing_dir(raw: str) -> Path | None:
-    if not raw:
-        return None
-    path = Path(raw).expanduser()
-    return path if path.is_dir() else None
-
-
 def overlay_e2e_repo(e2e_config: Mapping[str, str]) -> E2ERepo | None:
     """Lift an overlay's ``get_e2e_config`` into an :class:`E2ERepo`, when it can.
 
     Returns an ``E2ERepo`` IFF the config carries BOTH a non-empty ``url`` and
     ``ref`` — the overlay declares its own E2E repo and the ref to source the
-    suite from, so the ``external`` runner clones it by default (no ``--repo``,
-    no ``T3_PRIVATE_TESTS``). The repo ``name`` is the last segment of
-    ``project_path`` (falling back to ``"overlay-e2e"``); ``e2e_dir`` is the
-    config's ``e2e_dir`` (default ``"e2e"``).
+    suite from, so the ``external`` runner clones it by default (no ``--repo``).
+    The repo ``name`` is the last segment of ``project_path`` (falling back to
+    ``"overlay-e2e"``); ``e2e_dir`` is the config's ``e2e_dir`` (default ``"e2e"``).
 
     Returns ``None`` otherwise (e.g. a trigger-ci-only config with a
-    ``project_path`` + ``ref`` but no ``url``), so an overlay that supplies no
-    ``url`` keeps the exact legacy ``T3_PRIVATE_TESTS`` behaviour.
+    ``project_path`` + ``ref`` but no ``url``), leaving ``--repo`` as the only
+    way to name a specs source for that overlay.
     """
     url = e2e_config.get("url", "")
     ref = e2e_config.get("ref", "")
@@ -335,25 +298,12 @@ def overlay_e2e_repo(e2e_config: Mapping[str, str]) -> E2ERepo | None:
 def resolve_external_specs_path(repo: str, branch: str, *, overlay_repo: E2ERepo | None = None) -> Path:
     """Resolve the Playwright working directory for the ``external`` runner.
 
-    Resolution order (first match wins) — EXPLICIT beats DEFAULT throughout:
+    Specs live in the repo that owns them, so every source is a declared repo
+    cloned at a ref. Resolution order (first match wins) — EXPLICIT beats DEFAULT:
     an explicit ``--repo <name>`` clones the configured ``[e2e_repos.<name>]`` at
-    *branch* (or its default) and always wins;
-    else an explicitly-exported ``T3_PRIVATE_TESTS`` names a checkout to run as-is;
-    else, when *overlay_repo* is supplied (the overlay's
-    :func:`overlay_e2e_repo`), it is cloned at its ``ref`` (a ``--branch``/``--ref``
-    override wins so an open MR's branch can be run);
-    else the DB-configured ``private_tests`` directory is used. *branch* is only
-    meaningful for a clone path — a private-tests directory is checked out by the
-    user, so a branch there is a misuse.
-
-    The env var outranks *overlay_repo* because an overlay that declares a ``url``
-    supplies a DEFAULT, and a per-invocation export is an instruction. Ranked the
-    other way, an overlay with a ``url`` made ``T3_PRIVATE_TESTS`` unreachable and
-    the runner could only ever execute specs already pushed to a remote — so a
-    deterministic, stack-free lane (no browser, no BASE_URL, no credentials) could
-    not be run against the working tree at all, which is precisely what CI does.
-    The DB ``private_tests`` setting keeps its lowest precedence: it is a standing
-    preference, not an instruction about this run.
+    *branch* (or its default) and always wins; else *overlay_repo* (the overlay's
+    :func:`overlay_e2e_repo`, its declared ``url`` + ``ref``) is cloned, with a
+    ``--branch``/``--ref`` override winning so an open MR's branch can be run.
 
     Raises :class:`E2eSpecsResolutionError` (carrying the CLI exit code) on any
     misconfiguration so the caller maps one exception to one ``SystemExit``.
@@ -362,36 +312,24 @@ def resolve_external_specs_path(repo: str, branch: str, *, overlay_repo: E2ERepo
         repos_by_name = {r.name: r for r in load_e2e_repos()}
         if repo not in repos_by_name:
             raise E2eSpecsResolutionError.repo_not_in_config(repo)
-        try:
-            playwright_root = clone_or_update_e2e_repo(repos_by_name[repo], branch)
-        except E2eBranchNotFoundError as exc:
-            raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
-        ensure_external_e2e_dependencies(playwright_root)
-        return playwright_root
-    exported_private_tests = _exported_private_tests_path()
-    if exported_private_tests is not None:
-        if branch:
-            raise E2eSpecsResolutionError.branch_needs_repo()
-        return exported_private_tests
-    if overlay_repo is not None:
-        try:
-            playwright_root = clone_or_update_e2e_repo(overlay_repo, branch)
-        except E2eBranchNotFoundError as exc:
-            raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
-        ensure_external_e2e_dependencies(playwright_root)
-        return playwright_root
-    if branch:
-        raise E2eSpecsResolutionError.branch_needs_repo()
-    private_tests_path = resolve_private_tests_path()
-    if not private_tests_path:
-        raise E2eSpecsResolutionError.no_private_tests()
-    return private_tests_path
+        return _clone_specs_repo(repos_by_name[repo], branch)
+    if overlay_repo is None:
+        raise E2eSpecsResolutionError.no_specs_source()
+    return _clone_specs_repo(overlay_repo, branch)
+
+
+def _clone_specs_repo(specs_repo: E2ERepo, branch: str) -> Path:
+    try:
+        playwright_root = clone_or_update_e2e_repo(specs_repo, branch)
+    except E2eBranchNotFoundError as exc:
+        raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
+    ensure_external_e2e_dependencies(playwright_root)
+    return playwright_root
 
 
 def build_e2e_env(
     frontend_url: str | None = None,
     *,
-    headed: bool,
     target: str,
     context: E2eEnvContext | None = None,
 ) -> dict[str, str]:
@@ -461,10 +399,7 @@ def build_e2e_env(
     for key, value in get_overlay().e2e.env_extras(env_cache, context=extras_context).items():
         env.setdefault(key, value)
 
-    if headed:
-        env.pop("CI", None)
-    else:
-        env["CI"] = "1"
+    env["CI"] = "1"
     return env
 
 
@@ -474,7 +409,6 @@ class ProjectRunOptions:
 
     test_path: str = ""
     resolved_target: str = ""
-    headed: bool = False
     docker: bool = True
     update_snapshots: bool = False
     artifacts_dir: str = ""
@@ -497,10 +431,7 @@ def _managed_run_env(opts: ProjectRunOptions, settings_module: str) -> dict[str,
         env[ARTIFACTS_ENV] = opts.artifacts_dir
     if opts.capture_evidence:
         env[CAPTURE_EVIDENCE_ENV] = "1"
-    if opts.headed:
-        env.pop("CI", None)
-    else:
-        env["CI"] = "1"
+    env["CI"] = "1"
     return env
 
 

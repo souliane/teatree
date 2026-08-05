@@ -9,7 +9,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # PR Sweep — Batch Maintenance for Open PRs

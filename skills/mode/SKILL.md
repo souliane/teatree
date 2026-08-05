@@ -5,7 +5,6 @@ eval_exempt: thin chairside reference for the `t3 loop preset` and `t3 teatree q
 compatibility: any
 metadata:
   version: 0.0.2
-  subagent_safe: true
 requires:
   - rules
 ---

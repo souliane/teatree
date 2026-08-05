@@ -85,6 +85,11 @@ class DreamRunMarker(models.Model):
     name = models.CharField(max_length=64, unique=True, default=NAME)
     last_succeeded_at = models.DateTimeField(null=True, blank=True)
     last_attempted_at = models.DateTimeField(null=True, blank=True)
+    #: Where the next pass resumes in the ranked corpus when the per-pass batch cap
+    #: binds. Without it a capped pass re-distils the ranking's head every night and
+    #: the tail is never consolidated at all; see
+    #: :func:`teatree.loops.dream.distill.distill_in_batches`.
+    distill_cursor = models.PositiveIntegerField(default=0)
 
     objects: ClassVar[DreamRunMarkerManager] = DreamRunMarkerManager()
 

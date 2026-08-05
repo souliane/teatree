@@ -6,7 +6,6 @@ requires:
 compatibility: macOS/Linux, zsh or bash, git, docker with compose plugin, PostgreSQL CLIs (psql, createdb, dropdb, pg_restore), direnv, lsof. Optional dslr, uv, jq.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Environment & Workspace Lifecycle
@@ -220,12 +219,23 @@ When `clean-all` skips a branch with this warning, the branch has commits the cl
 
 `clean-all` drops only stashes whose source branch is gone. For stashes you encounter on existing branches, verify before dropping:
 
+Every worktree of a repo shares ONE stash stack, so `stash@{N}` names a different
+entry the moment any other worktree pushes or drops one. Resolve the entry to a
+SHA and work from that:
+
 ```bash
-git stash show -p stash@{N}  # inspect the diff
+sha=$(git rev-parse "stash@{N}")   # pin the identity before doing anything else
+git stash show -p "$sha"           # inspect by SHA, never by index
 # Grep main for the changed lines/sections to confirm content is on main
 ```
 
-If the content is on `main` (typical for stashes that pre-date a squash-merged branch), drop with `git stash drop stash@{N}`.
+If the content is on `main` (typical for stashes that pre-date a squash-merged
+branch), drop it — but re-check that the index still resolves to the SHA you
+inspected, because the drop is the step that destroys the wrong entry:
+
+```bash
+[ "$(git rev-parse "stash@{N}")" = "$sha" ] && git stash drop "stash@{N}"
+```
 
 ## Rules
 
@@ -431,6 +441,7 @@ stateDiagram-v2
     provisioned --> services_up : start_services
     services_up --> created : teardown
     services_up --> provisioned : db_refresh
+    services_up --> provisioned : start_failed
     services_up --> provisioned : stop_services
     services_up --> services_up : start_services
     services_up --> ready : verify

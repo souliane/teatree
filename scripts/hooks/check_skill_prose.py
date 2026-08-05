@@ -22,8 +22,17 @@ from dataclasses import dataclass
 NEW_RULE_PATTERN = re.compile(
     r"^[\s]*[-*]\s+\*\*(?:[^*]*?\b(?:Non-Negotiable|Always|Never|Stop|Run)\b)",
 )
-SKILL_PATH_PATTERN = re.compile(r"^skills/.+/(SKILL\.md|references/.+\.md)$")
-COMPANION_PREFIXES = ("src/", "hooks/scripts/", "tests/")
+# A skill tree is not always the repo root's: an overlay mounts one at
+# ``overlay/skills/`` and a vendored core at ``vendor/<core>/skills/``. Anchoring on
+# a path SEGMENT governs authored prose wherever the tree is mounted.
+SKILL_PATH_PATTERN = re.compile(r"(?:^|/)skills/.+/(SKILL\.md|references/.+\.md)$")
+# A skill-shaped catalogue under a fixture tree is test DATA, not authored prose —
+# the segment anchoring above reaches it, so it is excluded by path.
+FIXTURE_PATH_PATTERN = re.compile(r"(?:^|/)fixtures/")
+# Same reasoning on the companion side: ``src``/``tests`` and both hook-script
+# spellings count wherever they sit, so a vendored or overlay-side code change
+# still discharges the rule.
+COMPANION_PATTERN = re.compile(r"(?:^|/)(?:src|tests)/|(?:^|/)(?:hooks/scripts|scripts/hooks)/")
 
 
 @dataclass(frozen=True)
@@ -34,7 +43,7 @@ class RuleAddition:
 
 
 def _staged_diff() -> str:
-    cmd = ["git", "diff", "--cached", "--diff-filter=ACMR", "-U0", "--", "skills/"]
+    cmd = ["git", "diff", "--cached", "--diff-filter=ACMR", "-U0", "--", "*.md"]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     return result.stdout
 
@@ -46,7 +55,7 @@ def _staged_files() -> list[str]:
 
 
 def has_companion_code_change(files: list[str]) -> bool:
-    return any(path.startswith(COMPANION_PREFIXES) for path in files)
+    return any(COMPANION_PATTERN.search(path) for path in files)
 
 
 def count_new_rule_lines(diff: str) -> list[RuleAddition]:
@@ -71,7 +80,8 @@ def count_new_rule_lines(diff: str) -> list[RuleAddition]:
 
         if raw_line.startswith("+") and not raw_line.startswith("+++"):
             content = raw_line[1:]
-            if SKILL_PATH_PATTERN.match(current_file) and NEW_RULE_PATTERN.search(content):
+            governed = SKILL_PATH_PATTERN.search(current_file) and not FIXTURE_PATH_PATTERN.search(current_file)
+            if governed and NEW_RULE_PATTERN.search(content):
                 findings.append(RuleAddition(current_file, line_num, content))
             line_num += 1
 

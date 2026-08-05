@@ -19,6 +19,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -29,6 +30,9 @@ from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.utils import git
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import WorktreeExtra, WorktreeSiblingFields
 
 logger = logging.getLogger(__name__)
 
@@ -337,19 +341,17 @@ def _refresh_reused_row(worktree: Worktree, branch: str, cwd_path: Path) -> None
     rows claiming one directory is the collision this fix forecloses, so it
     raises :class:`WorktreePathConflictError` rather than silently steal.
     """
-    update_fields: list[str] = []
-    if worktree.branch != branch:
-        worktree.branch = branch
-        update_fields.append("branch")
-    extra = worktree.extra or {}
     new_path = str(cwd_path)
-    if extra.get("worktree_path") != new_path:
+    set_keys: WorktreeExtra = {}
+    if (worktree.extra or {}).get("worktree_path") != new_path:
         _assert_path_unclaimed(worktree, new_path)
-        extra["worktree_path"] = new_path
-        worktree.extra = extra
-        update_fields.append("extra")
-    if update_fields:
-        worktree.save(update_fields=update_fields)
+        set_keys["worktree_path"] = new_path
+    also_set: WorktreeSiblingFields = {} if worktree.branch == branch else {"branch": branch}
+    if set_keys or also_set:
+        # `branch` and `extra` are co-written here on purpose, so this stays ONE
+        # locked UPDATE — `merge_extra` re-reads `extra` from the locked row, so a
+        # concurrent writer's key survives instead of being dropped by this snapshot.
+        worktree.merge_extra(set_keys=set_keys, also_set=also_set)
 
 
 def _assert_path_unclaimed(worktree: Worktree, new_path: str) -> None:
