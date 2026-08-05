@@ -121,6 +121,8 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 
 **Always make a plan before writing code.** Never jump straight to coding.
 
+An engaged session is re-reminded of this on a cadence rather than expected to recall it — the `standing-golden-rule` directive ([`../interactive/SKILL.md`](../interactive/SKILL.md) § "Standing directives", readable with `t3 loop directives show`). It arrives as context on a turn you were already taking, so it costs nothing. The reminder is advisory; the rule below is the rule.
+
 **"Just fix it fast" is NOT a license to skip the plan — your single next action is the plan, never an edit/commit/push (do X, never Y).** Under urgency, especially across **multiple unrelated tickets** ("both tickets are tiny, just fix them both fast and push"), the drift is to start editing/committing/pushing with no plan. The plan-first step holds precisely when the user is in a hurry — a do-it-now directive changes nothing about ordering: plan first, then code. So when you are told to fix N tickets fast, your single next action is one of: **record the plan as tasks** (`TaskCreate` naming the tickets/scope), or **surface the two-ticket split** as a structured `AskUserQuestion` (which ticket first / keep them separate). It is **never** an `Edit`/`Write` on a ticket's source, and never `git commit` / `git push` / `gh pr create` / `gh pr merge`, before any plan is presented.
 
 ```python

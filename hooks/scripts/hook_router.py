@@ -119,7 +119,11 @@ from hooks.scripts.handlers.classifier_denial import (
 from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
-from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
+from hooks.scripts.loop_registrations import (
+    emit_loop_registrations,
+    emit_standing_directives_once,
+    is_bare_loop_tick_prompt,
+)
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
@@ -177,6 +181,7 @@ from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_d
 from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
+from hooks.scripts.session_nudges import handle_todo_freshness_nudge
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
@@ -803,10 +808,15 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     :mod:`loop_registrations`. Fail-open: no reactive slot resolvable emits nothing.
     Emit-once per session, keyed on the ``loop-pending`` marker (also the
     ``_skill_loading_exempt`` bootstrap signal), so a repeated prompt does not re-nag.
+
+    It ALSO delivers the standing directives (#4166) — same sibling, emitted
+    BEFORE the owner election because the INJECTED shape reaches every engaged
+    session; the sibling gates the self-waking shape itself, per slot.
     """
     session_id = data.get("session_id", "")
     if not session_id:
         return
+    emit_standing_directives_once(session_id, sys.stdout)
     if not _loop_auto_load_active(session_id):
         return
     _claim_loop_ownership(session_id)
@@ -824,35 +834,6 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
         return
     if emit_loop_registrations(sys.stdout):
         pending.write_text("1", encoding="utf-8")
-
-
-# ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
-
-_TODO_FRESHNESS_NUDGE = (
-    "Session housekeeping: keep the task/TODO list current. "
-    "Reflect finished work as completed and surface any newly discovered work "
-    "as its own task before continuing."
-)
-
-
-def handle_todo_freshness_nudge(data: dict) -> None:
-    """Once per session, nudge keeping the task/TODO list current.
-
-    Ordinary per-session housekeeping — fires in-session, never as a sub-agent
-    and unrelated to the monitor/work-trigger loop. Idempotent via a
-    per-session ``<session>.todo-nudged`` marker, mirroring the loop-pending
-    precedent. Advisory only: prints additionalContext, never emits a deny,
-    so it can never block tool use.
-    """
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-    _ensure_state_dir()
-    marker = _state_file(session_id, "todo-nudged")
-    if marker.exists():
-        return
-    marker.write_text("1", encoding="utf-8")
-    print(_TODO_FRESHNESS_NUDGE)  # noqa: T201 — hook writes its protocol output to stdout
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────

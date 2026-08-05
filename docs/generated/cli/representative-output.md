@@ -194,6 +194,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  then drains a bounded batch of the fresh remainder, and     │
 │                  stands down while a live worker holds either worker         │
 │                  singleton.                                                  │
+│ directives       Read the standing directives, or switch a slot off and back │
+│                  on (#4166).                                                 │
 │ preset           Named loop-state presets — mode switching (#3159).          │
 │ schedule         Weekly preset schedules — the L2 calendar (#3159).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
