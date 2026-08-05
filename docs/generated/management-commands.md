@@ -369,6 +369,8 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 
 ## `pr`
 
+A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.
+
 | Subcommand | Description |
 | --- | --- |
 | `create` | Validate ship gates and trigger the ship transition |

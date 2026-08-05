@@ -715,7 +715,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.\n\nGated on ``_called_from_command_line`` \u2014 the flag Django's ``run_from_argv``\nsets and ``call_command`` does not \u2014 because the two callers need opposite\nthings from one refusal: a shell needs a failing status, an in-process\nconsumer needs the dict.",
       "name": "pr",
       "subcommands": [
         {
