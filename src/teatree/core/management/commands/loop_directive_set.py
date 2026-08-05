@@ -73,11 +73,20 @@ class Command(TyperCommand):
 
         With a snapshotted body, that body comes back; with none, the override row is
         removed so the compiled default resolves again.
+
+        A slot that is ALREADY on is left exactly as it is. ``PromptVersion`` rows hold
+        SUPERSEDED bodies, never the live one, so restoring the newest non-empty version
+        over a live body reverts the owner's latest edit — and with only the disable's
+        empty snapshot behind it, the delete branch destroys that edit outright. Both are
+        reachable from the documented ``enable --all`` undo of ``disable --all``.
         """
         for slot_id in self._resolve_slots(slot_ids, every=all_slots):
             prompt = Prompt.objects.by_name(override_prompt_name(slot_id))
             if prompt is None:
                 self.stderr.write(f"  {slot_id}: on (compiled default)")
+                continue
+            if prompt.body.strip():
+                self.stderr.write(f"  {slot_id}: on (owner text, unchanged)")
                 continue
             restored = next((v for v in prompt.versions.order_by("-version") if v.body.strip()), None)
             if restored is None:

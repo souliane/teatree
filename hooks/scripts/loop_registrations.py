@@ -49,6 +49,13 @@ Each shape keeps its OWN per-session marker holding per-slot data
 singleton slot's eligibility is decided later in the same handler than the
 others' and a shared emit-once marker would strand it.
 
+Both seams are read BEFORE the directive resolver, which bootstraps Django
+(measured 1.67s cold) on a hook budgeted at 30s. The loop-arming seam implies the
+engagement one, so an unengaged session is out on the first check; an engaged
+session that arms no loop has only the cadence-throttled context slots, and
+``directives-injected`` carries their earliest next-due epoch alongside the
+per-slot instants so that throttle is decidable without the store too.
+
 Neither marker is reaped from here. N engaged sessions is the normal operating
 mode, and a session cannot tell a dead peer's marker from a running one's, so a
 sweep on every prompt deletes the state its peers throttle on — re-registering
@@ -174,6 +181,10 @@ def _duration_token(seconds: int) -> str:
 _INJECTED_MARKER = "directives-injected"
 _REGISTERED_MARKER = "directives-registered"
 
+#: Reserved key in the injected marker holding the epoch the earliest context slot
+#: next falls due. Slot ids are ``standing-*``, so it can never collide with one.
+_NEXT_DUE_KEY = "__next_due__"
+
 
 def _marker_data(session_id: str, suffix: str) -> dict[str, float]:
     """The per-slot delivery data in *suffix*, or ``{}`` when absent/unreadable."""
@@ -220,6 +231,7 @@ def _inject_context_directives(
     for directive in due:
         stream.write(f"  - [{directive['slot_id']}] {directive['text']}\n")
         data[directive["slot_id"]] = now
+    data[_NEXT_DUE_KEY] = min(data[d["slot_id"]] + d["cadence_seconds"] for d in candidates)
     _write_marker_data(session_id, _INJECTED_MARKER, data)
     return True
 
@@ -275,6 +287,27 @@ def _register_waking_directives(
     return True
 
 
+def _nothing_deliverable(session_id: str) -> bool:
+    """Whether no shape can deliver anything this prompt — decided WITHOUT Django.
+
+    :func:`_standing_directives` bootstraps Django (measured 1.67s cold) and this
+    runs on every ``UserPromptSubmit``, so the marker-file and engagement seams
+    both shapes are gated on are read first. #22 de-Djangoized this same chain to
+    keep that budget; a resolver called before its own gates reverses that.
+
+    The loop-arming seam implies the engagement one, so an unengaged session can
+    reach neither shape. An engaged session that arms no loop has only the
+    cadence-throttled context slots, and their next-due epoch is in the marker.
+    """
+    from hooks.scripts.hook_router import _loop_auto_load_active, _teatree_engaged  # noqa: PLC0415 deferred back-import
+
+    if not _teatree_engaged(session_id):
+        return True
+    if _loop_auto_load_active(session_id):
+        return False
+    return time.time() < _marker_data(session_id, _INJECTED_MARKER).get(_NEXT_DUE_KEY, 0.0)
+
+
 def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
     """Deliver both standing-directive shapes to *session_id*; returns whether anything was written.
 
@@ -285,7 +318,7 @@ def emit_standing_directives_once(session_id: str, stream: _Writable) -> bool:
     try:
         from hooks.scripts.headless_authoring_gate import LANE_SDK, session_lane  # noqa: PLC0415 deferred back-import
 
-        if not session_id or session_lane() == LANE_SDK:
+        if not session_id or session_lane() == LANE_SDK or _nothing_deliverable(session_id):
             return False
         directives = _standing_directives()
         if not directives:

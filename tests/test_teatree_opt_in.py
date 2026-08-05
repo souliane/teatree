@@ -57,6 +57,11 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
+    # A headless factory agent runs this suite with the Agent-SDK lane exported,
+    # which suppresses the standing directives (#4166) — an unpinned env would
+    # decide the delivery assertions below rather than the gating under test.
+    monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     # Hermetic HOME: ``autoload_enabled`` is DB-home (the legacy file tier is
     # removed) — it reads ``T3_AUTOLOAD`` env first, else the canonical ConfigSetting
     # sqlite. A clean home with no DB keeps the default-OFF (#256) path deterministic

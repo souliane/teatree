@@ -83,6 +83,32 @@ class TestEnable(django.test.TestCase):
 
         assert "standing-todo-consolidate" in _resolved_slots()
 
+    def test_enable_leaves_a_live_owner_body_alone(self) -> None:
+        # ``versions`` holds SUPERSEDED bodies, never the live one, so restoring
+        # the newest non-empty version over an already-on slot reverts the owner's
+        # latest edit. Reachable from the documented `enable --all` undo.
+        prompt = Prompt.objects.create(name=override_prompt_name("standing-pr-board"), body="First board rule.")
+        prompt.revise(body="Second board rule.")
+
+        _run("enable", "standing-pr-board")
+
+        by_slot = {d.slot_id: d.text for d in resolve_standing_directives()}
+        assert by_slot["standing-pr-board"] == "Second board rule."
+
+    def test_enable_keeps_text_the_owner_authored_after_the_disable(self) -> None:
+        # The disable snapshots an EMPTY body as v1, so a body authored afterwards
+        # has no non-empty version behind it — the delete branch would destroy it.
+        _run("disable", "standing-pr-board")
+        prompt = Prompt.objects.by_name(override_prompt_name("standing-pr-board"))
+        assert prompt is not None
+        prompt.revise(body="Re-authored board rule.")
+
+        _run("enable", "standing-pr-board")
+
+        assert Prompt.objects.by_name(override_prompt_name("standing-pr-board")) is not None
+        by_slot = {d.slot_id: d.text for d in resolve_standing_directives()}
+        assert by_slot["standing-pr-board"] == "Re-authored board rule."
+
 
 class TestRefusals(django.test.TestCase):
     def test_an_unknown_slot_exits_non_zero_and_names_the_valid_ids(self) -> None:

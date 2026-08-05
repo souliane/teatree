@@ -50,8 +50,20 @@ def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def not_the_sdk_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Close the SDK-lane seam the ambient env opens.
+
+    A headless factory agent runs the suite with ``CLAUDE_AGENT_SDK_VERSION`` /
+    ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` exported, which is exactly the lane the
+    adapter excludes — so an unpinned env decides the assertion, not the code.
+    """
+    monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+
+
 @pytest.fixture
-def engaged(monkeypatch: pytest.MonkeyPatch) -> None:
+def engaged(monkeypatch: pytest.MonkeyPatch, not_the_sdk_lane: None) -> None:
     """Every gate open: engaged, loop-arming allowed, and this session owns the tick."""
     monkeypatch.setattr(loop_registrations, "_standing_directives", lambda: _FAKE)
     monkeypatch.setattr(router, "_teatree_engaged", lambda _sid: True)
@@ -293,6 +305,32 @@ class TestTheGateMatrix:
         monkeypatch.setattr(router, "_loop_auto_load_active", lambda _sid: False)
 
         assert _emit() == ""
+
+    def test_an_unengaged_session_never_reaches_the_resolver(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The resolver bootstraps Django (~1.7s cold) on the hot UserPromptSubmit
+        # path, so a session that can emit nothing must not reach it (#22).
+        resolver = mock.Mock(return_value=_FAKE)
+        monkeypatch.setattr(loop_registrations, "_standing_directives", resolver)
+        monkeypatch.setattr(router, "_teatree_engaged", lambda _sid: False)
+        monkeypatch.setattr(router, "_loop_auto_load_active", lambda _sid: False)
+
+        assert _emit() == ""
+        resolver.assert_not_called()
+
+    def test_a_throttled_prompt_never_reaches_the_resolver(
+        self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same cost, paid per prompt: an engaged session that arms no loop has
+        # nothing but the cadence-throttled context slots to deliver.
+        monkeypatch.setattr(router, "_loop_auto_load_active", lambda _sid: False)
+        assert "Alpha rule." in _emit()
+        resolver = mock.Mock(return_value=_FAKE)
+        monkeypatch.setattr(loop_registrations, "_standing_directives", resolver)
+
+        assert _emit() == ""
+        resolver.assert_not_called()
 
     def test_the_sdk_lane_is_excluded(self, state_dir: Path, engaged: None, monkeypatch: pytest.MonkeyPatch) -> None:
         # Factory workers are FSM-governed and have no user-request channel.
