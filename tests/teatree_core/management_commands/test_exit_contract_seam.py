@@ -6,13 +6,17 @@ exited 0 on a failure the command had correctly detected — and
 ``t3 <overlay> ship <id> && t3 <overlay> ticket clear …`` ran the second
 command on a refused first, at the merge-authorisation seam.
 
-The four bare-``int`` sites (``env``) raise. The other 18 return a structured
-dict an in-process caller routes on — ``CallCommandMergeKeystone.merge_clear``
-reads ``merged`` / ``merged_sha`` / ``error`` / ``escalation_kind`` /
-``standing_delegation_by`` off ``ticket merge`` — so raising there would
-destroy the value the loop reads. They inherit
+The ``env`` group's six bare-``int`` sites, spread over five subcommands, raise.
+The rest return a structured dict an in-process caller routes on —
+``CallCommandMergeKeystone.merge_clear`` reads ``merged`` / ``merged_sha`` /
+``error`` / ``escalation_kind`` / ``standing_delegation_by`` off ``ticket
+merge`` — so raising there would destroy the value the loop reads. They inherit
 :class:`~teatree.core.management.refusal_exit.RefusalExitTyperCommand`, which
 restores the exit code at the argv boundary alone (#4210).
+
+#4234's own enumeration was one site short: ``env migrate-secrets`` returned its
+code from a conditional expression, which the constant-only scan behind that
+count could not see. ``_returns_non_zero_int`` below descends into one.
 
 Two guards, because either alone is weak: the AST ratchet proves no command
 class *escapes* the seam, and the live cases prove the seam *fires*.
@@ -21,8 +25,9 @@ class *escapes* the seam, and the live cases prove the seam *fires*.
 import ast
 import inspect
 import textwrap
+from collections.abc import Callable
 from importlib import import_module
-from typing import Any
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,16 +36,18 @@ from django.test import TestCase
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError
 from teatree.core.management.commands import e2e as e2e_mod
+from teatree.core.management.commands import env as env_mod
 from teatree.core.management.commands import followup as followup_mod
 from teatree.core.management.commands import lifecycle as lifecycle_mod
 from teatree.core.management.commands import repro as repro_mod
 from teatree.core.management.commands import review as review_mod
 from teatree.core.management.commands import ticket as ticket_mod
 from teatree.core.management.refusal_exit import REFUSAL_EXIT_CODE, RefusalExitTyperCommand
-from teatree.core.models import Ticket
+from teatree.core.models import Ticket, Worktree
 from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError
 from teatree.core.models.repro_evidence import ReproEvidenceError
 from teatree.core.models.repro_waiver import ReproWaiverError
+from teatree.utils.postgres_secret import PostgresPasswordUnavailableError
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -71,13 +78,20 @@ def _returns_error_dict(value: ast.expr) -> bool:
 
 
 def _returns_non_zero_int(value: ast.expr) -> bool:
-    """True for ``return 1`` — reads as an exit code, is not one."""
+    """True for ``return 1``, and for either branch of ``return 0 if ok else 1``.
+
+    Both read as an exit code and neither is one. The conditional needs its own
+    descent: matching ``ast.Constant`` alone is how ``env migrate-secrets`` kept
+    returning its code past this ratchet.
+    """
+    if isinstance(value, ast.IfExp):
+        return _returns_non_zero_int(value.body) or _returns_non_zero_int(value.orelse)
     if not (isinstance(value, ast.Constant) and isinstance(value.value, int)):
         return False
     return not isinstance(value.value, bool) and value.value != 0
 
 
-def _offending_returns(klass: type, predicate: Any) -> list[str]:
+def _offending_returns(klass: type, predicate: Callable[[ast.expr], bool]) -> list[str]:
     """``"<class>.<method>:<lineno>"`` for each ``@command`` return matching *predicate*."""
     try:
         source = textwrap.dedent(inspect.getsource(klass))
@@ -113,7 +127,7 @@ def _teatree_command_classes() -> dict[str, type]:
     return classes
 
 
-def _offenders_across_mro(klass: type, predicate: Any) -> list[str]:
+def _offenders_across_mro(klass: type, predicate: Callable[[ast.expr], bool]) -> list[str]:
     return [offence for base in klass.__mro__ for offence in _offending_returns(base, predicate)]
 
 
@@ -138,13 +152,18 @@ class TestNoCommandReturnsABareNonZeroInt:
                 @command()
                 def sub(self):
                     return 2
+
+                @command()
+                def conditional(self):
+                    return 0 if ok else 1
             """,
         )
         tree = ast.parse(source)
         returns = [node for node in ast.walk(tree) if isinstance(node, ast.Return) and node.value is not None]
-        assert [_returns_non_zero_int(node.value) for node in returns if node.value] == [True]
+        assert [_returns_non_zero_int(node.value) for node in returns if node.value] == [True, True]
         assert not _returns_non_zero_int(ast.Constant(value=0))
         assert not _returns_non_zero_int(ast.Constant(value=True))
+        assert not _returns_non_zero_int(ast.parse("0 if ok else 0", mode="eval").body)
 
 
 class TestEveryStructuredRefusalCarriesTheSeam:
@@ -350,6 +369,35 @@ class TestLifecycleGroupRefusalsExitNonZero(TestCase):
                 ["manage.py", "lifecycle", "record-e2e-run", str(ticket.pk), "--spec", "", "--head-sha", _A_SHA],
             )
         assert exc.value.code == REFUSAL_EXIT_CODE
+
+
+class TestEnvGroupRefusalsExitNonZero(TestCase):
+    """A failed ``migrate-secrets`` leaves the literal in the cache — the shell must see that."""
+
+    def test_migrate_secrets_rejects_a_worktree_it_could_not_migrate(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4238")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="ac-test",
+            extra={"worktree_path": "/tmp/wt/backend"},
+        )
+        with (
+            patch.object(env_mod, "resolve_worktree", return_value=worktree),
+            patch.object(env_mod, "env_cache_path", return_value=Path("/tmp/wt/.t3-cache/backend/.t3-env.cache")),
+            patch.object(env_mod, "extract_literal_from_cache", return_value="<unmigrated>"),
+            patch.object(
+                env_mod,
+                "ensure_postgres_pass_entry",
+                side_effect=PostgresPasswordUnavailableError("no pass installed"),
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            env_mod.Command().run_from_argv(
+                ["manage.py", "env", "migrate-secrets", "--path", "/tmp/wt/backend"],
+            )
+        assert exc.value.code == 1
 
 
 class TestOverlayBackedRefusalsExitNonZero:

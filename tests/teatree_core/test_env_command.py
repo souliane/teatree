@@ -311,7 +311,7 @@ class TestEnvMigrateSecrets(TestCase):
 
             mock_write.assert_not_called()
 
-    def test_returns_nonzero_when_pass_not_available(self) -> None:
+    def test_exits_non_zero_when_pass_not_available(self) -> None:
         from tempfile import TemporaryDirectory  # noqa: PLC0415
 
         from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
@@ -342,10 +342,9 @@ class TestEnvMigrateSecrets(TestCase):
                     "teatree.core.management.commands.env.ensure_postgres_pass_entry",
                     side_effect=PostgresPasswordUnavailableError("pass missing"),
                 ),
+                pytest.raises(SystemExit) as exc_info,
             ):
-                # call_command returns the return value of the command's handler
-                result = call_command("env", "migrate-secrets", "--path", str(wt_path))
-                # The handler returns 1 on failure (non-zero exit code).
-                assert result == 1
+                call_command("env", "migrate-secrets", "--path", str(wt_path))
+            assert exc_info.value.code == 1
             # Literal must not be wiped — caller needs to retry once pass is configured.
             assert "POSTGRES_PASSWORD=needs-migration" in cache_file.read_text(encoding="utf-8")

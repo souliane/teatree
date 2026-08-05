@@ -164,13 +164,16 @@ class Command(TyperCommand):
             self.stdout.write("  no worktrees found — nothing to migrate")
             return 0
 
-        failures = 0
+        unmigrated: list[str] = []
         for worktree in targets:
             outcome = self._migrate_single_worktree(worktree)
             self.stdout.write(f"  {worktree.repo_path}: {outcome.message}")
             if not outcome.ok:
-                failures += 1
-        return 0 if failures == 0 else 1
+                unmigrated.append(worktree.repo_path)
+        if unmigrated:
+            self.stderr.write(f"  not migrated, needs attention: {', '.join(unmigrated)}")
+            raise SystemExit(1)
+        return 0
 
     def _migrate_single_worktree(self, worktree: Worktree) -> "_MigrationOutcome":
         cache_path = env_cache_path(worktree)
