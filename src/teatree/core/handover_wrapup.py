@@ -39,6 +39,7 @@ __all__ = [
     "SUBAGENT_MARKER_END",
     "SUBAGENT_MARKER_START",
     "SUBAGENT_SECTION_HEADER",
+    "carries_subagent_section",
     "merge_subagent_records",
     "render_subagent_section",
     "subagent_record",
@@ -68,6 +69,17 @@ def subagent_record(push: "SubagentPush", *, at: "dt.datetime") -> dict:
         "last_seen_at": stamp,
         "in_latest_barrier": True,
     }
+
+
+def carries_subagent_section(handover: "SessionHandover") -> bool:
+    """Whether *handover*'s payload already carries a wrap-up block from some earlier barrier.
+
+    A row that carries one has to be re-rendered by every later hand-off, barrier or
+    no barrier: the block asserts which agents the LATEST barrier saw, so leaving it
+    untouched across a hand-off that ran none re-states that freshness for a barrier
+    that never happened.
+    """
+    return SUBAGENT_MARKER_START in handover.payload
 
 
 def merge_subagent_records(existing: "Sequence[dict]", incoming: "Sequence[dict]") -> list[dict]:

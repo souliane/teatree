@@ -34,6 +34,7 @@ from teatree.core.handover import (
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
 from teatree.core.handover_wrapup import (
     SUBAGENT_MARKER_START,
+    carries_subagent_section,
     merge_subagent_records,
     subagent_record,
     upsert_subagent_section,
@@ -124,20 +125,21 @@ class Command(TyperCommand):
 
         handover, mirror, source = created.handover, created.mirror, created.source
         recipient = handover.to_session or "next-session"
-        if drive_subagents:
+        # Fold on a barrier-less hand-off TOO, whenever the row already carries a block:
+        # `in_latest_barrier` is a freshness claim about THIS hand-off, so a block left
+        # untouched keeps asserting that a barrier which never ran enumerated its agents.
+        # Re-rendering against zero returns is what flips them to NOT-enumerated, which is
+        # the true statement — and it puts the block back at the end of an absorbed payload.
+        folded = drive_subagents or carries_subagent_section(handover)
+        if folded:
             mirror = self._fold_subagent_wrapup(handover, pushes)
-        failures = self._completeness_failures(
-            pk=handover.pk, expected=created.resolved, drove_subagents=drive_subagents
-        )
+        failures = self._completeness_failures(pk=handover.pk, expected=created.resolved, folded=folded)
         # A hand-off that reports OK while transferring nothing usable is worse
         # than one that fails: the operator moves on believing state was carried
         # over, and the receiving session claims a row that does not hold it
         # (#3551, #3888). Only a VETTED source whose row survives the re-read may
         # report OK, and the re-read happens BEFORE the line is written.
         ok = source.is_vetted and not failures
-        # Read off the resolution that decided the refusal, never asserted: as constants
-        # they reported `payload_source: "empty"` beside `row_written: true`.
-        empty_payload = source is PayloadSource.EMPTY
         status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
         human_lines = [
             f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); mirror written to {mirror}."
@@ -154,8 +156,12 @@ class Command(TyperCommand):
                 "ok": ok,
                 "handover_id": handover.pk,
                 "payload_source": source.value,
-                "empty_payload": empty_payload,
-                "row_written": not empty_payload,
+                # Literal, not derived: an EMPTY resolution exited through `_refuse_empty`
+                # above, which emits its own line. This one is only ever reached by a row
+                # that was written, so the pair that once read `empty` beside `row_written:
+                # true` cannot recur — the two paths now each state their own facts.
+                "empty_payload": False,
+                "row_written": True,
                 "from_session": handover.from_session,
                 "to_session": handover.to_session,
                 "parked_for_next": handover.is_for_next_session,
@@ -198,7 +204,7 @@ class Command(TyperCommand):
         return upsert_subagent_section(handover, records)
 
     @staticmethod
-    def _completeness_failures(*, pk: int, expected: str, drove_subagents: bool) -> list[str]:
+    def _completeness_failures(*, pk: int, expected: str, folded: bool) -> list[str]:
         """What is wrong with the PERSISTED row, read fresh from the DB — ``[]`` when nothing is.
 
         Verify-by-re-read: the in-memory row is what the command believes it wrote,
@@ -224,9 +230,13 @@ class Command(TyperCommand):
                 not is_loop_runner_session(row.to_session),
                 f"the row is addressed to {row.to_session!r}, an id no receiving session can have",
             ),
+            # Keyed on whether the FOLD ran, not on whether the barrier did: a barrier-less
+            # hand-off onto a row that already carries a block folds too, and gating on the
+            # barrier let exactly that path through vacuously — the one path where the block
+            # in the row is one no barrier of this hand-off produced.
             (
-                not drove_subagents or sections == 1,
-                "the sub-agent barrier ran but its per-agent returns are not in the payload",
+                not folded or sections == 1,
+                "the sub-agent wrap-up was folded in but its block is not in the payload",
             ),
             # Verify-by-re-read must catch THIS bug class too: the wrap-up used to be
             # appended, so N hand-offs left N sections. An authored body that itself

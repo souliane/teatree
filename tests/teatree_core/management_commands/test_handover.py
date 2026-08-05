@@ -15,7 +15,7 @@ from django.test import TestCase
 from teatree.core.fast_push import FastPushOutcome, LeakFinding
 from teatree.core.handover import claim_handovers
 from teatree.core.handover_orchestration import SubagentPush
-from teatree.core.handover_wrapup import SUBAGENT_MARKER_START
+from teatree.core.handover_wrapup import SUBAGENT_MARKER_END, SUBAGENT_MARKER_START
 from teatree.core.management.commands.handover import Command
 from teatree.core.models import LoopLease, SessionHandover, Ticket
 
@@ -267,6 +267,35 @@ class TestOneWrapUpSectionPerRow(_PinnedSessionTestCase):
         assert "/wt/b" in payload
         assert "committed, pushed" in payload, "the surviving agent carries its LATEST status"
 
+    def test_a_hand_off_without_the_barrier_stops_claiming_the_agent_is_current(self) -> None:
+        """Barrier ON, then OFF: the row must not keep asserting a freshness it no longer has.
+
+        The wrap-up carries ``in_latest_barrier``, so skipping the fold leaves every
+        agent flagged as enumerated at a barrier that never ran — a receiver then acts
+        on a status, and possibly a worktree, that nothing re-checked.
+        """
+        self._barrier([_push("/wt/a", "feat/a", error="refused: unpushed work")])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", drive_subagents=False, json_output=True)
+
+        payload = SessionHandover.objects.get().payload
+        assert payload.count(SUBAGENT_MARKER_START) == 1
+        assert "1 agents seen; 0 enumerated at the latest barrier" in payload
+        assert "NOT enumerated at the latest barrier" in payload
+        assert "refused: unpushed work" in payload, "the last known status is kept, only its freshness is dropped"
+
+    def test_the_wrap_up_block_stays_last_after_a_barrier_less_absorb(self) -> None:
+        """``upsert_payload_block`` promises the barrier report is what a receiver reads last."""
+        self._barrier([_push("/wt/a", "feat/a", error="boom")])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", drive_subagents=False, json_output=True)
+
+        payload = SessionHandover.objects.get().payload
+        assert payload.rstrip().endswith(SUBAGENT_MARKER_END)
+        assert payload.index("SECOND") < payload.index(SUBAGENT_MARKER_START)
+
     def test_a_changed_agent_status_is_updated_not_duplicated(self) -> None:
         self._barrier([_push("/wt/a", "feat/a", error="refused: leak")], [_push("/wt/a", "feat/a", pushed=True)])
 
@@ -284,9 +313,35 @@ class TestOneWrapUpSectionPerRow(_PinnedSessionTestCase):
         assert json.loads(created)["completeness_ok"] is True
         SessionHandover.objects.filter(pk=row.pk).update(payload=f"{row.payload}\n\n{row.payload}")
 
-        failures = Command._completeness_failures(pk=row.pk, expected="BODY", drove_subagents=True)
+        failures = Command._completeness_failures(pk=row.pk, expected="BODY", folded=True)
 
         assert any("sub-agent wrap-up sections" in failure for failure in failures)
+
+    def test_verify_by_re_read_covers_the_barrier_less_fold(self) -> None:
+        """Keyed on the barrier, the check short-circuited on the very path that folds blind."""
+        self._barrier([_push("/wt/a", "feat/a", error="boom")])
+        _call("handover", "create", body="FIRST", json_output=True)
+
+        def _lose_the_block(handover, _records) -> pathlib.Path:
+            SessionHandover.objects.filter(pk=handover.pk).update(payload="FIRST\n\nSECOND")
+            return pathlib.Path("/tmp/mirror.md")
+
+        self._patch("teatree.core.management.commands.handover.upsert_subagent_section", _lose_the_block)
+
+        out = StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command(
+                "handover",
+                "create",
+                body="SECOND",
+                drive_subagents=False,
+                stdout=out,
+                stderr=StringIO(),
+                json_output=True,
+            )
+
+        assert excinfo.value.code == 1
+        assert any("wrap-up" in failure for failure in json.loads(out.getvalue())["completeness_failures"])
 
 
 class TestTheBarrierNeverFastPushesTheWorktreeItRunsIn(_PinnedSessionTestCase):
