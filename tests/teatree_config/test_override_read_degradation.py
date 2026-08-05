@@ -13,6 +13,7 @@ resolve to the shipped default.
 """
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -26,18 +27,21 @@ from django.test import TestCase
 from teatree.config import get_effective_settings
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.override_read_health import (
+    MARKER_FILENAME,
     MAX_RECORDED_CALLERS,
     SAFETY_FAIL_CLOSED_STORED_VALUES,
     ConfigOverrideReadError,
     clear_degraded_read,
     degraded_read_report,
+    fallback_marker_path,
     marker_path,
+    marker_paths,
     record_degraded_read,
 )
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.resolution import fail_closed_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
-from teatree.paths import ControlDb
+from teatree.paths import ControlDb, data_dir_root
 
 _GLOBAL = "global"
 
@@ -337,3 +341,90 @@ class TestTheMarkerCanBeAcknowledged(TestCase):
         tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
         self.addCleanup(lambda: tmp.unlink(missing_ok=True))
         return tmp
+
+
+class TestTheMarkerIsRecordedWhereTheFaultWasObserved(TestCase):
+    """The record has to land in the venue that SAW the fault, not only in the canonical one (#4041).
+
+    The canonical marker sits inside the container's control-DB volume. A HOST process hits
+    the very read failure this records, then cannot create ``/var/lib/teatree`` to write it
+    down — so ``record_degraded_read`` fell into its own ``except OSError`` and logged that
+    the fault "is visible only in this log". A health marker that cannot be written where
+    the fault happens cannot do its job, and the degradation stayed invisible by
+    construction while every consumer resolved against a shipped default.
+
+    The unwritable canonical dir here is one whose PARENT is a regular file, so ``mkdir``
+    raises for root as well — a permission-bit foil would go vacuous under a root test run.
+    """
+
+    def _unwritable_canonical(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        (root / "blocking-file").write_text("not a directory")
+        return root / "blocking-file" / "control-db" / MARKER_FILENAME
+
+    def _writable_fallback(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root / MARKER_FILENAME
+
+    def test_the_fallback_resolves_into_this_venues_own_data_dir(self) -> None:
+        # The fallback is only useful if it lands where the venue that observed the fault
+        # can write AND where its operator already looks — the same root the host
+        # projection is published into. A fallback pointing back inside the control-DB
+        # volume would satisfy every other case here while fixing nothing.
+        assert fallback_marker_path() == data_dir_root() / MARKER_FILENAME
+        assert fallback_marker_path() != marker_path()
+
+    def test_the_marker_is_written_when_the_canonical_path_is_unwritable(self) -> None:
+        canonical, fallback = self._unwritable_canonical(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global", caller="hook.py:1 in f")
+            report = degraded_read_report()
+        assert fallback.is_file(), "the fault was observed here and recorded nowhere"
+        assert not canonical.exists()
+        assert report is not None
+        assert report.scopes == ("global",)
+        assert report.path == fallback, "the operator must be told the file that exists"
+
+    def test_recording_a_failure_emits_no_traceback(self) -> None:
+        # C: this runs under the statusline and `t3 loop status`, whose output must stay
+        # quiet. Exhausting every candidate is one WARNING line naming the paths tried.
+        canonical = self._unwritable_canonical()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=canonical),
+            self.assertLogs("teatree.config", level="WARNING") as logs,
+        ):
+            record_degraded_read("global")
+        assert len(logs.records) == 1, logs.output
+        assert logs.records[0].exc_info is None, "a handled OSError dumped its frames into the bar"
+        assert str(canonical) in logs.output[0]
+
+    def test_a_writable_canonical_venue_keeps_exactly_one_marker(self) -> None:
+        # The foil: offering the per-user path unconditionally would let a stale host
+        # marker outvote a healthy container record — the same defect one layer up.
+        canonical, fallback = self._writable_fallback(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global")
+            assert marker_paths() == (canonical,)
+        assert canonical.is_file()
+        assert not fallback.exists()
+
+    def test_clearing_drops_the_fallback_record_too(self) -> None:
+        canonical, fallback = self._unwritable_canonical(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global")
+            assert degraded_read_report() is not None
+            clear_degraded_read()
+            assert degraded_read_report() is None
+        assert not fallback.exists()

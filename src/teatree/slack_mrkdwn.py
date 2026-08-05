@@ -6,8 +6,8 @@ render as inert plain text in the Slack client:
 
 1.  **GitHub-flavored ``[label](url)``** — Slack ignores the brackets and
     shows the literal characters.
-2.  **Bare references like ``!281`` or ``#1011``** — Slack has no concept
-    of cross-repo issue refs; only an explicit ``<url|!281>`` is clickable.
+2.  **Bare references like ``!42`` or ``#1011``** — Slack has no concept
+    of cross-repo issue refs; only an explicit ``<url|!42>`` is clickable.
 
 :func:`slack_linkify` rewrites both forms in place while preserving the
 surrounding structure (table pipes, headers, newlines, fenced code).

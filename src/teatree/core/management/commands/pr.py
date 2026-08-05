@@ -6,32 +6,26 @@ it runs the deterministic gates, calls ``ticket.ship()`` to enter SHIPPED, and
 returns the PR URL once the worker completes.
 """
 
-import os
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from django.conf import settings
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
-from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
+from teatree.core.gates.orphan_guard import classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
-from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, defer_unpushed_pr
+from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, skip_for_classified
 from teatree.core.management.commands._pending_pr_commands import PendingPrCommands
+from teatree.core.management.commands._pr_control_db import ControlDbUnreachableError, unreachable_control_db_reason
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
     ShipDryRun,
     ship_dry_run,
     validate_pr_metadata,
 )
-from teatree.core.management.commands._pr_ticket_resolve import (
-    TicketNotFoundError,
-    resolve_ticket,
-    ticket_not_found_error,
-)
+from teatree.core.management.commands._pr_ticket_resolve import TicketNotFoundError, resolve_ticket_or_refusal
 from teatree.core.management.commands._pr_worktree import WorktreeMissingError, _resolve_or_adopt_worktree
 from teatree.core.management.commands._shared_code_host import no_code_host_error
 from teatree.core.management.commands._ship.exec import (
@@ -60,7 +54,7 @@ from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_g
 from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
-from teatree.core.management.commands._test_plan.post import TestPlanMediaError
+from teatree.core.management.commands._test_plan.post import TestPlanMediaError as _TestPlanMediaError
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
@@ -70,13 +64,11 @@ from teatree.core.provision.worktree_adopt import reopen_ticket_for_followup
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.core.send_proxy import OutboundBlockedError
-from teatree.db.boundary import control_db_unreachable_reason
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
-    from teatree.core.gates.orphan_guard import BranchReport
     from teatree.core.models.types import TicketExtra
 
 # The host create/update-comment response shape returned by the comment commands.
@@ -118,17 +110,6 @@ type CommentResult = dict[str, object]
 
 _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
-
-
-def _configured_db_path() -> Path:
-    """The database THIS process would open — the subject of the topology question.
-
-    Read from the resolved settings rather than from the canonical location, so the
-    answer is about the database actually in play: a test database, a per-worktree
-    isolated copy, and the canonical control DB are three different subjects and only
-    the last one sits behind a container-only mount.
-    """
-    return Path(str(settings.DATABASES["default"]["NAME"]))
 
 
 def _run_precheck_ship_gates(
@@ -287,21 +268,6 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
     return branch_name, None
 
 
-def _skip_for_classified_branch(report: "BranchReport", repo_path: str, branch_name: str) -> EnsurePrResult | None:
-    """The answer a classification already carries, or ``None`` when a PR must be created.
-
-    A pure mapping over the classification — three of the four branch states are
-    a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
-    """
-    if report.status is BranchStatus.SYNCED:
-        return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
-    if report.status is BranchStatus.OPEN_PR:
-        return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
-    if report.status is BranchStatus.UNPUSHED_ORPHAN:
-        return defer_unpushed_pr(repo_path, branch_name)
-    return None
-
-
 class Command(PendingPrCommands, TyperCommand):
     @command()
     # PLR0913: this signature IS the CLI contract — django-typer derives
@@ -335,6 +301,7 @@ class Command(PendingPrCommands, TyperCommand):
         | WorktreeMissingError
         | NoCommitsAheadError
         | TicketNotFoundError
+        | ControlDbUnreachableError
     ):
         """Validate ship gates and trigger the ship transition.
 
@@ -365,15 +332,19 @@ class Command(PendingPrCommands, TyperCommand):
         the invoking on-disk worktree as a new row and reopens the terminal
         ticket to a shippable state once the #788 hollow-ship guard confirms the
         fresh branch has real commits — so already-merged work is never re-shipped.
+
+        A ``Ticket`` row is REQUIRED by design, not by accident: this command IS the
+        FSM ship transition and every gate it runs is keyed on the row. A ticketless
+        checkout that only needs a PR opened uses ``pr ensure-pr`` (#4170).
         """
-        try:
-            ticket = resolve_ticket(ticket_id)
-        except Ticket.DoesNotExist:
-            # #1051: no canonical Ticket row (out-of-FSM autonomous-loop
-            # PR, or a pruned row). Return an actionable error instead of
-            # letting the bare DoesNotExist crash the command and force a
-            # manual `gh pr create` fallback.
-            return ticket_not_found_error(ticket_id)
+        # #1051 / #4170: an unreachable control DB and a missing Ticket row are the two
+        # ways this command can have no ticket to ship, and each carries its own
+        # remedy — never a bare OperationalError or DoesNotExist, which is what sent
+        # three agents to a manual `gh pr create` in one day.
+        resolved_ticket = resolve_ticket_or_refusal(ticket_id)
+        if not isinstance(resolved_ticket, Ticket):
+            return resolved_ticket
+        ticket = resolved_ticket
         # #779: refuse to read the shipping gate from a worktree-isolated DB.
         # The gate reads phase attestations; if this process resolved to a
         # per-worktree DB (uv run from a worktree) it sees a partial phase
@@ -474,7 +445,7 @@ class Command(PendingPrCommands, TyperCommand):
         if early_result is not None:
             return early_result
 
-        unreachable = control_db_unreachable_reason(_configured_db_path(), env=os.environ)
+        unreachable = unreachable_control_db_reason()
         if unreachable is not None:
             return EnsurePrResult(skipped=unreachable, branch=branch_name)
 
@@ -486,7 +457,7 @@ class Command(PendingPrCommands, TyperCommand):
                 error=f"could not determine sync status of {branch_name!r} in {repo_path!r}: {exc}",
             )
 
-        already_answered = _skip_for_classified_branch(report, repo_path, branch_name)
+        already_answered = skip_for_classified(report, repo_path, branch_name)
         if already_answered is not None:
             return already_answered
 
@@ -649,7 +620,7 @@ class Command(PendingPrCommands, TyperCommand):
                 MrTestPlanPost(repo=repo_path, mr_iid=mr_iid, title=title, body=body, files=list(files or [])),
                 write_out=self.stdout.write,
             )
-        except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, TestPlanMediaError) as err:
+        except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, _TestPlanMediaError) as err:
             return {"error": str(err)}
 
     @command(name="post-evidence", hidden=True, deprecated=True)

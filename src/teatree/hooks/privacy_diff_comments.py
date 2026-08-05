@@ -46,7 +46,12 @@ _SELF_REF_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bMR\s+!"),
     re.compile(r"\bmerge request\b", re.IGNORECASE),
     re.compile(r"\bPR\s+#\d"),
-    re.compile(r"\bconsolidat", re.IGNORECASE),
+    # Only the BOOKKEEPING form (a tracker reference follows), never the bare verb  # privacy-scan:allow
+    # or noun, which is this codebase's own domain vocabulary — the dream loop folds  # privacy-scan:allow
+    # a transcript corpus into memories, so matching the bare stem flagged ordinary  # privacy-scan:allow
+    # architecture comments. Same line the `workstream` / `umbrella` exclusions draw:
+    # the tracker REFERENCE is what makes it a self-reference, not the word.
+    re.compile(r"\bconsolidat\w*\s+(?:in|into|under)\s+\S*[!#]\d", re.IGNORECASE),
     re.compile(r"\bthis MR\b", re.IGNORECASE),
     re.compile(r"\bsee MR\b", re.IGNORECASE),
     re.compile(r"\bsuperseded by\b", re.IGNORECASE),

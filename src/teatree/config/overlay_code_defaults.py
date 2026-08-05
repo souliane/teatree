@@ -20,10 +20,28 @@ in cold / no-overlay / no-Django contexts where no provider is registered, and
 in those the chain must fall straight through to the dataclass default exactly as
 before this seam existed. That empty return is also the one-line revert path —
 unregister the provider and resolution is byte-identical to pre-#36.
+
+That fall-through is right for a value nobody enforces and WRONG for a value a
+gate reads. Registration happens at ``teatree.core.overlay_loader`` import time,
+which a PreToolUse hook never reaches, so for every Bash gate the tier was not
+merely empty but structurally absent: a rule declared in ``overlay_settings.py``
+resolved to its shipped default at the one seam that enforces it, and the gate
+sat inert while the rule it carries was being broken.
+:func:`cold_overlay_code_defaults` closes that by reading the SAME declaration
+directly — the overlay's settings module is plain constants and imports
+Django-free — so the declaration is authoritative on both surfaces and there is
+no second place to state it.
 """
 
 from collections.abc import Callable
+from importlib import import_module
+from importlib.metadata import entry_points
 from typing import Any
+
+#: The module every overlay states its constants in, sitting beside the module its
+#: ``teatree.overlays`` entry point names. ``OverlayConfig._load_settings`` reads it
+#: warm; the cold read below reads the same file through the same convention.
+OVERLAY_SETTINGS_MODULE_LEAF = "overlay_settings"
 
 # The ``UserSettings`` fields promoted to an overlay code default (#36). Each is a
 # genuinely-constant, non-secret, public skill / regex value already present
@@ -40,6 +58,12 @@ PROMOTED_OVERLAY_CODE_DEFAULT_KEYS: frozenset[str] = frozenset(
         "backlog_sweep_skill",
         "dogfood_smoke_skill",
         "mr_title_regex",
+        # The repos that are ONE branch wide right now. Promoted because the
+        # declaration lives in the overlay's ``overlay_settings.py`` while every
+        # consumer (the Bash gate, the provisioner, branch classification) reads
+        # ``get_effective_settings``: without this tier the two surfaces diverge
+        # and the gate reads ``[]`` while the rule is declared.
+        "single_branch_repos",
     }
 )
 
@@ -61,12 +85,54 @@ def register_overlay_code_default_provider(provider: OverlayCodeDefaultProvider)
 
 
 def overlay_code_defaults(overlay_name: str) -> dict[str, Any]:
-    """The promoted-key code defaults for *overlay_name* via the registered provider.
+    """The promoted-key code defaults for *overlay_name*, warm provider first.
 
-    ``{}`` when no overlay is active, no provider is registered, or the provider
-    cannot resolve the overlay — the resolver then falls through to the dataclass
-    default, matching pre-#36 behaviour exactly.
+    The registered provider stays authoritative wherever it exists — it reads the
+    fully-constructed ``OverlayConfig``, including a ``[overlays.<name>]`` registry
+    override the raw settings module cannot see. Only when it yields nothing (no
+    provider registered, or an overlay it cannot resolve) does the cold read below
+    answer, so a gate running outside Django sees the declaration instead of the
+    shipped default. ``{}`` when no overlay is active or neither path resolves —
+    the resolver then falls through to the shipped default as it did pre-#36.
     """
     if not overlay_name:
         return {}
-    return _provider(overlay_name)
+    return _provider(overlay_name) or cold_overlay_code_defaults(overlay_name)
+
+
+def cold_overlay_code_defaults(overlay_name: str) -> dict[str, Any]:
+    """The promoted keys *overlay_name*'s settings module declares, read Django-free.
+
+    Only the keys the module actually states are returned. An undeclared key is
+    ABSENT rather than filled with a mirror of the shipped default, so this read can
+    never introduce a value the overlay did not state — it can only carry one it did.
+
+    Fails safe to ``{}`` on everything: an overlay with no entry point, a settings
+    module that is missing or raises on import, an unreadable entry-point table.
+    """
+    try:
+        module_path = _overlay_settings_module(overlay_name)
+        if not module_path:
+            return {}
+        module = import_module(module_path)
+    except Exception:  # noqa: BLE001 — a cold read that cannot resolve contributes no tier, never a traceback.
+        return {}
+    return {
+        key: getattr(module, key.upper()) for key in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS if hasattr(module, key.upper())
+    }
+
+
+def _overlay_settings_module(overlay_name: str) -> str:
+    """The dotted path of *overlay_name*'s settings module, or ``""`` when unresolvable.
+
+    Derived from the overlay's ``teatree.overlays`` entry point rather than from the
+    ``OverlayConfig`` constructor argument that names it warm: reaching that argument
+    means importing (and instantiating) the overlay class, which pulls in Django and
+    is exactly what a cold hook cannot do.
+    """
+    for entry_point in entry_points(group="teatree.overlays"):
+        if entry_point.name != overlay_name:
+            continue
+        package = entry_point.value.partition(":")[0].rpartition(".")[0]
+        return f"{package}.{OVERLAY_SETTINGS_MODULE_LEAF}" if package else ""
+    return ""

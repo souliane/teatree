@@ -367,10 +367,17 @@ deploy_lock_held() {
 # tzdata-less image — which this one is, so every sample would silently fail to
 # parse and the probe would never fire on the box.
 stack_recently_recreated() {
-  local now created epoch
-  local -a ids
+  local now created epoch id
+  local -a ids=()
   now="$(date -u +%s 2>/dev/null)" || return 1
-  mapfile -t ids < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}' 2>/dev/null)
+  # A `read` loop, not `mapfile`: the builtin is bash 4+, and this file's shebang
+  # is `#!/usr/bin/env bash`, which selects whatever bash comes first on PATH.
+  # Nothing on the deploy path can hand it a 3.2 — but the same builtin in the
+  # hook resolver cost hours precisely because it fails SILENTLY there, so no
+  # second copy of that class stays in the tree.
+  while IFS= read -r id || [ -n "$id" ]; do
+    [ -n "$id" ] && ids+=("$id")
+  done < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}' 2>/dev/null)
   [ "${#ids[@]}" -gt 0 ] || return 1
   while IFS= read -r created; do
     [ -n "$created" ] || continue

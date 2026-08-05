@@ -7,14 +7,11 @@ requires:
 eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # TeaTree — Interactive Session
 
 The Claude Code side of teatree: what engages a session, how skills reach an agent, how hooks are registered — and the one rule an attended session must not break. Loading this skill is itself the engagement act.
-
-Not `subagent_safe`: loading it writes the `.teatree-active` engagement marker and its procedures run `t3` commands, so it is not the pure methodology that flag is reserved for.
 
 ## No work-bearing state is terminal
 

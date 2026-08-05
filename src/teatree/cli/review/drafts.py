@@ -10,7 +10,7 @@ live here:
     half-specified-inline (``--file`` without ``--line`` and vice
     versa) and contradictory (``--general`` together with
     ``--file``/``--line``) invocations, closing the #72
-    silent-degradation foot-gun observed on !6220.
+    silent-degradation foot-gun.
 * :func:`register` — wires the ``delete-draft-note``,
     ``delete-discussion``, ``delete-issue-note``, ``list-draft-notes``,
     ``publish-draft-notes``, ``resolve-discussion``, and ``update-note``
@@ -44,10 +44,9 @@ import typer
 def validate_inline_or_general(*, file: str, line: int | None, general: bool) -> None:
     """Refuse half-specified or contradictory ``post-draft-note`` invocations (#72).
 
-    Pre-#72 the typer wrapper accepted any combination of
-    ``--file``/``--line`` and silently degraded a missing pair into a
-    general (MR-wide) note — observed on !6220 where 4 of 5 cold-review
-    drafts intended as inline became general. The validator enforces:
+    Without this check a half-specified ``--file``/``--line`` pair
+    degrades into a general (MR-wide) note: the draft the author meant to
+    anchor on one line loses its anchor, silently. The validator enforces:
 
     * Without ``--general``: both ``--file`` AND ``--line`` are required.
     * With ``--general``: both ``--file`` and ``--line`` must be absent

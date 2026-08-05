@@ -195,6 +195,11 @@ class OverlayConfig(BaseModel):
     backlog_sweep_skill: str = "sweeping-tickets"
     dogfood_smoke_skill: str = "dogfood-smoke"
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
+    # ``<repo-slug>=<branch>`` entries; empty means the gate is inert here. The
+    # field must exist even for an overlay that declares nothing, because the
+    # provider reads every promoted key off the config in one comprehension and
+    # a single missing attribute collapses the whole tier to ``{}``.
+    single_branch_repos: list[str] = Field(default_factory=list)
 
     def __init__(self, settings_module: str = "", overlay_name: str = "", **data: object) -> None:
         super().__init__(**data)

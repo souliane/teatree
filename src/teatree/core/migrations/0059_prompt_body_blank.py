@@ -12,6 +12,6 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = [("core", "0057_remove_mode_availability_mode")]
+    dependencies = [("core", "0058_merge_vendor_sync_and_availability_removal")]
 
     operations = [migrations.AlterField(model_name="prompt", name="body", field=models.TextField(blank=True))]

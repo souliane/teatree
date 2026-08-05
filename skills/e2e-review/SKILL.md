@@ -8,7 +8,6 @@ requires:
   - receiving-code-review
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # Reviewing E2E Specs
@@ -208,3 +207,14 @@ When the change isn't a single spec but an externally-authored suite being migra
 4. **Prove parity.** The converted suite must run green in the project's runner and each migrated spec must still pass its anti-vacuity check — a conversion that silently weakened an assertion is worse than the original. Land it only once it both conforms and proves the same behaviour it did before.
 
 Keep conversion changes reviewable: prefer one spec (or one cohesive group) per commit so the diff shows the before/after of each pattern, rather than a single opaque "migrated everything" drop.
+
+## References
+
+The six principles above restate Playwright's own published guidance; the rubric is theirs, the
+review procedure is this skill's.
+
+- [Best Practices](https://playwright.dev/docs/best-practices) — user-visible behaviour over implementation, test isolation
+- [Locators](https://playwright.dev/docs/locators) — role/label/test-id over CSS/XPath
+- [Actionability](https://playwright.dev/docs/actionability) — why a fixed wait is the wrong tool
+- [Assertions](https://playwright.dev/docs/test-assertions) — web-first, auto-retrying assertions
+- [Page Object Model](https://playwright.dev/docs/pom) — the structure the spec review expects

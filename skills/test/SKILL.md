@@ -8,7 +8,6 @@ requires:
   - platforms
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Testing, QA & CI
@@ -82,7 +81,7 @@ t3 tool affected-tests --explain tests/teatree_core/test_x.py   # trace one test
 bash dev/test-affected.sh              # select + run the fast lane (--full to force whole suite)
 ```
 
-How it selects (#3672): the **tach pytest plugin** is the impact engine — `--tach --tach-base origin/main` walks the reverse-import graph natively and deselects the tests a diff cannot reach, in one session. `t3 tool affected-tests` decides FULL-vs-scoped from the escalation policy and, on a scoped run, layers our **force-keep** plugin (`-p teatree.quality.force_keep_plugin`) over the deselection: the always-run floor (`tests/quality`, `tests/integration`, `tests/conformance`), the reference-reader tests for a changed non-imported path (a doc, or a `dev/` lane runner — #3817), the mirror-convention test path, and the changed test files themselves are kept regardless of what the graph says. A change to the lane's OWN selection machinery (`SELECTION_DEFINING_PATHS`: the `quality` classifier modules, `cli/affected_tests_tools.py`, `dev/test-affected.sh`) forces FULL — a selection cannot validate its own change; bound `PYTEST_XDIST_AUTO_NUM_WORKERS` on a memory-tight host rather than skip the run. The changed src modules run under `--doctest-modules` to match the CI shard flags. Zero test runs twice.
+How it selects (#3672): the **tach pytest plugin** is the impact engine — `--tach --tach-base origin/main` walks the reverse-import graph natively and deselects the tests a diff cannot reach, in one session. `t3 tool affected-tests` decides FULL-vs-scoped from the escalation policy and, on a scoped run, layers our **force-keep** plugin (`-p teatree.quality.force_keep_plugin`) over the deselection: the always-run floor (`tests/quality`, `tests/integration`, `tests/conformance`), the reference-reader tests for a changed non-imported path (a doc, or a `dev/` lane runner — #3817), the mirror-convention test path, and the changed test files themselves are kept regardless of what the graph says. A change to the lane's OWN selection machinery (`SELECTION_DEFINING_PATHS`: the `quality` classifier modules, `cli/affected_tests_tools.py`, `dev/test-affected.sh`) forces FULL — a selection cannot validate its own change; bound `PYTEST_XDIST_AUTO_NUM_WORKERS` on a memory-tight host rather than skip the run (a dispatched agent sets that env var in its own brief — `/t3:rules` § "Sub-Agent Limitations"). The changed src modules run under `--doctest-modules` to match the CI shard flags. Zero test runs twice.
 
 Degrades to a whole-tree FULL run with the plugin OFF (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; or a dirty merge-base. When the report says FULL, run the whole suite.
 

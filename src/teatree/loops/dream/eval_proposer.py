@@ -16,13 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict
 
-from teatree.loops.dream.engine import (
-    ConsolidationExtract,
-    DistilledCluster,
-    cluster_is_grounded,
-    default_projects_dir,
-    normalize_ws,
-)
+from teatree.loops.dream.engine import DistilledCluster, cluster_is_grounded, normalize_ws
+from teatree.loops.dream.replay import ConsolidationExtract, default_projects_dir
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,7 +25,7 @@ or the environment's?" — which is what makes a review defect distinguishable f
 harness fault on the card.
 
 It is NOT the requeue predicate. That remains
-:func:`teatree.agents.outage_classifier.is_transient_failure`, and the two are related by
+:func:`teatree.failure_signatures.is_transient_failure`, and the two are related by
 a one-way invariant this module's tests pin: everything the requeue sweep calls transient
 is also environmental here, never the reverse. The gap between them is intentional —
 :attr:`FailureKind.LEASE_LOST` is environmental (a concurrent re-claim, not a defect in

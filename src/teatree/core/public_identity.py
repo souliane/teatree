@@ -17,6 +17,7 @@ GitLab clone could be stamped with the github identity.
 import re
 from typing import NotRequired, TypedDict
 
+from teatree.core.forge_pr_probe import forge_cli_env
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -140,6 +141,7 @@ def is_public_github_remote(remote: str) -> bool:
         result = run_allowed_to_fail(
             ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
             expected_codes=(0,),
+            env=forge_cli_env(),
         )
     except CommandFailedError:
         return False

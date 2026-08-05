@@ -28,6 +28,7 @@ from teatree.core.backend_protocols import (
     ROLLUP_QUERY_FAILED,
     BackendResolutionError,
     ForgeMergeResult,
+    MergeConflictState,
     PrMergeState,
 )
 from teatree.types import RawAPIDict
@@ -60,6 +61,30 @@ def _mr_endpoint(slug: str, pr_id: int) -> str:
     return f"projects/{slug.replace('/', '%2F')}/merge_requests/{pr_id}"
 
 
+def _conflict_state(mr: RawAPIDict) -> MergeConflictState:
+    """Map GitLab's ``has_conflicts`` + ``merge_status`` pair onto the conflict axis.
+
+    ``has_conflicts`` is the direct answer and is computed independently of why else a
+    merge request may be unmergeable, so a draft or an unapproved merge request still
+    reports its real conflict state. ``merge_status`` supplies the *was it computed*
+    half: GitLab reports ``checking``/``unchecked`` while the background job runs,
+    during which ``has_conflicts`` is a default rather than a finding. Only
+    ``can_be_merged`` alongside a false ``has_conflicts`` is clean.
+
+    Lives here, beside its one caller. It sat unused in
+    :mod:`teatree.backends.forge_merge_rpc` — written for the ``glab``-binary RPC that
+    #4007 replaced with this module, and never re-wired — where nothing imported it and
+    nothing could see that GitLab's conflict axis had gone dark.
+    """
+    conflicts = mr.get("has_conflicts")
+    merge_status = str(mr.get("merge_status") or "").lower()
+    if conflicts is True or merge_status == "cannot_be_merged":
+        return MergeConflictState.CONFLICTED
+    if conflicts is False and merge_status == "can_be_merged":
+        return MergeConflictState.CLEAN
+    return MergeConflictState.UNKNOWN
+
+
 class GitLabApiMergeRpc:
     """The §17.4.3 GitLab merge surface — MR reads plus the SHA-bound squash merge."""
 
@@ -89,20 +114,22 @@ class GitLabApiMergeRpc:
         return str(mr.get("sha") or "") if mr is not None else ""
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        """State + merge commit + the CONFLICT axis, in parity with the ``gh`` twin.
+
+        ``conflict`` defaults to ``UNKNOWN``, and leaving it there is not free: the
+        conflict scanner treats every non-``CLEAN`` verdict as a signal, so an
+        unpopulated axis manufactures one "MR merge state unreadable" signal per open
+        GitLab MR, on every sweep, forever — noise that is indistinguishable from the
+        genuine "the forge is still computing mergeability" case it exists to report.
+        The MR payload already carries the answer, so it is read here via
+        :func:`_conflict_state` rather than left blank.
+        """
         mr = self._fetch_mr(slug=slug, pr_id=pr_id)
         if mr is None:
             return PrMergeState(state="", merge_commit_oid="")
         state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
         oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
-        return PrMergeState(state=state, merge_commit_oid=oid)
-
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        if mr is None:
-            return False
-        # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the legacy
-        # field kept for compatibility — accept either.
-        return bool(mr.get("draft") or mr.get("work_in_progress"))
+        return PrMergeState(state=state, merge_commit_oid=oid, conflict=_conflict_state(mr))
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         """The MR author ``username`` — the §17.4.3 author-gate input (#1773).

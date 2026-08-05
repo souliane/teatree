@@ -19,7 +19,7 @@ So this module observes two facts that are true NOW:
 import os
 import re
 import shutil
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,9 +92,7 @@ class ControlDbWriteDomain:
         Deduplicated per process: one writer with three descriptors on the file is
         one writer, and reporting it three times buries the count that matters.
         """
-        holders = self._proc_holders() if _PROC.is_dir() else self._lsof_holders()
-        writers = {holder.pid: holder for holder in holders if holder.writable}
-        return sorted(writers.values(), key=lambda holder: holder.pid)
+        return [holder for _, holder in read_write_holders_across([self.db_path])]
 
     def foreign_writers(self) -> list[FdHolder]:
         """Read-write holders from OUTSIDE the owning domain.
@@ -131,58 +129,86 @@ class ControlDbWriteDomain:
                 best_mountpoint, best_fstype = mountpoint, tail_fields[0]
         return best_fstype
 
-    def _proc_holders(self) -> Iterator[FdHolder]:
-        target = str(self.db_path)
-        for entry in _PROC.iterdir():
-            if not entry.name.isdigit():
+
+def read_write_holders_across(paths: Sequence[Path]) -> list[tuple[Path, FdHolder]]:
+    """Every (path, writing PROCESS) pair across *paths*, reading the descriptor table ONCE.
+
+    The table is the same for every path, so asking per path re-reads all of it per
+    path: a real data dir holds 52 control-DB artifacts (the sidecars plus every
+    dated rename), which turned one probe into 52 and a doctor run into a 20-second
+    one. Matching a whole set against a single read is the same answer at a 52nd of
+    the cost.
+
+    Deduplicated per (path, process): one writer with eleven descriptors on a file
+    is one writer, and reporting it eleven times buries the count that matters.
+    """
+    targets = {str(path): path for path in paths}
+    if not targets:
+        return []
+    found = _proc_holders(targets) if _PROC.is_dir() else _lsof_holders(targets)
+    writers = {(str(path), holder.pid): (path, holder) for path, holder in found if holder.writable}
+    return [writers[key] for key in sorted(writers)]
+
+
+def _proc_holders(targets: Mapping[str, Path]) -> Iterator[tuple[Path, FdHolder]]:
+    for entry in _PROC.iterdir():
+        if entry.name.isdigit():
+            yield from _holders_for_pid(entry, targets)
+
+
+def _holders_for_pid(proc_dir: Path, targets: Mapping[str, Path]) -> Iterator[tuple[Path, FdHolder]]:
+    try:
+        descriptors = list((proc_dir / "fd").iterdir())
+    except OSError:
+        return
+    for descriptor in descriptors:
+        try:
+            target = targets.get(str(descriptor.readlink()))
+            if target is None:
                 continue
-            yield from self._holders_for_pid(entry, target)
-
-    def _holders_for_pid(self, proc_dir: Path, target: str) -> Iterator[FdHolder]:
-        try:
-            descriptors = list((proc_dir / "fd").iterdir())
+            flags = _FDINFO_FLAGS.search((proc_dir / "fdinfo" / descriptor.name).read_text(encoding="utf-8"))
         except OSError:
-            return
-        for descriptor in descriptors:
-            try:
-                if str(descriptor.readlink()) != target:
-                    continue
-                flags = _FDINFO_FLAGS.search((proc_dir / "fdinfo" / descriptor.name).read_text(encoding="utf-8"))
-            except OSError:
-                continue
-            writable = flags is not None and int(flags.group(1), 8) & _O_ACCMODE != _O_RDONLY
-            yield FdHolder(int(proc_dir.name), self._command(proc_dir), writable)
+            continue
+        writable = flags is not None and int(flags.group(1), 8) & _O_ACCMODE != _O_RDONLY
+        yield target, FdHolder(int(proc_dir.name), _command(proc_dir), writable)
 
-    @staticmethod
-    def _command(proc_dir: Path) -> str:
-        try:
-            return (proc_dir / "comm").read_text(encoding="utf-8").strip()
-        except OSError:
-            return "?"
 
-    def _lsof_holders(self) -> Iterator[FdHolder]:
-        """Parse ``lsof -F pcan`` — the only descriptor view a non-Linux host offers.
+def _command(proc_dir: Path) -> str:
+    try:
+        return (proc_dir / "comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "?"
 
-        ``lsof`` exits 1 when nothing holds the file, which is an ANSWER (no holders),
-        not a failure — hence the widened *expected_codes*.
-        """
-        lsof = shutil.which("lsof")
-        if lsof is None:
-            return
-        try:
-            result = run_allowed_to_fail(
-                [lsof, "-F", "pcan", "--", str(self.db_path)],
-                expected_codes=None,
-                timeout=_LSOF_TIMEOUT_SECONDS,
-            )
-        except (OSError, CommandFailedError):
-            return
-        pid, command = 0, "?"
-        for line in result.stdout.splitlines():
-            tag, value = line[:1], line[1:]
-            if tag == "p" and value.isdigit():
-                pid, command = int(value), "?"
-            elif tag == "c":
-                command = value
-            elif tag == "a" and pid:
-                yield FdHolder(pid, command, writable=value.strip() in _LSOF_WRITABLE_MODES)
+
+def _lsof_holders(targets: Mapping[str, Path]) -> Iterator[tuple[Path, FdHolder]]:
+    """Parse one ``lsof -F pcan`` over every target — the only descriptor view a non-Linux host offers.
+
+    ``lsof`` exits 1 when nothing holds the files, which is an ANSWER (no holders),
+    not a failure — hence the widened *expected_codes*. The ``n`` (name) field
+    arrives AFTER the ``a`` (access) field of the same record, so a record is emitted
+    only once its name has been read; that is what lets one invocation cover many files.
+    """
+    lsof = shutil.which("lsof")
+    if lsof is None:
+        return
+    try:
+        result = run_allowed_to_fail(
+            [lsof, "-F", "pcan", "--", *sorted(targets)],
+            expected_codes=None,
+            timeout=_LSOF_TIMEOUT_SECONDS,
+        )
+    except (OSError, CommandFailedError):
+        return
+    pid, command, writable = 0, "?", False
+    for line in result.stdout.splitlines():
+        tag, value = line[:1], line[1:]
+        if tag == "p" and value.isdigit():
+            pid, command = int(value), "?"
+        elif tag == "c":
+            command = value
+        elif tag == "a":
+            writable = value.strip() in _LSOF_WRITABLE_MODES
+        elif tag == "n" and pid:
+            target = targets.get(value)
+            if target is not None:
+                yield target, FdHolder(pid, command, writable)

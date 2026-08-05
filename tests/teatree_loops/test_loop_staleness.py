@@ -216,6 +216,29 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
         assert [loop.name for loop in stale] == ["tickets"]
         assert stale[0].suppressed is True
 
+    def test_force_on_beats_an_off_preset(self) -> None:
+        # The operator ran `t3 loop override tickets on` against a preset masking it off.
+        # The verdict ADMITS it, so its silence is a real fault — reading the mask alone
+        # read a wedged loop the operator explicitly demanded as deliberately idle.
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        self._activate({"tickets": False})
+        LoopState.objects.override("tickets", on=True)
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is False
+
+    def test_a_hold_still_beats_a_force_on(self) -> None:
+        # A durable ``LoopState`` hold is the stronger plane and keeps its explanation.
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        self._activate({"tickets": False})
+        LoopState.objects.override("tickets", on=True)
+        LoopState.objects.pause("tickets")
+        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is True
+
     def test_a_column_disabled_loop_no_mode_admits_is_not_measured(self) -> None:
         # Neither a member nor operator-enabled — nothing is supposed to drive it, so it
         # is not part of the fleet reading at all.
@@ -238,6 +261,21 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
             stale = stale_loops(timezone.now())
         assert [loop.name for loop in stale] == ["tickets"]
         assert stale[0].suppressed is True
+
+    def test_an_all_off_mask_over_real_mode_rows_is_a_frozen_fleet(self) -> None:
+        # The seven-hour incident end to end, through the REAL resolver rather than a
+        # patched seam: the mask is a `Mode` row, so nothing about the verdict is stubbed.
+        # Measuring membership alone would empty the denominator and report the total,
+        # deliberate, forgotten shutdown as a healthy zero-loop fleet (#4196).
+        names = ("tickets", "dispatch", "ship")
+        for name in names:
+            _loop(name, cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        self._activate(dict.fromkeys(names, False))
+        with patch(_REGISTRY_SEAM, return_value=tuple(_mini(name) for name in names)):
+            health = loop_health(timezone.now())
+        assert health.considered == len(names)
+        assert health.frozen_fleet is True
+        assert not health.ok
 
     def test_admission_counts_the_admitted_total_not_the_enabled_column(self) -> None:
         _loop("tickets", cadence=300, ran_ago=dt.timedelta(seconds=60), enabled=False)

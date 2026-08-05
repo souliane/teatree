@@ -19,6 +19,7 @@ import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
+from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
@@ -88,8 +89,7 @@ class TestLifecycleCommands(TestCase):
                 extra={"worktree_path": wt_path},
             )
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
@@ -155,8 +155,7 @@ class TestHealMissingProvisionedDb(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _ticket, _wt, wt_path = self._make_worktree(tmp_path)
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
             reprovision = MagicMock()
             reprovision.run.return_value = MagicMock(ok=True, detail="healed")
             with (
@@ -179,8 +178,7 @@ class TestHealMissingProvisionedDb(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _ticket, _wt, wt_path = self._make_worktree(tmp_path)
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
@@ -230,8 +228,7 @@ class TestProvisionTicketFlag(TestCase):
             manual_path.mkdir()
             (manual_path / ".git").write_text("gitdir: /some/.git/worktrees/manual-backend\n")
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),

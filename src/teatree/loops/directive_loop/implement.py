@@ -70,11 +70,7 @@ def schedule_directive_implementation(
         issue_url=issue_url,
         defaults={"role": Ticket.Role.AUTHOR, "short_description": short},
     )
-    extra = dict(ticket.extra or {})
-    extra[_DIRECTIVE_KEY] = directive.pk
-    if extra != ticket.extra:
-        ticket.extra = extra
-        ticket.save(update_fields=["extra"])
+    ticket.merge_extra(set_keys={_DIRECTIVE_KEY: directive.pk})
     task: Task | None = None
     already_scheduled = Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists()
     if not already_scheduled and ticket.state == Ticket.State.NOT_STARTED:

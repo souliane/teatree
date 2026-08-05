@@ -1,12 +1,17 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, ToolResultBlock
+from pydantic_ai import Agent
 from pydantic_ai.exceptions import ApprovalRequired, ModelRetry, UnexpectedModelBehavior
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.function import FunctionToolset
 
+from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
 from teatree.agents.lane_b.gating import (
     _MAX_TRACKED_RUNS,
     HardDenyToolset,
@@ -186,6 +191,110 @@ class TestHardDenyRetryCap:
             asyncio.run(toolset.call_tool("Bash", _DENIED_CALL, SimpleNamespace(run_id="run-1"), None))
         with pytest.raises(ModelRetry):
             asyncio.run(toolset.call_tool("Bash", _DENIED_CALL, SimpleNamespace(run_id="run-2"), None))
+
+
+class TestToolFailuresReachTheModelInsteadOfKillingTheRun:
+    """A tool failing on the model's OWN input is retryable, not fatal.
+
+    A jailed path escaped ``call_tool`` uncaught, propagated out of ``Agent.run``
+    (nothing in the session's ``_RUN_ERRORS`` matches it) and killed the whole
+    dispatch with a traceback — one bad path threw away everything a working
+    coding run had done, when the model only needed to be told the path was
+    outside its worktree. The observed instance:
+    ``PathTraversalError: path '<other worktree>/tests/test_x.py' resolves outside
+    the worktree root '<jail>'``.
+    """
+
+    @staticmethod
+    def _reads_then_answers(path: str) -> FunctionModel:
+        """Call ``Read`` on *path*, then finish — the shape a coding run opens with."""
+        turns = {"n": 0}
+
+        def stream_fn(_messages: object, _info: object) -> object:
+            turns["n"] += 1
+            turn = turns["n"]
+
+            async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
+                if turn == 1:
+                    yield {0: DeltaToolCall(name="Read", json_args=json.dumps({"path": path}), tool_call_id="c1")}
+                else:
+                    yield "done"
+
+            return gen()
+
+        return FunctionModel(stream_function=stream_fn)
+
+    def _run(self, model: FunctionModel, root: Path) -> list[object]:
+        harness = PydanticAiHarness(model=model, phase="coding")
+
+        async def drive() -> list[object]:
+            async with harness.open(ClaudeAgentOptions(cwd=str(root))) as session:
+                await session.query("implement the ticket")
+                return [message async for message in session.receive_response()]
+
+        return asyncio.run(drive())
+
+    @staticmethod
+    def _errors(messages: list[object]) -> list[str]:
+        return [
+            str(block.content)
+            for message in messages
+            if isinstance(message, AssistantMessage)
+            for block in message.content
+            if isinstance(block, ToolResultBlock) and block.is_error
+        ]
+
+    @pytest.mark.parametrize(
+        ("bad_path", "expected"),
+        [
+            ("/etc/passwd", "resolves outside the worktree root"),
+            ("nope.py", "No such file"),
+        ],
+        ids=["outside-the-jail", "missing-file"],
+    )
+    def test_a_bad_path_comes_back_as_a_tool_error_and_the_run_finishes(
+        self, tmp_path: Path, bad_path: str, expected: str
+    ) -> None:
+        # RED before the fix: the exception escaped Agent.run and this raised.
+        messages = self._run(self._reads_then_answers(bad_path), tmp_path)
+
+        assert any(expected in error for error in self._errors(messages)), self._errors(messages)
+        terminal = next(m for m in messages if isinstance(m, ResultMessage))
+        assert terminal.is_error is False, "the model was told and corrected — the run must not die"
+        assert terminal.result == "done"
+
+    def test_a_readable_file_still_reads(self, tmp_path: Path) -> None:
+        # The anti-over-block twin: converting failures into retries must not make a
+        # legitimate call fail. Without it the rows above are satisfied by a toolset
+        # that refuses everything.
+        (tmp_path / "a.py").write_text("x = 1\n")
+
+        messages = self._run(self._reads_then_answers("a.py"), tmp_path)
+
+        assert self._errors(messages) == []
+        assert next(m for m in messages if isinstance(m, ResultMessage)).result == "done"
+
+    def test_a_teatree_bug_still_propagates_untouched(self, tmp_path: Path) -> None:
+        # The boundary: ONLY the model's own input errors are converted. A defect in
+        # teatree's code must still land as the driver's sdk_error traceback rather
+        # than be laundered into "the model got it wrong" and silently retried.
+        def broken(path: str) -> str:
+            msg = f"a genuine bug in teatree, reading {path}"
+            raise ZeroDivisionError(msg)
+
+        inner: FunctionToolset[None] = FunctionToolset()
+        inner.add_function(broken, takes_ctx=False, name="Read")
+        agent: Agent[None, str] = Agent(
+            self._reads_then_answers("a.py"), toolsets=[HardDenyToolset(inner, cwd=tmp_path)]
+        )
+        session = PydanticAiHarnessSession(agent, model_name="test", phase="coding")
+
+        async def drive() -> list[object]:
+            await session.query("go")
+            return [message async for message in session.receive_response()]
+
+        with pytest.raises(ZeroDivisionError):
+            asyncio.run(drive())
 
 
 class TestDenialCountsBounded:

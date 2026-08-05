@@ -43,6 +43,12 @@ class TestBuildManagementCommandsDocPayload:
         names = {entry["name"] for entry in payload["commands"]}
         assert "tasks_session_view" not in names
 
+    def test_every_helper_module_in_the_commands_package_is_excluded(self) -> None:
+        """A helper with no Command class crashes load_command_class, killing the whole build."""
+        payload = build_management_commands_doc_payload()
+        names = {entry["name"] for entry in payload["commands"]}
+        assert "tasks_interactive_launch" not in names
+
     def test_each_entry_has_name_help_and_subcommands(self) -> None:
         payload = build_management_commands_doc_payload()
         for entry in payload["commands"]:

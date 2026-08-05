@@ -50,9 +50,12 @@ class TestSkillsDeclaredInApmManifest:
 
         assert declared[0].source == "souliane/skills/ac-python#d0008a3"
 
-    def test_remediation_names_the_command_that_provisions_it(self, tmp_path: Path) -> None:
+    def test_remediation_is_the_runnable_install_line_for_the_declared_spec(self, tmp_path: Path) -> None:
         declared = skills_declared_in_apm_manifest(_write_manifest(tmp_path))
 
+        # A pasteable command, pinned to the manifest's own spec — not a generic
+        # `apm install` shape the reader still has to resolve to a source.
+        assert "apm install souliane/skills/ac-python#d0008a3" in declared[0].remediation
         assert "t3 setup" in declared[0].remediation
 
     def test_an_absent_manifest_raises_rather_than_reporting_zero_dependencies(self, tmp_path: Path) -> None:

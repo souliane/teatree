@@ -58,7 +58,6 @@ class DispatchOptions:
 
     test_path: str = ""
     target: str = ""
-    headed: bool = False
     update_snapshots: bool = False
     docker: bool = True
     linked_to: int = 0
@@ -80,7 +79,6 @@ class Command(MachineOutputCommand):
         *,
         at: str = "",
         target: str = "",
-        headed: bool = False,
         update_snapshots: bool = False,
         docker: bool = True,
         linked_to: int = 0,
@@ -121,7 +119,6 @@ class Command(MachineOutputCommand):
         opts = DispatchOptions(
             test_path=test_path,
             target=target,
-            headed=headed,
             update_snapshots=update_snapshots,
             docker=docker,
             linked_to=linked_to,
@@ -145,7 +142,6 @@ class Command(MachineOutputCommand):
             return self.project(
                 test_path=opts.test_path,
                 target=opts.target,
-                headed=opts.headed,
                 docker=opts.docker,
                 update_snapshots=opts.update_snapshots,
             )
@@ -153,7 +149,6 @@ class Command(MachineOutputCommand):
             return self.external(
                 test_path=opts.test_path,
                 target=opts.target,
-                headed=opts.headed,
                 update_snapshots=opts.update_snapshots,
                 linked_to=opts.linked_to,
                 branch=opts.branch,
@@ -304,7 +299,6 @@ class Command(MachineOutputCommand):
         *,
         repo: str = "",
         target: str = "",
-        headed: bool = False,
         update_snapshots: bool = False,
         playwright_args: str = "",
         linked_to: int = 0,
@@ -312,15 +306,14 @@ class Command(MachineOutputCommand):
         artifacts_dir: str = "",
         no_evidence: bool = False,
     ) -> str:
-        """Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo).
+        """Run Playwright tests from an external specs repo (the overlay's own, or --repo).
 
-        Three sources for the Playwright working directory (first match wins):
+        Two sources for the Playwright working directory (first match wins):
 
         - ``--repo <name>``: clone the named entry from the DB-home ``e2e_repos`` config and use its ``e2e_dir``.
         - else the overlay's ``get_e2e_config`` repo (its ``url`` cloned at ``ref``), when declared.
-        - else the ``T3_PRIVATE_TESTS`` env var / the DB-home ``private_tests`` directory.
 
-        ``--branch``/``--ref`` overrides a clone's specs ref (the ``--repo`` default or the
+        ``--branch``/``--ref`` overrides the specs ref (the ``--repo`` default or the
         overlay ``ref``) to run from an open MR's branch.
 
         ``--target dev|qa|local`` is deterministic: remote targets keep the
@@ -356,7 +349,7 @@ class Command(MachineOutputCommand):
         """
         overlay_repo = _runners.overlay_e2e_repo(get_overlay().metadata.get_e2e_config())
         try:
-            private_tests_path = _runners.resolve_external_specs_path(repo, branch, overlay_repo=overlay_repo)
+            specs_path = _runners.resolve_external_specs_path(repo, branch, overlay_repo=overlay_repo)
         except _runners.E2eSpecsResolutionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(exc.exit_code) from exc
@@ -375,12 +368,10 @@ class Command(MachineOutputCommand):
         opts = PlaywrightOptions(
             test_path=test_path,
             update_snapshots=update_snapshots,
-            headed=headed,
             extra=[*overlay_args, *caller_args],
         )
         env = _build_e2e_env(
             frontend_url,
-            headed=headed,
             target=resolved_target,
             context=_runners.make_e2e_env_context(
                 test_path,
@@ -391,7 +382,7 @@ class Command(MachineOutputCommand):
             ),
         )
 
-        self.stdout.write(f"  Running from: {private_tests_path}")
+        self.stdout.write(f"  Running from: {specs_path}")
         self.stdout.write(f"  Target: {resolved_target}")
         self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
         if env.get("CUSTOMER"):
@@ -400,7 +391,7 @@ class Command(MachineOutputCommand):
         self._run_preflight(env)
 
         cmd = ["npx", "playwright", "test", *opts.to_args()]
-        rc = run_streamed(cmd, cwd=private_tests_path, env=env, check=False)
+        rc = run_streamed(cmd, cwd=specs_path, env=env, check=False)
         if rc == 0:
             return "E2E passed."
         self.stderr.write(f"E2E failed (exit {rc}).")
@@ -412,7 +403,6 @@ class Command(MachineOutputCommand):
         test_path: str = "",
         *,
         target: str = "",
-        headed: bool = False,
         docker: bool = True,
         update_snapshots: bool = False,
     ) -> str:
@@ -433,7 +423,6 @@ class Command(MachineOutputCommand):
         opts = _runners.ProjectRunOptions(
             test_path=test_path,
             resolved_target=self._resolve_target(target),
-            headed=headed,
             docker=docker,
             update_snapshots=update_snapshots,
             artifacts_dir=self._resolve_artifacts_dir(""),

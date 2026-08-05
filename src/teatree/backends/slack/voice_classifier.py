@@ -16,7 +16,7 @@ six sub-agents the same day it was saved; this gate is the
 deterministic structural fix.
 
 The mirror failure mode this also guards against. A user-voice review
-request ("please review !6264", "I'd appreciate a look") posted under
+request ("please review !42", "I'd appreciate a look") posted under
 the bot token is the inverse mismatch — the message reads to
 colleagues as a bot announcement rather than the operator's personal
 request, breaking the per-overlay routing sibling rule

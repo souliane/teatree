@@ -1,6 +1,7 @@
 ---
 name: next
 description: Wrap up the current session — retro, structured result, pipeline handoff.
+compatibility: macOS/Linux, git, the `t3` CLI on PATH.
 requires:
   - retro
 metadata:

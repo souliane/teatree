@@ -17,6 +17,7 @@ Mirrors openclaw's ``vitest/no-disabled-tests``. AST-based, sibling of
 """
 
 import ast
+from pathlib import PurePosixPath
 
 from teatree.utils.run import run_allowed_to_fail
 
@@ -24,12 +25,26 @@ _UNCONDITIONAL_SKIP_NAMES = frozenset({"skip"})
 _SKIPIF_NAMES = frozenset({"skipif", "skipIf"})
 
 
+_TEST_DIR_NAMES = frozenset({"tests", "e2e"})
+
+
+def _is_test_path(path: str) -> bool:
+    """Whether *path* lives under a test directory, at any depth.
+
+    A leading-``tests/`` check scans nothing in a repo whose suite sits at
+    ``overlay/tests/`` or ``vendor/<dep>/tests/``, and the hook then reports green
+    having read no file — worse than not running it, because it looks enforced.
+    Matching a path SEGMENT keeps ``latest/`` and ``protests/`` out.
+    """
+    return bool(_TEST_DIR_NAMES & set(PurePosixPath(path).parts[:-1]))
+
+
 def _staged_test_files() -> list[str]:
     result = run_allowed_to_fail(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"],
         expected_codes=None,
     )
-    return [f for f in result.stdout.strip().splitlines() if f.startswith(("tests/", "e2e/"))]
+    return [f for f in result.stdout.strip().splitlines() if _is_test_path(f)]
 
 
 def _decorator_tail(node: ast.expr) -> str:

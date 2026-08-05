@@ -14,6 +14,7 @@ from teatree.paths import (
     _seed_isolated_db,
     _sqlite_snapshot,
     _worktree_isolation_root,
+    find_control_db_artifacts,
     find_overlay_db,
     find_stale_dbs,
     resolve_data_dir,
@@ -403,6 +404,78 @@ def test_finds_nested_layouts(tmp_path: Path) -> None:
     nested.touch()
 
     assert list(find_stale_dbs(tmp_path, canonical=canonical)) == [nested]
+
+
+class TestFindControlDbArtifacts:
+    """Every file under the data dir a host process could still be writing the control DB through.
+
+    Wider than ``find_stale_dbs`` in the two directions that actually bit: a RENAME
+    does not close a descriptor, so the writer a ``.precorrupt-*`` rename was meant
+    to retire keeps writing to the same inode under the new name; and the
+    ``-wal``/``-shm`` sidecars ARE the database, so a writer holding the
+    write-ahead log is a writer.
+    """
+
+    def test_finds_a_renamed_database_find_stale_dbs_cannot_see(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "control-db" / "db.sqlite3"
+        canonical.parent.mkdir()
+        canonical.touch()
+        renamed = tmp_path / "db.sqlite3.precorrupt-inode-20260727"
+        renamed.touch()
+
+        assert list(find_stale_dbs(tmp_path, canonical=canonical)) != [renamed], "control: the narrow sweep misses it"
+        assert renamed in set(find_control_db_artifacts(tmp_path, canonical=canonical))
+
+    def test_finds_the_write_ahead_log_and_shared_memory_sidecars(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "control-db" / "db.sqlite3"
+        canonical.parent.mkdir()
+        canonical.touch()
+        for name in ("db.sqlite3", "db.sqlite3-wal", "db.sqlite3-shm"):
+            (tmp_path / name).touch()
+
+        found = set(find_control_db_artifacts(tmp_path, canonical=canonical))
+        assert found == {tmp_path / "db.sqlite3", tmp_path / "db.sqlite3-wal", tmp_path / "db.sqlite3-shm"}
+
+    def test_excludes_the_canonical_database_itself(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "db.sqlite3"
+        canonical.touch()
+        assert list(find_control_db_artifacts(tmp_path, canonical=canonical)) == []
+
+    def test_finds_the_legacy_namespaced_layout_one_level_down(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "control-db" / "db.sqlite3"
+        canonical.parent.mkdir()
+        canonical.touch()
+        namespaced = tmp_path / "t3-teatree" / "db.sqlite3-wal"
+        namespaced.parent.mkdir()
+        namespaced.touch()
+
+        assert namespaced in set(find_control_db_artifacts(tmp_path, canonical=canonical))
+
+    def test_does_not_walk_the_backup_tree(self, tmp_path: Path) -> None:
+        # The data dir also roots backups — 62k entries on a real install, and a full
+        # `**` walk of it over a bind mount measured 20-115s for files no live process
+        # holds. A control database never lives that deep.
+        canonical = tmp_path / "control-db" / "db.sqlite3"
+        canonical.parent.mkdir()
+        canonical.touch()
+        archived = tmp_path / "backups" / "20260727" / "db.sqlite3"
+        archived.parent.mkdir(parents=True)
+        archived.touch()
+
+        assert archived not in set(find_control_db_artifacts(tmp_path, canonical=canonical))
+
+    def test_ignores_directories_and_unrelated_files(self, tmp_path: Path) -> None:
+        canonical = tmp_path / "control-db" / "db.sqlite3"
+        canonical.parent.mkdir()
+        canonical.touch()
+        (tmp_path / "db.sqlite3.d").mkdir()
+        (tmp_path / "availability_presence").touch()
+
+        assert list(find_control_db_artifacts(tmp_path, canonical=canonical)) == []
+
+    def test_skips_a_missing_data_dir(self, tmp_path: Path) -> None:
+        missing = tmp_path / "absent"
+        assert list(find_control_db_artifacts(missing, canonical=missing / "db.sqlite3")) == []
 
 
 class TestFindOverlayDb:

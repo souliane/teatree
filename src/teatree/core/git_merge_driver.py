@@ -23,19 +23,40 @@ _DRIVER_NAME = "regenerate generated docs on conflict (souliane/teatree#3582)"
 _DRIVER_SCRIPT = Path("scripts/hooks/git_merge_generated.py")
 
 
-def driver_command() -> str:
-    """The ``merge.generated.driver`` value, with the driver script named ABSOLUTELY.
+def driver_command(checkout: Path | None = None) -> str:
+    """The ``merge.generated.driver`` value, naming the driver script for *checkout*.
 
     ``uv run python`` supplies the venv interpreter with teatree + Django installed.
-    git runs a merge driver with cwd at the top of the working tree, which in a fork
-    that vendors core is the FORK root — where ``scripts/hooks/`` is the fork's own
-    and holds no driver script. A repo-relative command therefore died with
-    ``can't open file '<fork>/scripts/hooks/git_merge_generated.py'`` on every merge.
     :func:`~teatree.paths.teatree_source_root` is layout-independent (pure stdlib, so
     this module stays Django-free), giving the repo root in a plain clone and
     ``<repo>/vendor/teatree`` in a fork.
+
+    The script is named RELATIVE to *checkout* whenever it lives inside it. git runs a
+    merge driver with cwd at the top of the working tree, so ``scripts/hooks/…`` in a
+    plain clone and ``vendor/teatree/scripts/hooks/…`` in a fork both resolve — a
+    core-relative command (the original shape) named nothing in a fork, which is the
+    ``can't open file '<fork>/scripts/hooks/git_merge_generated.py'`` failure, but a
+    CHECKOUT-relative one is exactly the path git will look for.
+
+    Relative matters beyond tidiness: ``.git/config`` is per-clone, and a clone
+    bind-mounted into a container is the SAME config file under two different absolute
+    paths. With an absolute command, whichever side ran ``t3 setup`` last silently
+    pointed the other side's merges at a path that does not exist there, and git
+    answers a missing driver by falling back to a textual 3-way merge — a generated
+    doc resolved by hand rather than by regeneration, which is the one thing
+    ``.gitattributes`` marks these paths to prevent. A relative command is identical
+    on both sides, so neither can clobber the other.
+
+    A script outside *checkout* (an installed teatree serving a repo that does not
+    vendor it, and the no-checkout call) has no relative form and stays absolute.
     """
-    return f"uv run python {teatree_source_root() / _DRIVER_SCRIPT} %O %A %B %P"
+    script = teatree_source_root() / _DRIVER_SCRIPT
+    if checkout is not None:
+        try:
+            script = script.resolve().relative_to(checkout.resolve())
+        except (OSError, ValueError):
+            script = teatree_source_root() / _DRIVER_SCRIPT
+    return f"uv run python {script} %O %A %B %P"
 
 
 def install_merge_driver(checkout: Path) -> str:
@@ -50,7 +71,7 @@ def install_merge_driver(checkout: Path) -> str:
             ["git", "-C", str(checkout), "config", "merge.generated.name", _DRIVER_NAME],
         )
         run_allowed_to_fail(
-            ["git", "-C", str(checkout), "config", "merge.generated.driver", driver_command()],
+            ["git", "-C", str(checkout), "config", "merge.generated.driver", driver_command(checkout)],
         )
     except (OSError, CommandFailedError) as exc:
         return (
