@@ -36,7 +36,7 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
     "review_verdict": {
         "review_verdict": {
             "verdict": "merge_safe",
-            "reviewed_sha": "0" * 40,
+            "reviewed_sha": "<the full 40-char head sha you were dispatched for>",
             "reviewer_identity": "<your reviewer id>",
             "gh_verify_result": "green",
             "blast_class": "logic",

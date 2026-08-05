@@ -15,7 +15,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
-from teatree.agents.result_schema import check_evidence
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task
 from teatree.core.models.phase_landing import phase_landing_evidence
 
@@ -26,11 +26,16 @@ _SLUG = "souliane/teatree"
 _PR_ID = 4242
 _HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
 _OTHER_HEAD = "f89874729bb0a41ce6d5713a2c0e9f38b7a1d4e5"
-_PR_URL = f"https://github.com/{_SLUG}/pull/{_PR_ID}"
 
 
-def _reviewing_task_via_dispatch() -> tuple[Task, AutoReviewDispatch]:
-    dispatch = AutoReviewDispatch.enqueue(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD, pr_url=_PR_URL, overlay="teatree")
+def _reviewing_task_via_dispatch(*, pr_id: int = _PR_ID) -> tuple[Task, AutoReviewDispatch]:
+    dispatch = AutoReviewDispatch.enqueue(
+        slug=_SLUG,
+        pr_id=pr_id,
+        head_sha=_HEAD,
+        pr_url=f"https://github.com/{_SLUG}/pull/{pr_id}",
+        overlay="teatree",
+    )
     assert dispatch is not None
     task = dispatch.task
     assert task is not None
@@ -54,6 +59,14 @@ def _verdict_envelope(
             "findings": [],
         },
     }
+
+
+def _verdict_envelope_without_reviewed_sha() -> dict[str, object]:
+    envelope = _verdict_envelope()
+    verdict = envelope["review_verdict"]
+    assert isinstance(verdict, dict)
+    del verdict["reviewed_sha"]
+    return envelope
 
 
 class TestHeadlessReviewerRecordsVerdictWithoutBash(TestCase):
@@ -144,6 +157,82 @@ class TestVerdictBindsToTheDispatchHead(TestCase):
         assert task.status == Task.Status.FAILED
         assert _OTHER_HEAD[:8] in attempt.error
         assert _HEAD[:8] in attempt.error
+
+
+class TestAnUndisclosedHeadIsRefusedLikeADivergentOne(TestCase):
+    """#4168: an omitted ``reviewed_sha`` used to be read as agreement with the dispatch head.
+
+    ``merge_safe`` was then recorded at that head with no consistency check performed at
+    all — the rule #4158 states ("would vouch for a tree nobody reviewed") enforced only
+    against reviewers that disclose a head. The shell path already refuses an empty
+    ``--reviewed-sha``; these pin the envelope path to the same answer.
+    """
+
+    def test_an_omitted_reviewed_sha_records_nothing(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _verdict_envelope_without_reviewed_sha(), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert phase_landing_evidence(task, trust_phase_artifact=True) == ""
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "reviewed_sha" in attempt.error
+
+    def test_an_empty_reviewed_sha_records_nothing(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _verdict_envelope(reviewed_sha="   "), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "reviewed_sha" in attempt.error
+
+    def test_the_refusal_names_the_dispatch_head_the_reviewer_should_have_bound_to(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _verdict_envelope_without_reviewed_sha(), phase="reviewing")
+
+        assert _HEAD in attempt.error
+
+
+class TestEveryRequiredFieldIsActuallyRefusedWhenOmitted(TestCase):
+    """#4168: the schema's ``required`` list and the recorder's refusals are ONE fact.
+
+    They were two, and a field declared required but never enforced reads as a guard while
+    guarding nothing — exactly the miss ``reviewed_sha`` was. This walks the declared list
+    rather than a hand-copy of it, so adding a name there without teaching the recorder to
+    refuse its omission turns red.
+    """
+
+    def _required_fields(self) -> list[str]:
+        properties = RESULT_JSON_SCHEMA["properties"]
+        assert isinstance(properties, dict)
+        schema = properties["review_verdict"]
+        assert isinstance(schema, dict)
+        required = schema["required"]
+        assert isinstance(required, list)
+        assert required, "an empty required list would pass this vacuously"
+        return [str(name) for name in required]
+
+    def test_omitting_any_declared_required_field_records_no_verdict(self) -> None:
+        for offset, field in enumerate(self._required_fields()):
+            with self.subTest(field=field):
+                pr_id = _PR_ID + offset
+                task, _ = _reviewing_task_via_dispatch(pr_id=pr_id)
+                envelope = _verdict_envelope()
+                verdict = envelope["review_verdict"]
+                assert isinstance(verdict, dict)
+                assert field in verdict, f"the canonical envelope never carried {field!r} — the fixture is stale"
+                del verdict[field]
+
+                attempt = record_result_envelope(task, envelope, phase="reviewing")
+
+                assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=pr_id).exists()
+                task.refresh_from_db()
+                assert task.status == Task.Status.FAILED
+                assert field in attempt.error
 
 
 class TestReviewingEvidenceAcceptsVerdict(TestCase):

@@ -54,6 +54,8 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "the verdict is recorded at that head and the merge gate compares it against the forge's live head.",
     "Any other head is REFUSED and records nothing — if the head moved under you, review the dispatched",
     "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
+    "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
+    "dispatched one, so a verdict that names no head records nothing at all.",
     "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
 )
 

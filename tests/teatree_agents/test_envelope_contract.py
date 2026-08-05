@@ -67,6 +67,36 @@ class TestEnvelopeContractText(SimpleTestCase):
             assert set(envelope_example(phase)) <= set(allowed_keys()), phase
 
 
+class TestReviewVerdictMustDiscloseTheHeadItBoundTo(SimpleTestCase):
+    """#4168: the head is the one field the merge-safety chain cannot infer."""
+
+    def _required_properties(self) -> list[str]:
+        properties = RESULT_JSON_SCHEMA["properties"]
+        assert isinstance(properties, dict)
+        schema = properties["review_verdict"]
+        assert isinstance(schema, dict)
+        required = schema["required"]
+        assert isinstance(required, list)
+        return [str(name) for name in required]
+
+    def _example_reviewed_sha(self) -> str:
+        verdict = envelope_example("reviewing").get("review_verdict")
+        assert isinstance(verdict, dict)
+        asserted_head = verdict.get("reviewed_sha")
+        assert isinstance(asserted_head, str)
+        return asserted_head
+
+    def test_reviewed_sha_is_a_required_property(self) -> None:
+        assert "reviewed_sha" in self._required_properties()
+
+    def test_the_copyable_example_shows_a_placeholder_not_a_literal_sha(self) -> None:
+        # A verbatim copy of a literal SHA is indistinguishable from a real assertion —
+        # the undisclosed-head miss wearing a disclosed head's clothes.
+        asserted_head = self._example_reviewed_sha()
+        assert asserted_head.startswith("<")
+        assert asserted_head.endswith(">")
+
+
 class TestSystemContextCarriesTheContract(TestCase):
     def _context(self, phase: str) -> str:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/3660")
