@@ -55,6 +55,8 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
 17a. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
 17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
+17b. [Self-Apply `needs-triage` on Agent-Filed Issues](#self-apply-needs-triage-on-agent-filed-issues-non-negotiable)
+17c. [A Filed Issue Separates OBSERVED From INFERRED](#a-filed-issue-separates-observed-from-inferred-non-negotiable)
 18. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
 19. [Public-Repo Commit Author Identity](#public-repo-commit-author-identity-non-negotiable)
 20. [GitLab Inline Comments](#gitlab-inline-comments)
@@ -551,6 +553,21 @@ When in doubt, apply `needs-triage` — a withheld issue costs the maintainer on
 
 The label governs an issue that is going to exist. Whether it should exist at all is decided one step earlier by the backlog-reuse precondition — search the open backlog, extend a suitable host rather than adding a near-duplicate, one issue per root cause — which is canonical in `AGENTS.md` § "Issue Creation" and is not restated here.
 
+## A Filed Issue Separates OBSERVED From INFERRED (Non-Negotiable)
+
+A root-cause claim in a filed issue is load-bearing: the next reader starts from it, so a wrong mechanism sends them down the wrong path and costs more than filing no mechanism at all. Keep the two apart in the body, labelled:
+
+- **Observed** — the commands run, their verbatim output, the states read, the `file:line` inspected. Reproducible: anyone re-running it gets the same thing.
+- **Inferred** — the mechanism you believe connects those observations. A hypothesis until an experiment separates it from the alternatives.
+
+Then:
+
+- **An inference written in the observed voice is a claim you did not make.** "X fails because Y", when all you saw was X, reads to the next person as a measured fact.
+- **When the mechanism rests on a SINGLE observation, say so and name the experiment that would confirm it.** One observation is consistent with several mechanisms; naming the discriminating experiment turns a guess into a next step.
+- Stated uncertainty is cheap; a confidently wrong root cause is not — and it is invisible, because a plausible mechanism is never questioned again.
+
+This is the published-artifact sibling of § "Re-Validate a Reused Guard in a New Destructive Context" and its "mark every load-bearing premise VERIFIED or UNVERIFIED" clause: that rule scopes to a sub-agent BRIEF, this one to anything that leaves the machine.
+
 ## Leak Remediation — Silent Scrubs (Non-Negotiable)
 
 When remediating a privacy leak on a public repo (force-push to drop PII, delete a comment that exposed a credential, rewrite a branch that leaked internal data), **every public artifact produced during the remediation must be neutral**. Do not name what leaked, do not name that a leak occurred, do not describe the scrub. Announcing the remediation on a public surface amplifies the leak (Streisand effect) — the commit subject, the PR comment, and the branch name are all crawled, cached, and indexed.
@@ -623,6 +640,19 @@ gh pr create --base main --head 42-fix-empty-owner --fill --draft   # FORBIDDEN 
 ```
 
 Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_draft_default` (`evals/scenarios/subagent_prompt_drift.yaml`).
+
+**A dispatch brief must BOUND the test-worker multiplier (Non-Negotiable).** `-n auto` is in the repo's pytest `addopts` and in the lane runners, so EVERY dispatched agent sizes its own pool from the box's cores regardless of how many agents already run: N agents on a C-core box is N × C workers competing for one machine's RAM. **"Do not run the full suite" is NOT a bound** — it constrains which tests are selected, not how many processes they fork; a narrow node id at `-n auto` still spawns a worker per core. The lane runners' `bound_xdist_workers_to_memory` default is not one either: it reads the container's cgroup cap for **its own** process and cannot see the sibling agents. The only bound is the env var, and it belongs in the brief.
+
+The bound is a **ceiling, not a literal to paste**. Pick a small number, and where the environment already exports `PYTEST_XDIST_AUTO_NUM_WORKERS`, defer to it rather than overwrite it — a headless-dispatched agent already receives a per-agent value the governor computed from the live core count, the active-agent count and free memory (`agents/headless.py` → `with_test_worker_cap` → `core/admission_governor.py::per_agent_test_workers`), and on a loaded box that value is frequently **1**. On 8 cores with 4 agents live and 8 GB available it resolves to exactly 1, so a brief hardcoding `=4` quadruples the parallelism the governor just decided was safe — causing the OOM the rule exists to prevent:
+
+```bash
+# small ceiling, but NEVER above a value the environment already exported:
+PYTEST_XDIST_AUTO_NUM_WORKERS=${PYTEST_XDIST_AUTO_NUM_WORKERS:-4} uv run --no-sync python -m pytest <paths> -q --no-migrations -p no:cacheprovider
+```
+
+**Watch AVAILABLE MEMORY, not load average.** Load 30 with 10 GB free is a healthy box; load 12 with 2 GB free is an OOM about to happen — load says how many runnable processes there are, memory says whether the next one survives. Read free memory before dispatching another test-running agent, and wait rather than stack one more.
+
+A deterministic cross-agent worker cap HAS landed, but only for the **headless** lane — [#4107](https://github.com/souliane/teatree/issues/4107) and [#4157](https://github.com/souliane/teatree/issues/4157) shipped it, and every headless dispatch now exports the governor's computed per-agent value. The harness `Agent`/`Task` sub-agent path is NOT capped: neither `src/teatree/core/dispatch_admission.py` nor `hooks/scripts/dispatch_admission_gate.py` carries any test-worker or `XDIST` term, so what landed there is an agent-COUNT ceiling, not a worker cap. That is why the brief-level bound above still matters — on the harness dispatch path it remains the only thing between N sub-agents and an OOM.
 
 ## Prefer Native Tool APIs Over Filesystem Heuristics
 
