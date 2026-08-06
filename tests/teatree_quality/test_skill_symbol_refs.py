@@ -189,9 +189,11 @@ class TestResolver:
         assert resolve_module_local("main_clone_guard.handle_block_main_clone_mutation", index) is None
 
     def test_a_file_path_names_no_symbol_reading(self) -> None:
+        # The module is live, so attempting the symbol reading would report a missing
+        # `py` attribute on it — the tail names a file, and only the path reading applies.
         reason = resolve_path_qualified_symbol("agents/harness.py", build_repo_index(_REPO_ROOT))
         assert reason is not None
-        assert "py" not in reason.split()
+        assert "teatree.agents.harness" not in reason
 
     def test_module_raising_on_import_reports_it(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "skill_ref_probe_boom.py").write_text('raise RuntimeError("boom")\n', encoding="utf-8")
