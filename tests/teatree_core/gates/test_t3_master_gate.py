@@ -89,11 +89,28 @@ class TestSkipMessage:
         assert "self-improve" in unclaimed
         assert "self-improve" in foreign
 
-    def test_unclaimed_message_names_the_absent_owner_and_the_remedy(self) -> None:
+    def test_unclaimed_message_names_only_the_lease_it_read(self) -> None:
         message = t3_master_verdict().skip_message("Slack-answer")
 
-        assert "no live owner" in message
-        assert "t3 worker" in message
+        assert "`t3-master` owner lease is unheld" in message
+
+    def test_unclaimed_message_asserts_nothing_about_loops_it_never_read(self) -> None:
+        # #4253: this verdict reads ONE lease. On the box that produced the ticket every
+        # loop was ticking and the worker flock was held while the slot read unheld, so a
+        # verdict phrased as a claim about the whole factory was simply false.
+        message = t3_master_verdict().skip_message("Slack-answer")
+
+        assert "nothing is driving the loops" not in message
+
+    def test_unclaimed_message_does_not_advise_starting_a_second_worker(self) -> None:
+        # The old remedy was already satisfied throughout the outage; following it would
+        # have run a second worker against one control DB.
+        message = t3_master_verdict().skip_message("Slack-answer")
+
+        assert "Start `t3 worker`" not in message
+
+    def test_unclaimed_message_points_at_the_surface_that_reads_both_facts(self) -> None:
+        assert "t3 doctor check" in t3_master_verdict().skip_message("Slack-answer")
 
     def test_foreign_message_names_the_owning_session(self) -> None:
         _claim("sess-other", owner_pid=os.getpid())

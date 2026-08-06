@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.core.loop_lease_liveness import namespace_is_attributable
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
@@ -231,10 +232,25 @@ def _mini_entry(loop: "Loop", planes: "EnablePlanes", starved_names: set[str]) -
     )
 
 
+def _pid_reads_alive(lease: LoopLease) -> bool:
+    """Whether THIS reader can see ``lease``'s owner process alive (#4253).
+
+    A pid recorded in another namespace is no evidence here — probing it answers about
+    whatever occupies that integer locally, which on the box that produced the ticket
+    reported the live worker's own lease as dead from a sibling container, and in the
+    collision direction would keep a dead owner's lease reading live forever past its
+    TTL. Unattributable therefore falls through to the TTL, the same degraded path a
+    null pid takes in :func:`~teatree.core.loop_lease_liveness.lease_is_live`.
+    """
+    if lease.owner_pid is None or not namespace_is_attributable(lease.owner_pid_namespace):
+        return False
+    return pid_alive(lease.owner_pid)
+
+
 def _owner_status(lease: LoopLease | None, now: dt.datetime, *, slot: str) -> LoopOwnerStatus:
     if lease is None or not lease.session_id:
         return LoopOwnerStatus(session_id="", owner_pid=None, pid_is_alive=False, is_live=False, slot=slot)
-    pid_ok = lease.owner_pid is not None and pid_alive(lease.owner_pid)
+    pid_ok = _pid_reads_alive(lease)
     ttl_live = lease.lease_expires_at is not None and lease.lease_expires_at > now
     return LoopOwnerStatus(
         session_id=lease.session_id,

@@ -364,6 +364,43 @@ def _check_aged_sweep_skips() -> bool:
     return False
 
 
+def _check_t3_master_unheld_while_loops_tick() -> bool:
+    """Hard-FAIL when ``t3-master`` is unheld while loops are still ticking (#4253).
+
+    The owner-gated reactive cycles (``loop_slack_answer`` / ``loop_self_improve``) skip
+    every beat on an unheld lease, and the only notice is a log line. Meanwhile
+    ``t3 worker status`` exits 0 and every cadence surface reads healthy, because none of
+    them knows about this lease — so the degraded state reached nobody for the whole
+    night that produced the ticket.
+
+    Silent when nothing is ticking: an unheld lease on an idle box is honest, and a
+    stopped chain is ``_check_loop_schedule_liveness``'s finding, not this one.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens on
+    the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.loops.master_lease_contradiction import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        unheld_master_lease_with_live_ticks,
+    )
+
+    try:
+        finding = unheld_master_lease_with_live_ticks(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  t3-master owner-lease check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if finding is None:
+        return True
+    typer.echo(
+        f"FAIL  The `t3-master` owner lease is unheld while {finding.describe()} — every owner-gated "
+        "reactive cycle (`t3 loop slack-answer run`, `t3 loop self-improve run`) is skipping its beat. "
+        "Inspect with `t3 loop owner`; a running worker re-claims the slot on its next refresh, so a "
+        "lease that stays unheld means the claim itself is failing (#4253).",
+    )
+    return False
+
+
 def _check_loop_schedule_liveness() -> bool:
     """Hard-FAIL when an enabled, timer-chained loop is carrying no live timer (#4140).
 
