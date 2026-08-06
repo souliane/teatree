@@ -87,7 +87,22 @@ class TestRedSetWiring(django.test.TestCase):
             },
         )
 
-    def test_act_phase_announces_a_mutually_blocking_red_set(self) -> None:
+    def test_act_phase_announces_a_board_inheriting_mains_red(self) -> None:
+        announced: list[str] = []
+
+        with (
+            mock.patch("teatree.loop.red_set_surface._default_main_checks", return_value=frozenset({"shard-a"})),
+            mock.patch(
+                "teatree.loop.red_set_surface._default_notify",
+                side_effect=lambda **kwargs: announced.append(str(kwargs["text"])),
+            ),
+        ):
+            act_phase(_report([self._red(7, "shard-a"), self._red(8, "shard-a")]))
+
+        assert len(announced) == 1
+        assert "main-red" in announced[0]
+
+    def test_act_phase_says_nothing_for_a_disjoint_board_on_a_green_main(self) -> None:
         announced: list[str] = []
 
         with (
@@ -99,8 +114,7 @@ class TestRedSetWiring(django.test.TestCase):
         ):
             act_phase(_report([self._red(7, "shard-a"), self._red(8, "shard-b")]))
 
-        assert len(announced) == 1
-        assert "possible-cycle" in announced[0]
+        assert announced == []
 
     def test_act_phase_says_nothing_when_the_reds_share_a_cause(self) -> None:
         announced: list[str] = []

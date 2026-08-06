@@ -2,9 +2,9 @@
 
 Every other surface asks "what blocks THIS PR?" — the sweep decides per PR, the
 aged-skip surfacer announces per ``(ref, reason)``, the status views render per
-PR. A question about the SET is unanswerable that way: PRs each red only because
-another's unmerged fix is missing form a cycle that no re-run, no waiting and no
-merge ordering clears, and a per-PR view cannot see it by construction.
+PR. A question about the SET is unanswerable that way: whether the board is
+stuck depends on how the reds relate to each other and to ``main``, which no
+per-PR view can see by construction.
 
 This is the pure half. It takes one repo's red PRs plus ``main``'s own failing
 check names and returns a :class:`RedSetReport` — main's verdict first, the
@@ -13,10 +13,20 @@ per-PR failing sets, what they share, what is unique to each, and one
 gathering and the one-shot announcement are
 :mod:`teatree.loop.red_set_surface`.
 
+``main-red`` is the one verdict this data EARNS: main's own failing checks
+intersected with what the set is failing is direct evidence no merge ordering
+clears the board. ``disjoint-reds`` deliberately asserts nothing — a mutual
+block and wholly unrelated failures reach it through identical records, so the
+note names both readings and picks neither. Distinguishing them needs
+dependency evidence (a "this PR fixes check X" signal, failing-job-log content,
+or the merge-and-re-run experiment) that no surface records, which is also why
+``independent`` gains no new rung: making it reachable for n≥2 would mean
+claiming exactly the dependency this module cannot observe.
+
 The two indeterminate rungs are load-bearing. A run judged against a base the
 branch has fallen behind carries an UNKNOWN verdict (#4063), and an unreadable
-``main`` cannot be assumed green — either one refuses the cycle claim rather
-than guessing it, because ``possible-cycle`` is a claim about the whole set.
+``main`` cannot be assumed green — either one refuses to read a red the board
+inherits as a property of the set.
 """
 
 import hashlib
@@ -25,6 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 __all__ = [
+    "MIN_SET_SIZE",
     "PrRedRecord",
     "RedSetReport",
     "SetVerdict",
@@ -33,7 +44,7 @@ __all__ = [
 
 #: Below this there is no SET to reason about — a lone red PR's failure is its
 #: own, and every per-PR surface already says so.
-_MIN_SET_SIZE = 2
+MIN_SET_SIZE = 2
 
 
 class SetVerdict(Enum):
@@ -42,7 +53,7 @@ class SetVerdict(Enum):
     MAIN_RED = "main-red"
     MAIN_INDETERMINATE = "main-indeterminate"
     SHARED_CAUSE = "shared-cause"
-    POSSIBLE_CYCLE = "possible-cycle"
+    DISJOINT_REDS = "disjoint-reds"
     INDEPENDENT = "independent"
 
 
@@ -93,8 +104,16 @@ class RedSetReport:
         signs identically forever (announced once) while any change to the
         membership, the failing names, the base freshness or the verdict is a
         new claim that is announced again.
+
+        The main term is ``inherited``, not ``main_failing``: measured over 8
+        consecutive main commits a FIXED red set took 4 distinct signatures on
+        the unscoped set and 1 on this one, because incidental reds no PR is
+        failing (``deploy``, ``refresh-durations``, a shard) flip constantly and
+        are not part of the claim. ``inherited`` is also already scoped to the
+        branch-protection-REQUIRED contexts, since it intersects with each
+        record's ``failing``.
         """
-        parts = [self.slug, self.verdict.value, _names(self.main_failing) if self.main_failing is not None else "?"]
+        parts = [self.slug, self.verdict.value, _names(self.inherited) if self.main_failing is not None else "?"]
         parts += [f"{record.ref}|{_names(record.failing)}|{int(record.base_current)}" for record in self.records]
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
 
@@ -122,13 +141,14 @@ class RedSetReport:
             return "main's checks could not be read, so a cycle cannot be claimed over it"
         if self.verdict is SetVerdict.SHARED_CAUSE:
             return f"{len(self.records)} PRs fail {_names(self.shared) or 'a common check'} — one cause, one fix"
-        if self.verdict is SetVerdict.POSSIBLE_CYCLE:
+        if self.verdict is SetVerdict.DISJOINT_REDS:
             return (
-                f"{len(self.records)} PRs, disjoint failing checks, every run judged the current base — "
-                "no merge ordering exists; make one branch self-sufficient (cherry-pick the other's fix) "
-                "so a single PR is green standalone"
+                f"{len(self.records)} PRs, no failing check in common, every run judged the current base, "
+                "and main is green on everything this set fails. This surface sees no dependency evidence "
+                "either way — consistent with a mutual block (each red only because another's unmerged fix "
+                "is missing) and equally with unrelated failures"
             )
-        return "no shared cause and no cycle — each red is that PR's own"
+        return "no shared cause across the set — each red is that PR's own"
 
 
 def analyse_red_set(
@@ -165,7 +185,7 @@ def _verdict(
 ) -> SetVerdict:
     if inherited:
         return SetVerdict.MAIN_RED
-    if len(records) < _MIN_SET_SIZE:
+    if len(records) < MIN_SET_SIZE:
         return SetVerdict.INDEPENDENT
     if _any_pair_overlaps(records):
         return SetVerdict.SHARED_CAUSE
@@ -173,7 +193,7 @@ def _verdict(
         return SetVerdict.INDEPENDENT
     if main_failing is None:
         return SetVerdict.MAIN_INDETERMINATE
-    return SetVerdict.POSSIBLE_CYCLE
+    return SetVerdict.DISJOINT_REDS
 
 
 def _any_pair_overlaps(records: tuple[PrRedRecord, ...]) -> bool:

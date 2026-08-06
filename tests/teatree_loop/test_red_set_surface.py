@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from teatree.loop.red_set_report import SetVerdict
-from teatree.loop.red_set_surface import _default_main_checks, record_red_set
+from teatree.loop.red_set_surface import _CHECK_RUNS_PAGE, _default_main_checks, record_red_set
 from teatree.loop.scanners.base import ScanSignal
 
 SLUG = "souliane/teatree"
@@ -54,8 +54,50 @@ def _unreadable_main(*, slug: str, overlay: str) -> None:
     return None
 
 
+def _main_red_on_shard_a(*, slug: str, overlay: str) -> frozenset[str]:
+    return frozenset({"shard-a"})
+
+
 class TestFold:
-    def test_a_mutually_blocking_red_set_is_reported_and_announced(self) -> None:
+    def test_a_main_red_board_is_announced_once(self) -> None:
+        notifier = RecordingNotifier()
+
+        reports = record_red_set(
+            [_skip_signal(4101, "shard-a"), _skip_signal(4102, "shard-a")],
+            main_checks=_main_red_on_shard_a,
+            notify=notifier,
+        )
+
+        assert [report.verdict for report in reports] == [SetVerdict.MAIN_RED]
+        assert len(notifier.calls) == 1
+        text, key = notifier.calls[0]
+        assert "main-red" in text
+        assert key == f"pr_sweep_red_set:{reports[0].signature()}"
+
+    def test_a_lone_pr_inheriting_mains_red_is_not_announced(self) -> None:
+        # A single PR inheriting main's red is already visible per-PR; only a SET
+        # claim earns the DM.
+        notifier = RecordingNotifier()
+
+        reports = record_red_set([_skip_signal(4101, "shard-a")], main_checks=_main_red_on_shard_a, notify=notifier)
+
+        assert [report.verdict for report in reports] == [SetVerdict.MAIN_RED]
+        assert notifier.calls == []
+
+    def test_the_same_stalled_set_keys_the_same_announcement_every_tick(self) -> None:
+        # The ledger no-ops a key it has already delivered, so an unchanged set is
+        # announced ONCE however long it stays stalled.
+        notifier = RecordingNotifier()
+        signals = [_skip_signal(4101, "shard-a"), _skip_signal(4102, "shard-a")]
+
+        record_red_set(signals, main_checks=_main_red_on_shard_a, notify=notifier)
+        record_red_set(signals, main_checks=_main_red_on_shard_a, notify=notifier)
+
+        assert len({key for _text, key in notifier.calls}) == 1
+
+    def test_an_ordinary_disjoint_red_board_is_logged_not_announced(self) -> None:
+        # Two PRs failing different checks on a green main is the ordinary board.
+        # This surface sees no dependency evidence, so it says nothing.
         notifier = RecordingNotifier()
 
         reports = record_red_set(
@@ -64,24 +106,10 @@ class TestFold:
             notify=notifier,
         )
 
-        assert [report.verdict for report in reports] == [SetVerdict.POSSIBLE_CYCLE]
-        assert len(notifier.calls) == 1
-        text, key = notifier.calls[0]
-        assert "possible-cycle" in text
-        assert key == f"pr_sweep_red_set:{reports[0].signature()}"
+        assert [report.verdict for report in reports] == [SetVerdict.DISJOINT_REDS]
+        assert notifier.calls == []
 
-    def test_the_same_stalled_set_keys_the_same_announcement_every_tick(self) -> None:
-        # The ledger no-ops a key it has already delivered, so an unchanged set is
-        # announced ONCE however long it stays stalled.
-        notifier = RecordingNotifier()
-        signals = [_skip_signal(4101, "shard-a"), _skip_signal(4102, "shard-b")]
-
-        record_red_set(signals, main_checks=_green_main, notify=notifier)
-        record_red_set(signals, main_checks=_green_main, notify=notifier)
-
-        assert len({key for _text, key in notifier.calls}) == 1
-
-    def test_only_a_possible_cycle_is_announced(self) -> None:
+    def test_a_shared_cause_board_is_logged_not_announced(self) -> None:
         notifier = RecordingNotifier()
 
         reports = record_red_set(
@@ -127,7 +155,7 @@ class TestFold:
         )
 
         assert {report.slug for report in reports} == {SLUG, "souliane/other"}
-        assert {report.verdict for report in reports} == {SetVerdict.POSSIBLE_CYCLE, SetVerdict.INDEPENDENT}
+        assert {report.verdict for report in reports} == {SetVerdict.DISJOINT_REDS, SetVerdict.INDEPENDENT}
 
     def test_the_same_repo_under_two_overlays_stays_two_sets(self) -> None:
         notifier = RecordingNotifier()
@@ -183,12 +211,12 @@ class TestQuietPaths:
             raise RuntimeError(_SLACK_DOWN)
 
         reports = record_red_set(
-            [_skip_signal(4101, "shard-a"), _skip_signal(4102, "shard-b")],
-            main_checks=_green_main,
+            [_skip_signal(4101, "shard-a"), _skip_signal(4102, "shard-a")],
+            main_checks=_main_red_on_shard_a,
             notify=boom,
         )
 
-        assert [report.verdict for report in reports] == [SetVerdict.POSSIBLE_CYCLE]
+        assert [report.verdict for report in reports] == [SetVerdict.MAIN_RED]
 
 
 class TestMainProbe:
@@ -209,11 +237,22 @@ class TestMainProbe:
         monkeypatch.setattr("teatree.loop.red_set_surface.run_allowed_to_fail", fake_run)
         monkeypatch.setattr("teatree.loop.red_set_surface._github_token", lambda _overlay: "")
         result = _default_main_checks(slug=SLUG, overlay="t3-teatree")
-        assert f"repos/{SLUG}/commits/main/check-runs" in captured[0]
+        argv = captured[0]
+        endpoint = next(arg for arg in argv if "check-runs" in arg)
+        assert endpoint.startswith(f"repos/{SLUG}/commits/main/check-runs")
+        assert "--paginate" in argv, "an unpaginated read sees only page 1 of main's check-runs"
+        assert "--slurp" in argv, "bare --paginate emits concatenated docs json.loads rejects"
+        assert "--jq" not in argv, "gh refuses --slurp together with --jq"
+        assert f"per_page={_CHECK_RUNS_PAGE}" in endpoint
         return result
 
+    @staticmethod
+    def _pages(*pages: list[dict[str, object]]) -> str:
+        """The ``--slurp`` shape: one list of page bodies, each with its own ``check_runs``."""
+        return json.dumps([{"total_count": len(page), "check_runs": page} for page in pages])
+
     def test_a_completed_non_green_run_is_a_failing_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        payload = json.dumps(
+        payload = self._pages(
             [
                 {"name": "test (3.13)", "status": "completed", "conclusion": "failure"},
                 {"name": "uv-audit", "status": "completed", "conclusion": "success"},
@@ -224,13 +263,28 @@ class TestMainProbe:
         assert self._probe(monkeypatch, stdout=payload) == frozenset({"test (3.13)"})
 
     def test_a_still_running_check_is_not_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        payload = json.dumps([{"name": "test (3.13)", "status": "in_progress", "conclusion": None}])
+        payload = self._pages([{"name": "test (3.13)", "status": "in_progress", "conclusion": None}])
 
         assert self._probe(monkeypatch, stdout=payload) == frozenset()
+
+    def test_a_failing_check_on_a_later_page_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The defect the pagination fixes: main carried 86 check-runs at one sampled
+        # commit, so a required context routinely lands past page 1.
+        payload = self._pages(
+            [{"name": "lint", "status": "completed", "conclusion": "success"}],
+            [{"name": "eval-gate", "status": "completed", "conclusion": "failure"}],
+        )
+
+        assert self._probe(monkeypatch, stdout=payload) == frozenset({"eval-gate"})
 
     def test_no_check_runs_at_all_is_indeterminate_not_green(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Nothing has reported on that commit, so there is no evidence main is green.
         assert self._probe(monkeypatch, stdout="[]") is None
+
+    def test_a_commit_with_zero_check_runs_is_indeterminate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # GitHub's real empty shape is one page carrying an empty list — never seen
+        # by the shipped code, whose --jq flattened it away before Python looked.
+        assert self._probe(monkeypatch, stdout='[{"total_count": 0, "check_runs": []}]') is None
 
     def test_a_non_zero_exit_is_indeterminate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert self._probe(monkeypatch, stdout="", returncode=1) is None

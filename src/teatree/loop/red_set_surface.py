@@ -1,17 +1,19 @@
-"""Gather the open red PR set from the tick's own signals and announce a cycle ONCE (#4090).
+"""Gather the open red PR set from the tick's own signals and announce it ONCE (#4090).
 
 The live half of :mod:`teatree.loop.red_set_report`. It reads the sweep's emitted
 signals rather than re-listing PRs, so the report is computed from the exact
 snapshot the merge decision was made on and costs no second forge read per PR —
 the sweep already classified each PR's failing REQUIRED checks through the shared
 §17.4.3 classifier, and stamps them on the signal. The only live read is one
-``main`` check-run query per repo, which is the single boolean that reframes the
-whole board.
+paginated ``main`` check-run query per repo, which is the single boolean that
+reframes the whole board.
 
-``possible-cycle`` is a claim about the SET, so it is announced rather than
-logged per tick — and keyed on the set's own signature, so a permanently stalled
-set is announced once instead of producing the same quiet line forever. Every
-other verdict is logged; nothing here mutates or decides a merge.
+``main-red`` over a set of two or more is the one claim this data earns, so it is
+DM'd — keyed on the set's own signature, so a permanently stalled board is
+announced once instead of producing the same quiet line forever. A lone PR
+inheriting main's red is not a SET claim and is already visible per PR, so it
+stays log-only, as does every other verdict. Nothing here mutates or decides a
+merge.
 
 Every failure is swallowed: an unreachable forge, a missing overlay, a broken DM
 transport or a malformed payload must degrade to a quiet tick, never abort one.
@@ -24,7 +26,7 @@ import shutil
 from collections.abc import Callable, Iterable
 from typing import TypedDict, cast
 
-from teatree.loop.red_set_report import PrRedRecord, RedSetReport, SetVerdict, analyse_red_set
+from teatree.loop.red_set_report import MIN_SET_SIZE, PrRedRecord, RedSetReport, SetVerdict, analyse_red_set
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_sweep_types import GREEN_TERMINAL_CONCLUSIONS
 from teatree.utils.run import run_allowed_to_fail
@@ -40,14 +42,17 @@ _SWEEP_PREFIX = "pr_sweep."
 #: fallback and this report can never disagree about which commit is "main".
 _MAIN_BRANCH = "main"
 
-_CHECK_RUNS_JQ = "[.check_runs[] | {name: .name, status: .status, conclusion: .conclusion}]"
+#: Page size under ``--paginate``. Main carried 86 check-runs at one sampled
+#: commit against a 30-run default page, so this is the request count today's
+#: board costs — never the ceiling, which is what ``--paginate`` is for.
+_CHECK_RUNS_PAGE = 100
 
 type MainChecks = Callable[..., frozenset[str] | None]
 type CycleNotifier = Callable[..., None]
 
 
 class _CheckRun(TypedDict, total=False):
-    """One entry of ``gh api repos/<slug>/commits/<branch>/check-runs``, as the jq projects it."""
+    """One entry of a ``check_runs`` page body."""
 
     name: object
     status: object
@@ -99,7 +104,7 @@ def _report_for(
         report.verdict.value,
         len(report.records),
     )
-    if report.verdict is SetVerdict.POSSIBLE_CYCLE:
+    if report.verdict is SetVerdict.MAIN_RED and len(report.records) >= MIN_SET_SIZE:
         _announce(report, notify or _default_notify)
     return report
 
@@ -109,7 +114,7 @@ def _main_failing(*, slug: str, overlay: str, probe: MainChecks) -> frozenset[st
 
     A probe that RAISES is the same condition as one that reports it cannot tell,
     so it degrades to ``None`` — never to an empty set, which would read as a
-    green ``main`` and let the analysis claim a cycle for an inherited red.
+    green ``main`` and hide a red the whole board inherits.
     """
     try:
         return probe(slug=slug, overlay=overlay)
@@ -122,7 +127,7 @@ def _announce(report: RedSetReport, notify: CycleNotifier) -> None:
     try:
         notify(text=report.render(), idempotency_key=f"pr_sweep_red_set:{report.signature()}")
     except Exception:
-        logger.exception("red_set: failed to announce the possible cycle on %s", report.slug)
+        logger.exception("red_set: failed to announce the set-level claim on %s", report.slug)
 
 
 def _group(signals: Iterable[ScanSignal]) -> dict[tuple[str, str], list[PrRedRecord]]:
@@ -158,13 +163,31 @@ def _decode(payload: SignalPayload) -> tuple[tuple[str, str], PrRedRecord] | Non
 
 
 def _default_main_checks(*, slug: str, overlay: str) -> frozenset[str] | None:
-    """The names of ``main``'s completed, non-green check-runs — one API call.
+    """The names of ``main``'s completed, non-green check-runs, read across ALL pages.
+
+    Unpaginated, this read saw only the first 30 of main's check-runs, so which
+    required contexts it reported depended on the order the API happened to
+    return them — five of the seven required contexts were absent from page 1 at
+    one sampled commit. A verdict keyed on a content-addressed signature has to
+    be repeatable, so the read is paginated.
+
+    ``--slurp`` is required rather than preferred: bare ``--paginate`` emits
+    concatenated JSON documents that :func:`json.loads` rejects, and ``gh``
+    refuses ``--slurp`` together with ``--jq``, so the projection moves into
+    :func:`_failing_check_names`.
 
     ``None`` on ANY read failure (no ``gh``, non-zero exit, unparsable body), so
-    an unreadable ``main`` can never be mistaken for a green one.
+    an unreadable ``main`` can never be mistaken for a green one — which also
+    covers a ``gh`` older than 2.53, where ``--slurp`` exits non-zero.
     """
     gh = shutil.which("gh") or "gh"
-    argv = [gh, "api", f"repos/{slug}/commits/{_MAIN_BRANCH}/check-runs", "--jq", _CHECK_RUNS_JQ]
+    argv = [
+        gh,
+        "api",
+        "--paginate",
+        "--slurp",
+        f"repos/{slug}/commits/{_MAIN_BRANCH}/check-runs?per_page={_CHECK_RUNS_PAGE}",
+    ]
     token = _github_token(overlay)
     try:
         result = run_allowed_to_fail(
@@ -179,20 +202,30 @@ def _default_main_checks(*, slug: str, overlay: str) -> frozenset[str] | None:
 
 
 def _failing_check_names(out: str) -> frozenset[str] | None:
-    """Classify ``main``'s check-run payload, or ``None`` when it carries no evidence.
+    """Classify the slurped pages, or ``None`` when they carry no evidence.
 
-    A payload with NO check-runs at all is indeterminate, not green: nothing has
-    reported on that commit, which is the same "cannot tell" the non-zero exit
-    above returns.
+    ``--slurp`` yields one list of page bodies, each ``{"total_count", "check_runs"}``,
+    so the runs are flattened across pages. A payload with NO check-run at all is
+    indeterminate, not green — nothing has reported on that commit, the same
+    "cannot tell" the non-zero exit above returns — and that now covers GitHub's
+    real empty shape, one page carrying an empty list.
     """
     try:
-        runs = json.loads(out or "[]")
+        pages = json.loads(out or "[]")
     except json.JSONDecodeError:
         return None
-    if not isinstance(runs, list) or not runs:
+    if not isinstance(pages, list):
         return None
-    entries = [cast("_CheckRun", run) for run in runs if isinstance(run, dict)]
-    return frozenset(_check_name(run) for run in entries if _is_failing(run)) - {""}
+    runs = [
+        cast("_CheckRun", run)
+        for page in pages
+        if isinstance(page, dict)
+        for run in page.get("check_runs", [])
+        if isinstance(run, dict)
+    ]
+    if not runs:
+        return None
+    return frozenset(_check_name(run) for run in runs if _is_failing(run)) - {""}
 
 
 def _check_name(run: "_CheckRun") -> str:

@@ -26,13 +26,11 @@ def _analyse(*records: PrRedRecord, main_failing: frozenset[str] | None = frozen
 
 
 class TestVerdict:
-    def test_disjoint_failing_sets_on_a_current_base_are_a_possible_cycle(self) -> None:
-        # The #4090 incident: neither PR can go green alone because each carries the
-        # other's missing fix. No per-PR view can reach this conclusion.
+    def test_disjoint_failing_sets_on_a_current_base_are_disjoint_reds(self) -> None:
         report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"))
 
         assert report is not None
-        assert report.verdict is SetVerdict.POSSIBLE_CYCLE
+        assert report.verdict is SetVerdict.DISJOINT_REDS
 
     def test_overlapping_failing_sets_are_one_shared_cause(self) -> None:
         report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-a", "shard-b"))
@@ -62,7 +60,7 @@ class TestVerdict:
         )
 
         assert report is not None
-        assert report.verdict is SetVerdict.POSSIBLE_CYCLE
+        assert report.verdict is SetVerdict.DISJOINT_REDS
         assert report.inherited == frozenset()
 
     def test_a_stale_base_run_refuses_the_cycle_claim(self) -> None:
@@ -122,12 +120,33 @@ class TestRender:
 
         assert report is not None
         rendered = report.render()
-        assert "possible-cycle" in rendered
+        assert "disjoint-reds" in rendered
         assert f"https://github.com/{SLUG}/pull/4101" in rendered
         assert f"https://github.com/{SLUG}/pull/4102" in rendered
         assert "shard-a" in rendered
         assert "shard-b" in rendered
-        assert "self-sufficient" in rendered
+
+    def test_disjoint_reds_state_the_observation_not_a_conclusion(self) -> None:
+        report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"))
+
+        assert report is not None
+        rendered = report.render()
+        assert "disjoint-reds" in rendered
+        assert "no failing check in common" in rendered
+        assert "no dependency evidence" in rendered
+        assert "cherry-pick" not in rendered
+        assert "no merge ordering exists" not in rendered
+
+    def test_the_note_names_both_hypotheses_and_picks_neither(self) -> None:
+        # A mutual block and two wholly unrelated reds reach this rung through
+        # byte-identical records, so the note must carry both readings.
+        report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"))
+
+        assert report is not None
+        rendered = report.render()
+        assert "mutual block" in rendered
+        assert "unrelated failures" in rendered
+        assert "either way" in rendered
 
     def test_main_red_render_names_the_inherited_check(self) -> None:
         report = _analyse(
@@ -158,6 +177,25 @@ class TestSignature:
     def test_a_changed_failing_set_is_a_new_claim(self) -> None:
         first = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"))
         second = _analyse(_record(4101, "shard-a"), _record(4102, "shard-c"))
+
+        assert first is not None
+        assert second is not None
+        assert first.signature() != second.signature()
+
+    def test_an_incidental_main_red_outside_the_set_is_the_same_claim(self) -> None:
+        # Measured: a FIXED red set took 4 distinct signatures across 8 main commits
+        # while `deploy` / `refresh-durations` / `test-shard (3.13, 5)` flipped. The
+        # key is the CLAIM, so an incidental main red no PR is failing is not one.
+        first = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"), main_failing=frozenset())
+        second = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"), main_failing=frozenset({"deploy"}))
+
+        assert first is not None
+        assert second is not None
+        assert first.signature() == second.signature()
+
+    def test_a_changed_inherited_set_is_a_new_claim(self) -> None:
+        first = _analyse(_record(4101, "a", "b"), _record(4102, "a", "b"), main_failing=frozenset({"a"}))
+        second = _analyse(_record(4101, "a", "b"), _record(4102, "a", "b"), main_failing=frozenset({"a", "b"}))
 
         assert first is not None
         assert second is not None
