@@ -441,11 +441,18 @@ class Ticket(
 
     @transition(
         field=state,
-        source=[State.SHIPPED, State.IN_REVIEW, State.MERGED, State.RETROSPECTED],
+        source=[State.SHIPPED, State.IN_REVIEW, State.MERGED, State.RETROSPECTED, State.DELIVERED],
         target=State.STARTED,
     )
     def reopen(self) -> None:
-        """Reopen a post-ship ticket back to STARTED."""
+        """Reopen a post-ship ticket back to STARTED.
+
+        DELIVERED is a source because it is otherwise the end of every path: a ticket
+        owns its issue URL in each state but IGNORED, so a reopened issue behind a
+        delivered ticket was invisible to intake and to every reconcile rule (#4152).
+        REVIEW_POSTED stays out — a reviewer ticket's ``issue_url`` IS a PR, which the
+        board reconcile's PR rules already resolve.
+        """
         extra = self._extra()
         extra.pop("tests_passed", None)
         extra["reopened_from"] = self.state

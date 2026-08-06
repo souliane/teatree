@@ -1634,11 +1634,11 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
 │                           failure, its triaged reds).                        │
 │ green-proof               Assert the merged eval-heal JSON proves a          │
-│                           full-suite green (executed, 0 reds).               │
+│                           full-suite green (whole catalog, 0 reds).          │
 │ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
 │                           --skip-code (non-list payload exits 2).            │
-│ verify-benchmark-publish  Exit 1 when any collected benchmark shard is not   │
-│                           backed by real metered spend.                      │
+│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
+│                           shard or not backed by metered spend.              │
 │ merge-summaries           Merge per-shard summary markdown into one          │
 │                           dashboard (to --out or stdout).                    │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
@@ -2040,7 +2040,8 @@ Usage: t3 eval ci-status [OPTIONS]
 ```
 Usage: t3 eval green-proof [OPTIONS] SUMMARY_JSON
 
- Assert the merged eval-heal JSON proves a full-suite green (executed, 0 reds).
+ Assert the merged eval-heal JSON proves a full-suite green (whole catalog, 0
+ reds).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    summary_json      PATH  The merged eval-heal-<sha> §2.4 summary JSON to │
@@ -2078,7 +2079,8 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 ```
 Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 
- Exit 1 when any collected benchmark shard is not backed by real metered spend.
+ Exit 1 when the collected dashboard is short a shard or not backed by metered
+ spend.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    dashboard_dir      PATH  Directory holding the collected                │
@@ -2086,7 +2088,11 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                               [required]                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ *  --expected-shards        INTEGER  Matrix leg count the run planned; fewer │
+│                                      collected artifacts refuses the         │
+│                                      publish.                                │
+│                                      [required]                              │
+│    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

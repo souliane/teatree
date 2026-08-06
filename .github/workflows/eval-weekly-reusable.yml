@@ -501,14 +501,21 @@ jobs:
           path: ${{ runner.temp }}/benchmarks
           pattern: eval-benchmark-*
           merge-multiple: true
-      # REFUSE an unmetered dashboard. When the subscription OAuth window is
-      # exhausted mid-run the remaining shards still "complete": every scenario
-      # force-FAILs and the affected model reports $0.0000. Publishing those would
-      # commit fake all-red matrices. This runs BEFORE the copy, so nothing
-      # contaminated ever reaches the working tree, and it fails the WHOLE publish
-      # (a partially-published dashboard that looks complete is the failure mode).
-      - name: Refuse to publish shards not backed by metered spend
-        run: uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks"
+      # REFUSE an unmetered or INCOMPLETE dashboard. When the subscription OAuth
+      # window is exhausted mid-run the remaining shards still "complete": every
+      # scenario force-FAILs and the affected model reports $0.0000. When a leg
+      # times out instead, it uploads nothing at all — and this job still runs
+      # (`if: always()`), so what is left is metered, clean, and only part of the
+      # week. `--expected-shards` is the planned matrix leg count, so a missing
+      # shard refuses rather than shrinking the dashboard into a complete-looking
+      # commit. Runs BEFORE the copy, so nothing bad reaches the working tree.
+      - name: Refuse to publish an incomplete or unmetered dashboard
+        env:
+          EVAL_MATRIX: ${{ needs.prepare.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          EXPECTED="$(printf '%s' "$EVAL_MATRIX" | python -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          uv run t3 eval verify-benchmark-publish "$RUNNER_TEMP/benchmarks" --expected-shards "$EXPECTED"
       # Copy every shard's matrix HTML into the caller's public dashboard dir. The
       # per-shard HTML files keep their lane/shard/effort suffix, so parallel legs
       # never collide. An index links them; the dir is the published dashboard.

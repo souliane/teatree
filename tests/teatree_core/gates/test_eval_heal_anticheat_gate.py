@@ -47,8 +47,10 @@ class TestClassifyFixDiff:
 
     def test_other_eval_runner_code_is_allowed(self) -> None:
         # ANTI-VACUOUS: a sibling eval file that is NOT grading machinery is fine —
-        # the ban is surgical, not "all of src/teatree/eval".
-        assert classify_fix_diff(["src/teatree/eval/report.py"]) == ()
+        # the ban is surgical, not "all of src/teatree/eval". The control is a pure
+        # RENDERER: summary_markdown.py formats an already-decided verdict, so
+        # permitting it can never be read as permitting a grader.
+        assert classify_fix_diff(["src/teatree/eval/summary_markdown.py"]) == ()
 
     def test_leading_dot_slash_is_normalized(self) -> None:
         assert classify_fix_diff(["./evals/scenarios/rules.yaml"]) == ("./evals/scenarios/rules.yaml",)

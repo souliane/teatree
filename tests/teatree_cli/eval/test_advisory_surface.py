@@ -282,7 +282,7 @@ class TestTheGreenProofVerdict:
         merged = merge_summary_payloads(
             [json.loads(shard.read_text(encoding="utf-8"))], head_sha="sha", generated_at="t"
         )
-        return evaluate_green_proof(merged)
+        return evaluate_green_proof(merged, expected_total=len(specs))
 
     def test_the_shard_exits_zero_yet_the_row_still_carries_a_triage_class(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -322,7 +322,7 @@ class TestTheGreenProofVerdict:
         merged = merge_summary_payloads(
             [json.loads(shard.read_text(encoding="utf-8"))], head_sha="sha", generated_at="t"
         )
-        assert not evaluate_green_proof(merged).is_green
+        assert not evaluate_green_proof(merged, expected_total=len(specs)).is_green
 
     def test_the_heal_loop_dispatches_no_fixer_for_an_advisory_red(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

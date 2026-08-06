@@ -300,3 +300,16 @@ class TestWorkerRunsRunnerOutsideClaimLock(TransactionTestCase):
         ):
             execute_worktree_verify.call(wt.pk)
         assert seen["in_atomic"] is False
+
+    def test_stop_compose_down_runs_outside_transaction(self) -> None:
+        """``docker compose down`` defaults to a 30s timeout — the control DB's whole busy_timeout."""
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        seen: dict[str, bool] = {}
+
+        def _spy_down(project: str, **kwargs: object) -> None:
+            seen["in_atomic"] = connection.in_atomic_block
+
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down", _spy_down):
+            result = execute_worktree_stop.call(wt.pk)
+        assert result["ok"] is True
+        assert seen["in_atomic"] is False

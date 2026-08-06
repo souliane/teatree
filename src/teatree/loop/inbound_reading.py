@@ -33,7 +33,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from teatree.agents.one_shot import OneShotSpec, run_one_shot
 from teatree.loop.inbound_classifier import AnswerRoute, classify
 
 logger = logging.getLogger(__name__)
@@ -126,8 +125,14 @@ _TIMEOUT_SECONDS = 45.0
 _MAX_PROMPT_CHARS = 4000
 
 
-def read_inbound(text: str, *, one_shot: Callable[..., str | None] = run_one_shot) -> InboundReading:
+def read_inbound(text: str, *, one_shot: Callable[..., str | None] | None = None) -> InboundReading:
     """Resolve *text* to an :class:`InboundReading`; model first, heuristic on failure.
+
+    ``one_shot`` defaults to :func:`~teatree.agents.one_shot.run_one_shot`, bound
+    on first use rather than at import: that module reaches the model-client SDK,
+    and this one is on the dashboard urlconf's import graph, where a first
+    request would otherwise pay ~2.4 s loading 671 SDK modules after the socket
+    has already accepted.
 
     Never raises: every failure of the model turn — including a refused
     credential, which :func:`run_one_shot` deliberately propagates — degrades to
@@ -145,7 +150,12 @@ def read_inbound(text: str, *, one_shot: Callable[..., str | None] = run_one_sho
             rationale="empty message",
         )
     try:
-        raw = one_shot(
+        from teatree.agents.one_shot import (  # noqa: PLC0415 — deferred: keeps the urlconf off the SDK
+            OneShotSpec,
+            run_one_shot,
+        )
+
+        raw = (one_shot or run_one_shot)(
             stripped[:_MAX_PROMPT_CHARS],
             OneShotSpec(system_prompt=_SYSTEM_PROMPT, timeout_seconds=_TIMEOUT_SECONDS),
         )

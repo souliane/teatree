@@ -180,6 +180,14 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
     longer PROVISIONED (a concurrent ``start_services`` revived it between the
     transition and this worker) is a stale read — skip rather than stop a
     freshly-restarted stack (fail-CLOSED stale-read guard).
+
+    The claim holds a SHORT row lock; the ``down`` runs OUTSIDE it at parity
+    with the other four workers (see the module docstring). ``docker_compose_down``
+    defaults to a 30s timeout — exactly the control DB's ``busy_timeout`` — so one
+    slow teardown held under the SQLite write lock consumed the entire budget of
+    every concurrent writer, and the loop tick's own lease TTL-lapsed while its
+    owner was alive. Nothing in the ``down`` needs the lock: ``compose_project``
+    reads the already-fetched row's own fields, and neither outcome writes FSM state.
     """
     with transaction.atomic():
         try:
@@ -195,7 +203,8 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
             )
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
         project = compose_project(worktree)
-        docker_compose_down(project)
+
+    docker_compose_down(project)
     return {"worktree_id": worktree_id, "ok": True, "detail": f"stopped compose project {project}"}
 
 

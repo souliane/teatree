@@ -14,6 +14,7 @@ the cross-host Protocol surface — the same shape as the sibling ``api`` /
 import json
 import logging
 import re
+from collections.abc import Sequence
 from typing import cast
 from urllib.parse import urlparse
 
@@ -30,19 +31,28 @@ logger = logging.getLogger(__name__)
 ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
 
-# One bounded read of a PR's review threads — GitHub DOES enforce conversation
-# resolution as a merge gate (unlike the stale docstring's "GitHub lacks it"),
-# so the unresolved-thread count must be surfaced, not hard-coded to zero.
+# A PR's review threads — GitHub DOES enforce conversation resolution as a merge
+# gate (unlike the stale docstring's "GitHub lacks it"), so the unresolved-thread
+# count must be surfaced, not hard-coded to zero. The connection caps a page at
+# 100 nodes, so a PR with more threads must be walked by cursor: reading only the
+# first page on a 100+-thread PR reports the unresolved thread past it as absent,
+# which is the hard-coded zero again with extra steps.
 _REVIEW_THREADS_QUERY = """\
 query {{
     repository(owner: "{owner}", name: "{repo}") {{
         pullRequest(number: {number}) {{
-            reviewThreads(first: 100) {{
+            reviewThreads(first: 100{after}) {{
+                pageInfo {{ hasNextPage endCursor }}
                 nodes {{ isResolved }}
             }}
         }}
     }}
 }}"""
+
+# Pages of 100 threads. A PR beyond this is not read short and reported low — the
+# walk returns None so `approval_state` fails closed exactly as it does for an
+# unreadable page.
+_REVIEW_THREADS_MAX_PAGES = 20
 
 
 # CheckRun conclusions / StatusContext states that count as a hard failure — the
@@ -167,18 +177,44 @@ def enrich_pr_pipeline(hit: RawAPIDict, *, token: str) -> RawAPIDict:
 
 
 def count_unresolved_review_threads(*, repo: str, pr_iid: int, token: str) -> int | None:
-    """Count the PR's UNRESOLVED review threads via one bounded GraphQL read.
+    """Count the PR's UNRESOLVED review threads, walking every page of the connection.
 
     Returns the number of ``reviewThreads`` whose ``isResolved`` is ``false``,
     or ``None`` when the read could not be completed — a malformed ``repo``
     slug, a non-zero ``gh`` exit (auth/network/ratelimit), an unparsable body,
-    or an unexpected shape. ``None`` lets :func:`approval_state` fail closed
-    rather than report a fabricated zero unresolved threads.
+    an unexpected shape, or a thread list longer than the page budget. ``None``
+    lets :func:`approval_state` fail closed rather than report a count drawn
+    from a truncated read, which under-reports and authorises a merge the forge
+    then refuses over the open conversation.
     """
     owner, _, name = repo.partition("/")
     if not owner or not name:
         return None
-    query = _REVIEW_THREADS_QUERY.format(owner=owner, repo=name, number=pr_iid)
+    unresolved = 0
+    after = ""
+    for _ in range(_REVIEW_THREADS_MAX_PAGES):
+        page = _review_threads_page(owner=owner, name=name, pr_iid=pr_iid, after=after, token=token)
+        if page is None:
+            return None
+        nodes, end_cursor = page
+        unresolved += sum(
+            1 for node in nodes if isinstance(node, dict) and cast("RawAPIDict", node).get("isResolved") is False
+        )
+        if end_cursor is None:
+            return unresolved
+        after = f', after: "{end_cursor}"'
+    return None
+
+
+def _review_threads_page(
+    *, owner: str, name: str, pr_iid: int, after: str, token: str
+) -> tuple[Sequence[object], str | None] | None:
+    """One page of review threads as ``(nodes, next_cursor)``, or ``None`` when unreadable.
+
+    ``next_cursor`` is ``None`` on the last page; a ``hasNextPage`` with no usable
+    ``endCursor`` also ends the walk, since there is no way to advance it.
+    """
+    query = _REVIEW_THREADS_QUERY.format(owner=owner, repo=name, number=pr_iid, after=after)
     try:
         result = _run_gh(
             "gh",
@@ -195,10 +231,14 @@ def count_unresolved_review_threads(*, repo: str, pr_iid: int, token: str) -> in
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         return None
-    nodes = dig(payload, "data", "repository", "pullRequest", "reviewThreads", "nodes")
+    threads = dig(payload, "data", "repository", "pullRequest", "reviewThreads")
+    nodes = dig(threads, "nodes")
     if not isinstance(nodes, list):
         return None
-    return sum(1 for node in nodes if isinstance(node, dict) and cast("RawAPIDict", node).get("isResolved") is False)
+    if dig(threads, "pageInfo", "hasNextPage") is not True:
+        return nodes, None
+    end_cursor = dig(threads, "pageInfo", "endCursor")
+    return nodes, end_cursor if isinstance(end_cursor, str) and end_cursor else None
 
 
 def pr_open_state(*, pr_url: str, token: str) -> PrOpenState:

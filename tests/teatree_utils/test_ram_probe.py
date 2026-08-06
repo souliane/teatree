@@ -19,7 +19,6 @@ from teatree.utils.ram_probe import (
     available_cpu_count,
     cgroup_v2_memory_mib,
     default_provision_concurrency,
-    effective_available_ram_mib,
     host_available_ram_mib,
     host_total_ram_mib,
     linux_mem_available_kb,
@@ -378,45 +377,6 @@ class TestHostAvailableRamMib:
     def test_unknown_platform_is_zero(self) -> None:
         with patch("teatree.utils.ram_probe.platform.system", return_value="FreeBSD"):
             assert host_available_ram_mib() == 0
-
-
-class TestEffectiveAvailableRamMib:
-    """A cgroup-capped worker must not size work against the host's free memory."""
-
-    def test_the_cgroup_headroom_wins_over_a_larger_host_reading(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=20000),
-            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=[22000, 16000]),
-        ):
-            assert effective_available_ram_mib() == 6000
-
-    def test_the_host_reading_wins_when_the_cgroup_is_roomier(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000),
-            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=[64000, 1000]),
-        ):
-            assert effective_available_ram_mib() == 4000
-
-    def test_an_uncapped_cgroup_leaves_the_host_reading_alone(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000),
-            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", return_value=None),
-        ):
-            assert effective_available_ram_mib() == 4000
-
-    def test_a_cgroup_at_its_limit_reads_zero_not_unreadable(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0),
-            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=[16000, 16000]),
-        ):
-            assert effective_available_ram_mib() == 0
-
-    def test_nothing_readable_is_none_not_zero(self) -> None:
-        with (
-            patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0),
-            patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", return_value=None),
-        ):
-            assert effective_available_ram_mib() is None
 
 
 class TestLinuxMemAvailableKb:

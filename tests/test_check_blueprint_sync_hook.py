@@ -6,6 +6,11 @@ unless the commit type is exempt (test/docs/style/chore/ci/fix/refactor). The
 under ``docs/blueprint/`` — updating an appendix satisfies the requirement just
 as the monolith does (teatree#2237: the appendices ARE the BLUEPRINT).
 
+That type exemption is withdrawn for a commit staging the shipped
+``config/defaults.toml`` or an enum vocabulary — the values the docs quote
+literally. #3895's ``chore(config)`` defaults flip invalidated the mode/wip/
+agent_runtime prose and passed the gate by prefix alone.
+
 The exemption depends on the hook reading the *commit message*. The hook must
 therefore source the commit type robustly — from the commit-message file git
 hands it at the ``commit-msg`` stage, and never from a staged source filename it
@@ -335,6 +340,88 @@ class TestMain:
             options=_RunOptions(is_revert_commit=False),
         )
         assert rc == 1
+
+
+class TestIsShippedContract:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/teatree/config/defaults.toml",
+            "src/teatree/config/enums.py",
+            "src/teatree/config/agent_enums.py",
+        ],
+    )
+    def test_documented_value_surfaces_count(self, path: str) -> None:
+        assert hook._is_shipped_contract(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/teatree/config/settings.py",
+            "src/teatree/config/defaults_approvals.toml",
+            "src/teatree/core/models/enumerations.py",
+            "BLUEPRINT.md",
+        ],
+    )
+    def test_other_paths_do_not_count(self, path: str) -> None:
+        assert hook._is_shipped_contract(path) is False
+
+    def test_vendored_prefix_is_stripped(self) -> None:
+        assert hook._is_shipped_contract("vendor/teatree/src/teatree/config/defaults.toml", "vendor/teatree/") is True
+
+
+class TestShippedContractWithdrawsTypeExemption:
+    """A `chore:` that flips a shipped default must not be exempt from the sync gate."""
+
+    _run = TestMain._run
+
+    def test_chore_flipping_a_shipped_default_is_gated(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="chore(config): default autonomous posture",
+            staged=["src/teatree/config/defaults.toml"],
+        )
+        assert rc == 1
+
+    def test_fix_touching_an_enum_vocabulary_is_gated(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="fix(config): drop a retired mode value",
+            staged=["src/teatree/config/enums.py"],
+        )
+        assert rc == 1
+
+    def test_correcting_the_prose_clears_it(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="chore(config): default autonomous posture",
+            staged=["src/teatree/config/defaults.toml", "docs/blueprint/configuration.md"],
+        )
+        assert rc == 0
+
+    def test_neighbouring_config_change_keeps_its_exemption(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="chore(config): rename a private helper",
+            staged=["src/teatree/config/settings.py"],
+        )
+        assert rc == 0
+
+    def test_merge_replay_stays_exempt(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="Merge branch 'main' into feature",
+            staged=["src/teatree/config/defaults.toml"],
+            options=_RunOptions(is_merge_commit=True),
+        )
+        assert rc == 0
 
 
 FORK_OWN_SRC = "src/fork_overlay/sibling.py"
