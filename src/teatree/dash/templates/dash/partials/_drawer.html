@@ -39,6 +39,24 @@
     <p class="muted">No legal transitions from {{ detail.state }}.</p>
   {% endif %}
 
+  <h3>Enqueue a task</h3>
+  {% comment %}
+  Prioritising work, never recording an outcome: these buttons queue a phase task and
+  nothing here can write a review verdict or a merge CLEAR. One form per button — the
+  vendored htmx drops the clicked submitter.
+  {% endcomment %}
+  <div class="toolbar">
+    {% for button in detail.enqueue_buttons %}
+      <form method="post" action="{% url 'dash:task_action' detail.ticket_id %}"
+        hx-post="{% url 'dash:task_action' detail.ticket_id %}" hx-target="#drawer" hx-swap="innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="phase" value="{{ button.phase }}">
+        <button class="dash-btn" type="submit" {% if not button.enabled %}disabled title="{{ button.reason }}"{% endif %}
+          onclick="return confirm('Enqueue a {{ button.phase|escapejs }} task for #{{ detail.number|escapejs }}?')">{{ button.label }}</button>
+      </form>
+    {% endfor %}
+  </div>
+
   <h3>Lifecycle</h3>
   <div class="mermaid">{{ detail.mermaid }}</div>
 

@@ -76,7 +76,7 @@ t3 tool affected-tests                 # human report: SCOPED (tach plugin + for
 t3 tool affected-tests --pytest-args   # emit the pytest invocation (the --tach flags + force-keep plugin)
 t3 tool affected-tests --json          # machine-readable selection
 t3 tool affected-tests --explain all   # trace why each test is force-kept over the plugin
-t3 tool affected-tests --explain tests/teatree_core/test_x.py   # trace one test
+t3 tool affected-tests --explain tests/teatree_core/test_admin.py   # trace one test
 
 bash dev/test-affected.sh              # select + run the fast lane (--full to force whole suite)
 ```

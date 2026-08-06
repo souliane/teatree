@@ -189,6 +189,11 @@ EXEMPT: dict[str, str] = {
     "teatree.loops.deadlined_tick:_LIVE_TICK_PGIDS": (
         "live tick subprocess PGIDs; process-lifecycle, not a per-test memo"
     ),
+    "teatree.quality.skill_symbol_refs:build_repo_index": (
+        "@lru_cache keyed by repo_root; every caller (scan_source/scan_tree, all test-only) passes "
+        "the same live _REPO_ROOT and no test mutates src/teatree or hooks/ during a run, so "
+        "resetting it would only re-walk an identical tree — it isolates no test state"
+    ),
 }
 
 

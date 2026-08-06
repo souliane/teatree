@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from teatree.cli.eval.escalate import EscalationOutcome, EscalationReport, escalate_failures, render_escalation_markdown
+from teatree.cli.eval.single_trial import _render_escalation_text
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.report import ScenarioResult
 
@@ -33,14 +34,14 @@ def _spec(name: str) -> EvalSpec:
     )
 
 
-def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False) -> ScenarioResult:
-    reason = "skipped: x" if skipped else ("success" if passed else "end_turn")
+def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False, cap_reason: str = "") -> ScenarioResult:
+    reason = cap_reason or ("skipped: x" if skipped else ("success" if passed else "end_turn"))
     run = EvalRun(
         spec_name=spec.name,
         tool_calls=(),
         text_blocks=(),
         terminal_reason=reason,
-        is_error=not passed and not skipped,
+        is_error=not passed and not skipped and not cap_reason,
         raw_stdout="",
         raw_stderr="",
     )
@@ -48,15 +49,24 @@ def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False) -> ScenarioR
 
 
 class _ScriptedRunner:
-    """Maps a scenario name to a queue of pass/fail verdicts for its escalation trials."""
+    """Maps a scenario name to a queue of verdicts for its escalation trials.
 
-    def __init__(self, scripts: dict[str, list[bool]]) -> None:
+    A ``bool`` entry is a clean pass/fail. A ``str`` entry is a cap reason
+    (``max_turns``) for a trial whose matchers were satisfied by a partial
+    trajectory the harness then truncated — the #2192 shape, which
+    :attr:`ScenarioResult.passed` scores as a non-pass.
+    """
+
+    def __init__(self, scripts: dict[str, list[bool | str]]) -> None:
         self._iters = {name: iter(verdicts) for name, verdicts in scripts.items()}
         self.calls: dict[str, int] = {}
 
     def __call__(self, spec: EvalSpec) -> ScenarioResult:
         self.calls[spec.name] = self.calls.get(spec.name, 0) + 1
-        return _result(spec, passed=next(self._iters[spec.name]))
+        verdict = next(self._iters[spec.name])
+        if isinstance(verdict, str):
+            return _result(spec, passed=True, cap_reason=verdict)
+        return _result(spec, passed=verdict)
 
 
 class TestEscalateFailures:
@@ -125,6 +135,48 @@ class TestEscalateFailures:
         assert by_name["flaky"].classification == "flaky"
         assert by_name["confirmed"].classification == "confirmed"
 
+    def test_flaky_when_a_clean_trial_passes_despite_a_cap_truncated_sibling(self) -> None:
+        # The live CI shape recorded as CONFIRMED (2/3): two clean passes and one
+        # cap-truncated trial. Passing ANY escalation trial is flaky, never a hard red.
+        spec = _spec("capped_sibling")
+        initial = [_result(spec, passed=False)]
+        runner = _ScriptedRunner({"capped_sibling": [True, "max_turns", True]})
+        report = escalate_failures(initial, runner, escalate_trials=3)
+        outcome = report.outcomes[0]
+        assert outcome.passes == 2
+        assert outcome.classification == "flaky"
+        assert outcome.cap_tainted
+        assert not outcome.is_hard_red
+        assert not report.hard_red
+
+    def test_confirmed_when_every_escalation_trial_is_cap_truncated(self) -> None:
+        spec = _spec("all_capped")
+        initial = [_result(spec, passed=False)]
+        runner = _ScriptedRunner({"all_capped": ["max_turns", "max_turns", "max_turns"]})
+        report = escalate_failures(initial, runner, escalate_trials=3)
+        outcome = report.outcomes[0]
+        assert outcome.passes == 0
+        assert outcome.classification == "confirmed"
+        assert outcome.cap_tainted
+        assert outcome.is_hard_red
+        assert report.hard_red
+
+    def test_an_all_skipped_escalation_clears_rather_than_reddening_the_lane(self) -> None:
+        # A provisioning gate that fell away after trial 1 (expired key, vanished
+        # binary) yields zero graded trials — an absent verdict, not a confirmed one.
+        spec = _spec("gate_fell_away")
+        initial = [_result(spec, passed=False)]
+
+        class _SkippingRunner:
+            def __call__(self, spec: EvalSpec) -> ScenarioResult:
+                return _result(spec, passed=False, skipped=True)
+
+        report = escalate_failures(initial, _SkippingRunner(), escalate_trials=3)
+        outcome = report.outcomes[0]
+        assert outcome.passes == 0
+        assert outcome.classification == "flaky"
+        assert not report.hard_red
+
     def test_escalate_trials_must_be_at_least_two(self) -> None:
         spec = _spec("x")
         initial = [_result(spec, passed=False)]
@@ -163,3 +215,16 @@ class TestRenderEscalationMarkdown:
         assert "1 confirmed, 1 flaky" in md
         assert "| flaky_one | 1/3 | flaky |" in md
         assert "| solid_red | 0/3 | confirmed |" in md
+
+    def test_cap_taint_is_reported_but_never_gates(self) -> None:
+        report = EscalationReport(
+            outcomes=[
+                EscalationOutcome(
+                    spec_name="capped_sibling", trials=3, passes=2, classification="flaky", cap_tainted=True
+                )
+            ]
+        )
+        assert "cap-truncated" in render_escalation_markdown(report)
+        assert "CAP-TRUNCATED" in _render_escalation_text(report)
+        assert not report.outcomes[0].is_hard_red
+        assert not report.hard_red

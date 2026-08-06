@@ -7,9 +7,10 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
+from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.dash.selectors import BOARD_COLUMNS
-from tests.factories import TicketFactory
+from tests.factories import TaskFactory, TicketFactory
 
 State = Ticket.State
 
@@ -127,3 +128,34 @@ class BoardAccessGateTestCase(TestCase):
         self.client.force_login(staff)
         resp = self.client.get(reverse("dash:board"), REMOTE_ADDR=_NON_LOOPBACK)
         assert resp.status_code == 200
+
+
+class CardEnqueueButtonsTestCase(TestCase):
+    """#4085: prioritising a PR is a click on its card, not a raw DB query plus a CLI call."""
+
+    def setUp(self) -> None:
+        self.ticket = TicketFactory(state=State.STARTED)
+        self.action = reverse("dash:task_action", args=[self.ticket.pk])
+
+    def _card(self) -> str:
+        return self.client.get(reverse("dash:board_columns")).content.decode()
+
+    def test_the_card_carries_review_now_and_ship_now_wired_to_the_enqueue_post(self) -> None:
+        body = self._card()
+        assert f'hx-post="{self.action}"' in body
+        assert "Review now" in body
+        assert "Ship now" in body
+
+    def test_the_button_does_not_also_open_the_drawer(self) -> None:
+        assert "event.stopPropagation()" in self._card()
+
+    def test_a_queued_phase_renders_disabled_with_its_reason(self) -> None:
+        task = TaskFactory(ticket=self.ticket, phase="reviewing", status=Task.Status.PENDING)
+        body = self._card()
+        assert "disabled" in body
+        assert f"TODO-{task.pk} is already queued for reviewing" in body
+
+    def test_the_card_offers_no_phase_beyond_the_two(self) -> None:
+        body = self._card()
+        for absent in ("Scope now", "Code now", "Test now"):
+            assert absent not in body, f"the card offers {absent!r} — that set belongs in the drawer"

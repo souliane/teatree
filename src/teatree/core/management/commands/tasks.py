@@ -19,6 +19,7 @@ from teatree.core.management.commands.tasks_session_view import (
 )
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
+from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
 
@@ -86,17 +87,11 @@ class Command(TyperCommand):
                 raise SystemExit(1) from None
             ticket_obj.save(update_fields=["kind"])
 
-        # #801 SSOT: canonical earliest+locked policy (was -pk-latest
-        # else an unlocked raw create); non-blank agent_id on miss.
-        session = ticket_obj.resolve_phase_session(agent_id="phase-handoff")
-        requested = Task.ExecutionTarget.INTERACTIVE if interactive else Task.ExecutionTarget.HEADLESS
-        task = Task.objects.create(
-            ticket=ticket_obj,
-            session=session,
-            phase=phase,
-            execution_target=requested,
-            execution_reason=body,
-        )
+        try:
+            task = enqueue_phase_task(ticket=ticket_obj, phase=phase, reason=body, interactive=interactive)
+        except TaskEnqueueError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from None
         # ``Task.save`` routes a loop-dispatched phase to INTERACTIVE regardless
         # of ``--interactive``, so report the persisted target, not the request.
         target = task.execution_target

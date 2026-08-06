@@ -619,7 +619,7 @@ default, so nothing routes to one without an operator writing the id into
 | Setting | Type | Purpose |
 |---------|------|---------|
 | `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
-| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
+| `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `src/teatree/agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
 | `TEATREE_EDITABLE` | bool | Declare teatree is editable (verified by `t3 doctor check`) |
 | `OVERLAY_EDITABLE` | bool | Declare overlay is editable (verified by `t3 doctor check`) |
 

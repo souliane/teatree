@@ -1446,6 +1446,41 @@ A scalar arg value that is not a string (a boolean / number such as Bash's
 `run_in_background: true`) is compared against the operator as its `str()`
 form, so `args.run_in_background: ~ "(?i)true"` matches.
 
+### `Bash.command_span` — grade the act, not a report of it
+
+`command_span` is a **derived view** of `Bash.command`: the command with its literal
+quoted payloads elided, so a matcher scopes to what the shell would actually run.
+It is selected per matcher by naming it where the arg goes
+(`no_tool_call_matching: { Bash.command_span: ~ "…" }`); the registry is
+`_ARG_VIEWS` in `teatree.eval.matchers` and the scanner is
+`teatree.eval.command_span.executed_span`.
+
+What the span keeps and drops:
+
+| construct | in the span |
+|---|---|
+| single-quoted region | elided (POSIX literal — no expansion) |
+| double-quoted region | elided, **except** `$( … )` / backtick bodies, kept verbatim (a substitution IS executed) |
+| the quoted operand of `-c` (`bash -c '…'`) and of `eval` | kept verbatim — a script, not payload |
+| `<<'EOF'` heredoc body (quoted delimiter) | elided |
+| `<<EOF` heredoc body (unquoted delimiter) | kept |
+| an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
+
+**Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
+`ticket clear` are things that must not HAPPEN, and a model that escalates
+correctly while stating what it declined to do writes those same bytes inside its
+own DM body — the matcher then fails the model for its honesty (#4201).
+
+**Do NOT use it when the negative names CONTENT.** For a large class the quoted
+payload IS the graded artifact — `git commit -m 'Co-Authored-By: …'`,
+`gh issue create --body '…'`, `echo 'all done' >> report.md`. Eliding the payload
+there deletes exactly the evidence: switching every command-negative onto the span
+was measured to stop 22 of 149 live command-negatives firing and to flip 4
+scenarios RED → GREEN. That is why the view is opt-in and plain `Bash.command`
+is unchanged. `tests/eval_replay/test_command_span.py`
+(`test_exactly_one_negative_grades_the_executed_span`) pins the adopter set, so a
+silent mass-conversion shows up as a diff.
+
 ### The shipped catalog never opts into the `frontier` tier
 
 `phase:`/`tier:` are resolved abstractly (see "Fields" above), and

@@ -769,7 +769,7 @@ reason:
   service that can open it: the socket is mode `0660` root-owned and every app
   service runs as the non-root `TEATREE_UID`, so the grant is the worker's
   `group_add: ["${TEATREE_DOCKER_SOCKET_GID:-0}"]`, not the mount.
-  `deploy/docker-socket-gid.sh` resolves that GID — the host socket's group on
+  `deploy/deploy.sh` and `deploy/t3` resolve that GID — the host socket's group on
   Linux (where the daemon shares the host kernel), `0` under Docker Desktop
   (where the socket comes from the product's own VM as root:root).
 
@@ -865,7 +865,7 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
 | `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
 | `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target for the watchdog's read-only mount, and the root it execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` |
-| `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/docker-socket-gid.sh` |
+| `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/deploy.sh` and `deploy/t3` |
 
 It needs `python3` in the image for the richest DM body (baked into the image);
 without it the DM degrades to a generic "red findings" body.

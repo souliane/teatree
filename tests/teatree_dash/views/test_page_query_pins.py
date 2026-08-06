@@ -45,9 +45,13 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: shed the duplicate preset read they used to pay. ``live`` resolved no mode at all, so
 #: it now pays the L0 default lookup its membership read needs. Still flat, still one
 #: bounded read per datum.
+#: #4085 put "Review now" / "Ship now" on every card. Their enabled state is ONE bounded
+#: read of the whole board's unstarted tasks, not one per card — which is precisely what
+#: the two-population assertion below proves, on the page where an N+1 would be
+#: multiplied by the 4s poll.
 PAGE_QUERY_PINS: dict[str, int] = {
-    "dash:board": 11,
-    "dash:board_columns": 9,
+    "dash:board": 12,
+    "dash:board_columns": 10,
     "dash:cycle_time": 10,
     "dash:health": 20,
     "dash:health_bands": 20,
@@ -60,7 +64,10 @@ PAGE_QUERY_PINS: dict[str, int] = {
     "dash:settings": 7,
     "dash:settings_readouts": 3,
 }
-TICKET_DRAWER_QUERIES = 11
+# #4085 added the enqueue-button row: ONE bounded read of the ticket's unstarted tasks,
+# O(1) in the population. A re-pin because the drawer reads a new datum, not an N+1 —
+# the two-population assertion below is what tells those apart.
+TICKET_DRAWER_QUERIES = 12
 TRANSCRIPT_QUERIES = 2
 
 

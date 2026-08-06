@@ -157,7 +157,7 @@ class TestSelfImproveT3MasterGate:
         assert payload["skipped"] is True
         assert payload["skipped_reason"] == T3MasterGate.UNCLAIMED.value
         assert payload["owner_session"] == ""
-        assert "no live owner" in err.getvalue()
+        assert "`t3-master` owner lease is unheld" in err.getvalue()
 
     def test_foreign_live_session_skips_and_names_the_owner(self) -> None:
         LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="sess-other", owner_pid=os.getpid())

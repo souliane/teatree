@@ -1,0 +1,3 @@
+# Bare module-local symbol in a repo script the tree cannot import
+
+The engagement check is `hook_router._no_such_engagement_probe`.

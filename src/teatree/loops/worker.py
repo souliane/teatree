@@ -171,6 +171,19 @@ def _reclaim_dead_owner_leases() -> None:
     LoopLease.objects.reclaim_dead_owner_leases()
 
 
+def _reap_expired_leases() -> None:
+    """Delete long-expired work-lease rows nothing will consult again (#4253).
+
+    ``acquire`` mints a ``work:<kind>:<hash>`` row per unit of work and nothing retires
+    it, so the table grows without bound and an operator reading it cannot tell a live
+    holder from hours of debris. Owner slots are never in range — their ``generation`` is
+    the fencing token — so this is disjoint from the reclaim above.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    LoopLease.objects.reap_expired_leases()
+
+
 def _claim_t3_master() -> None:
     """Claim/refresh the machine-wide ``t3-master`` slot for this worker (#3968).
 
@@ -247,6 +260,7 @@ class WorkerSeams:
     spawn: Callable[[_Executor], _Handle] = _spawn_executor_thread
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
     reclaim_leases: Callable[[], object] = _reclaim_dead_owner_leases
+    reap_leases: Callable[[], object] = _reap_expired_leases
     claim_master: Callable[[], object] = _claim_t3_master
     release_master: Callable[[], object] = _release_t3_master
     sleep: Callable[[float], None] = time.sleep
@@ -322,6 +336,13 @@ class LoopWorker:
         except Exception:
             logger.warning("Dead-owner loop-lease reclaim failed this poll; will retry next tick.", exc_info=True)
 
+    def _reap_expired_leases(self) -> None:
+        """Reap expired work-lease debris; a reap error must never crash the supervisor (#4253)."""
+        try:
+            self._seams.reap_leases()
+        except Exception:
+            logger.warning("Expired loop-lease reap failed this beat; will retry next beat.", exc_info=True)
+
     def _claim_t3_master(self) -> None:
         """Claim/refresh t3-master; a claim error must never crash the supervisor (#3968)."""
         try:
@@ -349,11 +370,17 @@ class LoopWorker:
         return max(1, round(seams.master_refresh_seconds / seams.poll_seconds))
 
     def _per_poll_maintenance(self) -> None:
-        """The supervisor's per-poll upkeep: the throttled t3-master heartbeat, then the lease sweep."""
+        """The supervisor's per-poll upkeep: the throttled lease beat, then the dead-owner sweep.
+
+        The throttled beat carries both lease writes — the t3-master heartbeat and the
+        expired-debris reap — because both are cadence work on one table that would add
+        needless control-DB write pressure at the 5 s kill-switch poll.
+        """
         self._polls_since_master_refresh += 1
         if self._polls_since_master_refresh >= self._polls_per_master_refresh():
             self._polls_since_master_refresh = 0
             self._claim_t3_master()
+            self._reap_expired_leases()
         self._reclaim_dead_owner_leases()
 
     def run(self) -> None:
