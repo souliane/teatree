@@ -9,6 +9,7 @@ functions take a ``Task`` so they stay free of model-class state.
 """
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
@@ -61,11 +62,14 @@ def check_requeue_allowed(task: Task) -> None:
     * :class:`~teatree.core.repair_loop.MaxIterationsExceeded` — the iteration cap
         (previously FAILed the row with only a ``logger.warning`` — a silent freeze).
 
+    A CAUSELESS attempt is dropped from the stall comparison (#4075) but still counted
+    toward the cap — see :func:`~teatree.core.modelkit.task_failure_taxonomy.is_causeless`.
+
     A no-op when under the cap and not stalled.
     """
     attempts = phase_attempts(task)
     phase = normalize_phase(task.phase)
-    last_two = [a.error_fingerprint for a in attempts[-2:] if a.error_fingerprint]
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
     try:
         requeue_verdict(
             ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
