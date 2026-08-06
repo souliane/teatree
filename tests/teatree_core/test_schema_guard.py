@@ -234,6 +234,12 @@ class BehindSelfDbReportingTest(TransactionTestCase):
 # single-core that exceeds the global 60s ``pytest-timeout`` under maximum
 # parallel contention. Scoped 240s bump for the genuinely-slow migrations; the
 # global 60s stays as the hang-detector everywhere else (#1189).
+def _forge_offline(argv: list[str]) -> tuple[int, str, str]:
+    """Every forge read fails — the repo-reconcile probe falls back to its initial slug."""
+    del argv
+    return (1, "", "forge unreachable")
+
+
 @pytest.mark.timeout(240)
 class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """The sanctioned commands that cannot move off ``default`` (#2915).
@@ -252,18 +258,21 @@ class BehindSelfDbSelfHealsTest(TransactionTestCase):
         self.addCleanup(_migrate_core_forward)
 
     def test_ticket_clear_command_proceeds_past_schema_gate(self) -> None:
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                866,
-                "statusline-stale-wakeup",
-                reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
-                reviewer_identity="coldrev-866",
-                blast_class="logic",
-            ),
-        )
+        # A workstream-slug CLEAR probes the forge to reconcile its repo. This case is
+        # about the schema gate, so answer that probe offline instead of shelling out.
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_forge_offline):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    866,
+                    "statusline-stale-wakeup",
+                    reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+                    reviewer_identity="coldrev-866",
+                    blast_class="logic",
+                ),
+            )
         # The clear proceeds past the schema gate; whatever its outcome, it
         # is never the unapplied-migration refusal that #2006 eliminates.
         assert "unapplied migration" not in str(result.get("error", ""))

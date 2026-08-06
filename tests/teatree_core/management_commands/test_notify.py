@@ -11,8 +11,7 @@ import os
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
-import pytest
-from django.core.management import CommandError, call_command
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import BotPing
@@ -154,8 +153,11 @@ class TestNotifySendSubcommand(TestCase):
         assert "no_messaging_backend" in message
 
     def test_missing_idempotency_key_is_required(self) -> None:
-        with pytest.raises((SystemExit, CommandError)):
-            _call("notify", "send", "body", "--user-id", "U_ME", "--kind", "info")
+        # The option carries a default so `call_command` kwargs reach the body, so an
+        # OMITTED key is refused by the same runtime check a blank one hits, not by
+        # typer's missing-parameter error.
+        _out, code = _call("notify", "send", "body", "--user-id", "U_ME", "--kind", "info")
+        assert code == 2
 
     def test_blank_idempotency_key_exits_two(self) -> None:
         _out, code = _call(

@@ -26,6 +26,7 @@ from django.test import TestCase
 from teatree.core.merge import merge_ticket_pr, restore_caller_branch
 from teatree.core.merge.head_guard import _capture_head, _restore_head
 from teatree.core.models import MergeClear, Ticket
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -126,7 +127,7 @@ def _gh_ok(argv: list[str]) -> tuple[int, str, str]:
         return (0, '{"state": "OPEN", "mergeCommit": null}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "merged0deadbeef"}', "")
-    return (0, "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 class TestMergeKeystoneRestoresCallerBranch(TestCase):

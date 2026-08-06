@@ -196,6 +196,12 @@ def _check_host_projection_is_current() -> bool:
     The source generation is read from the database FILE rather than through the ORM,
     because the file is what the publisher projects from: comparing against whichever
     connection happens to be open would answer about a different database.
+
+    A source that cannot be read FAILs. The faults that make it unreadable — a long
+    writer holding the lock, a WAL recovery in progress — are the same ones that stop
+    the publisher, so returning quietly reported the projection as current on exactly
+    the failure this check exists to catch, and emitted no line for the JSON finding
+    parser to see either. An unreadable source is not evidence of a current projection.
     """
     path = _sqlite_path()
     if path is None or not path.exists():
@@ -204,8 +210,14 @@ def _check_host_projection_is_current() -> bool:
     published = ProjectionReader(projection_dir_for(path)).read().projection
     try:
         expected = ProjectionPublisher(path, projection_dir_for(path)).build().generation
-    except sqlite3.Error:
-        return True
+    except sqlite3.Error as exc:
+        typer.secho(
+            f"FAIL  Host projection: could not read the source generation from {path} ({exc}). "
+            "Whether the projection is current is unknown, so every Claude Code hook reading a "
+            "DB-home setting without Django may be serving values this generation did not produce.",
+            fg=typer.colors.RED,
+        )
+        return False
     if published is not None and published.generation == expected:
         typer.secho(
             f"OK    Host projection: current at generation {expected}",

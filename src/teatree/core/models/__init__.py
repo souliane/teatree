@@ -72,7 +72,13 @@ from teatree.core.models.loop_preset import Mode, ModeManager, ModeOverride, Mod
 from teatree.core.models.loop_schedule import ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.mechanism_sketch import MechanismSketch, MechanismSketchError
-from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.merge_clear import (
+    ClearIssuanceError,
+    ClearRequest,
+    MergeAudit,
+    MergeClear,
+    normalize_reviewer_identity,
+)
 from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
@@ -104,13 +110,7 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import (
-    Finding,
-    ReviewVerdict,
-    ReviewVerdictError,
-    Severity,
-    normalize_reviewer_identity,
-)
+from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E

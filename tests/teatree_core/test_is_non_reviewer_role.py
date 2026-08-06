@@ -16,6 +16,7 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -46,7 +47,7 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
         return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
-    return (0, "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 class TestIsNonReviewerRoleUnit(TestCase):
@@ -112,6 +113,23 @@ class TestIssueTimeMergeLoopBlockedIntegration(TestCase):
                     reviewed_sha=_SHA,
                     reviewer_identity="merge-loop",
                     executing_loop_identity="other-loop",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                )
+            )
+        assert MergeClear.objects.count() == 0
+
+    def test_issue_with_differently_cased_executing_loop_raises(self) -> None:
+        # Issue-time and merge-time canonicalize the identity identically, so a
+        # re-spelling of the executor's own name cannot self-issue a clearance.
+        with pytest.raises(ClearIssuanceError, match="equals the executing loop identity"):
+            MergeClear.issue(
+                ClearRequest(
+                    pr_id=1602,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="Worker-Alpha",
+                    executing_loop_identity="worker-alpha",
                     gh_verify_result="green",
                     blast_class="logic",
                 )

@@ -155,6 +155,12 @@ MERGE_KEYSTONE = GuardedChokepoint(
             purpose="A clean recorded merge-quality verdict covers the shipped head (north-star PR-4).",
         ),
         GateSpec(
+            name="ticket_scoped_gates",
+            callable_path="teatree.core.merge.ticket_gates.assert_ticket_scoped_gates",
+            purpose="The anti-vacuity attestation and rubric done-gate, resolved by PR identity so the "
+            "no-CLEAR merge paths are graded by the settings the operator enabled (#1829/#2241).",
+        ),
+        GateSpec(
             name="not_draft",
             callable_path="teatree.core.merge.execution.assert_not_draft",
             purpose="The PR/MR is not in draft state at the live head (§17.4.3 step 4).",

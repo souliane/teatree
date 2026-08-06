@@ -17,7 +17,7 @@ from django.db import migrations, models
 
 
 def _normalize(identity: str) -> str:
-    # Frozen snapshot of teatree.core.models.review_verdict.normalize_reviewer_identity:
+    # Frozen snapshot of teatree.core.models.merge_clear.normalize_reviewer_identity:
     # strip + collapse internal whitespace runs + casefold. Duplicated here on
     # purpose — a migration is a point-in-time transform and must not drift with
     # the live function.
