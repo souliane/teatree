@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import django.test
 
+import teatree.cli.doctor.app as doctor_app
 from teatree.cli.doctor.app import _run_loop_intent_gates
 from teatree.cli.doctor.checks_loop import _check_t3_master_unheld_while_loops_tick
 from teatree.loops.master_lease_contradiction import UnheldMasterLease
@@ -38,8 +39,22 @@ class TestT3MasterUnheldDoctorCheck(django.test.TestCase):
     def test_the_fail_reaches_the_doctor_run_verdict(self) -> None:
         # Wired into the aggregation, not merely defined: a check that no orchestration
         # list evaluates is dead authority, and its FAIL would never reach an operator.
-        with patch(_TARGET, return_value=_FINDING):
-            assert _run_loop_intent_gates() is False
+        #
+        # The three sibling gates in the ``and`` chain are pinned GREEN because one of
+        # them, ``_check_loop_schedule_liveness``, already reads False on the empty test
+        # DB — so a bare ``assert _run_loop_intent_gates() is False`` held with this check
+        # unwired, and even with no finding at all (proved live: probe printed
+        # "aggregate with NO finding -> False"). Both arms below are asserted so the
+        # aggregate can only flip on THIS check's own verdict.
+        with (
+            patch.object(doctor_app, "_check_intent_freshness", return_value=True),
+            patch.object(doctor_app, "_check_intake_budget_deadlock", return_value=True),
+            patch.object(doctor_app, "_check_loop_schedule_liveness", return_value=True),
+        ):
+            with patch(_TARGET, return_value=None):
+                assert _run_loop_intent_gates() is True
+            with patch(_TARGET, return_value=_FINDING):
+                assert _run_loop_intent_gates() is False
 
 
 class TestFailMessage(django.test.TestCase):
