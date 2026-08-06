@@ -40,11 +40,6 @@ def _unstarted_tasks(ticket: Ticket, phase: str) -> "QuerySet[Task]":
     return ticket.tasks.filter(phase=phase, status=Task.Status.PENDING).order_by("pk")  # ty: ignore[unresolved-attribute]
 
 
-def pending_phase_task(*, ticket: Ticket, phase: str) -> Task | None:
-    """The oldest unstarted task queued for *ticket* at *phase*, or ``None``."""
-    return _unstarted_tasks(ticket, phase).first()
-
-
 def enqueue_phase_task(
     *,
     ticket: Ticket,

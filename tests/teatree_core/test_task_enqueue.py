@@ -11,7 +11,6 @@ from teatree.core.task_enqueue import (
     TaskEnqueueError,
     enqueue_phase_task,
     enqueue_phase_task_once,
-    pending_phase_task,
 )
 
 
@@ -81,22 +80,18 @@ class EnqueueOnceTestCase(TestCase):
         enqueue_phase_task_once(ticket=self.ticket, phase="reviewing", reason="Review again.")
         assert Task.objects.filter(ticket=self.ticket, phase="reviewing").count() == 2
 
+    def test_a_claimed_task_does_not_block_a_re_enqueue(self) -> None:
+        # A claimed task is being worked right now; blocking on it would leave an
+        # operator unable to re-queue a phase whose worker died.
+        first = enqueue_phase_task_once(ticket=self.ticket, phase="reviewing", reason="Review now.")
+        Task.objects.filter(pk=first.pk).update(status=Task.Status.CLAIMED)
+        enqueue_phase_task_once(ticket=self.ticket, phase="reviewing", reason="Review again.")
+        assert Task.objects.filter(ticket=self.ticket, phase="reviewing").count() == 2
 
-class PendingPhaseTaskTestCase(TestCase):
-    def setUp(self) -> None:
-        self.ticket = Ticket.objects.create(overlay="test")
-
-    def test_it_reports_nothing_when_no_task_is_queued(self) -> None:
-        assert pending_phase_task(ticket=self.ticket, phase="coding") is None
-
-    def test_it_reports_the_oldest_unstarted_task_for_the_phase(self) -> None:
-        first = enqueue_phase_task(ticket=self.ticket, phase="coding", reason="a")
-        enqueue_phase_task(ticket=self.ticket, phase="coding", reason="b")
-        found = pending_phase_task(ticket=self.ticket, phase="coding")
-        assert found is not None
-        assert found.pk == first.pk
-
-    def test_a_claimed_task_is_not_reported_as_unstarted(self) -> None:
-        task = enqueue_phase_task(ticket=self.ticket, phase="coding", reason="a")
-        Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED)
-        assert pending_phase_task(ticket=self.ticket, phase="coding") is None
+    def test_the_refusal_names_the_oldest_queued_task(self) -> None:
+        # The disabled button names the oldest too, so the two can never disagree.
+        first = enqueue_phase_task(ticket=self.ticket, phase="reviewing", reason="a")
+        enqueue_phase_task(ticket=self.ticket, phase="reviewing", reason="b")
+        with pytest.raises(DuplicatePhaseTaskError) as exc:
+            enqueue_phase_task_once(ticket=self.ticket, phase="reviewing", reason="c")
+        assert f"TODO-{first.pk}" in str(exc.value)

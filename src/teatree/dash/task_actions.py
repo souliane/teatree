@@ -97,7 +97,7 @@ def _oldest_pending_task_per_phase(ticket: Ticket) -> dict[str, int]:
     """Offered phase -> the pk of its oldest unstarted task, for the phases that have one.
 
     Descending pk so the dict ends up holding the OLDEST — the same row
-    :func:`teatree.core.task_enqueue.pending_phase_task` refuses against, so the
+    :func:`teatree.core.task_enqueue.enqueue_phase_task_once` refuses against, so the
     disabled button and the POST refusal can never name two different tasks.
     """
     rows = (
