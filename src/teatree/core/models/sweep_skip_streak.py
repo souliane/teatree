@@ -8,14 +8,22 @@ and each is log-only, so a PR that is skipped every tick forever produces no sig
 at all — the shape where a finished branch quietly never merges.
 
 One row per ``(slug, pr_id)`` counts how many CONSECUTIVE sweep passes produced the
-SAME reason. Persistence is what surfaces, not any individual skip: a reason that
-changes restarts the per-reason count (useful for "how long has THIS reason held"),
-a non-skip outcome deletes the row (the PR moved), and ``surfaced_at`` — the last
-time this PR was announced, independent of which reason triggered it — gates a
-cooldown so a PR held for days is announced once, then again only after backing
-off, rather than every tick or every time the granular reason wobbles (e.g.
-``ci_red`` flapping to ``ci_pending`` and back on every rerun of the same stuck PR
-is not a new problem).
+same reason GROUP. Persistence is what surfaces, not any individual skip: a reason
+from a different group restarts the count (a different problem), a non-skip outcome
+deletes the row (the PR moved), and ``surfaced_at`` — the last time this PR was
+announced, independent of which reason triggered it — gates a cooldown so a PR held
+for days is announced once, then again only after backing off, rather than every tick.
+
+``classify_sweep_ci`` emits four reasons — ``required_checks_indeterminate``,
+``ci_pending``, ``uv_audit_red_but_clean_on_main``, ``ci_red`` — for the ONE condition
+"this PR's checks are not clean yet", and a PR's verdict legitimately alternates between
+them on consecutive passes. Counting each flip as a new problem reset the run length
+every tick, so the flappiest PRs — the ones most worth announcing — could never reach
+the surface threshold at all (#4095). They are therefore one group for streak continuity
+only: the stored ``reason`` still tracks the LATEST observation while ``first_seen_at``
+holds at the group's start, so the doctor view and the DM pair the actionable current
+reason with the age of the condition rather than of that one flip. A within-group flip
+never touches ``surfaced_at`` — re-arming is the cooldown window's job alone (#4086).
 """
 
 import datetime as dt
@@ -27,6 +35,18 @@ from django.utils import timezone
 
 _SECONDS_PER_HOUR = 3600
 _STREAK_FIELDS = ("reason", "url", "overlay", "first_seen_at", "last_seen_at", "tick_count", "surfaced_at")
+
+#: The reasons ``teatree.loop.scanners.pr_sweep_decision.classify_sweep_ci`` can emit —
+#: one condition observed at four moments. See the module docstring.
+_CI_VERDICT_REASONS = frozenset(
+    {"required_checks_indeterminate", "ci_pending", "uv_audit_red_but_clean_on_main", "ci_red"},
+)
+_CI_VERDICT_GROUP = "group:ci_verdict"
+
+
+def _reason_group(reason: str) -> str:
+    """The identity a streak continues on: the CI verdict collapses, everything else stands alone."""
+    return _CI_VERDICT_GROUP if reason in _CI_VERDICT_REASONS else reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,12 +80,12 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         )
         if created:
             return row
-        if row.reason != observation.reason:
-            row.reason = observation.reason
+        if _reason_group(row.reason) != _reason_group(observation.reason):
             row.first_seen_at = moment
             row.tick_count = 1
         else:
             row.tick_count += 1
+        row.reason = observation.reason
         row.url = observation.url or row.url
         row.overlay = observation.overlay or row.overlay
         row.last_seen_at = moment

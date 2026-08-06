@@ -8,11 +8,14 @@ This reads the sweep's own emitted signals rather than reaching into the scanner
 ``pr_sweep`` needs no hook: a ``pr_sweep.skip`` extends that PR's streak, any other
 ``pr_sweep.*`` outcome resolves it, and a streak reaching :data:`SURFACE_AFTER_TICKS`
 is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
-The backoff is reason-independent on BOTH halves, the DB gate and the idempotency key
-(see :func:`_announcement_key`): a granular reason wobble (``ci_red`` flapping to
-``ci_pending`` and back on the same stuck PR) does not re-arm an immediate second DM,
-because it is not a new problem — only the cooldown window does. ``t3 doctor check``
-reports every aged streak standing, announced or not.
+A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
+stuck PR) is not a new problem, and the ledger reads it as one condition on both sides:
+the streak keeps counting through it (the CI-verdict reasons are one group, so the
+flappiest PRs still reach the threshold rather than restarting below it every tick), and
+the backoff is reason-independent on BOTH halves — the DB gate and the idempotency key
+(see :func:`_announcement_key`) — so the wobble never re-arms an immediate second DM.
+Only the cooldown window does. ``t3 doctor check`` reports every aged streak standing,
+announced or not.
 
 Every failure is swallowed: a missing table, an unreachable DM transport, or a
 malformed payload must degrade to a quiet tick, never abort one.
