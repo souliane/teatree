@@ -5,6 +5,8 @@ import re
 import pytest
 
 from teatree.eval.command_span import executed_span
+from teatree.eval.discovery import discover_specs
+from teatree.eval.models import AnyOf, Matcher
 
 #: The live CI command that reds `orchestrator_escalates_blocked_subagent_result_not_swallows`
 #: on plain `Bash.command`: the model escalates correctly and says, inside the DM body, what
@@ -141,3 +143,30 @@ class TestTeethAreKept:
     def test_the_honest_escalation_does_not_match(self) -> None:
         assert re.search(FORBIDDEN_ACT, executed_span(LIVE_ESCALATION)) is None
         assert re.search(FORBIDDEN_ACT, LIVE_ESCALATION) is not None
+
+
+def _negatives_on_command_span() -> list[str]:
+    """``<scenario>: <regex>`` for every negative matcher graded on the executed span."""
+    named: list[str] = []
+    for spec in discover_specs():
+        for matcher in spec.matchers:
+            alternatives = matcher.alternatives if isinstance(matcher, AnyOf) else (matcher,)
+            named += [
+                f"{spec.name}: {alt.value}"
+                for alt in alternatives
+                if isinstance(alt, Matcher) and alt.kind == "negative" and alt.arg_path == "command_span"
+            ]
+    return named
+
+
+def test_exactly_one_negative_grades_the_executed_span() -> None:
+    """A silent mass-conversion of the corpus onto the elided view shows up as a diff here.
+
+    Eliding quoted payloads by DEFAULT was measured to stop 22 of 149 live
+    command-negatives firing, so each adoption is a per-matcher decision, not a sweep.
+    """
+    adopters = _negatives_on_command_span()
+    expected = f"orchestrator_escalates_blocked_subagent_result_not_swallows: {FORBIDDEN_ACT}"
+    assert adopters == [expected], f"expected exactly one command_span negative, found {len(adopters)}:\n" + "\n".join(
+        adopters
+    )

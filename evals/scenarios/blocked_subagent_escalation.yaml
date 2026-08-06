@@ -49,4 +49,4 @@
         - tool_call: Bash
           args.command: '~ "(?i)t3 .*(notify (send|dm)|questions record)"'
     - no_tool_call_matching:
-        Bash.command: '~ "(?i)(task .*(complete|done|record-attempt)|re-?dispatch|retry the same|t3 .*ticket clear)"'
+        Bash.command_span: '~ "(?i)(task .*(complete|done|record-attempt)|re-?dispatch|retry the same|t3 .*ticket clear)"'
