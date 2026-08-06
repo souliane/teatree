@@ -17,8 +17,15 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.management.commands.tasks_session_view import render_tasks_table
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure, is_environmental
+from teatree.core.modelkit.task_failure_taxonomy import (
+    FailureKind,
+    classify_failure,
+    is_causeless,
+    is_environmental,
+    stall_fingerprints,
+)
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.dash.selectors import build_kanban_columns
 from teatree.failure_signatures import is_transient_failure
 
@@ -138,6 +145,44 @@ class TestClassifier(TestCase):
         for reason in transient_reasons:
             assert is_transient_failure(reason), reason
             assert is_environmental(classify_failure(reason)), reason
+
+
+class TestCauselessKinds:
+    """#4075: a failure that named no cause must not be compared against itself.
+
+    Both causeless kinds are recorded with a CONSTANT reason, so two of them collide on
+    one fingerprint by construction — "we learned nothing, twice" would otherwise read as
+    "one defect recurred twice" and halt a phase that was never doomed.
+    """
+
+    def test_the_two_reporting_failures_are_causeless(self) -> None:
+        assert is_causeless(classify_failure("no_result_envelope: agent produced no JSON result envelope"))
+        assert is_causeless(classify_failure("stuck_loop: runtime ceiling exceeded after 3600s"))
+
+    def test_a_named_defect_is_not_causeless(self) -> None:
+        # The control the whole change rests on: the stall check must still be able to fire.
+        assert not is_causeless(classify_failure("missing required evidence for phase 'coding'"))
+        assert not is_causeless(classify_failure("AssertionError: expected 3 got 4"))
+
+    def test_an_unnamed_kind_is_not_causeless(self) -> None:
+        # ``unclassified``/``unrecorded`` also fail to NAME a cause, but their free text
+        # differs, so the fingerprint check discriminates them and is deliberately kept.
+        assert not is_causeless(FailureKind.UNCLASSIFIED)
+        assert not is_causeless(FailureKind.UNRECORDED)
+
+    def test_causeless_fingerprints_are_dropped_from_the_stall_comparison(self) -> None:
+        fingerprint = terminal_reason_fingerprint("no_result_envelope: agent produced no JSON result envelope")
+        kind = classify_failure("no_result_envelope: agent produced no JSON result envelope")
+        assert stall_fingerprints([(kind, fingerprint), (kind, fingerprint)]) == []
+
+    def test_a_named_defects_fingerprints_still_count(self) -> None:
+        reason = "missing required evidence for phase 'coding'"
+        fingerprint = terminal_reason_fingerprint(reason)
+        kind = classify_failure(reason)
+        assert stall_fingerprints([(kind, fingerprint), (kind, fingerprint)]) == [fingerprint, fingerprint]
+
+    def test_an_empty_fingerprint_is_dropped_as_before(self) -> None:
+        assert stall_fingerprints([(FailureKind.UNCLASSIFIED, ""), (FailureKind.UNCLASSIFIED, "fp")]) == ["fp"]
 
 
 class TestAttemptStampsFailureKind(TestCase):

@@ -38,7 +38,7 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_causeless, is_environmental, stall_fingerprints
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
@@ -289,7 +289,7 @@ def _schedule_for_state(ticket: Ticket) -> Task:
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
     """Return the loud halt reason if *ticket*'s phase is out of repair budget, else ``None``."""
     attempts = _phase_attempts(ticket, phase=phase)
-    last_two = [a.error_fingerprint for a in attempts[-2:] if a.error_fingerprint]
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
     try:
         requeue_verdict(
             ticket_id=ticket.pk,
@@ -314,14 +314,19 @@ def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
 
     An environmental kind is dropped rather than compared: a lost lease or an API outage
     is the environment's fault, so repeating it says nothing about the work and must stay
-    retryable up to the iteration cap. Dropping (rather than substituting a placeholder)
-    also means one environmental failure between two identical deterministic ones breaks
-    the run — only two CONSECUTIVE named deterministic failures halt.
+    retryable up to the iteration cap. A CAUSELESS kind is dropped for the sibling reason
+    (#4075) — it reports the absence of a cause, so two of them are one silence repeated,
+    not one defect. Dropping (rather than substituting a placeholder) also means one such
+    failure between two identical deterministic ones breaks the run — only two CONSECUTIVE
+    named deterministic failures halt.
     """
     return [
         a.failure_kind
         for a in attempts[-2:]
-        if a.failure_kind and a.failure_kind not in _UNNAMED_KINDS and not is_environmental(a.failure_kind)
+        if a.failure_kind
+        and a.failure_kind not in _UNNAMED_KINDS
+        and not is_causeless(a.failure_kind)
+        and not is_environmental(a.failure_kind)
     ]
 
 

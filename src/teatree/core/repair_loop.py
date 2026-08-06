@@ -17,6 +17,15 @@ consecutive identical fingerprints is a stall: :func:`requeue_verdict` raises
 :class:`IterationStalled` so the caller escalates to the user instead of
 re-running the identical failure.
 
+Both stall checks compare only what the CALLER hands them, and it is the caller's
+job to withhold a comparison that cannot mean anything. A CAUSELESS failure — one
+recorded with a constant reason because the run reported nothing at all — collides
+with itself by construction, so
+:func:`~teatree.core.modelkit.task_failure_taxonomy.stall_fingerprints` drops it
+before it reaches :func:`is_stalled` (#4075). That, like the deterministic-kinds
+filter below, is what keeps this module a dependency-free leaf with no import of
+the failure taxonomy.
+
 Named-cause stall (#3958) — a fingerprint compares FREE TEXT, so one deterministic
 defect whose message carries a varying detail (a differing sha, a differing spec
 name) produces two different fingerprints and never trips the check. A caller that

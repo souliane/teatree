@@ -32,7 +32,26 @@ is also environmental here, never the reverse. The gap between them is intention
 the diff) yet must NOT be requeued by that sweep, because a live successor task already
 holds the work and reopening the predecessor would duplicate it (souliane/teatree#3534).
 Collapsing the two axes would silently re-run one of them into a wall.
+
+A third axis: causeless (souliane/teatree#4075)
+-----------------------------------------------
+:func:`is_causeless` answers a third question — "did this failure name a cause at all?".
+A run that emitted no envelope, or that was cut off at its runtime ceiling, reported
+NOTHING about why the work is unfinished, and both are recorded with a CONSTANT reason,
+so two of them share one ``error_fingerprint`` by construction. Feeding that to the repair
+loop's two-consecutive-identical stall check makes "we learned nothing, twice"
+indistinguishable from "one defect recurred twice" — and the corrective retry the loop
+itself schedules supplies the second strike, so the halt is manufactured rather than
+observed. :func:`stall_fingerprints` therefore drops them from the stall comparison; the
+attempt still burns iteration budget and still escalates at the cap.
+
+Deliberately NARROWER than ``_UNNAMED_KINDS`` in
+:mod:`teatree.loop.stuck_ticket_redispatch`: those two kinds also fail to name a cause,
+but they carry DIFFERING free text, so the fingerprint check discriminates them and is
+kept. A causeless kind's text is constant, so no check discriminates it.
 """
+
+from collections.abc import Iterable
 
 from django.db import models
 
@@ -86,6 +105,16 @@ _ENVIRONMENTAL: frozenset[str] = frozenset(
         FailureKind.RESULT_ERROR,
         FailureKind.PROVISION_FAILED,
         FailureKind.LANDING_UNVERIFIED,
+    },
+)
+
+#: Kinds that are the ABSENCE of a cause rather than a cause, recorded with a CONSTANT
+#: reason — so two of them collide on one fingerprint by construction. See the module
+#: docstring: dropped from the stall comparison, never from the iteration budget.
+_CAUSELESS: frozenset[str] = frozenset(
+    {
+        FailureKind.NO_RESULT_ENVELOPE,
+        FailureKind.RUNTIME_CEILING,
     },
 )
 
@@ -158,6 +187,24 @@ def is_environmental(kind: str) -> bool:
     return kind in _ENVIRONMENTAL
 
 
+def is_causeless(kind: str) -> bool:
+    """Whether *kind* is the absence of a cause, so two of them are not one repeating defect.
+
+    The stall axis only — see the module docstring on why this is narrower than the
+    "absence of a NAME" set the kind check drops.
+    """
+    return kind in _CAUSELESS
+
+
+def stall_fingerprints(kind_fingerprints: Iterable[tuple[str, str]]) -> list[str]:
+    """The ``(kind, fingerprint)`` pairs' fingerprints that count toward the stall check.
+
+    The single builder every ``last_two_fingerprints`` caller shares, so a causeless
+    failure can never be dropped on one repair path and counted on another.
+    """
+    return [fingerprint for kind, fingerprint in kind_fingerprints if fingerprint and not is_causeless(kind)]
+
+
 __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
@@ -165,5 +212,7 @@ __all__ = [
     "SUPERSEDED_PREFIX",
     "FailureKind",
     "classify_failure",
+    "is_causeless",
     "is_environmental",
+    "stall_fingerprints",
 ]
