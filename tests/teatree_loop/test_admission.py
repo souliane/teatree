@@ -18,7 +18,8 @@ from teatree.core.admission_governor import AdmissionDecision, read_machine_sign
 from teatree.core.models import Task
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.loop import admission
-from teatree.utils import ram_probe
+from teatree.utils import ram_scope
+from teatree.utils.ram_scope import RamHeadroom
 from tests.factories import TaskFactory
 
 
@@ -169,7 +170,9 @@ class TestMachineSignal:
     def test_populates_the_memory_reading_from_the_cgroup_aware_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # #4163: the field was declared and populated by nothing, and every live caller
         # here passes no argument — so the default path is the only one that ever ran.
-        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: 9 * 1024)
+        monkeypatch.setattr(
+            ram_scope, "read_ram_headroom", lambda: RamHeadroom(available_mib=9 * 1024, cgroup_limit_mib=None)
+        )
         assert read_machine_signal().ram_available_gb == pytest.approx(9.0)
 
     def test_carries_an_injected_ram_reading(self) -> None:

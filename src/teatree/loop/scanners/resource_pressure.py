@@ -50,7 +50,8 @@ from dataclasses import dataclass, field
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
-from teatree.utils.ram_probe import cgroup_v2_memory_mib, linux_mem_available_kb
+from teatree.utils.ram_probe import linux_mem_available_kb
+from teatree.utils.ram_scope import cgroup_headroom_mib
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -108,8 +109,9 @@ def read_ram_avail_gb() -> float | None:
     reclaimable ``vm_stat`` page classes) and this process's own cgroup. Reading
     only the machine is how a 23 GB-capped worker was OOM-killed three times while
     the 30 GB host still reported ~10 GB free, an order of magnitude above every
-    threshold (#4104). Mirrors :func:`ram_probe.effective_available_ram_mib`, which
-    the sibling intake scanner in this same mini-loop already reasons in.
+    threshold (#4104). Mirrors :func:`ram_scope.read_ram_headroom`, which the sibling
+    intake scanner in this same mini-loop already reasons in — and shares its cgroup
+    reader outright, so the two cannot drift.
 
     ``None`` means no scope could answer — the caller reports the RAM ladder INERT
     rather than skipping it silently.
@@ -133,12 +135,15 @@ def _read_machine_ram_avail_gb(system: str) -> float | None:
 
 
 def _read_cgroup_headroom_gb() -> float | None:
-    """What this process's cgroup can still allocate — the scope a container OOMs in."""
-    limit_mib = cgroup_v2_memory_mib("memory.max")
-    current_mib = cgroup_v2_memory_mib("memory.current")
-    if limit_mib is None or current_mib is None:
-        return None
-    return max(0, limit_mib - current_mib) / 1024
+    """What this process's cgroup can still allocate — the scope a container OOMs in.
+
+    Delegated to :func:`~teatree.utils.ram_scope.cgroup_headroom_mib` so this reader and
+    the admission governor's cannot drift on what "available" means: both credit the
+    reclaimable page cache ``memory.current`` charges, exactly as ``MemAvailable`` does
+    on the machine arm above (#4217).
+    """
+    headroom_mib = cgroup_headroom_mib()
+    return None if headroom_mib is None else headroom_mib / 1024
 
 
 def _ram_inert_reason(system: str) -> str:
