@@ -86,13 +86,33 @@ x-teatree-common: &teatree-common
     # tries to open the canonical DB gets a directory it cannot create, and fails
     # loudly instead of quietly opening a second database.
     - teatree_control_db:/var/lib/teatree/control-db
-    # The container's own CLONE root (`config.clone_root()`), holding the source
-    # clones worktrees are cut from. Mounted BENEATH the `t3-workspaces` bind
-    # below: docker orders mounts by target depth, so this lands first and the
-    # worktree bind lands on top of it. That nesting is deliberate — the clones
-    # are container-owned and invisible to the host, while the worktrees they
-    # produce stay host-visible so an operator can read and edit the code.
+    # The container's own CLONE root (`config.clone_root()`). Mounted BENEATH the
+    # `t3-workspaces` bind below: docker orders mounts by target depth, so this
+    # lands first and the worktree bind lands on top of it. The root itself is
+    # container-owned; what it holds for a repo is a discovery SYMLINK, and the
+    # mount below is what that link resolves to.
     - teatree_clones:/home/teatree/workspace
+    # The checkout this stack was deployed from, at PATH IDENTITY, READ-WRITE —
+    # the clone `workspace ticket` cuts worktrees from (deploy/entrypoint.sh's
+    # retarget_clone_discovery points the discovery link at it).
+    #
+    # `git worktree add` bakes an ABSOLUTE `gitdir:` pointer into its source
+    # clone, so the CLONE's path decides who can use the worktree, not the
+    # worktree's own. Cutting from the container-only `teatree_src` volume at
+    # `$TEATREE_CLONE_DIR` recorded a path that exists in no other venue: the
+    # files stayed readable from the host (t3-workspaces is bind-mounted) while
+    # every git command against them answered `fatal: not a git repository`
+    # (#4120). Path identity is the same device the watchdog's own read-only
+    # spelling of this mount already relies on, and both sides read ONE variable
+    # so identity holds on any topology rather than only at the box default.
+    #
+    # Read-write because `worktree add` writes `.git/worktrees/<n>` into the
+    # clone — the watchdog's read-only mount cannot serve provisioning. The
+    # container's UID is the host deploy user's (README § UID invariant), so
+    # those writes land with the ownership the host expects.
+    - type: bind
+      source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+      target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     - type: bind
       source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree
       target: /home/teatree/.local/share/teatree
@@ -204,6 +224,10 @@ services:
       # install that registers the overlay entry point. Interpolated from the
       # host env because that is the only channel deploy/t3 can reach compose on.
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Init owns the shared clone root, so it is where the discovery link is
+      # retargeted at the host-visible checkout — before the worker that reads
+      # it starts (#4120).
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     restart: "no"
 
   # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
@@ -216,6 +240,10 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same value as the checkout bind in the shared anchor: the entrypoint
+      # points clone discovery at it so the worktrees this role cuts carry a
+      # `gitdir:` the host resolves too (#4120).
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
     # THE ONE SERVICE THAT MAY DRIVE THE DAEMON. The shared mount set carries
     # /var/run/docker.sock, but the socket is mode 0660 root-owned and every app
     # service runs as the non-root TEATREE_UID, so the mount alone grants nothing.
