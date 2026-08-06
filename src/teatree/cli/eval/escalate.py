@@ -26,7 +26,7 @@ import dataclasses
 from collections.abc import Callable
 from typing import Literal
 
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import CAP_TERMINAL_REASONS, EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult
 from teatree.eval.surface import is_advisory
@@ -63,6 +63,12 @@ class EscalationOutcome:
     ``advisory`` carries the scenario's question SURFACE through to the verdict: an
     ``interactive``-surface scenario is re-run and reported exactly like any other,
     but never reds the lane (#3855).
+
+    ``cap_tainted`` records that at least one escalation trial was cap-truncated
+    (``max_turns``/budget/timeout), so the trial evidence is incomplete. It is
+    REPORTED by both renderers and never gates: the cap veto belongs to the weekly
+    gate (:attr:`~teatree.eval.pass_at_k.PassAtKResult.ok`), and applying it here
+    reds a scenario that passed a majority of its escalation trials (#4243).
     """
 
     spec_name: str
@@ -70,6 +76,7 @@ class EscalationOutcome:
     passes: int
     classification: EscalationClass
     advisory: bool = False
+    cap_tainted: bool = False
 
     @property
     def is_hard_red(self) -> bool:
@@ -126,8 +133,9 @@ def render_escalation_markdown(report: EscalationReport) -> str:
 
 
 def describe_classification(outcome: EscalationOutcome) -> str:
-    """The outcome's classification, tagged when it is reported-but-non-gating."""
-    return f"{outcome.classification} (advisory)" if outcome.advisory else outcome.classification
+    """The outcome's classification, tagged with every reported-but-non-gating qualifier."""
+    tags = [tag for tag, present in (("advisory", outcome.advisory), ("cap-truncated", outcome.cap_tainted)) if present]
+    return f"{outcome.classification} ({', '.join(tags)})" if tags else outcome.classification
 
 
 def _failed(result: ScenarioResult) -> bool:
@@ -156,7 +164,9 @@ def escalate_failures(
         if not _failed(result):
             continue
         aggregate = run_pass_at_k(result.spec, runner, k=escalate_trials, require="any")
-        classification: EscalationClass = "flaky" if aggregate.ok else "confirmed"
+        # NOT `aggregate.ok`: that is the weekly gate's verdict and vetoes on cap taint (#2192),
+        # which reds a scenario a majority of whose escalation trials passed cleanly (#4243).
+        classification: EscalationClass = "flaky" if aggregate.passes >= 1 else "confirmed"
         outcomes.append(
             EscalationOutcome(
                 spec_name=result.spec.name,
@@ -164,6 +174,7 @@ def escalate_failures(
                 passes=aggregate.passes,
                 classification=classification,
                 advisory=is_advisory(result.spec),
+                cap_tainted=aggregate.terminal_reason in CAP_TERMINAL_REASONS,
             )
         )
     return EscalationReport(outcomes=outcomes)
