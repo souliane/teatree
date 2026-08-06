@@ -37,18 +37,29 @@ A third axis: causeless (souliane/teatree#4075)
 -----------------------------------------------
 :func:`is_causeless` answers a third question — "did this failure name a cause at all?".
 A run that emitted no envelope, or that was cut off at its runtime ceiling, reported
-NOTHING about why the work is unfinished, and both are recorded with a CONSTANT reason,
-so two of them share one ``error_fingerprint`` by construction. Feeding that to the repair
-loop's two-consecutive-identical stall check makes "we learned nothing, twice"
-indistinguishable from "one defect recurred twice" — and the corrective retry the loop
-itself schedules supplies the second strike, so the halt is manufactured rather than
-observed. :func:`stall_fingerprints` therefore drops them from the stall comparison; the
-attempt still burns iteration budget and still escalates at the cap.
+NOTHING about why the work is unfinished, so two of them are one silence repeated rather
+than one defect recurring. Feeding that to the repair loop's two-consecutive-identical
+stall check makes "we learned nothing, twice" indistinguishable from "one defect recurred
+twice" — and the corrective retry the loop itself schedules supplies the second strike, so
+the halt is manufactured rather than observed. :func:`stall_fingerprints` therefore drops
+them from the stall comparison; the attempt still burns iteration budget and still
+escalates at the cap.
+
+Membership is decided by that absence-of-a-cause test, NOT by whether the recorded text
+happens to repeat: ``no_result_envelope`` is a module constant
+(:data:`teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`), so it always self-collides on
+the fingerprint, but ``runtime_ceiling``'s reason interpolates the breach (``ran 3601s``
+vs ``ran 3722s`` fingerprint differently) and so does NOT collide by construction — for it,
+the KIND-level drop in ``_deterministic_kinds`` is what does the work, and the fingerprint
+side is only sometimes redundant with it.
 
 Deliberately NARROWER than ``_UNNAMED_KINDS`` in
-:mod:`teatree.loop.stuck_ticket_redispatch`: those two kinds also fail to name a cause,
-but they carry DIFFERING free text, so the fingerprint check discriminates them and is
-kept. A causeless kind's text is constant, so no check discriminates it.
+:mod:`teatree.loop.stuck_ticket_redispatch`: those two kinds fail to name a cause because
+classification could not place a reason that IS there, so the text still carries the
+defect and the fingerprint check discriminates it (``UNRECORDED`` is the one exception —
+its text is blank by definition, so its fingerprint is empty and already dropped by the
+existing empty-fingerprint guard). A causeless kind's reason, in contrast, IS the reason —
+there is no defect-specific text underneath it for a check to discriminate.
 """
 
 from collections.abc import Iterable
