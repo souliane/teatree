@@ -89,6 +89,7 @@ from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission, handle_dispatch_admission_on_task_create
 from hooks.scripts.dispatch_ledger import handle_track_agents
+from hooks.scripts.dispatch_seat_release import handle_subagent_stop_release
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import autoload_skill_demand, engage
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
@@ -134,8 +135,7 @@ from hooks.scripts.managed_repo import overlay_managed_repo_signals as _overlay_
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
 from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
-from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
-from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
+from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write, is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
 from hooks.scripts.mode_posture_probe import resolved_defers_questions as _resolved_defers_questions
 from hooks.scripts.mode_posture_probe import resolved_pauses_self_pump as _resolved_pauses_self_pump_stdlib
@@ -1918,7 +1918,7 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     matcher, #171) is governed by the ``[teatree]
     mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
     """
-    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
+    if is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
         return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -5696,7 +5696,7 @@ _HANDLERS: dict[str, list] = {
         handle_stop_snapshot_slot,
         handle_loop_self_pump,
     ],
-    "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent],
+    "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent, handle_subagent_stop_release],
 }
 
 # Events whose block/deny is carried by a TOP-LEVEL ``decision`` JSON object on
