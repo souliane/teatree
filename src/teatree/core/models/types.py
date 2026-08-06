@@ -100,6 +100,9 @@ class TicketExtra(TypedDict, total=False):
     ship_invoking_branch: str
     ignored_from: str
     reopened_from: str
+    # Board reconcile rule E's revival cap. Undeclared it is stripped by every
+    # ladder transition, so the cap reads 0 forever and never fires (#4152).
+    reopen_revivals: int
     visual_qa: VisualQASummary
     branch: str
     # #33 per-repo branch override map (repo → branch). A ticket whose repos

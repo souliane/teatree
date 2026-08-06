@@ -27,6 +27,10 @@ class TestValidatedTicketExtra:
         result = validated_ticket_extra(raw)
         assert "123" in result["prs"]
 
+    def test_reopen_revivals_survives_validation(self) -> None:
+        """Undeclared, the board's revival counter is stripped by every ladder transition (#4152)."""
+        assert validated_ticket_extra({"reopen_revivals": 2})["reopen_revivals"] == 2
+
 
 class TestValidatedWorktreeExtra:
     def test_none_returns_empty(self) -> None:
