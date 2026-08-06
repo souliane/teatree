@@ -20,7 +20,13 @@ from teatree.core.models import (
     UnclaimedIntakeCandidate,
     WaitingCandidate,
 )
-from teatree.loop.scanners.issue_intake import IssueIntakeScanner, author_is_trusted, issue_author, issue_url
+from teatree.loop.scanners.issue_intake import (
+    IssueIntakeScanner,
+    author_is_trusted,
+    issue_author,
+    issue_created_at,
+    issue_url,
+)
 from teatree.types import RawAPIDict
 
 OWNER = "souliane"
@@ -807,6 +813,18 @@ class IssueIntakePayloadReadersTests(_PublicRepoTestCase):
         assert issue_author({"user": {"login": " souliane "}}) == OWNER
         assert issue_author({"author": {"username": OWNER}}) == OWNER
         assert issue_author({"user": "not-a-dict"}) == ""
+
+    def test_issue_created_at_reads_both_forges_and_degrades_to_none(self) -> None:
+        assert issue_created_at({"created_at": "2026-08-01T09:00:00Z"}) == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
+        # GitLab emits sub-second precision and a numeric offset.
+        assert issue_created_at({"created_at": "2026-08-01T11:00:00.000+02:00"}) == dt.datetime(
+            2026, 8, 1, 9, tzinfo=dt.UTC
+        )
+        # A naive stamp is read as UTC, not as local time.
+        assert issue_created_at({"created_at": "2026-08-01T09:00:00"}) == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
+        assert issue_created_at({"created_at": "not a date"}) is None
+        assert issue_created_at({"created_at": 1234}) is None
+        assert issue_created_at({}) is None
 
     def test_author_is_trusted_refuses_an_unresolvable_author(self) -> None:
         trusted = frozenset({OWNER})

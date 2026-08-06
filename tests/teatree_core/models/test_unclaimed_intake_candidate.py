@@ -4,7 +4,12 @@ import datetime as dt
 
 from django.test import TestCase
 
-from teatree.core.models import STARVED_AFTER, UnclaimedIntakeCandidate, WaitingCandidate
+from teatree.core.models import (
+    STARVED_AFTER,
+    UnclaimedIntakeCandidate,
+    UnclaimedIntakeCandidateManager,
+    WaitingCandidate,
+)
 
 OVERLAY = "acme"
 OLD = "https://github.com/souliane/teatree/issues/4188"
@@ -14,6 +19,9 @@ NOW = dt.datetime(2026, 8, 4, 12, tzinfo=dt.UTC)
 
 class UnclaimedIntakeCandidateSyncTests(TestCase):
     """``sync`` replaces the overlay's waiting set and preserves each first sighting."""
+
+    def test_the_default_manager_owns_the_sync_and_starved_reads(self) -> None:
+        assert isinstance(UnclaimedIntakeCandidate.objects, UnclaimedIntakeCandidateManager)
 
     def test_sync_records_the_observed_set(self) -> None:
         UnclaimedIntakeCandidate.objects.sync(
