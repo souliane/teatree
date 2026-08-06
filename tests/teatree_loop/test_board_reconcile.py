@@ -533,11 +533,39 @@ class TestReopenedIssueRule(TestCase):
         assert [t.to_state for t in report.transitions] == [Ticket.State.STARTED]
         assert report.applied == ()
 
+    def _walk_back_to_delivered(self, ticket: Ticket) -> None:
+        """Return a revived ticket to DELIVERED the way the ladder does.
+
+        ``test()`` is the step that matters: it rewrites ``extra`` through
+        ``validated_ticket_extra``, so a counter it does not know is dropped here.
+        """
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.CODED)
+        ticket.refresh_from_db()
+        ticket.test(passed=True)
+        ticket.save()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.DELIVERED)
+        ticket.refresh_from_db()
+
     def _capped(self) -> Ticket:
         ticket = self._delivered()
-        ticket.extra = {"reopen_revivals": board_reconcile.MAX_REOPEN_REVIVALS}
-        ticket.save()
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"reopen_revivals": board_reconcile.MAX_REOPEN_REVIVALS})
+        ticket.refresh_from_db()
+        self._walk_back_to_delivered(ticket)
         return ticket
+
+    def test_the_cap_fires_after_max_revivals_across_ladder_walks(self) -> None:
+        """A revival only recurs after a full ladder walk, so the counter must survive one (#4152)."""
+        ticket = self._delivered()
+        applied = 0
+
+        with patch.object(board_reconcile, "_reopened_issue_urls", return_value={self.URL}):
+            for _ in range(board_reconcile.MAX_REOPEN_REVIVALS + 2):
+                applied += len(reconcile_board().applied)
+                ticket.refresh_from_db()
+                self._walk_back_to_delivered(ticket)
+
+        assert applied == board_reconcile.MAX_REOPEN_REVIVALS
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"reopen-revival-capped:{ticket.pk}").count() == 1
 
     def test_the_revival_cap_halts_and_escalates_exactly_once(self) -> None:
         """The cap must not become the silence this rule exists to remove."""
