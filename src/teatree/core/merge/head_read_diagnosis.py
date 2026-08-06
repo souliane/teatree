@@ -6,11 +6,16 @@ the head. The keystone formatted it into a sentence asserting "PR head moved" an
 offered two hypotheses that excluded the real one, sending the reader after a
 force-push that never happened.
 
-A merge that ALREADY LANDED is the third state that empties the read (#4144): the
-squash deletes the source branch, so the head is gone precisely because the merge
-succeeded. :func:`landed_merge_commit` is the one fact an empty read does not
-settle on its own, and the keystone must establish it before diagnosing drift —
-refusing there left the ticket unadvanced against a merged PR.
+A merge that ALREADY LANDED is a third reason the read comes back empty (#4144).
+The #4144 incident read this way, but the mechanism is not a durable one to lean
+on: GitHub keeps serving ``headRefOid`` for a merged PR even after its source
+branch is deleted (checked against three merged PRs whose branches are gone from
+the remote — all still answered). So an empty read here is, like the #4239 causes
+above, most likely transient (network, rate limit, eventual consistency right
+after the merge) rather than proof the branch is gone. :func:`landed_merge_commit`
+does not need to know which — it is the one fact an empty read does not settle on
+its own, and the keystone must establish it before diagnosing drift, whatever
+emptied the read — refusing there left the ticket unadvanced against a merged PR.
 
 Each chain below is the one that host's merge READ actually authenticates from,
 which is neither the PUSH credential ``core.forge_push`` resolves nor the same

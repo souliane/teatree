@@ -161,9 +161,10 @@ def assert_merge_preconditions(
     live_sha = query.live_head_sha()
     if not live_sha:
         # #4144: settle "did it land?" before diagnosing the empty read as drift —
-        # a squash deletes the source branch, so an unreadable head is the EXPECTED
-        # state after a merge that succeeded. The gates below bind to the reviewed
-        # tree, the same value the readable-head reconcile path passes them.
+        # whatever emptied this read (transient forge error, credential, or the
+        # merge having already landed), a PR the forge reports MERGED settles it.
+        # The gates below bind to the reviewed tree, the same value the
+        # readable-head reconcile path passes them.
         if landed := landed_merge_commit(query):
             _assert_anti_vacuity(authorized_clear, authorized_clear.reviewed_sha)
             _assert_rubric_satisfied(authorized_clear, authorized_clear.reviewed_sha)

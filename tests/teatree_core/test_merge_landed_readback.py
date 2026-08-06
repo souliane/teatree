@@ -1,9 +1,12 @@
 """A merge that LANDED is not head drift (#4144).
 
 Observed live: the keystone merged a PR, then reported ``merged: False`` and
-re-escalated because the head readback came back ``(unresolved)``. An unreadable
-head is the EXPECTED state after a squash merge deletes the source branch — the
-keystone diagnosed it as drift, named a force-push that never happened, skipped
+re-escalated because the head readback came back ``(unresolved)``. The read can
+come back empty for the same reasons #4239 already covers (transient forge error,
+missing credential, rate limit) — GitHub keeps answering ``headRefOid`` for a
+merged PR even after its source branch is deleted, so branch deletion is not
+established as the cause. Whatever emptied it, the keystone diagnosed the empty
+read as drift, named a force-push that never happened, skipped
 ``record_merge_and_advance``, and left the ticket ``tested`` against a merged PR.
 
 These tests pin the ordering the fix establishes: "did it land?" is settled

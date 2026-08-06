@@ -331,12 +331,15 @@ def _reconcile_slug_against_reviewed_sha(
     A no-match raise is classified before it is composed (#4239, #4144). A forge
     read that returns nothing is a NON-answer, so "the head moved" is a claim the
     gate has no evidence for. When the INITIAL read came back empty, two things
-    follow: the PR may simply have merged already — established first, because a
-    squash deletes the branch the head read wants (#4144) — and, failing that, the
-    refusal says the head could not be READ rather than that it moved, naming the
-    venue's missing credential or (when candidates DID answer) the cross-repo
-    hypothesis those answers actually support. Only a head that RESOLVES to a
-    different SHA keeps the head-moved diagnosis.
+    follow: the PR may simply have merged already — checked first, whatever
+    emptied the read (#4144; a merged PR's head going unreadable is not shown to
+    be caused by its branch being deleted — GitHub keeps answering ``headRefOid``
+    for merged PRs after their source branch is gone, so a transient forge error
+    is at least as likely) — and, failing that, the refusal says the head could
+    not be READ rather than that it moved, naming the venue's missing credential
+    or (when candidates DID answer) the cross-repo hypothesis those answers
+    actually support. Only a head that RESOLVES to a different SHA keeps the
+    head-moved diagnosis.
     """
     if not reviewed_sha:
         return initial_slug
