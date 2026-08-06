@@ -44,6 +44,7 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.utils.pr_ref import PrRef
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 
@@ -125,7 +126,7 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
         return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
-    return (0, "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 class TestClearIssuanceSeam(TestCase):
@@ -1448,20 +1449,21 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
             state=Ticket.State.IN_REVIEW,
             issue_url="https://github.com/souliane/teatree/issues/859",
         )
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "859",
-                "teatree",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="docs",
-                ticket_id=int(ticket.pk),
-            ),
-        )
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "859",
+                    "teatree",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="docs",
+                    ticket_id=int(ticket.pk),
+                ),
+            )
         assert result["issued"]
         clear = MergeClear.objects.get(pk=result["clear_id"])
         assert clear.slug == "teatree"
@@ -1514,20 +1516,21 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
             state=Ticket.State.IN_REVIEW,
             issue_url="https://github.com/souliane/teatree/issues/859",
         )
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "859",
-                "  fix/clear-slug  ",
-                reviewed_sha=_SHA,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="docs",
-                ticket_id=int(ticket.pk),
-            ),
-        )
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "859",
+                    "  fix/clear-slug  ",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="docs",
+                    ticket_id=int(ticket.pk),
+                ),
+            )
         assert result["issued"]
         clear = MergeClear.objects.get(pk=result["clear_id"])
         assert clear.slug == "fix/clear-slug"
@@ -1599,9 +1602,12 @@ class TestClearResolvesVerdictSlugBeforeIssuing(TestCase):
 
     def test_clone_origin_fallback_still_issues_and_records_verdict(self) -> None:
         """The happy twin: a resolvable clone origin issues the CLEAR and records the verdict under it."""
-        with patch(
-            "teatree.core.merge.pr_slug_resolution._project_repo_slug",
-            return_value="souliane/teatree",
+        with (
+            patch(
+                "teatree.core.merge.pr_slug_resolution._project_repo_slug",
+                return_value="souliane/teatree",
+            ),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
         ):
             result = cast(
                 "dict[str, object]",

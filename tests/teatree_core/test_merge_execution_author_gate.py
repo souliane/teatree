@@ -26,6 +26,7 @@ from teatree.core.merge.execution import execute_bound_merge, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket, TrustedIdentity
 from teatree.core.review import author_trust
 from teatree.utils.pr_ref import PrRef
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import CommandOverlay, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -84,7 +85,7 @@ class _GhStub:
                 return (0, out, "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
     @property
     def attempted_merge(self) -> bool:

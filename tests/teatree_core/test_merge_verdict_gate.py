@@ -30,6 +30,7 @@ from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_loop.test_pr_sweep_scanner import FakeKeystone, FakePrApiClient
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -93,7 +94,7 @@ def _gh_green(argv: list[str]) -> tuple[int, str, str]:
             return (0, out, "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "merged0deadbeef"}', "")
-    return (0, "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 @pytest.fixture(autouse=True)

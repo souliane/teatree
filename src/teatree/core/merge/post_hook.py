@@ -15,6 +15,8 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.merge.errors import MergePreconditionError, MergeReplayError
+from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolved_repo_slug
+from teatree.core.models import MergeClear
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,48 @@ class MergeAuditAuthorizers:
 
     expedited_by: str = ""
     standing_delegation_by: str = ""
+
+
+def _supersede_siblings(locked: MergeClear, *, repo_slug: str) -> None:
+    """§15: consume every sibling unconsumed CLEAR for the SAME repo's PR.
+
+    A re-review at a moved head issues a fresh CLEAR at the new SHA, leaving the
+    older one unconsumed; once THIS merge consumes one, its siblings are no longer a
+    stalled merge, so they are consumed in the caller's atomic block under the row
+    lock (a single serialized UPDATE) rather than left to ratchet S4 hard-red forever.
+
+    The scope is the REPO, never the stored ``slug`` alone. A ticketless CLEAR's slug
+    is a workstream name (``merge-candidate-working-repos``) that several repos share,
+    so keying on ``(slug, pr_id)`` let a merge in one repo stamp another repo's live,
+    independently-reviewed CLEAR for its own PR #42 as consumed — that CLEAR then
+    refuses its merge as "already consumed" and owes a fresh cold review for work
+    that never merged. So a workstream-slug sibling is superseded only when it
+    resolves to the same repo this merge landed in, and when the merge-time repo is
+    unknown (a legacy caller passing no ``repo_slug``) nothing is superseded at all.
+    An ``owner/repo``-shaped slug is already repo-scoped and keeps the plain
+    case-insensitive match a forge slug's case-insensitivity requires.
+    """
+    siblings = (
+        MergeClear.objects.filter(slug__iexact=locked.slug, pr_id=locked.pr_id, consumed_at__isnull=True)
+        .exclude(pk=locked.pk)
+        .select_related("ticket")
+    )
+    if normalize_repo_slug(locked.slug):
+        superseded = [sibling.pk for sibling in siblings]
+    elif repo_slug:
+        superseded = [
+            sibling.pk for sibling in siblings if resolved_repo_slug(sibling).casefold() == repo_slug.casefold()
+        ]
+    else:
+        logger.warning(
+            "merge keystone: %s#%s carries a workstream slug and no merge-time repo — "
+            "skipping the §15 sibling supersede rather than risk consuming another repo's live CLEAR",
+            locked.slug,
+            locked.pr_id,
+        )
+        return
+    if superseded:
+        MergeClear.objects.filter(pk__in=superseded).update(consumed_at=locked.consumed_at)
 
 
 def record_merge_and_advance(
@@ -79,7 +123,6 @@ def record_merge_and_advance(
     idempotent DB write retries).
     """
     from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
-    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     stamps = authorizers or MergeAuditAuthorizers()
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller
@@ -113,24 +156,11 @@ def record_merge_and_advance(
                 repo_slug=repo_slug,
                 standing_delegation_by=stamps.standing_delegation_by,
             )
-            # §15: supersede every sibling unconsumed CLEAR for the same PR —
-            # re-review at a moved head issues a fresh CLEAR at the new SHA,
-            # leaving the older one unconsumed. Once THIS merge consumes one, its
-            # siblings are no longer a stalled merge, so consume them in the same
-            # atomic block (single serialized UPDATE) under the row lock. The slug
-            # is matched case-INSENSITIVELY (``slug__iexact``): a forge slug is
-            # case-insensitive, so a sibling CLEAR recorded with a differently-cased
-            # ``owner/Repo`` must NOT survive to keep ratcheting the S4 hard-red gate
-            # forever (the rest of the pipeline resolves slugs with ``__iexact``).
-            MergeClear.objects.filter(
-                slug__iexact=locked.slug,
-                pr_id=locked.pr_id,
-                consumed_at__isnull=True,
-            ).exclude(pk=locked.pk).update(consumed_at=locked.consumed_at)
+            _supersede_siblings(locked, repo_slug=repo_slug)
             # The forge merge already landed, so the PR row is MERGED and a ticketless
             # CLEAR (``--ticket-id`` is optional, and the loop never passed one) can
             # recover from the PR the FSM it otherwise has nothing to advance.
-            ticket = locked.record_merged_pull_request()
+            ticket = locked.record_merged_pull_request(repo_slug)
             if ticket is None:
                 # #3840: the merge landed, the CLEAR is consumed and the audit is written,
                 # but no FSM advanced. Returning "" quietly made that indistinguishable from
