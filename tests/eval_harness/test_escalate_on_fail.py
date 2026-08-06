@@ -161,6 +161,22 @@ class TestEscalateFailures:
         assert outcome.is_hard_red
         assert report.hard_red
 
+    def test_an_all_skipped_escalation_clears_rather_than_reddening_the_lane(self) -> None:
+        # A provisioning gate that fell away after trial 1 (expired key, vanished
+        # binary) yields zero graded trials — an absent verdict, not a confirmed one.
+        spec = _spec("gate_fell_away")
+        initial = [_result(spec, passed=False)]
+
+        class _SkippingRunner:
+            def __call__(self, spec: EvalSpec) -> ScenarioResult:
+                return _result(spec, passed=False, skipped=True)
+
+        report = escalate_failures(initial, _SkippingRunner(), escalate_trials=3)
+        outcome = report.outcomes[0]
+        assert outcome.passes == 0
+        assert outcome.classification == "flaky"
+        assert not report.hard_red
+
     def test_escalate_trials_must_be_at_least_two(self) -> None:
         spec = _spec("x")
         initial = [_result(spec, passed=False)]

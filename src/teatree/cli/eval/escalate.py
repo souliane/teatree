@@ -154,7 +154,10 @@ def escalate_failures(
     Returns the per-scenario :class:`EscalationOutcome` list (empty when nothing
     failed trial 1) and, via :attr:`EscalationReport.hard_red`, whether the lane
     must go RED. A scenario re-runs at ``require="any"`` semantics: passing on any
-    escalation trial is enough to clear it as ``flaky``.
+    escalation trial is enough to clear it as ``flaky``. An escalation whose every
+    trial SKIPPED produced no evidence at all — a provisioning gate that fell away
+    between trial 1 and the re-runs (an expired key, a vanished binary) — so it
+    clears as ``flaky`` rather than reddening the lane on an absent verdict.
     """
     if escalate_trials < 2:  # noqa: PLR2004 — one trial is no escalation; the trial-1 result already covers it.
         msg = f"escalate_trials must be >= 2 (got {escalate_trials}); a single trial is not an escalation."
@@ -166,7 +169,8 @@ def escalate_failures(
         aggregate = run_pass_at_k(result.spec, runner, k=escalate_trials, require="any")
         # NOT `aggregate.ok`: that is the weekly gate's verdict and vetoes on cap taint (#2192),
         # which reds a scenario a majority of whose escalation trials passed cleanly (#4243).
-        classification: EscalationClass = "flaky" if aggregate.passes >= 1 else "confirmed"
+        cleared = aggregate.skipped or aggregate.passes >= 1
+        classification: EscalationClass = "flaky" if cleared else "confirmed"
         outcomes.append(
             EscalationOutcome(
                 spec_name=result.spec.name,
