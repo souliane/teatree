@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.management.refusal_exit import refusal_exit_code
 from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FilingContext,
@@ -87,8 +88,20 @@ class Command(TyperCommand):
         verdicts and files one deduped enforcement issue per class-C finding.
         Returns the structured result as JSON (the human-readable summary is
         written to stdout); ``call_command`` callers parse the JSON.
+
+        The refusal shapes here (``_run`` / ``_file_findings``) are wrapped in
+        ``json.dumps`` before this method returns, so they are invisible both
+        to ``RefusalExitTyperCommand``'s runtime check (a ``str``, not a
+        ``Mapping``) and to the AST ratchet (a ``Call``, not a literal
+        ``{"error": …}``, at this method's own ``return``). Route the same
+        ``refusal_exit_code`` predicate the seam uses, by hand, so the argv
+        path still fails the shell on a refusal (#4234).
         """
-        return json.dumps(self._run(pr_url, classification=classification, repo=repo, label=label))
+        result = self._run(pr_url, classification=classification, repo=repo, label=label)
+        code = refusal_exit_code(result)
+        if code and self._called_from_command_line:
+            raise SystemExit(code)
+        return json.dumps(result)
 
     @command(name="gate-failures")
     # ast-grep-ignore: ac-django-no-complexity-suppressions

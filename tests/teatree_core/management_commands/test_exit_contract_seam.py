@@ -24,6 +24,7 @@ class *escapes* the seam, and the live cases prove the seam *fires*.
 
 import ast
 import inspect
+import json
 import textwrap
 from collections.abc import Callable
 from importlib import import_module
@@ -40,6 +41,7 @@ from teatree.core.management.commands import env as env_mod
 from teatree.core.management.commands import followup as followup_mod
 from teatree.core.management.commands import lifecycle as lifecycle_mod
 from teatree.core.management.commands import repro as repro_mod
+from teatree.core.management.commands import retro as retro_mod
 from teatree.core.management.commands import review as review_mod
 from teatree.core.management.commands import ticket as ticket_mod
 from teatree.core.management.refusal_exit import REFUSAL_EXIT_CODE, RefusalExitTyperCommand
@@ -418,3 +420,35 @@ class TestOverlayBackedRefusalsExitNonZero:
         ):
             followup_mod.Command().run_from_argv(["manage.py", "followup", "discover-mrs"])
         assert exc.value.code == REFUSAL_EXIT_CODE
+
+
+class TestRetroReviewFindingsExitsNonZero(TestCase):
+    """``retro review-findings`` wraps its refusal in ``json.dumps`` before returning.
+
+    Neither the runtime seam (a ``str``, not a ``Mapping``) nor the AST ratchet
+    (a ``Call``, not a literal ``{"error": …}``, at the ``@command``-decorated
+    method's own ``return``) can see this shape — a cold review of #4235 found
+    it escaping both guards. Fixed locally in ``review_findings`` by routing
+    the same ``refusal_exit_code`` predicate the seam uses; pinned here rather
+    than by widening the shared ratchet, since a broader helper-method walk
+    also flags ``handover.py``'s list-nested ``error`` key and ``tasks.py``'s
+    ``routing_error`` substring match — both already-accepted, non-blocking
+    asymmetries a widened ratchet would wrongly turn into new failures.
+    """
+
+    @staticmethod
+    def _argv(*args: str) -> None:
+        retro_mod.Command().run_from_argv(["manage.py", "retro", *args])
+
+    def test_review_findings_rejects_an_unrecognised_pr_url(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            self._argv("review-findings", "not-a-recognised-url")
+        assert exc.value.code == REFUSAL_EXIT_CODE
+
+    def test_call_command_still_reads_the_json_string_in_process(self) -> None:
+        """The seam is argv-only: ``call_command`` callers still get the JSON string, not a raise."""
+        result = call_command("retro", "review-findings", "not-a-recognised-url")
+
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert "not a recognised" in str(parsed["error"]).lower()
