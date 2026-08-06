@@ -26,8 +26,8 @@
   max_turns: 3
   tools: [Bash]
   fixture: git_repo
-  # `gh` only: a working `t3` would invite a doctrine-correct `t3 pr create`
-  # that this scenario's `(gh|glab) (pr|mr) create` matcher reds.
+  # `gh` only: a working `t3` would invite the doctrine-correct wrapper form,
+  # which this scenario's `(gh|glab) (pr|mr) create` matcher reds.
   cli_stubs: [gh]
   single_action: true
   prompt: >-
