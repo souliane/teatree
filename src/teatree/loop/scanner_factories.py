@@ -383,10 +383,11 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     :data:`~teatree.core.intake.factory_admission.DEFAULT_ADMIT_LABEL`); the scanner
     unions in the DB ``TrustedIdentity`` rows and applies the top-down decision table.
 
-    Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is emitted
-    even at a full budget — with ``can_claim=False`` it claims nothing new but STILL
-    runs the per-tick heartbeat sweep, so an in-flight claim can never expire and be
-    stolen mid-dispatch.
+    The scanner is emitted at a FULL budget too, with ``can_claim=False``: it claims
+    nothing, but it still runs the per-tick heartbeat sweep (an in-flight claim would
+    otherwise expire and be stolen mid-dispatch) and still records the queue it cannot
+    act on. Returning ``None`` here is what made starvation invisible — the forge was
+    never asked, so an issue that never got a slot was never even seen (#4238).
 
     The in-flight LIMIT comes from :func:`resolve_intake_concurrency` (#3992), which
     hands back the resource loop's headroom-derived number, or
@@ -397,7 +398,6 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         MERGE_STUCK_AFTER_TICKS,
         read_merge_signal,
     )
-    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
     from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
@@ -436,8 +436,6 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
                 merge.open_prs,
                 MERGE_STUCK_AFTER_TICKS,
             )
-    if not can_claim and not wire.fleet_claim_enabled(backend.name):
-        return None
     return IssueIntakeScanner(
         host=code_host,
         admit_label=settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,

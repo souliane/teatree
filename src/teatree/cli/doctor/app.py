@@ -52,6 +52,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_loop_schedule_liveness,
     _check_marker_jam,
     _check_shipped_seed_inertness,
+    _check_starved_intake_candidates,
 )
 from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
@@ -178,6 +179,7 @@ __all__ = (
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_starved_intake_candidates",
     "_check_t3_shim_receipt",
     "_check_teatree_mcp_liveness",
     "_check_teatree_mcp_registration",
@@ -308,6 +310,8 @@ def _run_loop_intent_gates() -> bool:
     loop/preset/schedule that is missing, disabled or not ticking) and ``_check_marker_jam``
     (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
     their return values are deliberately discarded so neither can become a gate by accident.
+    ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
+    never claimed) joins them: a slow queue is not a fault, an invisible one is.
 
     Three verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
     silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
@@ -326,6 +330,7 @@ def _run_loop_intent_gates() -> bool:
     _check_shipped_seed_inertness()
     _check_aged_sweep_skips()
     _check_marker_jam()
+    _check_starved_intake_candidates()
     intake_ok = _check_intake_budget_deadlock()
     scheduled_ok = _check_loop_schedule_liveness()
     return _check_intent_freshness() and intake_ok and scheduled_ok

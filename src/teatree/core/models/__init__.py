@@ -136,6 +136,12 @@ from teatree.core.models.ticket_artifacts import (
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
+from teatree.core.models.unclaimed_intake_candidate import (
+    STARVED_AFTER,
+    UnclaimedIntakeCandidate,
+    UnclaimedIntakeCandidateManager,
+    WaitingCandidate,
+)
 from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
 from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
@@ -146,6 +152,7 @@ __all__ = [
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "STARVED_AFTER",
     "AnthropicActivePick",
     "AnthropicActivePickManager",
     "AnthropicTokenUsage",
@@ -322,9 +329,12 @@ __all__ = [
     "TrajectoryToolCall",
     "TrustedIdentity",
     "TrustedIdentityManager",
+    "UnclaimedIntakeCandidate",
+    "UnclaimedIntakeCandidateManager",
     "UnshippedWorkRecord",
     "UsageWindowState",
     "UsageWindowStateQuerySet",
+    "WaitingCandidate",
     "WaitingItem",
     "WaitingItemError",
     "WaitingItemManager",
