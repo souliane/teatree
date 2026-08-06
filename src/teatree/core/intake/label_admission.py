@@ -1,10 +1,11 @@
 """The label gate every issue-intake path runs before it creates work.
 
-Two intakes turn an assigned issue into work: the ``assigned_issues`` scanner
-(loop signals) and ``t3 <overlay> followup sync`` (``Ticket`` rows). Both answer
-to the same overlay policy, so the predicate lives here rather than in either
-caller — an intake that carries its own copy, or none at all, silently picks up
-issues the operator never nominated.
+Two intakes answer to the same overlay label policy: the GitLab sync path
+(``backends/gitlab/sync.py``, via :meth:`LabelPolicy.admits`) and the GitHub
+``issue_intake`` scanner's exclude tier (via :func:`excluded`, #4134). The
+predicate lives here rather than in either caller — an intake that carries its
+own copy, or none at all, silently picks up issues the operator never
+nominated.
 
 An empty ``ready_labels`` admits everything, so an overlay that has not opted
 into an allowlist keeps its pre-allowlist intake behaviour.

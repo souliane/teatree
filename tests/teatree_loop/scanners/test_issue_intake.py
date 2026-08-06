@@ -378,7 +378,7 @@ class IssueIntakeExcludeLabelGateTests(_PublicRepoTestCase):
 
 
 class IssueIntakeAdmitLabelTests(_PublicRepoTestCase):
-    """Rule 4: the owner-applied admit label is the ONLY route in for an untrusted author."""
+    """Rule 5: the owner-applied admit label is the ONLY route in for an untrusted author."""
 
     def test_labeled_stranger_issue_is_admitted(self) -> None:
         host = _Host(labeled={self.LABEL: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL])]})
@@ -643,7 +643,7 @@ def _assigned(issue: RawAPIDict, assignee: str) -> RawAPIDict:
 
 
 class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
-    """Rule 2: a ticket already owning the URL blocks a second intake (#4133).
+    """Rule 3: a ticket already owning the URL blocks a second intake (#4133).
 
     Ownership is every state but IGNORED. ``_handle_orchestrator`` reuses the
     existing row (``get_or_create(issue_url=...)``) and returns early for anything
