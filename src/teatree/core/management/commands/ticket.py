@@ -6,7 +6,7 @@ from typing import Annotated, TypedDict
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
@@ -22,6 +22,7 @@ from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.merge import MergePreconditionError, normalize_repo_slug, resolve_host_kind, resolve_pr_repo_slug
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
@@ -120,8 +121,13 @@ class Command(
     SweepCommands,
     SpecCoverageCommands,
     ClearBackfillCommands,
-    TyperCommand,
+    # #4234: every refusal below is RETURNED so the loop can route on it —
+    # `CallCommandMergeKeystone.merge_clear` reads five keys off `merge`. The base class
+    # is what stops a `ship && clear` chain reading a refused CLEAR as an authorised one.
+    RefusalExitTyperCommand,
 ):
+    """Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue writes."""
+
     @command(help=TRANSITION_HELP)
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state; see ``--help`` for the allowed names."""

@@ -22,9 +22,10 @@ import json
 from typing import Annotated, TypedDict
 
 import typer
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
 from teatree.core.models import (
@@ -118,7 +119,11 @@ def _parse_findings(raw: str) -> list[Finding]:
     return [Finding.from_dict(item) for item in data if isinstance(item, dict)]
 
 
-class Command(TyperCommand):
+# #4234: `record`, `record-evidence` and `lock-acquire` RETURN their refusal so a caller
+# can route on it; the base class is what restores the exit code for the shell.
+class Command(RefusalExitTyperCommand):
+    """Review verdicts, evidence, comments and the per-MR review lock."""
+
     @initialize()
     def init(self) -> None:
         """``t3 <overlay> review`` group root."""

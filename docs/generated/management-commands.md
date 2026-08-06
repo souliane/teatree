@@ -117,6 +117,8 @@ Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
 
 ## `followup`
 
+Daily follow-up: MR discovery, ticket/PR sync, and reviewer reminders.
+
 | Subcommand | Description |
 | --- | --- |
 | `refresh` |  |
@@ -369,7 +371,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 
 ## `pr`
 
-A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.
+Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan posting.
 
 | Subcommand | Description |
 | --- | --- |
@@ -567,7 +569,7 @@ Register, clear, or list standing verified-green goals (PR-25).
 
 ## `ticket`
 
-The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritance.
+Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue writes.
 
 | Subcommand | Description |
 | --- | --- |

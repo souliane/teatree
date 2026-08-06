@@ -8,7 +8,9 @@ it didn't match.
 import dataclasses
 import json
 import re
+from collections.abc import Callable, Mapping
 
+from teatree.eval.command_span import executed_span
 from teatree.eval.models import EvalRun, EvalToolCall, canonicalize_tool
 
 
@@ -54,6 +56,23 @@ def _as_text(value: object) -> str | None:
     return None
 
 
+#: Derived arg views, keyed by the ``<arg>`` a matcher names: the REAL arg to read and
+#: the transform to apply. Opt-in per matcher — a matcher naming ``command`` still grades
+#: the raw string, because for a large class the quoted payload IS the graded artifact
+#: (``git commit -m 'Co-Authored-By: …'``, ``gh issue create --body '…'``).
+_ARG_VIEWS: Mapping[str, tuple[str, Callable[[str], str]]] = {"command_span": ("command", executed_span)}
+
+
+def _arg_text(call: EvalToolCall, arg_path: str) -> str | None:
+    """Matchable text for *arg_path*, through its derived view when one is registered."""
+    view = _ARG_VIEWS.get(arg_path)
+    if view is None:
+        return _as_text(_get_arg(call, arg_path))
+    source_arg, derive = view
+    text = _as_text(_get_arg(call, source_arg))
+    return None if text is None else derive(text)
+
+
 def _format_calls(run: EvalRun) -> str:
     if not run.tool_calls:
         return "  (no tool calls captured)"
@@ -68,7 +87,7 @@ def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, subst
         # passes when the agent calls the tool with no/omitted arg — e.g. a
         # correct ``TaskList()`` that reads the whole live list. A specific
         # substring still fails against "", so value-pinning matchers are unchanged.
-        value = _as_text(_get_arg(call, arg_path)) or ""
+        value = _arg_text(call, arg_path) or ""
         if substring in value:
             return
     msg = (
@@ -87,7 +106,7 @@ def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex
         # passes when the agent calls the tool with no/omitted arg — e.g. a
         # correct ``TaskList()`` reading the whole live list. A value-pinning
         # regex (``~ "in_progress"``) still fails against "", so it is unchanged.
-        value = _as_text(_get_arg(call, arg_path)) or ""
+        value = _arg_text(call, arg_path) or ""
         if pattern.search(value):
             return
     msg = (
@@ -101,7 +120,7 @@ def assert_no_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, su
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != tool_name:
             continue
-        value = _as_text(_get_arg(call, arg_path))
+        value = _arg_text(call, arg_path)
         if value is not None and substring in value:
             msg = (
                 f"Did not expect any {tool_name} tool call with {arg_path} containing {substring!r}, "
@@ -115,7 +134,7 @@ def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, re
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != tool_name:
             continue
-        value = _as_text(_get_arg(call, arg_path))
+        value = _arg_text(call, arg_path)
         if value is not None and pattern.search(value):
             msg = (
                 f"Did not expect any {tool_name} tool call with {arg_path} matching {regex!r}, "
@@ -130,7 +149,7 @@ def _first_matching_turn(run: EvalRun, target: CallPattern) -> int | None:
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != target.tool:
             continue
-        value = _as_text(_get_arg(call, target.arg_path))
+        value = _arg_text(call, target.arg_path)
         if value is not None and pattern.search(value):
             return call.turn
     return None
@@ -151,7 +170,7 @@ def assert_no_tool_call_before(run: EvalRun, forbidden: CallPattern, guard: Call
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != forbidden.tool:
             continue
-        value = _as_text(_get_arg(call, forbidden.arg_path))
+        value = _arg_text(call, forbidden.arg_path)
         if value is None or not pattern.search(value):
             continue
         if guard_turn is None or call.turn < guard_turn:

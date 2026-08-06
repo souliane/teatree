@@ -185,19 +185,27 @@ def _offending_exit_contract_returns(source: str) -> list[tuple[str, int, str]]:
 
 
 #: ``(module filename, @command method)`` pairs that signal failure by a non-string
-#: return today. They predate this detector and each exits 0 on a real failure. The
-#: set may only ever SHRINK — a new offender fails
-#: ``test_no_new_command_signals_failure_by_a_non_string_return`` immediately, and a
-#: fixed one can simply be deleted from here.
+#: return today. They predate this detector. The set may only ever SHRINK — a new
+#: offender fails ``test_no_new_command_signals_failure_by_a_non_string_return``
+#: immediately, and a fixed one can simply be deleted from here.
+#:
+#: #4234 drained the 4 ``env.py`` bare-int sites (now ``raise SystemExit(N)``) plus
+#: ``env.py migrate_secrets`` and ``retro.py review_findings`` (neither of which this
+#: AST-only detector could see — see ``tests/teatree_core/management_commands/
+#: test_exit_contract_seam.py``). The remaining sites below still literally
+#: ``return {"error": …}`` — converting them to a bare raise would destroy the value
+#: in-process callers read (e.g. ``CallCommandMergeKeystone.merge_clear`` off ``ticket
+#: merge``). They exit non-zero from the shell anyway: their ``Command`` classes all
+#: inherit ``RefusalExitTyperCommand`` (#4210), which restores the exit code at the
+#: argv boundary alone. ``test_exit_contract_seam.py::TestEveryStructuredRefusalCarriesTheSeam``
+#: is the seam-aware guard for this set — it fails if any of these classes ever loses
+#: that base, so this static ratchet staying non-empty here is the accepted, verified
+#: end state, not an open TODO.
 _KNOWN_EXIT_CONTRACT_OFFENDERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("_merge_keystone_commands.py", "merge"),
         ("_rubric_commands.py", "rubric_set"),
         ("e2e.py", "trigger_ci"),
-        ("env.py", "check_drift"),
-        ("env.py", "set_var"),
-        ("env.py", "show"),
-        ("env.py", "unset"),
         ("followup.py", "discover_mrs"),
         ("lifecycle.py", "record_e2e_run"),
         ("pr.py", "post_test_plan"),
