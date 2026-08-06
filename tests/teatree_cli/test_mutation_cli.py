@@ -159,7 +159,11 @@ class TestUpdateBaseline:
     def test_ratchet_to_zero_drops_the_entry(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         pyproject = _pyproject(tmp_path, baseline=[("src/teatree/a.py", 3)])
         _point_at(monkeypatch, pyproject)
-        outcome = MutationOutcome(scoped_modules=("src/teatree/a.py",), survived=(), killed=(), inconclusive=())
+        # A killed mutant is what makes the zero a MEASUREMENT rather than the
+        # absence of one — an all-inconclusive run leaves the baseline alone.
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/a.py",), survived=(), killed=("teatree.a.f__mutmut_1",), inconclusive=()
+        )
         _stub_run(monkeypatch, outcome)
         result = runner.invoke(app, ["mutation", "run", "--all", "--update-baseline"])
         assert result.exit_code == 0

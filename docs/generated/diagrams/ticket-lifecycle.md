@@ -74,6 +74,7 @@ stateDiagram-v2
     retrospected --> retrospected : retrospect
     retrospected --> delivered : mark_delivered
     retrospected --> ignored : ignore
+    delivered --> started : reopen
     delivered --> reviewed : reopen_for_followup
     review_posted --> review_posted : mark_review_no_action
     review_posted --> review_posted : mark_reviewed_externally

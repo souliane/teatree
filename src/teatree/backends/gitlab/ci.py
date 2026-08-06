@@ -1,10 +1,29 @@
 """GitLab CI backend — fetch pipeline errors, test reports, trigger builds."""
 
+import dataclasses
 import re
 from typing import cast
 from urllib.parse import urlencode
 
 from teatree.backends.gitlab.api import GitLabAPI
+
+
+@dataclasses.dataclass(frozen=True)
+class JobTrace:
+    """One job's log, or why it could not be read.
+
+    A failed job whose trace is unreadable (an expired artifact, a token without
+    ``read_build``, a transport blip) must still appear in the error list: an
+    absent entry reads to the debug lane as "this pipeline has no failures to act
+    on", which is the opposite of what happened.
+    """
+
+    text: str = ""
+    unreadable_reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.unreadable_reason
 
 
 class GitLabCIService:
@@ -30,9 +49,12 @@ class GitLabCIService:
             if job.get("status") != "failed":
                 continue
             job_id = int(cast("int | str", job["id"]))
+            name = job.get("name", job_id)
             trace = self._get_job_trace(project_info.project_id, job_id)
-            if trace:
-                errors.append(f"Job {job.get('name', job_id)} failed:\n{_extract_error_tail(trace)}")
+            if trace.ok:
+                errors.append(f"Job {name} failed:\n{_extract_error_tail(trace.text)}")
+            else:
+                errors.append(f"Job {name} failed: trace unreadable ({trace.unreadable_reason})")
         return errors
 
     def fetch_failed_tests(self, *, project: str, ref: str) -> list[str]:
@@ -120,19 +142,22 @@ class GitLabCIService:
             return data[0]
         return None
 
-    def _get_job_trace(self, project_id: int, job_id: int) -> str:
+    def _get_job_trace(self, project_id: int, job_id: int) -> JobTrace:
         import httpx  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         if not self._client.token:
-            return ""
-        response = httpx.get(
-            f"{self._client.base_url}/projects/{project_id}/jobs/{job_id}/trace",
-            headers={"PRIVATE-TOKEN": self._client.token},
-            timeout=15.0,
-        )
+            return JobTrace(unreadable_reason="no GitLab token resolved")
+        try:
+            response = httpx.get(
+                f"{self._client.base_url}/projects/{project_id}/jobs/{job_id}/trace",
+                headers={"PRIVATE-TOKEN": self._client.token},
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            return JobTrace(unreadable_reason=f"{type(exc).__name__}: {exc}")
         if response.is_success:
-            return response.text
-        return ""
+            return JobTrace(text=response.text)
+        return JobTrace(unreadable_reason=f"HTTP {response.status_code}")
 
 
 def _extract_error_tail(trace: str, *, max_lines: int = 50) -> str:

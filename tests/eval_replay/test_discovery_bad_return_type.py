@@ -32,7 +32,7 @@ def _fake_overlay(return_value: object) -> SimpleNamespace:
 def test_skips_overlay_returning_non_path(bad_value: object) -> None:
     overlay = _fake_overlay(bad_value)
     with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-bad": overlay}):
-        specs = _discover_overlay_specs()
+        specs = _discover_overlay_specs({})
     assert specs == []
 
 
@@ -54,5 +54,5 @@ def test_other_overlays_still_load_when_one_returns_bad_type(tmp_path: Path) -> 
         "teatree.core.overlay_loader.get_all_overlays",
         return_value={"t3-good": good, "t3-bad": bad},
     ):
-        specs = _discover_overlay_specs()
+        specs = _discover_overlay_specs({})
     assert [s.name for s in specs] == ["good_one"]

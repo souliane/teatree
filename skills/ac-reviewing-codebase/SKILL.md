@@ -1,7 +1,7 @@
 ---
 name: ac-reviewing-codebase
-description: Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked.
-eval_exempt: whole-tree periodic synthesis with no fixed input/output pair to grade per-turn; correctness is judged by the tickets/BLUEPRINT-fixes it produces over time, mirroring retro (#837)
+description: Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked.
+eval_exempt: whole-tree periodic synthesis with no fixed input/output pair to grade per-turn; correctness is judged by the merged fixes it produces over time, mirroring retro (#837)
 requires:
   - architecture-design
   - review
@@ -20,7 +20,7 @@ Three review tiers cover different scopes and cadences (BLUEPRINT.md § 17.2):
 |---|---|---|---|
 | `architecture-design` | Before code is written | The change about to be made | Ten-check pre-flight, worktree-local |
 | `check_antipatterns.py` | Every PR | The diff | Deterministic grep over `grep_hint` entries |
-| **`ac-reviewing-codebase` (this skill)** | Periodic (time or merge-count cadence) | The **whole tree** | Judgement pass, one Task per run |
+| **`ac-reviewing-codebase` (this skill)** | Periodic (time or merge-count cadence) | The **whole tree** | Judgement pass, one Task per run, ending in one pushed PR |
 
 The first two tiers are per-change and catch what a single diff introduces. Neither can see **drift that accumulates across many small, individually-fine changes** — a module that crept past the health threshold one function at a time, a BLUEPRINT section that quietly went stale as the code it describes moved on, a pattern that was fine in isolation twice and is now a repo-wide anti-pattern the third time. That is this skill's job.
 
@@ -28,7 +28,9 @@ You are dispatched by `ArchitecturalReviewScanner` (`src/teatree/loop/scanners/a
 
 ## Environment
 
-You run **shell-enabled** (`read_file`/`search_files`/`shell`/`web` — the same least-privilege shape as the reviewer phases, no `write_file`/`edit_file`), starting in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` directly. The main-clone guard blocks any git mutation of the shared clone, so for a heavy cold read — or the one write case below, a BLUEPRINT.md staleness edit — cut your own throwaway checkout with `git worktree add --detach ../ac-review origin/main` and work there. If you ever find yourself with no shell or no checkout, that is a dispatch fault, not a question for the owner: STOP and return `needs_user_input` with the reason (it is classified INTERNAL, never DM'd).
+Your tool grant is whatever `teatree.core.modelkit.phase_tools.tools_for_phase("architectural_review")` returns at dispatch time — that accessor is the authority, never prose about it. The pass needs file reads, tree search, web fetch, shell, and write/edit for § 4. You start in the overlay's **main teatree clone** (the dispatch resolves your `cwd` there). Read the tree, run read-only `git` (`git log`, merge-count since the last review) and `t3 tool verify-gates` there directly.
+
+The main-clone guard blocks every mutation of the shared clone, so **all writing happens in your own worktree**: `git worktree add -b review-fixes/<slug> ../ac-review origin/main`. Cut it as soon as the walk turns up its first confirmed finding — the implementation pass below runs there, and a heavy cold read is cheaper there too. If you find yourself without a checkout, or without one of the tools listed above, that is a dispatch fault, not a question for the owner: STOP and return `needs_user_input` with the reason (it is classified INTERNAL, never DM'd).
 
 ## What to do
 
@@ -53,22 +55,57 @@ You run **shell-enabled** (`read_file`/`search_files`/`shell`/`web` — the same
 - Fallback chain that hides the primary failure
 - List/fetch reads only the first page (silent truncation)
 
-Re-read `docs/generated/antipattern-catalog.md` at review time rather than trusting the list above — the catalog is the source of truth and grows. For each judgement entry, sample across the tree (you do not need to read every file; prioritize modules that changed since the last review — see § 3) and check whether the anti-pattern's `preferred_pattern` is actually followed. File a ticket per confirmed root cause using the normal ticket pipeline — do not fix inline; this is a review pass, not a fix pass. Root cause, not per entry scanned and not per instance: instances one PR would close together are one ticket, and an instance an already-open ticket covers extends that ticket instead of adding a near-duplicate — search the open backlog before filing anything (`AGENTS.md` § "Issue Creation" is canonical for that reuse rule). Reference the catalog entry id in the ticket so the fixer has the anti-pattern/preferred-pattern pair without re-deriving it. Filing is the whole action here, and `AGENTS.md` First Principles 8-10 do not turn it into a deferral: those bind the surface a *change* touches, and this pass authors no change — maker is not checker, so fixing what you reviewed is the one thing this pass may not do. Each ticket still needs the owner's approval before it is created (`AGENTS.md` § "Issue Creation"); present the batch and let them decide.
+Re-read `docs/generated/antipattern-catalog.md` at review time rather than trusting the list above — the catalog is the source of truth and grows. For each judgement entry, sample across the tree (you do not need to read every file; prioritize modules that changed since the last review — see § 3) and check whether the anti-pattern's `preferred_pattern` is actually followed.
+
+Group what you confirm by **root cause**, not per entry scanned and not per instance: instances one PR would close together are one unit of work, and an instance an already-open ticket covers belongs to that ticket rather than a near-duplicate — search the open backlog before filing anything (`AGENTS.md` § "Issue Creation" is canonical for that reuse rule). Each unit then goes down one of two paths: implemented in this pass (§ 4, the default) or filed as a ticket (§ 5, the exception). A ticket references the catalog entry id so the fixer has the anti-pattern/preferred-pattern pair without re-deriving it; a commit references it for the same reason.
 
 ### 2. Check BLUEPRINT.md tightness and staleness
 
-Per BLUEPRINT.md's own `## Maintenance` section: "Keeping the file tight is a reviewer responsibility — flag bloat, prose that restates code instead of capturing architecture, and stale or duplicated sections — captured in `skills/review/SKILL.md` § 'Keep BLUEPRINT Tight' and in the periodic holistic review (this skill)." Load `skills/review/SKILL.md` § "Keep BLUEPRINT Tight" for the three-point checklist (restated-not-architectural prose, stale/duplicated sections, appendix-class detail in the top-level file) and apply it to the **whole file**, not a diff — this is the one place that checklist runs at full-tree scope instead of per-PR scope. Cross-check every section against the current code it describes; a section naming a mechanism that has since moved, been renamed, or been removed is a staleness finding.
+Per BLUEPRINT.md's own `## Maintenance` section: "Keeping the file tight is a reviewer responsibility — flag bloat, prose that restates code instead of capturing architecture, and stale or duplicated sections — captured in `skills/review/SKILL.md` § 'Keep BLUEPRINT Tight' and in the periodic holistic review (this skill)." Load `skills/review/SKILL.md` § "Keep BLUEPRINT Tight" for the three-point checklist (restated-not-architectural prose, stale/duplicated sections, appendix-class detail in the top-level file) and apply it to the **whole file**, not a diff — this is the one place that checklist runs at full-tree scope instead of per-PR scope. Cross-check every section against the current code it describes; a section naming a mechanism that has since moved, been renamed, or been removed is a staleness finding. A staleness finding is the clearest case for § 4 — the current code is right there and the correction is a prose edit, so it lands in this pass's PR unless the prose is wrong about an invariant someone must decide.
 
 ### 3. Prioritize by what changed since the last review
 
 You do not have unlimited budget to re-read the entire tree every cadence. Scope your attention using the same signal the scanner uses to decide *whether* to fire: `TicketTransition` rows into `_MERGED_STATES` (`merged`, `delivered`) since the last completed `architectural_review` Task's `Session.started_at`. Prioritize modules touched by those merges — that is where new drift is most likely to have landed. A full cold read of untouched, previously-clean areas is lower priority than re-checking what actually moved.
 
-### 4. File findings through the normal pipeline; never fix inline
+### 4. Implement the findings and push one PR
 
-This review produces tickets, not commits. For each confirmed finding (catalog anti-pattern instance or BLUEPRINT staleness), file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later implementation session does not have to re-derive your reasoning. Do not batch everything into one mega-issue; one finding (or one tightly-related cluster) per ticket, same discipline as `t3:dogfooding`'s "dedupe aggressively, one root cause per ticket" rule.
+**The run ends in a pushed PR, not a report.** This holds identically in the headless factory and in an attended session: either way the pass is not done until the branch is on the remote and a PR is open. A run that ends with only a findings list has not finished.
+
+In the worktree you cut in § Environment:
+
+1. Implement each unit of work from § 1 and § 2. Follow `skills/code/SKILL.md` — a failing test first wherever the behaviour is testable, observed RED before the fix; a BLUEPRINT/appendix staleness fix is a prose change with no test.
+2. Commit per unit, so the history reads as one coherent change per root cause. Cite the catalog entry id (and the ticket, where one exists) in the commit body.
+3. Run the affected-tests lane (`bash dev/test-affected.sh`) and `uv run ruff check`, both green, before pushing.
+4. Push the branch — never `--no-verify`. The pre-push hook runs `t3 <overlay> pr ensure-pr`, which on a first push owes a durable `PendingPullRequest` instead of opening a PR against a remote ref that does not exist yet; re-run `t3 <overlay> pr ensure-pr` once the push lands so this pass discharges its own obligation rather than leaving it for the dispatch loop. Raw `gh pr create` stays forbidden (`skills/ship/SKILL.md` § "pr create is mandatory").
+5. Report the branch, the pushed SHA, the PR url, and the per-finding disposition in your result envelope.
+
+`t3 <overlay> pr create` is not this pass's path, and forcing it is not the fix. It IS the FSM ship transition, so it demands a `Worktree` row the § Environment `git worktree add` never creates, and its shipping gate requires the ticket to have visited `testing` and `reviewing` (`teatree.core.management.commands._ship.gates.check_shipping_gate`). A cadence-anchor ticket only visits `architectural_review`, which `teatree.core.modelkit.phases.normalize_phase` maps to itself — so recording a `reviewing` visit here would attest the cold review that § "Maker≠checker" deliberately puts *after* this PR exists. `pr create`'s own docstring names `pr ensure-pr` as the seam for a checkout that needs a PR without the ship transition.
+
+One PR carries the whole batch. `/t3:rules` § "Fewest PRs for Related Work" applies — splitting needs the owner's up-front approval, so the default is one.
+
+### 5. File a ticket only for what this pass cannot implement
+
+Filing is the **exception**, not the default. A unit of work goes to a ticket instead of the PR only when implementing it needs a decision this pass cannot make alone:
+
+- it turns on an **architectural decision** — two defensible designs, a contract change other overlays consume, a migration whose shape the owner picks;
+- it is **contested** — the catalog's preferred pattern is arguable here, or the code is deliberately the way it is and the reason is not in reach.
+
+Both are decidable from the read, before a line is written. Size is not a third reason: "too large to land coherently" is a judgement you cannot reach until you have already implemented the thing, so it would certify whatever you did — including nothing.
+
+For those, file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later session does not re-derive your reasoning, **plus the reason it was not implemented here**, or the next reader rediscovers the same blocker. Each ticket needs the owner's approval before it is created (`AGENTS.md` § "Issue Creation"); present that batch and let them decide. "I ran low on budget" is not one of the two reasons — say so plainly in the envelope instead, so the shortfall is visible as a shortfall.
+
+## Maker≠checker holds at the merge gate, not at the keyboard
+
+This pass reviews and then writes, so the reviewer is the maker of the resulting PR. That hazard is real: an author is the worst judge of their own diff, and the reasoning that produced a finding is exactly the reasoning that will look sound to whoever acted on it.
+
+The mitigation is where the maker≠checker boundary actually sits — the **merge gate**. The PR this pass pushes is an ordinary PR: it needs an **independent cold review** before merge, by a reviewer who did not run this pass and reads the diff without its author's framing, and it merges only through the §17.4 CLEAR/merge keystone like every other PR. Nothing lands on this pass's own say-so.
+
+So do not "restore" a rule forbidding this pass from writing code. Refusing to write never protected maker≠checker — the independent merge gate did, and it is untouched. Refusing to write bought only a backlog of filed-and-forgotten tickets, which is the deferral `AGENTS.md` First Principles 8-10 exist to prevent.
 
 ## What NOT to do
 
 - Do not re-check `detection: greppable` catalog entries — `check_antipatterns.py` already covers those on every PR; duplicating that work here wastes the review budget.
-- Do not fix anything inline. This skill's output is tickets (and, for BLUEPRINT staleness, optionally a direct BLUEPRINT.md edit PR if the finding is purely a prose/staleness fix with no architectural judgment call — but any finding that touches an actual invariant or contested tradeoff goes through a ticket, not a unilateral edit).
+- Do not end the run on a report. A findings list with no pushed branch is an unfinished pass, in the factory and in an attended session alike.
+- Do not file a ticket for a finding you could have implemented. Filing is for the two cases in § 5, and each ticket says which one applies.
+- Do not merge your own PR, and do not treat this pass's review as its cold review. The independent reviewer at the merge gate is the whole reason this pass is allowed to write.
 - Do not re-litigate architecture-design's ten checks — those already ran when the reviewed code was written; this pass is about accumulated drift, not re-approving old decisions.
