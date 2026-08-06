@@ -5,8 +5,10 @@ When the issue-implementer loop dispatches an issue it records an
 re-tick on a live or COMPLETED issue finds the existing row and skips
 re-dispatch, while an ABANDONED row (a given-up attempt) is RE-CLAIMED so
 an abandoned issue becomes claimable again rather than permanently skipped
-(F10). The non-terminal row count (``in_flight_count``) is the max-concurrent
-budget the loop checks before dispatching the next issue.
+(F10). A DECLINED row is an operator's cancellation: terminal like ABANDONED
+so the budget self-heals, but never re-claimed (#4105). The non-terminal row
+count (``in_flight_count``) is the max-concurrent budget the loop checks
+before dispatching the next issue.
 
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 (idempotent ``claim()`` keyed on a natural identity).
@@ -62,10 +64,11 @@ class MarkerReconcileResult:
 
     completed: tuple[int, ...] = ()
     abandoned: tuple[int, ...] = ()
+    declined: tuple[int, ...] = ()
 
     @property
     def released(self) -> int:
-        return len(self.completed) + len(self.abandoned)
+        return len(self.completed) + len(self.abandoned) + len(self.declined)
 
 
 class MarkerClaimFields(TypedDict, total=False):
@@ -91,9 +94,9 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
     ) -> "ImplementedIssueMarker | None":
         """Claim *issue_url* for dispatch, returning the marker or ``None`` if unavailable.
 
-        A first observation inserts a DISPATCHED row. A live (non-terminal) or COMPLETED
-        row returns ``None`` — the issue is in flight or already implemented, never
-        re-dispatched. An ABANDONED row (a given-up consideration record) is RE-CLAIMED
+        A first observation inserts a DISPATCHED row. A live (non-terminal), COMPLETED
+        or DECLINED row returns ``None`` — the issue is in flight, already implemented,
+        or one an operator cancelled. An ABANDONED row (a given-up consideration record) is RE-CLAIMED
         (F10): before the fix ``get_or_create`` returned ``None`` for ANY existing row, so
         an abandoned issue could never be re-claimed — permanently skipped by intake. The
         re-claim is a backend-agnostic conditional UPDATE (the affected-row count is the
@@ -157,13 +160,21 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
     ) -> MarkerReconcileResult:
         """Classify — WITHOUT mutating — which non-terminal markers are reconcilable (#3275).
 
-        Four ways a marker stops being legitimately in flight, and each frees its
+        Five ways a marker stops being legitimately in flight, and each frees its
         budget slot:
 
         TERMINAL — its ticket reached a ``Ticket.marker_release_states()`` state → COMPLETED.
         LANDED — its ticket's PR merged → COMPLETED, on that fact alone and with no grace.
         GONE — no ticket exists for its issue and it outlived ``orphan_grace`` → ABANDONED.
+        CANCELLED — an operator cancelled the attempt → DECLINED, with no grace (#4105).
         STALLED — its ticket exists but died past a grace (:meth:`_ticket_stalled`) → ABANDONED.
+
+        CANCELLED outranks STALLED because the two are indistinguishable by age alone:
+        a cancelled attempt has nothing queued and no PR, so the dead grace released it
+        as ABANDONED — the one state :meth:`ImplementedIssueMarkerManager.claim` resets —
+        and intake handed the same issue back two hours later. It needs no grace of its
+        own: the grace buys time for an attempt that might still be alive, and a human
+        already said this one is over.
 
         LANDED exists because SHIPPED is deliberately NOT a release state (it means
         "PR open, not yet landed"), so a ticket frozen at SHIPPED after its PR merged
@@ -199,6 +210,7 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
 
         completed: list[int] = []
         abandoned: list[int] = []
+        declined: list[int] = []
         for marker in non_terminal.iterator():
             if not marker.issue_url:
                 continue
@@ -208,11 +220,15 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
                     abandoned.append(marker.pk)
             elif ticket.state in terminal_states or self._pr_landed(ticket):
                 completed.append(marker.pk)
+            elif self._has_active_task(ticket):
+                continue
+            elif ticket.newest_task_was_cancelled():
+                declined.append(marker.pk)
             elif self._ticket_stalled(
                 ticket, marker, cutoff=stall_cutoff if self._has_open_pr(ticket) else dead_cutoff
             ):
                 abandoned.append(marker.pk)
-        return MarkerReconcileResult(completed=tuple(completed), abandoned=tuple(abandoned))
+        return MarkerReconcileResult(completed=tuple(completed), abandoned=tuple(abandoned), declined=tuple(declined))
 
     @staticmethod
     def _pr_landed(ticket: "Ticket") -> bool:
@@ -229,15 +245,31 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         return PullRequest.objects.live().filter(ticket=ticket).exists()
 
     @staticmethod
+    def _has_active_task(ticket: "Ticket") -> bool:
+        """True while something PENDING or CLAIMED can still move *ticket*.
+
+        Asked once for both the cancelled and the stalled branch: a live task means
+        the attempt is not over however its last one ended, so a queued task holds
+        the slot no matter how old the claim is — and a re-queue after a cancel is
+        exactly the "something changed" that puts the issue back in play.
+        """
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        return task_model.objects.filter(ticket=ticket, status__in=task_model.Status.active()).exists()
+
+    @staticmethod
+    def _ticket_tasks(ticket: "Ticket") -> "models.QuerySet[Task]":
+        """*ticket*'s tasks, reached through the app registry to dodge the import cycle."""
+        return cast("type[Task]", apps.get_model("core", "Task")).objects.filter(ticket=ticket)
+
+    @staticmethod
     def _ticket_stalled(ticket: "Ticket", marker: "ImplementedIssueMarker", *, cutoff: datetime) -> bool:
         """True when *ticket*'s attempt is DEAD rather than merely slow.
 
-        Dead means both halves: no task is still being worked (nothing PENDING or
-        CLAIMED will ever move it again), and the newest thing that happened to it
-        — its last task, or the claim itself when it never got one — predates
-        *cutoff*. Requiring both is what keeps a long-running attempt safe: a
-        queued task holds the slot no matter how old the claim is, and a recent
-        task holds it no matter how the last one ended.
+        Dead means the newest thing that happened to it — its last task, or the claim
+        itself when it never got one — predates *cutoff*, with the caller having already
+        established that no task is still being worked. That keeps a long-running attempt
+        safe: a recent task holds the slot no matter how the last one ended.
 
         The newest task is read with ``Max``, not ``order_by("-created_at")``:
         ``Task.created_at`` is nullable, and DESC ordering puts NULLs FIRST on
@@ -245,11 +277,7 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         ordering read back ``None`` and drop the recency half entirely. ``Max``
         ignores NULLs on every backend.
         """
-        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-        tasks = task_model.objects.filter(ticket=ticket)
-        if tasks.filter(status__in=task_model.Status.active()).exists():
-            return False
+        tasks = ImplementedIssueMarkerManager._ticket_tasks(ticket)
         last_task_at = tasks.aggregate(latest=models.Max("created_at"))["latest"]
         return max(marker.dispatched_at, last_task_at or marker.dispatched_at) <= cutoff
 
@@ -266,7 +294,8 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         Terminal-ticket and merged-PR markers → COMPLETED; gone-ticket orphans past
         the grace and stalled-ticket attempts past their grace → ABANDONED (mirroring
         the give-up semantics ABANDONED already carries, so the issue becomes claimable
-        again through :meth:`claim`'s re-claim path). Idempotent: a second pass
+        again through :meth:`claim`'s re-claim path); operator-cancelled attempts →
+        DECLINED, terminal but outside that re-claim path. Idempotent: a second pass
         finds the just-released rows terminal and is a no-op. Returns the same
         :class:`MarkerReconcileResult` :meth:`find_stale` computes.
         """
@@ -275,6 +304,8 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
             self.filter(pk__in=result.completed).update(state=ImplementedIssueMarker.State.COMPLETED)
         if result.abandoned:
             self.filter(pk__in=result.abandoned).update(state=ImplementedIssueMarker.State.ABANDONED)
+        if result.declined:
+            self.filter(pk__in=result.declined).update(state=ImplementedIssueMarker.State.DECLINED)
         return result
 
 
@@ -288,11 +319,26 @@ class ImplementedIssueMarker(models.Model):
         #: reserved for give-up / fleet-claim-steal semantics.
         COMPLETED = "completed", "Completed"
         ABANDONED = "abandoned", "Abandoned"
+        #: An operator cancelled the attempt (#4105). Terminal like ABANDONED, so the
+        #: budget still self-heals — but OUTSIDE the re-claim path, because ABANDONED
+        #: is the one state ``claim`` resets, and a cancel that intake undoes two hours
+        #: later is not a decision the operator gets to make.
+        DECLINED = "declined", "Declined by an operator"
 
         @classmethod
         def terminal(cls) -> tuple[str, ...]:
             """States that no longer consume the max-concurrent budget."""
-            return (cls.COMPLETED, cls.ABANDONED)
+            return (cls.COMPLETED, cls.ABANDONED, cls.DECLINED)
+
+        @classmethod
+        def relinquished(cls) -> tuple[str, ...]:
+            """Terminal states in which the attempt was LET GO rather than finished.
+
+            The distinction COMPLETED does not share: nobody is doing this work, so a
+            caller still asserting ownership of it (a refreshed fleet claim ref, a
+            completion rewrite) is asserting something untrue.
+            """
+            return (cls.ABANDONED, cls.DECLINED)
 
     issue_url = models.URLField(max_length=512)
     overlay = models.CharField(max_length=64, blank=True, default="")

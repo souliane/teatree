@@ -280,6 +280,7 @@ SETTING_HELP: dict[str, str] = {
     "triage_assessor_enabled": "run the triage assessor over untriaged issues",
     "triage_assessor_max_issues_per_tick": "issues the triage assessor may assess in one tick",
     "trusted_issue_authors": "issue authors whose issues may be claimed without extra triage",
+    "umbrella_issue_labels": "labels marking an issue as an umbrella/epic parent intake never claims",
     "unbacked_claim_gate_enabled": "refuse a diagnosis or an escalation that cites no artefact the agent read",
     "unknown_repo_push_gate_enabled": "refuse a push to a repo teatree does not recognise",
     "user_identity_aliases": "other identities that are the same person as the operator",

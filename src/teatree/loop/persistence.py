@@ -295,8 +295,8 @@ def _link_claimed_marker(ticket: Ticket, issue_url: str) -> None:
 
     This handler is the intended (and, before now, the only) writer of the
     ``TICKET_CREATED`` state — the claim path leaves the marker ``DISPATCHED``.
-    Terminal markers (``ABANDONED`` / ``COMPLETED``) are excluded so a re-tick
-    on an already-completed issue can never resurrect a marker into the budget.
+    Every ``State.terminal()`` marker is excluded so a re-tick on an issue already
+    completed, abandoned or declined can never resurrect one into the budget.
     """
     ImplementedIssueMarker.objects.filter(issue_url=issue_url).exclude(
         state__in=ImplementedIssueMarker.State.terminal()

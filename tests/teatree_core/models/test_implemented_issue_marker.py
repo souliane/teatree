@@ -12,6 +12,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import ImplementedIssueMarker, PullRequest, Task, Ticket
 from teatree.instance_id import instance_id
 from tests.factories import ImplementedIssueMarkerFactory, PullRequestFactory, TaskFactory, TicketFactory
@@ -444,3 +445,102 @@ class TestDeadClaimGrace(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
         assert result.released == 0
+
+
+class TestOperatorCancelledClaim(TestCase):
+    """An operator cancellation is a DECISION, not a dead attempt (#4105).
+
+    Cancelling the task released the slot as ABANDONED, which is the state
+    ``claim`` re-claims from — so the next tick handed the same issue straight
+    back and the operator's decline was undone without anything changing. A
+    cancelled claim releases as DECLINED instead: terminal, so the budget still
+    self-heals, and outside the re-claim path, so intake leaves it alone.
+    """
+
+    def _cancelled(self, url: str, *, kind: str = FailureKind.CANCELLED, age_hours: int = 0) -> ImplementedIssueMarker:
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        task = TaskFactory(ticket=ticket, status=Task.Status.FAILED, failure_kind=kind)
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
+            dispatched_at=timezone.now() - timedelta(hours=age_hours)
+        )
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_a_cancelled_claim_is_not_reclaimed_on_the_next_tick(self) -> None:
+        # Aged past the dead grace, which is what made the observed re-claim possible:
+        # ABANDONED is the one state ``claim`` resets, so the cancel lasted two hours.
+        url = "https://github.com/o/r/issues/400"
+        self._cancelled(url, age_hours=72)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.claim(url, "acme") is None
+
+    def test_the_cancelled_claim_releases_as_declined(self) -> None:
+        marker = self._cancelled("https://github.com/o/r/issues/401")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DECLINED
+        assert result.declined == (marker.pk,)
+        assert result.released == 1
+
+    def test_the_declined_claim_still_frees_the_budget(self) -> None:
+        self._cancelled("https://github.com/o/r/issues/402")
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 0
+
+    def test_the_decision_needs_no_grace_to_take_effect(self) -> None:
+        """The dead grace buys time for an attempt that MIGHT still be alive; this one is over."""
+        marker = self._cancelled("https://github.com/o/r/issues/403", age_hours=0)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DECLINED
+
+    def test_a_requeued_ticket_keeps_its_slot(self) -> None:
+        """Something DID change — a live task means the cancel was not the last word."""
+        marker = self._cancelled("https://github.com/o/r/issues/404")
+        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_a_superseded_task_is_not_an_operator_decline(self) -> None:
+        """Rework cancels the task on the factory's own initiative — the issue stays claimable."""
+        url = "https://github.com/o/r/issues/405"
+        marker = self._cancelled(url, kind=FailureKind.SUPERSEDED, age_hours=72)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert ImplementedIssueMarker.objects.claim(url, "acme") is not None
+
+    def test_a_plain_failure_still_abandons(self) -> None:
+        marker = self._cancelled("https://github.com/o/r/issues/406", kind=FailureKind.UNCLASSIFIED, age_hours=72)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_an_older_cancel_under_a_newer_failure_does_not_decline(self) -> None:
+        """The NEWEST outcome decides — a cancel the pipeline moved past is not the last word."""
+        url = "https://github.com/o/r/issues/407"
+        marker = self._cancelled(url, age_hours=72)
+        newer = TaskFactory(ticket=marker.ticket, status=Task.Status.FAILED, failure_kind=FailureKind.UNCLASSIFIED)
+        Task.objects.filter(pk=newer.pk).update(created_at=timezone.now() - timedelta(hours=48))
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
