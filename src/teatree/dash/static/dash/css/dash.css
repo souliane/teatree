@@ -385,6 +385,16 @@ a.card-num:hover {
   flex-wrap: wrap;
   align-items: center;
 }
+.card-actions {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  margin-top: var(--sp-1);
+}
+.card-btn {
+  padding: 0 var(--sp-2);
+  font-size: var(--text-xs);
+}
 .card-dwell {
   color: var(--ink-muted);
   font-size: var(--text-xs);

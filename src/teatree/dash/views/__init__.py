@@ -34,7 +34,7 @@ from teatree.dash.views.settings import (
     settings_restore,
     settings_set,
 )
-from teatree.dash.views.tickets import ticket_drawer, ticket_transition
+from teatree.dash.views.tickets import task_action, ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
 __all__ = [
@@ -72,6 +72,7 @@ __all__ = [
     "settings_readouts",
     "settings_restore",
     "settings_set",
+    "task_action",
     "ticket_drawer",
     "ticket_transition",
     "transcript",

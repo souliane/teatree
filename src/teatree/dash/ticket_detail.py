@@ -22,6 +22,7 @@ from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.issue_link import issue_link
 from teatree.dash.selectors import PrChip, group_slug, pr_chip
 from teatree.dash.skills import skill_bundle
+from teatree.dash.task_actions import EnqueueButton, enqueue_buttons
 
 # How many of each history the drawer renders. A ticket the factory worked for weeks
 # accumulates thousands of transitions and attempts, and rendering all of them
@@ -121,6 +122,7 @@ class TicketDetail:
     transitions_total: int
     mermaid: str
     available_transitions: tuple[str, ...]
+    enqueue_buttons: tuple[EnqueueButton, ...]
     tasks: tuple[TaskRow, ...]
     tasks_total: int
     sessions: tuple[SessionRow, ...]
@@ -175,6 +177,7 @@ def build_ticket_detail(ticket_id: int) -> TicketDetail:
         transitions_total=transitions_total,
         mermaid=build_ticket_lifecycle_mermaid(ticket_id),
         available_transitions=legal_transition_names(ticket),
+        enqueue_buttons=enqueue_buttons(ticket),
         tasks=tasks,
         tasks_total=tasks_total,
         sessions=_sessions(ticket),
