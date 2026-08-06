@@ -67,7 +67,13 @@ class PrSummary:
 
 @dataclass(frozen=True, slots=True)
 class MergeAttempt:
-    """The scanner's per-PR decision plus any merge outcome."""
+    """The scanner's per-PR decision plus any merge outcome.
+
+    ``failing_required`` and ``base_current`` are the CI facts the decision was
+    made on, carried out to the emitted signal so a CROSS-PR comparison (#4090)
+    can ask a question about the SET without re-listing and re-classifying every
+    PR. Empty / ``True`` on any path that never reached the CI gate.
+    """
 
     slug: str
     pr_id: int
@@ -77,3 +83,5 @@ class MergeAttempt:
     reason: str = ""
     url: str = ""
     review_dispatched: bool = False
+    failing_required: tuple[str, ...] = ()
+    base_current: bool = True

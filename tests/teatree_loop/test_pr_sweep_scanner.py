@@ -2174,3 +2174,51 @@ class TestSubstrateStandingDelegation:
 
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
         assert pinger.calls == []
+
+
+class TestRedSetSignalContext:
+    """The sweep stamps what a CROSS-PR comparison needs onto its own signal (#4090).
+
+    The failing REQUIRED set and the base freshness are already computed for the
+    merge decision; without them on the payload the set-level report would have to
+    re-list every PR and re-classify it — a second forge read and a second
+    classifier, the #12 divergence this repo forbids.
+    """
+
+    def test_a_ci_red_skip_carries_its_failing_required_checks(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert signals[0].payload["reason"] == "ci_red"
+        assert signals[0].payload["failing_required"] == ["lint"]
+        assert signals[0].payload["base_current"] is True
+        assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_red_judged_against_a_moved_base_is_marked_stale(self) -> None:
+        # A behind-main branch's red judged a base it has fallen behind (#4063), so
+        # the report must not read it as a live verdict.
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
+        )
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert signals[0].payload["base_current"] is False
+        assert signals[0].payload["failing_required"] == ["lint"]
+
+    def test_a_green_pr_carries_no_failing_checks(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(merged=True))
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["failing_required"] == []
