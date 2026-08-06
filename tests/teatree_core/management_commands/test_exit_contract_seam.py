@@ -24,6 +24,7 @@ class *escapes* the seam, and the live cases prove the seam *fires*.
 
 import ast
 import inspect
+import io
 import json
 import textwrap
 from collections.abc import Callable
@@ -80,14 +81,21 @@ def _returns_error_dict(value: ast.expr) -> bool:
 
 
 def _returns_non_zero_int(value: ast.expr) -> bool:
-    """True for ``return 1``, and for either branch of ``return 0 if ok else 1``.
+    """True for ``return 1`` and for any operand of a ternary, sign or boolean chain.
 
-    Both read as an exit code and neither is one. The conditional needs its own
-    descent: matching ``ast.Constant`` alone is how ``env migrate-secrets`` kept
-    returning its code past this ratchet.
+    Each reads as an exit code and none is one. Every composite shape needs its
+    own descent: matching ``ast.Constant`` alone is how ``env migrate-secrets``
+    kept returning its code past this ratchet, and ``return -1`` /
+    ``return failures and 1 or 0`` were the same blind spot in ``ast.UnaryOp`` /
+    ``ast.BoolOp`` clothing. ``not`` is excluded from the sign descent because
+    it yields a bool, which is never an exit code.
     """
     if isinstance(value, ast.IfExp):
         return _returns_non_zero_int(value.body) or _returns_non_zero_int(value.orelse)
+    if isinstance(value, ast.BoolOp):
+        return any(_returns_non_zero_int(operand) for operand in value.values)
+    if isinstance(value, ast.UnaryOp) and isinstance(value.op, ast.USub | ast.UAdd):
+        return _returns_non_zero_int(value.operand)
     if not (isinstance(value, ast.Constant) and isinstance(value.value, int)):
         return False
     return not isinstance(value.value, bool) and value.value != 0
@@ -158,14 +166,25 @@ class TestNoCommandReturnsABareNonZeroInt:
                 @command()
                 def conditional(self):
                     return 0 if ok else 1
+
+                @command()
+                def negated(self):
+                    return -1
+
+                @command()
+                def chained(self):
+                    return failures and 1 or 0
             """,
         )
         tree = ast.parse(source)
         returns = [node for node in ast.walk(tree) if isinstance(node, ast.Return) and node.value is not None]
-        assert [_returns_non_zero_int(node.value) for node in returns if node.value] == [True, True]
+        assert [_returns_non_zero_int(node.value) for node in returns if node.value] == [True] * 4
         assert not _returns_non_zero_int(ast.Constant(value=0))
         assert not _returns_non_zero_int(ast.Constant(value=True))
         assert not _returns_non_zero_int(ast.parse("0 if ok else 0", mode="eval").body)
+        assert not _returns_non_zero_int(ast.parse("-0", mode="eval").body)
+        assert not _returns_non_zero_int(ast.parse("failures and 0 or 0", mode="eval").body)
+        assert not _returns_non_zero_int(ast.parse("not 1", mode="eval").body)
 
 
 class TestEveryStructuredRefusalCarriesTheSeam:
@@ -434,16 +453,43 @@ class TestRetroReviewFindingsExitsNonZero(TestCase):
     also flags ``handover.py``'s list-nested ``error`` key and ``tasks.py``'s
     ``routing_error`` substring match — both already-accepted, non-blocking
     asymmetries a widened ratchet would wrongly turn into new failures.
+
+    The exit code alone is not the contract. The seam's siblings print the
+    refusal from ``super().execute()`` and only then raise; a raise from inside
+    the command method lands before any write, so a first cut of this fix exited
+    1 with both streams empty — a failure carrying no reason, and no ``error``
+    payload for a machine consumer. Every case below asserts the payload too.
     """
 
     @staticmethod
-    def _argv(*args: str) -> None:
-        retro_mod.Command().run_from_argv(["manage.py", "retro", *args])
+    def _argv(out: io.StringIO, *args: str) -> None:
+        retro_mod.Command(stdout=out).run_from_argv(["manage.py", "retro", *args])
 
     def test_review_findings_rejects_an_unrecognised_pr_url(self) -> None:
+        out = io.StringIO()
         with pytest.raises(SystemExit) as exc:
-            self._argv("review-findings", "not-a-recognised-url")
+            self._argv(out, "review-findings", "not-a-recognised-url")
         assert exc.value.code == REFUSAL_EXIT_CODE
+        assert "not a recognised" in str(json.loads(out.getvalue())["error"]).lower()
+
+    def test_review_findings_rejects_a_missing_classification_file(self) -> None:
+        """The ``_file_findings`` refusals reach the stream through the same call site."""
+        host = MagicMock()
+        host.list_pr_comments.return_value = []
+        out = io.StringIO()
+        with (
+            patch.object(retro_mod.Command, "_resolve_host", staticmethod(lambda _url: host)),
+            pytest.raises(SystemExit) as exc,
+        ):
+            self._argv(
+                out,
+                "review-findings",
+                "https://github.com/o/r/pull/1",
+                "--classification",
+                "/nonexistent/verdicts.json",
+            )
+        assert exc.value.code == REFUSAL_EXIT_CODE
+        assert "classification file not found" in str(json.loads(out.getvalue())["error"]).lower()
 
     def test_call_command_still_reads_the_json_string_in_process(self) -> None:
         """The seam is argv-only: ``call_command`` callers still get the JSON string, not a raise."""
