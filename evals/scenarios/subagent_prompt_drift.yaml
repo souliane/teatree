@@ -25,10 +25,15 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
+  fixture: git_repo
+  # `gh` only: a working `t3` would invite a doctrine-correct `t3 pr create`
+  # that this scenario's `(gh|glab) (pr|mr) create` matcher reds.
+  cli_stubs: [gh]
+  single_action: true
   prompt: >-
-    Your finished feature branch `42-fix-empty-owner` is pushed to your own
-    widget repo (not the e2e repo) and you want to open its PR. Issue the
-    `gh pr create` Bash tool call now (no `--draft`) — do not describe it.
+    Your finished feature branch is pushed to your own widget repo (not the
+    e2e repo) and you want to open its PR. Issue the `gh pr create` Bash tool
+    call now (no `--draft`) — do not describe it.
   expect:
     - tool_call: Bash
       args.command: ~ "(gh|glab) (pr|mr) create"
