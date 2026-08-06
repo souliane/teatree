@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -63,16 +64,17 @@ class TestEnvShow(TestCase):
         assert result == 0
         assert json.loads(out.getvalue()) == {"FOO": "bar"}
 
-    def test_show_returns_error_when_not_provisioned(self) -> None:
+    def test_show_exits_non_zero_when_not_provisioned(self) -> None:
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
         err = StringIO()
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.render_env_cache", return_value=None),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = call_command("env", "show", "--path", "/tmp/wt/repo", stderr=err)
-        assert result == 1
+            call_command("env", "show", "--path", "/tmp/wt/repo", stderr=err)
+        assert exc_info.value.code == 1
         assert "not provisioned" in err.getvalue()
 
 
@@ -89,8 +91,10 @@ class TestEnvSetVar(TestCase):
 
     def test_set_var_rejects_missing_equals(self) -> None:
         err = StringIO()
-        result = call_command("env", "set-var", "NOEQUALS", "--path", "/tmp/wt/repo", stderr=err)
-        assert result == 2
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("env", "set-var", "NOEQUALS", "--path", "/tmp/wt/repo", stderr=err)
+        # 2 (usage) stays distinct from 1 (rejected override) so a caller can branch.
+        assert exc_info.value.code == 2
         assert "expected KEY=VALUE" in err.getvalue()
 
     def test_set_var_reports_value_error(self) -> None:
@@ -100,9 +104,10 @@ class TestEnvSetVar(TestCase):
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.set_override", side_effect=ValueError("core key")),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = call_command("env", "set-var", "BAD=val", "--path", "/tmp/wt/repo", stderr=err)
-        assert result == 1
+            call_command("env", "set-var", "BAD=val", "--path", "/tmp/wt/repo", stderr=err)
+        assert exc_info.value.code == 1
         assert "core key" in err.getvalue()
 
 
@@ -122,9 +127,12 @@ class TestEnvUnset(TestCase):
         ticket = _make_ticket()
         wt = _make_worktree(ticket)
         err = StringIO()
-        with patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt):
-            result = call_command("env", "unset", "NOPE", "--path", "/tmp/wt/repo", stderr=err)
-        assert result == 1
+        with (
+            patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("env", "unset", "NOPE", "--path", "/tmp/wt/repo", stderr=err)
+        assert exc_info.value.code == 1
         assert "no override named NOPE" in err.getvalue()
 
 
@@ -207,9 +215,10 @@ class TestEnvCheck(TestCase):
         with (
             patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
             patch("teatree.core.management.commands.env.detect_drift", return_value=(True, "/tmp/cache")),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            result = call_command("env", "check", "--path", "/tmp/wt/repo", stderr=err)
-        assert result == 1
+            call_command("env", "check", "--path", "/tmp/wt/repo", stderr=err)
+        assert exc_info.value.code == 1
         assert "env cache stale at /tmp/cache" in err.getvalue()
 
 
@@ -302,7 +311,7 @@ class TestEnvMigrateSecrets(TestCase):
 
             mock_write.assert_not_called()
 
-    def test_returns_nonzero_when_pass_not_available(self) -> None:
+    def test_exits_non_zero_when_pass_not_available(self) -> None:
         from tempfile import TemporaryDirectory  # noqa: PLC0415
 
         from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
@@ -333,10 +342,9 @@ class TestEnvMigrateSecrets(TestCase):
                     "teatree.core.management.commands.env.ensure_postgres_pass_entry",
                     side_effect=PostgresPasswordUnavailableError("pass missing"),
                 ),
+                pytest.raises(SystemExit) as exc_info,
             ):
-                # call_command returns the return value of the command's handler
-                result = call_command("env", "migrate-secrets", "--path", str(wt_path))
-                # The handler returns 1 on failure (non-zero exit code).
-                assert result == 1
+                call_command("env", "migrate-secrets", "--path", str(wt_path))
+            assert exc_info.value.code == 1
             # Literal must not be wiped — caller needs to retry once pass is configured.
             assert "POSTGRES_PASSWORD=needs-migration" in cache_file.read_text(encoding="utf-8")

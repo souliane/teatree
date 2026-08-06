@@ -12405,8 +12405,19 @@ Usage: t3 teatree retro review-findings [OPTIONS] PR_URL
  With no ``--classification``, lists every finding + its fingerprint so
  the agent can supply verdicts. With ``--classification``, records the
  verdicts and files one deduped enforcement issue per class-C finding.
- Returns the structured result as JSON (the human-readable summary is
- written to stdout); ``call_command`` callers parse the JSON.
+ Returns the structured result as JSON; ``call_command`` callers parse
+ it. A success writes its human-readable summary to stdout as it works;
+ a refusal writes its JSON payload to stdout and exits non-zero.
+
+ The refusal shapes here (``_run`` / ``_file_findings``) are wrapped in
+ ``json.dumps`` before this method returns, so they are invisible both
+ to ``RefusalExitTyperCommand``'s runtime check (a ``str``, not a
+ ``Mapping``) and to the AST ratchet (a ``Call``, not a literal
+ ``{"error": …}``, at this method's own ``return``). Route the same
+ ``refusal_exit_code`` predicate the seam uses, by hand — and emit the
+ payload before raising, because the seam's siblings print theirs from
+ ``super().execute()`` first, whereas raising from inside this method
+ lands before any write and would exit non-zero saying nothing (#4234).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    pr_url      TEXT  [required]                                            │
