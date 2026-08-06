@@ -63,6 +63,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     record_mergeable_notified,
     red_required_at_stale_base,
     untrusted_merge_provenance,
+    with_ci_context,
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_types import (
@@ -298,8 +299,9 @@ class PrSweepScanner:
         if reason not in self._STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
             failing, behind_main=pr.behind_main
         ):
-            return _skip(pr, reason=reason)
-        return branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
+            return with_ci_context(_skip(pr, reason=reason), pr=pr, failing=failing)
+        remedy = branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
+        return with_ci_context(remedy, pr=pr, failing=failing)
 
     def _remedy_ctx(self) -> branch_update.RemedyContext:
         return branch_update.RemedyContext(
@@ -597,5 +599,7 @@ def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
             "overlay": overlay,
             "url": attempt.url,
             "review_dispatched": attempt.review_dispatched,
+            "failing_required": list(attempt.failing_required),
+            "base_current": attempt.base_current,
         },
     )

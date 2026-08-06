@@ -10,6 +10,7 @@ orchestration and under the module-health LOC cap (same split rationale as
 
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from teatree.core.merge import classify_required_rollup, failing_required_names
@@ -17,7 +18,7 @@ from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, PrSummary
+from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, MergeAttempt, PrSummary
 
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict
@@ -102,6 +103,23 @@ def classify_sweep_ci(
             return "uv_audit_red_but_clean_on_main", False, failing
         return "ci_red", False, failing
     return None, False, failing
+
+
+def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) -> MergeAttempt:
+    """Stamp the CI facts a CROSS-PR comparison needs onto *attempt* (#4090).
+
+    The failing REQUIRED set and whether the run judged the CURRENT base are both
+    already computed for the merge decision; carrying them out to the signal is
+    what lets the set-level report compare PRs without re-listing them and
+    running a second, divergent classifier over the same rollups (#12). The PR
+    URL rides along so the report can render a clickable ref for a plain skip.
+    """
+    return replace(
+        attempt,
+        failing_required=tuple(sorted(failing)),
+        base_current=not pr.behind_main,
+        url=attempt.url or pr.url,
+    )
 
 
 def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:

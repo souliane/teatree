@@ -1,6 +1,7 @@
 """Tests for ``teatree.loop.phases.act`` — dispatch + mechanical + persist."""
 
 import datetime as dt
+from unittest import mock
 
 import django.test
 import pytest
@@ -64,3 +65,53 @@ class TestSweepSkipLedgerWiring(django.test.TestCase):
         act_phase(report)
 
         assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == 1
+
+
+class TestRedSetWiring(django.test.TestCase):
+    """The tick's act phase is where per-PR sweep signals become ONE set-level claim."""
+
+    @staticmethod
+    def _red(pr_id: int, failing: str) -> ScanSignal:
+        return ScanSignal(
+            kind="pr_sweep.skip",
+            summary=f"o/r#{pr_id} skip (ci_red)",
+            payload={
+                "slug": "o/r",
+                "pr_id": pr_id,
+                "decision": "skip",
+                "reason": "ci_red",
+                "overlay": "t3-teatree",
+                "url": f"https://github.com/o/r/pull/{pr_id}",
+                "failing_required": [failing],
+                "base_current": True,
+            },
+        )
+
+    def test_act_phase_announces_a_mutually_blocking_red_set(self) -> None:
+        announced: list[str] = []
+
+        with (
+            mock.patch("teatree.loop.red_set_surface._default_main_checks", return_value=frozenset()),
+            mock.patch(
+                "teatree.loop.red_set_surface._default_notify",
+                side_effect=lambda **kwargs: announced.append(str(kwargs["text"])),
+            ),
+        ):
+            act_phase(_report([self._red(7, "shard-a"), self._red(8, "shard-b")]))
+
+        assert len(announced) == 1
+        assert "possible-cycle" in announced[0]
+
+    def test_act_phase_says_nothing_when_the_reds_share_a_cause(self) -> None:
+        announced: list[str] = []
+
+        with (
+            mock.patch("teatree.loop.red_set_surface._default_main_checks", return_value=frozenset()),
+            mock.patch(
+                "teatree.loop.red_set_surface._default_notify",
+                side_effect=lambda **kwargs: announced.append(str(kwargs["text"])),
+            ),
+        ):
+            act_phase(_report([self._red(7, "shard-a"), self._red(8, "shard-a")]))
+
+        assert announced == []
