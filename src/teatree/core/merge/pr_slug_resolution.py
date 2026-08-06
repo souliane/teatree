@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from teatree.config import discover_overlays
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.merge.head_read_diagnosis import unreadable_head_advisory
+from teatree.core.merge.head_read_diagnosis import landed_merge_commit, unreadable_head_advisory
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
@@ -328,12 +328,15 @@ def _reconcile_slug_against_reviewed_sha(
     raises a :class:`MergePreconditionError` naming every ambiguous repo —
     the gate never silently picks one.
 
-    A no-match raise is classified before it is composed (#4239). A forge read
-    that returns nothing is a NON-answer, so "the head moved" is a claim the
-    gate has no evidence for: when the initial read AND every candidate probe
-    came back empty, the refusal says the head could not be READ and names the
-    venue's missing ambient credential instead. Any readable probe means the
-    forge answered, so the head-moved diagnosis stands unchanged.
+    A no-match raise is classified before it is composed (#4239, #4144). A forge
+    read that returns nothing is a NON-answer, so "the head moved" is a claim the
+    gate has no evidence for. When the INITIAL read came back empty, two things
+    follow: the PR may simply have merged already — established first, because a
+    squash deletes the branch the head read wants (#4144) — and, failing that, the
+    refusal says the head could not be READ rather than that it moved, naming the
+    venue's missing credential or (when candidates DID answer) the cross-repo
+    hypothesis those answers actually support. Only a head that RESOLVES to a
+    different SHA keeps the head-moved diagnosis.
     """
     if not reviewed_sha:
         return initial_slug
@@ -380,14 +383,33 @@ def _reconcile_slug_against_reviewed_sha(
         )
         return match
     considered = [initial_slug, *other_candidates]
-    if not initial_live and not any(probed_heads.values()):
+    if not initial_live:
+        if landed := landed_merge_commit(query):
+            logger.info(
+                "merge_execution: PR #%s on %r reads MERGED at %s — its unreadable head is the "
+                "expected post-merge state, not drift (#4144)",
+                pr_id,
+                initial_slug,
+                landed[:8],
+            )
+            return initial_slug
+        readable = sorted(slug for slug, head in probed_heads.items() if head)
+        cause = (
+            unreadable_head_advisory(host_kind)
+            if not readable
+            else (
+                f"The forge DID answer for {readable}, so a missing credential is not the cause — "
+                f"the initial repo most likely carries no PR #{pr_id} at all (a CLEAR issued from a "
+                f"clone whose overlay registry doesn't include the target repo). This refusal "
+                f"consumes nothing — the CLEAR stays actionable."
+            )
+        )
         msg = (
-            f"could not read the live head for PR #{pr_id}: every forge read in this attempt "
-            f"returned nothing (probed {considered}), so the head was never compared with the "
-            f"reviewed SHA {reviewed_sha} — this is NOT evidence that the head moved. "
-            f"{unreadable_head_advisory(host_kind)} "
-            f"Re-escalate; the loop never self-issues a replacement "
-            f"(§17.4.3 step 2 / #4239)."
+            f"could not read the live head for PR #{pr_id} on {initial_slug!r}, so it was never "
+            f"compared with the reviewed SHA {reviewed_sha} — this is NOT evidence that the head "
+            f"moved, and no candidate repo's PR #{pr_id} carries that SHA either. Candidates "
+            f"considered: {considered}. {cause} Re-escalate; the loop never self-issues a "
+            f"replacement (§17.4.3 step 2 / #4239)."
         )
         raise MergePreconditionError(msg)
     msg = (

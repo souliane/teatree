@@ -35,7 +35,7 @@ from teatree.core.merge.authorization import (
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
-from teatree.core.merge.head_read_diagnosis import unreadable_head_advisory
+from teatree.core.merge.head_read_diagnosis import landed_merge_commit, unreadable_head_advisory
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
@@ -160,6 +160,18 @@ def assert_merge_preconditions(
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
     live_sha = query.live_head_sha()
     if not live_sha:
+        # #4144: settle "did it land?" before diagnosing the empty read as drift —
+        # a squash deletes the source branch, so an unreadable head is the EXPECTED
+        # state after a merge that succeeded. The gates below bind to the reviewed
+        # tree, the same value the readable-head reconcile path passes them.
+        if landed := landed_merge_commit(query):
+            _assert_anti_vacuity(authorized_clear, authorized_clear.reviewed_sha)
+            _assert_rubric_satisfied(authorized_clear, authorized_clear.reviewed_sha)
+            return MergePrecheck(
+                verified_sha=authorized_clear.reviewed_sha,
+                already_merged_sha=landed,
+                standing_delegation_by=standing_delegation_by,
+            )
         msg = (
             f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2). "
             f"{unreadable_head_advisory(ref.host_kind)}"
