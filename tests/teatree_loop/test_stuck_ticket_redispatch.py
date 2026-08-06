@@ -644,3 +644,12 @@ class TestOperatorCancelledTickets(TestCase):
         _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
 
         assert redispatch_stuck_tickets() == 1
+
+    def test_a_cancelled_reviewer_ticket_is_not_redispatched(self) -> None:
+        """The guard is asked for EVERY live ticket, reviewer role included — not just author's."""
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/9")
+        task = _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}not now")
+        task.fail(reason=f"{CANCELLED_PREFIX}not now")
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0

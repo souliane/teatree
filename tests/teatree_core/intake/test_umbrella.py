@@ -64,6 +64,20 @@ class TestStructuralSignal:
         body = "## Members\n\n- [ ] https://gitlab.com/acme/app/-/issues/12\n- [ ] https://gitlab.com/acme/app/-/issues/13\n"
         assert _reason(body)
 
+    def test_a_non_forge_url_checklist_is_not_a_child_list(self) -> None:
+        """A docs-link checklist is a plan, not a tracking parent — the URL grammar is narrow."""
+        body = "## Docs\n\n- [ ] https://example.com/readme\n- [ ] https://example.com/changelog\n"
+        assert _reason(body) == ""
+
+    def test_a_forge_url_with_a_trailing_fragment_is_not_a_bare_child_ref(self) -> None:
+        """The link must span the WHOLE token — a comment-anchored URL is prose about a child."""
+        body = (
+            "## Members\n\n"
+            "- [ ] https://github.com/o/r/issues/12#issuecomment-1\n"
+            "- [ ] https://github.com/o/r/issues/13#issuecomment-2\n"
+        )
+        assert _reason(body) == ""
+
     def test_one_child_link_is_below_the_threshold(self) -> None:
         assert _reason("## Members\n\n- [x] #3814\n") == ""
 
