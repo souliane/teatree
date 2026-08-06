@@ -117,7 +117,8 @@ class DrawerPanel:
 
     @property
     def enqueue_buttons(self) -> Locator:
-        return self.page.locator('form[action*="/enqueue/"] button')
+        # Scoped to the panel: every board card behind it carries the same form.
+        return self.page.locator('#drawer form[action*="/enqueue/"] button')
 
     @property
     def mermaid_svg(self) -> Locator:
