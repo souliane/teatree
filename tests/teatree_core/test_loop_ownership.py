@@ -311,6 +311,7 @@ def _make_alias(tmp_path: Path) -> str:
                 owner VARCHAR(255) NOT NULL,
                 session_id VARCHAR(255) NOT NULL DEFAULT '',
                 owner_pid INTEGER NULL,
+                owner_pid_namespace VARCHAR(128) NOT NULL DEFAULT '',
                 acquired_at DATETIME NULL,
                 lease_expires_at DATETIME NULL,
                 generation INTEGER UNSIGNED NOT NULL DEFAULT 0,
