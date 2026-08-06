@@ -328,3 +328,32 @@ def _check_aged_sweep_skips() -> bool:
             f"({row.age_label()}) — reason `{row.reason}`. {row.url}",
         )
     return False
+
+
+def _check_loop_schedule_liveness() -> bool:
+    """Hard-FAIL when an enabled, timer-chained loop is carrying no live timer (#4140).
+
+    The reading no other surface has: ``t3 loop list`` reports a manually-poked loop
+    as scheduled, because a manual ``t3 loops tick`` bumps ``Loop.last_run_at``
+    without restoring the chain. During the 61-minute ``issue_implementer`` outage
+    every cadence surface read healthy while no successor existed at all.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens
+    on the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.loops.schedule_liveness import unscheduled_loops  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    try:
+        stalled = unscheduled_loops(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Loop schedule-liveness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for loop in stalled:
+        typer.echo(
+            f"FAIL  Loop `{loop.name}` is enabled but nothing is scheduled to fire it — {loop.reason}. "
+            "The periodic reconciler re-heads the chain on its next pass; if this persists, "
+            "restart the worker with `t3 worker ensure` (#4140).",
+        )
+    return not stalled

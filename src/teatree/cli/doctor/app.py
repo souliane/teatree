@@ -49,6 +49,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_intake_budget_deadlock,
     _check_loop_classification_drift,
     _check_loop_presets,
+    _check_loop_schedule_liveness,
     _check_marker_jam,
     _check_shipped_seed_inertness,
 )
@@ -159,6 +160,7 @@ __all__ = (
     "_check_legacy_overlay_alias",
     "_check_loop_classification_drift",
     "_check_loop_presets",
+    "_check_loop_schedule_liveness",
     "_check_marker_jam",
     "_check_mcp_connectivity",
     "_check_mode_override_staleness",
@@ -307,14 +309,17 @@ def _run_loop_intent_gates() -> bool:
     (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
     their return values are deliberately discarded so neither can become a gate by accident.
 
-    Two verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
+    Three verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
     silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
     its consumer is not live — masked/disabled/held, or refused by the consumer's own
     guard chain (the directive-loop silent-freeze incident — directives stuck at
     CAPTURED behind an idle loop, zero signal). ``_check_intake_budget_deadlock`` (#3978)
     is its issue-intake twin: a full in-flight budget held entirely by claims that are
-    going nowhere admits no work at all while every other signal reads healthy. Both are
-    evaluated before the ``and`` so neither can mask the other.
+    going nowhere admits no work at all while every other signal reads healthy.
+    ``_check_loop_schedule_liveness`` (#4140) is the scheduledness reading no cadence
+    surface carries: a loop whose chain was dropped keeps a recent anchor, so it reports
+    as healthy while nothing will ever fire it again. All three are evaluated before the
+    ``and`` so none can mask another.
     """
     _check_loop_presets()
     _check_loop_classification_drift()
@@ -322,7 +327,8 @@ def _run_loop_intent_gates() -> bool:
     _check_aged_sweep_skips()
     _check_marker_jam()
     intake_ok = _check_intake_budget_deadlock()
-    return _check_intent_freshness() and intake_ok
+    scheduled_ok = _check_loop_schedule_liveness()
+    return _check_intent_freshness() and intake_ok and scheduled_ok
 
 
 def _check_claude_session_posture() -> bool:

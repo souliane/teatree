@@ -44,12 +44,7 @@ from django.tasks import task
 from django.utils import timezone
 
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
-from teatree.loops.timer_chains import (
-    LOOPS_QUEUE,
-    compute_successor_run_after,
-    compute_tick_deadline,
-    enqueue_loop_timer,
-)
+from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +73,6 @@ HEADLESS_LEASE_SECONDS = 300
 SLACK_ANSWER_LEASE = "loop-slack-answer"
 
 
-def _is_stranded(result, loop_row, now: dt.datetime) -> bool:  # noqa: ANN001 — untyped by design: a duck-typed handle passed positionally
-    """Whether a RUNNING timer has outlived its tick deadline + grace (a dead worker)."""
-    if result.started_at is None:
-        return False
-    limit = compute_tick_deadline(loop_row) + STUCK_GRACE_SECONDS
-    return result.started_at < now - dt.timedelta(seconds=limit)
-
-
 def ensure_loop_timers() -> dict[str, int]:
     """Reconcile the loop-timer chains to the ADMITTED loop set; return the repair counts.
 
@@ -105,6 +92,9 @@ def ensure_loop_timers() -> dict[str, int]:
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.schedule_liveness import (  # noqa: PLC0415 — deferred: breaks the liveness/reconciler import cycle
+        is_stranded,
+    )
 
     now = timezone.now()
     chain_names = timer_chain_loop_names()
@@ -118,7 +108,7 @@ def ensure_loop_timers() -> dict[str, int]:
         loop_row = loops[name]
         ready = sorted(ready_by_name.get(name, []), key=lambda r: r.run_after)
         running = running_by_name.get(name, [])
-        stranded = [r for r in running if _is_stranded(r, loop_row, now)]
+        stranded = [r for r in running if is_stranded(r, loop_row, now)]
         live_running = [r for r in running if r not in stranded]
 
         for result in stranded:
