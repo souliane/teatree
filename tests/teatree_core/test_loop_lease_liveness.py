@@ -15,10 +15,10 @@ from teatree.core.loop_lease_liveness import (
     UNVERIFIABLE_OWNER_GRACE,
     LeaseClaim,
     anchorable_owner_pid,
-    claim_pid_is_attributable,
     claim_pid_is_foreign,
     lease_is_live,
     live_foreign_owner_session,
+    namespace_is_attributable,
     pid_alive_probe,
     pid_is_attributable,
     pid_is_foreign,
@@ -202,11 +202,11 @@ class TestPidIsAttributable:
     def test_an_unreadable_reader_namespace_leaves_the_pid_as_the_only_evidence(self) -> None:
         assert pid_is_attributable(WORKER_NS, "") is True
 
-    def test_the_claim_form_reads_this_processs_own_namespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_one_argument_form_reads_this_processs_own_namespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(liveness_mod, "reader_pid_namespace", lambda: READER_NS)
 
-        assert claim_pid_is_attributable(LeaseClaim("s", 7, owner_pid_namespace=WORKER_NS)) is False
-        assert claim_pid_is_attributable(LeaseClaim("s", 7, owner_pid_namespace=READER_NS)) is True
+        assert namespace_is_attributable(WORKER_NS) is False
+        assert namespace_is_attributable(READER_NS) is True
 
 
 class TestPidAcrossPidNamespaces:

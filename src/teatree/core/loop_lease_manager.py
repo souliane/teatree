@@ -44,10 +44,10 @@ from teatree.core.loop_lease_liveness import (
     CLAIM_COLUMNS,
     LeaseClaim,
     anchorable_owner_pid,
-    claim_pid_is_attributable,
     claim_pid_is_foreign,
     lease_is_live,
     live_foreign_owner_session,
+    namespace_is_attributable,
     pid_alive_probe,
     reader_pid_namespace,
     reclaim_reason,
@@ -434,7 +434,7 @@ class LoopLeaseQuerySet(models.QuerySet):
                 session_id="", owner_pid=None, owner_pid_namespace="", acquired_at=None, lease_expires_at=None
             )
 
-        if stored_pid is None or not claim_pid_is_attributable(claim):
+        if stored_pid is None or not namespace_is_attributable(claim.owner_pid_namespace):
             return 0
 
         if not claim_pid_is_foreign(claim, current_pid):

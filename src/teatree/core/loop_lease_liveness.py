@@ -132,14 +132,16 @@ def pid_is_attributable(owner_pid_namespace: str, reader_namespace: str) -> bool
     return owner_pid_namespace == reader_namespace
 
 
-def claim_pid_is_attributable(claim: LeaseClaim) -> bool:
+def namespace_is_attributable(owner_pid_namespace: str) -> bool:
     """:func:`pid_is_attributable` against THIS reader's namespace — the one call sites use.
 
     Every consumer resolves the reader namespace through this module rather than importing
     :func:`reader_pid_namespace` itself, so a test that pins one reader's namespace pins it
-    for the whole decision instead of half of it.
+    for the whole decision instead of half of it. Takes the bare namespace rather than a
+    :class:`LeaseClaim` so a caller holding a
+    :class:`~teatree.core.models.loop_lease.LoopLease` row asks the same question.
     """
-    return pid_is_attributable(claim.owner_pid_namespace, reader_pid_namespace())
+    return pid_is_attributable(owner_pid_namespace, reader_pid_namespace())
 
 
 def anchorable_owner_pid(owner_pid: int | None) -> int | None:
@@ -188,7 +190,7 @@ def lease_is_live(claim: LeaseClaim, now: datetime, *, trust_pid_past_ttl: bool)
     if not claim.session_id:
         return False
     within_ttl = claim.within_ttl(now)
-    if claim.owner_pid is not None and claim_pid_is_attributable(claim):
+    if claim.owner_pid is not None and namespace_is_attributable(claim.owner_pid_namespace):
         pid_alive = pid_alive_probe()
         if pid_alive is not None:
             if not pid_alive(claim.owner_pid):
@@ -265,6 +267,6 @@ def claim_pid_is_foreign(claim: LeaseClaim, current_pid: int | None) -> bool:
     container whose own pid happens to equal the worker's re-anchors or evicts the live
     worker's lease on nothing but a collision.
     """
-    if not claim_pid_is_attributable(claim):
+    if not namespace_is_attributable(claim.owner_pid_namespace):
         return True
     return pid_is_foreign(claim.owner_pid, current_pid)
