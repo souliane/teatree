@@ -3,7 +3,6 @@
 import subprocess
 import sys
 import tempfile
-from contextlib import AbstractContextManager
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -20,7 +19,6 @@ from teatree.utils.ram_probe import (
     available_cpu_count,
     cgroup_v2_memory_mib,
     default_provision_concurrency,
-    effective_available_ram_mib,
     host_available_ram_mib,
     host_total_ram_mib,
     linux_mem_available_kb,
@@ -379,66 +377,6 @@ class TestHostAvailableRamMib:
     def test_unknown_platform_is_zero(self) -> None:
         with patch("teatree.utils.ram_probe.platform.system", return_value="FreeBSD"):
             assert host_available_ram_mib() == 0
-
-
-def _cgroup_reads(values: dict[str, int | None]) -> tuple[AbstractContextManager[object], list[str]]:
-    """Patch ``cgroup_v2_memory_mib`` keyed on the FILENAME, recording every read.
-
-    ``side_effect=[a, b]`` fixes the arithmetic while erasing WHICH cgroup file
-    each number came from, so no change to the files the probe reads could turn
-    those assertions red. Keying on the argument puts the scope of the reading
-    under test alongside the min() it feeds.
-    """
-    seen: list[str] = []
-
-    def _read(filename: str) -> int | None:
-        seen.append(filename)
-        return values.get(filename)
-
-    return patch("teatree.utils.ram_probe.cgroup_v2_memory_mib", side_effect=_read), seen
-
-
-class TestEffectiveAvailableRamMib:
-    """A cgroup-capped worker must not size work against the host's free memory."""
-
-    def test_the_headroom_is_memory_max_minus_memory_current(self) -> None:
-        # Names the cgroup files the answer depends on: swapping `memory.max` for
-        # `memory.high` (an advisory throttle, not the OOM limit) reds here, where
-        # an arithmetic-only assertion would stay green.
-        patched, seen = _cgroup_reads({"memory.max": 22000, "memory.current": 16000})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=20000), patched:
-            assert effective_available_ram_mib() == 6000
-        assert seen == ["memory.max", "memory.current"]
-
-    def test_the_cgroup_headroom_wins_over_a_larger_host_reading(self) -> None:
-        patched, _ = _cgroup_reads({"memory.max": 22000, "memory.current": 16000})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=20000), patched:
-            assert effective_available_ram_mib() == 6000
-
-    def test_the_host_reading_wins_when_the_cgroup_is_roomier(self) -> None:
-        patched, _ = _cgroup_reads({"memory.max": 64000, "memory.current": 1000})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000), patched:
-            assert effective_available_ram_mib() == 4000
-
-    def test_an_uncapped_cgroup_leaves_the_host_reading_alone(self) -> None:
-        patched, _ = _cgroup_reads({"memory.max": None, "memory.current": None})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000), patched:
-            assert effective_available_ram_mib() == 4000
-
-    def test_a_limit_with_no_readable_usage_yields_no_headroom_term(self) -> None:
-        patched, _ = _cgroup_reads({"memory.max": 2048, "memory.current": None})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=4000), patched:
-            assert effective_available_ram_mib() == 4000
-
-    def test_a_cgroup_at_its_limit_reads_zero_not_unreadable(self) -> None:
-        patched, _ = _cgroup_reads({"memory.max": 16000, "memory.current": 16000})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0), patched:
-            assert effective_available_ram_mib() == 0
-
-    def test_nothing_readable_is_none_not_zero(self) -> None:
-        patched, _ = _cgroup_reads({})
-        with patch("teatree.utils.ram_probe.host_available_ram_mib", return_value=0), patched:
-            assert effective_available_ram_mib() is None
 
 
 class TestLinuxMemAvailableKb:

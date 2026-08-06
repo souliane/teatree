@@ -249,31 +249,6 @@ def cgroup_v2_memory_mib(filename: str) -> "int | None":
     return value // (1024 * 1024) if value >= 0 else None
 
 
-def effective_available_ram_mib() -> "int | None":
-    """RAM available to THIS process, cgroup-aware — the honest headroom (#3992).
-
-    ``/proc/meminfo`` inside a container reports the HOST's memory, not the cgroup's
-    ``mem_limit`` — so a worker capped well below the box reads headroom it may not
-    touch, and a sizing decision made from it OOMs the cgroup while the host looks fine.
-    The minimum of every signal we can read is the honest answer, mirroring
-    :func:`available_cpu_count`: the host figure, and the cgroup's own
-    ``memory.max - memory.current``.
-
-    ``None`` (unreadable) is a DIFFERENT answer from ``0`` (readable, no headroom left)
-    — a caller that sizes work against this must fall back on the first and tighten on
-    the second, so the two are never collapsed.
-    """
-    candidates: list[int] = []
-    host = host_available_ram_mib()
-    if host > 0:
-        candidates.append(host)
-    limit = cgroup_v2_memory_mib("memory.max")
-    current = cgroup_v2_memory_mib("memory.current")
-    if limit is not None and current is not None:
-        candidates.append(max(0, limit - current))
-    return min(candidates) if candidates else None
-
-
 def _cgroup_v2_cpu_quota() -> "int | None":
     """Cores permitted by the cgroup-v2 CPU quota, or ``None`` when unlimited/absent.
 
