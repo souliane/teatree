@@ -11,8 +11,8 @@ per-key change list; the owner-approval gate and the file write live in the mana
 command (:mod:`teatree.core.management.commands.snapshot_settings_defaults`), so this
 module stays in the ``config`` layer and is unit-testable with plain dicts.
 
-Exclusions. SAFETY-posture keys and DARK feature-flags can never move through this path
-— approval or not — because a write to one is an authorization, never a shipped default.
+Exclusions. Every key :func:`pinned_fail_closed_keys` names can never move through this
+path — approval or not — because a write to one is a posture, never a shipped default.
 Owner-workflow / engagement keys (:data:`WORKFLOW_ENGAGEMENT_KEYS`) are declined too: the
 live box has turned them on for its own operation, which is wrong for a fresh install.
 SECRET / PERSONAL rows are never emitted (their empty code default stays in the model);
@@ -23,11 +23,14 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 
 import tomlkit
 
-from teatree.config.feature_flags import dark_flags
+from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
+from teatree.config.feature_flags import FEATURE_FLAGS
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
 from teatree.config.schema import Category, setting_meta
 from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
@@ -53,6 +56,12 @@ WORKFLOW_ENGAGEMENT_KEYS: frozenset[str] = frozenset(
         "active_loop_schedule",
     }
 )
+
+#: Name-shaped safety wires — a gate kill-switch and the opt-in ``require_*`` training
+#: wheels. Mirrors ``teatree.mcp.write_tools._REFUSED_KEY_GLOBS``; the two are held equal
+#: by ``tests/config/test_defaults_snapshot.py``'s superset pin rather than by an import,
+#: because ``config`` sits below ``mcp`` and may not reach up to it.
+_SAFETY_KEY_GLOBS: tuple[str, ...] = ("*_gate_enabled", "require_*")
 
 _ABSENT = "(absent)"
 
@@ -190,8 +199,31 @@ def conservative_keys() -> frozenset[str]:
 
 
 def pinned_fail_closed_keys() -> frozenset[str]:
-    """Safety-posture + dark-flag keys — never movable by ANY path, approval or not."""
-    return SAFETY_POSTURE_KEYS | frozenset(dark_flags())
+    """Keys never movable by ANY path, approval or not — the write is a posture, not a default.
+
+    A key too dangerous for an agent to flip over MCP is too dangerous to bake into every
+    fresh install, so this set is held a SUPERSET of everything
+    ``teatree.mcp.write_tools.refuse_reason`` refuses. It is restated from the config-layer
+    registries rather than imported, because ``config`` sits below ``mcp``.
+
+    The classes: safety-posture keys, every feature flag (its value is code-governed and
+    dies with the code it gates — a SETTLING flag an operator turned off during a soak is
+    no more a shipped default than a DARK one), the pre-Django cold-hook gate wires, the
+    definition registries, every cold-read key (the master ``danger_gate_fail_open``
+    fail-open switch among them), and the name-shaped safety wires.
+    """
+    return (
+        SAFETY_POSTURE_KEYS
+        | frozenset(FEATURE_FLAGS)
+        | frozenset(COLD_HOOK_SETTINGS)
+        | frozenset(REGISTRY_KEYS)
+        | frozenset(COLD_SETTINGS)
+        | frozenset(k for k in ALL_KNOWN_CONFIG_SETTINGS if _matches_safety_glob(k))
+    )
+
+
+def _matches_safety_glob(key: str) -> bool:
+    return any(fnmatch(key, glob) for glob in _SAFETY_KEY_GLOBS)
 
 
 def default_category_keys() -> frozenset[str]:
@@ -200,10 +232,18 @@ def default_category_keys() -> frozenset[str]:
 
 
 def _decline_reason(key: str) -> str:
-    if key in SAFETY_POSTURE_KEYS:
-        return "safety-posture"
-    if key in dark_flags():
-        return "dark-flag"
+    """The narrowest class that pins *key*, so the owner sees WHY the row was refused."""
+    lanes: tuple[tuple[bool, str], ...] = (
+        (key in SAFETY_POSTURE_KEYS, "safety-posture"),
+        (key in FEATURE_FLAGS, "feature-flag"),
+        (key in COLD_HOOK_SETTINGS, "cold-hook-gate"),
+        (key in REGISTRY_KEYS, "definition-registry"),
+        (key in COLD_SETTINGS, "cold-read"),
+        (_matches_safety_glob(key), "safety-gate"),
+    )
+    for matched, reason in lanes:
+        if matched:
+            return reason
     return "workflow-engagement"
 
 

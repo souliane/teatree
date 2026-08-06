@@ -4,6 +4,8 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
 """
 
+import shutil
+import sys
 from pathlib import Path
 
 import typer
@@ -161,6 +163,100 @@ def _check_teatree_mcp_registration() -> bool:
     if teatree_statuses and not any(status.connected for status in teatree_statuses):
         typer.echo(
             f"WARN  MCP server '{TEATREE_MCP_SERVER_NAME}' is registered but reports NOT "
-            "connected in `claude mcp list` — it may not have started for this session yet.",
+            "connected in `claude mcp list` — it may not have started for this session yet. "
+            "The authoritative verdict is the exercising check below, which spawns the "
+            "server and says WHY.",
         )
     return True
+
+
+def _resolve_registered_mcp_command() -> list[str] | None:
+    """The argv the ``teatree`` MCP registration actually launches, or ``None``.
+
+    ``.mcp.json`` declares ``t3 mcp serve`` as a PATH lookup, so this exercises what a
+    client exercises — the console script on PATH, not this process's own entry point,
+    which on a container-wrapped install is a different program.
+    """
+    t3_bin = shutil.which("t3")
+    if t3_bin is None:
+        return None
+    return [t3_bin, "mcp", "serve"]
+
+
+def _check_version_skew(*, repair: bool) -> bool:
+    """FAIL on declared-versus-installed drift in the env that runs ``t3`` (#4049).
+
+    True when there is nothing to report — including when there is no editable source
+    tree to measure against, which is an absent question rather than a clean answer.
+    """
+    from teatree.cli.doctor.skew_repair import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        repair_version_skew,
+        report_version_skew,
+    )
+    from teatree.mcp.liveness import skew_finding  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.dep_drift import editable_source_path  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    source = editable_source_path()
+    if source is None:
+        return True
+    pyproject = source / "pyproject.toml"
+    if not pyproject.is_file():
+        return True
+    skews = find_version_skew(pyproject)
+    if not skews:
+        return True
+    typer.echo(f"FAIL  {skew_finding([skew.summary for skew in skews], source=pyproject)}")
+    if repair:
+        return repair_version_skew(source, skews)
+    report_version_skew(skews)
+    return False
+
+
+def _check_teatree_mcp_liveness(*, repair: bool = False) -> bool:
+    """EXERCISE teatree's own MCP server — hard FAIL when it is not usable (#4049).
+
+    The counterpart to :func:`_check_teatree_mcp_registration`, which is structural and
+    a WARN by design. This one spawns the registered ``t3 mcp serve``, speaks a real
+    ``initialize`` frame to it over stdio, and keeps the stderr ``claude mcp list``
+    throws away — so an enabled-but-dead server is a FAIL that names its cause and the
+    exact remedy instead of one advisory line among twenty.
+
+    Declared-versus-installed skew is checked first, because that cause kills the server
+    before it can report anything about itself. It is REPAIRED only under ``repair`` —
+    the flag every other mutating check threads — because a reinstall replaces the
+    console script the calling session is running under, which a read-only
+    ``t3 doctor check`` must never do; without it the skew is reported with the exact
+    command that clears it.
+
+    Degrades to a WARN only when the check cannot RUN at all (no ``t3`` on PATH, an
+    unresolvable source tree) — never for a server that ran and failed.
+    """
+    from teatree.mcp.liveness import exercise_mcp_server  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    ok = _check_version_skew(repair=repair)
+
+    argv = _resolve_registered_mcp_command()
+    if argv is None:
+        typer.echo("WARN  `t3` is not on PATH, so the registered `t3 mcp serve` could not be exercised.")
+        return ok
+
+    try:
+        outcome = exercise_mcp_server(argv)
+    except OSError as exc:
+        typer.echo(f"WARN  Could not spawn `{' '.join(argv)}` to exercise the MCP server: {exc}")
+        return ok
+
+    if outcome.slow:
+        typer.echo(f"WARN  {outcome.finding}")
+        return ok
+    if outcome.ok:
+        typer.echo(f"OK    {outcome.finding}")
+        return ok
+    typer.echo(f"FAIL  {outcome.finding}")
+    if outcome.stderr_excerpt:
+        typer.echo("      Captured stderr (`claude mcp list` never shows this):")
+        for line in outcome.stderr_excerpt.splitlines():
+            typer.echo(f"        {line}")
+    typer.echo(f"      Reproduce: `{' '.join(argv)}` — this ran as {sys.executable}.")
+    return False

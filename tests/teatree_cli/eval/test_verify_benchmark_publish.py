@@ -47,7 +47,7 @@ class TestVerifyBenchmarkPublish:
     def test_metered_shards_exit_zero(self, tmp_path: Path) -> None:
         _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)
 
-        result = runner.invoke(app, ["eval", "verify-benchmark-publish", str(tmp_path)])
+        result = runner.invoke(app, ["eval", "verify-benchmark-publish", str(tmp_path), "--expected-shards", "1"])
 
         assert result.exit_code == 0, result.output
         assert "publishable" in result.output
@@ -56,7 +56,7 @@ class TestVerifyBenchmarkPublish:
         _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)
         _write_shard(tmp_path, "under_load-3-5", cost_usd=0.0)
 
-        result = runner.invoke(app, ["eval", "verify-benchmark-publish", str(tmp_path)])
+        result = runner.invoke(app, ["eval", "verify-benchmark-publish", str(tmp_path), "--expected-shards", "2"])
 
         assert result.exit_code == 1
         assert "under_load-3-5" in result.output
@@ -69,12 +69,22 @@ class TestVerifyBenchmarkPublishCallable:
     def test_returns_on_a_metered_dashboard(self, tmp_path: Path) -> None:
         _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)
 
-        verify_benchmark_publish(tmp_path)
+        verify_benchmark_publish(tmp_path, expected_shards=1)
 
     def test_raises_system_exit_one_on_an_unmetered_shard(self, tmp_path: Path) -> None:
         _write_shard(tmp_path, "under_load-3-5", cost_usd=0.0)
 
         with pytest.raises(SystemExit) as excinfo:
-            verify_benchmark_publish(tmp_path)
+            verify_benchmark_publish(tmp_path, expected_shards=1)
+
+        assert excinfo.value.code == 1
+
+    def test_a_missing_shard_refuses_the_publish(self, tmp_path: Path) -> None:
+        # The `if: always()` publish job runs after a leg timed out and uploaded
+        # nothing; what survives is metered and clean, and only part of the week.
+        _write_shard(tmp_path, "clean_room-1-16", cost_usd=0.31)
+
+        with pytest.raises(SystemExit) as excinfo:
+            verify_benchmark_publish(tmp_path, expected_shards=8)
 
         assert excinfo.value.code == 1

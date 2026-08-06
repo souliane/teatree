@@ -29,6 +29,7 @@ import pytest
 
 import hooks.scripts.deny_circuit_breaker as dcb
 import hooks.scripts.hook_router as router
+from teatree.hooks import banned_terms_scanner
 
 _SCRIPTS_DIR = Path(router.__file__).resolve().parent
 
@@ -68,6 +69,11 @@ class TestLeakGateNeverGranted:
     The banned-terms / quote-scanner leak path is fail-CLOSED always. Even with a
     ``[fp-confirmed:]`` token on the call, the breaker keeps denying it — while a
     non-leak deny carrying the same token is suppressed.
+
+    The reason comes from the real formatter, never a literal: a hardcoded string
+    proves the matcher matches what it was handed and nothing about the messages the
+    system emits (#4218). The whole family is enumerated in
+    ``test_deny_circuit_breaker_leak_family.py``.
     """
 
     def _ctx(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str) -> None:
@@ -83,8 +89,7 @@ class TestLeakGateNeverGranted:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         self._ctx(monkeypatch, tmp_path, "glab mr note 1 -m body [fp-confirmed: not a leak]")
-        reason = "BLOCKED: banned-terms posting gate (#1415). The body carries the banned term 'acme'."
-        decision = dcb.apply_deny_circuit_breaker(reason)
+        decision = dcb.apply_deny_circuit_breaker(banned_terms_scanner.format_block_message("acme"))
         assert decision.allow is False, "a leak deny is never grantable, token or not"
 
     def test_non_leak_deny_with_fp_confirmed_token_is_suppressed(

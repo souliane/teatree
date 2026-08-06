@@ -80,11 +80,20 @@ def cgroup_headroom_mib() -> int | None:
     ``memory.current`` sitting near ``memory.max`` as pure page cache, and every reader
     of this number concludes the box is full.
     """
+    return _cgroup_cap_and_headroom_mib()[1]
+
+
+def _cgroup_cap_and_headroom_mib() -> tuple[int | None, int | None]:
+    """This cgroup's ``memory.max`` and its remaining headroom, both in whole MiB.
+
+    Read together because :func:`read_ram_headroom` needs both, and a second read of
+    ``memory.max`` would let the cap and the headroom describe different instants.
+    """
     limit_mib = cgroup_v2_memory_mib("memory.max")
     current_mib = cgroup_v2_memory_mib("memory.current")
     if limit_mib is None or current_mib is None:
-        return None
-    return max(0, limit_mib - max(0, current_mib - cgroup_v2_reclaimable_mib()))
+        return limit_mib, None
+    return limit_mib, max(0, limit_mib - max(0, current_mib - cgroup_v2_reclaimable_mib()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,17 +129,14 @@ def read_ram_headroom() -> RamHeadroom:
     ``None`` (nothing readable) stays a different answer from ``0`` (readable, nothing
     left): a caller falls back on the first and tightens on the second.
     """
+    limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib()
     candidates: list[int] = []
     host = host_available_ram_mib()
     if host > 0:
         candidates.append(host)
-    headroom = cgroup_headroom_mib()
-    if headroom is not None:
-        candidates.append(headroom)
-    return RamHeadroom(
-        available_mib=min(candidates) if candidates else None,
-        cgroup_limit_mib=cgroup_v2_memory_mib("memory.max"),
-    )
+    if headroom_mib is not None:
+        candidates.append(headroom_mib)
+    return RamHeadroom(available_mib=min(candidates) if candidates else None, cgroup_limit_mib=limit_mib)
 
 
 __all__ = [
