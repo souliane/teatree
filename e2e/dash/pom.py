@@ -89,8 +89,13 @@ class BoardPage:
     def card_in_column(self, state: str, ticket_id: int) -> Locator:
         return self.column(state).locator(f'.card[data-ticket="{ticket_id}"]')
 
+    def enqueue_buttons_on(self, ticket_id: int) -> Locator:
+        return self.card_by_id(ticket_id).locator('form[action*="/enqueue/"] button')
+
     def open_drawer_for(self, ticket_id: int) -> "DrawerPanel":
-        self.card_by_id(ticket_id).click()
+        # The card's description, not the card: a card carries enqueue buttons, and a
+        # centre-point click on the article itself can land on one of them.
+        self.card_by_id(ticket_id).locator(".card-desc").click()
         return DrawerPanel(self.page)
 
 
@@ -109,6 +114,11 @@ class DrawerPanel:
     @property
     def transition_buttons(self) -> Locator:
         return self.page.locator('form[action*="/transition/"] button')
+
+    @property
+    def enqueue_buttons(self) -> Locator:
+        # Scoped to the panel: every board card behind it carries the same form.
+        return self.page.locator('#drawer form[action*="/enqueue/"] button')
 
     @property
     def mermaid_svg(self) -> Locator:

@@ -20,6 +20,23 @@
     <span class="chip">{{ card.kind }}</span>
     {% for pr in card.pr_chips %}<a class="chip pr {{ pr.state }}" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.label }}</a>{% endfor %}
   </div>
+  {% comment %}
+  Prioritise the work from the row it is already on. The card is itself a click-target
+  that opens the drawer, so each button stops the click propagating — otherwise one
+  press would both enqueue and re-open. Queues work only: no card control records an
+  outcome. One form per button — the vendored htmx drops the clicked submitter.
+  {% endcomment %}
+  <div class="card-actions">
+    {% for button in card.enqueue_buttons %}
+      <form method="post" action="{% url 'dash:task_action' card.ticket_id %}"
+        hx-post="{% url 'dash:task_action' card.ticket_id %}" hx-target="#drawer" hx-swap="innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="phase" value="{{ button.phase }}">
+        <button class="dash-btn card-btn" type="submit" {% if not button.enabled %}disabled title="{{ button.reason }}"{% endif %}
+          onclick="event.stopPropagation(); return confirm('Enqueue a {{ button.phase|escapejs }} task for #{{ card.number|escapejs }}?')">{{ button.label }}</button>
+      </form>
+    {% endfor %}
+  </div>
   {% if card.active_phase %}<div class="card-dwell">phase <span class="mono">{{ card.active_phase }}</span>{% if card.claimed_by %} · {{ card.claimed_by }}{% endif %}</div>{% endif %}
   {% if card.dwell %}<div class="card-dwell">in column <span class="mono">{{ card.dwell }}</span></div>{% endif %}
   {% if card.last_error %}

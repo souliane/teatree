@@ -25,6 +25,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import _humanize_duration
 from teatree.dash.issue_link import issue_link
+from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
 
 State = Ticket.State
 
@@ -120,6 +121,7 @@ class KanbanCard:
     failure_kind_label: str = ""
     failure_environmental: bool = False
     pr_chips: tuple[PrChip, ...] = ()
+    enqueue_buttons: tuple[EnqueueButton, ...] = ()
 
 
 #: What each lifecycle state MEANS, surfaced as the column's tooltip. The labels
@@ -205,6 +207,7 @@ class _CardContext:
     failure_kind: dict[int, str] = field(default_factory=dict)
     latest_transition_at: dict[int, datetime] = field(default_factory=dict)
     pr_chips: dict[int, tuple[PrChip, ...]] = field(default_factory=dict)
+    queued_phases: dict[int, dict[str, int]] = field(default_factory=dict)
 
 
 def build_kanban_columns(filters: BoardFilters | None = None) -> KanbanBoard:
@@ -269,6 +272,7 @@ def _card_context(ticket_ids: list[int]) -> _CardContext:
         failure_kind={ticket_id: kind for ticket_id, (_, kind) in failures.items()},
         latest_transition_at=_latest_transition_at(ticket_ids),
         pr_chips=_pr_chips_by_ticket(ticket_ids),
+        queued_phases=pending_phase_tasks_by_ticket(ticket_ids),
     )
 
 
@@ -378,6 +382,7 @@ def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
         failure_environmental=is_environmental(kind),
         dwell=_dwell(context.latest_transition_at.get(ticket.pk)),
         pr_chips=context.pr_chips.get(ticket.pk, ()),
+        enqueue_buttons=board_enqueue_buttons(context.queued_phases.get(ticket.pk, {})),
     )
 
 

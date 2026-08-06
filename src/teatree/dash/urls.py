@@ -44,6 +44,7 @@ from teatree.dash.views import (
     settings_readouts,
     settings_restore,
     settings_set,
+    task_action,
     ticket_drawer,
     ticket_transition,
     transcript,
@@ -92,6 +93,9 @@ urlpatterns = [
     path("settings/import/", settings_import, name="settings_import"),
     path("tickets/<int:ticket_id>/", ticket_drawer, name="ticket_drawer"),
     path("tickets/<int:ticket_id>/transition/", ticket_transition, name="ticket_transition"),
+    # The phase rides in the POST body, not the path: the button set is a drawer
+    # concern, and the endpoint validates it against the allowlist either way.
+    path("tickets/<int:ticket_id>/enqueue/", task_action, name="task_action"),
     path("transcript/<str:session_id>/", transcript, name="transcript"),
     path("debug/session/", debug_session, name="debug_session"),
     path("debug/command/", command_run, name="command_run"),
