@@ -378,6 +378,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             merge_ticket_pr(clear=object(), executing_loop_identity="merge-loop")
 
     def test_missing_live_head_sha_is_refused(self) -> None:
+        """An unreadable head is refused as unreadable, never reported as moved (#4239)."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
 
@@ -388,9 +389,11 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_no_head),
-            pytest.raises(MergePreconditionError, match=r"live=\(unresolved\)"),
+            pytest.raises(MergePreconditionError, match="could not read the live head") as exc,
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert "PR head moved" not in str(exc.value)
 
     def test_generic_merge_failure_is_refused_not_head_moved(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
