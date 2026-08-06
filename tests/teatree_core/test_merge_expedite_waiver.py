@@ -29,6 +29,7 @@ from teatree.core.models import (
     ReviewVerdictError,
     Ticket,
 )
+from tests._forge_stub import changed_files_stdout
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -83,7 +84,7 @@ class _GhStub:
             return (0, self.checks, "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "expedited0merged"}', "")
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
 
 def _pending_stub() -> _GhStub:

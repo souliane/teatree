@@ -82,7 +82,9 @@ class _GitLabApiStub:
 
     def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
         self.calls.append(endpoint)
-        return []
+        # A real open MR always carries at least one diff, so an empty list is a failed
+        # read the substrate gate holds on — scripted here rather than left blank.
+        return [{"new_path": "README.md"}] if "/diffs" in endpoint else []
 
     def put_response(
         self,

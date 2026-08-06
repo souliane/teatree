@@ -423,6 +423,25 @@
       ]
     },
     {
+      "help": "Switch standing-directive slots off (disable) or back on (enable) (#4166).",
+      "name": "loop_directive_set",
+      "subcommands": [
+        {
+          "help": "Switch each named slot off by writing an empty override body",
+          "name": "disable"
+        },
+        {
+          "help": "Switch each named slot back on, restoring the owner's own text where there is one",
+          "name": "enable"
+        }
+      ]
+    },
+    {
+      "help": "Print the standing directives with their resolved cadence, scope, cost and text (#4166).",
+      "name": "loop_directives",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "loop_dispatch",
       "subcommands": [
@@ -696,7 +715,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.\n\nGated on ``_called_from_command_line`` \u2014 the flag Django's ``run_from_argv``\nsets and ``call_command`` does not \u2014 because the two callers need opposite\nthings from one refusal: a shell needs a failing status, an in-process\nconsumer needs the dict.",
       "name": "pr",
       "subcommands": [
         {

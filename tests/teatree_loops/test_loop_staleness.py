@@ -388,6 +388,24 @@ class TestLoopHealth(_LoopTableCase):
         assert "idle by configuration: review" in rendered
         assert "FAIL" not in rendered
 
+    def test_a_force_masked_loop_does_not_fail_the_health_verdict(self) -> None:
+        # The colleague gate above is one arm of _is_suppressed; this is the other. An
+        # operator who ran `t3 loop override review off` must not be told the factory is
+        # broken — the FORCED plane is as deliberate as a mode mask, and it is the only
+        # arm no health-verdict test exercised.
+        _loop("tickets", ran_ago=dt.timedelta(seconds=30))
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        LoopState.objects.override("review", on=False)
+        health = self._health(
+            admitted=["tickets"],
+            mode=_mode(),
+            registry=(_mini("tickets"), _mini("review")),
+        )
+        rendered = "\n".join(health.lines())
+        assert health.ok
+        assert [loop.name for loop in health.stale if loop.suppressed] == ["review"]
+        assert "FAIL" not in rendered
+
     def test_unexplained_stale_loop_fails_even_beside_healthy_ones(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(seconds=30))
         _loop("dispatch", ran_ago=dt.timedelta(hours=7))

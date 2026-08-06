@@ -116,6 +116,40 @@ def _check_intake_budget_deadlock() -> bool:
     return not jammed
 
 
+def _check_starved_intake_candidates() -> bool:
+    """WARN on each issue intake keeps judging admissible and never has the budget to claim.
+
+    The complement of :func:`_check_intake_budget_deadlock`, which fires only when the
+    held slots are going nowhere. A budget that turns over correctly and hands every
+    freed slot to a newer issue is a healthy-looking factory with an issue in it that
+    never starts — three of them sat a full day with every surface green (#4238).
+
+    Reads the ledger the intake scanner syncs on each discovery pass, so it costs no
+    forge call and names an issue only while it is STILL waiting. Advisory: age ordering
+    is what stops the starvation, and a long wait behind a full budget is legitimate —
+    the operator needs to see it, not have the doctor go red over it. Crash-proof: any
+    error degrades to OK.
+    """
+    from teatree.core.models import UnclaimedIntakeCandidate  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        starved = list(UnclaimedIntakeCandidate.objects.starved())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Starved-intake check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not starved:
+        return True
+    for row in starved:
+        typer.echo(f"WARN  Intake starvation: {row.report()}")
+    typer.echo(
+        f"WARN  {len(starved)} issue(s) have been admissible and unclaimed past the threshold. "
+        "Intake claims oldest-filed first, so these are behind a budget that is not freeing "
+        "slots fast enough — raise `issue_implementer_max_concurrent` or clear the in-flight "
+        "work (#4238).",
+    )
+    return False
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 
@@ -328,3 +362,32 @@ def _check_aged_sweep_skips() -> bool:
             f"({row.age_label()}) — reason `{row.reason}`. {row.url}",
         )
     return False
+
+
+def _check_loop_schedule_liveness() -> bool:
+    """Hard-FAIL when an enabled, timer-chained loop is carrying no live timer (#4140).
+
+    The reading no other surface has: ``t3 loop list`` reports a manually-poked loop
+    as scheduled, because a manual ``t3 loops tick`` bumps ``Loop.last_run_at``
+    without restoring the chain. During the 61-minute ``issue_implementer`` outage
+    every cadence surface read healthy while no successor existed at all.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens
+    on the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.loops.schedule_liveness import unscheduled_loops  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    try:
+        stalled = unscheduled_loops(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Loop schedule-liveness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for loop in stalled:
+        typer.echo(
+            f"FAIL  Loop `{loop.name}` is enabled but nothing is scheduled to fire it — {loop.reason}. "
+            "The periodic reconciler re-heads the chain on its next pass; if this persists, "
+            "restart the worker with `t3 worker ensure` (#4140).",
+        )
+    return not stalled

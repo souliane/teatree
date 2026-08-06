@@ -1634,11 +1634,11 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ ci-status                 Resolve one eval-ci-heal run's verdict (and, on    │
 │                           failure, its triaged reds).                        │
 │ green-proof               Assert the merged eval-heal JSON proves a          │
-│                           full-suite green (executed, 0 reds).               │
+│                           full-suite green (whole catalog, 0 reds).          │
 │ merged-prs-since          Exit 0 if any PR merged in the last --days, else   │
 │                           --skip-code (non-list payload exits 2).            │
-│ verify-benchmark-publish  Exit 1 when any collected benchmark shard is not   │
-│                           backed by real metered spend.                      │
+│ verify-benchmark-publish  Exit 1 when the collected dashboard is short a     │
+│                           shard or not backed by metered spend.              │
 │ merge-summaries           Merge per-shard summary markdown into one          │
 │                           dashboard (to --out or stdout).                    │
 │ merge-summary-json        Merge per-shard eval-heal summary JSONs into one   │
@@ -2040,7 +2040,8 @@ Usage: t3 eval ci-status [OPTIONS]
 ```
 Usage: t3 eval green-proof [OPTIONS] SUMMARY_JSON
 
- Assert the merged eval-heal JSON proves a full-suite green (executed, 0 reds).
+ Assert the merged eval-heal JSON proves a full-suite green (whole catalog, 0
+ reds).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    summary_json      PATH  The merged eval-heal-<sha> §2.4 summary JSON to │
@@ -2078,7 +2079,8 @@ Usage: t3 eval merged-prs-since [OPTIONS]
 ```
 Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 
- Exit 1 when any collected benchmark shard is not backed by real metered spend.
+ Exit 1 when the collected dashboard is short a shard or not backed by metered
+ spend.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    dashboard_dir      PATH  Directory holding the collected                │
@@ -2086,7 +2088,11 @@ Usage: t3 eval verify-benchmark-publish [OPTIONS] DASHBOARD_DIR
 │                               [required]                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ *  --expected-shards        INTEGER  Matrix leg count the run planned; fewer │
+│                                      collected artifacts refuses the         │
+│                                      publish.                                │
+│                                      [required]                              │
+│    --help                            Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3104,9 +3110,10 @@ Usage: t3 doctor check [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repair                   Allow doctor to APPLY fixes that mutate state:    │
 │                            re-point a relocated/hijacked t3 editable install │
-│                            (#3231) AND clear a stale entrypoint-seeded       │
-│                            provision_max_concurrency pin (#3434). A plain    │
-│                            run never mutates.                                │
+│                            (#3231), clear a stale entrypoint-seeded          │
+│                            provision_max_concurrency pin (#3434), and        │
+│                            re-register the t3 Claude plugin. A plain run     │
+│                            never mutates.                                    │
 │ --slack-roundtrip          Deep Slack round-trip: additionally run a LIVE    │
 │                            auth.test per Slack backend (#3411).              │
 │ --json                     Emit findings as JSON for the watchdog container. │
@@ -4170,6 +4177,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  then drains a bounded batch of the fresh remainder, and     │
 │                  stands down while a live worker holds either worker         │
 │                  singleton.                                                  │
+│ directives       Read the standing directives, or switch a slot off and back │
+│                  on (#4166).                                                 │
 │ preset           Named loop-state presets — mode switching (#3159).          │
 │ schedule         Weekly preset schedules — the L2 calendar (#3159).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4771,6 +4780,77 @@ Usage: t3 loop drain-queue start [OPTIONS]
  (seconds; floor 10).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop directives`
+
+```
+Usage: t3 loop directives [OPTIONS] COMMAND [ARGS]...
+
+ Read the standing directives, or switch a slot off and back on (#4166).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show     Print the standing directives, their scope, their delivery cost and │
+│          the turn budget.                                                    │
+│ disable  Switch each named slot off by writing an empty, versioned override  │
+│          body.                                                               │
+│ enable   Switch each named slot back on, restoring the owner's own text      │
+│          where there is one.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop directives show`
+
+```
+Usage: t3 loop directives show [OPTIONS]
+
+ Print the standing directives, their scope, their delivery cost and the turn
+ budget.
+
+ Read-only. The ``--json`` payload — ``{slot_id, cadence_seconds, text, scope,
+ wakes_session}`` per directive — is the harness-neutral contract: a non-Claude
+ harness reads it and writes only its own delivery adapter.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the standing directives as JSON.                        │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop directives disable`
+
+```
+Usage: t3 loop directives disable [OPTIONS] [SLOT_IDS]...
+
+ Switch each named slot off by writing an empty, versioned override body.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   slot_ids      [SLOT_IDS]...  Slot ids to switch off.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all           Switch every slot off.                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop directives enable`
+
+```
+Usage: t3 loop directives enable [OPTIONS] [SLOT_IDS]...
+
+ Switch each named slot back on, restoring the owner's own text where there is
+ one.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   slot_ids      [SLOT_IDS]...  Slot ids to switch back on.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all           Switch every slot back on.                                   │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -10692,13 +10772,11 @@ Usage: t3 teatree ticket e2e-bypass [OPTIONS] TICKET_ID
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --approver        TEXT  Human user id authorising the bypass; a           │
-│                            maker/coding-agent/loop id is refused (#1967).    │
-│                            [required]                                        │
-│ *  --head-sha        TEXT  Full 40-char hex SHA of the reviewed tree the     │
-│                            bypass authorises.                                │
-│                            [required]                                        │
-│    --help                  Show this message and exit.                       │
+│ --approver        TEXT  Human user id authorising the bypass; a              │
+│                         maker/coding-agent/loop id is refused (#1967).       │
+│ --head-sha        TEXT  Full 40-char hex SHA of the reviewed tree the bypass │
+│                         authorises.                                          │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10741,11 +10819,10 @@ Usage: t3 teatree ticket dod-override [OPTIONS] TICKET_ID
 │ *    ticket_id      INTEGER  [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --reason        TEXT  Why this UI-visible ticket may ship without a       │
-│                          local-stack E2E (#88).                              │
-│                          [required]                                          │
-│    --by            TEXT  Who is recording the override (audit trail).        │
-│    --help                Show this message and exit.                         │
+│ --reason        TEXT  Why this UI-visible ticket may ship without a          │
+│                       local-stack E2E (#88).                                 │
+│ --by            TEXT  Who is recording the override (audit trail).           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12205,17 +12282,14 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --idempotency-key        TEXT  Required dedupe key (the helper enforces   │
-│                                   it).                                       │
-│                                   [required]                                 │
-│    --user-id                TEXT  Slack user id to DM (defaults to the       │
-│                                   configured user).                          │
-│    --kind                   TEXT  Notification kind: info | answer |         │
-│                                   question.                                  │
-│                                   [default: info]                            │
-│    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
-│                                   (per-overlay bot routing).                 │
-│    --help                         Show this message and exit.                │
+│ --idempotency-key        TEXT  Required dedupe key (the helper enforces it). │
+│ --user-id                TEXT  Slack user id to DM (defaults to the          │
+│                                configured user).                             │
+│ --kind                   TEXT  Notification kind: info | answer | question.  │
+│                                [default: info]                               │
+│ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
+│                                bot routing).                                 │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12228,17 +12302,15 @@ Usage: t3 teatree notify post [OPTIONS]
  (exit 0 on ``ok``).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel          TEXT  Destination: the user's own DM (→bot) or a       │
-│                             colleague/channel (→xoxp).                       │
-│                             [required]                                       │
-│ *  --text             TEXT  Slack mrkdwn body. Use ``-`` to read the body    │
-│                             from stdin.                                      │
-│                             [required]                                       │
-│    --thread-ts        TEXT  Thread ``ts`` to reply into (omit to post a new  │
-│                             top-level message).                              │
-│    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
-│                             credentials).                                    │
-│    --help                   Show this message and exit.                      │
+│ --channel          TEXT  Destination: the user's own DM (→bot) or a          │
+│                          colleague/channel (→xoxp).                          │
+│ --text             TEXT  Slack mrkdwn body. Use ``-`` to read the body from  │
+│                          stdin.                                              │
+│ --thread-ts        TEXT  Thread ``ts`` to reply into (omit to post a new     │
+│                          top-level message).                                 │
+│ --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay       │
+│                          credentials).                                       │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12251,16 +12323,13 @@ Usage: t3 teatree notify react [OPTIONS]
  colleague/channel→xoxp (exit 0 on ``ok``).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel        TEXT  Destination the message is in: self-DM (bot) or    │
-│                           colleague/channel (xoxp).                          │
-│                           [required]                                         │
-│ *  --ts             TEXT  Timestamp ``ts`` of the message to react to.       │
-│                           [required]                                         │
-│ *  --emoji          TEXT  Emoji name (with or without surrounding colons).   │
-│                           [required]                                         │
-│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
-│                           credentials).                                      │
-│    --help                 Show this message and exit.                        │
+│ --channel        TEXT  Destination the message is in: self-DM (bot) or       │
+│                        colleague/channel (xoxp).                             │
+│ --ts             TEXT  Timestamp ``ts`` of the message to react to.          │
+│ --emoji          TEXT  Emoji name (with or without surrounding colons).      │
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay         │
+│                        credentials).                                         │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

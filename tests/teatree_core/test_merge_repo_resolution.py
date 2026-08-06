@@ -29,6 +29,7 @@ from teatree.core.merge import (
     resolve_pr_repo_slug,
 )
 from teatree.core.models import MergeClear, Ticket
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -115,7 +116,7 @@ class TestMergeUsesResolvedRepo(TestCase):
                 return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
@@ -215,7 +216,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
                 return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         return _gh
 

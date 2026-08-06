@@ -29,7 +29,9 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 
 INSTRUCTIONS = (
-    "- slack_mentions(since): recent @-mentions of the user.\n"
+    "- slack_mentions(since): queued @-mentions. Errors (never returns an empty list) when "
+    "this process holds no Socket-Mode queue — the receiver writes mentions to a JSONL the "
+    "loop's scanner drains, so `[]` here would mean 'I cannot see mentions', not 'none'.\n"
     "- slack_channel_history(channel, limit): recent messages in a channel. Errors "
     "(never returns an empty list) when the bot cannot read the channel — a bot token "
     "reads only channels it was invited to, so `[]` always means genuinely empty.\n"
@@ -50,8 +52,33 @@ def _client() -> MessagingBackend:
     )
 
 
+class MentionQueueUnreadableError(RuntimeError):
+    """``slack_mentions`` found no queue to read — never "the user was not mentioned"."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Cannot read mentions: this process holds no Socket-Mode mention queue. The receiver "
+            "(`t3 slack listen`) writes inbound mentions to slack-events.jsonl, which the loop's "
+            "SlackMentionsScanner drains in its own process — an MCP server started separately "
+            "sees an empty in-memory queue whether or not the user was mentioned. Read the "
+            "action_needed statusline zone, or the drained mention signals, instead."
+        )
+
+
 async def _slack_mentions(*, since: str = "") -> list[dict[str, Any]]:
-    return await sync_to_async(lambda: _client().fetch_mentions(since=since), thread_sensitive=True)()
+    """Queued Socket-Mode mentions — refuses loudly rather than returning a misleading ``[]``.
+
+    An agent asking "was I pinged?" cannot act on a bare empty list: "nobody
+    mentioned you" and "this process cannot see mentions at all" are opposite
+    facts, and only the second is ever true here — the queue is filled in the
+    receiver's process, not the MCP server's. Same hardening as the sibling
+    ``slack_channel_history``, whose silent-empty form reported the first while
+    meaning the second.
+    """
+    mentions = await sync_to_async(lambda: _client().fetch_mentions(since=since), thread_sensitive=True)()
+    if not mentions:
+        raise MentionQueueUnreadableError
+    return mentions
 
 
 async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[str, Any]]:

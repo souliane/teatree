@@ -14,8 +14,16 @@ from pathlib import Path
 import pytest
 
 from teatree.cli import mcp_owning_domain
-from teatree.cli.mcp_owning_domain import DELEGATED_ENV_VAR, delegate_to_owning_domain, owning_domain_wrapper
+from teatree.cli.mcp_owning_domain import (
+    DELEGATED_ENV_VAR,
+    claim_is_observable,
+    declare_cwd_insensitive_invocation,
+    delegate_to_owning_domain,
+    owning_domain_wrapper,
+)
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.db.boundary import ControlDbBoundary
+from teatree.paths import DEFAULT_CONTROL_DB_DIR
 
 _UNRESOLVABLE = RuntimeError("no main clone on this machine")
 
@@ -61,11 +69,63 @@ class TestRoutingToTheOwningDomain:
 
         assert replaced == [(str(clone / "deploy" / "t3"), [str(clone / "deploy" / "t3"), "mcp", "serve"])]
 
+    def test_delegation_declares_a_container_side_cwd(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without it the wrapper REFUSES: a client's cwd is routinely a checkout it cannot see.
+
+        Trading a server that cannot open the DB for one the wrapper declines to start
+        is no fix at all — both present to the client as a bare closed connection.
+        """
+        monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
+        monkeypatch.setattr(os, "execv", lambda path, argv: None)
+
+        delegate_to_owning_domain()
+
+        assert os.environ[INVOCATION_CWD_ENV] == str(DEFAULT_CONTROL_DB_DIR)
+
+    def test_an_operator_declared_cwd_is_left_alone(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(INVOCATION_CWD_ENV, "/container/side/declared")
+        monkeypatch.setattr(os, "execv", lambda path, argv: None)
+
+        delegate_to_owning_domain()
+
+        assert os.environ[INVOCATION_CWD_ENV] == "/container/side/declared"
+
     def test_the_delegation_marker_stops_a_second_hop(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Insurance against an exec loop if container detection ever failed inside one."""
         monkeypatch.setenv(DELEGATED_ENV_VAR, "1")
 
         assert owning_domain_wrapper() is None
+
+
+class TestAnInvisibleClaimIsNotAnAbsentClaim:
+    """#4041 class: "I cannot see whether a container claimed it" must not read as "unclaimed".
+
+    On the host the canonical control-DB directory does not exist AT ALL — it is a
+    container-only mount by design — so the claim file cannot be stat'd and
+    ``read_write_allowed`` answers ``True`` for a database the container owns outright.
+    The server then served natively and failed every ORM-backed call on ``unable to
+    open database file``, which the client reports only as ``Connection closed``.
+    """
+
+    @pytest.fixture
+    def unreachable_control_db(self, clone: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Point the canonical DB at a control-db dir that does not exist on this side."""
+        directory = tmp_path / "container-only" / "control-db"
+        monkeypatch.setattr("teatree.db.boundary.control_db_dir", lambda _env: directory)
+        monkeypatch.setattr(mcp_owning_domain, "CANONICAL_DB", directory / "db.sqlite3")
+        return directory
+
+    def test_an_invisible_claim_is_not_observable(self, unreachable_control_db: Path) -> None:
+        assert claim_is_observable(unreachable_control_db / "db.sqlite3") is False
+
+    def test_an_invisible_claim_delegates_rather_than_serving_here(
+        self, clone: Path, unreachable_control_db: Path
+    ) -> None:
+        assert owning_domain_wrapper() == clone / "deploy" / "t3"
+
+    def test_a_visible_unclaimed_database_is_still_observable(self, clone: Path) -> None:
+        """The fix must not turn every install into a delegating one."""
+        assert claim_is_observable(mcp_owning_domain.CANONICAL_DB) is True
 
 
 class TestServingHereIsTheDefault:
@@ -104,3 +164,19 @@ class TestServingHereIsTheDefault:
         monkeypatch.setattr(os, "execv", lambda path, argv: pytest.fail(f"delegated to {path} {argv}"))
 
         delegate_to_owning_domain()
+
+
+class TestTheDeclaredInvocationCwd:
+    def test_it_names_the_container_side_control_db_directory(self) -> None:
+        env: dict[str, str] = {}
+
+        declare_cwd_insensitive_invocation(env)
+
+        assert env[INVOCATION_CWD_ENV] == str(DEFAULT_CONTROL_DB_DIR)
+
+    def test_it_never_overwrites_an_existing_declaration(self) -> None:
+        env = {INVOCATION_CWD_ENV: "/somewhere/else"}
+
+        declare_cwd_insensitive_invocation(env)
+
+        assert env[INVOCATION_CWD_ENV] == "/somewhere/else"

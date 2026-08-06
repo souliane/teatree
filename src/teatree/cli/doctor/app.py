@@ -49,13 +49,16 @@ from teatree.cli.doctor.checks_loop import (
     _check_intake_budget_deadlock,
     _check_loop_classification_drift,
     _check_loop_presets,
+    _check_loop_schedule_liveness,
     _check_marker_jam,
     _check_shipped_seed_inertness,
+    _check_starved_intake_candidates,
 )
 from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
     _check_connector_manifest,
     _check_mcp_connectivity,
+    _check_teatree_mcp_liveness,
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
@@ -158,6 +161,7 @@ __all__ = (
     "_check_legacy_overlay_alias",
     "_check_loop_classification_drift",
     "_check_loop_presets",
+    "_check_loop_schedule_liveness",
     "_check_marker_jam",
     "_check_mcp_connectivity",
     "_check_mode_override_staleness",
@@ -175,7 +179,9 @@ __all__ = (
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_starved_intake_candidates",
     "_check_t3_shim_receipt",
+    "_check_teatree_mcp_liveness",
     "_check_teatree_mcp_registration",
     "_check_tmp_tmpfs_headroom",
     "_check_ttyd_for_dashboard",
@@ -216,8 +222,9 @@ def check(
         "--repair",
         help=(
             "Allow doctor to APPLY fixes that mutate state: re-point a relocated/hijacked "
-            "t3 editable install (#3231) AND clear a stale entrypoint-seeded "
-            "provision_max_concurrency pin (#3434). A plain run never mutates."
+            "t3 editable install (#3231), clear a stale entrypoint-seeded "
+            "provision_max_concurrency pin (#3434), and re-register the t3 Claude plugin. "
+            "A plain run never mutates."
         ),
     ),
     slack_roundtrip: bool = typer.Option(
@@ -304,23 +311,30 @@ def _run_loop_intent_gates() -> bool:
     loop/preset/schedule that is missing, disabled or not ticking) and ``_check_marker_jam``
     (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
     their return values are deliberately discarded so neither can become a gate by accident.
+    ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
+    never claimed) joins them: a slow queue is not a fault, an invisible one is.
 
-    Two verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
+    Three verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
     silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
     its consumer is not live — masked/disabled/held, or refused by the consumer's own
     guard chain (the directive-loop silent-freeze incident — directives stuck at
     CAPTURED behind an idle loop, zero signal). ``_check_intake_budget_deadlock`` (#3978)
     is its issue-intake twin: a full in-flight budget held entirely by claims that are
-    going nowhere admits no work at all while every other signal reads healthy. Both are
-    evaluated before the ``and`` so neither can mask the other.
+    going nowhere admits no work at all while every other signal reads healthy.
+    ``_check_loop_schedule_liveness`` (#4140) is the scheduledness reading no cadence
+    surface carries: a loop whose chain was dropped keeps a recent anchor, so it reports
+    as healthy while nothing will ever fire it again. All three are evaluated before the
+    ``and`` so none can mask another.
     """
     _check_loop_presets()
     _check_loop_classification_drift()
     _check_shipped_seed_inertness()
     _check_aged_sweep_skips()
     _check_marker_jam()
+    _check_starved_intake_candidates()
     intake_ok = _check_intake_budget_deadlock()
-    return _check_intent_freshness() and intake_ok
+    scheduled_ok = _check_loop_schedule_liveness()
+    return _check_intent_freshness() and intake_ok and scheduled_ok
 
 
 def _check_claude_session_posture() -> bool:
@@ -405,12 +419,43 @@ def _run_config_posture_advisories() -> None:
     _check_config_rows_shadowing_shipped_defaults()
 
 
-def _run_advisory_finalisers() -> None:
-    """Surfacing-only passes that never gate the exit code."""
+def _run_advisory_finalisers(*, repair: bool) -> None:
+    """Surfacing-only passes that never gate the exit code.
+
+    ``repair`` reaches the plugin-registration pass because it WRITES: a plain run
+    reports the drift and touches nothing, honouring ``--repair``'s own promise that
+    "a plain run never mutates" — this pass used to rewrite the operator's
+    ``~/.claude/settings.json`` on every session start regardless.
+    """
     _check_singletons()
     _check_legacy_overlay_alias()
     report_missing_authorizations(typer.echo)
-    _ensure_plugin_registered()
+    _ensure_plugin_registered(repair=repair)
+
+
+def _run_mcp_checks(*, repair: bool = False) -> bool:
+    """Every MCP gate, in dependence order; ``False`` when any of them hard-FAILs.
+
+    Grouped so ``run_doctor_checks`` reads as a list of concerns rather than a list of
+    calls. The order is load-bearing: connectivity and the connector manifest run after
+    the account-switch gate (a `/login` invalidates the backend cache), and they share
+    one live `claude mcp list` probe; the exercising liveness check runs last so its
+    spawn sees the post-recovery state.
+
+    Two of the four are advisory by design. `_check_teatree_mcp_registration` is
+    structural — the resolved main clone can legitimately lag a merged change until the
+    next `t3 update`. `_check_teatree_mcp_liveness` is the authoritative one: it spawns
+    the registered `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause
+    (stale tool env / delegation failure / startup over the handshake budget) and the
+    remedy, because `claude mcp list` only ever says `Connection closed` (#4049).
+
+    ``repair`` reaches the liveness check alone: it is the only MCP gate that can mutate
+    the operator's env, and it reinstalls the running tool env only when asked.
+    """
+    ok = _check_mcp_connectivity()
+    ok = _check_connector_manifest() and ok
+    _check_teatree_mcp_registration()
+    return _check_teatree_mcp_liveness(repair=repair) and ok
 
 
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
@@ -633,25 +678,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = _check_claude_session_posture() and ok
 
-    # Enabled-MCP connectivity + declared-provider check (#2282). Runs after the
-    # account-switch gate (which invalidates the backend cache on a `/login`), so
-    # the live `claude mcp list` probe reflects the post-recovery state. An
-    # enabled-but-disconnected MCP is a hard FAIL; `claude` absent degrades to a WARN.
-    ok = _check_mcp_connectivity() and ok
+    ok = _run_mcp_checks(repair=repair) and ok
 
-    # Per-overlay claude.ai connector manifest (PR-19). Runs after the general MCP
-    # connectivity gate — it reuses the same live `claude mcp list` probe. A REQUIRED
-    # declared connector that is down is a hard FAIL with mode-correct guidance +
-    # RECONNECT lines; an optional one WARNs; `claude` absent degrades to a WARN.
-    ok = _check_connector_manifest() and ok
-
-    # Teatree's own structured-search MCP server registration (#2863). WARN-only
-    # (never gates the exit code) — the resolved main clone can legitimately lag
-    # a merged change until the next `t3 update`. Runs after the general MCP
-    # connectivity gate — it reuses the same live `claude mcp list` probe.
-    _check_teatree_mcp_registration()
-
-    _run_advisory_finalisers()
+    _run_advisory_finalisers(repair=repair)
 
     if ok:
         typer.echo("All checks passed")

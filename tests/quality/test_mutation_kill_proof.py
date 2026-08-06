@@ -7,10 +7,13 @@ ASK). A mutant that flips that ``BLOCK`` to ``PROCEED`` would let an unattended
 post go out under the user's identity; the existing suite must catch it.
 
 Two proofs, by design. ``TestManualMutantKilled`` is the deterministic,
-platform-independent proof: it rebuilds the exact BLOCK→PROCEED mutant by hand
-and asserts the existing test's assertion goes RED on it (and GREEN on the real
-code) — the methodology's "revert the fix, confirm RED" applied to the mutant,
-running on every platform. ``TestMutmutKillsTheMutant`` drives the REAL mutmut
+platform-independent proof: ONE assertion — the full verdict table — is applied
+to the REAL resolver and to a hand-built BLOCK→PROCEED mutant, and must pass on
+the first and fail on the second. Both directions bite: mutate the real module
+and the real-code direction reds; weaken the table and the mutant direction stops
+distinguishing. (An earlier form asserted only that the test-local mutant differed
+from ``BLOCK``, which is true of the mutant's own source text and would hold with
+``on_behalf_gate.py`` deleted.) ``TestMutmutKillsTheMutant`` drives the REAL mutmut
 runner over ``on_behalf_gate.py`` and asserts mutmut reports at least one killed
 mutant; mutmut's fork+output-capture model segfaults on macOS (a mutmut-3.5 bug,
 not a test gap), so when the run yields only inconclusive results the test SKIPs
@@ -20,11 +23,25 @@ and Linux CI exercises the real run.
 
 import shutil
 import sys
+from collections.abc import Callable
 
 import pytest
 
 from teatree.config import OnBehalfPostMode
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
+
+Resolver = Callable[[OnBehalfPostMode, str], OnBehalfVerdict]
+
+#: The fail-closed contract, in full. A colleague-VISIBLE action is refused under
+#: both blocking modes; a draft is colleague-invisible so it auto-drafts instead;
+#: IMMEDIATE is the user's explicit opt-out.
+_EXPECTED: dict[tuple[OnBehalfPostMode, str], OnBehalfVerdict] = {
+    (OnBehalfPostMode.ASK, "post_comment"): OnBehalfVerdict.BLOCK,
+    (OnBehalfPostMode.DRAFT_OR_ASK, "post_comment"): OnBehalfVerdict.BLOCK,
+    (OnBehalfPostMode.ASK, "post_draft_note"): OnBehalfVerdict.AUTO_DRAFT,
+    (OnBehalfPostMode.DRAFT_OR_ASK, "post_draft_note"): OnBehalfVerdict.AUTO_DRAFT,
+    (OnBehalfPostMode.IMMEDIATE, "post_comment"): OnBehalfVerdict.PROCEED,
+}
 
 
 def _mutant_resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
@@ -38,23 +55,33 @@ def _mutant_resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
     return OnBehalfVerdict.BLOCK
 
 
+def _assert_fail_closed_table(resolve: Resolver) -> None:
+    """The one assertion both directions of the proof are made against."""
+    for (mode, action), expected in _EXPECTED.items():
+        assert resolve(mode, action) is expected, f"{mode} + {action} must resolve {expected}"
+
+
+def _real_resolver(monkeypatch: pytest.MonkeyPatch) -> Resolver:
+    def resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
+        return resolve_on_behalf_verdict(action)
+
+    return resolve
+
+
 class TestManualMutantKilled:
-    """The existing assertion is RED on the mutant and GREEN on the real code."""
+    """One assertion, applied to the real resolver and to the mutant."""
 
-    def test_real_code_blocks_under_ask(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
-        # The assertion that pins the fail-closed gate for a colleague-VISIBLE
-        # action (mirrors test_on_behalf_gate.py::TestExplicitModes::
-        # test_explicit_ask_blocks_visible_posts_but_exempts_drafts).
-        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+    def test_real_code_satisfies_the_fail_closed_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Reds on any mutation of the shipped resolver — the ASK branch flipped to
+        # PROCEED, the draft carve-out widened, the enum renamed.
+        _assert_fail_closed_table(_real_resolver(monkeypatch))
 
-    def test_same_assertion_goes_red_on_the_mutant(self) -> None:
-        # Feeding the mutant to the exact assertion the suite makes proves the
-        # assertion is anti-vacuous: it distinguishes BLOCK from PROCEED.
-        verdict = _mutant_resolve(OnBehalfPostMode.ASK, "post_comment")
-        assert verdict is not OnBehalfVerdict.BLOCK, "mutant should diverge from the real fail-closed result"
-        with pytest.raises(AssertionError):
-            assert verdict is OnBehalfVerdict.BLOCK
+    def test_the_same_table_rejects_the_mutant(self) -> None:
+        # The assertion that just passed against production code fails against the
+        # mutant, so it demonstrably distinguishes them rather than certifying both.
+        with pytest.raises(AssertionError, match="must resolve"):
+            _assert_fail_closed_table(_mutant_resolve)
 
 
 # The real mutmut run is an expensive whole-module subprocess; deselected at push

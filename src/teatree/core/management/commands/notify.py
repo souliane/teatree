@@ -108,7 +108,7 @@ class Command(TyperCommand):
         idempotency_key: Annotated[
             str,
             typer.Option("--idempotency-key", help="Required dedupe key (the helper enforces it)."),
-        ],
+        ] = "",
         user_id: Annotated[
             str,
             typer.Option("--user-id", help="Slack user id to DM (defaults to the configured user)."),
@@ -164,11 +164,11 @@ class Command(TyperCommand):
         channel: Annotated[
             str,
             typer.Option("--channel", help="Destination: the user's own DM (→bot) or a colleague/channel (→xoxp)."),
-        ],
+        ] = "",
         text: Annotated[
             str,
             typer.Option("--text", help="Slack mrkdwn body. Use ``-`` to read the body from stdin."),
-        ],
+        ] = "",
         thread_ts: Annotated[
             str,
             typer.Option("--thread-ts", help="Thread ``ts`` to reply into (omit to post a new top-level message)."),
@@ -179,6 +179,9 @@ class Command(TyperCommand):
         ] = "",
     ) -> str:
         """Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``)."""
+        if not channel.strip():
+            self.stderr.write("--channel must not be empty")
+            raise SystemExit(2)
         body = sys.stdin.read() if text == "-" else text
         if not body.strip():
             self.stderr.write("--text must not be empty")
@@ -210,21 +213,27 @@ class Command(TyperCommand):
         channel: Annotated[
             str,
             typer.Option("--channel", help="Destination the message is in: self-DM (bot) or colleague/channel (xoxp)."),
-        ],
+        ] = "",
         ts: Annotated[
             str,
             typer.Option("--ts", help="Timestamp ``ts`` of the message to react to."),
-        ],
+        ] = "",
         emoji: Annotated[
             str,
             typer.Option("--emoji", help="Emoji name (with or without surrounding colons)."),
-        ],
+        ] = "",
         overlay: Annotated[
             str,
             typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay credentials)."),
         ] = "",
     ) -> str:
         """React on a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``)."""
+        if not channel.strip():
+            self.stderr.write("--channel must not be empty")
+            raise SystemExit(2)
+        if not ts.strip():
+            self.stderr.write("--ts must not be empty")
+            raise SystemExit(2)
         name = emoji.strip().strip(":")
         if not name:
             self.stderr.write("--emoji must not be empty")

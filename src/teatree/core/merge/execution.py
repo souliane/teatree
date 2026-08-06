@@ -35,11 +35,13 @@ from teatree.core.merge.authorization import (
 from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
 from teatree.core.merge.errors import MergePreconditionError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.head_read_diagnosis import unreadable_head_advisory
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
 from teatree.core.merge.sha_bind import verify_sha_bound
+from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.project import find_project_root
 from teatree.utils.pr_ref import PrRef
 
@@ -130,11 +132,9 @@ def assert_merge_preconditions(
     slug, pr_id = ref.slug, ref.pr_id
 
     # Attach the live diff paths so the substrate authorization guard can detect
-    # a mislabeled substrate diff (path-based classifier — invariant 4). A forge
-    # error degrades to no paths: the path detector only WIDENS substrate over the
-    # recorded ``blast_class``, never narrows it, so a missing diff never weakens
-    # the label-based gate. Set BEFORE the authorize call so the substrate branch
-    # reads it.
+    # a mislabeled substrate diff (path-based classifier — invariant 4). A diff
+    # that cannot be read to completion holds as substrate rather than merging
+    # unclassified. Set BEFORE the authorize call so the substrate branch reads it.
     attach_touched_paths(clear, query)
 
     authorized_clear = _assert_clear_authorized(
@@ -160,7 +160,10 @@ def assert_merge_preconditions(
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
     live_sha = query.live_head_sha()
     if not live_sha:
-        msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
+        msg = (
+            f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2). "
+            f"{unreadable_head_advisory(ref.host_kind)}"
+        )
         raise MergePreconditionError(msg)
     if not verify_sha_bound(cleared_sha=authorized_clear.reviewed_sha, live_sha=live_sha):
         # A SHA mismatch fails CLOSED: the merge is REFUSED here and now, never
@@ -308,12 +311,15 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop, five gates run — the single chokepoint BOTH merge paths cross
+    retry loop, six gates run — the single chokepoint BOTH merge paths cross
     (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
     via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
     (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
     (north-star PR-4 — a directive keystone / opted-in ordinary ticket needs a clean
-    recorded merge-quality verdict at the shipped head), and the #18 not-draft +
+    recorded merge-quality verdict at the shipped head), ``assert_ticket_scoped_gates``
+    (the anti-vacuity attestation + rubric done-gate, resolved by PR identity so the
+    no-CLEAR paths are graded by the settings the operator enabled instead of merging
+    past them silently), and the #18 not-draft +
     FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
     chokepoint so a green→red / open→draft flip in the TOCTOU window between a
     caller's snapshot and this PUT is refused here — the solo lane had NO such
@@ -347,6 +353,10 @@ def execute_bound_merge(
     from teatree.core.gates import merge_quality_gate  # noqa: PLC0415 avoids a core.merge/core.gates cycle
 
     merge_quality_gate.assert_merge_quality_verdict(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
+    # The two ticket-scoped gates, by PR identity rather than through a CLEAR — so the
+    # no-CLEAR paths that reach this chokepoint are graded by the settings the operator
+    # turned on, instead of merging past them silently.
+    assert_ticket_scoped_gates(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_not_draft(query)
     assert_ci_not_failed(query)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):

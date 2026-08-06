@@ -74,33 +74,34 @@ It provides:
 ```
 src/teatree/           Python package (the Django app + CLI)
   cli/                 Typer CLI package — the `t3` entry point
-  config.py            settings resolution (DB ConfigSetting store), overlay discovery
+  config/              Settings resolution (DB ConfigSetting store), setting-home registry,
+                       overlay discovery, and `defaults.toml` — the shipped-defaults authority
   skill_support/       Skill selection policy (`loading.py` — phase → skills, cwd detection),
                        transitive `requires` / soft `companions` resolution (`deps.py`),
                        and the `agents/*.md` frontmatter reader (`agent_declarations.py`)
   core/                Django app: models, managers, views, selectors, management commands
     models/            Model package — Ticket/Worktree/Task/PullRequest (FSM) + Session, TaskAttempt, TicketTransition, etc.
     selectors/         Selector functions (no domain logic in views)
+    backend_protocols.py  Protocol classes (CodeHostBackend, CIService, MessagingBackend)
     overlay.py         OverlayBase ABC — extension point for downstream projects
     overlay_loader.py  Discovers the active overlay class from `teatree.overlays` entry points
     management/commands/  Django-typer commands (lifecycle, workspace, db, run, followup, pr, tasks)
     views/             Admin views
     templates/         Django admin templates
-  backends/            Pluggable service integrations
-    protocols.py       Protocol classes (CodeHostBackend, CIService, MessagingBackend)
+    <leaf packages>    cleanup/ worktree/ provision/ factory/ intake/ review/ evidence/ merge/ gates/ …
+  backends/            Pluggable service integrations, one package per forge
     loader.py          Overlay-config-driven backend resolution (cached via lru_cache)
-    github.py          GitHub code-host client
-    github_sync.py     GitHubSyncBackend — implements SyncBackend ABC from teatree.types
-    gitlab.py          GitLab code-host client
-    gitlab_ci.py       GitLab CI pipeline operations
-    gitlab_sync*.py    GitLabSyncBackend + per-concern sync modules (issues, prs, approvals, terminal)
-    slack*.py, notion.py, sentry.py, sharepoint.py  Other integrations
+    github/            GitHub code-host client + `sync.py` (GitHubSyncBackend, the SyncBackend ABC from teatree.types)
+    gitlab/            GitLab code-host client, CI pipeline operations, per-concern sync modules
+    slack/, notion/, msteams/, sentry.py, sharepoint.py, figma.py   Other integrations
   agents/              Agent runtime
-    headless.py        Headless tasks via `claude -p` (capture structured JSON output)
+    headless.py        Headless in-process runs behind the `Harness` seam (structured JSON envelope)
+    harness.py         The `Harness` / `HarnessSession` protocols the runtimes implement
     handover.py        Headless ↔ interactive session handover (resume by session id)
     model_tiering.py   Per-phase model override resolution
     skill_bundle.py    Skill dependency resolver for agent launch
     prompt.py          System context and task prompt builders (headless + interactive)
+    attempt_recorder.py  Shared schema + evidence gate applied to every recorded attempt
     result_schema.py   JSON schema for structured agent output
   utils/               Git helpers, port allocation, subprocess wrappers
   overlay_init/        `t3 startoverlay` templates (overlay package + app)
@@ -260,24 +261,28 @@ Current implementations: `GitHubSyncBackend` (`backends/github/sync.py`), `GitLa
 
 ## Agent Runtime
 
-Both task kinds shell out to the local `claude` CLI (no Anthropic API key
-needed). The binary is resolved via `shutil.which("claude")`; per-phase
-model overrides come from `agents/model_tiering.py`.
+Two lanes, one per task kind. Per-phase model overrides come from
+`agents/model_tiering.py` in both.
 
 ### Headless Sessions (`agents/headless.py`)
 
-Headless tasks run `claude -p <prompt> --append-system-prompt <context> --output-format json`.
+Headless tasks drive an in-process agent session behind the `Harness` seam
+(`agents/harness.py`), whose backend `agent_harness` selects — `claude_sdk`
+(a `claude-agent-sdk` `ClaudeSDKClient`) or `pydantic_ai` (an OpenAI-compatible
+endpoint). Both yield the same `AssistantMessage` / `ResultMessage` vocabulary,
+so the driver never special-cases the transport.
 
-- Parses the JSON result from stdout, validates against `result_schema.py`
-- If the result contains `needs_user_input: true`, reroutes the task to the user-input queue
+- Collects the typed messages the session yields and validates the result envelope against `result_schema.py`
+- If the result carries `needs_user_input: true`, reroutes the task to the user-input queue
 - Stores the parsed result in `TaskAttempt.result`
-- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, headless prepends `--resume <session_id>` to continue with full context (`headless.py`).
+- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, the harness opens the session with the SDK-native `resume=` option (`pydantic_ai` rehydrates the equivalent message history from `agents/pydantic_ai_resume.py`).
 
-### Interactive Sessions (`core/management/commands/tasks.py`)
+### Interactive Sessions (`core/management/commands/tasks_interactive_launch.py`)
 
 Interactive tasks (`tasks start`) launch `claude` inline in
-the invoking terminal — no ttyd, no terminal-mode strategies. The argv is
-built by `_build_claude_command`:
+the invoking terminal — no ttyd, no terminal-mode strategies. The binary is
+resolved via `shutil.which("claude")` and the argv is built by
+`build_claude_command`:
 
 - Fresh session: `claude --append-system-prompt <interactive context>` (context from `agents/prompt.py:build_interactive_context`).
 - Resume: when `Session.agent_id` holds a Claude session UUID, `claude --resume <uuid>` — preserving context from the prior headless run.
@@ -390,6 +395,6 @@ teatree resolves ALL required state from its own stores; an assistant's memory i
 - Port allocation uses file-level locking (`teatree.utils.ports`) — never hardcode ports.
 - The `t3 agent` command builds a system prompt from overlay detection + skill resolution, then `os.execvp`s into `claude`.
 - Coverage omits only migrations. Everything else must be covered.
-- `claude -p` is headless (exits immediately). Interactive sessions use `claude` without `-p`.
+- The headless lane is an in-process session behind the `Harness` seam; whether a `claude` CLI child is spawned underneath is the backend's own `HarnessCapabilities.spawns_cli_child`. Interactive tasks exec the `claude` CLI directly in the operator's terminal.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
 - **Submodule shadowing in `cli/__init__.py`.** When `cli/__init__.py` re-exports a name from a same-named submodule (`from teatree.cli.agent import agent`), the imported function overwrites the `cli.agent` submodule attribute on the parent package. Tests that do `import teatree.cli.agent as cli_agent_mod` then receive the function, not the module — `patch.object(cli_agent_mod, "os", ...)` fails with `does not have the attribute 'os'`. Use `import teatree.cli.agent as _agent` in `__init__.py` and reference attributes (`_agent.agent`) instead. The aliasing form does not bind to the parent package, so the submodule attribute survives intact.

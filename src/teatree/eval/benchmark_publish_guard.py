@@ -16,6 +16,14 @@ all owed no spend and is legitimately empty, not contaminated.
 The refusal is whole-dashboard: one contaminated shard fails the publish rather
 than being dropped from an otherwise-complete-looking commit, because a
 partially-published dashboard is exactly the failure this guard prevents.
+
+A partial dashboard has a second door, and the contamination filter cannot see
+through it: the publish job runs ``if: always()``, so shards that TIMED OUT
+uploaded no HTML at all. What survives is metered and clean, and a filter that
+only inspects the files present reports the two-shard remnant as publishable.
+:func:`verify_publishable` therefore takes the count of shards the run PLANNED
+and refuses a directory holding fewer — an absent shard is missing evidence, not
+a clean one.
 """
 
 import dataclasses
@@ -29,6 +37,18 @@ _SHARD_PREFIX = "eval-benchmark-"
 
 class UnmeteredShardError(RuntimeError):
     """One or more shards report graded verdicts against zero metered spend."""
+
+
+class IncompleteDashboardError(RuntimeError):
+    """Fewer shard artifacts are present than the run planned to produce."""
+
+    def __init__(self, *, found: int, expected: int) -> None:
+        super().__init__(
+            f"refusing to publish {found} benchmark shard(s) — the run planned {expected}. "
+            "The missing shard(s) failed or timed out and uploaded nothing, so this dashboard "
+            "would be committed as the week's complete benchmark while covering only part of it. "
+            "Re-dispatch the missing legs; do not publish this dashboard."
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -55,8 +75,22 @@ def contaminated_shards(dashboard_dir: Path) -> list[ContaminatedShard]:
     return found
 
 
-def verify_publishable(dashboard_dir: Path) -> None:
-    """Raise :class:`UnmeteredShardError` when any shard in *dashboard_dir* is contaminated."""
+def shard_paths(dashboard_dir: Path) -> list[Path]:
+    """Every collected shard artifact in *dashboard_dir*, sorted."""
+    return sorted(dashboard_dir.glob(SHARD_GLOB))
+
+
+def verify_publishable(dashboard_dir: Path, *, expected_shards: int) -> None:
+    """Refuse an incomplete or unmetered dashboard.
+
+    Raises :class:`IncompleteDashboardError` when fewer than *expected_shards*
+    artifacts were collected (including none at all), and
+    :class:`UnmeteredShardError` when any collected shard records graded verdicts
+    against zero metered spend.
+    """
+    found = len(shard_paths(dashboard_dir))
+    if found < expected_shards:
+        raise IncompleteDashboardError(found=found, expected=expected_shards)
     shards = contaminated_shards(dashboard_dir)
     if not shards:
         return

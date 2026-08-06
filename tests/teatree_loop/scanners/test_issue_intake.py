@@ -7,13 +7,26 @@ decision function; claims go through the TOCTOU-safe
 never double-dispatches the same issue.
 """
 
+import datetime as dt
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.models import ImplementedIssueMarker, Ticket, TrustedIdentity
-from teatree.loop.scanners.issue_intake import IssueIntakeScanner, author_is_trusted, issue_author, issue_url
+from teatree.core.models import (
+    ImplementedIssueMarker,
+    Ticket,
+    TrustedIdentity,
+    UnclaimedIntakeCandidate,
+    WaitingCandidate,
+)
+from teatree.loop.scanners.issue_intake import (
+    IssueIntakeScanner,
+    author_is_trusted,
+    issue_author,
+    issue_created_at,
+    issue_url,
+)
 from teatree.types import RawAPIDict
 
 OWNER = "souliane"
@@ -73,9 +86,25 @@ class _Host:
         return self.merged_prs
 
 
-def _issue(url: str, *, author: str, labels: list[str] | None = None, state: str = "open") -> RawAPIDict:
+def _issue(
+    url: str,
+    *,
+    author: str,
+    labels: list[str] | None = None,
+    state: str = "open",
+    created_at: str = "",
+) -> RawAPIDict:
     """A GitHub-shaped issue payload (``user.login`` is the author)."""
-    return {"web_url": url, "title": "do it", "labels": labels or [], "state": state, "user": {"login": author}}
+    issue: RawAPIDict = {
+        "web_url": url,
+        "title": "do it",
+        "labels": labels or [],
+        "state": state,
+        "user": {"login": author},
+    }
+    if created_at:
+        issue["created_at"] = created_at
+    return issue
 
 
 def _issue_repo_slug(issue: RawAPIDict) -> str:
@@ -615,6 +644,163 @@ class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
         assert set(blocking) == set(Ticket.State.values) - {Ticket.State.IGNORED}
 
 
+class IssueIntakeAgeOrderingTests(_PublicRepoTestCase):
+    """A free slot goes to the issue that has waited longest (#4238).
+
+    The forge is asked for created-ascending, but the scanner merges a per-author
+    fan-out with the label query — so the ORDER that decides which issue gets the
+    slot is the order of the merge, not of any single query.
+    """
+
+    OLD = "https://github.com/souliane/teatree/issues/4188"
+    NEW = "https://github.com/souliane/teatree/issues/4234"
+    NEWEST = "https://github.com/souliane/teatree/issues/4239"
+
+    def test_the_oldest_issue_wins_the_slot_across_the_merged_queries(self) -> None:
+        """The single free slot goes to the oldest, though its query ran LAST.
+
+        ``sorted(trusted)`` runs OWNER's query first, so putting the newer issue there
+        is what an arbitrary merge reaches first — the shape of the observed incident.
+        """
+        host = _Host(
+            authored={
+                OWNER: [_issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z")],
+                COLLEAGUE: [_issue(self.OLD, author=COLLEAGUE, created_at="2026-08-01T09:00:00Z")],
+            },
+        )
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.OLD]
+
+    def test_an_old_labelled_issue_outranks_a_new_authored_one(self) -> None:
+        """The label query runs last of all — age still decides, not query position."""
+        labelled = _issue(self.OLD, author=STRANGER, created_at="2026-08-01T09:00:00Z", labels=[self.LABEL])
+        host = _Host(
+            authored={OWNER: [_issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z")]},
+            labeled={self.LABEL: [labelled]},
+        )
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.OLD]
+
+    def test_every_candidate_is_claimed_in_age_order(self) -> None:
+        """Each query arrives NEWEST first — the forge default the fix stops trusting."""
+        host = _Host(
+            authored={
+                OWNER: [
+                    _issue(self.NEWEST, author=OWNER, created_at="2026-08-05T09:00:00Z"),
+                    _issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"),
+                ],
+                COLLEAGUE: [_issue(self.OLD, author=COLLEAGUE, created_at="2026-08-01T09:00:00Z")],
+            },
+        )
+
+        signals = self._scanner(host, max_concurrent=0).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.OLD, self.NEW, self.NEWEST]
+
+    def test_an_issue_with_no_filing_date_sorts_behind_every_dated_one(self) -> None:
+        """A payload-shape change degrades to arrival order — it never overtakes a dated issue."""
+        host = _Host(
+            authored={
+                OWNER: [_issue(self.NEWEST, author=OWNER)],
+                COLLEAGUE: [_issue(self.OLD, author=COLLEAGUE, created_at="2026-08-01T09:00:00Z")],
+            },
+        )
+
+        signals = self._scanner(host, max_concurrent=0).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.OLD, self.NEWEST]
+
+
+class IssueIntakeNoStarvationTests(_PublicRepoTestCase):
+    """An issue admissible across many full-budget rounds is claimed the moment a slot frees.
+
+    The observed defect: three issues filed in the morning were still unadmitted at the
+    end of the day, because both slots that freed went to issues filed hours later.
+    """
+
+    OLD = "https://github.com/souliane/teatree/issues/4188"
+
+    def _round(self, host: _Host) -> list[str]:
+        return [str(signal.payload["url"]) for signal in self._scanner(host, max_concurrent=1).scan()]
+
+    def test_the_old_issue_takes_the_first_slot_that_frees(self) -> None:
+        held = "https://github.com/souliane/teatree/issues/1"
+        ImplementedIssueMarker.objects.claim(held, overlay=self.OVERLAY)
+        queue = [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z")]
+        host = _Host(authored={OWNER: queue})
+
+        # Three rounds at a full budget, each with a fresher issue arriving. Each one
+        # lands at the FRONT of the query result, as the forge's own default order puts it.
+        for day in (2, 3, 4):
+            queue.insert(
+                0,
+                _issue(
+                    f"https://github.com/souliane/teatree/issues/42{day}0",
+                    author=OWNER,
+                    created_at=f"2026-08-0{day}T09:00:00Z",
+                ),
+            )
+            assert self._round(host) == []
+
+        # The held slot turns over exactly as it did in the incident.
+        ImplementedIssueMarker.objects.filter(issue_url=held).delete()
+
+        assert self._round(host) == [self.OLD]
+
+
+class IssueIntakeStarvationVisibilityTests(_PublicRepoTestCase):
+    """Every admissible candidate the budget passed over is recorded, not silently skipped."""
+
+    OLD = "https://github.com/souliane/teatree/issues/4188"
+    NEW = "https://github.com/souliane/teatree/issues/4234"
+
+    def test_a_full_budget_records_every_passed_over_candidate(self) -> None:
+        ImplementedIssueMarker.objects.claim("https://github.com/souliane/teatree/issues/1", overlay=self.OVERLAY)
+        host = _Host(
+            authored={
+                OWNER: [
+                    _issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z"),
+                    _issue(self.NEW, author=OWNER, created_at="2026-08-04T09:00:00Z"),
+                ],
+            },
+        )
+
+        assert self._scanner(host, max_concurrent=1).scan() == []
+
+        waiting = UnclaimedIntakeCandidate.objects.filter(overlay=self.OVERLAY)
+        assert sorted(waiting.values_list("issue_url", flat=True)) == sorted([self.OLD, self.NEW])
+        assert waiting.get(issue_url=self.OLD).issue_created_at == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
+
+    def test_an_unclaimable_tick_still_records_the_queue_it_cannot_act_on(self) -> None:
+        """``can_claim=False`` is the state the incident sat in all day — it must still witness."""
+        host = _Host(authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z")]})
+
+        assert self._scanner(host, can_claim=False).scan() == []
+
+        assert list(UnclaimedIntakeCandidate.objects.values_list("issue_url", flat=True)) == [self.OLD]
+
+    def test_a_claimed_candidate_leaves_the_waiting_ledger(self) -> None:
+        host = _Host(authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z")]})
+        UnclaimedIntakeCandidate.objects.sync(self.OVERLAY, [WaitingCandidate(issue_url=self.OLD)])
+
+        assert len(self._scanner(host, max_concurrent=1).scan()) == 1
+
+        assert not UnclaimedIntakeCandidate.objects.exists()
+
+    def test_a_claim_refused_by_an_existing_holder_is_not_reported_as_starved(self) -> None:
+        """A refused claim means somebody holds the issue — that is not a passed-over candidate."""
+        ImplementedIssueMarker.objects.claim(self.OLD, overlay=self.OVERLAY)
+        host = _Host(authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z")]})
+
+        assert self._scanner(host, max_concurrent=0).scan() == []
+
+        assert not UnclaimedIntakeCandidate.objects.exists()
+
+
 class IssueIntakePayloadReadersTests(_PublicRepoTestCase):
     """The three payload readers the fail-closed gate leans on."""
 
@@ -627,6 +813,18 @@ class IssueIntakePayloadReadersTests(_PublicRepoTestCase):
         assert issue_author({"user": {"login": " souliane "}}) == OWNER
         assert issue_author({"author": {"username": OWNER}}) == OWNER
         assert issue_author({"user": "not-a-dict"}) == ""
+
+    def test_issue_created_at_reads_both_forges_and_degrades_to_none(self) -> None:
+        assert issue_created_at({"created_at": "2026-08-01T09:00:00Z"}) == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
+        # GitLab emits sub-second precision and a numeric offset.
+        assert issue_created_at({"created_at": "2026-08-01T11:00:00.000+02:00"}) == dt.datetime(
+            2026, 8, 1, 9, tzinfo=dt.UTC
+        )
+        # A naive stamp is read as UTC, not as local time.
+        assert issue_created_at({"created_at": "2026-08-01T09:00:00"}) == dt.datetime(2026, 8, 1, 9, tzinfo=dt.UTC)
+        assert issue_created_at({"created_at": "not a date"}) is None
+        assert issue_created_at({"created_at": 1234}) is None
+        assert issue_created_at({}) is None
 
     def test_author_is_trusted_refuses_an_unresolvable_author(self) -> None:
         trusted = frozenset({OWNER})

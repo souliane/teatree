@@ -334,3 +334,18 @@ class TestTheHostProjectionIsCurrent:
             assert _check_host_projection_is_current() is False
 
         assert "nothing published" in capsys.readouterr().out
+
+    def test_an_unreadable_source_fails_loud(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The fault that makes the source unreadable is the same one that stops the
+        # publisher, so a quiet pass reported the projection current on exactly the
+        # failure this check exists to catch — and emitted no line for the JSON parser.
+        db = self._projectable(_sound_db(tmp_path / "db.sqlite3"), 5)
+        ProjectionPublisher(db, db.parent).publish()
+
+        with (
+            _database_config(db, SQLITE_BOUNDARY_ENGINE),
+            patch.object(ProjectionPublisher, "build", side_effect=sqlite3.OperationalError("database is locked")),
+        ):
+            assert _check_host_projection_is_current() is False
+
+        assert "could not read the source generation" in capsys.readouterr().out

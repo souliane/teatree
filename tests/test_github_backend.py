@@ -684,9 +684,19 @@ class TestGitHubCodeHost:
             result = host.list_authored_issues(author="souliane")
         assert len(result) == 1
         mock_search.assert_called_once_with(
-            "search/issues?q=is%3Aissue+is%3Aopen+author%3Asouliane&per_page=100",
+            "search/issues?q=is%3Aissue+is%3Aopen+author%3Asouliane&sort=created&order=asc&per_page=100",
             token="tok",
         )
+
+    def test_intake_issue_queries_ask_the_forge_for_oldest_first(self) -> None:
+        """#4238 — an unsorted GitHub search ranks by *best match*, never by age."""
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            host.list_authored_issues(author="souliane")
+            host.list_labeled_issues(label="t3-auto-implement")
+        assert len(mock_search.call_args_list) == 2
+        for call in mock_search.call_args_list:
+            assert "sort=created&order=asc" in call.args[0]
 
     def test_list_authored_issues_scopes_search_to_repo_slugs(self) -> None:
         """repo_slugs AND OR-ed ``repo:owner/name`` qualifiers into the search — the cross-repo firehose fix."""
