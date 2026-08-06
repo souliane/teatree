@@ -150,9 +150,10 @@ class TestClassifier(TestCase):
 class TestCauselessKinds:
     """#4075: a failure that named no cause must not be compared against itself.
 
-    Both causeless kinds are recorded with a CONSTANT reason, so two of them collide on
-    one fingerprint by construction — "we learned nothing, twice" would otherwise read as
-    "one defect recurred twice" and halt a phase that was never doomed.
+    Membership is the absence-of-a-cause test, not fingerprint collision:
+    ``no_result_envelope``'s constant reason self-collides, ``runtime_ceiling``'s
+    interpolated one does not. Without the drop, "we learned nothing, twice" reads as
+    "one defect recurred twice" and halts a phase that was never doomed.
     """
 
     def test_the_two_reporting_failures_are_causeless(self) -> None:

@@ -579,7 +579,7 @@ def _record_landed(task: Task, *, evidence: str, lease_loss: str) -> TaskAttempt
 
     The row is landed COMPLETED only while NOTHING holds it — a conditional
     ``UPDATE ... WHERE status=PENDING``, the same compare-and-swap
-    ``transient_requeue._retire_superseded`` uses. A live successor's claim is therefore
+    ``transient_requeue_disposal._retire_superseded`` uses. A live successor's claim is therefore
     never terminated out from under it, and a row nobody took up after the in-process
     reclaim stops being re-dispatched for work that already shipped. No FSM side effect is
     needed: the evidence IS that the ticket already reached this phase's target state.
