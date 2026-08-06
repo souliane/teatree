@@ -119,9 +119,10 @@ _ENVIRONMENTAL: frozenset[str] = frozenset(
     },
 )
 
-#: Kinds that are the ABSENCE of a cause rather than a cause, recorded with a CONSTANT
-#: reason — so two of them collide on one fingerprint by construction. See the module
-#: docstring: dropped from the stall comparison, never from the iteration budget.
+#: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
+#: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
+#: ``runtime_ceiling``'s interpolated one does not. See the module docstring: dropped from
+#: the stall comparison, never from the iteration budget.
 _CAUSELESS: frozenset[str] = frozenset(
     {
         FailureKind.NO_RESULT_ENVELOPE,
