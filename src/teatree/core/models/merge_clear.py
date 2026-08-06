@@ -147,6 +147,27 @@ def is_non_reviewer_role(identity: str) -> bool:
     return bool(parts & _COMPONENT_ROLE_WORDS)
 
 
+def normalize_reviewer_identity(identity: str) -> str:
+    """The canonical, idempotency-keyed form of a free-text reviewer identity (F8).
+
+    The recorded ``reviewer_identity`` is free text — 187 distinct values on the
+    live box, with the SAME logical reviewer spelled many ways ("Codex", "codex ",
+    "codex"). That made "has this sha been reviewed by this identity?" unanswerable
+    by query and let the dispatcher re-review one sha 17 times. The normalized form
+    collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
+    runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
+    genuinely distinct identities stay distinct (no role-prefix stripping, which
+    would over-merge two real reviewers). It is the canonical key at every boundary:
+    the ``ReviewVerdict`` write, its uniqueness constraint, and the maker≠checker
+    comparison at CLEAR issuance and at merge time.
+
+    It sits beside :func:`is_non_reviewer_role` rather than next to ``ReviewVerdict``
+    because CLEAR issuance validates through it and ``review_verdict`` imports this
+    module — the reviewer-identity primitives are the shared lower layer.
+    """
+    return " ".join(identity.split()).casefold()
+
+
 def is_commit_sha(value: str) -> bool:
     """True iff ``value`` is a full 40-char hex commit SHA (§17.4.2, #1162).
 
@@ -332,7 +353,7 @@ class MergeClear(models.Model):
         if not reviewer:
             msg = "reviewer_identity is required and must be non-empty (§17.4.2)"
             raise ClearIssuanceError(msg)
-        if reviewer == request.executing_loop_identity.strip():
+        if normalize_reviewer_identity(reviewer) == normalize_reviewer_identity(request.executing_loop_identity):
             msg = (
                 f"reviewer_identity {reviewer!r} equals the executing loop identity "
                 f"({request.executing_loop_identity!r}) — a CLEAR must be issued by an independent "
@@ -465,22 +486,34 @@ class MergeClear(models.Model):
             )
             raise ClearIssuanceError(msg)
 
-    def record_merged_pull_request(self) -> "Ticket | None":
+    def record_merged_pull_request(self, repo_slug: str = "") -> "Ticket | None":
         """Bind a landed merge to the PR-side records; return the ticket the FSM must advance.
 
         The merge keystone is the authoritative moment the PR became merged — the
         open-PR-only reconciler that used to be ``PullRequest.mark_merged``'s sole
         caller can never observe a PR that merged between two of its ticks.
-        """
-        PullRequest.objects.record_forge_merge(slug=self.slug, pr_id=self.pr_id)
-        return self.adopt_owning_ticket()
 
-    def adopt_owning_ticket(self) -> "Ticket | None":
+        *repo_slug* is the real ``owner/repo`` the caller merged against; see
+        :meth:`adopt_owning_ticket` for why :attr:`slug` is not it.
+        """
+        PullRequest.objects.record_forge_merge(slug=repo_slug or self.slug, pr_id=self.pr_id)
+        return self.adopt_owning_ticket(repo_slug)
+
+    def adopt_owning_ticket(self, repo_slug: str = "") -> "Ticket | None":
         """Persist the PR's owning ticket onto a ticketless CLEAR; return the ticket adopted.
 
         ``--ticket-id`` is optional on ``ticket clear`` and the loop never passed one,
         so a CLEAR is routinely born with no ticket and the merge keystone then has no
         FSM to advance. The PR itself knows its ticket, so recover the link from there.
+
+        *repo_slug* is the real ``owner/repo`` the caller resolved for this PR, and it
+        is what the lookup is keyed on. :attr:`slug` is a WORKSTREAM name on exactly the
+        ticketless CLEARs this method exists for, so keying on it matched no
+        ``PullRequest`` row and adoption silently never happened for them — the board
+        never moved and the log said only "merged but resolved no owning ticket". The
+        caller supplies the slug rather than this model re-deriving it: the merge
+        keystone already reconciled the authoritative one, and ``core.models`` may not
+        depend on the ``core.merge`` resolver that would re-derive it (tach).
 
         Adoption is bookkeeping, never authorisation: the merge gates that read
         ``clear.ticket`` (anti-vacuity, rubric) run BEFORE the merge, so adopting
@@ -488,7 +521,7 @@ class MergeClear(models.Model):
         """
         if self.ticket is not None:
             return self.ticket
-        ticket = PullRequest.objects.owning_ticket(slug=self.slug, pr_id=self.pr_id)
+        ticket = PullRequest.objects.owning_ticket(slug=repo_slug or self.slug, pr_id=self.pr_id)
         if ticket is None:
             return None
         self.ticket = ticket

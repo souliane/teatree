@@ -116,6 +116,40 @@ def _check_intake_budget_deadlock() -> bool:
     return not jammed
 
 
+def _check_starved_intake_candidates() -> bool:
+    """WARN on each issue intake keeps judging admissible and never has the budget to claim.
+
+    The complement of :func:`_check_intake_budget_deadlock`, which fires only when the
+    held slots are going nowhere. A budget that turns over correctly and hands every
+    freed slot to a newer issue is a healthy-looking factory with an issue in it that
+    never starts — three of them sat a full day with every surface green (#4238).
+
+    Reads the ledger the intake scanner syncs on each discovery pass, so it costs no
+    forge call and names an issue only while it is STILL waiting. Advisory: age ordering
+    is what stops the starvation, and a long wait behind a full budget is legitimate —
+    the operator needs to see it, not have the doctor go red over it. Crash-proof: any
+    error degrades to OK.
+    """
+    from teatree.core.models import UnclaimedIntakeCandidate  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        starved = list(UnclaimedIntakeCandidate.objects.starved())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Starved-intake check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not starved:
+        return True
+    for row in starved:
+        typer.echo(f"WARN  Intake starvation: {row.report()}")
+    typer.echo(
+        f"WARN  {len(starved)} issue(s) have been admissible and unclaimed past the threshold. "
+        "Intake claims oldest-filed first, so these are behind a budget that is not freeing "
+        "slots fast enough — raise `issue_implementer_max_concurrent` or clear the in-flight "
+        "work (#4238).",
+    )
+    return False
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 

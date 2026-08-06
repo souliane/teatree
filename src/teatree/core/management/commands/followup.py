@@ -1,11 +1,12 @@
 from typing import IO, Annotated, cast
 
 import typer
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._shared_code_host import no_code_host_error
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.table_output import print_table
@@ -48,7 +49,11 @@ def _repo_slug(pr: RawAPIDict) -> str:
     return ref.slug if ref is not None else ""
 
 
-class Command(TyperCommand):
+# #4234: `discover-mrs` RETURNS its no-code-host refusal; the base class stops a
+# review-request batch proceeding on an empty discovery it never actually made.
+class Command(RefusalExitTyperCommand):
+    """Daily follow-up: MR discovery, ticket/PR sync, and reviewer reminders."""
+
     @command()
     def refresh(self) -> dict[str, int]:
         return {

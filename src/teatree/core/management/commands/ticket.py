@@ -6,7 +6,7 @@ from typing import Annotated, TypedDict
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
@@ -22,7 +22,9 @@ from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
-from teatree.core.merge import MergePreconditionError, resolve_host_kind, resolve_pr_repo_slug
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
+from teatree.core.merge import MergePreconditionError, normalize_repo_slug, resolve_host_kind, resolve_pr_repo_slug
+from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
@@ -70,6 +72,37 @@ class E2EBypassResult(TypedDict, total=False):
     approver: str
 
 
+def _verdict_slug(request: ClearRequest, resolved_slug: str) -> str:
+    """The repo the MERGE will bind to, so the by-product verdict is keyed where the gate reads it.
+
+    ``resolve_pr_repo_slug`` is only half of what the keystone does: it then runs
+    ``_reconcile_slug_against_reviewed_sha``, which recovers the real repo when the
+    initial slug's PR does not carry the reviewed SHA. Issuance skipping that half is
+    the #1335 trap in its most durable form — a CLEAR for a downstream overlay's PR
+    records its verdict under the running clone's ``origin``, the merge queries the
+    recovered repo, finds nothing, and the CLEAR is unmergeable for its whole life
+    with re-issuing reproducing the same wrong slug.
+
+    The reconcile is skipped for an ``owner/repo``-shaped CLEAR slug, which
+    ``resolve_pr_repo_slug`` returns unchanged and which no fallback could have
+    mis-resolved — so an ordinary CLEAR pays no forge read. A reconcile that refuses
+    (a genuinely moved head, an offline forge) keeps the initial slug: issuance must
+    not become STRICTER than the merge gate it feeds, and the merge's own SHA bind
+    still refuses a moved head.
+    """
+    if normalize_repo_slug(request.slug):
+        return resolved_slug
+    try:
+        return _reconcile_slug_against_reviewed_sha(
+            initial_slug=resolved_slug,
+            pr_id=request.pr_id,
+            reviewed_sha=request.reviewed_sha.strip().lower(),
+            host_kind=request.host_kind,
+        )
+    except MergePreconditionError:
+        return resolved_slug
+
+
 # The 10-mixin base list is a django-typer requirement, not a composition-bar
 # violation: django-typer discovers ``@command``-decorated methods by walking the
 # Command class's own MRO, so each cohesive command group (rubric, plan, show,
@@ -88,8 +121,13 @@ class Command(
     SweepCommands,
     SpecCoverageCommands,
     ClearBackfillCommands,
-    TyperCommand,
+    # #4234: every refusal below is RETURNED so the loop can route on it —
+    # `CallCommandMergeKeystone.merge_clear` reads five keys off `merge`. The base class
+    # is what stops a `ship && clear` chain reading a refused CLEAR as an authorised one.
+    RefusalExitTyperCommand,
 ):
+    """Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue writes."""
+
     @command(help=TRANSITION_HELP)
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state; see ``--help`` for the allowed names."""
@@ -134,7 +172,7 @@ class Command(
         reason: Annotated[
             str,
             typer.Option(help="Why this UI-visible ticket may ship without a local-stack E2E (#88)."),
-        ],
+        ] = "",
         by: Annotated[
             str,
             typer.Option(help="Who is recording the override (audit trail)."),
@@ -174,11 +212,11 @@ class Command(
                 "--approver",
                 help="Human user id authorising the bypass; a maker/coding-agent/loop id is refused (#1967).",
             ),
-        ],
+        ] = "",
         head_sha: Annotated[
             str,
             typer.Option("--head-sha", help="Full 40-char hex SHA of the reviewed tree the bypass authorises."),
-        ],
+        ] = "",
     ) -> "E2EBypassResult":
         """Record a single-use user bypass of the mandatory-E2E gate (#1967).
 
@@ -192,6 +230,9 @@ class Command(
         """
         from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError  # noqa: PLC0415 — lazy ORM
 
+        if not approver.strip() or not head_sha.strip():
+            self.stderr.write("  e2e-bypass refused: --approver and --head-sha are both required.")
+            raise SystemExit(1)
         ticket = self._resolve_ticket(ticket_id)
         try:
             approval = E2EBypassApproval.record(ticket=ticket, head_sha=head_sha, approver_id=approver)
@@ -374,6 +415,7 @@ class Command(
         try:
             verdict_slug = resolve_pr_repo_slug(request)
             request = dataclasses.replace(request, host_kind=resolve_host_kind(request, repo_slug=verdict_slug))
+            verdict_slug = _verdict_slug(request, verdict_slug)
             with transaction.atomic():
                 clear = MergeClear.issue(request)
                 # Record the durable read-side sibling (a merge-safe judgment by
@@ -402,9 +444,10 @@ class Command(
         # ``--ticket-id`` is optional and no caller passes it, so a CLEAR is routinely
         # born with no ticket for the merge keystone to advance. The PR knows its own
         # ticket — adopt it AFTER issuance, so the issuance contract sees exactly the
-        # inputs the caller supplied.
+        # inputs the caller supplied. Keyed on verdict_slug for the same reason the
+        # verdict is: ``clear.slug`` is a workstream name that matches no PR row.
         if resolved_ticket is None:
-            resolved_ticket = clear.adopt_owning_ticket()
+            resolved_ticket = clear.adopt_owning_ticket(verdict_slug)
         self.stdout.write(
             f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]} on {clear.host_kind}"
         )

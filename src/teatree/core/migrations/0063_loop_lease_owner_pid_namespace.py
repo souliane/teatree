@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0061_prompt_body_blank"),
+        ("core", "0062_unclaimedintakecandidate"),
     ]
 
     operations = [

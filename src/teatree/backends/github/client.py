@@ -38,6 +38,12 @@ from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
+#: Intake's queue order. An unsorted GitHub search ranks by *best match* — a relevance
+#: score nobody set — so an issue that ranks low can lose every free slot indefinitely
+#: (#4238). The intake scanner re-sorts the merged result too; this makes each single
+#: query's order the same thing rather than something the merge has to undo.
+_OLDEST_FIRST = "sort=created&order=asc"
+
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
@@ -270,7 +276,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         firehose + cross-repo claim hole this closes — see the commit body).
         """
         query = quote_plus(f"is:issue is:open author:{author}" + "".join(f" repo:{s}" for s in repo_slugs))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return _gh_api_search_paginated(f"search/issues?q={query}&{_OLDEST_FIRST}&per_page=100", token=self._token)
 
     def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
         """Open issues carrying *label* — the owner-admission intake query (#3634).
@@ -279,7 +285,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         is repo-scoped exactly like the author query.
         """
         query = quote_plus(f'is:issue is:open label:"{label}"' + "".join(f" repo:{s}" for s in repo_slugs))
-        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        return _gh_api_search_paginated(f"search/issues?q={query}&{_OLDEST_FIRST}&per_page=100", token=self._token)
 
     def create_issue(
         self,

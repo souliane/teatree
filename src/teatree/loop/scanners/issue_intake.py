@@ -21,8 +21,23 @@ so an over-returning forge query cannot launder an untrusted author past rule 5.
 Claims go through the TOCTOU-safe :meth:`ImplementedIssueMarker.claim` (or the
 cross-instance fleet ref when that kill-switch is on), so a re-tick or a
 concurrent overlay never double-dispatches.
+
+Candidates are claimed OLDEST FILED FIRST (#4238). Each discovery query asks its forge
+for that order, and the merged set is re-sorted here — sorting inside one query says
+nothing about the union of several, so the merge is where fairness is actually decided.
+Plain age order needs no aging term to be starvation-free: a candidate's rank can only
+improve, because every issue filed after it sorts behind it. What can push it back is an
+older issue becoming admissible late (an admit label applied, a reopen, an author newly
+trusted) — an operator act, not a stream.
+
+Every admissible candidate the budget or the governor stopped us from claiming is
+recorded in :class:`UnclaimedIntakeCandidate`, because intake's own decision is per-tick
+and log-only: without the ledger a passed-over issue is indistinguishable from one that
+was never filed, which is how three issues went unadmitted for a full day with every
+health surface green.
 """
 
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -32,8 +47,8 @@ from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
-from teatree.core.intake.factory_admission import decide_issue_intake
-from teatree.core.models import ImplementedIssueMarker
+from teatree.core.intake.factory_admission import IntakeVerdict, decide_issue_intake
+from teatree.core.models import ImplementedIssueMarker, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.core.review.author_trust import (
     AuthorSubject,
     AutonomyGate,
@@ -54,6 +69,11 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+
+#: Where an issue with no readable filing date sorts. LAST, so a payload-shape change
+#: degrades the whole queue to arrival order instead of letting one undated issue
+#: overtake every dated one waiting ahead of it.
+_UNDATED = dt.datetime.max.replace(tzinfo=dt.UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +97,22 @@ def issue_url(issue: RawAPIDict) -> str:
 def _issue_title(issue: RawAPIDict) -> str:
     title = issue.get("title")
     return title if isinstance(title, str) else ""
+
+
+def issue_created_at(issue: RawAPIDict) -> dt.datetime | None:
+    """When *issue* was FILED — the intake queue's ordering key on both forges.
+
+    GitHub and GitLab both name the field ``created_at``. A naive timestamp is read as
+    UTC, which is what both forges emit; an absent or unparsable one yields ``None``.
+    """
+    raw = issue.get("created_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        moment = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=dt.UTC)
 
 
 def issue_author(issue: RawAPIDict) -> str:
@@ -165,44 +201,53 @@ class IssueIntakeScanner:
     readback_enabled: bool = True
     #: The single-ticket in-flight budget; 0 means uncapped.
     max_concurrent: int = 0
-    #: When False this tick only HEARTBEATS in-flight fleet claims and claims
-    #: nothing new — the heartbeat must run even at full budget or an in-flight
-    #: claim would expire mid-dispatch.
+    #: When False this tick claims nothing new. It still HEARTBEATS in-flight fleet
+    #: claims (one would otherwise expire mid-dispatch) and still runs discovery, so
+    #: the queue an unclaimable tick is sitting on is recorded rather than unseen —
+    #: the full-budget tick is exactly when a starved issue needs a witness (#4238).
     can_claim: bool = True
 
     def scan(self) -> list[ScanSignal]:
         wire.heartbeat_inflight_claims(self.overlay_name)
-        if not self.can_claim:
-            return []
         trusted = self._trusted_author_set()
-        operators = self._resolve_identities()
         candidates = self._candidate_issues(trusted)
         if not candidates:
+            UnclaimedIntakeCandidate.objects.sync(self.overlay_name, [])
             return []
-        open_prs = fetch_open_prs(self.host, authors=operators) if self.readback_enabled else []
-        merged_prs = fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else []
+        operators = self._resolve_identities()
         context = _TickContext(
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
-            open_prs=open_prs,
-            merged_prs=merged_prs,
+            open_prs=fetch_open_prs(self.host, authors=operators) if self.readback_enabled else [],
+            merged_prs=fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else [],
         )
         signals: list[ScanSignal] = []
+        waiting: list[WaitingCandidate] = []
+        claiming = self.can_claim
         for issue in candidates:
-            if self._budget_exhausted() or self._governor_denied():
-                break
             url = issue_url(issue)
             try:
-                signal = self._signal_for(issue, url, context=context)
+                verdict = self._admits(issue, url, context=context)
+                if verdict is None:
+                    continue
+                claiming = claiming and not (self._budget_exhausted() or self._governor_denied())
+                if claiming:
+                    self._append_claim(issue, url, verdict, signals)
+                    continue
             except Exception:
                 logger.exception("IssueIntakeScanner failed on issue %s", url)
                 continue
-            if signal is not None:
-                signals.append(signal)
+            waiting.append(
+                WaitingCandidate(issue_url=url, title=_issue_title(issue), issue_created_at=issue_created_at(issue)),
+            )
+        UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting)
         return signals
 
-    def _signal_for(self, issue: RawAPIDict, url: str, *, context: "_TickContext") -> ScanSignal | None:
-        """Decide *issue*, claim it when the verdict acts, and build its signal.
+    def _admits(self, issue: RawAPIDict, url: str, *, context: "_TickContext") -> "IntakeVerdict | None":
+        """The admitting verdict for *issue*, or ``None`` when the table refuses it.
+
+        Decides only — the claim is a separate step, so a candidate can be judged
+        admissible on a tick that has no budget to act on it.
 
         Rule 2's "work exists" fact is the union of the local ticket ledger and the
         forge read-back, so a cross-instance PR that already cites the issue is seen
@@ -226,18 +271,36 @@ class IssueIntakeScanner:
             work_exists=work_exists,
             admit_label=self.admit_label,
         )
-        if not verdict.acts:
-            logger.info(
-                "IssueIntakeScanner %s %s (author %r)%s",
-                verdict.value,
-                url,
-                issue_author(issue),
-                f": {readback_reason}" if readback_reason else "",
-            )
-            return None
-        marker = self._claim(url)
-        if marker is None:
-            return None
+        if verdict.acts:
+            return verdict
+        logger.info(
+            "IssueIntakeScanner %s %s (author %r)%s",
+            verdict.value,
+            url,
+            issue_author(issue),
+            f": {readback_reason}" if readback_reason else "",
+        )
+        return None
+
+    def _append_claim(
+        self,
+        issue: RawAPIDict,
+        url: str,
+        verdict: "IntakeVerdict",
+        signals: list[ScanSignal],
+    ) -> None:
+        """Claim *issue* and append its signal; a refused claim appends nothing.
+
+        A refusal means an existing marker or a live work lease already holds the issue,
+        so it is NOT a waiting candidate — someone is on it. That distinction is why the
+        claim attempt is the last step: only a candidate we never tried to claim is one
+        the budget passed over.
+        """
+        if self._claim(url) is None:
+            return
+        signals.append(self._signal(issue, url, verdict))
+
+    def _signal(self, issue: RawAPIDict, url: str, verdict: "IntakeVerdict") -> ScanSignal:
         return ScanSignal(
             kind="issue_intake.admitted",
             summary=f"Admitted for auto-implement: {_issue_title(issue)}",
@@ -345,12 +408,16 @@ class IssueIntakeScanner:
         return (user,) if user else ()
 
     def _candidate_issues(self, trusted: frozenset[str]) -> list[RawAPIDict]:
-        """Open, URL-bearing issues from both scoped discovery queries, deduped by URL.
+        """Open, URL-bearing issues from both scoped discovery queries, OLDEST FILED FIRST.
+
+        The sort is over the DEDUPED UNION, not per query: each query already asks its
+        forge for created-ascending, but a per-query order says nothing about the merge
+        of a per-author fan-out plus the label query, and the merge is what the budget
+        consumes. Sorting is stable, so issues the forge gave no filing date for keep
+        their arrival order behind the dated ones.
 
         An app handle (any ``/``-containing handle) is skipped outright: it can never
-        author a real intake, so its query is pure waste. Authors are sorted so the
-        query fan-out — and hence the claim order under a tight budget — is
-        deterministic across ticks.
+        author a real intake, so its query is pure waste.
 
         Each query is fault-isolated (#3508): one identity's rate limit, deleted
         account, or transient forge error is logged and skipped, so a sibling
@@ -374,7 +441,7 @@ class IssueIntakeScanner:
                 seen_urls,
                 issues,
             )
-        return issues
+        return sorted(issues, key=lambda issue: issue_created_at(issue) or _UNDATED)
 
     @staticmethod
     def _collect(

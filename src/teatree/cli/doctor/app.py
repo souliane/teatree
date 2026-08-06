@@ -52,6 +52,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_loop_schedule_liveness,
     _check_marker_jam,
     _check_shipped_seed_inertness,
+    _check_starved_intake_candidates,
     _check_t3_master_unheld_while_loops_tick,
 )
 from teatree.cli.doctor.checks_mcp import (
@@ -179,6 +180,7 @@ __all__ = (
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_starved_intake_candidates",
     "_check_t3_master_unheld_while_loops_tick",
     "_check_t3_shim_receipt",
     "_check_teatree_mcp_liveness",
@@ -222,8 +224,9 @@ def check(
         "--repair",
         help=(
             "Allow doctor to APPLY fixes that mutate state: re-point a relocated/hijacked "
-            "t3 editable install (#3231) AND clear a stale entrypoint-seeded "
-            "provision_max_concurrency pin (#3434). A plain run never mutates."
+            "t3 editable install (#3231), clear a stale entrypoint-seeded "
+            "provision_max_concurrency pin (#3434), and re-register the t3 Claude plugin. "
+            "A plain run never mutates."
         ),
     ),
     slack_roundtrip: bool = typer.Option(
@@ -310,6 +313,8 @@ def _run_loop_intent_gates() -> bool:
     loop/preset/schedule that is missing, disabled or not ticking) and ``_check_marker_jam``
     (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
     their return values are deliberately discarded so neither can become a gate by accident.
+    ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
+    never claimed) joins them: a slow queue is not a fault, an invisible one is.
 
     Three verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
     silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
@@ -331,6 +336,7 @@ def _run_loop_intent_gates() -> bool:
     _check_shipped_seed_inertness()
     _check_aged_sweep_skips()
     _check_marker_jam()
+    _check_starved_intake_candidates()
     intake_ok = _check_intake_budget_deadlock()
     scheduled_ok = _check_loop_schedule_liveness()
     master_ok = _check_t3_master_unheld_while_loops_tick()
@@ -419,12 +425,18 @@ def _run_config_posture_advisories() -> None:
     _check_config_rows_shadowing_shipped_defaults()
 
 
-def _run_advisory_finalisers() -> None:
-    """Surfacing-only passes that never gate the exit code."""
+def _run_advisory_finalisers(*, repair: bool) -> None:
+    """Surfacing-only passes that never gate the exit code.
+
+    ``repair`` reaches the plugin-registration pass because it WRITES: a plain run
+    reports the drift and touches nothing, honouring ``--repair``'s own promise that
+    "a plain run never mutates" — this pass used to rewrite the operator's
+    ``~/.claude/settings.json`` on every session start regardless.
+    """
     _check_singletons()
     _check_legacy_overlay_alias()
     report_missing_authorizations(typer.echo)
-    _ensure_plugin_registered()
+    _ensure_plugin_registered(repair=repair)
 
 
 def _run_mcp_checks(*, repair: bool = False) -> bool:
@@ -674,7 +686,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = _run_mcp_checks(repair=repair) and ok
 
-    _run_advisory_finalisers()
+    _run_advisory_finalisers(repair=repair)
 
     if ok:
         typer.echo("All checks passed")

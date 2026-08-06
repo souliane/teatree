@@ -250,7 +250,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Daily follow-up: MR discovery, ticket/PR sync, and reviewer reminders.",
       "name": "followup",
       "subcommands": [
         {
@@ -715,7 +715,7 @@
       ]
     },
     {
-      "help": "A ``TyperCommand`` whose returned refusal exits non-zero when run from argv.\n\nGated on ``_called_from_command_line`` \u2014 the flag Django's ``run_from_argv``\nsets and ``call_command`` does not \u2014 because the two callers need opposite\nthings from one refusal: a shell needs a failing status, an in-process\nconsumer needs the dict.",
+      "help": "Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan posting.",
       "name": "pr",
       "subcommands": [
         {
@@ -1099,7 +1099,7 @@
       ]
     },
     {
-      "help": "The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritance.\n\nThe ``ticket`` :class:`~django_typer.management.TyperCommand` inherits this mixin\nso the two commands mount under it while their bodies live here, off the cap-bound\n``ticket.py``. Both resolve the ticket, run the pure parse/validate/mutate helpers,\nand translate a :class:`RubricCommandError` / :class:`RubricError` into a ``stderr``\nrefusal + a nonzero exit.",
+      "help": "Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue writes.",
       "name": "ticket",
       "subcommands": [
         {
