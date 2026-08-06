@@ -24,7 +24,7 @@ class _LoopFlagAndCredentialSettings:
     # admitted issues without an operator opt-in. Flip OFF to make the loop a hard
     # NO-OP. The per-issue admission decision table still applies.
     issue_implementer_enabled: bool = True
-    # #3634 The owner-applied ADMISSION label — rule 4 of the intake decision
+    # #3634 The owner-applied ADMISSION label — rule 5 of the intake decision
     # table, and the label-scoped discovery query. It is the ONLY route by which an
     # UNTRUSTED author's issue reaches the factory; a trusted author needs no label
     # at all. Empty resolves to the shipped ``t3-auto`` convention

@@ -1,5 +1,7 @@
 """The single top-down intake decision function (#3634)."""
 
+from typing import TYPE_CHECKING
+
 from django.test import TestCase
 
 from teatree.core.intake.factory_admission import (
@@ -12,6 +14,9 @@ from teatree.core.intake.factory_admission import (
 )
 from teatree.core.models import ConfigSetting
 
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
+
 
 def _facts(
     *,
@@ -23,7 +28,7 @@ def _facts(
 
 
 class TestDecisionTableOrder:
-    """Rules 1-5 of the issue's table, evaluated top-down, first match wins."""
+    """Rules 1-6 of the issue's table, evaluated top-down, first match wins."""
 
     def test_needs_triage_ignores_even_a_trusted_author(self) -> None:
         verdict = decide_intake(
@@ -69,6 +74,56 @@ class TestDecisionTableOrder:
         assert verdict is IntakeVerdict.IGNORE_NOT_ADMITTED
 
 
+class TestExcludeTier:
+    """The overlay's ``exclude_labels`` is a hold like ``needs-triage`` (#4134)."""
+
+    def test_an_excluded_label_ignores_even_a_trusted_author(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"interactive-implementation"}), author_trusted=True),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"interactive-implementation"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+        assert not verdict.acts
+
+    def test_an_excluded_label_outranks_the_admit_label(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"t3-auto", "on-hold"})),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+
+    def test_needs_triage_outranks_the_exclude_tier(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"needs-triage", "on-hold"})),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_NEEDS_TRIAGE
+
+    def test_the_exclude_tier_outranks_existing_work(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"on-hold"}), work_exists=True),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+
+    def test_an_unmatched_exclude_list_leaves_the_verdict_alone(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"bug"}), author_trusted=True),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.ACT_TRUSTED_AUTHOR
+
+    def test_the_default_empty_policy_excludes_nothing(self) -> None:
+        """An overlay that never set ``exclude_labels`` keeps its pre-#4134 verdicts."""
+        verdict = decide_intake(_facts(labels=frozenset({"on-hold"}), author_trusted=True), admit_label="t3-auto")
+        assert verdict is IntakeVerdict.ACT_TRUSTED_AUTHOR
+
+
 class TestPayloadLabels:
     def test_reads_both_forge_label_shapes(self) -> None:
         assert payload_labels({"labels": ["a", {"name": "b"}]}) == frozenset({"a", "b"})
@@ -97,6 +152,20 @@ class TestPayloadFacade:
             decide_issue_intake({}, author_trusted=True, work_exists=False, admit_label="t3-auto")
             is IntakeVerdict.ACT_TRUSTED_AUTHOR
         )
+
+    def test_the_exclude_policy_reaches_the_table_through_the_facade(self) -> None:
+        both_forge_shapes: list[RawAPIDict] = [{"labels": [{"name": "on-hold"}]}, {"labels": ["on-hold"]}]
+        for payload in both_forge_shapes:
+            assert (
+                decide_issue_intake(
+                    payload,
+                    author_trusted=True,
+                    work_exists=False,
+                    admit_label="t3-auto",
+                    exclude_labels=frozenset({"on-hold"}),
+                )
+                is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+            )
 
 
 class TestResolveAdmitLabel(TestCase):

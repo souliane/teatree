@@ -12,11 +12,11 @@ Discovery is scoped so the factory never even fetches work it may not do:
     overlay's own repo slugs — a stranger's issue is never fetched;
 * one label-scoped query for the owner-applied admit label, same repo scope —
     this is the ONLY route by which an untrusted author's issue enters, and it
-    requires the owner's explicit label (rule 4).
+    requires the owner's explicit label (rule 5).
 
 Selection narrows; the decision function decides. Every candidate is re-checked
 at claim time through the shared :mod:`~teatree.core.review.author_trust` seam,
-so an over-returning forge query cannot launder an untrusted author past rule 5.
+so an over-returning forge query cannot launder an untrusted author past rule 6.
 
 Claims go through the TOCTOU-safe :meth:`ImplementedIssueMarker.claim` (or the
 cross-instance fleet ref when that kill-switch is on), so a re-tick or a
@@ -175,7 +175,7 @@ class IssueIntakeScanner:
 
     ``admit_label`` is the owner-applied admission label (the effective
     ``issue_implementer_label``). It is BOTH the label-scoped discovery query and
-    rule 4 of the decision table — an untrusted author's issue enters only through
+    rule 5 of the decision table — an untrusted author's issue enters only through
     it.
 
     ``trusted_authors`` is the CONFIG tier of the trust union (the owner's
@@ -187,6 +187,10 @@ class IssueIntakeScanner:
     ``identities`` is the OPERATOR's own handle set. It is deliberately NOT the
     trust set: it scopes the read-back's PR queries, because the PR implementing an
     issue is authored by the operator regardless of who filed the issue.
+
+    ``exclude_labels`` is the overlay's denylist (``OverlayConfig.exclude_labels``) —
+    rule 2 of the decision table. It holds an issue whoever filed it, so it is the
+    operator's reservation surface against the factory (#4134).
     """
 
     host: CodeHostBackend
@@ -194,6 +198,7 @@ class IssueIntakeScanner:
     overlay_name: str = ""
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
+    exclude_labels: tuple[str, ...] = field(default_factory=tuple)
     #: The overlay's OWN repo slugs (``owner/name``). Every discovery query is
     #: scoped to them. Empty keeps the pre-scope global search (back-compat).
     repo_slugs: tuple[str, ...] = field(default_factory=tuple)
@@ -249,7 +254,7 @@ class IssueIntakeScanner:
         Decides only — the claim is a separate step, so a candidate can be judged
         admissible on a tick that has no budget to act on it.
 
-        Rule 2's "work exists" fact is the union of the local ticket ledger and the
+        Rule 3's "work exists" fact is the union of the local ticket ledger and the
         forge read-back, so a cross-instance PR that already cites the issue is seen
         even though no local row exists.
         """
@@ -270,6 +275,7 @@ class IssueIntakeScanner:
             author_trusted=author_is_trusted(issue, context.trusted),
             work_exists=work_exists,
             admit_label=self.admit_label,
+            exclude_labels=frozenset(self.exclude_labels),
         )
         if verdict.acts:
             return verdict
@@ -379,7 +385,7 @@ class IssueIntakeScanner:
         return config_tier | trusted_handles()
 
     def _tracked_issue_urls(self) -> frozenset[str]:
-        """Issue URLs a ticket already owns — rule 2's local half.
+        """Issue URLs a ticket already owns — rule 3's local half.
 
         Ownership is :meth:`Ticket.issue_owning_states` (every state but IGNORED), the
         SSOT rather than a second hand-maintained list — the list this replaced omitted
