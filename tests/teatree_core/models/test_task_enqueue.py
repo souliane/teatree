@@ -5,13 +5,13 @@ from django.test import TestCase
 
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.core.models.ticket import Ticket
-from teatree.core.task_enqueue import (
+from teatree.core.models.task_enqueue import (
     DuplicatePhaseTaskError,
     TaskEnqueueError,
     enqueue_phase_task,
     enqueue_phase_task_once,
 )
+from teatree.core.models.ticket import Ticket
 
 
 class EnqueuePhaseTaskTestCase(TestCase):

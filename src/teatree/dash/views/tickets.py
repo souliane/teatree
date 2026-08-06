@@ -19,8 +19,8 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 from django_fsm import TransitionNotAllowed
 
+from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task_once
 from teatree.core.models.ticket import Ticket
-from teatree.core.task_enqueue import TaskEnqueueError, enqueue_phase_task_once
 from teatree.dash import audit
 from teatree.dash.task_actions import ENQUEUEABLE_PHASES
 from teatree.dash.ticket_detail import build_ticket_detail, legal_transition_names
