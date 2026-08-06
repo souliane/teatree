@@ -55,6 +55,7 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         "expire": lambda: None,
         "kill_ticks": lambda: None,
         "reclaim_leases": lambda: None,
+        "reap_leases": lambda: None,
         "claim_master": lambda: None,
         "release_master": lambda: None,
     }
@@ -125,6 +126,35 @@ class TestClaimSeamWiring:
 
         assert seams.claim_master is worker_mod._claim_t3_master
         assert seams.release_master is worker_mod._release_t3_master
+        assert seams.reap_leases is worker_mod._reap_expired_leases
+
+
+class TestExpiredLeaseReapSeam:
+    """The debris reap rides the throttled lease beat, never the 5s kill-switch poll (#4253)."""
+
+    def test_it_runs_on_the_supervisor_beat(self) -> None:
+        reaps: list[int] = []
+        worker = _worker(polls=3, reap_leases=lambda: reaps.append(1))
+        worker.run()
+
+        assert reaps, "nothing else retires work-lease rows, so the beat is the only reaper"
+
+    def test_it_is_throttled_with_the_master_refresh_not_run_every_poll(self) -> None:
+        # Three 5s polls against the 300s refresh cadence: the beat has not come round, so
+        # a reap here would be a table delete on every kill-switch poll.
+        reaps: list[int] = []
+        worker = _worker(polls=3, poll_seconds=5.0, reap_leases=lambda: reaps.append(1))
+        worker.run()
+
+        assert reaps == []
+
+    def test_a_reap_error_never_crashes_the_supervisor(self) -> None:
+        def _boom() -> None:
+            msg = "db hiccup"
+            raise RuntimeError(msg)
+
+        worker = _worker(polls=2, reap_leases=_boom)
+        worker.run()  # must not raise
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

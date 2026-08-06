@@ -1,0 +1,145 @@
+"""teatree.loops.master_lease_contradiction — unheld lease vs. ticking loops (#4253).
+
+The two facts the skip message collapsed into one. Integration-first against the real
+``Loop`` / ``LoopLease`` rows, because the finding IS a join of those two tables and a
+stubbed read would prove nothing about the shape that produced the ticket: five loops
+inside their own cadence while ``t3-master`` read unheld.
+
+The seeded fleet ships with ``last_run_at`` unset, so it contributes no evidence — a
+baseline assertion in each class pins that, so a future seed that DOES tick fails loudly
+here rather than silently satisfying every arm below.
+"""
+
+import datetime as dt
+
+import django.test
+from django.utils import timezone
+
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT
+from teatree.core.models import Loop, LoopLease, Prompt
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from teatree.loops.master_lease_contradiction import (
+    TICK_FRESHNESS_MULTIPLE,
+    UnheldMasterLease,
+    ticking_interval_loops,
+    unheld_master_lease_with_live_ticks,
+)
+
+REVIEW = "t4253-review"
+SHIP = "t4253-ship"
+STANDUP = "t4253-standup"
+
+
+def _loop(name: str, *, delay_seconds: int | None, last_run_at: dt.datetime | None, enabled: bool = True) -> Loop:
+    prompt = Prompt.objects.create(name=f"prompt-{name}", body=f"run {name}")
+    return Loop.objects.create(
+        name=name, prompt=prompt, enabled=enabled, delay_seconds=delay_seconds, last_run_at=last_run_at
+    )
+
+
+class TestTickingIntervalLoops(django.test.TestCase):
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        assert ticking_interval_loops(self.now) == (), "the seeded fleet must contribute no ticks"
+
+    def test_a_loop_inside_its_own_cadence_is_evidence_of_a_live_tick(self) -> None:
+        _loop(REVIEW, delay_seconds=60, last_run_at=self.now - dt.timedelta(seconds=30))
+
+        assert [name for name, _ in ticking_interval_loops(self.now)] == [REVIEW]
+
+    def test_a_loop_overrun_past_the_freshness_multiple_is_not(self) -> None:
+        stale = self.now - dt.timedelta(seconds=60 * TICK_FRESHNESS_MULTIPLE + 1)
+        _loop(REVIEW, delay_seconds=60, last_run_at=stale)
+
+        assert ticking_interval_loops(self.now) == ()
+
+    def test_a_disabled_loop_is_never_evidence(self) -> None:
+        _loop(REVIEW, delay_seconds=60, last_run_at=self.now, enabled=False)
+
+        assert ticking_interval_loops(self.now) == ()
+
+    def test_a_never_run_loop_is_never_evidence(self) -> None:
+        _loop(REVIEW, delay_seconds=60, last_run_at=None)
+
+        assert ticking_interval_loops(self.now) == ()
+
+    def test_a_cron_loop_is_not_evidence_however_recent(self) -> None:
+        # A daily loop's anchor says nothing about whether ticks are being driven NOW,
+        # so only interval loops count — a fresh cron anchor must not mask an idle box.
+        _loop(STANDUP, delay_seconds=None, last_run_at=self.now)
+
+        assert ticking_interval_loops(self.now) == ()
+
+    def test_the_age_travels_with_the_name(self) -> None:
+        _loop(REVIEW, delay_seconds=600, last_run_at=self.now - dt.timedelta(seconds=45))
+
+        ((name, age),) = ticking_interval_loops(self.now)
+
+        assert name == REVIEW
+        assert 44 <= age <= 46
+
+
+class TestUnheldMasterLeaseWithLiveTicks(django.test.TestCase):
+    """The exact box the ticket was filed from: worker driving ticks, lease reading unheld."""
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        assert unheld_master_lease_with_live_ticks(self.now) is None, "an untouched fleet is not the finding"
+
+    def _tick(self, name: str) -> None:
+        _loop(name, delay_seconds=60, last_run_at=self.now - dt.timedelta(seconds=5))
+
+    def _hold_the_lease(self) -> None:
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id=LOOP_RUNNER_SESSION_ID, owner_pid=None)
+
+    def test_an_unheld_lease_with_loops_ticking_is_the_finding(self) -> None:
+        self._tick(REVIEW)
+        self._tick(SHIP)
+
+        finding = unheld_master_lease_with_live_ticks(self.now)
+
+        assert finding is not None
+        assert finding.ticking_loops == (REVIEW, SHIP)
+        assert finding.freshest_tick_seconds < 10
+
+    def test_a_held_lease_is_not_a_finding(self) -> None:
+        self._tick(REVIEW)
+        self._hold_the_lease()
+
+        assert unheld_master_lease_with_live_ticks(self.now) is None
+
+    def test_an_unheld_lease_on_an_idle_box_is_not_a_finding(self) -> None:
+        # An honestly idle box: nothing ticking, nobody owning. A stopped chain belongs
+        # to the schedule-liveness check, not to this one.
+        assert unheld_master_lease_with_live_ticks(self.now) is None
+
+    def test_a_released_lease_reopens_the_finding(self) -> None:
+        self._tick(REVIEW)
+        self._hold_the_lease()
+        LoopLease.objects.release_ownership(T3_MASTER_SLOT, session_id=LOOP_RUNNER_SESSION_ID)
+
+        assert unheld_master_lease_with_live_ticks(self.now) is not None
+
+
+class TestDescribe:
+    def test_it_names_the_ticking_loops_and_the_freshest_age(self) -> None:
+        described = UnheldMasterLease(ticking_loops=("review", "ship"), freshest_tick_seconds=6.2).describe()
+
+        assert "2 loop(s)" in described
+        assert "review, ship" in described
+        assert "freshest 6s ago" in described
+
+    def test_a_long_list_is_summarised_rather_than_dumped(self) -> None:
+        described = UnheldMasterLease(
+            ticking_loops=tuple(f"l{i}" for i in range(8)), freshest_tick_seconds=1.0
+        ).describe()
+
+        assert "and 3 more" in described
+        assert "l7" not in described
+
+    def test_exactly_the_named_count_carries_no_more_suffix(self) -> None:
+        described = UnheldMasterLease(
+            ticking_loops=tuple(f"l{i}" for i in range(5)), freshest_tick_seconds=1.0
+        ).describe()
+
+        assert "more" not in described

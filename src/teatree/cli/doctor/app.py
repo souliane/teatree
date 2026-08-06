@@ -52,6 +52,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_loop_schedule_liveness,
     _check_marker_jam,
     _check_shipped_seed_inertness,
+    _check_t3_master_unheld_while_loops_tick,
 )
 from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
@@ -178,6 +179,7 @@ __all__ = (
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_t3_master_unheld_while_loops_tick",
     "_check_t3_shim_receipt",
     "_check_teatree_mcp_liveness",
     "_check_teatree_mcp_registration",
@@ -318,7 +320,10 @@ def _run_loop_intent_gates() -> bool:
     going nowhere admits no work at all while every other signal reads healthy.
     ``_check_loop_schedule_liveness`` (#4140) is the scheduledness reading no cadence
     surface carries: a loop whose chain was dropped keeps a recent anchor, so it reports
-    as healthy while nothing will ever fire it again. All three are evaluated before the
+    as healthy while nothing will ever fire it again.
+    ``_check_t3_master_unheld_while_loops_tick`` (#4253) is its inverse — the chains fire
+    fine, but the ``t3-master`` owner lease no reactive cycle can run without is unheld,
+    and no other surface reads that lease at all. All four are evaluated before the
     ``and`` so none can mask another.
     """
     _check_loop_presets()
@@ -328,7 +333,8 @@ def _run_loop_intent_gates() -> bool:
     _check_marker_jam()
     intake_ok = _check_intake_budget_deadlock()
     scheduled_ok = _check_loop_schedule_liveness()
-    return _check_intent_freshness() and intake_ok and scheduled_ok
+    master_ok = _check_t3_master_unheld_while_loops_tick()
+    return _check_intent_freshness() and intake_ok and scheduled_ok and master_ok
 
 
 def _check_claude_session_posture() -> bool:
