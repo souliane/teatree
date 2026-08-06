@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from teatree.config import discover_overlays
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.head_read_diagnosis import unreadable_head_advisory
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
@@ -267,7 +268,7 @@ def _iter_candidate_repo_slugs() -> list[str]:
         companion repo) was previously unmergeable because the candidate set
         never contained it (#2323).
 
-    Used by :func:`_probe_candidate_repos` to recover from the #1335
+    Used by :func:`_probe_candidate_heads` to recover from the #1335
     cross-repo confusion: a CLEAR issued from the teatree clone for a PR
     in a downstream overlay's repo (e.g. ``downstream-org/downstream-overlay#159``)
     used to resolve to ``souliane/teatree``'s same-numbered (unrelated)
@@ -326,6 +327,13 @@ def _reconcile_slug_against_reviewed_sha(
     to whichever was probed first would merge an unverified twin. That case
     raises a :class:`MergePreconditionError` naming every ambiguous repo —
     the gate never silently picks one.
+
+    A no-match raise is classified before it is composed (#4239). A forge read
+    that returns nothing is a NON-answer, so "the head moved" is a claim the
+    gate has no evidence for: when the initial read AND every candidate probe
+    came back empty, the refusal says the head could not be READ and names the
+    venue's missing ambient credential instead. Any readable probe means the
+    forge answered, so the head-moved diagnosis stands unchanged.
     """
     if not reviewed_sha:
         return initial_slug
@@ -333,23 +341,18 @@ def _reconcile_slug_against_reviewed_sha(
     initial_live = query.live_head_sha()
     if initial_live == reviewed_sha:
         return initial_slug
-    # An empty ``initial_live`` is itself a #1335 signal, NOT merely a transient
-    # auth/network failure: a cross-repo CLEAR resolves to the running clone's
-    # ``origin`` (the wrong repo), which has no PR <pr_id> at all, so the forge
-    # returns an empty head for it. Fall through to the cross-repo probe so a
-    # candidate overlay repo whose PR <pr_id> carries ``reviewed_sha`` is
-    # recovered. The genuinely-absent case (no candidate matches) is still
-    # covered by the ``MergePreconditionError`` below, whose message names every
-    # candidate considered — so a real auth/network outage still fails loud.
+    # An empty ``initial_live`` can be a #1335 signal rather than an auth/network
+    # failure: a cross-repo CLEAR resolves to the running clone's ``origin`` (the
+    # wrong repo), which has no PR <pr_id> at all, so the forge returns an empty
+    # head for it. Fall through to the cross-repo probe either way — a candidate
+    # overlay repo whose PR <pr_id> carries ``reviewed_sha`` is recovered, and the
+    # per-candidate heads are what tell the two causes apart when none matches.
     candidates = _iter_candidate_repo_slugs()
     # The initial slug was already probed above — exclude it from the secondary
     # set so the candidates list in the error message reflects what was probed.
     other_candidates = [c for c in candidates if c != initial_slug]
-    matches = _probe_candidate_repos(
-        query=query,
-        reviewed_sha=reviewed_sha,
-        candidates=other_candidates,
-    )
+    probed_heads = _probe_candidate_heads(query=query, candidates=other_candidates)
+    matches = [slug for slug, head in probed_heads.items() if head == reviewed_sha]
     if len(matches) > 1:
         # #2338: a same-SHA multi-match is an ambiguity the merge gate must
         # never resolve silently — binding to ``matches[0]`` could merge an
@@ -377,6 +380,16 @@ def _reconcile_slug_against_reviewed_sha(
         )
         return match
     considered = [initial_slug, *other_candidates]
+    if not initial_live and not any(probed_heads.values()):
+        msg = (
+            f"could not read the live head for PR #{pr_id}: every forge read in this attempt "
+            f"returned nothing (probed {considered}), so the head was never compared with the "
+            f"reviewed SHA {reviewed_sha} — this is NOT evidence that the head moved. "
+            f"{unreadable_head_advisory(host_kind)} "
+            f"Re-escalate; the loop never self-issues a replacement "
+            f"(§17.4.3 step 2 / #4239)."
+        )
+        raise MergePreconditionError(msg)
     msg = (
         f"PR head moved: live={initial_live or '(unresolved)'} != "
         f"reviewed={reviewed_sha} on the initial repo ({initial_slug!r}), and "
@@ -390,30 +403,31 @@ def _reconcile_slug_against_reviewed_sha(
     raise MergePreconditionError(msg)
 
 
-def _probe_candidate_repos(
+def _probe_candidate_heads(
     *,
     query: CodeHostQuery,
-    reviewed_sha: str,
     candidates: list[str],
-) -> list[str]:
-    """Every candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha* (#2338).
+) -> dict[str, str]:
+    """Each candidate ``owner/repo`` mapped to its live PR <pr_id> head SHA (#2338, #4239).
 
-    Probes **all** candidates and returns the full list of those whose live
-    head SHA matches *reviewed_sha* — the #1335 recovery path enumerates the
-    repos that could own the reviewed work, and the caller requires EXACTLY
-    ONE to match. Returning every match (not just the first) is what lets the
-    caller detect a same-SHA ambiguity: when two distinct candidate repos
-    (a fork/mirror, or an overlay working-repo that aliases another) both
-    expose PR <pr_id> at the same reviewed SHA, binding silently to whichever
-    was probed first would merge an unverified twin. The list lets the caller
-    raise instead, naming every ambiguous repo.
+    Probes **all** candidates in order — the #1335 recovery path enumerates the
+    repos that could own the reviewed work, and the caller requires EXACTLY ONE
+    to carry the reviewed SHA. Reporting every candidate (not stopping at the
+    first match) is what lets the caller detect a same-SHA ambiguity: when two
+    distinct candidate repos (a fork/mirror, or an overlay working-repo that
+    aliases another) both expose PR <pr_id> at the same reviewed SHA, binding
+    silently to whichever was probed first would merge an unverified twin.
+
+    Reporting the HEAD rather than a match verdict is what lets the caller tell a
+    forge that answered "a different SHA" from one that did not answer at all
+    (#4239) — the two need opposite diagnoses and are indistinguishable once
+    collapsed to a boolean.
 
     Reuses *query*'s already-resolved backend (:meth:`CodeHostQuery.rebound_to`),
     re-reading ``pulls/<N>`` per candidate slug without re-resolving the transport.
     The per-candidate swallow-failures contract is preserved: a probe error
     surfaces as an empty head from :meth:`CodeHostQuery.live_head_sha`, which never
-    equals *reviewed_sha*, so a failing candidate is simply absent from the
-    matches — never counted, never raising on its own. Returns ``[]`` when no
-    candidate matches (a real force-push or a truly stale CLEAR).
+    equals a reviewed SHA, so a failing candidate can never be selected — and
+    never raises on its own.
     """
-    return [slug for slug in candidates if query.rebound_to(slug).live_head_sha() == reviewed_sha]
+    return {slug: query.rebound_to(slug).live_head_sha() for slug in candidates}

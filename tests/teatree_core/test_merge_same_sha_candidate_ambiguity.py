@@ -1,6 +1,6 @@
 """Same-SHA multi-candidate ambiguity must fail loud, never silently bind (#2338).
 
-The #1335 cross-repo probe (``_probe_candidate_repos``) recovers the repo whose
+The #1335 cross-repo probe (``_probe_candidate_heads``) recovers the repo whose
 PR #N head matches the reviewed SHA when the initially-resolved repo's PR is an
 unrelated same-numbered PR. The #2327 candidate-set widening (overlay
 working-repos) made it possible for TWO distinct candidate repos to expose PR #N
@@ -55,6 +55,15 @@ def _head_by_repo(matching: set[str]):
     return _live_head
 
 
+def _probe_matches(candidates: list[str]) -> list[str]:
+    """The candidates carrying the reviewed SHA, derived exactly as the caller derives them."""
+    heads = pr_slug_resolution._probe_candidate_heads(
+        query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
+        candidates=candidates,
+    )
+    return [slug for slug, head in heads.items() if head == _REVIEWED_SHA]
+
+
 class TestSameShaMultiCandidateRaises(TestCase):
     """#2338: two candidates at the SAME reviewed SHA → raise naming both."""
 
@@ -71,11 +80,7 @@ class TestSameShaMultiCandidateRaises(TestCase):
             autospec=True,
             side_effect=_head_by_repo({_REPO_ONE, _REPO_TWO}),
         ):
-            matches = pr_slug_resolution._probe_candidate_repos(
-                query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
-                reviewed_sha=_REVIEWED_SHA,
-                candidates=[_REPO_ONE, _REPO_TWO],
-            )
+            matches = _probe_matches([_REPO_ONE, _REPO_TWO])
 
         assert matches == [_REPO_ONE, _REPO_TWO], (
             f"probe must return every candidate whose head matches the reviewed SHA; got {matches!r}"
@@ -124,11 +129,7 @@ class TestSingleMatchHappyPathPreserved(TestCase):
             autospec=True,
             side_effect=_head_by_repo({_REPO_ONE}),
         ):
-            matches = pr_slug_resolution._probe_candidate_repos(
-                query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
-                reviewed_sha=_REVIEWED_SHA,
-                candidates=[_REPO_ONE, _REPO_TWO],
-            )
+            matches = _probe_matches([_REPO_ONE, _REPO_TWO])
 
         assert matches == [_REPO_ONE]
 
@@ -164,11 +165,7 @@ class TestDifferentShaGuardPreserved(TestCase):
             autospec=True,
             side_effect=_head_by_repo(set()),
         ):
-            matches = pr_slug_resolution._probe_candidate_repos(
-                query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
-                reviewed_sha=_REVIEWED_SHA,
-                candidates=[_REPO_ONE, _REPO_TWO],
-            )
+            matches = _probe_matches([_REPO_ONE, _REPO_TWO])
 
         assert matches == []
 
