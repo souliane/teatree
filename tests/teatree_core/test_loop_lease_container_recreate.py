@@ -39,8 +39,18 @@ WORKER_PID = 7
 
 
 def _claim_as_worker(session_id: str = LOOP_RUNNER_SESSION_ID, *, ttl_seconds: int = 1800) -> None:
-    """Claim ``t3-master`` the way the worker does: its own pid, stamped with its namespace."""
-    with patch.object(manager, "reader_pid_namespace", return_value=WORKER_NS):
+    """Claim ``t3-master`` the way the worker does: its own pid, stamped with its namespace.
+
+    The probe answers True because a claimer is anchoring on ``os.getpid()`` — its own
+    live process, in its own namespace. Leaving it to the host would decide the test:
+    ``anchorable_owner_pid`` nulls a pid the box cannot resolve, and every case below
+    would then exercise the null-pid path instead of the cross-namespace one.
+    """
+    with (
+        patch.object(manager, "reader_pid_namespace", return_value=WORKER_NS),
+        patch.object(liveness, "reader_pid_namespace", return_value=WORKER_NS),
+        patch("teatree.utils.singleton.pid_alive", return_value=True),
+    ):
         LoopLease.objects.claim_ownership(
             T3_MASTER_SLOT, session_id=session_id, owner_pid=WORKER_PID, ttl_seconds=ttl_seconds
         )
@@ -158,7 +168,11 @@ class TestTheNextWorkerGenerationRecovers:
         # the new generation refreshes its own slot immediately rather than waiting a TTL.
         _claim_as_worker()
 
-        with patch.object(manager, "reader_pid_namespace", return_value=SIBLING_NS):
+        with (
+            patch.object(manager, "reader_pid_namespace", return_value=SIBLING_NS),
+            patch.object(liveness, "reader_pid_namespace", return_value=SIBLING_NS),
+            patch("teatree.utils.singleton.pid_alive", return_value=True),
+        ):
             won, owner = LoopLease.objects.claim_ownership(
                 T3_MASTER_SLOT, session_id=LOOP_RUNNER_SESSION_ID, owner_pid=WORKER_PID
             )
