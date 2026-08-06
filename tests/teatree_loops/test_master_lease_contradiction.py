@@ -19,6 +19,7 @@ from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import Loop, LoopLease, Prompt
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
 from teatree.loops.master_lease_contradiction import (
+    LIVE_TICK_CEILING_SECONDS,
     TICK_FRESHNESS_MULTIPLE,
     UnheldMasterLease,
     ticking_interval_loops,
@@ -78,6 +79,31 @@ class TestTickingIntervalLoops(django.test.TestCase):
         assert name == REVIEW
         assert 44 <= age <= 46
 
+    def test_a_daily_interval_loops_hours_old_anchor_is_not_evidence(self) -> None:
+        # The measured shape on a real box: five enabled interval loops, freshest anchor
+        # 5.9 HOURS old, every one inside 2x its own multi-hour cadence — so the finding
+        # fired and read "ticking on cadence ... freshest 21306s ago" about an idle box.
+        # A daily loop on schedule says nothing about whether ticks are driven RIGHT NOW,
+        # which is the only claim this evidence is allowed to make.
+        _loop(STANDUP, delay_seconds=86_400, last_run_at=self.now - dt.timedelta(hours=20))
+
+        assert ticking_interval_loops(self.now) == ()
+
+    def test_evidence_is_capped_by_wall_clock_not_only_by_cadence(self) -> None:
+        # Just past the absolute ceiling but far inside 2x cadence: cadence alone would
+        # admit it, so this pins that the ceiling is a SECOND, independent condition.
+        stale = self.now - dt.timedelta(seconds=LIVE_TICK_CEILING_SECONDS + 60)
+        _loop(REVIEW, delay_seconds=LIVE_TICK_CEILING_SECONDS * 4, last_run_at=stale)
+
+        assert ticking_interval_loops(self.now) == ()
+
+    def test_a_long_cadence_loop_that_ticked_moments_ago_is_still_evidence(self) -> None:
+        # The ceiling must not throw away a genuine live tick: a slow loop that fired
+        # seconds ago is exactly the "something is driving ticks now" signal.
+        _loop(REVIEW, delay_seconds=86_400, last_run_at=self.now - dt.timedelta(seconds=5))
+
+        assert [name for name, _ in ticking_interval_loops(self.now)] == [REVIEW]
+
 
 class TestUnheldMasterLeaseWithLiveTicks(django.test.TestCase):
     """The exact box the ticket was filed from: worker driving ticks, lease reading unheld."""
@@ -111,6 +137,16 @@ class TestUnheldMasterLeaseWithLiveTicks(django.test.TestCase):
     def test_an_unheld_lease_on_an_idle_box_is_not_a_finding(self) -> None:
         # An honestly idle box: nothing ticking, nobody owning. A stopped chain belongs
         # to the schedule-liveness check, not to this one.
+        assert unheld_master_lease_with_live_ticks(self.now) is None
+
+    def test_a_quiet_box_of_slow_loops_on_schedule_is_not_a_finding(self) -> None:
+        # Reproduced live: a real box whose enabled loops are all multi-hour cadences,
+        # freshest anchor ~6h old. Every one is inside 2x its own cadence, so a
+        # cadence-only reading called it "ticking on cadence" and hard-FAILed the doctor
+        # on a box where nothing had driven a tick since the small hours.
+        for name, delay in ((REVIEW, 21_600), (SHIP, 43_200), (STANDUP, 86_400)):
+            _loop(name, delay_seconds=delay, last_run_at=self.now - dt.timedelta(hours=6))
+
         assert unheld_master_lease_with_live_ticks(self.now) is None
 
     def test_a_released_lease_reopens_the_finding(self) -> None:

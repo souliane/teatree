@@ -12,9 +12,11 @@ lease with NOTHING ticking is not this finding — that is an honestly idle box,
 stopped chain is already
 :func:`teatree.loops.schedule_liveness.unscheduled_loops`'s to report.
 
-Only INTERVAL loops count as evidence. A daily loop's anchor can be twenty hours old and
-still perfectly on schedule, so it says nothing about whether anything is driving ticks
-right now; an interval loop inside :data:`TICK_FRESHNESS_MULTIPLE` of its own cadence does.
+Only INTERVAL loops count as evidence, and only ones that ticked within
+:data:`LIVE_TICK_CEILING_SECONDS` AND inside :data:`TICK_FRESHNESS_MULTIPLE` of their own
+cadence. A daily loop twenty hours into its schedule satisfies the cadence test while
+saying nothing about whether anything is driving ticks right now, which is the only claim
+this evidence is allowed to make.
 """
 
 import datetime as dt
@@ -28,6 +30,13 @@ TICK_FRESHNESS_MULTIPLE = 2
 
 #: How many ticking loop names the finding names before summarising the rest as a count.
 NAMED_LOOPS_IN_FINDING = 5
+
+#: Wall-clock ceiling on evidence, independent of any loop's own cadence. The claim this
+#: evidence backs is "ticks are being driven RIGHT NOW", and a daily loop twenty hours
+#: into its cadence is perfectly on schedule while saying nothing about right now — so
+#: the cadence multiple alone admitted a six-hour-idle box as "ticking". The measured
+#: outage's ages were 0-282 s, so this is generous against the shape it must catch.
+LIVE_TICK_CEILING_SECONDS = 900
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +58,12 @@ class UnheldMasterLease:
 
 
 def ticking_interval_loops(now: dt.datetime) -> tuple[tuple[str, float], ...]:
-    """Every enabled interval loop that ran within :data:`TICK_FRESHNESS_MULTIPLE` cadences.
+    """Every enabled interval loop that ran recently AND within its own cadence.
+
+    Both conditions are required, because each admits a box the other rejects: the
+    cadence multiple alone counts a daily loop twenty hours into its schedule (on
+    cadence, but no evidence of a tick right now), and the wall-clock ceiling alone
+    would count a 60 s loop ten cadences overrun.
 
     Returned as ``(name, seconds_since_run)`` pairs so the caller reports the evidence it
     decided on rather than re-deriving it from a second read.
@@ -59,7 +73,9 @@ def ticking_interval_loops(now: dt.datetime) -> tuple[tuple[str, float], ...]:
     fresh: list[tuple[str, float]] = []
     for row in Loop.objects.filter(enabled=True, delay_seconds__isnull=False).exclude(last_run_at=None):
         age = row.seconds_since_run(now)
-        if age is not None and age <= TICK_FRESHNESS_MULTIPLE * max(row.delay_seconds or 0, 1):
+        if age is None or age > LIVE_TICK_CEILING_SECONDS:
+            continue
+        if age <= TICK_FRESHNESS_MULTIPLE * max(row.delay_seconds or 0, 1):
             fresh.append((row.name, age))
     return tuple(sorted(fresh))
 
@@ -85,6 +101,7 @@ def unheld_master_lease_with_live_ticks(now: dt.datetime) -> UnheldMasterLease |
 
 
 __all__ = [
+    "LIVE_TICK_CEILING_SECONDS",
     "TICK_FRESHNESS_MULTIPLE",
     "UnheldMasterLease",
     "ticking_interval_loops",
