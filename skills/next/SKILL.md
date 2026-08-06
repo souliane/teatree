@@ -53,7 +53,7 @@ Output a JSON block on the **last line** of the session. **When step 2 enqueued 
   "summary": "one-line description of what was accomplished",
   "needs_user_input": false,
   "user_input_reason": "",
-  "files_modified": [{"path": "src/foo.py", "action": "modified"}],
+  "files_modified": [{"path": "src/acme/foo.py", "action": "modified"}],
   "next_steps": ["run e2e tests", "update docs"]
 }
 ```

@@ -301,7 +301,7 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 
 // F. no commits ahead, but the work is STAGED → SALVAGE the working tree, never delete.
 { "kind": "worktree", "branch": "feat-gate", "owner": "souliane", "path": "/wk/feat-gate",
-  "unique_commit_shas": [], "uncommitted_paths": ["src/gate.py", "tests/test_gate.py"],
+  "unique_commit_shas": [], "uncommitted_paths": ["src/acme/gate.py", "tests/acme/test_gate.py"],
   "content_verified": false, "verdict_source": "uncommitted-work",
   "merged_with_post_merge_work": false, "banned_terms_status": "unknown", "liveness": "" }
 // → commit the named files onto a branch and push them FIRST — they exist on no ref, so a

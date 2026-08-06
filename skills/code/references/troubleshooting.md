@@ -16,7 +16,7 @@
 - **Symptom:** `t3 <overlay> <group> <sub>` exits with `Unknown command: '<group>'` after a recent rename/refactor of the underlying management command, even though `t3 <overlay> <group> --help` lists the subcommand.
 - **Cause:** `cli/overlay.py:DJANGO_GROUPS` still maps `<group>` to a Django command that has been renamed or deleted. The bridge happily forwards to a target that no longer exists; the failure surfaces only when the user runs the subcommand for real.
 - **Fix:** Update `DJANGO_GROUPS` to point at the current Django command names (e.g. when `lifecycle` was split into `worktree` + `workspace`, the bridge needed both groups, not the old one). Also retire any docs/skills that still mention the dead group.
-- **Prevention:** The existing `tests/test_cli_overlay.py` bridge tests mock `managepy`, so they pass even when the target is dead. Treat any rename/deletion of a Django command in `core/management/commands/` as a `DJANGO_GROUPS` change too — and run `t3 <overlay> <group> <sub> --help` end-to-end once after the change to confirm the dispatch resolves.
+- **Prevention:** The existing `tests/test_cli_overlay_groups.py` bridge tests mock `managepy`, so they pass even when the target is dead. Treat any rename/deletion of a Django command in `core/management/commands/` as a `DJANGO_GROUPS` change too — and run `t3 <overlay> <group> <sub> --help` end-to-end once after the change to confirm the dispatch resolves.
 
 ## Doc-Only "Fix" Propagates a Broken CLI Reference
 

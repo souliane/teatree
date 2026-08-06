@@ -262,12 +262,12 @@ Current implementations: `GitHubSyncBackend` (`backends/github/sync.py`), `GitLa
 ## Agent Runtime
 
 Two lanes, one per task kind. Per-phase model overrides come from
-`agents/model_tiering.py` in both.
+`src/teatree/agents/model_tiering.py` in both.
 
-### Headless Sessions (`agents/headless.py`)
+### Headless Sessions (`src/teatree/agents/headless.py`)
 
 Headless tasks drive an in-process agent session behind the `Harness` seam
-(`agents/harness.py`), whose backend `agent_harness` selects — `claude_sdk`
+(`src/teatree/agents/harness.py`), whose backend `agent_harness` selects — `claude_sdk`
 (a `claude-agent-sdk` `ClaudeSDKClient`) or `pydantic_ai` (an OpenAI-compatible
 endpoint). Both yield the same `AssistantMessage` / `ResultMessage` vocabulary,
 so the driver never special-cases the transport.
@@ -275,7 +275,7 @@ so the driver never special-cases the transport.
 - Collects the typed messages the session yields and validates the result envelope against `result_schema.py`
 - If the result carries `needs_user_input: true`, reroutes the task to the user-input queue
 - Stores the parsed result in `TaskAttempt.result`
-- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, the harness opens the session with the SDK-native `resume=` option (`pydantic_ai` rehydrates the equivalent message history from `agents/pydantic_ai_resume.py`).
+- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, the harness opens the session with the SDK-native `resume=` option (`pydantic_ai` rehydrates the equivalent message history from `src/teatree/agents/pydantic_ai_resume.py`).
 
 ### Interactive Sessions (`core/management/commands/tasks_interactive_launch.py`)
 
@@ -284,7 +284,7 @@ the invoking terminal — no ttyd, no terminal-mode strategies. The binary is
 resolved via `shutil.which("claude")` and the argv is built by
 `build_claude_command`:
 
-- Fresh session: `claude --append-system-prompt <interactive context>` (context from `agents/prompt.py:build_interactive_context`).
+- Fresh session: `claude --append-system-prompt <interactive context>` (context from `src/teatree/agents/prompt.py:build_interactive_context`).
 - Resume: when `Session.agent_id` holds a Claude session UUID, `claude --resume <uuid>` — preserving context from the prior headless run.
 
 ### Skill Loading
