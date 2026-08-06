@@ -187,6 +187,10 @@ class IssueIntakeScanner:
     ``identities`` is the OPERATOR's own handle set. It is deliberately NOT the
     trust set: it scopes the read-back's PR queries, because the PR implementing an
     issue is authored by the operator regardless of who filed the issue.
+
+    ``exclude_labels`` is the overlay's denylist (``OverlayConfig.exclude_labels``) —
+    rule 2 of the decision table. It holds an issue whoever filed it, so it is the
+    operator's reservation surface against the factory (#4134).
     """
 
     host: CodeHostBackend
@@ -194,6 +198,7 @@ class IssueIntakeScanner:
     overlay_name: str = ""
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
+    exclude_labels: tuple[str, ...] = field(default_factory=tuple)
     #: The overlay's OWN repo slugs (``owner/name``). Every discovery query is
     #: scoped to them. Empty keeps the pre-scope global search (back-compat).
     repo_slugs: tuple[str, ...] = field(default_factory=tuple)
@@ -270,6 +275,7 @@ class IssueIntakeScanner:
             author_trusted=author_is_trusted(issue, context.trusted),
             work_exists=work_exists,
             admit_label=self.admit_label,
+            exclude_labels=frozenset(self.exclude_labels),
         )
         if verdict.acts:
             return verdict

@@ -3,10 +3,16 @@
 Every issue-intake path answers to this table, first match wins:
 
 1. ``needs-triage`` present -> IGNORE (maintainer hold).
-2. An active ticket / claim / forge read-back already exists -> IGNORE (work exists).
-3. Author trusted -> ACT immediately: no admit label, no assignment, no grace window.
-4. Author untrusted AND the owner-applied admit label present -> ACT.
-5. Author untrusted, no label -> IGNORE (fail-closed).
+2. One of the overlay's ``exclude_labels`` present -> IGNORE (operator hold).
+3. An active ticket / claim / forge read-back already exists -> IGNORE (work exists).
+4. Author trusted -> ACT immediately: no admit label, no assignment, no grace window.
+5. Author untrusted AND the owner-applied admit label present -> ACT.
+6. Author untrusted, no label -> IGNORE (fail-closed).
+
+Rules 1 and 2 are the same kind of thing — a label the human applied to withhold an
+issue — so they sit together, above every reason to act. They keep separate verdicts
+because ``needs-triage`` is a shipped convention and the denylist is per-overlay data,
+and the log line has to say which one held the issue.
 
 The two facts the caller must supply are the ones this module cannot compute
 cheaply: *author_trusted* (the fail-closed
@@ -14,7 +20,7 @@ cheaply: *author_trusted* (the fail-closed
 marker / read-back probe). Everything else is read off the payload here, so a
 caller cannot hold a divergent opinion about labels.
 
-Fail-closed in both directions: an unset admit label admits NOBODY (rule 4 can
+Fail-closed in both directions: an unset admit label admits NOBODY (rule 5 can
 never degrade to "any label admits"), and an author the caller could not resolve
 arrives as ``author_trusted=False``.
 """
@@ -23,6 +29,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
+from teatree.core.intake.label_admission import excluded
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.types import RawAPIDict
 
@@ -35,6 +42,7 @@ class IntakeVerdict(StrEnum):
     """Which rule of the decision table matched, and hence what the factory does."""
 
     IGNORE_NEEDS_TRIAGE = "ignore_needs_triage"
+    IGNORE_EXCLUDED_LABEL = "ignore_excluded_label"
     IGNORE_WORK_EXISTS = "ignore_work_exists"
     ACT_TRUSTED_AUTHOR = "act_trusted_author"
     ACT_ADMITTED = "act_admitted"
@@ -52,10 +60,21 @@ class IntakeFacts:
     author_trusted: bool
 
 
-def decide_intake(facts: IntakeFacts, *, admit_label: str) -> IntakeVerdict:
-    """Apply the decision table to *facts*, top-down, first match wins."""
+def decide_intake(
+    facts: IntakeFacts,
+    *,
+    admit_label: str,
+    exclude_labels: frozenset[str] = frozenset(),
+) -> IntakeVerdict:
+    """Apply the decision table to *facts*, top-down, first match wins.
+
+    ``exclude_labels`` is the overlay's denylist. It defaults to EMPTY, which excludes
+    nothing — an overlay that never configured one keeps its pre-#4134 verdicts.
+    """
     if NEEDS_TRIAGE_LABEL in facts.labels:
         return IntakeVerdict.IGNORE_NEEDS_TRIAGE
+    if excluded(facts.labels, exclude_labels):
+        return IntakeVerdict.IGNORE_EXCLUDED_LABEL
     if facts.work_exists:
         return IntakeVerdict.IGNORE_WORK_EXISTS
     if facts.author_trusted:
@@ -87,6 +106,7 @@ def decide_issue_intake(
     author_trusted: bool,
     work_exists: bool,
     admit_label: str,
+    exclude_labels: frozenset[str] = frozenset(),
 ) -> IntakeVerdict:
     """:func:`decide_intake` against a raw forge issue payload."""
     return decide_intake(
@@ -96,6 +116,7 @@ def decide_issue_intake(
             author_trusted=author_trusted,
         ),
         admit_label=admit_label,
+        exclude_labels=exclude_labels,
     )
 
 

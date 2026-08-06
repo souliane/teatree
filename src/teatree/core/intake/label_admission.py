@@ -14,6 +14,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 
+def excluded(labels: Iterable[str], exclude_labels: Iterable[str]) -> bool:
+    """Whether the overlay's denylist HOLDS an item carrying *labels*.
+
+    Named and shared so the two intakes cannot drift on what "excluded" means: the
+    GitLab sync path reaches it through :meth:`LabelPolicy.admits`, the GitHub issue
+    intake through the ``decide_intake`` exclude tier (#4134).
+    """
+    return bool(set(labels) & set(exclude_labels))
+
+
 def intake_admits(
     labels: Iterable[str],
     ready_labels: Iterable[str],
@@ -23,7 +33,7 @@ def intake_admits(
     allowlist = set(ready_labels)
     if allowlist and not present & allowlist:
         return False
-    return not present & set(exclude_labels)
+    return not excluded(present, exclude_labels)
 
 
 @dataclass(frozen=True, slots=True)
