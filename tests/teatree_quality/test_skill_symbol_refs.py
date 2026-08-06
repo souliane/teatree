@@ -18,11 +18,13 @@ visible instead of invisible, and a NEW stale citation reds.
 over-blocking against a committed ``*.md.txt`` corpus — a must-FLAG set (absent
 path, absent module, absent attribute, absent imported name, an absent bare
 module-local symbol beside a RESOLVING path on the same line, an absent symbol
-in a repo script, an absent repo path outside ``src/teatree/``) and a symmetric
-must-NOT-FLAG set (live path, live dotted name, live import, a live bare
-module-local symbol, the pragma in both its line and block scopes, a
-config-section header, a filename tail, a glob, and the third-party /
-attribute-access tokens the module-local widening must never sweep in).
+in a repo script, an absent repo path outside ``src/teatree/``, a path-qualified
+symbol its live module does not carry, and one cited under a directory that does
+not carry it) and a symmetric must-NOT-FLAG set (live path, live dotted name,
+live import, a live bare module-local symbol, a live path-qualified symbol, the
+pragma in both its line and block scopes, a config-section header, a filename
+tail, a glob, and the third-party / attribute-access tokens the module-local
+widening must never sweep in).
 """
 
 from dataclasses import replace
@@ -36,6 +38,7 @@ from teatree.quality.skill_symbol_refs import (
     build_repo_index,
     resolve_dotted,
     resolve_module_local,
+    resolve_path_qualified_symbol,
     resolve_repo_path,
     scan_file,
     scan_source,
@@ -89,7 +92,6 @@ _CHARTER_DOCS: list[Path] = [
 _KNOWN_UNRESOLVED_CHARTER_REFS: frozenset[tuple[str, str]] = frozenset(
     {
         ("AGENTS.md", "teatree.overlays"),
-        ("BLUEPRINT.md", "teatree.env"),
         ("BLUEPRINT.md", "teatree.harnesses"),
         ("BLUEPRINT.md", "teatree.overlays"),
         ("BLUEPRINT.md", "teatree.teams"),
@@ -166,6 +168,31 @@ class TestResolver:
         assert "teatree.core.modelkit.phases" in reason
         assert "teatree.quality.skill_symbol_refs" in reason
 
+    def test_path_qualified_symbol_resolves(self) -> None:
+        ref = "hooks/scripts/main_clone_guard.handle_block_main_clone_mutation"
+        assert resolve_path_qualified_symbol(ref, build_repo_index(_REPO_ROOT)) is None
+
+    def test_path_qualified_symbol_resolves_under_a_src_rooted_qualifier(self) -> None:
+        ref = "src/teatree/agents/sdk_tool_map.CAPABILITY_TO_SDK_TOOLS"
+        assert resolve_path_qualified_symbol(ref, build_repo_index(_REPO_ROOT)) is None
+
+    def test_path_qualified_symbol_the_module_lacks_is_unresolved(self) -> None:
+        ref = "agents/model_tiering.no_such_tier_helper"
+        assert resolve_path_qualified_symbol(ref, build_repo_index(_REPO_ROOT)) is not None
+
+    def test_a_directory_that_does_not_carry_the_module_cannot_vouch_for_it(self) -> None:
+        # `main_clone_guard` is a basename two directories ship; only the hook leaf
+        # carries the handler, so the qualifier has to discriminate rather than be stripped.
+        index = build_repo_index(_REPO_ROOT)
+        ref = "core/gates/main_clone_guard.handle_block_main_clone_mutation"
+        assert resolve_path_qualified_symbol(ref, index) is not None
+        assert resolve_module_local("main_clone_guard.handle_block_main_clone_mutation", index) is None
+
+    def test_a_file_path_names_no_symbol_reading(self) -> None:
+        reason = resolve_path_qualified_symbol("agents/harness.py", build_repo_index(_REPO_ROOT))
+        assert reason is not None
+        assert "py" not in reason.split()
+
     def test_module_raising_on_import_reports_it(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "skill_ref_probe_boom.py").write_text('raise RuntimeError("boom")\n', encoding="utf-8")
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -186,6 +213,18 @@ class TestGoldenCorpus:
             "src/teatree/core/modelkit/phase_tools.py": True,
             "phase_tools.PHASE_TOOLS": False,
         }
+
+    def test_a_failed_path_reference_reports_both_readings_it_admits(self) -> None:
+        fixture = _FIXTURES / "must_flag" / "path_qualified_absent_symbol.md.txt"
+        (finding,) = _unresolved(scan_source(fixture.read_text(encoding="utf-8"), fixture, _REPO_ROOT))
+        assert finding.reason is not None
+        assert "no such path in the tree" in finding.reason
+        assert "no_such_tier_helper" in finding.reason
+
+    def test_a_plain_file_path_reports_only_the_path_reading(self) -> None:
+        fixture = _FIXTURES / "must_flag" / "absent_repo_path.md.txt"
+        (finding,) = _unresolved(scan_source(fixture.read_text(encoding="utf-8"), fixture, _REPO_ROOT))
+        assert finding.reason == "no such path in the tree"
 
     @pytest.mark.parametrize("fixture", _MUST_NOT_FLAG, ids=lambda p: p.name)
     def test_must_not_flag(self, fixture: Path) -> None:

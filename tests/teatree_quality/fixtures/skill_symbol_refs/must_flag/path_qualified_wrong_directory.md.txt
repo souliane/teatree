@@ -1,0 +1,4 @@
+# Path-qualified symbol cited under a directory that does not carry its module
+
+The tier table is read as `hooks/scripts/model_tiering.TIER_MODELS` — a live
+symbol of `src/teatree/agents/`, which the cited directory must not vouch for.

@@ -7,7 +7,7 @@ symbol has no Python import to break and no test to turn red, so nothing catches
 it. This walk does: every teatree-shaped reference a skill makes must resolve
 against the live tree.
 
-Five reference shapes are extracted:
+Six reference shapes are extracted:
 
 - a repo path under ``src/teatree/`` — must exist on disk.
 - a repo path under any other top-level directory of the tree — checked only
@@ -24,6 +24,14 @@ Five reference shapes are extracted:
     tokens stay out: the head must name a module the tree actually ships, and
     the tail must be module-symbol-shaped (``UPPER_SNAKE`` or ``_private``), so
     ``typer.Exit``, ``permissions.allow`` and ``overlay.config`` are not ours.
+- a path-qualified ``<dir>/<module>.<SYMBOL>`` name
+    (``hooks/scripts/main_clone_guard.handle_block_main_clone_mutation``) — the
+    module-local reading with the directory kept as the qualifier. The
+    reference admits two readings and only the path one was tried, so a live
+    symbol read as an absent path; the path reading still goes first, so a
+    genuine path miss is caught, and the qualifier discriminates rather than
+    being stripped, so a same-basename module in another directory cannot vouch
+    for the reference.
 - a ``from teatree.<mod> import a, b`` statement — the module plus each
     imported name.
 
@@ -65,6 +73,8 @@ _NON_MODULE_TAILS = frozenset({"cfg", "json", "lock", "md", "pth", "py", "sqlite
 _ELISIONS = ("*", "...")
 _TEATREE_SRC = "src/teatree/"
 _INDEXED_PACKAGES = ("src/teatree", "hooks")
+#: A slash-bearing reference whose tail names a file, so only the path reading applies.
+_NO_SYMBOL_READING = "the tail names no module symbol"
 
 
 @dataclass(frozen=True)
@@ -143,6 +153,37 @@ def resolve_module_local(ref: str, index: RepoIndex) -> str | None:
             return None
         reasons.append(reason)
     return "; ".join(dict.fromkeys(reasons)) or f"no module named {head!r} in the tree"
+
+
+def resolve_path_qualified_symbol(ref: str, index: RepoIndex) -> str | None:
+    """Resolve ``<dir>/<module>.<SYMBOL>`` as the module symbol its tail names.
+
+    The directory is carried into the candidate's dotted name rather than
+    discarded, so only a module living under it can answer:
+    ``hooks/scripts/main_clone_guard.handle_block_main_clone_mutation`` resolves
+    against the hook leaf alone, never against the same-basename
+    ``core/gates/`` module beside it.
+    """
+    directory, _, tail = ref.rpartition("/")
+    head, _, symbol = tail.partition(".")
+    if not symbol or symbol.partition(".")[0] in _NON_MODULE_TAILS:
+        return _NO_SYMBOL_READING
+    qualified = f"{_dotted_prefix(directory)}.{head}"
+    reasons: list[str] = []
+    for dotted in index.modules.get(head, ()):
+        if dotted != qualified and not dotted.endswith(f".{qualified}"):
+            continue
+        reason = resolve_dotted(f"{dotted}.{symbol}")
+        if reason is None:
+            return None
+        reasons.append(reason)
+    return "; ".join(dict.fromkeys(reasons)) or f"no module named {qualified!r} in the tree"
+
+
+def _dotted_prefix(directory: str) -> str:
+    """A repo directory as the dotted prefix the module index keys it under."""
+    parts = directory.split("/")
+    return ".".join(parts[1:] if parts[0] == "src" else parts)
 
 
 def resolve_dotted(dotted: str) -> str | None:
@@ -246,11 +287,16 @@ def _refs_in_line(line: str, index: RepoIndex) -> list[str]:
 
 
 def _resolve(ref: str, index: RepoIndex) -> str | None:
-    if "/" in ref:
-        return resolve_repo_path(ref, index.repo_root)
-    if ref.partition(".")[0] == "teatree":
-        return resolve_dotted(ref)
-    return resolve_module_local(ref, index)
+    """Try every reading the reference admits; unresolved only when all of them fail."""
+    if "/" not in ref:
+        return resolve_dotted(ref) if ref.partition(".")[0] == "teatree" else resolve_module_local(ref, index)
+    path_reason = resolve_repo_path(ref, index.repo_root)
+    if path_reason is None:
+        return None
+    symbol_reason = resolve_path_qualified_symbol(ref, index)
+    if symbol_reason is None:
+        return None
+    return path_reason if symbol_reason == _NO_SYMBOL_READING else f"{path_reason}; {symbol_reason}"
 
 
 def scan_source(source: str, path: Path, repo_root: Path) -> list[SymbolRefFinding]:
