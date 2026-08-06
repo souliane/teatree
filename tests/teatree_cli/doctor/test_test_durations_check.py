@@ -235,6 +235,13 @@ class TestDurationsFreshnessDoctorCheck:
             assert check_test_durations_freshness() is True
         assert "OK" in capsys.readouterr().out
 
+    def test_a_single_day_old_refresh_is_singular(self, capsys, tmp_path: Path) -> None:
+        with _repo_found(tmp_path), _freshness(_aged(dt.timedelta(days=1))):
+            assert check_test_durations_freshness() is True
+        out = capsys.readouterr().out
+        assert "refreshed 1 day ago" in out
+        assert "1 days ago" not in out
+
     def test_an_unanswerable_age_is_silent_never_a_verdict(self, capsys, tmp_path: Path) -> None:
         """A shallow clone cannot see when the artifact last changed — silence beats a guess."""
         with _repo_found(tmp_path), _freshness(None):

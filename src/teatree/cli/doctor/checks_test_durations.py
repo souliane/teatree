@@ -130,7 +130,8 @@ def check_test_durations_freshness() -> bool:
 
     landed = freshness.last_refreshed_at.date().isoformat()
     if not freshness.is_stale:
-        typer.echo(f"OK    Test-shard durations were refreshed {freshness.age.days} days ago ({landed})")
+        day_word = "day" if freshness.age.days == 1 else "days"
+        typer.echo(f"OK    Test-shard durations were refreshed {freshness.age.days} {day_word} ago ({landed})")
         return True
 
     typer.echo(

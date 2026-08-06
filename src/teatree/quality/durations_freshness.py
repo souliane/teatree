@@ -14,6 +14,15 @@ Age is read from git rather than from the file, because the file is a
 of whatever checkout is asking — always minutes old in a freshly-created worktree.
 The commit that last touched the artifact is "when a refresh last landed", which is
 the question, and it survives re-checkout.
+
+A shallow clone's grafted boundary commit has no parent, so git reports it as
+touching every file in the tree regardless of that file's real history — a shallow
+checkout whose boundary happens to answer this query would silently report a
+confident, false OK. §4130-review caught this live: both this box's own checkout
+and the deployed worker container are shallow, so the false-OK case is not
+theoretical. The boundary is therefore treated as unreadable rather than trusted —
+loud WARN, never a silent guess — while a non-boundary answer within a shallow
+clone's fetched range is unaffected and stays trusted.
 """
 
 import dataclasses
@@ -29,14 +38,20 @@ from teatree.utils.git_worktree_query import is_git_checkout
 # job has stopped producing or its PR is sitting unmerged, and both are worth a page.
 MAX_REFRESH_AGE = dt.timedelta(days=14)
 
+# Unit separator: not a legal character in a git ref, a commit hash, or `%cI`'s
+# strict-ISO-8601 output, so a single `git log` format string can carry both fields
+# with no ambiguity about where one ends and the other begins.
+_FIELD_SEP = "\x1f"
+
 
 class DurationsHistoryUnreadableError(RuntimeError):
     """A checkout whose history git refused to read — an unverifiable age, not a fresh one.
 
     Kept distinct from "no commit records this artifact" so a git that cannot answer
-    (dubious-ownership refusal, a broken gitdir pointer) surfaces as unverified instead
-    of quietly holding the alarm down forever, which is the failure mode this whole
-    check exists to remove one surface over.
+    (dubious-ownership refusal, a broken gitdir pointer, a shallow-clone boundary
+    standing in for real history) surfaces as unverified instead of quietly holding
+    the alarm down forever, which is the failure mode this whole check exists to
+    remove one surface over.
     """
 
 
@@ -50,6 +65,28 @@ class DurationsFreshness:
         return self.age >= MAX_REFRESH_AGE
 
 
+def _shallow_boundary_commits(repo: Path) -> frozenset[str]:
+    """The commit hashes this checkout's shallow clone is grafted at, if any.
+
+    Empty for a full clone (``--is-shallow-repository`` false) and for a shallow
+    clone whose boundary file this git cannot locate — the caller then trusts the
+    ``git log`` answer as it always has, rather than refusing on a probe failure
+    that is orthogonal to the question being asked.
+    """
+    shallow_check = run_with_status(repo=str(repo), args=["rev-parse", "--is-shallow-repository"])
+    if shallow_check.returncode != 0 or shallow_check.stdout.strip() != "true":
+        return frozenset()
+
+    shallow_path = run_with_status(repo=str(repo), args=["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    if shallow_path.returncode != 0 or not shallow_path.stdout.strip():
+        return frozenset()
+
+    shallow_file = Path(shallow_path.stdout.strip()) / "shallow"
+    if not shallow_file.is_file():
+        return frozenset()
+    return frozenset(line.strip() for line in shallow_file.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
 def measure_durations_freshness(repo: Path, *, now: dt.datetime) -> DurationsFreshness | None:
     """Return how long ago *repo* last committed a change to the durations artifact.
 
@@ -61,7 +98,9 @@ def measure_durations_freshness(repo: Path, *, now: dt.datetime) -> DurationsFre
     if not is_git_checkout(repo):
         return None
 
-    result = run_with_status(repo=str(repo), args=["log", "-1", "--format=%cI", "--", DURATIONS_PATH.as_posix()])
+    result = run_with_status(
+        repo=str(repo), args=["log", "-1", f"--format=%H{_FIELD_SEP}%cI", "--", DURATIONS_PATH.as_posix()]
+    )
     if result.returncode != 0:
         message = f"git could not read the history of {DURATIONS_PATH}: {result.stderr.strip()}"
         raise DurationsHistoryUnreadableError(message)
@@ -70,8 +109,17 @@ def measure_durations_freshness(repo: Path, *, now: dt.datetime) -> DurationsFre
     if not stamp:
         return None
 
+    commit_hash, _, iso = stamp.partition(_FIELD_SEP)
+    if commit_hash in _shallow_boundary_commits(repo):
+        message = (
+            f"the last recorded touch to {DURATIONS_PATH} is {commit_hash[:12]}, this checkout's "
+            "shallow-clone boundary — a grafted commit with no parent, which git reports as touching "
+            "every file in the tree regardless of that file's real history, so this age cannot be trusted"
+        )
+        raise DurationsHistoryUnreadableError(message)
+
     # `%cI` is strict ISO 8601 with an offset, so no parse guard: were git ever to emit
     # something else, the doctor check's crash handler reports it as a visible WARN, which
     # beats an unreachable branch here that no test can honestly cover.
-    landed = dt.datetime.fromisoformat(stamp)
+    landed = dt.datetime.fromisoformat(iso)
     return DurationsFreshness(last_refreshed_at=landed, age=now - landed)
