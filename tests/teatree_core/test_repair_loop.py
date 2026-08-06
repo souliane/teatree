@@ -11,6 +11,7 @@ import pytest
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -234,6 +235,45 @@ class TestCheckRequeueAllowed(TestCase):
         # last two are (different, same)-ordered → not two-consecutive-identical.
         task.check_requeue_allowed()
 
+    def test_two_causeless_failures_do_not_stall(self) -> None:
+        # #4075: ``no_result_envelope`` is a CONSTANT string, so two of them always
+        # fingerprint-match — the phase would halt on "we learned nothing, twice".
+        ticket = Ticket.objects.create()
+        task = self._phase_task(ticket)
+        _failed_attempt(task, error=NO_ENVELOPE_ERROR)
+        _failed_attempt(task, error=NO_ENVELOPE_ERROR)
+        task.check_requeue_allowed()  # must not raise
+        assert DeferredQuestion.pending().count() == 0
+
+    def test_two_runtime_ceilings_do_not_stall(self) -> None:
+        # The sibling causeless kind: a run cut off at its ceiling reported nothing
+        # about why the work is unfinished, so two of them are one silence repeated.
+        ticket = Ticket.objects.create()
+        task = self._phase_task(ticket)
+        _failed_attempt(task, error="stuck_loop: runtime ceiling exceeded after 3600s")
+        _failed_attempt(task, error="stuck_loop: runtime ceiling exceeded after 3600s")
+        task.check_requeue_allowed()  # must not raise
+
+    def test_causeless_failures_still_burn_the_iteration_budget(self) -> None:
+        # The drop is from the stall COMPARISON only: the attempts still count, so a
+        # phase that keeps reporting nothing still escalates at the cap (3 here).
+        ticket = Ticket.objects.create()
+        task = self._phase_task(ticket)
+        for _ in range(3):
+            _failed_attempt(task, error=NO_ENVELOPE_ERROR)
+        with pytest.raises(MaxIterationsExceeded):
+            task.check_requeue_allowed()
+
+    def test_a_causeless_failure_never_masks_an_adjacent_named_stall(self) -> None:
+        # Control on the other side: dropping the causeless attempt must not shorten the
+        # window so far that two identical NAMED defects stop stalling.
+        ticket = Ticket.objects.create()
+        task = self._phase_task(ticket)
+        _failed_attempt(task, error="missing required evidence for phase 'coding'")
+        _failed_attempt(task, error="missing required evidence for phase 'coding'")
+        with pytest.raises(IterationStalled):
+            task.check_requeue_allowed()
+
 
 @override_settings(MAX_PHASE_ITERATIONS=3)
 class TestReclaimEnforcesRepairLoop(TestCase):
@@ -294,13 +334,13 @@ class TestKindStall:
     """
 
     def test_two_identical_kinds_are_a_stall(self) -> None:
-        assert is_kind_stalled(["no_result_envelope", "no_result_envelope"]) is True
+        assert is_kind_stalled(["evidence_missing", "evidence_missing"]) is True
 
     def test_distinct_kinds_are_not_a_stall(self) -> None:
-        assert is_kind_stalled(["no_result_envelope", "evidence_missing"]) is False
+        assert is_kind_stalled(["recording_refused", "evidence_missing"]) is False
 
     def test_a_single_kind_is_not_a_stall(self) -> None:
-        assert is_kind_stalled(["no_result_envelope"]) is False
+        assert is_kind_stalled(["evidence_missing"]) is False
 
     def test_no_kinds_is_not_a_stall(self) -> None:
         assert is_kind_stalled([]) is False
@@ -318,11 +358,11 @@ class TestRequeueVerdictKindStall:
 
     def test_repeated_deterministic_kind_stalls_despite_distinct_fingerprints(self) -> None:
         with pytest.raises(IterationStalled):
-            self._verdict(["no_result_envelope", "no_result_envelope"])
+            self._verdict(["evidence_missing", "evidence_missing"])
 
     def test_omitting_the_kinds_preserves_the_fingerprint_only_verdict(self) -> None:
         # The default keeps every existing caller byte-identical.
         self._verdict()
 
     def test_distinct_deterministic_kinds_do_not_stall(self) -> None:
-        self._verdict(["no_result_envelope", "evidence_missing"])
+        self._verdict(["recording_refused", "evidence_missing"])

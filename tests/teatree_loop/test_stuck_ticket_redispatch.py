@@ -16,6 +16,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -424,12 +425,40 @@ class TestFailingCandidates(TestCase):
                 ticket,
                 phase="testing",
                 status=Task.Status.FAILED,
-                error=f"no_result_envelope: agent produced prose only in {suffix}",
+                error=f"missing required evidence for phase 'testing': no tests_run in {suffix}",
             )
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_repeated_causeless_failures_are_redispatched_within_the_cap(self) -> None:
+        # #4075: ``no_result_envelope`` is the ABSENCE of a cause — the run reported
+        # nothing — so two of them are one silence repeated, not one defect. Halting here
+        # declared four real phases doomed that later ran the same phase and succeeded.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for suffix in ("alpha", "beta"):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"no_result_envelope: agent produced prose only in {suffix}",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_repeated_identical_causeless_failures_are_redispatched_too(self) -> None:
+        # The real shape: the reason is a CONSTANT, so both attempts also share one
+        # fingerprint — the FINGERPRINT stall, not just the kind stall, must let it through.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for _ in range(2):
+            _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=NO_ENVELOPE_ERROR)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
 
     def test_repeated_environmental_failures_are_redispatched_within_the_cap(self) -> None:
         # A transient/environmental failure is the environment's fault, not the work's,
@@ -467,7 +496,7 @@ class TestFailingCandidates(TestCase):
                 ticket,
                 phase="testing",
                 status=Task.Status.FAILED,
-                error=f"no_result_envelope: {suffix}",
+                error=f"missing required evidence for phase 'testing': {suffix}",
                 hours_ago=48,
             )
         _finished_task(ticket, phase="testing", status=Task.Status.COMPLETED, hours_ago=48)

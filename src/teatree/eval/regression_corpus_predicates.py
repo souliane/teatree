@@ -434,10 +434,37 @@ def _check_mr_description_first_line_validated() -> bool:
     return any("first line" in err.lower() for err in rejected) and accepted == []
 
 
+def _check_causeless_failure_does_not_trip_the_stall() -> bool:
+    """#4075: a reporting failure is dropped from the stall check, a real defect is not.
+
+    Pre-fix, ``no_result_envelope`` was a CONSTANT reason, so its fingerprint matched
+    itself and the corrective retry the repair loop schedules supplied the second strike —
+    a manufactured "identical failure twice" halt on phases that were not doomed. The
+    fixed :func:`stall_fingerprints` must:
+    * drop two identical causeless fingerprints (``is_stalled`` then sees nothing), and
+    * keep two identical NAMED-defect fingerprints, so the stall can still fire.
+    """
+    from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR  # noqa: PLC0415 — deferred: loaded per eval run
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        stall_fingerprints,
+    )
+    from teatree.core.repair_loop import is_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    def _last_two(reason: str) -> list[str]:
+        pair = (classify_failure(reason), terminal_reason_fingerprint(reason))
+        return stall_fingerprints([pair, pair])
+
+    must_allow = is_stalled(_last_two(NO_ENVELOPE_ERROR))
+    must_block = is_stalled(_last_two("missing required evidence for phase 'coding': files_modified"))
+    return not must_allow and must_block
+
+
 __all__ = [
     "_check_account_switch_detect_and_recover",
     "_check_banned_terms_scanner_fails_closed_on_crash",
     "_check_branch_currency_conflict_only",
+    "_check_causeless_failure_does_not_trip_the_stall",
     "_check_forge_resolves_by_host_not_token",
     "_check_loop_owner_lease_pid_anchored",
     "_check_merge_precondition_maker_is_not_checker",
