@@ -864,7 +864,7 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
 | `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
-| `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target for the watchdog's read-only mount, and the root it execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` |
+| `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target (path identity) for the watchdog's read-only mount and the app services' read-write one, the clone `workspace ticket` cuts worktrees from (#4120), and the root the watchdog execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` <!-- privacy-scan:allow — the box's public, documented deploy home --> |
 | `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/deploy.sh` and `deploy/t3` |
 
 It needs `python3` in the image for the richest DM body (baked into the image);

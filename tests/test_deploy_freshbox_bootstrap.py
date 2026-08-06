@@ -33,6 +33,9 @@ _HOME = "/home/teatree"  # privacy-scan:allow — the box's public, documented d
 # The host-side root every compose bind SOURCE is written against. Both scripts
 # that create those dirs set it from `$HOME`, which on the box IS `_HOME`.
 _HOST_HOME_PLACEHOLDER = "${TEATREE_HOST_HOME:-" + _HOME + "}"
+# The deploy checkout mount's source — the checkout each script runs out of, not a
+# dir either creates (#4120).
+_DEPLOY_CHECKOUT_PLACEHOLDER = "${TEATREE_DEPLOY_CHECKOUT:-" + _HOME + "/teatree-deploy}"
 
 
 def _bind_sources() -> set[str]:
@@ -41,6 +44,11 @@ def _bind_sources() -> set[str]:
     Sources are written as ``${TEATREE_HOST_HOME:-/home/teatree}/<suffix>``; the
     placeholder resolves to the box's deploy home so the paths compare directly
     against the ``$HOME``-rooted dirs the scripts pre-create.
+
+    The deploy checkout is excluded: it is not a state dir either script creates
+    but the directory each is EXECUTING FROM, so it exists by construction and no
+    fresh box can meet dockerd's auto-create-as-root hazard on it. What pins that
+    is :class:`TestDeployCheckoutSourceIsTheCheckoutTheScriptsRunFrom` below.
     """
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     volumes = compose["x-teatree-common"]["volumes"]
@@ -48,7 +56,7 @@ def _bind_sources() -> set[str]:
         entry["source"].replace(_HOST_HOME_PLACEHOLDER, _HOME, 1)
         for entry in volumes
         if isinstance(entry, dict) and entry.get("type") == "bind"
-    }
+    } - {_DEPLOY_CHECKOUT_PLACEHOLDER}
 
 
 def _created_dirs(script: str, command: str, var: str) -> set[str]:
@@ -144,6 +152,34 @@ class TestCliWrapperPreCreatesEveryBindSource:
             assert expanding, f"{name} must be passed to install -d"
             for line in expanding:
                 assert "-m 700" in line, "credential-plane dirs must be created mode 700"
+
+
+class TestDeployCheckoutSourceIsTheCheckoutTheScriptsRunFrom:
+    """What replaces the pre-create rule for the one bind source nobody creates.
+
+    The pre-create invariant exists because dockerd auto-creates an absent bind
+    source ROOT-owned. The deploy checkout can never be absent: both entry points
+    derive it from their own ``$REPO_ROOT``, the directory holding the script
+    being executed. Pinning that derivation is what keeps the exclusion in
+    :func:`_bind_sources` honest rather than a hole (#4120).
+    """
+
+    def test_deploy_sh_exports_it_from_its_own_repo_root(self) -> None:
+        assert 'export TEATREE_DEPLOY_CHECKOUT="$REPO_ROOT"' in DEPLOY_SH.read_text(encoding="utf-8")
+
+    def test_cli_wrapper_exports_it_from_its_own_repo_root(self) -> None:
+        assert 'export TEATREE_DEPLOY_CHECKOUT="${TEATREE_DEPLOY_CHECKOUT:-$REPO_ROOT}"' in CLI_WRAPPER.read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_compose_source_reads_that_same_variable(self) -> None:
+        compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+        sources = {
+            entry["source"]
+            for entry in compose["x-teatree-common"]["volumes"]
+            if isinstance(entry, dict) and entry.get("type") == "bind"
+        }
+        assert _DEPLOY_CHECKOUT_PLACEHOLDER in sources
 
 
 class TestHostDerivedRuntimeUid:

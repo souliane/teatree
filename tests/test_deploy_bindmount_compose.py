@@ -68,14 +68,23 @@ SESSION_PLANE = {
 }
 # Every host bind mount the shared list must carry, by canonical container target.
 ALL_BIND_TARGETS = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
+# The deploy checkout: the clone `workspace ticket` cuts worktrees from (#4120).
+# A different KIND of bind from the state planes above — it is not a container
+# path rebased onto the host home but the SAME path on both sides, so the
+# absolute `gitdir:` a worktree records resolves in either venue.
+DEPLOY_CHECKOUT_PLACEHOLDER = (
+    "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}"  # privacy-scan:allow — public deploy home
+)
 # The mounts that stay Docker-managed named volumes by default.
 #: ``teatree_control_db`` holds the control database itself — a named volume so the
 #: file has no host path for a host process to open (teatree.db.write_domain).
 #: ``teatree_clones`` is the container's own CLONE root. Deliberately NOT a bind of
 #: the host's ``~/workspace``: a git worktree records an absolute ``gitdir`` pointer
-#: into its source clone, so checkouts cannot be shared across the boundary at all
-#: — each side must own its clones. A volume rather than the image layer so the
-#: clones survive container recreation.
+#: into its source clone, so a clone is shareable only where both venues name it
+#: identically — which the host home variable cannot guarantee for a whole root.
+#: Sharing is done per-clone instead, by a discovery symlink into the deploy
+#: checkout bound at path identity (#4120). A volume rather than the image layer so
+#: the clones survive container recreation.
 CLONE_ROOT_VOLUME = "teatree_clones"
 CLONE_ROOT_TARGET = f"{CONTAINER_HOME}/workspace"
 KEPT_NAMED_VOLUMES = {DEFAULT_SOURCE_VOLUME, "teatree_uv", "teatree_control_db", CLONE_ROOT_VOLUME}
@@ -162,17 +171,28 @@ class TestExternalizedBindMounts:
 
     def test_state_dirs_are_bind_mounts_at_canonical_container_targets(self) -> None:
         binds = self._bind_mounts()
-        assert set(binds) == ALL_BIND_TARGETS, "every state + credential dir must be a host bind mount"
+        assert set(binds) == ALL_BIND_TARGETS | {DEPLOY_CHECKOUT_PLACEHOLDER}, (
+            "every state + credential dir must be a host bind mount, plus the deploy checkout"
+        )
 
-    def test_every_bind_source_is_the_target_rebased_on_the_host_home(self) -> None:
+    def test_every_state_bind_source_is_the_target_rebased_on_the_host_home(self) -> None:
         # The target is fixed (it is what `teatree.paths` resolves inside the
         # container); only the host-side root varies, through ONE variable whose
         # default keeps source == target on the box.
-        for target, entry in self._bind_mounts().items():
+        binds = self._bind_mounts()
+        for target in ALL_BIND_TARGETS:
             suffix = target.removeprefix(CONTAINER_HOME)
-            assert entry["source"] == f"{HOST_HOME_PLACEHOLDER}{suffix}", (
+            assert binds[target]["source"] == f"{HOST_HOME_PLACEHOLDER}{suffix}", (
                 f"{target}: source must be the target rebased on {HOST_HOME_PLACEHOLDER}"
             )
+
+    def test_the_deploy_checkout_is_bound_at_path_identity_and_writable(self) -> None:
+        # `git worktree add` bakes an ABSOLUTE `gitdir:` into its source clone, so
+        # only source == target makes the recorded pointer resolve in both venues;
+        # writable because that same add writes `.git/worktrees/<n>` into the clone.
+        entry = self._bind_mounts()[DEPLOY_CHECKOUT_PLACEHOLDER]
+        assert entry["source"] == DEPLOY_CHECKOUT_PLACEHOLDER == entry["target"]
+        assert not entry.get("read_only", False)
 
     def test_credential_plane_is_a_dedicated_bind_mount(self) -> None:
         # The pass store + GPG home must be their own mounts (not nested under the
@@ -249,11 +269,12 @@ class TestDockerComposeConfigGolden:
 class TestContainerOwnedCloneRoot:
     """The clone root is the container's own volume, with the worktree bind inside it.
 
-    Checkouts cannot be shared across the container boundary — a git worktree
-    records an absolute ``gitdir`` into its source clone, so a host-made worktree
-    reads as ``fatal: not a git repository: /Users/...`` inside and vice versa.
-    The container therefore owns its clones and cuts worktrees from them, while
-    the worktrees themselves stay host-visible for reading and editing.
+    A git worktree records an absolute ``gitdir`` into its source clone, so a clone
+    is usable on both sides only where the two venues name it identically; bound at
+    a DIFFERENT path it reads as ``fatal: not a git repository``. The
+    root therefore stays container-owned, and the one clone worktrees are cut from
+    is shared per-clone through the path-identity checkout mount (#4120), while the
+    worktrees themselves stay host-visible for reading and editing.
     """
 
     def test_clone_root_is_a_named_volume_at_the_canonical_workspace_path(self, tmp_path: Path) -> None:
@@ -262,8 +283,9 @@ class TestContainerOwnedCloneRoot:
         assert mount["source"] == CLONE_ROOT_VOLUME
 
     def test_clone_root_is_never_a_host_bind(self, tmp_path: Path) -> None:
-        # Binding the operator's ~/workspace is the fix that does NOT work: it
-        # would still leave every gitdir pointer naming the wrong side.
+        # Binding the operator's ~/workspace is the fix that does NOT work: off-box
+        # the host root differs from the container's, so every gitdir pointer would
+        # still name a path the other side cannot resolve.
         for env in ({}, {"TEATREE_HOST_HOME": "/home/operator"}):
             assert _rendered_mounts(_render(tmp_path, env))[CLONE_ROOT_TARGET]["type"] == "volume"
 
