@@ -224,6 +224,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "triage_assessor_enabled",
         "triage_assessor_max_issues_per_tick",
         "trusted_issue_authors",
+        "umbrella_issue_labels",
         "user_identity_aliases",
         "watchdog_max_cost_usd",
         "watchdog_max_runtime_seconds",

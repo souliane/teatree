@@ -149,6 +149,7 @@ triage_assessor_cadence_hours = 24 # int — hours between triage assessor runs
 triage_assessor_enabled = true # bool — run the triage assessor over untriaged issues
 triage_assessor_max_issues_per_tick = 10 # int — issues the triage assessor may assess in one tick
 trusted_issue_authors = [] # list — issue authors whose issues may be claimed without extra triage
+umbrella_issue_labels = ["epic", "umbrella", "tracking"] # list — labels marking an issue as an umbrella/epic parent intake never claims
 
 [teatree.Communication."Posting on your behalf"]
 admin_autologin_enabled = true # bool — log the loopback operator into Django admin without a password prompt

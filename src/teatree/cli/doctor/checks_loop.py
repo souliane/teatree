@@ -54,7 +54,8 @@ def _check_marker_jam() -> bool:
         return True
     typer.echo(
         f"WARN  {stale.released} orphaned issue-marker(s) hold intake budget but their tickets are "
-        f"terminal, gone, or stalled ({len(stale.completed)} completed, {len(stale.abandoned)} abandoned) — "
+        f"terminal, gone, stalled, or cancelled ({len(stale.completed)} completed, "
+        f"{len(stale.abandoned)} abandoned, {len(stale.declined)} declined) — "
         "run `t3 loop reclaim-markers` to free the issue_implementer budget (#3275)."
     )
     return False
