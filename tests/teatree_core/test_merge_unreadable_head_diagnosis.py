@@ -20,11 +20,13 @@ code. Repo names are neutral placeholders — core/tests stay overlay-agnostic
 
 import os
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import PrMergeState
 from teatree.core.merge import (
     CodeHostQuery,
     MergePreconditionError,
@@ -58,6 +60,19 @@ def _heads(mapping: dict[str, str]) -> Callable[[CodeHostQuery], str]:
     return _live_head
 
 
+def _unmerged() -> AbstractContextManager[object]:
+    """Patch the merge-state read to OPEN — these cases are all unmerged PRs (#4144).
+
+    Stubbed explicitly rather than left to the real transport: the landed-merge
+    probe the unreadable-head path now runs would otherwise shell out to ``gh``.
+    """
+    return patch(
+        "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
+        autospec=True,
+        return_value=PrMergeState(state="OPEN", merge_commit_oid=""),
+    )
+
+
 def _reconcile(*, host_kind: str = "github") -> str:
     return pr_slug_resolution._reconcile_slug_against_reviewed_sha(
         initial_slug=_INITIAL_SLUG,
@@ -75,6 +90,7 @@ def _refusal_message(*, mapping: dict[str, str], candidates: list[str], host_kin
             autospec=True,
             side_effect=_heads(mapping),
         ),
+        _unmerged(),
         patch(
             "teatree.core.merge.pr_slug_resolution._iter_candidate_repo_slugs",
             return_value=candidates,
@@ -132,6 +148,7 @@ class TestUnreadableHeadStillFailsClosed(TestCase):
                 autospec=True,
                 side_effect=_heads({}),
             ),
+            _unmerged(),
             patch(
                 "teatree.core.merge.pr_slug_resolution._iter_candidate_repo_slugs",
                 return_value=[_INITIAL_SLUG],
@@ -180,7 +197,7 @@ class TestUnreadableHeadStillFailsClosed(TestCase):
 
 
 class TestReadableHeadKeepsTheMovedDiagnosis(TestCase):
-    """A forge that ANSWERS keeps the existing #1335 head-moved message."""
+    """A forge that ANSWERS *for the initial repo* keeps the #1335 head-moved message."""
 
     def test_initial_repo_answers_a_different_sha(self) -> None:
         message = _refusal_message(
@@ -192,14 +209,22 @@ class TestReadableHeadKeepsTheMovedDiagnosis(TestCase):
         assert "could not read the live head" not in message
 
     def test_initial_unreadable_but_a_candidate_answers(self) -> None:
-        """The forge works; the initial repo simply has no PR of that number (#1335)."""
+        """The initial head is still a NON-answer, so the drift wording stays off it (#4144).
+
+        The readable candidates change the CAUSE the refusal names — the forge
+        plainly works, so the initial repo carries no PR of that number (#1335) —
+        never the claim that a head nobody read had moved.
+        """
         message = _refusal_message(
             mapping={_CANDIDATE: _WRONG_SHA},
             candidates=[_INITIAL_SLUG, _CANDIDATE],
         )
 
-        assert "PR head moved" in message
-        assert "could not read the live head" not in message
+        assert "PR head moved" not in message
+        assert "force-push" not in message
+        assert "could not read the live head" in message
+        assert "The forge DID answer" in message
+        assert "docker compose exec" not in message
 
     def test_cross_repo_recovery_survives_an_unreadable_initial_read(self) -> None:
         """#1335 recovery is unchanged: an empty initial read still probes candidates."""

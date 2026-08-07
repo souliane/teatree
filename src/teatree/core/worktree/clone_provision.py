@@ -5,13 +5,16 @@ sure there is one". The distinction is what lets a runtime own its workspace
 instead of inheriting one.
 
 The containerized stack is the case that forces it. Its clone root is a
-container-owned volume, not a bind of the operator's ``~/workspace`` — deliberately,
-because a bind would not help: a git worktree records an ABSOLUTE ``gitdir``
-pointer into its source clone, so a worktree created on the host is structurally
-unusable in the container (``fatal: not a git repository: /Users/...``) and the
-reverse. Sharing the checkouts across the boundary cannot work; each side owning
-its own clones can. So the container clones what it needs, and every worktree it
-creates points at a clone in its own coordinates.
+container-owned volume, not a bind of the operator's ``~/workspace``: a git
+worktree records an ABSOLUTE ``gitdir`` pointer into its source clone, so sharing
+a clone across the boundary works only where the two venues agree on its path,
+and a bind that lands the operator's clones at a DIFFERENT container path makes
+every worktree structurally unusable on the other side (``fatal: not a git
+repository``, naming a gitdir the reading venue has no such path for). So the
+container clones what it needs into its own root. What the root then holds for
+a repo may be a link to a clone mounted at
+PATH IDENTITY — the deploy checkout, which every venue names the same way
+(souliane/teatree#4120) — and that is the shape a shared clone has to take.
 
 Cloning is by definition a network operation against a private remote, so it
 depends on the runtime's git credential helper being wired (``deploy/entrypoint.sh``

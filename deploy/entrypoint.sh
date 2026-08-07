@@ -291,6 +291,37 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
 
+# Point clone discovery at a checkout every venue can reach.
+#
+# `git worktree add` bakes an ABSOLUTE `gitdir:` pointer into its SOURCE CLONE,
+# so the clone's path — not the worktree's — decides who can use the result. The
+# image links `~/workspace/souliane/teatree` at the `teatree_src` volume, a path
+# that exists nowhere but this container, so a worktree cut here answered
+# `fatal: not a git repository` from the host even though its files were readable
+# through the `t3-workspaces` bind (#4120). The deploy checkout is bind-mounted at
+# path identity, so pointing the link there makes the recorded pointer portable.
+#
+# Degrades to the image's link rather than failing: with nothing exported dockerd
+# creates an empty dir at the default path, and a container that provisions
+# container-only worktrees is still better than one that cannot provision at all.
+retarget_clone_discovery() {
+    local link="${1:-/home/teatree/workspace/souliane/teatree}"  # privacy-scan:allow — the box's public, documented deploy home
+    local checkout="${TEATREE_DEPLOY_CHECKOUT:-}"
+    if [ -z "$checkout" ] || ! git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "entrypoint: no git checkout at TEATREE_DEPLOY_CHECKOUT='${checkout}' - leaving clone discovery on the image link; worktrees cut here resolve only inside this container (#4120)" >&2
+        return 0
+    fi
+    # A real directory is someone's clone, not the image's link — never clobber it.
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        echo "entrypoint: $link is a real directory, not the image's discovery link - leaving it untouched (#4120)" >&2
+        return 0
+    fi
+    mkdir -p "$(dirname "$link")"
+    ln -sfn "$checkout" "$link"
+}
+
+retarget_clone_discovery
+
 # True when the box pass store holds at least one Anthropic account entry —
 # the option-b credential source (anthropic_oauth_pass_paths routing).
 pass_store_has_anthropic() {
