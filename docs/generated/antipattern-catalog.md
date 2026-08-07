@@ -248,7 +248,7 @@ holistic (`ac-reviewing-codebase`).
 - **id:** `signal-for-core-flow`
 - **severity:** medium
 - **detection:** greppable
-- **grep hint:** `@receiver\(\s*post_save|@receiver\(\s*pre_save`
+- **grep hint:** `@receiver\(\s*post_save|@receiver\(\s*pre_save|post_save\.connect\(|pre_save\.connect\(`
 - **linter:** _(none — gap)_
 - **consumers:** architecture-design, ac-reviewing-codebase, linter
 - **refs:** ac-django-antipatterns-22

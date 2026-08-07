@@ -263,7 +263,7 @@
   preferred_pattern: >-
     Call domain behaviour explicitly from a model method; reserve signals for
     integrating third-party app events.
-  grep_hint: '@receiver\(\s*post_save|@receiver\(\s*pre_save'
+  grep_hint: '@receiver\(\s*post_save|@receiver\(\s*pre_save|post_save\.connect\(|pre_save\.connect\('
   consumers: [architecture-design, ac-reviewing-codebase, linter]
   refs: ["ac-django-antipatterns-22"]
   linter: null
