@@ -63,6 +63,7 @@ from teatree.agents.reader_profile import is_reader_phase, reader_child_env, rea
 from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import (
+    LimitSignal,
     maybe_park_for_active_window,
     park_or_rotate_on_limit,
     park_task_on_all_exhausted,
@@ -349,7 +350,8 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", la
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
     if limit is not None:
         sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
-        parked = park_or_rotate_on_limit(task, limit, sdk_resets_at=sdk_resets_at, lane=lane)
+        signal = LimitSignal(sdk_resets_at=sdk_resets_at, usage=usage)
+        parked = park_or_rotate_on_limit(task, limit, lane=lane, signal=signal)
         if parked is not None:
             maybe_persist_on_limit_park(task, outcome.thread)
             return parked

@@ -5,6 +5,7 @@ from django.test import TestCase
 
 from teatree.agents.headless import HarnessOutcome, _outcome_failure
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.config_setting import ConfigSetting
 from tests.teatree_agents._sdk_fake import result_message
 
 _USAGE = {"input_tokens": 4200, "output_tokens": 310, "cache_read_input_tokens": 90}
@@ -79,6 +80,39 @@ class TestFailureRecordsItsSpend(SpendRecordingCase):
         assert attempt is not None
         assert attempt.input_tokens == 4200
         assert attempt.cost_usd == pytest.approx(0.9)
+
+
+class TestPostTurnParkRecordsItsSpend(SpendRecordingCase):
+    """A usage-limit park is reached AFTER the SDK returned a result — it billed a turn.
+
+    ``_outcome_failure`` samples ``usage`` from the SAME ``ResultMessage`` every branch
+    classifies (including the limit branch) — a park must carry it through to
+    ``TaskAttempt`` like every other branch, not discard it as though nothing ran.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+
+    def test_a_rate_limited_run_parks_but_still_records_its_spend(self) -> None:
+        task = self.make_task()
+        task.claim(claimed_by="headless-worker")
+        outcome = HarnessOutcome(
+            agent_text="",
+            result_message=result_message(
+                is_error=True, result="rate limit exceeded", num_turns=3, usage=_USAGE, total_cost_usd=0.42
+            ),
+            stuck_reason=None,
+        )
+
+        attempt = _outcome_failure(task, outcome, phase="coding", lane=TaskAttempt.Lane.SUBSCRIPTION)
+
+        assert attempt is not None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING, "parked, not FAILED"
+        assert attempt.input_tokens == 4200
+        assert attempt.output_tokens == 310
+        assert attempt.cache_read_tokens == 90
+        assert attempt.cost_usd == pytest.approx(0.42)
 
 
 class TestPreTurnFailureStaysNull(SpendRecordingCase):
