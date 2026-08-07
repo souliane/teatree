@@ -444,6 +444,7 @@ Group root — forces sub-commands to be addressed by name.
 | Subcommand | Description |
 | --- | --- |
 | `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
+| `scratch` | Reclaim stale agent scratch under the temp root (dry-run unless --apply) |
 
 ## `retro`
 
