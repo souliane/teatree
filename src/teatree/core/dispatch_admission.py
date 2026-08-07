@@ -22,6 +22,14 @@ every one passed. :class:`~teatree.core.models.InteractiveDispatch` is this
 lane's ``Task.admitted_at`` — a seat taken AT the gate, counted by every later
 probe, handed back on ``SubagentStop`` with the window as the backstop.
 
+**A `t3 loop claim-next` claim and its own dispatch are one agent, not two**
+(#4129 review). A loop tick claims a ``Task`` (durable, ``claimed_by_session``)
+and then dispatches THAT unit's sub-agent through the harness, which seats it
+(durable, ``session_id``) — both rows now name the same live agent for the whole
+run. ``_claimed_agent_count`` drops an INTERACTIVE claim once its session holds a
+live seat, and drops the caller's own claim a moment early when it is the one
+about to be seated, so the sum never counts one agent twice.
+
 ``apply_ceiling=False`` is for a caller whose own lane ALREADY admitted it (a
 sub-agent's onward dispatch, the ``TaskCreated`` fan-out): re-clamping it against
 a ceiling its own claim is counted in would deadlock it against itself. It still
@@ -65,7 +73,7 @@ def _seats() -> "InteractiveDispatchManager":
     return seats.objects
 
 
-def _claimed_agent_count() -> int:
+def _claimed_agent_count(*, exclude_session: str = "") -> int:
     """Live agents holding a durable ``Task`` claim — CLAIMED with an unexpired lease.
 
     :meth:`~teatree.core.managers.TaskQuerySet.live_headless_agent_count` counts
@@ -73,9 +81,26 @@ def _claimed_agent_count() -> int:
     worker budget but the wrong number for THIS ceiling: an interactive dispatch
     adds to the population both halves share. ``active_claims`` is the repo's
     single in-flight predicate, so the two can never drift on what "live" means.
+
+    A ``t3 loop claim-next`` claim and that SAME unit's own ``Agent``-tool dispatch
+    name one live sub-agent, not two (#4129 review). Once a session's dispatch is
+    seated, its INTERACTIVE claim is dropped from this count for as long as the seat
+    lives — the claim and the seat are durable records of the SAME agent, not
+    distinct ones, so summing both would double it for the sub-agent's whole run.
+    *exclude_session* additionally drops the caller's own claim a moment early — the
+    instant its seat is about to be created but does not exist in the DB yet.
     """
-    tasks, _seat_ledger = _models()
-    return tasks.objects.active_claims().count()
+    tasks, seats = _models()
+    seated_sessions = {sid for sid in seats.objects.live_seats().values_list("session_id", flat=True) if sid}
+    if exclude_session:
+        seated_sessions.add(exclude_session)
+    claims = tasks.objects.active_claims()
+    if seated_sessions:
+        claims = claims.exclude(
+            execution_target=tasks.ExecutionTarget.INTERACTIVE,
+            claimed_by_session__in=seated_sessions,
+        )
+    return claims.count()
 
 
 def live_agent_count() -> int:
@@ -122,7 +147,11 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: 
         if not apply_ceiling:
             _seats().record_seat(session_id=session_id)
             return None
-        if _seats().claim_seat(session_id=session_id, ceiling=decision.ceiling, other_agents=_claimed_agent_count()):
+        if _seats().claim_seat(
+            session_id=session_id,
+            ceiling=decision.ceiling,
+            other_agents=_claimed_agent_count(exclude_session=session_id),
+        ):
             return None
         live = live_agent_count()
     except Exception:

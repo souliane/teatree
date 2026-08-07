@@ -244,3 +244,49 @@ class TestLiveAgentCount(TestCase):
         task.lease_expires_at = timezone.now() - dt.timedelta(minutes=1)
         task.save(update_fields=["lease_expires_at"])
         assert gate_mod.live_agent_count() == 0
+
+
+class TestNoDoubleCountForALoopClaimedTask(TestCase):
+    """Review of #4285/#4129: one Task claim + its own dispatch is one agent, not two.
+
+    A ``t3 loop claim-next`` claim and the SAME unit's own ``Agent``-tool dispatch
+    name one live sub-agent. Before the fix, ``other_agents`` for ``claim_seat`` was
+    ``_claimed_agent_count()`` taken with no regard for the calling session's own
+    already-CLAIMED ``Task`` — so a loop tick's single dispatch was refused by the
+    very claim it exists to service, and ``live_agent_count()`` kept double-counting
+    for the sub-agent's whole run once seated.
+    """
+
+    def _claimed_interactive(self, *, session_id: str) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.CLAIMED,
+            claimed_by_session=session_id,
+            lease_expires_at=timezone.now() + dt.timedelta(minutes=10),
+            phase="architectural_review",
+        )
+
+    def test_the_claiming_sessions_own_dispatch_is_not_refused_by_its_own_claim(self) -> None:
+        # The Task claim IS the population unit this dispatch represents — not a
+        # second, distinct agent already occupying the one-seat ceiling.
+        self._claimed_interactive(session_id="s-loop")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
+            assert dispatch_admission_denied_reason(session_id="s-loop") is None
+
+    def test_live_agent_count_does_not_double_count_once_seated(self) -> None:
+        self._claimed_interactive(session_id="s-loop")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
+            assert dispatch_admission_denied_reason(session_id="s-loop") is None
+        assert gate_mod.live_agent_count() == 1
+
+    def test_a_different_sessions_claim_still_counts(self) -> None:
+        # Only the CALLING session's own claim is exempt — a distinct session's
+        # claimed-but-not-yet-dispatched unit is real population and still counts.
+        self._claimed_interactive(session_id="s-other")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
+            reason = dispatch_admission_denied_reason(session_id="s-loop")
+        assert reason is not None
