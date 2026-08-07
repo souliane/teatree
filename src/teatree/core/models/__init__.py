@@ -56,6 +56,7 @@ from teatree.core.models.implemented_issue_marker import (
 )
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
+from teatree.core.models.interactive_dispatch import SEAT_WINDOW, InteractiveDispatch, InteractiveDispatchManager
 from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
 from teatree.core.models.landscape_artifact import LandscapeArtifact
 from teatree.core.models.live_post_approval import (
@@ -152,6 +153,7 @@ __all__ = [
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "SEAT_WINDOW",
     "STARVED_AFTER",
     "AnthropicActivePick",
     "AnthropicActivePickManager",
@@ -217,6 +219,8 @@ __all__ = [
     "InstructionComplianceRecord",
     "InstructionComplianceSnapshot",
     "IntentClassification",
+    "InteractiveDispatch",
+    "InteractiveDispatchManager",
     "InvalidTransitionError",
     "InvariantOutcome",
     "KnownIssue",

@@ -28,14 +28,14 @@ _REAL_DENIED_REASON = gate._denied_reason
 @pytest.fixture(autouse=True)
 def _governor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: the governor is silent, so only a test that brakes sees a deny."""
-    monkeypatch.setattr(gate, "_denied_reason", lambda *, apply_ceiling: None)
+    monkeypatch.setattr(gate, "_denied_reason", lambda *, apply_ceiling, session_id="": None)
 
 
 def _braking(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     """Make the governor brake, recording each call's ``apply_ceiling``."""
     seen: list[bool] = []
 
-    def _reason(*, apply_ceiling: bool) -> str:
+    def _reason(*, apply_ceiling: bool, session_id: str = "") -> str:
         seen.append(apply_ceiling)
         return _BRAKE
 
@@ -46,7 +46,7 @@ def _braking(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
 _PROBE_EXPLODED = "probe exploded"
 
 
-def _exploding_probe(*, apply_ceiling: bool) -> str:
+def _exploding_probe(*, apply_ceiling: bool, session_id: str = "") -> str:
     raise RuntimeError(_PROBE_EXPLODED)
 
 
@@ -101,6 +101,17 @@ class TestPreToolUseArm:
         seen = _braking(monkeypatch)
         gate.handle_dispatch_admission(_agent_dispatch())
         assert seen == [True]
+
+    def test_the_dispatchs_session_reaches_the_seat_ledger(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #4129: the seat is booked under the dispatching session, so a release can find it.
+        seen: list[str] = []
+        monkeypatch.setattr(
+            gate,
+            "_denied_reason",
+            lambda *, apply_ceiling, session_id="": seen.append(session_id) or None,
+        )
+        gate.handle_dispatch_admission(_agent_dispatch(session_id="sess-4129"))
+        assert seen == ["sess-4129"]
 
     def test_an_internal_error_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gate, "_denied_reason", _exploding_probe)
@@ -188,7 +199,7 @@ class TestDeniedReasonSeam:
         monkeypatch.setattr(
             core,
             "dispatch_admission_denied_reason",
-            lambda *, apply_ceiling: seen.append(apply_ceiling) or None,
+            lambda *, apply_ceiling, session_id="": seen.append(apply_ceiling) or None,
         )
         assert _REAL_DENIED_REASON(apply_ceiling=False) is None
         assert seen == [False]
