@@ -275,6 +275,10 @@ def heartbeat_inflight_claims(overlay: str) -> None:
     stalled — abandon the marker so the in-flight work aborts rather than push under
     a lost claim. An unreachable forge is transient: leave the marker and retry next
     tick (the TTL is the backstop).
+
+    Both RELINQUISHED states are skipped — ABANDONED (given up) and DECLINED (an
+    operator cancelled it, #4105) — because a refreshed claim ref on work nobody is
+    doing keeps a sibling instance out of an issue this one has let go.
     """
     if not fleet_claim_enabled(overlay):
         return
@@ -283,7 +287,7 @@ def heartbeat_inflight_claims(overlay: str) -> None:
     live = (
         ImplementedIssueMarker.objects.filter(overlay=overlay)
         .exclude(claim_ref_sha="")
-        .exclude(state=ImplementedIssueMarker.State.ABANDONED)
+        .exclude(state__in=ImplementedIssueMarker.State.relinquished())
     )
     for marker in live:
         _heartbeat_one(marker)

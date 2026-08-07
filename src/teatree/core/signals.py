@@ -435,9 +435,11 @@ def _release_issue_markers_on_completion(
     Keyed on the ticket REACHING a terminal-done state (MERGED / DELIVERED /
     REVIEW_POSTED / IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
     whole life, so without this the first claim locked the single-ticket budget
-    permanently. ABANDONED (give-up / fleet-claim-steal) is left untouched — it
-    is already terminal and carries distinct semantics. Best-effort: the FSM
-    transition must never block on the marker update.
+    permanently. The RELINQUISHED states are left untouched — ABANDONED (give-up /
+    fleet-claim-steal) and DECLINED (an operator cancelled it, #4105) are already
+    terminal and each records WHY the attempt ended, which a blanket rewrite to
+    COMPLETED would erase. Best-effort: the FSM transition must never block on the
+    marker update.
 
     Reaching it is an ENTRY, so a state-preserving transition frees nothing: the
     markers went COMPLETED on the first entry, and re-firing rewrites that same
@@ -450,7 +452,7 @@ def _release_issue_markers_on_completion(
         return
     try:
         ImplementedIssueMarker.objects.filter(issue_url=instance.issue_url).exclude(
-            state=ImplementedIssueMarker.State.ABANDONED
+            state__in=ImplementedIssueMarker.State.relinquished()
         ).update(state=ImplementedIssueMarker.State.COMPLETED)
     except Exception:
         logger.exception("Failed to release issue markers for ticket %s (%s)", instance.pk, instance.issue_url)

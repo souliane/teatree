@@ -1,8 +1,10 @@
 from typing import TYPE_CHECKING
 
 from django.apps import apps
+from django.db.models import Max
 
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
@@ -34,6 +36,28 @@ class TicketIntrospectionModel(TicketFacet):
         # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
         task_model = apps.get_model("core", "Task")
         return self.tasks.filter(status__in=task_model.Status.active()).exists()  # type: ignore[attr-defined]  # Django reverse FK
+
+    def newest_task_was_cancelled(self) -> bool:
+        """True when a human cancelled this ticket's NEWEST task (#4105).
+
+        The ONE reading of "an operator said stop", shared by the marker reconciler
+        (which releases such a claim as DECLINED rather than the re-claimable
+        ABANDONED) and the stuck-ticket drain (which leaves the ticket alone). Two
+        opinions here would let one actor undo the other's honoured decision.
+
+        The NEWEST task decides, so anything the pipeline did afterwards — a re-queue,
+        a later failure — is the "something changed" that puts the ticket back in play.
+        ``SUPERSEDED`` is deliberately not included: that is rework the factory itself
+        initiated, so the ticket stays claimable.
+
+        The newest task is read with ``Max``, not ``order_by("-created_at")``:
+        ``Task.created_at`` is nullable, and DESC ordering puts NULLs FIRST on
+        PostgreSQL (last on SQLite), so one null-stamped row would decide this.
+        """
+        newest = self.tasks.aggregate(latest=Max("created_at"))["latest"]  # type: ignore[attr-defined]  # Django reverse FK
+        if newest is None:
+            return False
+        return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # type: ignore[attr-defined]  # Django reverse FK
 
     @property
     def is_terminal(self) -> bool:

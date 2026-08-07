@@ -3,8 +3,8 @@
 A dispatched marker holds a slot in the single-ticket in-flight budget for
 its whole lifetime. Before the release seam it was never cleared, so the
 first claim locked the budget permanently. The ``post_transition`` receiver
-here transitions every non-abandoned marker for the ticket's ``issue_url`` to
-``COMPLETED`` the moment the ticket reaches a terminal state (MERGED /
+here transitions every non-relinquished marker for the ticket's ``issue_url``
+to ``COMPLETED`` the moment the ticket reaches a terminal state (MERGED /
 DELIVERED / IGNORED), returning the slot to the budget.
 """
 
@@ -81,6 +81,22 @@ class TestMarkerReleaseOnCompletion(TestCase):
 
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_declined_marker_is_not_resurrected_to_completed(self) -> None:
+        """DECLINED records WHY the attempt ended — a blanket rewrite would erase it (#4105)."""
+        ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.IN_REVIEW)
+        marker = ImplementedIssueMarkerFactory(
+            overlay="t3-teatree",
+            issue_url=URL,
+            ticket=ticket,
+            state=ImplementedIssueMarker.State.DECLINED,
+        )
+
+        ticket.reconcile_merged()
+        ticket.save()
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DECLINED
 
     def test_state_preserving_transition_releases_nothing(self) -> None:
         """Release is the side effect of REACHING terminal, not of sitting on it.

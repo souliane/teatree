@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0063_loop_lease_owner_pid_namespace"),
+        ("core", "0064_implementedissuemarker_declined"),
     ]
 
     operations = [

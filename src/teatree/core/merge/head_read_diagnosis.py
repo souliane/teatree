@@ -1,10 +1,21 @@
-"""Why a live-head read came back EMPTY, and what stays true when it does (#4239).
+"""Why a live-head read came back EMPTY, and what stays true when it does (#4239, #4144).
 
 ``fetch_live_head_sha`` returns ``""`` for every failure — no credential, no
 network, no such PR — so an empty result is a NON-ANSWER, never a verdict about
 the head. The keystone formatted it into a sentence asserting "PR head moved" and
 offered two hypotheses that excluded the real one, sending the reader after a
 force-push that never happened.
+
+A merge that ALREADY LANDED is a third reason the read comes back empty (#4144).
+The #4144 incident read this way, but the mechanism is not a durable one to lean
+on: GitHub keeps serving ``headRefOid`` for a merged PR even after its source
+branch is deleted (checked against three merged PRs whose branches are gone from
+the remote — all still answered). So an empty read here is, like the #4239 causes
+above, most likely transient (network, rate limit, eventual consistency right
+after the merge) rather than proof the branch is gone. :func:`landed_merge_commit`
+does not need to know which — it is the one fact an empty read does not settle on
+its own, and the keystone must establish it before diagnosing drift, whatever
+emptied the read — refusing there left the ticket unadvanced against a merged PR.
 
 Each chain below is the one that host's merge READ actually authenticates from,
 which is neither the PUSH credential ``core.forge_push`` resolves nor the same
@@ -17,6 +28,10 @@ ticket's own defect inside its fix.
 
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from teatree.core.merge.ci_rollup import CodeHostQuery
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +62,19 @@ def read_credential_chain(host_kind: str) -> ReadCredentialChain:
 def read_credential_env_vars(host_kind: str) -> tuple[str, ...]:
     """The env vars *host_kind*'s merge-read transport authenticates from."""
     return read_credential_chain(host_kind).env_vars
+
+
+def landed_merge_commit(query: "CodeHostQuery") -> str:
+    """The commit a merge that ALREADY LANDED produced, or ``""`` (#4144).
+
+    The question an empty head read leaves open and the drift diagnosis assumes
+    away. Only a forge that reports MERGED *and* names the resulting commit
+    answers it: a merged state with no commit oid is another degraded payload, so
+    it yields ``""`` and the caller keeps its fail-closed refusal rather than
+    recording a merge it cannot point at.
+    """
+    state = query.pr_merge_state()
+    return state.merge_commit_oid if state.is_merged else ""
 
 
 def unreadable_head_advisory(host_kind: str) -> str:
