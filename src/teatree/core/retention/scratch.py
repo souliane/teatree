@@ -363,7 +363,7 @@ def _covers(paths: frozenset[str], candidate: str, *, nested_only: bool) -> bool
     return False
 
 
-def resolve_scratch_roots(configured: str = "") -> ScratchSweep:
+def resolve_scratch_sweep(configured: str = "") -> ScratchSweep:
     """A sweep whose root is paired with the process table that can see its holders.
 
     The host's temp root and its process table are mounted as a PAIR
@@ -383,7 +383,7 @@ def resolve_scratch_roots(configured: str = "") -> ScratchSweep:
 
 def sweep_scratch(*, configured_root: str, retention_days: int, apply: bool) -> ScratchSweepPlan:
     """Plan (or apply) the scratch retention sweep for the resolved root."""
-    resolved = resolve_scratch_roots(configured_root)
+    resolved = resolve_scratch_sweep(configured_root)
     sweep = replace(resolved, retention_days=retention_days)
     return sweep.apply() if apply else sweep.plan()
 
@@ -392,6 +392,6 @@ __all__ = [
     "ScratchEntry",
     "ScratchSweep",
     "ScratchSweepPlan",
-    "resolve_scratch_roots",
+    "resolve_scratch_sweep",
     "sweep_scratch",
 ]

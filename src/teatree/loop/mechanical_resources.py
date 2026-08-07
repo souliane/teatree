@@ -44,7 +44,7 @@ from pathlib import Path
 from django.utils import timezone
 
 from teatree.config import worktree_root
-from teatree.core.retention.scratch import resolve_scratch_roots, sweep_scratch
+from teatree.core.retention.scratch import resolve_scratch_sweep, sweep_scratch
 from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
@@ -263,7 +263,7 @@ def _scratch_plan_step(payload: ActionPayload) -> str:
     days = _scratch_retention_days(payload)
     if days <= 0:
         return "SKIP agent-scratch sweep (scratch_retention_days=0)"
-    root = resolve_scratch_roots(str(payload.get("scratch_sweep_root", ""))).root
+    root = resolve_scratch_sweep(str(payload.get("scratch_sweep_root", ""))).root
     return f"SWEEP agent scratch under {root} older than {days}d"
 
 

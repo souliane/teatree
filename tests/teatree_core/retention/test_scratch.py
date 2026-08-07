@@ -258,7 +258,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
         host_proc = Path(self.enterContext(TemporaryDirectory()))
 
         with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_proc):
-            paired = scratch.resolve_scratch_roots()
+            paired = scratch.resolve_scratch_sweep()
 
         assert paired.root == host_tmp
         assert paired.proc_root == host_proc
@@ -268,7 +268,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
         host_tmp = Path(self.enterContext(TemporaryDirectory()))
 
         with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_tmp / "absent"):
-            fallback = scratch.resolve_scratch_roots()
+            fallback = scratch.resolve_scratch_sweep()
 
         assert fallback.root == Path("/tmp")
         assert fallback.proc_root == Path("/proc")
@@ -279,7 +279,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
         host_proc = Path(self.enterContext(TemporaryDirectory()))
 
         with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_proc):
-            explicit = scratch.resolve_scratch_roots(str(self.root))
+            explicit = scratch.resolve_scratch_sweep(str(self.root))
 
         assert explicit.root == self.root
         assert explicit.proc_root == Path("/proc")
