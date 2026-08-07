@@ -66,6 +66,18 @@ class TestSchemaInvariants:
             if entry.grep_hint is not None:
                 re.compile(entry.grep_hint)
 
+    def test_signal_for_core_flow_hint_matches_connect_style_registration(
+        self, catalog: tuple[AntiPatternEntry, ...]
+    ) -> None:
+        by_id = {e.id: e for e in catalog}
+        grep_hint = by_id["signal-for-core-flow"].grep_hint
+        assert grep_hint is not None
+        pattern = re.compile(grep_hint)
+        assert pattern.search("post_save.connect(_auto_enqueue_headless_task, sender=Task)")
+        assert pattern.search("pre_save.connect(_stamp_something, sender=Ticket)")
+        assert pattern.search("@receiver(post_save, sender=Task)")
+        assert not pattern.search("post_delete.connect(_cleanup_orphans, sender=Task)")
+
 
 class TestReachabilityLedger:
     def test_named_linter_resolves_to_a_real_hook_or_tool(self, catalog: tuple[AntiPatternEntry, ...]) -> None:
