@@ -11873,12 +11873,23 @@ Usage: t3 teatree config_setting import [OPTIONS]
  textarea is the surface that demands one, because a paste is not a per-key
  intent.
 
+ ``--restore-private`` accepts the private rows of an ``export
+ --include-private``
+ backup, the one file that carries them — so the flag whose purpose is a
+ COMPLETE
+ backup produces one that restores (#4156). It grants nothing on any other
+ file: an
+ ordinary dump's secret rows are refused under it exactly as without it.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --input          TEXT  Read the TOML dump from this path; omit to read       │
-│                        stdin.                                                │
-│ --dry-run              Classify every row (folded / written / skipped /      │
-│                        rejected); write nothing.                             │
-│ --help                 Show this message and exit.                           │
+│ --input                  TEXT  Read the TOML dump from this path; omit to    │
+│                                read stdin.                                   │
+│ --dry-run                      Classify every row (folded / written /        │
+│                                skipped / rejected); write nothing.           │
+│ --restore-private              Restore the private rows of a                 │
+│                                --include-private personal backup (that file  │
+│                                only).                                        │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11911,7 +11922,9 @@ Usage: t3 teatree config_setting export [OPTIONS]
  SHARED export (auto-configuring a fresh teatree) cannot leak customer data
  even though the private DB store keeps it. Each withheld row is named on
  stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
- backup.
+ backup. That file carries the rows an ordinary ``import`` refuses, so it
+ stamps
+ itself a backup and is restored with ``import --restore-private`` (#4156).
 
  A stored row that is not a SETTING — internal runtime state sharing the store,
  a

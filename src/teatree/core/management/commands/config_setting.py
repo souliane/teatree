@@ -331,7 +331,8 @@ class Command(TyperCommand):
         SHARED export (auto-configuring a fresh teatree) cannot leak customer data
         even though the private DB store keeps it. Each withheld row is named on
         stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
-        backup.
+        backup. That file carries the rows an ordinary ``import`` refuses, so it stamps
+        itself a backup and is restored with ``import --restore-private`` (#4156).
 
         A stored row that is not a SETTING — internal runtime state sharing the store, a
         key outliving its declaration — is named on stderr and left out whatever the flags
@@ -361,6 +362,9 @@ class Command(TyperCommand):
             self.stderr.write(
                 f"  {len(result.omitted)} stored row(s) omitted: not configuration, so import refuses them."
             )
+        if result.private_backup:
+            self.stderr.write("  this is a PERSONAL BACKUP carrying private rows an ordinary import refuses.")
+            self.stderr.write("  never share it; restore it with `config_setting import --restore-private`.")
         if output:
             Path(output).expanduser().write_text(result.toml, encoding="utf-8")
             self.stdout.write(f"  exported config store to {output}")
@@ -381,6 +385,13 @@ class Command(TyperCommand):
                 "--dry-run", help="Classify every row (folded / written / skipped / rejected); write nothing."
             ),
         ] = False,
+        restore_private: Annotated[
+            bool,
+            typer.Option(
+                "--restore-private",
+                help="Restore the private rows of a --include-private personal backup (that file only).",
+            ),
+        ] = False,
     ) -> None:
         """Load a ``config_setting export`` TOML dump into the store — the inverse of ``export``.
 
@@ -398,18 +409,32 @@ class Command(TyperCommand):
         Safety-posture keys import here without a confirm phrase: typing this command IS the
         operator's authorization, exactly as ``config_setting set`` is. The dashboard's import
         textarea is the surface that demands one, because a paste is not a per-key intent.
+
+        ``--restore-private`` accepts the private rows of an ``export --include-private``
+        backup, the one file that carries them — so the flag whose purpose is a COMPLETE
+        backup produces one that restores (#4156). It grants nothing on any other file: an
+        ordinary dump's secret rows are refused under it exactly as without it.
         """
         text = Path(input_path).expanduser().read_text(encoding="utf-8") if input_path else sys.stdin.read()
         try:
-            result = import_toml_to_db(text, dry_run=dry_run, allow_safety_posture=True)
+            result = import_toml_to_db(
+                text, dry_run=dry_run, allow_safety_posture=True, restore_private=restore_private
+            )
         except tomllib.TOMLDecodeError as exc:
             self.stderr.write(f"  invalid TOML: {exc}")
             raise SystemExit(2) from exc
+        if restore_private and not result.private_backup:
+            self.stderr.write("  --restore-private ignored: this file is not an --include-private personal backup.")
         for old, new in result.folded:
             self.stdout.write(f"  folded retired alias {old} -> {new}")
         for row in result.rejected:
             self.stderr.write(f"  rejected {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.rejected:
+            if result.private_backup and not restore_private:
+                self.stderr.write(
+                    "  this file is an --include-private personal backup; "
+                    "pass --restore-private to restore its private rows."
+                )
             self.stderr.write(f"  {len(result.rejected)} row(s) rejected; nothing was imported.")
             raise SystemExit(2)
         verb = "would import" if dry_run else "imported"

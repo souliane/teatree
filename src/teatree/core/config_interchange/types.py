@@ -25,11 +25,17 @@ class OmittedRow:
 
 @dataclass(frozen=True)
 class ConfigExport:
-    """A config-store export: the TOML text, the secret-withheld rows, the non-config rows."""
+    """A config-store export: the TOML text, the secret-withheld rows, the non-config rows.
+
+    ``private_backup`` means the text carries the ``--include-private`` marker: an ordinary
+    import refuses its private rows, so the caller must say so rather than hand the operator
+    a file that silently cannot be restored (#4156).
+    """
 
     toml: str
     redacted: tuple[RedactedRow, ...]
     omitted: tuple[OmittedRow, ...] = ()
+    private_backup: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,10 @@ class ConfigImport:
     ``unchanged``: re-importing a box's own export is a no-op, and a preview that called
     those rows writes reported a store full of changes to an operator who had changed
     nothing (#4147).
+
+    ``private_backup`` means the FILE declared itself a ``--include-private`` backup, so a
+    caller looking at a refusal can name the restore path instead of reporting a wall of
+    per-key secret rejections the operator has no way to act on (#4156).
     """
 
     written: tuple[ImportedRow, ...]
@@ -81,6 +91,7 @@ class ConfigImport:
     rejected: tuple[RejectedRow, ...]
     dry_run: bool
     unchanged: tuple[ImportedRow, ...] = ()
+    private_backup: bool = False
 
     @property
     def safety_posture_keys(self) -> tuple[str, ...]:
