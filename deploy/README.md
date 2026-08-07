@@ -157,6 +157,37 @@ Django-free Claude Code hooks consult now that they cannot open the database
 for the source tree; see [Running a host working tree](#running-a-host-working-tree)
 for the bind-mount mode.
 
+### The host namespace the scratch sweep reads: `/host-tmp` + `/host-proc`
+
+The host's temp root is bound **read-write** at `/host-tmp` (source
+`${TEATREE_HOST_TMP:-/tmp}`) and the host process table **read-only** at
+`/host-proc`. Both are distinct targets, so the container's own `/tmp` and `/proc`
+are untouched.
+
+They exist for the agent-scratch retention sweep (`t3 <overlay> retention scratch`,
+and the resource-pressure ladder's automatic pass). A container has its own `/tmp`,
+so a container-scoped sweep reclaims none of the host scratch that actually fills
+the box — and on a tmpfs-backed `/tmp` that scratch is **memory**, not idle disk.
+
+The pair is inseparable. The sweep refuses to remove any path a live process holds
+open, and that guard is answered from a process table; reading this container's
+while sweeping the host's files would answer confidently about the wrong namespace.
+When only one half is present the sweep falls back to this venue's own `/tmp` +
+`/proc` rather than mixing them.
+
+The mount is strictly narrower than what the worker already has — the docker socket
+below is root-equivalent on the host. What bounds the sweep is its own guards (age,
+uid ownership, open-file, registered-worktree, protected-name), each of which keeps
+an entry it cannot evaluate.
+
+`/tmp` itself stays a tmpfs; teatree does not move it to disk. On the measured box
+the root filesystem was 84% full, so a 15 GB disk-backed `/tmp` would trade RAM
+pressure for a filesystem-full failure that breaks the control DB — and tmpfs is
+wiped on reboot, which is what bounded the observed leak. The sizing is the defect:
+`t3 doctor check` WARNs when the tmpfs may claim more than
+`TEATREE_TMPFS_MAX_RAM_PERCENT` (default 25) of machine RAM and prints the
+`systemctl edit tmp.mount` cap.
+
 ### Exporting the DB by hand
 
 Take the snapshot **from inside a container, with SQLite's online `.backup`** —

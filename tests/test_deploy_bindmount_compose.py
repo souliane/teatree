@@ -66,7 +66,15 @@ CREDENTIAL_PLANE = {
 SESSION_PLANE = {
     f"{CONTAINER_HOME}/.claude/projects",
 }
+# The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
+# A PAIR by construction: the open-file guard is read from a process table, so the
+# temp root and the table describing its holders must name the same namespace.
+HOST_SCRATCH_TARGET = "/host-tmp"
+HOST_PROC_TARGET = "/host-proc"
+HOST_NAMESPACE = {HOST_SCRATCH_TARGET, HOST_PROC_TARGET}
 # Every host bind mount the shared list must carry, by canonical container target.
+# The host-namespace pair is listed separately: it is not a container path rebased
+# onto the host home, so the state-plane source rule below does not apply to it.
 ALL_BIND_TARGETS = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
 # The deploy checkout: the clone `workspace ticket` cuts worktrees from (#4120).
 # A different KIND of bind from the state planes above — it is not a container
@@ -171,8 +179,9 @@ class TestExternalizedBindMounts:
 
     def test_state_dirs_are_bind_mounts_at_canonical_container_targets(self) -> None:
         binds = self._bind_mounts()
-        assert set(binds) == ALL_BIND_TARGETS | {DEPLOY_CHECKOUT_PLACEHOLDER}, (
-            "every state + credential dir must be a host bind mount, plus the deploy checkout"
+        assert set(binds) == ALL_BIND_TARGETS | HOST_NAMESPACE | {DEPLOY_CHECKOUT_PLACEHOLDER}, (
+            "every state + credential dir must be a host bind mount, plus the deploy "
+            "checkout and the host-namespace pair the scratch sweep reads"
         )
 
     def test_every_state_bind_source_is_the_target_rebased_on_the_host_home(self) -> None:
@@ -193,6 +202,22 @@ class TestExternalizedBindMounts:
         entry = self._bind_mounts()[DEPLOY_CHECKOUT_PLACEHOLDER]
         assert entry["source"] == DEPLOY_CHECKOUT_PLACEHOLDER == entry["target"]
         assert not entry.get("read_only", False)
+
+    def test_the_host_scratch_root_is_writable_and_its_process_table_is_not(self) -> None:
+        # Reclaiming host scratch is the point, so /host-tmp is rw; the sweep only
+        # READS /proc/<pid>/{cwd,fd}, so the process table is mounted read-only.
+        binds = self._bind_mounts()
+        assert binds[HOST_SCRATCH_TARGET]["source"] == "${TEATREE_HOST_TMP:-/tmp}"
+        assert not binds[HOST_SCRATCH_TARGET].get("read_only", False)
+        assert binds[HOST_PROC_TARGET]["source"] == "/proc"
+        assert binds[HOST_PROC_TARGET]["read_only"] is True
+
+    def test_the_host_namespace_never_shadows_the_containers_own_tmp_or_proc(self) -> None:
+        # Distinct targets on purpose: mounting the host's /tmp OVER the container's
+        # would put every agent's scratch back in the pool this sweep exists to free.
+        binds = self._bind_mounts()
+        assert "/tmp" not in binds
+        assert "/proc" not in binds
 
     def test_credential_plane_is_a_dedicated_bind_mount(self) -> None:
         # The pass store + GPG home must be their own mounts (not nested under the
