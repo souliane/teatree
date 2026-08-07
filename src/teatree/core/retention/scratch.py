@@ -61,6 +61,14 @@ _HOST_PROC = Path("/host-proc")
 _VENUE_TMP = Path("/tmp")  # noqa: S108 — auditing the temp root, not creating a temp file
 _VENUE_PROC = Path("/proc")
 
+# The same variable the compose mount source reads (``${TEATREE_HOST_TMP:-/tmp}``),
+# forwarded into the container's own environment so this process can read the value
+# too. The open-file guard compares candidate paths against what the HOST process
+# table spells them as, so probe_root must name the host's real temp path — reading
+# anything else (a hard-coded ``/tmp``) reconstructs the exact bug this variable
+# fixes whenever the operator overrides the mount source.
+_HOST_TMP_ENV = "TEATREE_HOST_TMP"
+
 
 @dataclass(frozen=True, slots=True)
 class ScratchEntry:
@@ -368,16 +376,21 @@ def resolve_scratch_sweep(configured: str = "") -> ScratchSweep:
 
     The host's temp root and its process table are mounted as a PAIR
     (``/host-tmp`` + ``/host-proc``), because sweeping one namespace's files while
-    reading another's process table is exactly what blinds the open-file guard.
-    So the container reaches the host's scratch only when BOTH are present, and an
+    reading another's process table is exactly what blinds the open-file guard. So
+    the container reaches the host's scratch only when BOTH are present, and an
     explicitly configured root that is not that host mount is swept against this
-    venue's own ``/proc``. ``retention_days`` is left at 0 for the caller to set
-    from config — an unset window is the off switch, never a default deletion.
+    venue's own ``/proc``. The host view's ``probe_root`` is read from
+    ``TEATREE_HOST_TMP`` — the SAME variable the mount source is built from — so an
+    operator override that moves the host mount source moves the guard's namespace
+    with it; a stale ``/tmp`` here would blind the guard the moment the two diverge.
+    ``retention_days`` is left at 0 for the caller to set from config — an unset
+    window is the off switch, never a default deletion.
     """
     host_view = _HOST_TMP.is_dir() and _HOST_PROC.is_dir()
     root = Path(configured) if configured else (_HOST_TMP if host_view else _VENUE_TMP)
     if host_view and root == _HOST_TMP:
-        return ScratchSweep(root=_HOST_TMP, retention_days=0, probe_root=_VENUE_TMP, proc_root=_HOST_PROC)
+        probe_root = Path(os.environ.get(_HOST_TMP_ENV) or _VENUE_TMP)
+        return ScratchSweep(root=_HOST_TMP, retention_days=0, probe_root=probe_root, proc_root=_HOST_PROC)
     return ScratchSweep(root=root, retention_days=0, proc_root=_VENUE_PROC)
 
 

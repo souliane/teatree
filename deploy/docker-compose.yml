@@ -248,6 +248,11 @@ services:
       # install that registers the overlay entry point. Interpolated from the
       # host env because that is the only channel deploy/t3 can reach compose on.
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
       # Init owns the shared clone root, so it is where the discovery link is
       # retargeted at the host-visible checkout — before the worker that reads
       # it starts (#4120).
@@ -264,6 +269,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
       # Same value as the checkout bind in the shared anchor: the entrypoint
       # points clone discovery at it so the worktrees this role cuts carry a
       # `gitdir:` the host resolves too (#4120).
@@ -340,6 +350,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -375,6 +390,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully

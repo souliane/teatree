@@ -257,12 +257,64 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
         host_tmp = Path(self.enterContext(TemporaryDirectory()))
         host_proc = Path(self.enterContext(TemporaryDirectory()))
 
-        with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_proc):
+        with (
+            patch.object(scratch, "_HOST_TMP", host_tmp),
+            patch.object(scratch, "_HOST_PROC", host_proc),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("TEATREE_HOST_TMP", None)
             paired = scratch.resolve_scratch_sweep()
 
         assert paired.root == host_tmp
         assert paired.proc_root == host_proc
-        assert paired.probe_root == Path("/tmp")
+        assert paired.probe_root == Path("/tmp"), "with no override this still names the plain default host /tmp"
+
+    def test_the_host_views_probe_root_is_read_from_the_same_variable_the_mount_source_uses(self) -> None:
+        """#4165 review finding: a hard-coded probe_root silently blinded the open-file guard.
+
+        The compose mount source is ``${TEATREE_HOST_TMP:-/tmp}`` — when an operator
+        overrides it, the guard's namespace must move with it or every open-file
+        check compares against a path the host process table never spells.
+        """
+        host_tmp = Path(self.enterContext(TemporaryDirectory()))
+        host_proc = Path(self.enterContext(TemporaryDirectory()))
+
+        with (
+            patch.object(scratch, "_HOST_TMP", host_tmp),
+            patch.object(scratch, "_HOST_PROC", host_proc),
+            patch.dict(os.environ, {"TEATREE_HOST_TMP": "/mnt/scratch"}),
+        ):
+            paired = scratch.resolve_scratch_sweep()
+
+        assert paired.probe_root == Path("/mnt/scratch")
+
+    def test_a_live_process_held_file_survives_under_a_custom_host_tmp_override(self) -> None:
+        """The end-to-end regression for the review finding, not just the resolved value.
+
+        Reverting the ``_HOST_TMP_ENV`` read (hard-coding ``probe_root=_VENUE_TMP``
+        again) makes this go RED: the entry becomes removable because the guard
+        compares against ``/tmp/agentdb.sqlite3`` while the process table (as read
+        from the operator's real mount point) spells it ``/mnt/scratch/agentdb.sqlite3``.
+        """
+        host_tmp = Path(self.enterContext(TemporaryDirectory()))
+        host_proc = Path(self.enterContext(TemporaryDirectory()))
+        held = _scratch(host_tmp, "agentdb.sqlite3", days=9, size=64)
+        (host_proc / "999" / "fd").mkdir(parents=True)
+        (host_proc / "999" / "fd" / "3").symlink_to("/mnt/scratch/agentdb.sqlite3")
+
+        with (
+            patch.object(scratch, "_HOST_TMP", host_tmp),
+            patch.object(scratch, "_HOST_PROC", host_proc),
+            patch.dict(os.environ, {"TEATREE_HOST_TMP": "/mnt/scratch"}),
+        ):
+            sweep = scratch.resolve_scratch_sweep()
+            sweep = ScratchSweep(
+                root=sweep.root, retention_days=3, probe_root=sweep.probe_root, proc_root=sweep.proc_root
+            )
+            entry = next(e for e in sweep.plan().entries if e.path == str(held))
+
+        assert entry.removable is False
+        assert entry.reason == "open by a live process"
 
     def test_a_half_mounted_host_view_falls_back_to_this_venues_own_pair(self) -> None:
         host_tmp = Path(self.enterContext(TemporaryDirectory()))

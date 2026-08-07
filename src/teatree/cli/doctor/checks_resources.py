@@ -197,10 +197,29 @@ def _check_tmp_tmpfs_headroom(
     return True
 
 
+_HOST_TMP_MOUNT = Path("/host-tmp")
+
+
+def _tmpfs_sizing_target(tmp_dir: str | None) -> str:
+    """Which path to inspect: the caller's choice, else the host bind if mounted, else ``/tmp``.
+
+    ``t3 doctor check`` runs INSIDE the container (#4165), where the container's
+    own ``/tmp`` is the image's overlay layer, not the host's tmpfs — so a check
+    hard-coded to ``/tmp`` is silently inert there. ``/host-tmp`` is a BIND mount
+    of the host's real temp root (the scratch sweep's own mount, wired in this
+    same ticket), and a bind mount reports its SOURCE's fstype and size in the
+    mount table — so probing it from inside the container answers the question
+    about the HOST's tmpfs, which is what this check exists to surface.
+    """
+    if tmp_dir is not None:
+        return tmp_dir
+    return str(_HOST_TMP_MOUNT) if _HOST_TMP_MOUNT.is_dir() else "/tmp"  # noqa: S108 — auditing, not creating
+
+
 def _check_tmp_tmpfs_sizing(
     *,
     mounts_path: Path = Path("/proc/mounts"),
-    tmp_dir: str = "/tmp",  # noqa: S108 — auditing the /tmp mount, not creating a temp file
+    tmp_dir: str | None = None,
     total_ram_mib: int | None = None,
 ) -> bool:
     """WARN when a RAM-backed ``/tmp`` is SIZED to claim a large share of machine RAM.
@@ -221,12 +240,13 @@ def _check_tmp_tmpfs_sizing(
     to a silent pass so this diagnostic never aborts the doctor run.
     """
     try:
+        target = _tmpfs_sizing_target(tmp_dir)
         if not mounts_path.is_file():
             return True
-        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), tmp_dir) != "tmpfs":
+        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), target) != "tmpfs":
             return True
         ram_mib = host_total_ram_mib() if total_ram_mib is None else total_ram_mib
-        stats = os.statvfs(tmp_dir)
+        stats = os.statvfs(target)
         size_mib = stats.f_blocks * stats.f_frsize // (1024 * 1024)
         if ram_mib <= 0 or size_mib <= 0:
             return True
@@ -237,7 +257,7 @@ def _check_tmp_tmpfs_sizing(
         share = round(size_mib / ram_mib * 100)
         if share >= threshold:
             typer.echo(
-                f"WARN  {tmp_dir} is a tmpfs sized {size_mib / 1024:.1f} GB on {ram_mib / 1024:.1f} GB of RAM "
+                f"WARN  {target} is a tmpfs sized {size_mib / 1024:.1f} GB on {ram_mib / 1024:.1f} GB of RAM "
                 f"({share}% >= {threshold}%) — scratch written there is memory, not disk, so it can claim "
                 f"that share of the working pool permanently. Cap it (host, not the container): "
                 f"`systemctl edit tmp.mount` with `[Mount]` / `Options=mode=1777,strictatime,nosuid,nodev,size=4G`, "

@@ -175,6 +175,16 @@ while sweeping the host's files would answer confidently about the wrong namespa
 When only one half is present the sweep falls back to this venue's own `/tmp` +
 `/proc` rather than mixing them.
 
+**The open-file guard's own namespace is read from `TEATREE_HOST_TMP`, the same
+variable the mount source is built from.** Each app service (init/worker/admin/
+slack-listener) forwards it into its own environment with the identical default
+expression (`${TEATREE_HOST_TMP:-/tmp}`), so the value the sweep compares
+candidate paths against can never drift from the value the bind mount actually
+points at. Reading a value that disagreed with the mount source — a stale
+hard-coded `/tmp` while the operator had overridden the source — would silently
+blind the guard: a file a live host process holds open under the real override
+path would read as unheld and become removable.
+
 The mount is strictly narrower than what the worker already has — the docker socket
 below is root-equivalent on the host. What bounds the sweep is its own guards (age,
 uid ownership, open-file, registered-worktree, protected-name), each of which keeps
@@ -186,7 +196,10 @@ pressure for a filesystem-full failure that breaks the control DB — and tmpfs 
 wiped on reboot, which is what bounded the observed leak. The sizing is the defect:
 `t3 doctor check` WARNs when the tmpfs may claim more than
 `TEATREE_TMPFS_MAX_RAM_PERCENT` (default 25) of machine RAM and prints the
-`systemctl edit tmp.mount` cap.
+`systemctl edit tmp.mount` cap. The check runs INSIDE the container, where a plain
+`/tmp` is the image's own overlay layer rather than the host's tmpfs, so it
+inspects `/host-tmp` — the same bind the sweep reads — whenever that mount is
+present, falling back to this venue's own `/tmp` only when it is not.
 
 ### Exporting the DB by hand
 

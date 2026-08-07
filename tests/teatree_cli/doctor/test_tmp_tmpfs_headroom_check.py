@@ -16,10 +16,12 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+from teatree.cli.doctor import checks_resources
 from teatree.cli.doctor.checks_resources import (
     _check_tmp_tmpfs_headroom,
     _check_tmp_tmpfs_sizing,
     _tmp_mount_fstype,
+    _tmpfs_sizing_target,
     _tmpfs_warn_percent,
 )
 
@@ -164,4 +166,67 @@ class TestTmpfsSizingCheck:
         mounts = _mounts(tmp_path, "tmpfs")
         with patch.object(os, "statvfs", return_value=_FakeStatvfs(total=15 * 1024**3, used_pct=1)):
             assert _check_tmp_tmpfs_sizing(mounts_path=mounts, total_ram_mib=0) is True
+        assert capsys.readouterr().out == ""
+
+
+class TestTmpfsSizingTarget:
+    """Which path the sizing check inspects (#4165 review finding).
+
+    ``t3 doctor check`` runs INSIDE the container, where a hard-coded ``/tmp``
+    names the image's own overlay layer, never the host's tmpfs — so the default
+    resolution must prefer the ``/host-tmp`` bind (the scratch sweep's own mount)
+    when it exists, and only fall back to ``/tmp`` when it does not.
+    """
+
+    def test_an_explicit_tmp_dir_always_wins(self, tmp_path: Path) -> None:
+        with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path):
+            assert _tmpfs_sizing_target("/custom") == "/custom"
+
+    def test_prefers_the_host_bind_when_it_is_mounted(self, tmp_path: Path) -> None:
+        with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path):
+            assert _tmpfs_sizing_target(None) == str(tmp_path)
+
+    def test_falls_back_to_tmp_when_the_host_bind_is_absent(self, tmp_path: Path) -> None:
+        with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path / "absent"):
+            assert _tmpfs_sizing_target(None) == "/tmp"
+
+
+class TestTmpfsSizingCheckPrefersTheHostBind:
+    """End-to-end: the check itself follows the resolved target, not a literal /tmp.
+
+    Regression for the review finding: reverting the default from ``None`` back to
+    a hard-coded ``"/tmp"`` makes ``test_reports_the_host_tmpfs_by_its_bind_path``
+    go silent, because the mounts file here lists ONLY ``/host-tmp`` as tmpfs — the
+    exact shape of "doctor check runs in the container, where /tmp is not a
+    distinct mount".
+    """
+
+    def test_reports_the_host_tmpfs_by_its_bind_path(self, tmp_path: Path, capsys) -> None:
+        host_tmp = tmp_path / "host-tmp"
+        host_tmp.mkdir()
+        # The container's own /proc/mounts spells the bind mount at its resolved
+        # path (a bind mount reports the SOURCE's fstype at the new mountpoint) —
+        # not the literal /host-tmp target string.
+        mounts = _mounts(tmp_path, "tmpfs", mount_point=str(host_tmp))
+
+        with (
+            patch.object(checks_resources, "_HOST_TMP_MOUNT", host_tmp),
+            patch.object(os, "statvfs", return_value=_FakeStatvfs(total=15 * 1024**3, used_pct=1)),
+        ):
+            assert _check_tmp_tmpfs_sizing(mounts_path=mounts, total_ram_mib=31 * 1024) is True
+
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert str(host_tmp) in out
+
+    def test_silent_when_the_host_bind_is_absent_and_this_venues_own_tmp_is_not_tmpfs(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        mounts = _mounts(tmp_path, "ext4")  # this venue's own /tmp, disk-backed
+
+        with (
+            patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path / "absent"),
+            patch.object(os, "statvfs", side_effect=AssertionError("statvfs must not be called")),
+        ):
+            assert _check_tmp_tmpfs_sizing(mounts_path=mounts, total_ram_mib=31 * 1024) is True
         assert capsys.readouterr().out == ""
