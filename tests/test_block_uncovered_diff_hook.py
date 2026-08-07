@@ -325,6 +325,16 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
             reason = self._deny_reason(self._create_call(shipping_repo), capsys)
         assert "ALREADY EXISTS" not in reason
 
+    def test_no_note_when_the_installed_t3_predates_the_probe(self, shipping_repo, monkeypatch, capsys):
+        # The hook shells the INSTALLED `t3`, which lags this repo until the next
+        # `t3 update`: `tool open-pr` is then an unknown command — an error on
+        # stderr, nothing on stdout. The note is an enrichment, never a
+        # dependency, so that install keeps getting exactly the deny it had.
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        with t3_reports(_finding_json(), returncode=1, open_pr=""):
+            reason = self._deny_reason(self._create_call(shipping_repo), capsys)
+        assert "ALREADY EXISTS" not in reason
+
     def test_undraft_deny_carries_no_artifact_note(self, shipping_repo, monkeypatch, capsys):
         # `gh pr ready` guards the UN-DRAFT, which genuinely did not happen; its PR
         # obviously exists, so naming it would be noise, not reconciliation.
