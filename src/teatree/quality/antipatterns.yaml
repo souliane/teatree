@@ -142,6 +142,30 @@
   linter: gate-liveness
   eval_invariant: null
 
+- id: gate-side-effect-before-verdict
+  name: Gate performs the guarded side effect before concluding refusal
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A path that performs an outward write — a push, a PR/issue create, a merge,
+    a colleague post — and only then evaluates a check that returns "refused".
+    The verdict is a lie about the world: retrying is unsafe, the caller cannot
+    reconcile state from the return value, and escalation fires on a non-event.
+    The shape is invisible unless someone happens to retry, and it hides behind
+    an intermediate write whose own hook creates the artifact (a push that fires
+    the pre-push ensure-pr hook opens the PR the later refusal denies opening).
+  preferred_pattern: >-
+    Every refusal concludes BEFORE the first outward write in the path — group
+    them and return early, rather than interleaving checks with writes. When a
+    check genuinely cannot run until after the fact, it reports "performed, but
+    flagged" and NAMES the artifact that now exists; a refusal that leaves an
+    artifact behind must say so. The regression test asserts the write did not
+    happen, not merely that the verdict was a refusal.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4151", "souliane/teatree#4144", "resilience-invariants"]
+  linter: null
+  eval_invariant: null
+
 # ── Vacuous tests ──────────────────────────────────────────────────────────
 - id: assert-nothing-test
   name: Test function with no assertion
