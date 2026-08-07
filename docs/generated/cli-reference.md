@@ -3160,6 +3160,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      §17.6 gate 12, #836).                                   │
 │ gate-relaxation      Anti-relaxation + tach-soundness gate (BLUEPRINT        │
 │                      §17.6.1/§17.6.2, #850).                                 │
+│ open-pr              Report the OPEN PR/MR backing a branch as an explicit   │
+│                      tri-state, as JSON.                                     │
 │ figma-screenshot     Fetch a Figma node/frame as a PNG — bypasses the MCP    │
 │                      integration's size limits.                              │
 │ figma-frames         List a node's child frames (name + ID) for navigation.  │
@@ -3556,6 +3558,31 @@ Usage: t3 tool gate-relaxation [OPTIONS]
 │                     staged diff.                                             │
 │ --json              Emit machine-readable JSON.                              │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool open-pr`
+
+```
+Usage: t3 tool open-pr [OPTIONS]
+
+ Report the OPEN PR/MR backing a branch as an explicit tri-state, as JSON.
+
+ The shell-facing face of ``core.forge_pr_probe.find_open_pr_for_branch``, so a
+ cold hook can ask "does the artifact this refusal is about already exist?"
+ without hand-rolling a fourth ``gh pr list`` — the drift that probe exists to
+ prevent. ``outcome`` is ``found`` / ``none`` / ``unknown``; a caller must not
+ read ``unknown`` (missing CLI, auth failure, unparsable JSON) as "no PR".
+
+ Always exits 0: this is a probe, not a gate. The tri-state IS the answer.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --branch        TEXT  Branch to probe (default: the repo's checked-out       │
+│                       branch)                                                │
+│ --repo          PATH  Repo root (default: cwd)                               │
+│                       [default: <bound method PathBase.cwd of <class         │
+│                       'pathlib._local.Path'>>]                               │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

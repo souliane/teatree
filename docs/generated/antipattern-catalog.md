@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**24 entries** — 4 greppable, 20 judgement.
+**25 entries** — 4 greppable, 21 judgement.
 
 ## Index
 
@@ -20,6 +20,7 @@ holistic (`ac-reviewing-codebase`).
 - [Liveness path hard-fails a transient and locks the factory out](#gate-fails-closed-on-transient) — high, judgement
 - [Security or merge gate fails open on exception](#gate-fails-open-on-error) — high, judgement
 - [Gate classifies read-vs-write by verb instead of effective mutation](#gate-ignores-effective-write-semantics) — high, judgement
+- [Gate performs the guarded side effect before concluding refusal](#gate-side-effect-before-verdict) — high, judgement
 - [GET request with side effects](#get-with-side-effects) — high, greppable
 - [Strip a qualifier to force an identity match](#identity-strip-to-match) — high, greppable
 - [One item's exception aborts the whole sweep](#loop-scanner-no-fault-isolation) — high, judgement
@@ -145,6 +146,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A correct-looking deny handler keyed on a tool/skill that no registered hooks.json matcher delivers to its event, so the gate never fires in production despite passing its unit test.
 
 **Preferred.** Add a gate-liveness corpus row asserting reachability (the matched tool is delivered to the handler's event); a handler whose tool is absent from every matcher is xfail-tracked as a known phantom, never silently shipped.
+
+## Gate performs the guarded side effect before concluding refusal
+
+<a id="gate-side-effect-before-verdict"></a>
+
+- **id:** `gate-side-effect-before-verdict`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4151, souliane/teatree#4144, resilience-invariants
+
+**Anti-pattern.** A path that performs an outward write — a push, a PR/issue create, a merge, a colleague post — and only then evaluates a check that returns "refused". The verdict is a lie about the world: retrying is unsafe, the caller cannot reconcile state from the return value, and escalation fires on a non-event. The shape is invisible unless someone happens to retry, and it hides behind an intermediate write whose own hook creates the artifact (a push that fires the pre-push ensure-pr hook opens the PR the later refusal denies opening).
+
+**Preferred.** Every refusal concludes BEFORE the first outward write in the path — group them and return early, rather than interleaving checks with writes. When a check genuinely cannot run until after the fact, it reports "performed, but flagged" and NAMES the artifact that now exists; a refusal that leaves an artifact behind must say so. The regression test asserts the write did not happen, not merely that the verdict was a refusal.
 
 ## Test function with no assertion
 

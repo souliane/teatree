@@ -269,7 +269,7 @@ class ShipExecutor(RunnerBase):
         repo_path: str,
         branch: str,
     ) -> RunnerResult:
-        """Branch-currency re-check, then the two fenced outward writes (push, PR-open).
+        """Every refusal first, then the two fenced outward writes (push, PR-open).
 
         Split out of ``run`` so each half stays within the return-count gate. The
         fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
@@ -284,6 +284,10 @@ class ShipExecutor(RunnerBase):
         if currency_error is not None:
             return RunnerResult(ok=False, detail=currency_error)
 
+        refusal = self._refusal_before_outward_write(ticket, host, repo_path)
+        if refusal is not None:
+            return refusal
+
         fence = self._fleet_claim_lost(repo_path)
         if fence is not None:
             return fence
@@ -297,7 +301,39 @@ class ShipExecutor(RunnerBase):
         if fence is not None:
             return fence
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
-        return self._open_pr_and_record(ticket, host, spec, repo_path)
+        return self._open_pr_and_record(ticket, host, spec)
+
+    @staticmethod
+    def _refusal_before_outward_write(
+        ticket: "Ticket",
+        host: "CodeHostBackend",
+        repo_path: str,
+    ) -> "RunnerResult | None":
+        """The PR-budget / debt-delta refusals, reached BEFORE any outward write (#4151).
+
+        THE chokepoint both the interactive ``pr create`` async worker and the
+        autonomous loop's task-driven ship converge on — the loop route reaches
+        ``execute_ship`` without ``_run_ship_gates``, so without this the branch would
+        ship un-gated. Both are inert at their neutral/DARK defaults.
+
+        The ORDERING is the contract, not an optimisation. Run after the push, these
+        refusals answered "refused" for a ship whose PR already existed: the push fires
+        the pre-push ``ensure-pr`` hook, which opens a PR for the branch, so the caller
+        both retried into an "already exists" collision and stopped tracking a live PR.
+
+        Stage 3: ``host`` is the repo's resolved code host, so the budget check sees a
+        sibling fleet instance's live forge PR too.
+        """
+        expected_slug = git.remote_slug(repo=repo_path)
+        if expected_slug:
+            try:
+                check_pr_budget(ticket, expected_slug, host=host)
+            except PrBudgetExceededError as exc:
+                return RunnerResult(ok=False, detail=str(exc))
+        debt_error = evaluate_debt_delta(ticket, repo_path)
+        if debt_error is not None:
+            return RunnerResult(ok=False, detail=debt_error)
+        return None
 
     def _fleet_claim_lost(self, repo_path: str) -> "RunnerResult | None":
         """Refuse the outward write when this instance no longer holds the fleet claim.
@@ -344,9 +380,12 @@ class ShipExecutor(RunnerBase):
         ticket: "Ticket",
         host: "CodeHostBackend",
         spec: PullRequestSpec,
-        repo_path: str,
     ) -> RunnerResult:
         """Open the PR, verify the URL is present, and record it on the ticket.
+
+        Reached only once every refusal has concluded
+        (:meth:`_refusal_before_outward_write`), so nothing here can turn into a
+        "refused" verdict for a PR that exists.
 
         #1222 / #1226 verify-by-re-read: a backend that returns a payload
         without a URL (or with the wrong field name) MUST surface as
@@ -355,25 +394,7 @@ class ShipExecutor(RunnerBase):
         ``web_url`` is the cross-host canonical key; ``html_url`` is kept
         for raw GitHub API payloads piped through other producers.
         """
-        # North-star PR-2/PR-3: THE chokepoint both the interactive `pr create`
-        # async worker and the autonomous loop's task-driven ship converge on
-        # (routes that reach here without `_run_ship_gates`). Refuse before
-        # opening when the ticket is at its per-repo open-PR budget, or when the
-        # branch introduces unwaived net-new tech debt; both inert at their
-        # neutral/DARK defaults. `_run_ship_gates` additionally fail-fasts these
-        # before the push for the interactive path.
         expected_slug = git.remote_slug(repo=spec.repo)
-        if expected_slug:
-            try:
-                # Stage 3: pass the resolved `host` so THE chokepoint the
-                # autonomous loop's task-driven ship converges on also sees a
-                # sibling fleet instance's live forge PR (fails open on error).
-                check_pr_budget(ticket, expected_slug, host=host)
-            except PrBudgetExceededError as exc:
-                return RunnerResult(ok=False, detail=str(exc))
-        debt_error = evaluate_debt_delta(ticket, repo_path)
-        if debt_error is not None:
-            return RunnerResult(ok=False, detail=debt_error)
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):
