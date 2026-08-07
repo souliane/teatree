@@ -27,12 +27,28 @@ def _scratch(root: Path, name: str, *, days: float, size: int = 16) -> Path:
     return entry
 
 
+def _readable_net_unix(proc_root: Path) -> None:
+    """Give a synthetic proc root a real system's ``net/unix`` — header, no sockets.
+
+    Every genuine ``/proc`` has this file; a bare fixture directory does not, and
+    an unreadable ``net/unix`` is a deliberate probe-blinding signal elsewhere in
+    this module (see ``ScratchSweepDegradedReadTests``). Any fixture whose sweep
+    reaches ``plan()``/``apply()`` needs this so it exercises the guards under
+    test rather than the (separately, explicitly tested) unreadable-source path.
+    """
+    (proc_root / "net").mkdir(parents=True, exist_ok=True)
+    (proc_root / "net" / "unix").write_text(
+        "Num       RefCount Protocol Flags    Type St Inode Path\n", encoding="utf-8"
+    )
+
+
 class ScratchSweepTestCase(TestCase):
     """Shared temp root + a synthetic process table the sweep reads instead of /proc."""
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(TemporaryDirectory()))
         self.proc = Path(self.enterContext(TemporaryDirectory()))
+        _readable_net_unix(self.proc)
 
     def sweep(
         self,
@@ -91,10 +107,12 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
 
     def test_a_process_cwd_inside_a_stale_dir_keeps_the_whole_dir(self) -> None:
         scratch_dir = self.root / "board3841"
-        (scratch_dir / "nested").mkdir(parents=True)
+        nested = scratch_dir / "nested"
+        nested.mkdir(parents=True)
+        _age(nested, days=9)
         _age(scratch_dir, days=9)
         (self.proc / "77").mkdir()
-        (self.proc / "77" / "cwd").symlink_to(scratch_dir / "nested")
+        (self.proc / "77" / "cwd").symlink_to(nested)
 
         entry = self.entry_for(self.sweep().plan(), scratch_dir)
 
@@ -201,7 +219,9 @@ class ScratchSweepApplyTests(ScratchSweepTestCase):
     def test_apply_removes_the_stale_tree_and_reports_the_bytes(self) -> None:
         stale = self.root / "wt4081venv"
         stale.mkdir()
-        (stale / "lib.so").write_bytes(b"y" * 1024)
+        lib = stale / "lib.so"
+        lib.write_bytes(b"y" * 1024)
+        _age(lib, days=8)
         _age(stale, days=8)
         keep = _scratch(self.root, "fresh", days=0.5, size=64)
 
@@ -298,6 +318,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
         """
         host_tmp = Path(self.enterContext(TemporaryDirectory()))
         host_proc = Path(self.enterContext(TemporaryDirectory()))
+        _readable_net_unix(host_proc)
         held = _scratch(host_tmp, "agentdb.sqlite3", days=9, size=64)
         (host_proc / "999" / "fd").mkdir(parents=True)
         (host_proc / "999" / "fd" / "3").symlink_to("/mnt/scratch/agentdb.sqlite3")
@@ -412,8 +433,292 @@ class ScratchSweepDegradedReadTests(ScratchSweepTestCase):
 
         assert entry.size_bytes == 0
 
+    def test_a_nested_directorys_lstat_failing_mid_walk_is_skipped_not_fatal(self) -> None:
+        tree = self.root / "wt4081venv"
+        nested_dir = tree / "subdir"
+        nested_file = nested_dir / "file.txt"
+        nested_dir.mkdir(parents=True)
+        nested_file.write_bytes(b"x" * 100)
+        _age(nested_file, days=9)
+        _age(nested_dir, days=9)
+        _age(tree, days=9)
+        real_lstat = scratch.Path.lstat
+        vanished = OSError("vanished mid-walk")
+
+        def flaky(self_path: Path) -> object:
+            if self_path.name == "subdir":
+                raise vanished
+            return real_lstat(self_path)
+
+        with patch.object(scratch.Path, "lstat", flaky):
+            entry = self.entry_for(self.sweep().plan(), tree)
+
+        # os.walk descends into `subdir` regardless (it uses scandir, not lstat,
+        # to recurse), so the file inside still counts; only the directory
+        # entry's OWN lstat call is skipped rather than aborting the walk.
+        assert entry.size_bytes == 100
+        assert entry.removable is True
+
+    def test_an_entry_that_vanishes_between_the_tree_walk_and_the_ownership_check_is_kept(self) -> None:
+        """The narrow race the two-lstat-call split creates.
+
+        ``_tree_stats`` succeeds, then the SEPARATE top-level re-stat inside
+        ``_staleness_reason`` fails because the entry vanished in between.
+        Unreadable can never prove staleness.
+        """
+        flaky_entry = _scratch(self.root, "t3after", days=9, size=64)
+        real_lstat = scratch.Path.lstat
+        calls = {"n": 0}
+        vanished = OSError("vanished after the tree walk")
+
+        def flaky(self_path: Path) -> object:
+            if self_path == flaky_entry:
+                calls["n"] += 1
+                # _tree_stats's own explicit lstat() PLUS the internal lstat()
+                # inside Path.is_symlink() both land here first; only the LATER
+                # call from _staleness_reason's separate re-stat should fail.
+                if calls["n"] > 2:
+                    raise vanished
+            return real_lstat(self_path)
+
+        with patch.object(scratch.Path, "lstat", flaky):
+            entry = self.entry_for(self.sweep().plan(), flaky_entry)
+
+        assert entry.removable is False
+        assert "cannot prove it is stale" in entry.reason
+
     def test_gigabyte_scratch_is_reported_in_binary_units(self) -> None:
         assert ScratchEntry(path="p", size_bytes=2 * 1024**3, age_days=9, removable=True, reason="").size_human == (
             "2.0GiB"
         )
         assert ScratchEntry(path="p", size_bytes=512, age_days=9, removable=True, reason="").size_human == "512B"
+
+
+class TreeWideStalenessTests(ScratchSweepTestCase):
+    """Cold-review finding #1: staleness must read the WHOLE tree, not just the top entry.
+
+    A directory's own mtime moves only when an entry is added/removed/renamed
+    DIRECTLY inside it — writing new bytes into an existing nested file never
+    touches it. The pre-fix code read only the top-level ``lstat()``, so an
+    old-looking directory whose deep content was written a moment ago still
+    read as stale and ``apply()`` deleted a live working tree.
+    """
+
+    def test_a_nested_file_written_after_the_top_level_dir_survives_planning(self) -> None:
+        tree = self.root / "wt4081venv"
+        nested_dir = tree / "src"
+        live_file = nested_dir / "existing.py"
+        nested_dir.mkdir(parents=True)
+        live_file.write_text("initial content")
+        # Age EVERY node first, including the file — creating the file/dir
+        # structure is what bumps a parent's own mtime, so that must happen
+        # BEFORE aging, not after (else the parent looks "fresh" for the wrong
+        # reason and the top-level-only bug this test targets never fires).
+        _age(live_file, days=9)
+        _age(nested_dir, days=9)
+        _age(tree, days=9)
+        # NOW simulate "content written a moment ago": REWRITE the EXISTING
+        # file. Overwriting an existing file's content touches only the file's
+        # own mtime — its containing directory's entry list is unchanged, so
+        # neither `nested_dir` nor `tree` moves. This is exactly what the
+        # pre-fix top-level-only check could not see.
+        live_file.write_text("fresh content, written just now")
+
+        entry = self.entry_for(self.sweep().plan(), tree)
+
+        assert entry.removable is False
+        assert "younger than" in entry.reason
+
+    def test_apply_never_deletes_a_tree_whose_newest_content_was_written_seconds_ago(self) -> None:
+        """The review's own repro shape: apply() must not delete live work."""
+        tree = self.root / "board3841"
+        live_file = tree / "existing.txt"
+        tree.mkdir()
+        live_file.write_text("initial content")
+        # As above: age everything first (creating the file bumps tree's own
+        # mtime, so that must happen before aging), then overwrite the
+        # EXISTING file's content — a rewrite alone never touches tree's mtime.
+        _age(live_file, days=9)
+        _age(tree, days=9)
+        live_file.write_text("rewritten zero seconds ago")
+
+        plan = self.sweep().apply()
+
+        assert tree.exists()
+        assert live_file.exists()
+        assert live_file.read_text() == "rewritten zero seconds ago"
+        assert plan.reclaimed_bytes == 0
+
+    def test_apply_own_recheck_catches_a_nested_write_between_planning_and_deletion(self) -> None:
+        """Isolates apply()'s OWN re-walk from plan()'s guard (#4165 review finding #1).
+
+        A genuinely-stale plan is frozen (mirroring
+        ``test_apply_skips_an_entry_touched_between_the_plan_and_the_unlink``), then a
+        NESTED file is rewritten after that snapshot — invisible to a re-check that
+        only re-stats the top-level entry, caught only by a re-walk of the whole tree.
+        """
+        tree = self.root / "board3841"
+        live_file = tree / "existing.txt"
+        tree.mkdir()
+        live_file.write_text("initial content")
+        _age(live_file, days=9)
+        _age(tree, days=9)
+
+        sweep = self.sweep()
+        cleared = sweep.plan()
+        assert self.entry_for(cleared, tree).removable is True
+
+        # The box provisions continuously: a nested write lands after the plan
+        # was taken. Freezing the plan isolates apply()'s OWN re-walk as the
+        # only thing that can still catch it.
+        live_file.write_text("rewritten between plan and unlink")
+
+        with patch.object(ScratchSweep, "plan", return_value=cleared):
+            applied = sweep.apply()
+
+        assert tree.exists()
+        assert live_file.read_text() == "rewritten between plan and unlink"
+        assert applied.reclaimed_bytes == 0
+
+    def test_a_tree_that_is_genuinely_idle_throughout_is_still_removable(self) -> None:
+        """Companion: the tree-wide check does not over-protect a truly stale tree."""
+        tree = self.root / "wt4081venv"
+        nested = tree / "src" / "old_file.py"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("stale content")
+        _age(nested, days=9)
+        _age(nested.parent, days=9)
+        _age(tree, days=9)
+
+        entry = self.entry_for(self.sweep().plan(), tree)
+
+        assert entry.removable is True
+
+
+class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
+    """Cold-review finding #2: the open-file guard must see mmap and bound sockets.
+
+    Neither shows up under a per-pid ``fd`` walk: an mmap'd file survives an
+    ``fd`` close and is visible only via ``map_files``; a bound AF_UNIX socket's
+    fd reads back as ``socket:[inode]`` and its bind path is only in
+    ``/proc/net/unix``, a process-table-wide source, not a per-pid one.
+    """
+
+    def test_an_mmapped_file_with_no_open_fd_is_never_removable(self) -> None:
+        mapped = _scratch(self.root, "shared.db", days=9)
+        (self.proc / "555" / "map_files").mkdir(parents=True)
+        # Deliberately NO fd/ dir at all — the fd was closed after mmap().
+        (self.proc / "555" / "map_files" / "7f0000-7f1000").symlink_to(mapped)
+
+        entry = self.entry_for(self.sweep().plan(), mapped)
+
+        assert entry.removable is False
+        assert entry.reason == "open by a live process"
+
+    def test_apply_never_deletes_an_mmapped_file(self) -> None:
+        mapped = _scratch(self.root, "shared.db", days=9)
+        (self.proc / "555" / "map_files").mkdir(parents=True)
+        (self.proc / "555" / "map_files" / "7f0000-7f1000").symlink_to(mapped)
+
+        self.sweep().apply()
+
+        assert mapped.exists()
+
+    def test_a_bound_unix_socket_path_is_never_removable(self) -> None:
+        sock = self.root / "worker.sock"
+        sock.write_bytes(b"")
+        _age(sock, days=9)
+        (self.proc / "net").mkdir(parents=True, exist_ok=True)
+        (self.proc / "net" / "unix").write_text(
+            "Num       RefCount Protocol Flags    Type St Inode Path\n"
+            f"0000000000000000: 00000002 00000000 00000000 0001 01 12345 {sock}\n",
+            encoding="utf-8",
+        )
+
+        entry = self.entry_for(self.sweep().plan(), sock)
+
+        assert entry.removable is False
+        assert entry.reason == "open by a live process"
+
+    def test_an_abstract_namespace_socket_name_is_not_treated_as_a_filesystem_path(self) -> None:
+        stale = _scratch(self.root, "unrelated.sock", days=9)
+        (self.proc / "net").mkdir(parents=True, exist_ok=True)
+        (self.proc / "net" / "unix").write_text(
+            "Num       RefCount Protocol Flags    Type St Inode Path\n"
+            "0000000000000000: 00000002 00000000 00000000 0001 01 12345 @abstract-name\n",
+            encoding="utf-8",
+        )
+
+        entry = self.entry_for(self.sweep().plan(), stale)
+
+        assert entry.removable is True
+
+    def test_an_unreadable_net_unix_blinds_the_whole_probe(self) -> None:
+        """Process-table-wide source: a read failure here is fail-closed like proc_root itself."""
+        _scratch(self.root, "t3after", days=9, size=2048)
+        # setUp already gave this fixture a readable net/unix FILE; replace it with a
+        # directory at the same path, so read_text() raises IsADirectoryError.
+        (self.proc / "net" / "unix").unlink()
+        (self.proc / "net" / "unix").mkdir()
+
+        plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unreadable" in plan.probe_gap
+
+
+class AdHocGitRepoTests(ScratchSweepTestCase):
+    """Cold-review finding #3: an unregistered git checkout must never be removable.
+
+    ``_worktree_paths()`` only sees rows the DB was told about. An agent that
+    clones a repo by hand under the swept root — never registered as a teatree
+    ``Worktree`` — was invisible to that guard entirely.
+    """
+
+    def test_a_top_level_ad_hoc_clone_is_never_removable(self) -> None:
+        clone = self.root / "manual-clone"
+        (clone / ".git").mkdir(parents=True)
+        _age(clone / ".git", days=9)
+        _age(clone, days=9)
+
+        entry = self.entry_for(self.sweep().plan(), clone)
+
+        assert entry.removable is False
+        assert entry.reason == "holds a git repository"
+
+    def test_a_nested_ad_hoc_clone_protects_its_whole_scratch_dir(self) -> None:
+        scratch_dir = self.root / "rev3970"
+        repo = scratch_dir / "checkout"
+        (repo / ".git").mkdir(parents=True)
+        _age(repo / ".git", days=9)
+        _age(repo, days=9)
+        _age(scratch_dir, days=9)
+
+        entry = self.entry_for(self.sweep().plan(), scratch_dir)
+
+        assert entry.removable is False
+        assert entry.reason == "holds a git repository"
+
+    def test_apply_never_deletes_an_ad_hoc_clone(self) -> None:
+        clone = self.root / "manual-clone"
+        (clone / ".git").mkdir(parents=True)
+        _age(clone / ".git", days=9)
+        _age(clone, days=9)
+
+        self.sweep().apply()
+
+        assert clone.exists()
+        assert (clone / ".git").exists()
+
+    def test_a_worktree_style_git_file_marker_also_protects(self) -> None:
+        """A worktree's ``.git`` is a FILE (pointer), not a directory — both must count."""
+        checkout = self.root / "wt-style"
+        checkout.mkdir()
+        (checkout / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt-style\n")
+        _age(checkout / ".git", days=9)
+        _age(checkout, days=9)
+
+        entry = self.entry_for(self.sweep().plan(), checkout)
+
+        assert entry.removable is False
+        assert entry.reason == "holds a git repository"

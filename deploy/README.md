@@ -186,9 +186,11 @@ blind the guard: a file a live host process holds open under the real override
 path would read as unheld and become removable.
 
 The mount is strictly narrower than what the worker already has — the docker socket
-below is root-equivalent on the host. What bounds the sweep is its own guards (age,
-uid ownership, open-file, registered-worktree, protected-name), each of which keeps
-an entry it cannot evaluate.
+below is root-equivalent on the host. What bounds the sweep is its own guards
+(tree-wide age — not just the top-level entry's own mtime, uid ownership,
+open-file via fd/cwd/mmap/bound-AF_UNIX-socket, git repository anywhere in the
+tree whether registered or ad-hoc, protected-name), each of which keeps an entry
+it cannot evaluate.
 
 `/tmp` itself stays a tmpfs; teatree does not move it to disk. On the measured box
 the root filesystem was 84% full, so a 15 GB disk-backed `/tmp` would trade RAM

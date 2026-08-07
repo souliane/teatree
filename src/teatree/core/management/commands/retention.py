@@ -202,9 +202,12 @@ class Command(TyperCommand):
 
         On a RAM-backed ``/tmp`` this is memory, not disk: the measured box held
         8.8 GB of week-old sqlite/venv scratch, 28% of the working pool. An entry
-        is reclaimed only when it is older than the window, owned by this uid, held
-        open by no live process, and not a registered worktree — anything the sweep
-        cannot prove stale is kept with the reason printed beside it.
+        is reclaimed only when NO file anywhere in its tree was touched inside the
+        window (not just the top-level entry's own mtime), it is owned by this
+        uid, held open by no live process (fd, cwd, mmap, or a bound AF_UNIX
+        socket), and holds no git repository anywhere in its tree — registered or
+        ad-hoc — anything the sweep cannot prove stale is kept with the reason
+        printed beside it.
         """
         settings = get_effective_settings()
         plan = sweep_scratch(

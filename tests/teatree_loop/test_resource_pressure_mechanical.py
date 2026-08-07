@@ -895,8 +895,13 @@ class ScratchSweepLadderTests(TestCase):
         assert ResourcePressureMarker.load().last_freed_at is not None
 
     def test_the_reclaimed_bytes_land_in_the_plan_report(self) -> None:
-        _write_file(self.tmp / "wt4081venv" / "lib.so", _GIB // 2)
+        lib = self.tmp / "wt4081venv" / "lib.so"
+        _write_file(lib, _GIB // 2)
         old = timezone.now().timestamp() - 9 * 86400
+        # Age the nested file too, not just the top-level dir — the sweep's
+        # staleness check is tree-wide (#4165 review finding #1), so a fresh
+        # nested file would otherwise keep the whole tree off the candidate list.
+        os.utime(lib, (old, old))
         os.utime(self.tmp / "wt4081venv", (old, old))
 
         free_resources(self._payload("disk"))

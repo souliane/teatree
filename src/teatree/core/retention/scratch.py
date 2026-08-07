@@ -7,11 +7,17 @@ resource-pressure ladder reached only ``/tmp/claude-statusline``, which is why
 it reported ``reclaimed=0.00GB`` with that 8.8 GB sitting in front of it.
 
 FAIL-CLOSED on every guard it cannot evaluate. A top-level entry under the root
-is removable only when ALL of: older than the retention window, owned by this
-uid, not held open (fd or cwd) by a live process the probe can see, not a
-registered worktree checkout nor a parent/child of one, and not protected by
-name. A guard that cannot be answered keeps the entry with its reason recorded,
-so a read failure is never laundered into a deletion.
+is removable only when ALL of: no file ANYWHERE in its tree was touched inside
+the retention window (not just the top-level entry's own mtime — a directory's
+own mtime moves only when an entry is added/removed DIRECTLY inside it, so a
+working tree whose deep content was written seconds ago still reads as stale by
+that measure alone), owned by this uid, not held open by a live process the
+probe can see — as an fd, a cwd, or an mmap (``map_files``), and not the bind
+path of a live AF_UNIX socket (``/proc/net/unix``, invisible to any per-pid fd
+walk) — not a git repository anywhere in its tree (a registered ``Worktree``
+row OR an ad-hoc clone the DB never learned about), and not protected by name.
+A guard that cannot be answered keeps the entry with its reason recorded, so a
+read failure is never laundered into a deletion.
 
 The process table and the temp root must describe the SAME namespace or the
 open-file guard is blind: ``root`` is what this venue writes through, and
@@ -126,21 +132,59 @@ class ScratchSweepPlan:
         return f"{head} — {self.probe_gap}" if self.probe_gap else head
 
 
-def _tree_bytes(path: Path) -> int:
-    """Apparent size of *path* (file, symlink, or directory tree); 0 when unreadable."""
+@dataclass(frozen=True, slots=True)
+class _TreeStats:
+    """What one recursive walk of a candidate tree answers, computed together.
+
+    ``newest_mtime`` is the NEWEST ``st_mtime`` of any node anywhere in the
+    tree (every file's own mtime, every directory's own mtime, and the top
+    entry's), never just the top-level entry's own stat. A directory's own
+    mtime moves only when an entry is added, removed, or renamed DIRECTLY
+    inside it — editing a file two levels down never touches it — so a
+    top-level-only check reads an actively-written working tree as stale the
+    moment its own last direct-child change aged out of the window, even
+    though content underneath was written seconds ago.
+
+    ``holds_git_repo`` is True when a ``.git`` entry (directory for a clone,
+    file for a worktree) exists anywhere in the tree — the ad-hoc-repo guard
+    that catches a git checkout the ``Worktree`` table never learned about.
+    ``None`` for ``newest_mtime`` means the top entry itself could not be
+    stat-ed at all (never removable — unreadable can never prove staleness).
+    """
+
+    size_bytes: int
+    newest_mtime: float | None
+    holds_git_repo: bool
+
+
+def _tree_stats(path: Path) -> _TreeStats:
+    """Size, tree-wide newest mtime, and ad-hoc-repo detection in ONE walk."""
     try:
-        if path.is_symlink() or not path.is_dir():
-            return path.lstat().st_size
+        top = path.lstat()
     except OSError:
-        return 0
-    total = 0
-    for root, _dirs, files in os.walk(path, followlinks=False):
+        return _TreeStats(size_bytes=0, newest_mtime=None, holds_git_repo=False)
+    if path.is_symlink() or not path.is_dir():
+        return _TreeStats(size_bytes=top.st_size, newest_mtime=top.st_mtime, holds_git_repo=False)
+    total_size = 0
+    newest = top.st_mtime
+    holds_git = (path / ".git").exists()
+    for root, dirs, files in os.walk(path, followlinks=False):
+        if ".git" in dirs or ".git" in files:
+            holds_git = True
         for name in files:
             try:
-                total += (Path(root) / name).lstat().st_size
+                info = (Path(root) / name).lstat()
             except OSError:
                 continue
-    return total
+            total_size += info.st_size
+            newest = max(newest, info.st_mtime)
+        for name in dirs:
+            try:
+                info = (Path(root) / name).lstat()
+            except OSError:
+                continue
+            newest = max(newest, info.st_mtime)
+    return _TreeStats(size_bytes=total_size, newest_mtime=newest, holds_git_repo=holds_git)
 
 
 def _remove(path: Path) -> bool:
@@ -196,9 +240,12 @@ class ScratchSweep:
         reclaimed = 0
         for entry in plan.candidates:
             path = Path(entry.path)
-            # Re-read the mtime immediately before the unlink: the box provisions
-            # continuously, so an entry touched since the plan is live work.
-            if self._age_days(path, cutoff=cutoff) is None:
+            # Re-walk the WHOLE tree immediately before the unlink, not just the
+            # top-level entry: the box provisions continuously, and a nested file
+            # written since the plan is live work the top-level stat alone would
+            # miss (the exact gap tree-wide staleness exists to close).
+            stats = _tree_stats(path)
+            if stats.newest_mtime is None or stats.newest_mtime >= cutoff:
                 continue
             if _remove(path):
                 reclaimed += entry.size_bytes
@@ -214,16 +261,18 @@ class ScratchSweep:
 
     def _inert_plan(self, gap: str) -> ScratchSweepPlan:
         """A plan that removes nothing but still reports what is resident and why."""
-        entries = [
-            ScratchEntry(
-                path=str(child),
-                size_bytes=_tree_bytes(child),
-                age_days=self._age_days(child, cutoff=None) or 0.0,
-                removable=False,
-                reason=gap,
+        entries = []
+        for child in self._children():
+            stats = _tree_stats(child)
+            entries.append(
+                ScratchEntry(
+                    path=str(child),
+                    size_bytes=stats.size_bytes,
+                    age_days=self._age_days_from_mtime(stats.newest_mtime) or 0.0,
+                    removable=False,
+                    reason=gap,
+                )
             )
-            for child in self._children()
-        ]
         return ScratchSweepPlan(
             root=str(self.root),
             retention_days=self.retention_days,
@@ -252,11 +301,12 @@ class ScratchSweep:
         held: frozenset[str],
         reserved: frozenset[str],
     ) -> ScratchEntry:
-        keep = self._keep_reason(child, cutoff=cutoff, held=held, reserved=reserved)
+        stats = _tree_stats(child)
+        keep = self._keep_reason(child, stats=stats, cutoff=cutoff, held=held, reserved=reserved)
         return ScratchEntry(
             path=str(child),
-            size_bytes=_tree_bytes(child),
-            age_days=self._age_days(child, cutoff=None) or 0.0,
+            size_bytes=stats.size_bytes,
+            age_days=self._age_days_from_mtime(stats.newest_mtime) or 0.0,
             removable=not keep,
             reason=keep or f"stale scratch older than {self.retention_days}d",
         )
@@ -265,6 +315,7 @@ class ScratchSweep:
         self,
         child: Path,
         *,
+        stats: _TreeStats,
         cutoff: float,
         held: frozenset[str],
         reserved: frozenset[str],
@@ -272,25 +323,29 @@ class ScratchSweep:
         """Why *child* survives, or ``""`` when every guard cleared it."""
         if child.name in _PROTECTED_NAMES or child.name.startswith(_PROTECTED_PREFIXES):
             return "protected path"
-        stale = self._staleness_reason(child, cutoff=cutoff)
+        stale = self._staleness_reason(child, stats=stats, cutoff=cutoff)
         if stale:
             return stale
         if _covers(held, self._probe_path(child), nested_only=True):
             return "open by a live process"
         if _covers(reserved, str(child), nested_only=False):
             return "holds a tracked worktree"
+        if stats.holds_git_repo:
+            return "holds a git repository"
         return ""
 
-    def _staleness_reason(self, child: Path, *, cutoff: float) -> str:
+    def _staleness_reason(self, child: Path, *, stats: _TreeStats, cutoff: float) -> str:
         """Why *child* is not provably stale scratch of this uid, or ``""``."""
+        if stats.newest_mtime is None:
+            return "unreadable — cannot prove it is stale"
         try:
-            info = child.lstat()
+            owner = child.lstat().st_uid
         except OSError:
             return "unreadable — cannot prove it is stale"
-        owner = self.uid if self.uid is not None else os.getuid()
-        if info.st_uid != owner:
-            return f"owned by uid {info.st_uid}, not this one"
-        if info.st_mtime >= cutoff:
+        expected = self.uid if self.uid is not None else os.getuid()
+        if owner != expected:
+            return f"owned by uid {owner}, not this one"
+        if stats.newest_mtime >= cutoff:
             return f"younger than {self.retention_days}d"
         return ""
 
@@ -298,37 +353,72 @@ class ScratchSweep:
         """*child*'s path as the process table being read spells it."""
         return str((self.probe_root or self.root) / child.name)
 
-    def _age_days(self, path: Path, *, cutoff: float | None) -> float | None:
-        """Age in days; ``None`` when unreadable or (given *cutoff*) not yet stale."""
-        try:
-            mtime = path.lstat().st_mtime
-        except OSError:
-            return None
-        if cutoff is not None and mtime >= cutoff:
+    def _age_days_from_mtime(self, mtime: float | None) -> float | None:
+        """Age in days of *mtime* against the sweep's clock; ``None`` when unreadable."""
+        if mtime is None:
             return None
         return (self._clock().timestamp() - mtime) / _SECONDS_PER_DAY
 
     def _held_paths(self) -> frozenset[str] | None:
-        """Every path a live process holds as an fd or cwd; ``None`` when unreadable.
+        """Every path a live process holds open; ``None`` when unreadable.
 
-        A pid whose ``fd`` dir is unreadable belongs to another uid and is skipped
-        rather than failing the whole probe — that is the normal state of any
-        multi-user process table, and the ownership guard already refuses to
-        consider an entry this uid does not own. Only an unlistable ``proc_root``
-        (the wrong namespace, or no mount at all) blinds the probe.
+        Three distinct liveness forms, all folded into one set: a plain open
+        ``fd`` or ``cwd``; a memory-mapped file (``map_files``) — a process that
+        ``mmap()``s a file and then closes the original fd holds it live with NO
+        entry under ``fd/`` at all, so skipping ``map_files`` misses exactly that
+        case; and a bound ``AF_UNIX`` socket, which is not reachable through any
+        per-pid fd walk (a socket fd reads back as ``socket:[inode]``, never the
+        bind path) and is instead read once, process-table-wide, from
+        ``/proc/net/unix``.
+
+        A pid whose ``fd``/``map_files`` dir is unreadable belongs to another uid
+        and is skipped rather than failing the whole probe — that is the normal
+        state of any multi-user process table, and the ownership guard already
+        refuses to consider an entry this uid does not own. An unlistable
+        ``proc_root`` or an unreadable ``net/unix`` blinds the WHOLE probe: both
+        are process-table-wide sources, so a read failure there is a namespace
+        problem, not a single pid's, and this module never launders a source it
+        could not read into "nothing is held".
         """
         try:
             pids = [entry for entry in self.proc_root.iterdir() if entry.name.isdigit()]
         except OSError:
             return None
-        held: set[str] = set()
+        sockets = self._bound_socket_paths()
+        if sockets is None:
+            return None
+        held: set[str] = set(sockets)
         for base in pids:
-            for link in (base / "cwd", *_fd_links(base)):
+            links = (base / "cwd", *_fd_links(base), *_map_file_links(base))
+            for link in links:
                 try:
                     held.add(str(link.readlink()))
                 except OSError:
                     continue
         return frozenset(held)
+
+    def _bound_socket_paths(self) -> frozenset[str] | None:
+        """Filesystem paths bound by a live ``AF_UNIX`` socket; ``None`` when unreadable.
+
+        ``/proc/net/unix`` lists every socket in the namespace, one per line,
+        with the bind path (when the socket is bound to one, rather than
+        abstract-namespaced or anonymous) as the LAST whitespace-separated
+        field. An abstract-namespace name starts with ``@`` and is not a
+        filesystem path, so it is excluded.
+        """
+        try:
+            text = (self.proc_root / "net" / "unix").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        paths: set[str] = set()
+        for line in text.splitlines()[1:]:  # header: "Num RefCount Protocol Flags Type St Inode Path"
+            fields = line.split(None, 7)
+            if len(fields) < 8:  # noqa: PLR2004 — the fixed /proc/net/unix column count
+                continue
+            candidate = fields[7]
+            if candidate.startswith("/"):
+                paths.add(candidate)
+        return frozenset(paths)
 
 
 def _ranked(entries: list[ScratchEntry]) -> tuple[ScratchEntry, ...]:
@@ -338,6 +428,14 @@ def _ranked(entries: list[ScratchEntry]) -> tuple[ScratchEntry, ...]:
 def _fd_links(base: Path) -> list[Path]:
     try:
         return list((base / "fd").iterdir())
+    except OSError:
+        return []
+
+
+def _map_file_links(base: Path) -> list[Path]:
+    """A pid's memory-mapped file symlinks — the mmap'd-but-fd-closed liveness case."""
+    try:
+        return list((base / "map_files").iterdir())
     except OSError:
         return []
 
