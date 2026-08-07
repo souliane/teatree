@@ -313,3 +313,31 @@ class TestNoDoubleCountForALoopClaimedTask(TestCase):
             second = dispatch_admission_denied_reason(session_id="s-loop")
         assert first is None
         assert second is not None
+
+    def test_a_burst_of_ten_dispatches_admits_exactly_the_first_seats_worth(self) -> None:
+        # #4285 review finding 2: ceiling=4 with 4 claims refuses the second dispatch
+        # either way the one-shot exemption is coded, so it does not discriminate
+        # 71adc657 from the blanket per-session exemption it replaced. One claim,
+        # ceiling 5, 10 dispatches for the SAME session: a blanket exemption would
+        # drop this session from `other_agents` on every call and admit 5 (rank
+        # alone bounds it); the one-shot exemption spends its credit on the first
+        # call only, so `other_agents` reverts to 1 from the second call on and
+        # admission tracks the growing seat rank — exactly 4, not 5.
+        self._claimed_interactive(session_id="s-burst")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=5)):
+            verdicts = [dispatch_admission_denied_reason(session_id="s-burst") for _ in range(10)]
+        assert sum(verdict is None for verdict in verdicts) == 4, verdicts
+
+    def test_the_denial_message_never_understates_its_own_ceiling(self) -> None:
+        # #4285 review finding 1: the un-deduped CHECK can refuse a dispatch while
+        # the deduped REPORT (live_agent_count) is still under the ceiling — an
+        # accepted, conservative trade-off (finding 3). But the denial message
+        # must never claim a population "at/over" a ceiling it is actually under.
+        self._claimed_interactive(session_id="s-other")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=2)):
+            assert dispatch_admission_denied_reason(session_id="s-other") is None
+            reason = dispatch_admission_denied_reason(session_id="s-adhoc")
+        assert gate_mod.live_agent_count() == 1  # genuinely one live agent by the deduped report
+        assert reason is not None  # still refused under the conservative check (finding 3, accepted)
+        reported = int(reason.split()[2])
+        assert reported >= 2, f"message claims {reported} at/over ceiling 2, which is false: {reason}"

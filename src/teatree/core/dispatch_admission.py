@@ -184,6 +184,17 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: 
     outright or the seat was refused; ``None`` when admission is healthy, the
     kill-switch is off, or a probe raised (fail-open). A braked or refused
     dispatch holds no seat, so a refusal never narrows the lane it was refused by.
+
+    **The reported count must be the count that actually refused (#4285 review).**
+    ``claim_seat`` refuses on the UN-DEDUPED ``other_agents + ahead``, which can
+    legitimately exceed the DEDUPED :func:`live_agent_count` a session's own
+    multi-claim burst is conservatively charged for (accepted trade-off, #4129
+    follow-up). Reporting the deduped number in that case understates the
+    ceiling it was actually checked against — "live agents 1 at/over ceiling 2"
+    is false when 1 < 2. ``other_agents`` is already in scope; the refused
+    seat was deleted by ``claim_seat``, so a fresh seat count reconstructs
+    ``ahead`` exactly, and their sum is guaranteed >= the ceiling by
+    construction — the same number the refusal was decided on.
     """
     if not governor_enabled():
         return None
@@ -203,11 +214,11 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: 
             other_agents -= 1
         if _seats().claim_seat(session_id=session_id, ceiling=decision.ceiling, other_agents=other_agents):
             return None
-        live = live_agent_count()
+        occupied = other_agents + _seats().live_seats().count()
     except Exception:
         logger.exception("dispatch admission governor probe failed — admitting (fail-open)")
         return None
-    return f"live agents {live} at/over governor ceiling {decision.ceiling}"
+    return f"live agents {occupied} at/over governor ceiling {decision.ceiling}"
 
 
 __all__ = ["dispatch_admission_denied_reason", "live_agent_count", "release_interactive_dispatch"]
