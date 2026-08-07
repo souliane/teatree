@@ -17,7 +17,11 @@ path of a live AF_UNIX socket (``/proc/net/unix``, invisible to any per-pid fd
 walk) — not a git repository anywhere in its tree (a registered ``Worktree``
 row OR an ad-hoc clone the DB never learned about), and not protected by name.
 A guard that cannot be answered keeps the entry with its reason recorded, so a
-read failure is never laundered into a deletion.
+read failure is never laundered into a deletion — including when the open-file
+probe sees every pid but every per-pid source (fd, cwd, map_files) still comes
+back unreadable for ALL of them: that is not an empty process table, it is the
+probe itself unable to see the namespace it was asked to watch, and it blinds
+the whole sweep rather than reporting nothing held.
 
 The process table and the temp root must describe the SAME namespace or the
 open-file guard is blind: ``root`` is what this venue writes through, and
@@ -149,7 +153,11 @@ class _TreeStats:
     file for a worktree) exists anywhere in the tree — the ad-hoc-repo guard
     that catches a git checkout the ``Worktree`` table never learned about.
     ``None`` for ``newest_mtime`` means the top entry itself could not be
-    stat-ed at all (never removable — unreadable can never prove staleness).
+    stat-ed, OR some directory anywhere in the tree could not be SCANNED (an
+    ``EACCES`` on a subdirectory this uid cannot search) — either way never
+    removable, because an unscanned subtree could hold content written a
+    moment ago and silently under-reporting it is the same fail-open shape
+    as reading only the top-level entry's own mtime.
     """
 
     size_bytes: int
@@ -167,24 +175,46 @@ def _tree_stats(path: Path) -> _TreeStats:
         return _TreeStats(size_bytes=top.st_size, newest_mtime=top.st_mtime, holds_git_repo=False)
     total_size = 0
     newest = top.st_mtime
-    holds_git = (path / ".git").exists()
-    for root, dirs, files in os.walk(path, followlinks=False):
+    try:
+        # A directory this uid cannot search (EACCES) raises here, same as it
+        # will on os.walk's own scandir below — caught there via `unreadable`.
+        holds_git = (path / ".git").exists()
+    except OSError:
+        holds_git = False
+    unreadable = False
+
+    def _blind(_error: OSError) -> None:
+        # os.walk's default onerror=None silently drops whatever a subtree it
+        # cannot scandir would have contributed — the same fail-open shape as
+        # reading only the top-level mtime, one level deeper. Recorded, not
+        # swallowed: newest_mtime becomes None below, so the entry is kept.
+        nonlocal unreadable
+        unreadable = True
+
+    for root, dirs, files in os.walk(path, onerror=_blind, followlinks=False):
         if ".git" in dirs or ".git" in files:
             holds_git = True
-        for name in files:
-            try:
-                info = (Path(root) / name).lstat()
-            except OSError:
-                continue
+        for info in _lstat_all(root, files):
             total_size += info.st_size
             newest = max(newest, info.st_mtime)
-        for name in dirs:
-            try:
-                info = (Path(root) / name).lstat()
-            except OSError:
-                continue
+        for info in _lstat_all(root, dirs):
             newest = max(newest, info.st_mtime)
-    return _TreeStats(size_bytes=total_size, newest_mtime=newest, holds_git_repo=holds_git)
+    return _TreeStats(
+        size_bytes=total_size,
+        newest_mtime=None if unreadable else newest,
+        holds_git_repo=holds_git,
+    )
+
+
+def _lstat_all(root: str, names: list[str]) -> list[os.stat_result]:
+    """``lstat()`` each of *names* directly under *root*; a vanished entry is skipped, not fatal."""
+    stats = []
+    for name in names:
+        try:
+            stats.append((Path(root) / name).lstat())
+        except OSError:
+            continue
+    return stats
 
 
 def _remove(path: Path) -> bool:
@@ -371,14 +401,18 @@ class ScratchSweep:
         bind path) and is instead read once, process-table-wide, from
         ``/proc/net/unix``.
 
-        A pid whose ``fd``/``map_files`` dir is unreadable belongs to another uid
-        and is skipped rather than failing the whole probe — that is the normal
-        state of any multi-user process table, and the ownership guard already
-        refuses to consider an entry this uid does not own. An unlistable
-        ``proc_root`` or an unreadable ``net/unix`` blinds the WHOLE probe: both
-        are process-table-wide sources, so a read failure there is a namespace
-        problem, not a single pid's, and this module never launders a source it
-        could not read into "nothing is held".
+        A pid whose ``fd``/``map_files``/``cwd`` are unreadable belongs to another
+        uid and is skipped rather than failing the whole probe — that is the
+        normal state of any multi-user process table, and the ownership guard
+        already refuses to consider an entry this uid does not own. But when
+        pids exist and NOT ONE of them answers through ANY of the three
+        per-pid sources, that is not "a quiet, single-user box" — it is the
+        probe itself structurally blind (a container without ptrace/LSM access
+        into the host process table it was bind-mounted to read), and reporting
+        it as "nothing held" is exactly the fail-open this module's docstring
+        forbids. An unlistable ``proc_root`` or an unreadable ``net/unix``
+        blinds the WHOLE probe outright: both are process-table-wide sources,
+        so a read failure there is a namespace problem, not a single pid's.
         """
         try:
             pids = [entry for entry in self.proc_root.iterdir() if entry.name.isdigit()]
@@ -388,13 +422,24 @@ class ScratchSweep:
         if sockets is None:
             return None
         held: set[str] = set(sockets)
+        any_pid_answered = False
         for base in pids:
-            links = (base / "cwd", *_fd_links(base), *_map_file_links(base))
-            for link in links:
+            fd_entries, fd_ok = _listable(base / "fd")
+            map_entries, map_ok = _listable(base / "map_files")
+            try:
+                held.add(str((base / "cwd").readlink()))
+                cwd_ok = True
+            except OSError:
+                cwd_ok = False
+            if fd_ok or map_ok or cwd_ok:
+                any_pid_answered = True
+            for link in (*fd_entries, *map_entries):
                 try:
                     held.add(str(link.readlink()))
                 except OSError:
                     continue
+        if pids and not any_pid_answered:
+            return None
         return frozenset(held)
 
     def _bound_socket_paths(self) -> frozenset[str] | None:
@@ -425,19 +470,19 @@ def _ranked(entries: list[ScratchEntry]) -> tuple[ScratchEntry, ...]:
     return tuple(sorted(entries, key=lambda entry: (-entry.size_bytes, entry.path)))
 
 
-def _fd_links(base: Path) -> list[Path]:
-    try:
-        return list((base / "fd").iterdir())
-    except OSError:
-        return []
+def _listable(path: Path) -> tuple[list[Path], bool]:
+    """*path*'s entries, and whether the read itself succeeded.
 
-
-def _map_file_links(base: Path) -> list[Path]:
-    """A pid's memory-mapped file symlinks — the mmap'd-but-fd-closed liveness case."""
+    ``([], True)`` is a genuinely empty directory — the read worked, nothing is
+    there. ``([], False)`` is indistinguishable from that BY RESULT, but not by
+    what it means: only the caller, pooling this across every pid, can tell "one
+    pid belongs to another uid" (normal) apart from "no pid anywhere answered"
+    (the probe itself is blind) — see ``ScratchSweep._held_paths``.
+    """
     try:
-        return list((base / "map_files").iterdir())
+        return list(path.iterdir()), True
     except OSError:
-        return []
+        return [], False
 
 
 def _worktree_paths() -> frozenset[str] | None:

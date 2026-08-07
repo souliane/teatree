@@ -13,6 +13,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.worktree import Worktree
 from teatree.core.retention import scratch
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweep, ScratchSweepPlan
+from tests._unreadable_file import skip_if_root
 
 
 def _age(path: Path, *, days: float) -> None:
@@ -722,3 +723,194 @@ class AdHocGitRepoTests(ScratchSweepTestCase):
 
         assert entry.removable is False
         assert entry.reason == "holds a git repository"
+
+
+class UnsearchableTopLevelEntryTests(ScratchSweepTestCase):
+    """Cold-review CRITICAL C1: an entry this uid cannot search must not crash the sweep.
+
+    ``(path / ".git").exists()`` re-raises ``EACCES`` rather than swallowing it
+    (only ``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP`` are ignorable), so a
+    mode-0700 directory owned by another uid used to crash ``plan()`` outright
+    — and ``_inert_plan`` walks the same tree, so even the retention-disabled
+    path crashed too.
+    """
+
+    @skip_if_root
+    def test_plan_does_not_crash_on_a_top_level_dir_this_uid_cannot_search(self) -> None:
+        blocked = self.root / "another-uids-scratch"
+        blocked.mkdir()
+        _age(blocked, days=9)
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+
+        entry = self.entry_for(self.sweep().plan(), blocked)
+
+        assert entry.removable is False
+        assert "cannot prove it is stale" in entry.reason
+
+    @skip_if_root
+    def test_the_retention_disabled_path_does_not_crash_either(self) -> None:
+        blocked = self.root / "another-uids-scratch"
+        blocked.mkdir()
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+
+        plan = self.sweep(retention_days=0).plan()
+
+        assert plan.entries
+        assert plan.candidates == ()
+
+    @skip_if_root
+    def test_apply_does_not_crash_on_a_top_level_dir_this_uid_cannot_search(self) -> None:
+        """``apply()`` calls ``plan()`` internally, so the crash site is reached either way.
+
+        The meaningful assertion is that it does not raise, not whether the
+        (real, chmod-blocked) ``rmtree`` happens to succeed: an unsearchable
+        directory also can't be recursively DELETED, so "still exists after
+        apply()" would pass on unfixed code too, for the wrong reason.
+        """
+        blocked = self.root / "another-uids-scratch"
+        blocked.mkdir()
+        _age(blocked, days=9)
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+
+        plan = self.sweep().apply()  # must not raise
+
+        assert plan.applied is True
+
+
+class UnscannableSubdirectoryTests(ScratchSweepTestCase):
+    """Cold-review residual finding: os.walk's default onerror=None silently under-reports.
+
+    Same shape as the original tree-wide-mtime finding, one level deeper: a
+    subdirectory this uid cannot scandir into is skipped rather than treated
+    as "cannot prove staleness", so content written a moment ago underneath it
+    silently never counts toward the tree's newest mtime.
+    """
+
+    @skip_if_root
+    def test_an_unscannable_nested_directory_blinds_the_whole_entry(self) -> None:
+        tree, _blocked = self._tree_with_a_freshly_rewritten_but_unscannable_subdir()
+
+        entry = self.entry_for(self.sweep().plan(), tree)
+
+        assert entry.removable is False
+        assert "cannot prove it is stale" in entry.reason
+
+    def test_apply_never_deletes_a_tree_reported_as_having_an_unscannable_subdirectory(self) -> None:
+        """Same claim as the ``plan()`` test above, proven without ``chmod``.
+
+        A REAL EACCES on ``blocked`` would also make ``shutil.rmtree`` unable to
+        recurse into it, so "apply() didn't delete it" would pass on UNFIXED code
+        too — the OS's own permission wall, not this module's fail-closed logic,
+        would be doing the protecting. Simulating the scandir failure through
+        ``os.walk`` directly (rather than real permissions) leaves the real tree
+        fully deletable, so only the code's OWN guard — or its absence — decides
+        the outcome.
+        """
+        tree = self.root / "wt-scratch"
+        blocked = tree / "another-uids-subdir"
+        blocked.mkdir(parents=True)
+        _age(tree, days=9)
+        _age(blocked, days=9)
+        real_walk = os.walk
+
+        def blind_to_blocked(path, *, onerror=None, followlinks=False):
+            for root, dirs, files in real_walk(path, followlinks=followlinks):
+                if Path(root) == blocked:
+                    if onerror is not None:
+                        onerror(OSError("simulated: cannot scandir this subdirectory"))
+                    continue
+                yield root, dirs, files
+
+        with patch.object(scratch.os, "walk", side_effect=blind_to_blocked):
+            self.sweep().apply()
+
+        assert tree.exists()
+
+    def _tree_with_a_freshly_rewritten_but_unscannable_subdir(self) -> tuple[Path, Path]:
+        """A subdir aged old, then blinded, whose CONTENT was rewritten a moment ago.
+
+        The rewrite must land BEFORE the ``chmod`` (writing through a 0o000 dir
+        is impossible) and must be a content OVERWRITE of an EXISTING file, not
+        a new file: creating a new entry bumps the containing dir's own mtime,
+        which would let the OLD, unfixed code "detect" freshness by accident —
+        via the directory's own mtime, not via actually scanning the subtree —
+        and pass this test vacuously.
+        """
+        tree = self.root / "wt-scratch"
+        blocked = tree / "another-uids-subdir"
+        nested_file = blocked / "fresh.txt"
+        blocked.mkdir(parents=True)
+        nested_file.write_bytes(b"old content")
+        _age(nested_file, days=9)
+        _age(blocked, days=9)
+        _age(tree, days=9)
+        nested_file.write_bytes(b"just written")  # content-only: blocked's mtime is untouched
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+        return tree, blocked
+
+
+class OpenFileProbeStructuralBlindnessTests(ScratchSweepTestCase):
+    """Cold-review CRITICAL C2: the open-file guard must fail CLOSED when structurally blind.
+
+    Measured in the real container: fd readlinks 0 of 17, cwd EACCES, map_files
+    EACCES, versus 17 of 17 / readable / readable on the host — every per-pid
+    source unreadable for every pid, yet the old code returned an empty (not
+    ``None``) frozenset, so the plan proceeded as though nothing were held. A
+    single pid whose sources are ALL unreadable is the normal multi-user case
+    (another uid's process) and must NOT blind the probe on its own — only
+    when NOT ONE pid anywhere answers does the probe count as blind.
+    """
+
+    def test_when_no_pid_anywhere_answers_the_whole_probe_blinds(self) -> None:
+        _scratch(self.root, "t3after", days=9, size=64)
+        # A pid is visible (this is not "no processes"), but none of its
+        # per-pid sources exist to read — the exact container-side shape.
+        (self.proc / "777").mkdir()
+
+        plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unreadable" in plan.probe_gap
+
+    def test_apply_removes_nothing_when_the_probe_is_structurally_blind(self) -> None:
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        (self.proc / "777").mkdir()
+
+        self.sweep().apply()
+
+        assert stale.exists()
+
+    def test_a_lone_readable_pid_among_unreadable_ones_still_answers(self) -> None:
+        """The ordinary multi-user case: most pids belong to another uid and answer nothing.
+
+        That alone must never blind the probe.
+        """
+        held = _scratch(self.root, "still-open.db", days=9)
+        (self.proc / "111").mkdir()  # another uid's pid: nothing readable
+        readable = self.proc / "222" / "fd"
+        readable.mkdir(parents=True)
+        (readable / "3").symlink_to(held)
+
+        entry = self.entry_for(self.sweep().plan(), held)
+
+        assert entry.removable is False
+        assert entry.reason == "open by a live process"
+
+    def test_a_lone_readable_cwd_among_unreadable_pids_still_answers(self) -> None:
+        """Cwd alone (no fd, no map_files) must count as an answer too."""
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        (self.proc / "111").mkdir()  # another uid's pid: nothing readable
+        (self.proc / "222").mkdir()
+        (self.proc / "222" / "cwd").symlink_to(self.root)
+
+        plan = self.sweep().plan()
+
+        # Not blind (222's cwd answered) — the entry is decided on its own
+        # merits (staleness), not forced KEEP by a blind probe.
+        entry = self.entry_for(plan, stale)
+        assert "open-file probe unreadable" not in plan.probe_gap
+        assert entry.removable is True

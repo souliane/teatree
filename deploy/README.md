@@ -192,6 +192,23 @@ open-file via fd/cwd/mmap/bound-AF_UNIX-socket, git repository anywhere in the
 tree whether registered or ad-hoc, protected-name), each of which keeps an entry
 it cannot evaluate.
 
+**The open-file guard fails CLOSED when it cannot see the process table it was
+bind-mounted to watch, not just when a single source errors.** Measured in the
+real `teatree-worker` container (uid 1001, no added caps, bridge network, its
+own PID namespace, reading the host's `/proc` through the read-only bind):
+every per-pid source — `fd`, `cwd`, `map_files` — comes back unreadable for
+every pid, and `/proc/net/unix` reflects the container's OWN network namespace
+rather than the host's. That is not "a quiet process table" — it is the probe
+itself unable to see the namespace it was asked to watch, and the guard now
+recognizes the distinction: when not one pid anywhere answers through any
+per-pid source, it reports `probe_gap` and the sweep removes nothing, rather
+than reading zero holders as "nothing is held" and proceeding. Until the
+underlying capability/LSM restriction is separately addressed — not yet
+isolated; measured across four container configurations without separating
+AppArmor's `docker-default` ptrace deny from the dropped `CAP_SYS_PTRACE` —
+the open-file guard's real contribution inside this container is `probe_gap`,
+not a working liveness check.
+
 `/tmp` itself stays a tmpfs; teatree does not move it to disk. On the measured box
 the root filesystem was 84% full, so a 15 GB disk-backed `/tmp` would trade RAM
 pressure for a filesystem-full failure that breaks the control DB — and tmpfs is
