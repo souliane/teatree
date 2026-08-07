@@ -247,7 +247,7 @@ class TestLiveAgentCount(TestCase):
 
 
 class TestNoDoubleCountForALoopClaimedTask(TestCase):
-    """Review of #4285/#4129: one Task claim + its own dispatch is one agent, not two.
+    """Review of #4285/#4129: one Task claim + its own FIRST dispatch is one agent.
 
     A ``t3 loop claim-next`` claim and the SAME unit's own ``Agent``-tool dispatch
     name one live sub-agent. Before the fix, ``other_agents`` for ``claim_seat`` was
@@ -290,3 +290,26 @@ class TestNoDoubleCountForALoopClaimedTask(TestCase):
         with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
             reason = dispatch_admission_denied_reason(session_id="s-loop")
         assert reason is not None
+
+    def test_four_claims_and_one_seat_report_four_not_five(self) -> None:
+        # A session that raced ahead and claimed 4 units before dispatching any of
+        # them is 4 live agents once one is seated — the seat is one of the four
+        # claims made concrete, never a fifth agent stacked on top of them.
+        for _ in range(4):
+            self._claimed_interactive(session_id="s-loop")
+        assert gate_mod.live_agent_count() == 4
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=99)):
+            assert dispatch_admission_denied_reason(session_id="s-loop") is None
+        assert gate_mod.live_agent_count() == 4
+
+    def test_only_the_first_of_several_claims_exempts_a_dispatch(self) -> None:
+        # The exemption is ONE-SHOT per session: a second dispatch gets no credit
+        # from the session's OTHER still-unseated claims, or a burst of cheap
+        # claims could buy a burst of dispatches past the ceiling.
+        for _ in range(4):
+            self._claimed_interactive(session_id="s-loop")
+        with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=4)):
+            first = dispatch_admission_denied_reason(session_id="s-loop")
+            second = dispatch_admission_denied_reason(session_id="s-loop")
+        assert first is None
+        assert second is not None
