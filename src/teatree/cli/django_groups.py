@@ -239,6 +239,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Age-based pruning of the high-churn control-DB tables (#3693).",
         [
             ("prune", "Prune terminal-owned rows past the retention window (dry-run unless --apply)."),
+            ("scratch", "Reclaim stale agent scratch under the temp root (dry-run unless --apply, #4165)."),
         ],
         # Reads/deletes rows in the teatree-core control DB — dispatch via
         # ``python -m teatree`` so a cwd inside a ticket worktree resolves core,

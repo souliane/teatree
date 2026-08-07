@@ -9724,8 +9724,10 @@ Usage: t3 teatree retention [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ prune  Prune terminal-owned rows past the retention window (dry-run unless   │
-│        --apply).                                                             │
+│ prune    Prune terminal-owned rows past the retention window (dry-run unless │
+│          --apply).                                                           │
+│ scratch  Reclaim stale agent scratch under the temp root (dry-run unless     │
+│          --apply, #4165).                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9752,6 +9754,33 @@ Usage: t3 teatree retention prune [OPTIONS]
 │ --json           Emit the retention report as JSON on stdout instead of the  │
 │                  human view.                                                 │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree retention scratch`
+
+```
+Usage: t3 teatree retention scratch [OPTIONS]
+
+ Reclaim stale agent scratch under the temp root (dry-run unless --apply).
+
+ On a RAM-backed ``/tmp`` this is memory, not disk: the measured box held
+ 8.8 GB of week-old sqlite/venv scratch, 28% of the working pool. An entry
+ is reclaimed only when it is older than the window, owned by this uid, held
+ open by no live process, and not a registered worktree — anything the sweep
+ cannot prove stale is kept with the reason printed beside it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --root         TEXT     Temp root to sweep. Default: the configured          │
+│                         scratch_sweep_root.                                  │
+│ --days         INTEGER  Retention window. Default: the configured            │
+│                         scratch_retention_days.                              │
+│                         [default: -1]                                        │
+│ --apply                 Actually reclaim the stale scratch. Without it, this │
+│                         is a dry run.                                        │
+│ --json                  Emit the sweep report as JSON on stdout instead of   │
+│                         the human view.                                      │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

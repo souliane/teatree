@@ -32,6 +32,8 @@ from pathlib import Path
 
 from django.utils import timezone
 
+from teatree.core.models.worktree import Worktree
+
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_DAY = 86400
@@ -334,8 +336,6 @@ def _fd_links(base: Path) -> list[Path]:
 
 def _worktree_paths() -> frozenset[str] | None:
     """Registered checkout + repo paths; ``None`` when the read fails."""
-    from teatree.core.models.worktree import Worktree  # noqa: PLC0415 — lazy ORM import
-
     try:
         rows = list(Worktree.objects.values_list("repo_path", "extra"))
     except Exception:
