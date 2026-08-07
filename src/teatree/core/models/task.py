@@ -27,6 +27,19 @@ from teatree.core.models.ticket import Ticket
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
 
+#: Every column a claim writes, so the ``update_fields`` lists that release one cannot
+#: drift from :meth:`Task._clear_claim` — a released claim that kept a stale ``owner_pid``
+#: would report a dead owner as the executor of whoever holds the row next.
+CLAIM_FIELDS = (
+    "claimed_at",
+    "claimed_by",
+    "claimed_by_session",
+    "lease_expires_at",
+    "heartbeat_at",
+    "owner_pid",
+    "owner_pid_namespace",
+)
+
 
 class Task(models.Model):
     class ExecutionTarget(models.TextChoices):
@@ -81,6 +94,13 @@ class Task(models.Model):
     claimed_by_session = models.CharField(max_length=255, blank=True, default="")
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # #4164 The OS process currently executing this claim, so a sweep can tell a stalled
+    # worker from a dead one — a lapsed lease is evidence about the LEASE, not the process.
+    # The namespace rides along because a bare pid means nothing outside the namespace it
+    # was recorded in (#4253): each service in the deployment has its own, so the same
+    # integer names a different process — or none — depending on who reads it.
+    owner_pid = models.PositiveIntegerField(null=True, blank=True)
+    owner_pid_namespace = models.CharField(max_length=64, blank=True, default="")
     # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
     # window (and ``limit_autorecovery_enabled`` is on) the task is returned to the
     # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
@@ -245,11 +265,7 @@ class Task(models.Model):
                 update_fields=[
                     "status",
                     "result_artifact_path",
-                    "claimed_at",
-                    "claimed_by",
-                    "claimed_by_session",
-                    "lease_expires_at",
-                    "heartbeat_at",
+                    *CLAIM_FIELDS,
                 ],
             )
             self._advance_ticket()
@@ -283,11 +299,7 @@ class Task(models.Model):
                 update_fields=[
                     "status",
                     "result_artifact_path",
-                    "claimed_at",
-                    "claimed_by",
-                    "claimed_by_session",
-                    "lease_expires_at",
-                    "heartbeat_at",
+                    *CLAIM_FIELDS,
                 ],
             )
         try:
@@ -488,11 +500,7 @@ class Task(models.Model):
                 "status",
                 "failure_reason",
                 "failure_kind",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -525,11 +533,7 @@ class Task(models.Model):
             update_fields=[
                 "status",
                 "not_before",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -544,6 +548,9 @@ class Task(models.Model):
         task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
         attempt = task_attempt_model.objects.create(
+            # no-usage: the caller reaches here from an exception that ESCAPED the drive, so
+            # no result message exists to read spend off — and core cannot import the agent
+            # layer to parse one. A harness crash's spend stays unrecorded (#4164).
             task=self,
             execution_target=self.execution_target,
             ended_at=timezone.now(),
@@ -614,11 +621,7 @@ class Task(models.Model):
                 "execution_target",
                 "execution_reason",
                 "status",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -628,3 +631,5 @@ class Task(models.Model):
         self.claimed_by_session = ""
         self.lease_expires_at = None
         self.heartbeat_at = None
+        self.owner_pid = None
+        self.owner_pid_namespace = ""

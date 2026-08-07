@@ -278,6 +278,8 @@ def _record_park(task: Task, *, reason: str, not_before: datetime) -> TaskAttemp
     :meth:`Task.park` — the task ends PENDING with a future ``not_before``, never FAILED.
     """
     attempt = TaskAttempt.objects.create(
+        # no-usage: a park happens BEFORE any turn is billed, so the spend columns stay
+        # NULL — a zero here would read as a measurement of a run that never happened.
         task=task,
         execution_target=task.execution_target,
         ended_at=timezone.now(),

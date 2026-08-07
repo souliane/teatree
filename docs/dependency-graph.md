@@ -62,14 +62,17 @@ graph TD
     teatree.core --> teatree.loop.preset_resolution
     teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
+    teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
     teatree.core.loop_lease_manager --> teatree.utils
     teatree.core.managers_task_claim --> teatree.core.schema_readiness
+    teatree.core.managers_task_sweeps --> teatree.core.claim_liveness
     teatree.core.managers_task_sweeps --> teatree.core.modelkit
     teatree.core.managers_task_sweeps --> teatree.core.repair_loop
     teatree.core.managers_session --> teatree.config
     teatree.core.managers_session --> teatree.core.managers_overlay
     teatree.core.schema_readiness --> teatree.config
     teatree.core.managers --> teatree.config
+    teatree.core.managers --> teatree.core.claim_liveness
     teatree.core.managers --> teatree.utils
     teatree.core.managers --> teatree.core.modelkit
     teatree.core.managers --> teatree.core.models.errors
@@ -83,6 +86,7 @@ graph TD
     teatree.core.managers --> teatree.core.managers_task_sweeps
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
+    teatree.core.models --> teatree.core.claim_liveness
     teatree.core.models --> teatree.core.modelkit
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
@@ -357,6 +361,7 @@ graph TD
     teatree.loops --> teatree.agents
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
+    teatree.loops --> teatree.core.claim_liveness
     teatree.loops --> teatree.core.modelkit
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.loop.loop_state_db
