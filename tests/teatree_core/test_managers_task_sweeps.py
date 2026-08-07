@@ -1,11 +1,13 @@
 """#4164: the lease sweeps must not reap a claim whose owner process is still executing it."""
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
+import teatree.utils.singleton as singleton_mod
 from teatree.core import loop_lease_liveness as liveness
 from teatree.core.claim_liveness import driving
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
@@ -17,7 +19,13 @@ _LAPSED = timedelta(seconds=120)
 class LeaseSweepCase(TestCase):
     """A CLAIMED task whose lease lapsed — the state all three sweeps read as a dead worker."""
 
-    def lapsed_claim(self, *, owner_pid: int | None = None, namespace: str = _READER_NS) -> Task:
+    def lapsed_claim(
+        self,
+        *,
+        owner_pid: int | None = None,
+        namespace: str = _READER_NS,
+        driving_since: datetime | None = None,
+    ) -> Task:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
         now = timezone.now()
         return Task.objects.create(
@@ -31,6 +39,7 @@ class LeaseSweepCase(TestCase):
             lease_expires_at=now - _LAPSED,
             owner_pid=owner_pid,
             owner_pid_namespace=namespace if owner_pid is not None else "",
+            owner_driving_since=driving_since,
         )
 
     def setUp(self) -> None:
@@ -62,7 +71,7 @@ class TestReclaimOrphanedClaims(LeaseSweepCase):
         assert task.owner_pid_namespace == ""
 
     def test_a_claim_driven_by_another_process_is_still_returned_to_the_queue(self) -> None:
-        """Nothing here can see that process's registry, so it gets the lease-only verdict."""
+        """No cross-process ``owner_driving_since`` marker: no evidence, lease-only verdict."""
         task = self.lapsed_claim(owner_pid=os.getpid() + 1)
 
         with driving(task.pk):
@@ -70,6 +79,37 @@ class TestReclaimOrphanedClaims(LeaseSweepCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+
+    def test_a_claim_driving_in_the_loops_tick_subprocess_is_not_returned_to_the_queue(self) -> None:
+        """#4164 follow-up: reclaim runs in the loops_tick subprocess in production.
+
+        A different interpreter from the one that drives headless work — the in-memory
+        ``driving`` registry (exercised above) is ALWAYS empty there. This is the
+        regression this fix closes: an ``owner_driving_since`` marker + a provably alive
+        owner pid must withhold the reap even with NOTHING entered in-process.
+        """
+        task = self.lapsed_claim(owner_pid=os.getpid() + 1, driving_since=timezone.now())
+
+        with patch.object(singleton_mod, "pid_alive", lambda _pid: True):
+            assert Task.objects.reclaim_orphaned_claims() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "headless-worker"
+
+    def test_a_stale_driving_marker_from_a_dead_owner_is_still_returned_to_the_queue(self) -> None:
+        """A crash that skips drive_claim's finally leaves a stuck marker.
+
+        The pid check is what still lets a genuinely dead owner's row reclaim normally.
+        """
+        task = self.lapsed_claim(owner_pid=os.getpid() + 1, driving_since=timezone.now())
+
+        with patch.object(singleton_mod, "pid_alive", lambda _pid: False):
+            assert Task.objects.reclaim_orphaned_claims() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.owner_driving_since is None
 
 
 class TestReapStaleClaims(LeaseSweepCase):
@@ -103,6 +143,36 @@ class TestReapStaleClaims(LeaseSweepCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+    def test_a_claim_driving_in_the_loops_tick_subprocess_is_not_failed(self) -> None:
+        """#4164 follow-up: reap_stale_claims runs in the loops_tick subprocess in production.
+
+        The in-memory ``driving`` registry is ALWAYS empty there. The regression this fix
+        closes: an ``owner_driving_since`` marker + a provably alive owner pid must
+        withhold the reap even with NOTHING entered in-process.
+        """
+        task = self.lapsed_claim(owner_pid=os.getpid() + 1, driving_since=timezone.now())
+
+        with patch.object(singleton_mod, "pid_alive", lambda _pid: True):
+            assert Task.objects.reap_stale_claims() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_a_stale_driving_marker_from_a_dead_owner_is_still_failed(self) -> None:
+        """A crash that skips drive_claim's finally leaves a stuck marker.
+
+        The pid check is what still lets a genuinely dead owner's row reap normally.
+        """
+        task = self.lapsed_claim(owner_pid=os.getpid() + 1, driving_since=timezone.now())
+
+        with patch.object(singleton_mod, "pid_alive", lambda _pid: False):
+            assert Task.objects.reap_stale_claims() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.owner_driving_since is None
 
 
 class TestClaimStampsTheOwnerProcess(TestCase):

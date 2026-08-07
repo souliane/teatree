@@ -38,6 +38,7 @@ CLAIM_FIELDS = (
     "heartbeat_at",
     "owner_pid",
     "owner_pid_namespace",
+    "owner_driving_since",
 )
 
 
@@ -101,6 +102,12 @@ class Task(models.Model):
     # integer names a different process — or none — depending on who reads it.
     owner_pid = models.PositiveIntegerField(null=True, blank=True)
     owner_pid_namespace = models.CharField(max_length=64, blank=True, default="")
+    # #4164 follow-up: SET once when a drive begins, CLEARED once when it ends — never
+    # periodically renewed, so a memory-thrashed event loop that cannot heartbeat still
+    # recorded it before the stall began. The cross-process twin of claim_liveness's
+    # in-memory ``driving`` registry: a sweep running in a SEPARATE loops_tick subprocess
+    # cannot see that registry, but can read this column plus verify owner_pid is alive.
+    owner_driving_since = models.DateTimeField(null=True, blank=True)
     # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
     # window (and ``limit_autorecovery_enabled`` is on) the task is returned to the
     # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
@@ -633,3 +640,4 @@ class Task(models.Model):
         self.heartbeat_at = None
         self.owner_pid = None
         self.owner_pid_namespace = ""
+        self.owner_driving_since = None

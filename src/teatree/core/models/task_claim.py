@@ -12,13 +12,15 @@ stays cycle-free (task.py imports it at module level).
 """
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.claim_liveness import current_owner
+from teatree.core.claim_liveness import current_owner, driving
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 
 if TYPE_CHECKING:
@@ -36,6 +38,34 @@ def window_parked(task: "Task", now: datetime | None = None) -> bool:
     share so "is there work" and "may this be re-dispatched" can never disagree.
     """
     return task.not_before is not None and task.not_before > (now or timezone.now())
+
+
+@contextmanager
+def drive_claim(task: "Task") -> Iterator[None]:
+    """Mark *task* as executing — in-process AND cross-process (#4164 follow-up).
+
+    Pairs :func:`~teatree.core.claim_liveness.driving` (the in-memory registry a
+    same-process sweep like ``reap_stuck_headless_runs`` reads directly) with a
+    persisted ``owner_driving_since`` timestamp: the twin a sweep running in a
+    SEPARATE ``loops_tick`` subprocess reads instead, since nothing there can see
+    this process's own memory. ``run_boot_sweeps``' two claim sweeps
+    (``reclaim_orphaned_claims`` / ``reap_stale_claims``) run ONLY in that
+    subprocess in production — the in-memory registry alone never reaches them,
+    so a live-but-stalled row was reclaimed and duplicated exactly as before #4164.
+
+    Written once at entry and cleared once at exit — never renewed — so a
+    memory-thrashed event loop that cannot heartbeat still recorded it before the
+    stall began. A crash that skips the ``finally`` leaves it stuck set; the reader
+    (:func:`~teatree.core.claim_liveness.owner_is_executing`) trusts a stale value
+    only while ``owner_pid`` is independently provable alive, so a genuinely dead
+    owner's row still reclaims normally.
+    """
+    type(task).objects.filter(pk=task.pk).update(owner_driving_since=timezone.now())
+    try:
+        with driving(task.pk):
+            yield
+    finally:
+        type(task).objects.filter(pk=task.pk).update(owner_driving_since=None)
 
 
 def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:

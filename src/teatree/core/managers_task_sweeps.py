@@ -104,6 +104,7 @@ def reclaim_orphaned_claims(qs: "models.QuerySet") -> int:
             heartbeat_at=None,
             owner_pid=None,
             owner_pid_namespace="",
+            owner_driving_since=None,
         )
 
 
@@ -242,8 +243,8 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
                 *OWNER_COLUMNS,
             ),
         )
-        for pk, execution_target, claimed_by, owner_pid, owner_pid_namespace in candidates:
-            owner = ClaimOwner(owner_pid, owner_pid_namespace or "")
+        for pk, execution_target, claimed_by, owner_pid, owner_pid_namespace, owner_driving_since in candidates:
+            owner = ClaimOwner(owner_pid, owner_pid_namespace or "", owner_driving_since)
             if owner_is_executing(owner, pk):
                 logger.info("stale-claim reap skip task=%s: %s", pk, executing_owner_reason(owner))
                 continue
@@ -256,6 +257,7 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
                 heartbeat_at=None,
                 owner_pid=None,
                 owner_pid_namespace="",
+                owner_driving_since=None,
                 failure_reason=_lease_expired_reason(claimed_by),
                 failure_kind=FailureKind.LEASE_EXPIRED,
             )

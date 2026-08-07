@@ -69,10 +69,9 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
-from teatree.core.claim_liveness import driving
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
-from teatree.core.models.task_claim import describe_lease_loss
+from teatree.core.models.task_claim import describe_lease_loss, drive_claim
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
@@ -147,12 +146,15 @@ def run_headless(
 ) -> TaskAttempt:
     """Drive an agent for *task* in-process via the ``agent_harness`` backend.
 
-    The drive runs inside :func:`driving` (#4164), so the ``loops``-queue sweeps — sibling
-    threads of this one — can tell a memory-thrashed event loop that stalled past its 900s
-    lease from a dead worker. Without it they read the lapsed lease as death, fail the row
-    (which does not kill this process) and enqueue a SECOND agent onto the same worktree.
+    The drive runs inside :func:`~teatree.core.models.task_claim.drive_claim` (#4164), so
+    a sweep can tell a memory-thrashed event loop that stalled past its 900s lease from a
+    dead worker — in-process (the ``loops``-queue sweeps, sibling threads of this one) AND
+    cross-process (``reclaim_orphaned_claims`` / ``reap_stale_claims``, which run inside the
+    separate ``loops_tick`` subprocess every tick spawns). Without it a sweep reads the
+    lapsed lease as death, fails the row (which does not kill this process) and enqueues a
+    SECOND agent onto the same worktree.
     """
-    with driving(task.pk):
+    with drive_claim(task):
         return _run_headless_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
 
