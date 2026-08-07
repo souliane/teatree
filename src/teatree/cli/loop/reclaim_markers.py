@@ -83,6 +83,7 @@ def reclaim_markers_command(
                     "released": result.released,
                     "completed": list(result.completed),
                     "abandoned": list(result.abandoned),
+                    "declined": list(result.declined),
                     "pr_rows_settled": settled,
                 }
             )
@@ -92,7 +93,8 @@ def reclaim_markers_command(
     typer.echo(
         f"Reclaimed {result.released} stale issue-marker(s) for {scope}: "
         f"{len(result.completed)} completed (terminal ticket or merged PR), "
-        f"{len(result.abandoned)} abandoned (gone or stalled ticket); "
+        f"{len(result.abandoned)} abandoned (gone or stalled ticket), "
+        f"{len(result.declined)} declined (an operator cancelled the attempt); "
         f"{settled} PR row(s) settled from the forge first."
     )
 

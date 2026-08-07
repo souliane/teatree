@@ -265,6 +265,29 @@ class TestHeartbeatSweep(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
 
+    def test_heartbeat_skips_a_declined_marker(self) -> None:
+        """An operator let this one go — refreshing its claim keeps a sibling out (#4105)."""
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        thief = init_client(tmp / "thief", bare)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder), remote="origin", ttl_seconds=100.0, now=1000.0)
+        assert claim is not None
+        ImplementedIssueMarker.objects.create(
+            issue_url=_ISSUE,
+            overlay="acme",
+            claim_ref_sha=claim.sha,
+            state=ImplementedIssueMarker.State.DECLINED,
+        )
+        with (
+            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
+            patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
+            patch("teatree.core.fleet.claim.time.time", return_value=1090.0),
+        ):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+        # Un-refreshed, the original claim expired at t=1100, so the rival takes it.
+        assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=2000.0) is not None
+
     def test_heartbeat_is_a_no_op_when_switch_off(self) -> None:
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha="a" * 40)
         with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=False):
