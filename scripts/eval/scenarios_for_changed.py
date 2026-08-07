@@ -15,6 +15,10 @@ output it narrows a section-scoped scenario to the sections that actually moved.
 Paths still come from STDIN, so a diff the parser cannot read costs precision,
 never a missed scenario.
 
+A scenario in the known-red quarantine (``evals/quarantine.yaml``) is dropped from
+the selection and NAMED on stderr (#4173), so a tracked red stops blocking every
+PR touching the prose it grades without the shrunken lane going unnoticed.
+
 Exit 0 when at least one scenario matched (its names were printed) so the eval
 runs; exit ``--skip-code`` (default 1) when nothing matched (no scenario file
 changed) so the ``eval-pr`` workflow's eval job is skipped cleanly, no API spend.
@@ -47,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     # Surface the cap when it bites (#2737) so the CI log shows a corpus-wide PR's
     # truncated coverage instead of only the scenarios that will run.
     if note := selection.truncation_note():
+        print(note, file=sys.stderr)
+    # Same reason for a quarantine suppression (#4173) — a shrunken lane must be visible.
+    if note := selection.quarantine_note():
         print(note, file=sys.stderr)
     if not selection.names:
         return args.skip_code

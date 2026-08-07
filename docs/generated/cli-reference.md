@@ -1663,6 +1663,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           grade captured sessions.                           │
 │ label                     Corpus-label curation: list nominations, scaffold  │
 │                           a label, review the corpus.                        │
+│ quarantine                The known-red quarantine: scenarios the bounded PR │
+│                           lane does not select.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3061,6 +3063,74 @@ Usage: t3 eval label review [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval quarantine`
+
+```
+Usage: t3 eval quarantine [OPTIONS] COMMAND [ARGS]...
+
+ The known-red quarantine: scenarios the bounded PR lane does not select.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list   Print every quarantined scenario with its tracking issue and expiry.  │
+│ check  Validate the registry: no expired entry, no entry naming a scenario   │
+│        that does not exist.                                                  │
+│ audit  Report each quarantined scenario's outcome in a run; red on one that  │
+│        has escaped.                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine list`
+
+```
+Usage: t3 eval quarantine list [OPTIONS]
+
+ Print every quarantined scenario with its tracking issue and expiry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine check`
+
+```
+Usage: t3 eval quarantine check [OPTIONS]
+
+ Validate the registry: no expired entry, no entry naming a scenario that does
+ not exist.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file            PATH  The registry to read (default:                       │
+│                         evals/quarantine.yaml).                              │
+│ --scenario        TEXT  Catalog scenario name to validate entries against    │
+│                         (default: the discovered catalog).                   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine audit`
+
+```
+Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
+
+ Report each quarantined scenario's outcome in a run; red on one that has
+ escaped.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    summary_json      PATH  A merged eval-heal §2.4 summary JSON to audit   │
+│                              against.                                        │
+│                              [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
