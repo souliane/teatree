@@ -32,7 +32,7 @@ def _registry(tmp_path: Path, *, until: str = "2999-01-01", scenario: str = "fla
 
 def _payload(tmp_path: Path, rows: list[dict[str, object]]) -> Path:
     out = tmp_path / f"eval-heal-{_SHA}.json"
-    passed = sum(1 for row in rows if row["triage_class"] is None)
+    passed = sum(1 for row in rows if "triage_class" in row and row["triage_class"] is None)
     out.write_text(
         json.dumps(
             {
@@ -163,6 +163,18 @@ class TestAudit:
         )
         assert result.exit_code == 1, result.output
         assert "EXPIRED" in result.output
+
+    def test_a_row_with_no_triage_class_is_not_read_as_a_pass(self, tmp_path: Path) -> None:
+        # The producer always writes the key (null on a pass), so its absence means a
+        # grading this gate cannot read. Calling that a pass would retire an entry that
+        # is still needed — the same fail-closed asymmetry `green-proof` applies.
+        payload = _payload(tmp_path, [{"name": "flaky_one", "lane": "clean_room"}])
+        result = CliRunner().invoke(
+            app, ["eval", "quarantine", "audit", str(payload), "--file", str(_registry(tmp_path))]
+        )
+        assert result.exit_code == 0, result.output
+        assert "ESCAPED" not in result.output
+        assert "STILL RED flaky_one" in result.output
 
     def test_a_missing_payload_reds(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(app, ["eval", "quarantine", "audit", str(tmp_path / "absent.json")])

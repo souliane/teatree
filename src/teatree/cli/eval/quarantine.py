@@ -115,16 +115,14 @@ def audit(
 def _outcomes(payload: dict[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
     """The (passing, failing) scenario names in a merged payload.
 
-    A row's ``triage_class`` is ``None`` on a pass and a class string on any red — the
-    same read :func:`teatree.eval.green_proof.evaluate_green_proof` makes, so the audit
-    and the proof can never disagree about which scenarios were red.
+    A row PASSED only when it carries ``triage_class: null``; a class string is a red,
+    and so is a row with no ``triage_class`` KEY at all. That is
+    :func:`teatree.eval.green_proof.evaluate_green_proof`'s fail-closed asymmetry, and
+    it matters more here: reading an unclassifiable row as a pass would report the
+    scenario ESCAPED and retire a quarantine entry that is still needed.
     """
-    rows = payload.get("scenarios")
-    rows = rows if isinstance(rows, list) else []
-    passing = {str(row.get("name", "")) for row in rows if isinstance(row, dict) and row.get("triage_class") is None}
-    failing = {
-        str(row.get("name", ""))
-        for row in rows
-        if isinstance(row, dict) and "triage_class" in row and row["triage_class"] is not None
-    }
+    raw = payload.get("scenarios")
+    rows = [row for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+    passing = {str(row.get("name", "")) for row in rows if "triage_class" in row and row["triage_class"] is None}
+    failing = {str(row.get("name", "")) for row in rows} - passing
     return frozenset(passing), frozenset(failing)
