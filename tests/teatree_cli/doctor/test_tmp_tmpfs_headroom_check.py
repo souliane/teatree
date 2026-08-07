@@ -144,6 +144,22 @@ class TestTmpfsSizingCheck:
             assert _check_tmp_tmpfs_sizing(mounts_path=mounts, total_ram_mib=31 * 1024) is True
         assert "WARN" in capsys.readouterr().out
 
+    def test_absent_mounts_file_is_a_silent_pass(self, tmp_path: Path, capsys) -> None:
+        assert _check_tmp_tmpfs_sizing(mounts_path=tmp_path / "absent") is True
+        assert capsys.readouterr().out == ""
+
+    def test_a_failing_statvfs_is_a_silent_pass(self, tmp_path: Path, capsys) -> None:
+        mounts = _mounts(tmp_path, "tmpfs")
+        with patch.object(os, "statvfs", side_effect=OSError("no such mount")):
+            assert _check_tmp_tmpfs_sizing(mounts_path=mounts, total_ram_mib=31 * 1024) is True
+        assert capsys.readouterr().out == ""
+
+    def test_a_zero_sized_tmpfs_is_a_silent_pass(self, tmp_path: Path, capsys) -> None:
+        mounts = _mounts(tmp_path, "tmpfs")
+        with patch.object(os, "statvfs", return_value=_FakeStatvfs(total=0, used_pct=0)):
+            assert _check_tmp_tmpfs_sizing(mounts_path=mounts, total_ram_mib=31 * 1024) is True
+        assert capsys.readouterr().out == ""
+
     def test_an_unreadable_ram_total_is_a_silent_pass(self, tmp_path: Path, capsys) -> None:
         mounts = _mounts(tmp_path, "tmpfs")
         with patch.object(os, "statvfs", return_value=_FakeStatvfs(total=15 * 1024**3, used_pct=1)):

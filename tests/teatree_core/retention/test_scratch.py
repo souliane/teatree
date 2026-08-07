@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.core.retention import scratch
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweep, ScratchSweepPlan
 
 
@@ -117,6 +118,37 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
         assert entry.removable is False
         assert entry.reason == "holds a tracked worktree"
 
+    def test_an_entry_nested_inside_a_registered_worktree_root_is_never_removable(self) -> None:
+        nested = self.root / "checkouts"
+        nested.mkdir()
+        _age(nested, days=9)
+        ticket = Ticket.objects.create(issue_url="https://example.test/issues/2", overlay="teatree")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=str(nested / "repo"),
+            branch="wip",
+            extra={"worktree_path": str(nested / "repo" / "teatree")},
+        )
+
+        entry = self.entry_for(self.sweep().plan(), nested)
+
+        assert entry.removable is False
+        assert entry.reason == "holds a tracked worktree"
+
+    def test_an_entry_holding_the_root_of_a_registered_worktree_is_never_removable(self) -> None:
+        outer = Path(self.enterContext(TemporaryDirectory()))
+        inner = ScratchSweep(root=outer, retention_days=3, proc_root=self.proc)
+        child = outer / "wt"
+        child.mkdir()
+        _age(child, days=9)
+        ticket = Ticket.objects.create(issue_url="https://example.test/issues/3", overlay="teatree")
+        Worktree.objects.create(ticket=ticket, repo_path=str(outer), branch="wip", extra={})
+
+        entry = next(item for item in inner.plan().entries if item.path == str(child))
+
+        assert entry.removable is False
+        assert entry.reason == "holds a tracked worktree"
+
     def test_protected_names_survive_any_age(self) -> None:
         protected = self.root / "claude-statusline"
         protected.mkdir()
@@ -216,3 +248,120 @@ class ScratchSweepApplyTests(ScratchSweepTestCase):
 
         assert not link.is_symlink()
         assert (target / "keep.txt").exists()
+
+
+class ScratchRootResolutionTests(ScratchSweepTestCase):
+    """root + proc_root are resolved as a PAIR, so the guard never reads the wrong namespace."""
+
+    def test_the_host_view_is_used_only_when_both_halves_are_mounted(self) -> None:
+        host_tmp = Path(self.enterContext(TemporaryDirectory()))
+        host_proc = Path(self.enterContext(TemporaryDirectory()))
+
+        with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_proc):
+            paired = scratch.resolve_scratch_roots()
+
+        assert paired.root == host_tmp
+        assert paired.proc_root == host_proc
+        assert paired.probe_root == Path("/tmp")
+
+    def test_a_half_mounted_host_view_falls_back_to_this_venues_own_pair(self) -> None:
+        host_tmp = Path(self.enterContext(TemporaryDirectory()))
+
+        with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_tmp / "absent"):
+            fallback = scratch.resolve_scratch_roots()
+
+        assert fallback.root == Path("/tmp")
+        assert fallback.proc_root == Path("/proc")
+        assert fallback.probe_root is None
+
+    def test_an_explicit_root_is_swept_against_this_venues_own_process_table(self) -> None:
+        host_tmp = Path(self.enterContext(TemporaryDirectory()))
+        host_proc = Path(self.enterContext(TemporaryDirectory()))
+
+        with patch.object(scratch, "_HOST_TMP", host_tmp), patch.object(scratch, "_HOST_PROC", host_proc):
+            explicit = scratch.resolve_scratch_roots(str(self.root))
+
+        assert explicit.root == self.root
+        assert explicit.proc_root == Path("/proc")
+        assert explicit.probe_root is None
+
+    def test_sweep_scratch_applies_only_when_asked(self) -> None:
+        stale = _scratch(self.root, "t3db.sqlite3", days=9, size=64)
+
+        planned = scratch.sweep_scratch(configured_root=str(self.root), retention_days=3, apply=False)
+        assert planned.candidate_bytes == 64
+        assert stale.exists()
+
+        applied = scratch.sweep_scratch(configured_root=str(self.root), retention_days=3, apply=True)
+        assert applied.reclaimed_bytes == 64
+        assert not stale.exists()
+
+
+class ScratchSweepDegradedReadTests(ScratchSweepTestCase):
+    """Every read that can fail keeps the entry rather than removing it."""
+
+    def test_an_unlistable_root_reports_no_entries_rather_than_raising(self) -> None:
+        missing = ScratchSweep(root=self.root / "absent", retention_days=3, proc_root=self.proc)
+
+        assert missing.plan().entries == ()
+
+    def test_a_failed_worktree_read_removes_nothing(self) -> None:
+        _scratch(self.root, "t3db.sqlite3", days=9, size=128)
+
+        with patch.object(scratch, "_worktree_paths", return_value=None):
+            plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "registered-worktree read failed" in plan.probe_gap
+
+    def test_a_worktree_read_that_raises_is_a_probe_gap_not_a_crash(self) -> None:
+        _scratch(self.root, "t3db.sqlite3", days=9)
+
+        with patch.object(Worktree.objects, "values_list", side_effect=RuntimeError("db gone")):
+            plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "registered-worktree read failed" in plan.probe_gap
+
+    def test_a_removal_the_filesystem_refuses_is_not_counted_as_reclaimed(self) -> None:
+        _scratch(self.root, "t3db.sqlite3", days=9, size=256)
+
+        with patch.object(scratch.Path, "unlink", side_effect=OSError("read-only")):
+            plan = self.sweep().apply()
+
+        assert plan.reclaimed_bytes == 0
+
+    def test_an_entry_that_cannot_be_stat_ed_is_sized_zero_and_kept(self) -> None:
+        unreadable = _scratch(self.root, "t3db.sqlite3", days=9, size=32)
+
+        with patch.object(scratch.Path, "lstat", side_effect=OSError("gone")):
+            entry = self.entry_for(self.sweep().plan(), unreadable)
+
+        assert entry.size_bytes == 0
+        assert entry.removable is False
+        assert "cannot prove it is stale" in entry.reason
+
+    def test_a_directory_whose_children_vanish_mid_walk_is_still_sized(self) -> None:
+        tree = self.root / "wt4081venv"
+        tree.mkdir()
+        (tree / "lib.so").write_bytes(b"y" * 512)
+        _age(tree, days=9)
+        real_lstat = scratch.Path.lstat
+
+        vanished = OSError("the file went away mid-walk")
+
+        def flaky(self_path: Path) -> object:
+            if self_path.name == "lib.so":
+                raise vanished
+            return real_lstat(self_path)
+
+        with patch.object(scratch.Path, "lstat", flaky):
+            entry = self.entry_for(self.sweep().plan(), tree)
+
+        assert entry.size_bytes == 0
+
+    def test_gigabyte_scratch_is_reported_in_binary_units(self) -> None:
+        assert ScratchEntry(path="p", size_bytes=2 * 1024**3, age_days=9, removable=True, reason="").size_human == (
+            "2.0GiB"
+        )
+        assert ScratchEntry(path="p", size_bytes=512, age_days=9, removable=True, reason="").size_human == "512B"

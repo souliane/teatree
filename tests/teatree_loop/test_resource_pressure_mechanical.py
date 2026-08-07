@@ -887,6 +887,13 @@ class ScratchSweepLadderTests(TestCase):
         assert self.stale.exists()
         assert "SKIP agent-scratch sweep" in ResourcePressureMarker.load().last_plan
 
+    def test_a_sweep_failure_is_swallowed_so_the_tick_survives(self) -> None:
+        with patch.object(mechanical_resources, "sweep_scratch", side_effect=RuntimeError("proc gone")):
+            free_resources(self._payload("disk"))
+
+        assert self.stale.exists()
+        assert ResourcePressureMarker.load().last_freed_at is not None
+
     def test_the_reclaimed_bytes_land_in_the_plan_report(self) -> None:
         _write_file(self.tmp / "wt4081venv" / "lib.so", _GIB // 2)
         old = timezone.now().timestamp() - 9 * 86400
