@@ -7,8 +7,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
+from teatree.core.models.loop_preset import LOW_POWER_PRESET_SETTING
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.enable_verdict import effective_verdicts
+from teatree.loops.mode_shape import LOAD_BEARING_LOOPS
 from teatree.loops.preset_editing import PresetEditError, activate_preset, clear_preset_override, set_preset_entry
 from teatree.loops.schedule_editing import (
     active_schedule_name,
@@ -43,38 +45,38 @@ class PresetEntryTriStateTestCase(TestCase):
     """``on`` / ``off`` / absent all round-trip — absent must never be stored as ``False``."""
 
     def setUp(self) -> None:
-        _loop("inbox")
-        self.preset = _preset("engaged", {"inbox": True})
+        _loop("review")
+        self.preset = _preset("engaged", {"review": True})
 
     def test_setting_off_stores_false(self) -> None:
-        set_preset_entry("engaged", "inbox", "off")
-        assert Mode.objects.by_name("engaged").entries == {"inbox": False}
+        set_preset_entry("engaged", "review", "off")
+        assert Mode.objects.by_name("engaged").entries == {"review": False}
 
     def test_setting_on_stores_true(self) -> None:
-        set_preset_entry("engaged", "inbox", "off")
-        set_preset_entry("engaged", "inbox", "on")
-        assert Mode.objects.by_name("engaged").entries == {"inbox": True}
+        set_preset_entry("engaged", "review", "off")
+        set_preset_entry("engaged", "review", "on")
+        assert Mode.objects.by_name("engaged").entries == {"review": True}
 
     def test_setting_inherit_removes_the_key_entirely(self) -> None:
         # The bug this pins: "no opinion" implemented as False would mask the loop
         # instead of falling through to Loop.enabled.
-        set_preset_entry("engaged", "inbox", "inherit")
+        set_preset_entry("engaged", "review", "inherit")
         entries = Mode.objects.by_name("engaged").entries
-        assert "inbox" not in entries
-        assert entries.get("inbox") is not False
+        assert "review" not in entries
+        assert entries.get("review") is not False
 
     def test_inherit_leaves_the_tri_state_read_as_none(self) -> None:
-        set_preset_entry("engaged", "inbox", "inherit")
-        assert Mode.objects.by_name("engaged").state_for("inbox") is None
+        set_preset_entry("engaged", "review", "inherit")
+        assert Mode.objects.by_name("engaged").state_for("review") is None
 
     def test_unknown_value_is_refused_and_does_not_persist(self) -> None:
         with pytest.raises(PresetEditError):
-            set_preset_entry("engaged", "inbox", "maybe")
-        assert Mode.objects.by_name("engaged").entries == {"inbox": True}
+            set_preset_entry("engaged", "review", "maybe")
+        assert Mode.objects.by_name("engaged").entries == {"review": True}
 
     def test_unknown_preset_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            set_preset_entry("nope", "inbox", "on")
+            set_preset_entry("nope", "review", "on")
 
     def test_unknown_loop_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
@@ -202,3 +204,73 @@ class ScheduleSlotEditingTestCase(TestCase):
         with pytest.raises(PresetEditError):
             delete_schedule_slot(other.name, slot.pk)
         assert ModeScheduleSlot.objects.filter(schedule=self.schedule).count() == 1
+
+
+class LoadBearingRefusalTestCase(TestCase):
+    """No mask may quiet the survival tier — the low-power mode alone excepted (#4188)."""
+
+    def setUp(self) -> None:
+        for name in LOAD_BEARING_LOOPS:
+            _loop(name)
+        _loop("review")
+        self.preset = _preset("off", {})
+
+    def test_masking_a_load_bearing_loop_off_is_refused_and_does_not_persist(self) -> None:
+        with pytest.raises(PresetEditError) as exc:
+            set_preset_entry("off", "resource_pressure", "off")
+
+        assert "resource_pressure" in str(exc.value)
+        assert Mode.objects.get(name="off").entries == {}
+
+    def test_the_refusal_names_the_loop_and_the_one_mode_that_may(self) -> None:
+        with pytest.raises(PresetEditError) as exc:
+            set_preset_entry("off", "idle_stack_reaper", "off")
+
+        message = str(exc.value)
+        assert "idle_stack_reaper" in message
+        assert "low-power" in message
+
+    def test_the_low_power_mode_may_quiet_the_tier(self) -> None:
+        _preset("low-power", {})
+
+        set_preset_entry("low-power", "resource_pressure", "off")
+
+        assert Mode.objects.get(name="low-power").entries == {"resource_pressure": False}
+
+    def test_the_exception_follows_the_setting_not_the_shipped_name(self) -> None:
+        _preset("token-guard", {})
+        ConfigSetting.objects.set_value(LOW_POWER_PRESET_SETTING, "token-guard")
+        _preset("low-power", {})
+
+        set_preset_entry("token-guard", "resource_pressure", "off")
+        with pytest.raises(PresetEditError):
+            set_preset_entry("low-power", "resource_pressure", "off")
+
+        assert Mode.objects.get(name="token-guard").entries == {"resource_pressure": False}
+
+    def test_forcing_a_load_bearing_loop_on_is_allowed(self) -> None:
+        set_preset_entry("off", "resource_pressure", "on")
+
+        assert Mode.objects.get(name="off").entries == {"resource_pressure": True}
+
+    def test_returning_a_load_bearing_loop_to_inherit_is_allowed(self) -> None:
+        """Inherit hands the decision to the loop's own column — the mask quiets nothing."""
+        _preset("off", {"resource_pressure": True})
+
+        set_preset_entry("off", "resource_pressure", "inherit")
+
+        assert Mode.objects.get(name="off").entries == {}
+
+    def test_masking_a_work_loop_off_is_untouched(self) -> None:
+        set_preset_entry("off", "review", "off")
+
+        assert Mode.objects.get(name="off").entries == {"review": False}
+
+    def test_an_already_quieted_row_is_refused_on_the_next_unrelated_edit(self) -> None:
+        """A row written before the guard cannot be extended — the whole mask is judged."""
+        _preset("off", {"resource_pressure": False})
+
+        with pytest.raises(PresetEditError) as exc:
+            set_preset_entry("off", "review", "off")
+
+        assert "resource_pressure" in str(exc.value)

@@ -11,14 +11,24 @@ The tri-state is the load-bearing part. A preset entry is ``True`` (force on),
 ``False`` (mask off), or **absent** — and absent is NOT off: it hands the decision
 back to the loop's own ``Loop.enabled`` column, now and in future. Setting an
 entry to ``inherit`` therefore DELETES the key rather than storing ``False``.
+
+One shape is refused outright (#4188): a mask that quiets a loop in
+:data:`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`. Those are what free disk and RAM
+when the box is under pressure, so a mode that stops them removes the only mechanism that
+can recover the machine — from inside the machine. The token-budget mode
+(:func:`teatree.core.models.loop_preset.low_power_preset_name`) is the single exception.
+Because both surfaces fold their edits here, neither can write the shape.
 """
 
 import datetime as dt
+from collections.abc import Mapping
 from typing import Final
 
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models import Loop, Mode
+from teatree.core.models.loop_preset import low_power_preset_name
 from teatree.loop.preset_resolution import next_boundary
+from teatree.loops.mode_shape import quieted_load_bearing
 
 #: The three values a preset entry can be set to. ``inherit`` removes the key.
 ENTRY_ON: Final = "on"
@@ -50,7 +60,28 @@ def entry_state_of(preset: Mode, loop_name: str) -> str:
     return ENTRY_ON if opinion else ENTRY_OFF
 
 
-def apply_entry_edits(entries: object, edits: list[str]) -> dict[str, bool]:
+def refuse_quieted_load_bearing(preset_name: str, entries: Mapping[str, object]) -> None:
+    """Refuse a mask that quiets the load-bearing tier, naming every loop it would stop.
+
+    The whole RESULTING mask is judged rather than the edit alone, so a row written before
+    this guard cannot be carried forward by an unrelated edit.
+    """
+    escape = low_power_preset_name()
+    if preset_name == escape:
+        return
+    quieted = quieted_load_bearing(entries)
+    if not quieted:
+        return
+    msg = (
+        f"preset {preset_name!r} may not mask load-bearing loop(s) off: {', '.join(quieted)}. "
+        "They are what keeps the box alive and reachable under pressure, so a mode that stops them "
+        f"leaves nothing that can recover the machine and no way in to do it by hand. Only {escape!r} "
+        "may quiet them."
+    )
+    raise PresetEditError(msg)
+
+
+def apply_entry_edits(entries: object, edits: list[str], *, preset_name: str) -> dict[str, bool]:
     """Fold ``inbox=on`` / ``review=off`` / ``dream=inherit`` edits into *entries* (a copy).
 
     *entries* is the raw stored map (a JSONField value, so ``object``); non-bool
@@ -73,6 +104,7 @@ def apply_entry_edits(entries: object, edits: list[str]) -> dict[str, bool]:
             updated.pop(name, None)
         else:
             updated[name] = _ENTRY_BOOLS[value]
+    refuse_quieted_load_bearing(preset_name, updated)
     return updated
 
 
@@ -90,7 +122,7 @@ def set_preset_entry(preset_name: str, loop_name: str, value: str) -> Mode:
     if not Loop.objects.filter(name=loop_name).exists():
         msg = f"no loop named {loop_name!r}"
         raise PresetEditError(msg)
-    preset.entries = apply_entry_edits(preset.entries, [f"{loop_name}={state}"])
+    preset.entries = apply_entry_edits(preset.entries, [f"{loop_name}={state}"], preset_name=preset.name)
     preset.save(update_fields=["entries", "updated_at"])
     return preset
 
@@ -128,6 +160,7 @@ __all__ = [
     "apply_entry_edits",
     "clear_preset_override",
     "entry_state_of",
+    "refuse_quieted_load_bearing",
     "require_preset",
     "set_preset_entry",
 ]
