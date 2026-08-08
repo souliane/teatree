@@ -36,6 +36,16 @@ class TestBuildInterpreterContract(TestCase):
         assert "pr_budget_gate" in contract
         assert "max_open_prs_per_repo_per_ticket" in contract
 
+    def test_the_contract_leads_with_default_behaviour_not_a_neutral_default_setting(self) -> None:
+        # #4181: the doctrine that produced 31 queued inert settings said "a durable
+        # operator knob is a setting". It now says the opposite.
+        contract = build_interpreter_contract(_directive())
+        assert "DEFAULT BEHAVIOUR FIRST" in contract
+        assert "default_behaviour" in contract
+        assert "SECOND overlay" in contract
+        assert "NEUTRAL default (core inert)" not in contract
+        assert "A durable operator knob is a setting, not a feature flag" not in contract
+
 
 class TestDispatchInterpretation(TestCase):
     def test_dispatch_arms_one_headless_interpret_task(self) -> None:

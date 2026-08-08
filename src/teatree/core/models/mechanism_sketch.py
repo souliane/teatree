@@ -46,14 +46,20 @@ class MechanismSketchDict(TypedDict, total=False):
     probe_none_reason: str
 
 
-#: The day-one mechanism-kind catalog (§3.2). ``setting_policy_gate`` builds a
-#: core setting + a policy check at the seam and activates the overlay;
-#: ``activation_only`` is the duplication-check branch — the generic mechanism
-#: already exists, so only the per-overlay ``ConfigSetting`` row is applied. The
-#: catalog grows PR by PR; an uninterpretable directive is parked as a
-#: clarification, never forced into a wrong kind.
-KINDS_REQUIRING_ACCEPTANCE_TESTS: frozenset[str] = frozenset({"setting_policy_gate"})
-MECHANISM_KINDS: frozenset[str] = frozenset({"setting_policy_gate", "activation_only"})
+#: ``default_behaviour`` is the DEFAULT kind (#4181): the constraint ships as the
+#: unconditional behaviour at the core seam, with no knob to leave off.
+DEFAULT_BEHAVIOUR = "default_behaviour"
+#: ``setting_policy_gate`` is the exception — a core setting + a policy check at the
+#: seam, minted only when a SECOND overlay demonstrably needs a different value.
+SETTING_POLICY_GATE = "setting_policy_gate"
+#: ``activation_only`` is the duplication-check branch — the generic mechanism already
+#: exists, so only the per-overlay ``ConfigSetting`` row is applied.
+ACTIVATION_ONLY = "activation_only"
+
+#: The mechanism-kind catalog (§3.2). The catalog grows PR by PR; an uninterpretable
+#: directive is parked as a clarification, never forced into a wrong kind.
+KINDS_REQUIRING_ACCEPTANCE_TESTS: frozenset[str] = frozenset({SETTING_POLICY_GATE, DEFAULT_BEHAVIOUR})
+MECHANISM_KINDS: frozenset[str] = frozenset({SETTING_POLICY_GATE, DEFAULT_BEHAVIOUR, ACTIVATION_ONLY})
 
 #: A ``policy_chokepoint`` under any of these path segments is an overlay-local
 #: patch, not the core seam every overlay flows through — the structural refusal
@@ -177,7 +183,54 @@ def _check_kind(raw: MechanismSketchDict) -> str | None:
 
 def _check_setting_key(raw: MechanismSketchDict) -> str | None:
     setting_key = str(raw.get("setting_key", "")).strip()
+    if str(raw.get("kind", "")).strip() == DEFAULT_BEHAVIOUR:
+        if setting_key:
+            return (
+                f"setting_key {setting_key!r} must be empty for a {DEFAULT_BEHAVIOUR!r} sketch: the constraint "
+                f"is the unconditional behaviour at the core seam, not a knob that can leave it off"
+            )
+        return None
     return None if setting_key.isidentifier() else f"setting_key {setting_key!r} is not a valid identifier"
+
+
+def _check_default_behaviour_activation(raw: MechanismSketchDict) -> str | None:
+    """A ``default_behaviour`` sketch activates nothing — there is no per-overlay row to write."""
+    if str(raw.get("kind", "")).strip() != DEFAULT_BEHAVIOUR:
+        return None
+    scope = str(raw.get("activation_scope", "")).strip()
+    if scope:
+        return (
+            f"activation_scope {scope!r} must be empty for a {DEFAULT_BEHAVIOUR!r} sketch: the behaviour is "
+            f"unconditional, so there is no per-overlay activation. A scope that genuinely needs a different "
+            f"value makes this a {SETTING_POLICY_GATE!r}"
+        )
+    return None
+
+
+def _check_second_consumer(raw: MechanismSketchDict) -> str | None:
+    """The N=2 litmus applied to the SETTING itself (#4181) — the anti-inert-knob refusal.
+
+    A setting earns its existence only when a second consumer demonstrably wants a value
+    the rest of the world does not: the sketch must name that overlay AND an activation
+    value that differs from the neutral default. Absent either, the setting's only job is
+    to turn the directive's own behaviour off — the shipped-inert class this refuses.
+    """
+    if str(raw.get("kind", "")).strip() != SETTING_POLICY_GATE:
+        return None
+    scope = str(raw.get("activation_scope", "")).strip()
+    reshape = f"use kind={DEFAULT_BEHAVIOUR!r} with an empty setting_key"
+    if not scope:
+        return (
+            f"activation_scope is empty: a {SETTING_POLICY_GATE!r} must name the SECOND overlay that needs a "
+            f"different value. Absent a named second consumer the setting only turns the directive's own "
+            f"behaviour off — {reshape}"
+        )
+    if raw.get("activation_value") == raw.get("neutral_default"):
+        return (
+            f"activation_scope {scope!r} names no second consumer: its activation_value equals the "
+            f"neutral_default, so no overlay wants a different value — {reshape}"
+        )
+    return None
 
 
 def _check_rejected_alternatives(raw: MechanismSketchDict) -> str | None:
@@ -198,14 +251,17 @@ def _check_chokepoint(raw: MechanismSketchDict) -> str | None:
 
 
 #: The STRUCTURAL recorder checks (§3.4), applied in order — the first finding wins.
-#: kind in catalog; setting_key a real identifier; a core (never overlay/contrib) seam
-#: that exists at HEAD; the N=2-litmus rejected alternative recorded; and, for a
-#: mechanism-building kind, the acceptance tests named. The activation-scope registry
-#: check is the recorder's (``directive_interpret_gate``) — it needs the overlay
-#: registry, which the pure model layer must not import.
+#: kind in catalog; a setting_key matching the kind; a default_behaviour sketch
+#: activating nothing; a setting_policy_gate naming a genuine second consumer (#4181);
+#: a core (never overlay/contrib) seam that exists at HEAD; the N=2-litmus rejected
+#: alternative recorded; and, for a mechanism-building kind, the acceptance tests named.
+#: The activation-scope registry check is the recorder's (``directive_interpret_gate``)
+#: — it needs the overlay registry, which the pure model layer must not import.
 _STRUCTURE_CHECKS: tuple[Callable[[MechanismSketchDict], str | None], ...] = (
     _check_kind,
     _check_setting_key,
+    _check_default_behaviour_activation,
+    _check_second_consumer,
     _check_chokepoint,
     _check_rejected_alternatives,
     _check_acceptance_tests,

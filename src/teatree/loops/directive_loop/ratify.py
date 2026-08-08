@@ -124,11 +124,13 @@ def render_sketch(sketch: MechanismSketch) -> str:
     """A compact human-readable rendering of the sketch the ratify question shows."""
     rejected = "; ".join(sketch.rejected_alternatives) or "(none named — INVALID)"
     scope = sketch.activation_scope or "<global>"
-    return (
-        f"kind={sketch.kind}; setting={sketch.setting_key}: {sketch.setting_type} "
-        f"(neutral default {sketch.neutral_default!r}); chokepoint={sketch.policy_chokepoint}; "
-        f"activate {scope}={sketch.activation_value!r}; rejected alternatives: {rejected}"
+    mechanism = (
+        f"setting={sketch.setting_key}: {sketch.setting_type} (neutral default {sketch.neutral_default!r}); "
+        f"chokepoint={sketch.policy_chokepoint}; activate {scope}={sketch.activation_value!r}"
+        if sketch.setting_key
+        else f"unconditional behaviour at {sketch.policy_chokepoint} (no setting, no activation)"
     )
+    return f"kind={sketch.kind}; {mechanism}; rejected alternatives: {rejected}"
 
 
 def ask_ratification(directive: Directive) -> DeferredQuestion:
@@ -194,6 +196,11 @@ def _payload_visible_question(directive: Directive, sketch: MechanismSketch, con
 
 def _mechanism_facts(sketch: MechanismSketch) -> list[str]:
     """2-3 concrete "this changes X" facts a human can judge, derived from the sketch."""
+    if not sketch.setting_key:
+        return [
+            f"make the constraint the unconditional behaviour at {sketch.policy_chokepoint}",
+            "mint no setting — there is no knob that can leave it off",
+        ]
     scope = sketch.activation_scope or "<global>"
     return [
         f"add setting `{sketch.setting_key}` ({sketch.setting_type}), neutral default {sketch.neutral_default!r}",

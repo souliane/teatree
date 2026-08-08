@@ -16,9 +16,10 @@ from teatree.loops.directive_loop.ratify import (
     RatificationVerdict,
     ask_ratification,
     classify_ratification_answer,
+    render_sketch,
     try_admit,
 )
-from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
+from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
 #: The six ratifications the owner actually recorded against directives #38, #40, #41,
 #: #42, #43 and #45 — verbatim, from the DeferredQuestion rows they were answered on.
@@ -102,6 +103,14 @@ class TestAskRatification(TestCase):
         assert question.question.startswith(f"Ratify directive #{directive.pk}: at most 1 open PR")
         assert "provenance=" not in question.question
         assert "Verbatim source" not in question.question
+
+    def test_a_default_behaviour_sketch_renders_as_unconditional_not_as_an_empty_setting(self) -> None:
+        # #4181: the ratify DM is the human's decision surface — a setting-less sketch
+        # must not render "add setting `` ()" as if a knob were being minted.
+        rendered = render_sketch(sketch_from_envelope(default_behaviour_envelope()))
+        assert "unconditional" in rendered
+        assert "setting=" not in rendered
+        assert "activate" not in rendered
 
     def test_ask_refuses_a_directive_with_no_sketch(self) -> None:
         directive = Directive.objects.capture("not interpreted", source=Directive.Source.CLI)
