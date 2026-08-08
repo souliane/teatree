@@ -106,6 +106,22 @@ class TestRatifyGate(TestCase):
         exp.admit()
         assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.ADMITTED
 
+    def test_re_ask_holds_at_ratify_pending_on_a_fresh_question(self) -> None:
+        exp = self._proposed()
+        exp.attach_ratification(_answered_question())
+        fresh = DeferredQuestion.record("Ratify?", options_hash="h:reask")
+        exp.reask_ratification(fresh)
+        reloaded = OuterLoopExperiment.objects.get(pk=exp.pk)
+        assert reloaded.state == OuterLoopExperiment.State.RATIFY_PENDING
+        assert reloaded.ratify_question_id == fresh.pk
+
+    def test_re_ask_refuses_an_already_answered_question(self) -> None:
+        # A re-ask must never supply the consumed-question evidence admit() demands.
+        exp = self._proposed()
+        exp.attach_ratification(_answered_question())
+        with pytest.raises(OuterLoopExperimentError, match="already-answered"):
+            exp.reask_ratification(_answered_question())
+
     def test_ratify_denial_rejects(self) -> None:
         exp = self._proposed()
         exp.attach_ratification(DeferredQuestion.record("Ratify?"))
