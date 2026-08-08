@@ -401,6 +401,7 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | Subcommand | Description |
 | --- | --- |
 | `record` | Record a deferred question by hand — the agent-facing capture surface |
+| `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending questions with a user answer (resumes any parked headless task) |
 | `dismiss` | Dismiss pending questions without answering them |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |

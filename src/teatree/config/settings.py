@@ -986,6 +986,12 @@ class _RetentionSettings:
     # ``0`` disables that table's pruning entirely. Per-overlay overridable.
     task_attempt_retention_days: int = 30
     incoming_event_retention_days: int = 30
+    # #4178 age backstop over the pending DeferredQuestion backlog. A row past this
+    # many days with no resolution is ESCALATED — stamped and audited, never dismissed
+    # (directive #45), and at most once per window. 3 days because that is where the
+    # measured backlog turned from a queue into a graveyard (46 of 70 rows). ``0``
+    # disables the backstop. Per-overlay overridable.
+    deferred_question_age_ceiling_days: int = 3
     # The PARK lane's own window — separate from the terminal-owned rule above, and
     # deliberately shorter. A limit-park is a scheduling event on a task the park
     # itself RETURNS to the queue PENDING, so a park row's owning task is by

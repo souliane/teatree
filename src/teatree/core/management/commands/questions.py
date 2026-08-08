@@ -8,6 +8,8 @@ populated when availability=away (BLUEPRINT §17.1 invariant 9):
     user answer; writes a :class:`DeferredQuestionAudit` row.
 * ``t3 teatree questions dismiss <id> [--reason ...]`` — dismiss a question
     the user no longer wants to answer; writes an audit row.
+* ``t3 teatree questions reachability`` — which automated resolvers can decide
+    each pending row, and how many can be decided by none (#4178).
 * ``t3 teatree questions resurface`` — re-post the pending backlog to the
     user's Slack DM (the away→present drain): returning from away never
     silently swallows questions. Reuses :func:`teatree.core.notify.notify_user`
@@ -41,6 +43,34 @@ class DeferredQuestionRow(TypedDict):
     status: str
     question: str
     created_at: str | None
+
+
+class QuestionReachRow(TypedDict):
+    """One row of ``t3 <overlay> questions reachability --json``."""
+
+    id: int
+    has_subject: bool
+    resolvers: dict[str, str]
+
+
+def _render_reachability_table(rows: list["QuestionReachRow"]) -> str:
+    buffer = io.StringIO()
+    unreachable = sum(1 for row in rows if not row["resolvers"])
+    print_table(
+        ["ID", "Subject", "Resolvers"],
+        [
+            [
+                row["id"],
+                "yes" if row["has_subject"] else "no",
+                ", ".join(f"{name}={verdict}" for name, verdict in sorted(row["resolvers"].items())) or "—",
+            ]
+            for row in rows
+        ],
+        title=f"{len(rows)} pending, {unreachable} reachable by no resolver",
+        stream=buffer,
+        justify=["right", "left", "left"],
+    )
+    return buffer.getvalue()
 
 
 def _render_questions_table(rows: list[DeferredQuestion]) -> str:
@@ -146,6 +176,40 @@ class Command(MachineOutputCommand):
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
             human=_render_questions_table(rows) if rows else "no deferred questions.",
+        )
+        return payload
+
+    @command()
+    def reachability(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the reachability rows as JSON instead of the human view."),
+        ] = False,
+    ) -> list[QuestionReachRow]:
+        """Report which automated resolvers can decide each pending question (#4178).
+
+        A row with no resolver is one only a human can ever clear — the gap that let
+        the backlog reach 70 pending with a single automated drain covering 6.
+        """
+        from teatree.loop.question_drain import question_reachability  # noqa: PLC0415 — loop layer, not a model import
+
+        payload: list[QuestionReachRow] = [
+            {
+                "id": reach.question_id,
+                "has_subject": reach.has_subject,
+                "resolvers": {name: str(verdict) for name, verdict in reach.decisions.items()},
+            }
+            for reach in question_reachability()
+        ]
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_reachability_table(payload) if payload else "no pending questions.",
         )
         return payload
 

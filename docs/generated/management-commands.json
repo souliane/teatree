@@ -779,6 +779,10 @@
           "name": "record"
         },
         {
+          "help": "Report which automated resolvers can decide each pending question (#4178)",
+          "name": "reachability"
+        },
+        {
           "help": "Resolve pending questions with a user answer (resumes any parked headless task)",
           "name": "answer"
         },

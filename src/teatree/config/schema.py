@@ -217,6 +217,7 @@ class TeatreeSettingsSchema(BaseSettings):
     db_backup_cadence_hours: Annotated[int, BeforeValidator(_parse_overridable_positive_int(24)), _DEFAULT_OVERLAY]
     db_backup_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     db_backup_retention_days: Annotated[int, BeforeValidator(_parse_overridable_positive_int(7)), _DEFAULT_OVERLAY]
+    deferred_question_age_ceiling_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     directive_intake_per_tick: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     directive_loop_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     directive_verify_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
