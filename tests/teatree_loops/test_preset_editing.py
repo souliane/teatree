@@ -274,3 +274,59 @@ class LoadBearingRefusalTestCase(TestCase):
             set_preset_entry("off", "review", "off")
 
         assert "resource_pressure" in str(exc.value)
+
+
+class BackupWithoutReclaimRefusalTestCase(TestCase):
+    """No preset may admit ``db_backup`` once every reclaim loop is quiet (#4188).
+
+    Reached through the BASE columns rather than the mask: the reclaim pair is off in
+    ``Loop.enabled`` (never mentioned by the preset), so the load-bearing refusal above
+    never fires — this is the shape it does not cover.
+    """
+
+    def setUp(self) -> None:
+        _loop("db_backup")
+        _loop("resource_pressure", enabled=False)
+        _loop("idle_stack_reaper", enabled=False)
+        _loop("review")
+        self.preset = _preset("halt", {})
+
+    def test_admitting_the_backup_over_a_base_disabled_reclaim_pair_is_refused(self) -> None:
+        with pytest.raises(PresetEditError) as exc:
+            set_preset_entry("halt", "db_backup", "on")
+
+        message = str(exc.value)
+        assert "db_backup" in message
+        assert "resource_pressure" in message
+        assert "idle_stack_reaper" in message
+        assert Mode.objects.get(name="halt").entries == {}
+
+    def test_an_already_admitted_row_is_refused_on_the_next_unrelated_edit(self) -> None:
+        """A row written before this guard cannot be extended — the whole mask is judged."""
+        _preset("halt", {"db_backup": True})
+
+        with pytest.raises(PresetEditError) as exc:
+            set_preset_entry("halt", "review", "off")
+
+        assert "db_backup" in str(exc.value)
+
+    def test_one_surviving_reclaim_loop_admits_the_backup(self) -> None:
+        _loop("resource_pressure", enabled=True)
+
+        set_preset_entry("halt", "db_backup", "on")
+
+        assert Mode.objects.get(name="halt").entries == {"db_backup": True}
+
+    def test_masking_the_backup_off_is_untouched(self) -> None:
+        set_preset_entry("halt", "db_backup", "off")
+
+        assert Mode.objects.get(name="halt").entries == {"db_backup": False}
+
+    def test_the_low_power_escape_is_not_exempt_from_this_shape(self) -> None:
+        """Low-power escapes the load-bearing refusal only — it never masks the reclaim pair off."""
+        _preset("low-power", {})
+
+        with pytest.raises(PresetEditError) as exc:
+            set_preset_entry("low-power", "db_backup", "on")
+
+        assert "db_backup" in str(exc.value)
