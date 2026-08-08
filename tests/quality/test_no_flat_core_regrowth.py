@@ -213,7 +213,13 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # by the #75 decision above, mirroring forge_push_refs.py beside forge_push.py and
 # speak_cleaning.py beside speak.py; no existing subpackage owns the hand-off (merge/ is the
 # keystone transition, not the hand-off seam).
-PINNED_FLAT_CORE_MODULES = 109
+# 110: +claim_liveness.py (#4164) — "is this process still executing that task claim?", the
+# registry the three lease sweeps consult before reaping. A flat sibling of
+# loop_lease_liveness.py, whose pid-attribution seam it reuses and whose shape it mirrors
+# exactly: an ORM-free predicate layer that must be importable by core/models/ (task_claim),
+# core/managers*, core/tasks AND teatree.loops with no cycle, so it can live under none of
+# them; modelkit/ is a zero-dependency tach node and cannot take the loop_lease_liveness edge.
+PINNED_FLAT_CORE_MODULES = 110
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

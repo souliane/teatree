@@ -149,6 +149,7 @@ class Command(TyperCommand):
             # cancel produced a cause-less FAILED row indistinguishable from a crash.
             cancel_reason = f"{CANCELLED_PREFIX}{reason.strip() or 'cancelled by an operator with no reason given'}"
             TaskAttempt.objects.create(
+                # no-usage: an operator cancel records a decision, not a run — nothing billed.
                 task=task,
                 execution_target=task.execution_target,
                 ended_at=timezone.now(),
@@ -232,6 +233,8 @@ class Command(TyperCommand):
 
             if note.strip():
                 TaskAttempt.objects.create(
+                    # no-usage: an out-of-band completion note describes work this process
+                    # never ran, so it has no spend of its own to record.
                     task=task,
                     execution_target=task.execution_target,
                     ended_at=timezone.now(),
@@ -453,7 +456,12 @@ class Command(TyperCommand):
             return
 
         command_argv = build_claude_command(task)
-        TaskAttempt.objects.create(task=task, execution_target=task.execution_target, launch_url="")
+        TaskAttempt.objects.create(
+            # no-usage: the launch record is written BEFORE the interactive agent starts.
+            task=task,
+            execution_target=task.execution_target,
+            launch_url="",
+        )
 
         self.stdout.write(f"Starting task {task.pk} (ticket {task.ticket.ticket_number}) in the current terminal…")
         exec_inline(command_argv)

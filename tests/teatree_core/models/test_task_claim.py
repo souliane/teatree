@@ -16,9 +16,10 @@ from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.claim_liveness import reset_driving_registry
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
-from teatree.core.models.task_claim import claim, describe_lease_loss, renew_lease
+from teatree.core.models.task_claim import claim, describe_lease_loss, drive_claim, renew_lease
 
 
 class TestClaim(TestCase):
@@ -63,6 +64,40 @@ class TestClaim(TestCase):
         assert orphan.status == Task.Status.CLAIMED
         assert orphan.claimed_by == "new-owner"
         assert orphan.claimed_by_session == "fresh"
+
+
+class TestDriveClaim(TestCase):
+    """#4164 follow-up: drive_claim's cross-process marker.
+
+    Pairs the in-memory registry with a persisted, cross-process-visible
+    ``owner_driving_since`` marker.
+    """
+
+    def _claimed_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        claim(task, claimed_by="worker", lease_seconds=300)
+        return task
+
+    def tearDown(self) -> None:
+        reset_driving_registry()
+
+    def test_sets_owner_driving_since_for_the_duration(self) -> None:
+        task = self._claimed_task()
+        with drive_claim(task):
+            task.refresh_from_db()
+            assert task.owner_driving_since is not None
+        task.refresh_from_db()
+        assert task.owner_driving_since is None
+
+    def test_clears_owner_driving_since_even_when_the_drive_raises(self) -> None:
+        task = self._claimed_task()
+        boom = RuntimeError("drive died")
+        with pytest.raises(RuntimeError, match="drive died"), drive_claim(task):
+            raise boom
+        task.refresh_from_db()
+        assert task.owner_driving_since is None
 
 
 class TestRenewLease(TestCase):

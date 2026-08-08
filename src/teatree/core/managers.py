@@ -10,6 +10,7 @@ from django.db.models.lookups import LessThan
 from django.utils import timezone
 
 from teatree.config import worker_is_quiescing
+from teatree.core.claim_liveness import current_owner
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
     T3_MASTER_SLOT,
@@ -382,6 +383,7 @@ class TaskQuerySet(models.QuerySet):
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
             # predicate is the status CAS token and stays untouched by it.
+            owner_pid, owner_pid_namespace = current_owner()
             claimed_count = self.filter(pk=oldest_pk, status=task_model.Status.PENDING).update(
                 status=task_model.Status.CLAIMED,
                 claimed_by=claimed_by,
@@ -389,6 +391,8 @@ class TaskQuerySet(models.QuerySet):
                 claimed_at=now,
                 heartbeat_at=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
+                owner_pid=owner_pid,
+                owner_pid_namespace=owner_pid_namespace,
             )
             if claimed_count != 1:
                 return None

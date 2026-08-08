@@ -21,6 +21,7 @@ from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
+from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, executing_owner_reason, owner_is_executing
 from teatree.core.modelkit.task_failure_taxonomy import LEASE_EXPIRED_PREFIX, FailureKind
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 
@@ -74,6 +75,11 @@ def reclaim_orphaned_claims(qs: "models.QuerySet") -> int:
     on two consecutive identical failures (which also escalates to the user),
     is dropped from the re-queue set and held CLAIMED — so a doomed phase
     neither re-runs nor burns more attempts on the identical failure.
+
+    #4164: a lapsed lease is evidence about the LEASE, not about the process. A row whose
+    owner process is still executing it (a memory-thrashed event loop that stalled past its
+    900s lease) is held with its owner instead — re-queuing it strands a run that is still
+    producing work and hands a second agent the same worktree.
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -96,19 +102,28 @@ def reclaim_orphaned_claims(qs: "models.QuerySet") -> int:
             claimed_by_session="",
             lease_expires_at=None,
             heartbeat_at=None,
+            owner_pid=None,
+            owner_pid_namespace="",
+            owner_driving_since=None,
         )
 
 
 def _requeueable_within_budget(qs: "models.QuerySet", candidate_pks: list[int]) -> list[int]:
-    """Filter *candidate_pks* to those whose ticket-phase may still re-queue (#2009).
+    """Filter *candidate_pks* to those whose ticket-phase may still re-queue (#2009, #4164).
 
     Consults the repair-loop budget per row: a phase at its iteration cap
     (:class:`~teatree.core.repair_loop.MaxIterationsExceeded`) or stalled on
     two identical failures (:class:`~teatree.core.repair_loop.IterationStalled`,
-    which also escalates to the user) is dropped from the re-queue set.
+    which also escalates to the user) is dropped from the re-queue set. So is a
+    row whose owner process is still executing it (#4164) — the only evidence
+    that WITHHOLDS the sweep, never one that widens it.
     """
     allowed: list[int] = []
     for task in qs.filter(pk__in=candidate_pks).select_related("ticket", "session"):
+        owner = ClaimOwner.of(task)
+        if owner_is_executing(owner, task.pk):
+            logger.info("reclaim skip task=%s ticket=%s: %s", task.pk, task.ticket_id, executing_owner_reason(owner))
+            continue
         try:
             task.check_requeue_allowed()
         except (MaxIterationsExceeded, IterationStalled) as exc:
@@ -201,6 +216,12 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
     production SQLite backend (where ``select_for_update`` is a
     no-op) because the conditional UPDATE is itself atomic — the
     same shape as ``claim_next_pending`` / ``LoopLease.acquire``.
+
+    #4164: the CAS closes the window between the scan and the write, but not the case
+    where the lease genuinely lapsed while the owner PROCESS kept running — a stalled
+    event loop renews nothing, so the CAS matches and a live agent's row is failed under
+    it. A row whose owner is still executing is skipped, so the two sweeps agree: what
+    :func:`reclaim_orphaned_claims` declines to re-queue this does not terminally fail.
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
     attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
@@ -219,9 +240,14 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
                 "pk",
                 "execution_target",
                 "claimed_by",
+                *OWNER_COLUMNS,
             ),
         )
-        for pk, execution_target, claimed_by in candidates:
+        for pk, execution_target, claimed_by, owner_pid, owner_pid_namespace, owner_driving_since in candidates:
+            owner = ClaimOwner(owner_pid, owner_pid_namespace or "", owner_driving_since)
+            if owner_is_executing(owner, pk):
+                logger.info("stale-claim reap skip task=%s: %s", pk, executing_owner_reason(owner))
+                continue
             claimed = qs.filter(pk=pk, status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
                 status=task_model.Status.FAILED,
                 claimed_at=None,
@@ -229,6 +255,9 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
                 claimed_by_session="",
                 lease_expires_at=None,
                 heartbeat_at=None,
+                owner_pid=None,
+                owner_pid_namespace="",
+                owner_driving_since=None,
                 failure_reason=_lease_expired_reason(claimed_by),
                 failure_kind=FailureKind.LEASE_EXPIRED,
             )

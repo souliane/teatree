@@ -12,12 +12,15 @@ stays cycle-free (task.py imports it at module level).
 """
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.claim_liveness import current_owner, driving
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 
 if TYPE_CHECKING:
@@ -35,6 +38,34 @@ def window_parked(task: "Task", now: datetime | None = None) -> bool:
     share so "is there work" and "may this be re-dispatched" can never disagree.
     """
     return task.not_before is not None and task.not_before > (now or timezone.now())
+
+
+@contextmanager
+def drive_claim(task: "Task") -> Iterator[None]:
+    """Mark *task* as executing — in-process AND cross-process (#4164 follow-up).
+
+    Pairs :func:`~teatree.core.claim_liveness.driving` (the in-memory registry a
+    same-process sweep like ``reap_stuck_headless_runs`` reads directly) with a
+    persisted ``owner_driving_since`` timestamp: the twin a sweep running in a
+    SEPARATE ``loops_tick`` subprocess reads instead, since nothing there can see
+    this process's own memory. ``run_boot_sweeps``' two claim sweeps
+    (``reclaim_orphaned_claims`` / ``reap_stale_claims``) run ONLY in that
+    subprocess in production — the in-memory registry alone never reaches them,
+    so a live-but-stalled row was reclaimed and duplicated exactly as before #4164.
+
+    Written once at entry and cleared once at exit — never renewed — so a
+    memory-thrashed event loop that cannot heartbeat still recorded it before the
+    stall began. A crash that skips the ``finally`` leaves it stuck set; the reader
+    (:func:`~teatree.core.claim_liveness.owner_is_executing`) trusts a stale value
+    only while ``owner_pid`` is independently provable alive, so a genuinely dead
+    owner's row still reclaims normally.
+    """
+    type(task).objects.filter(pk=task.pk).update(owner_driving_since=timezone.now())
+    try:
+        with driving(task.pk):
+            yield
+    finally:
+        type(task).objects.filter(pk=task.pk).update(owner_driving_since=None)
 
 
 def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
@@ -80,6 +111,7 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
 
     status = task.Status
     now = timezone.now()
+    owner_pid, owner_pid_namespace = current_owner()
     claimable = (
         Q(status=status.PENDING)
         | (Q(status=status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)))
@@ -95,6 +127,8 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
             claimed_at=now,
             heartbeat_at=now,
             lease_expires_at=now + timedelta(seconds=lease_seconds),
+            owner_pid=owner_pid,
+            owner_pid_namespace=owner_pid_namespace,
         )
     )
     if won != 1:
@@ -124,9 +158,16 @@ def renew_lease(task: "Task", *, lease_seconds: int = 300) -> None:
     claim after a rival had already taken over — two workers then drove the
     same unit (double-spend, racing ``complete()``). Zero rows → raise
     :class:`LeaseLostError` so the heartbeating worker aborts.
+
+    The heartbeat also re-stamps ``owner_pid`` (#4164): the process that renews IS the one
+    executing, so the sweeps' liveness probe reads the executor rather than whichever
+    process happened to take the claim — the two differ wherever a dispatcher claims for a
+    runner. Renewal is the same instant ``heartbeat_at`` is written, which is the staleness
+    bound the probe pairs the pid with, so the two facts can never disagree.
     """
     now = timezone.now()
     expires = now + timedelta(seconds=lease_seconds)
+    owner_pid, owner_pid_namespace = current_owner()
     renewed = (
         type(task)
         .objects.filter(pk=task.pk, status=task.Status.CLAIMED)
@@ -135,13 +176,20 @@ def renew_lease(task: "Task", *, lease_seconds: int = 300) -> None:
             claimed_by_session=task.claimed_by_session,
             claimed_at=task.claimed_at,
         )
-        .update(heartbeat_at=now, lease_expires_at=expires)
+        .update(
+            heartbeat_at=now,
+            lease_expires_at=expires,
+            owner_pid=owner_pid,
+            owner_pid_namespace=owner_pid_namespace,
+        )
     )
     if renewed != 1:
         msg = f"lease lost for task {task.pk}: claim generation moved on (re-claimed or terminal)"
         raise LeaseLostError(msg)
     task.heartbeat_at = now
     task.lease_expires_at = expires
+    task.owner_pid = owner_pid
+    task.owner_pid_namespace = owner_pid_namespace
 
 
 def describe_lease_loss(task: "Task") -> str:
