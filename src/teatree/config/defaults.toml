@@ -43,6 +43,9 @@
 # That inheritance is why a mode masking DELIVERY off (`ship` / `tickets`) must also name
 # the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
 # delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
+# The mirror rule is the LOAD-BEARING tier (`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`):
+# no mask may quiet it (the low-power mode excepted), and none may keep `db_backup` writing
+# once every reclaim loop is quiet — that shape can only ever consume disk.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
 # the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
@@ -643,13 +646,14 @@ memory_skim = false
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
-description = "Every Loop-table loop off (the reversible 'calendar says nothing runs' mode)."
+description = "Every WORK loop off (the reversible 'calendar says nothing runs' mode); the load-bearing tier stays up so the box can still relieve itself."
 
 [modes.off.entries]
-inbox = false
-idle_stack_reaper = false
-local_stack_queue = false
-resource_pressure = false
+inbox = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+housekeeping = true
 snapshot_warmer = false
 dispatch = false
 tickets = false
@@ -661,7 +665,6 @@ followup = false
 issue_implementer = false
 triage_assessor = false
 dm_sweep = false
-housekeeping = false
 arch_review = false
 dogfood = false
 eval_local = false
@@ -678,13 +681,14 @@ memory_skim = false
 defers_questions = true
 pauses_self_pump = true
 presence_sensitive = false
-description = "Holiday: every loop off, questions defer AND the self-pump pauses (was 'off' preset + 'away')."
+description = "Holiday: every WORK loop off, questions defer AND the self-pump pauses; the load-bearing tier stays up."
 
 [modes.offline.entries]
-inbox = false
-idle_stack_reaper = false
-local_stack_queue = false
-resource_pressure = false
+inbox = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+housekeeping = true
 snapshot_warmer = false
 dispatch = false
 tickets = false
@@ -696,7 +700,6 @@ followup = false
 issue_implementer = false
 triage_assessor = false
 dm_sweep = false
-housekeeping = false
 arch_review = false
 dogfood = false
 eval_local = false

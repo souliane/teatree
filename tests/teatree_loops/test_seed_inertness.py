@@ -21,10 +21,11 @@ from django.utils import timezone
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.mode_shape import INTAKE_LOOPS
+from teatree.loops.mode_shape import BACKUP_LOOP, INTAKE_LOOPS, LOAD_BEARING_LOOPS
 from teatree.loops.preset_seed import default_preset_specs, seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.seed_inertness import (
+    KIND_BACKUP_WITHOUT_RECLAIM,
     KIND_DANGLING_SLOT,
     KIND_DISABLED,
     KIND_DISABLED_VS_SHIPPED,
@@ -34,6 +35,7 @@ from teatree.loops.seed_inertness import (
     KIND_INACTIVE,
     KIND_INTAKE_WITHOUT_DELIVERY,
     KIND_MISSING,
+    KIND_QUIETED_LOAD_BEARING,
     KIND_SLOTS_OVERRIDDEN,
     KIND_STALE,
     KIND_SUPPRESSED,
@@ -365,3 +367,50 @@ class TestAFreshlySeededBoxIsClean(django.test.TestCase):
         faults = [f for f in shipped_inertness(now=timezone.now()) if f.is_fault]
 
         assert faults == [], f"fresh install reports faults: {[f.label for f in faults]}"
+
+
+class TestAMaskThatKeepsWritingMustNotStopReclaiming(django.test.TestCase):
+    """The live ``off`` row's shape, reported where an operator can see it (#4188)."""
+
+    def setUp(self) -> None:
+        seed_default_loops_and_prompts()
+        seed_default_presets_and_schedules()
+
+    def _quiet_the_tier(self, name: str, *, backup: bool) -> None:
+        shipped = next(spec.entries for spec in default_preset_specs() if spec.name == name)
+        Mode.objects.filter(name=name).update(
+            entries={**shipped, **dict.fromkeys(LOAD_BEARING_LOOPS, False), BACKUP_LOOP: backup}
+        )
+
+    def test_the_live_off_row_that_backs_up_with_nothing_reclaiming_is_a_fault(self) -> None:
+        assert _named(shipped_inertness(), "preset", "off") == [], "control: the shipped mask is clean"
+
+        self._quiet_the_tier("off", backup=True)
+
+        found = _named(shipped_inertness(), "preset", "off")
+        assert [f.kind for f in found] == [KIND_BACKUP_WITHOUT_RECLAIM]
+        assert found[0].is_fault
+        assert BACKUP_LOOP in found[0].detail
+        assert "resource_pressure" in found[0].detail
+
+    def test_quieting_the_tier_without_the_backup_is_still_a_fault(self) -> None:
+        """No mask may stop the survival tier at all — the backup only sharpens it."""
+        self._quiet_the_tier("off", backup=False)
+
+        found = _named(shipped_inertness(), "preset", "off")
+        assert [f.kind for f in found] == [KIND_QUIETED_LOAD_BEARING]
+        assert found[0].is_fault
+        assert "resource_pressure" in found[0].detail
+
+    def test_the_low_power_mode_may_quiet_the_tier(self) -> None:
+        self._quiet_the_tier("low-power", backup=False)
+
+        assert _kinds(shipped_inertness(), "preset", "low-power") != [KIND_QUIETED_LOAD_BEARING]
+
+    def test_an_operator_written_mode_is_judged_by_the_same_rule(self) -> None:
+        Mode.objects.create(name="nights", description="hand-written", entries={"resource_pressure": False})
+
+        found = _named(shipped_inertness(), "preset", "nights")
+
+        assert [f.kind for f in found] == [KIND_QUIETED_LOAD_BEARING]
+        assert found[0].is_fault
