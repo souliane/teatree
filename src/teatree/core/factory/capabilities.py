@@ -49,6 +49,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0",),
         note="--json emits the per-table retention plan; dry-run unless --apply (#3693)",
     ),
+    Capability(
+        "teatree retention scratch",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the size-ranked agent-scratch sweep with a per-entry "
+        "verdict; dry-run unless --apply (#4165)",
+    ),
     Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree tasks create",

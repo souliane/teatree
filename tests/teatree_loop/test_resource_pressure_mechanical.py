@@ -25,10 +25,12 @@ import os
 import signal
 import subprocess
 from pathlib import Path
+from tempfile import mkdtemp
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop import mechanical_resources
@@ -837,6 +839,75 @@ def _fake_reclaim_report(total_bytes: int = 0) -> object:
         outcome=PruneOutcome(reclaimed="x", bytes_reclaimed=total_bytes),
     )
     return ReclaimReport(steps=(step,), planned=(step,), dry_run=False)
+
+
+class ScratchSweepLadderTests(TestCase):
+    """The scratch lane runs in BOTH ladders — on a tmpfs /tmp its scratch IS RAM (#4165)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(mkdtemp(prefix="rp_scratch_"))
+        self.addCleanup(_rmtree_safe, str(self.tmp))
+        self.stale = self.tmp / "t3db.sqlite3"
+        _write_file(self.stale, 2048)
+        old = timezone.now().timestamp() - 9 * 86400
+        os.utime(self.stale, (old, old))
+        self.uv_prune = _patch_uv_cache_prune(self)
+        patcher = patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _payload(self, resource: str, **extra: object) -> dict[str, object]:
+        return {
+            "resource": resource,
+            "scratch_retention_days": 3,
+            "scratch_sweep_root": str(self.tmp),
+            **extra,
+        }
+
+    def test_disk_ladder_reclaims_the_stale_scratch(self) -> None:
+        free_resources(self._payload("disk"))
+
+        assert not self.stale.exists()
+        assert "SWEEP agent scratch under" in ResourcePressureMarker.load().last_plan
+
+    def test_ram_ladder_reclaims_the_stale_scratch_because_tmpfs_scratch_is_ram(self) -> None:
+        with (
+            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
+            patch.object(mechanical_resources, "_docker_container_prune", return_value=None),
+        ):
+            free_resources(self._payload("ram"))
+
+        assert not self.stale.exists()
+
+    def test_a_zero_window_disables_the_lane_without_even_walking_the_root(self) -> None:
+        with patch.object(mechanical_resources, "sweep_scratch") as swept:
+            free_resources(self._payload("disk", scratch_retention_days=0))
+
+        swept.assert_not_called()
+        assert self.stale.exists()
+        assert "SKIP agent-scratch sweep" in ResourcePressureMarker.load().last_plan
+
+    def test_a_sweep_failure_is_swallowed_so_the_tick_survives(self) -> None:
+        with patch.object(mechanical_resources, "sweep_scratch", side_effect=RuntimeError("proc gone")):
+            free_resources(self._payload("disk"))
+
+        assert self.stale.exists()
+        assert ResourcePressureMarker.load().last_freed_at is not None
+
+    def test_the_reclaimed_bytes_land_in_the_plan_report(self) -> None:
+        lib = self.tmp / "wt4081venv" / "lib.so"
+        _write_file(lib, _GIB // 2)
+        old = timezone.now().timestamp() - 9 * 86400
+        # Age the nested file too, not just the top-level dir — the sweep's
+        # staleness check is tree-wide (#4165 review finding #1), so a fresh
+        # nested file would otherwise keep the whole tree off the candidate list.
+        os.utime(lib, (old, old))
+        os.utime(self.tmp / "wt4081venv", (old, old))
+
+        free_resources(self._payload("disk"))
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "reclaimed 0.50 GB" in plan
 
 
 def _patch_uv_cache_prune(case: TestCase) -> MagicMock:

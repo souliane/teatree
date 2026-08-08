@@ -242,6 +242,8 @@ SETTING_HELP: dict[str, str] = {
     "schema_readiness_gate_enabled": "refuse work when the database schema is not migrated",
     "sdk_monthly_credit_usd": "monthly SDK credit the cost tracker measures spend against",
     "self_dm_gate_enabled": "classify a self-DM apart from a colleague post, so it is not gated",
+    "scratch_retention_days": "days of agent scratch kept under the temp root before the sweep reclaims it",
+    "scratch_sweep_root": "temp root the scratch sweep reclaims from (blank auto-resolves the host view)",
     "self_update_cadence_hours": "hours between self-update checks",
     "self_update_disabled": "stop self-updating",
     "send_proxy_allowlist": "destinations the send proxy may deliver to",

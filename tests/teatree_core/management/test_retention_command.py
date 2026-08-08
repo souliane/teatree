@@ -13,8 +13,11 @@ either way) is what is under test.
 
 import datetime as dt
 import json
+import os
 from dataclasses import replace
 from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -180,3 +183,59 @@ class RetentionPruneVacuumTestCase(TestCase):
         assert "not applicable" in payload["vacuum"]["reason"]
         assert payload["vacuum"]["bytes_reclaimed"] == 0
         assert payload["vacuum"]["summary"] == payload["vacuum"]["reason"]
+
+
+class ScratchSweepCommandTests(TestCase):
+    """``t3 <overlay> retention scratch`` — dry-run default, size-ranked report, real reclaim."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        stale = self.root / "t3db.sqlite3"
+        stale.write_bytes(b"x" * 2048)
+        old = timezone.now().timestamp() - 9 * 86400
+        os.utime(stale, (old, old))
+        self.stale = stale
+
+    def _scratch_json(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_dry_run_reports_the_reclaimable_bytes_without_touching_anything(self) -> None:
+        payload = self._scratch_json()
+
+        assert payload["applied"] is False
+        assert payload["candidate_bytes"] == 2048
+        assert payload["reclaimed_bytes"] == 0
+        assert [entry["path"] for entry in payload["entries"]] == [str(self.stale)]
+        assert self.stale.exists()
+
+    def test_apply_reclaims_the_stale_scratch_and_reports_what_it_freed(self) -> None:
+        payload = self._scratch_json("--apply")
+
+        assert payload["applied"] is True
+        assert payload["reclaimed_bytes"] == 2048
+        assert not self.stale.exists()
+
+    def test_the_configured_retention_window_is_the_default(self) -> None:
+        with patch(f"{_COMMAND}.get_effective_settings") as settings:
+            settings.return_value.scratch_sweep_root = str(self.root)
+            settings.return_value.scratch_retention_days = 90
+            out = StringIO()
+            call_command("retention", "scratch", "--json", stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert payload["retention_days"] == 90
+        assert payload["candidate_bytes"] == 0
+
+    def test_the_human_view_names_every_kept_entry_and_its_reason(self) -> None:
+        fresh = self.root / "claude-statusline"
+        fresh.mkdir()
+        err = StringIO()
+
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", stderr=err)
+
+        rendered = err.getvalue()
+        assert "dry run" in rendered
+        assert "protected path" in rendered
+        assert "2.0KiB" in rendered

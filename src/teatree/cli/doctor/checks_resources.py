@@ -1,9 +1,9 @@
 """Box-capacity ``_check_*`` probes for `t3 doctor check` — disk + temp headroom + memory cap.
 
 These surface RESOURCE pressure that silently wedges the box: a ROOT FILESYSTEM
-filling toward full, a RAM-backed ``/tmp`` tmpfs filling toward ENOSPC, and a
-container memory cap set below the commit/lint-hook floor (a too-low ``mem_limit``
-OOM-kills ``ty-check``). Kept out of ``checks_environment`` (which owns
+filling toward full, a RAM-backed ``/tmp`` tmpfs filling toward ENOSPC or SIZED to
+claim a large share of RAM, and a container memory cap set below the commit/lint-hook
+floor (a too-low ``mem_limit`` OOM-kills ``ty-check``). Kept out of ``checks_environment`` (which owns
 clone/install/venv hygiene) so each module stays a single concern under the
 module-health LOC cap.
 
@@ -26,6 +26,7 @@ from typing import cast
 
 import typer
 
+from teatree.utils.ram_probe import host_total_ram_mib
 from teatree.utils.ram_scope import agent_workload_floor_gib
 
 # A parsed JSON object (``~/.claude`` settings / installed_plugins). Values are
@@ -34,6 +35,9 @@ from teatree.utils.ram_scope import agent_workload_floor_gib
 type JsonObject = dict[str, object]
 
 _DEFAULT_TMPFS_WARN_PERCENT = 80
+# A quarter of RAM is generous for scratch on a box whose whole purpose is agent
+# work; the measured default let /tmp claim 48%.
+_DEFAULT_TMPFS_MAX_RAM_PERCENT = 25
 _PERCENT_MAX = 100
 _MIN_MOUNT_FIELDS = 3
 
@@ -65,15 +69,15 @@ _CGROUP_MEMORY_MAX_V2 = Path("/sys/fs/cgroup/memory.max")
 _CGROUP_MEMORY_MAX_V1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
 
 
-def _tmpfs_warn_percent(raw: str | None) -> int:
-    """Parse ``TEATREE_TMPFS_WARN_PERCENT`` into a 1..100 threshold; default on garbage."""
+def _tmpfs_warn_percent(raw: str | None, *, default: int = _DEFAULT_TMPFS_WARN_PERCENT) -> int:
+    """Parse a tmpfs percent override into a 1..100 threshold; *default* on garbage."""
     if raw is None:
-        return _DEFAULT_TMPFS_WARN_PERCENT
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return _DEFAULT_TMPFS_WARN_PERCENT
-    return value if 1 <= value <= _PERCENT_MAX else _DEFAULT_TMPFS_WARN_PERCENT
+        return default
+    return value if 1 <= value <= _PERCENT_MAX else default
 
 
 def _disk_percent_threshold(raw: str | None, *, default: int) -> int:
@@ -187,6 +191,79 @@ def _check_tmp_tmpfs_headroom(
                 f"agent/pytest/uv scratch can fill it to ENOSPC and wedge the box. Trim it: "
                 f"`find {tmp_dir} -maxdepth 1 -name 'pytest-*' -mmin +120 -exec rm -rf {{}} +`. Runtime "
                 "temp is routed to disk via TMPDIR; tune this with TEATREE_TMPFS_WARN_PERCENT."
+            )
+    except OSError:
+        return True
+    return True
+
+
+_HOST_TMP_MOUNT = Path("/host-tmp")
+
+
+def _tmpfs_sizing_target(tmp_dir: str | None) -> str:
+    """Which path to inspect: the caller's choice, else the host bind if mounted, else ``/tmp``.
+
+    ``t3 doctor check`` runs INSIDE the container (#4165), where the container's
+    own ``/tmp`` is the image's overlay layer, not the host's tmpfs — so a check
+    hard-coded to ``/tmp`` is silently inert there. ``/host-tmp`` is a BIND mount
+    of the host's real temp root (the scratch sweep's own mount, wired in this
+    same ticket), and a bind mount reports its SOURCE's fstype and size in the
+    mount table — so probing it from inside the container answers the question
+    about the HOST's tmpfs, which is what this check exists to surface.
+    """
+    if tmp_dir is not None:
+        return tmp_dir
+    return str(_HOST_TMP_MOUNT) if _HOST_TMP_MOUNT.is_dir() else "/tmp"  # noqa: S108 — auditing, not creating
+
+
+def _check_tmp_tmpfs_sizing(
+    *,
+    mounts_path: Path = Path("/proc/mounts"),
+    tmp_dir: str | None = None,
+    total_ram_mib: int | None = None,
+) -> bool:
+    """WARN when a RAM-backed ``/tmp`` is SIZED to claim a large share of machine RAM.
+
+    The sibling headroom check above measures how FULL the tmpfs is; this one
+    measures how big it is allowed to get, which is the standing defect. The
+    measured box shipped a 15.1 GB ``/tmp`` on 31 GB of RAM — 48% of the machine
+    claimable by scratch alone, and 8.8 GB of week-old agent scratch was sitting
+    in it. Teatree does NOT move ``/tmp`` to disk to fix that: the root
+    filesystem was 84% full so a 15 GB disk-backed ``/tmp`` trades a degrading
+    failure for a filesystem-full one that breaks the control DB, and tmpfs is
+    wiped on reboot, which is what bounded the observed leak to a week's worth.
+    Capping the mount keeps both properties. Pairs with the
+    ``scratch_retention_days`` sweep, which keeps it from filling even at the cap.
+
+    Threshold overridable via ``TEATREE_TMPFS_MAX_RAM_PERCENT`` (1..100, default
+    25). Surfacing-only, like its sibling. Crash-proof — any probe error degrades
+    to a silent pass so this diagnostic never aborts the doctor run.
+    """
+    try:
+        target = _tmpfs_sizing_target(tmp_dir)
+        if not mounts_path.is_file():
+            return True
+        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), target) != "tmpfs":
+            return True
+        ram_mib = host_total_ram_mib() if total_ram_mib is None else total_ram_mib
+        stats = os.statvfs(target)
+        size_mib = stats.f_blocks * stats.f_frsize // (1024 * 1024)
+        if ram_mib <= 0 or size_mib <= 0:
+            return True
+        threshold = _tmpfs_warn_percent(
+            os.environ.get("TEATREE_TMPFS_MAX_RAM_PERCENT"),
+            default=_DEFAULT_TMPFS_MAX_RAM_PERCENT,
+        )
+        share = round(size_mib / ram_mib * 100)
+        if share >= threshold:
+            typer.echo(
+                f"WARN  {target} is a tmpfs sized {size_mib / 1024:.1f} GB on {ram_mib / 1024:.1f} GB of RAM "
+                f"({share}% >= {threshold}%) — scratch written there is memory, not disk, so it can claim "
+                f"that share of the working pool permanently. Cap it (host, not the container): "
+                f"`systemctl edit tmp.mount` with `[Mount]` / `Options=mode=1777,strictatime,nosuid,nodev,size=4G`, "
+                f"then reboot. Keep it a tmpfs — a disk-backed /tmp trades RAM pressure for a full root "
+                f"filesystem and gives up the reboot wipe. Sweep it with `t3 <overlay> retention scratch --apply`; "
+                f"tune this with TEATREE_TMPFS_MAX_RAM_PERCENT."
             )
     except OSError:
         return True
