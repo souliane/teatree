@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.eval.multi_trial import run_pass_at_k_lane
+from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.quarantine import load_quarantine
 
@@ -122,8 +123,35 @@ class TestCheck:
         assert "issue" in result.output
 
     def test_the_shipped_registry_is_valid(self) -> None:
+        """No UNKNOWN scenario, no malformed file — EXPIRED alone must never red this (#4173).
+
+        `check` also reds on an EXPIRED entry, on purpose, so a maintainer running it by
+        hand is warned. Asserting a bare exit_code == 0 here would re-create, one level up,
+        the exact blast radius #4173 removes: the day a live entry crosses its `until` date,
+        this test — run on every unrelated PR via the required suite — reds the whole unit
+        suite. Expiry is self-enforcing (the scenario re-arms on its own); this test owns
+        only "the file is well-formed and every entry names a real scenario", the same
+        contract `TestShippedRegistry` in `tests/teatree_eval/test_quarantine.py` states.
+        """
         result = CliRunner().invoke(app, ["eval", "quarantine", "check"])
-        assert result.exit_code == 0, result.output
+        assert "UNKNOWN" not in result.output, result.output
+        assert "MALFORMED" not in result.output, result.output
+
+    def test_an_expired_entry_does_not_red_this_test(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression for #4173: a live entry crossing `until` must not red every PR's suite.
+
+        Observed RED against the pre-fix `exit_code == 0` assertion (`AssertionError: ...
+        EXPIRED ... assert 1 == 0`) by pointing `QUARANTINE_PATH` at a registry carrying one
+        expired real-scenario entry.
+        """
+        real_name = min(spec.name for spec in discover_specs())
+        monkeypatch.setattr(
+            "teatree.eval.quarantine.QUARANTINE_PATH", _registry(tmp_path, scenario=real_name, until="2000-01-01")
+        )
+        result = CliRunner().invoke(app, ["eval", "quarantine", "check"])
+        assert "EXPIRED" in result.output, result.output
+        assert "UNKNOWN" not in result.output, result.output
+        assert "MALFORMED" not in result.output, result.output
 
 
 class TestAudit:

@@ -123,9 +123,11 @@ class TestShippedRegistry:
 
     Expiry is deliberately NOT asserted here. An expired entry already stops suppressing
     (``TestSuppression``), so the scenario re-arms on its own; reddening the whole test
-    suite on a date would re-create the every-PR blast radius #4173 exists to remove. The
-    loud channels for a stale entry are the selector's own note and ``t3 eval quarantine
-    check``, which the heal lane runs.
+    suite on a date would re-create the every-PR blast radius #4173 exists to remove
+    (`tests/teatree_cli/eval/test_quarantine_cli.py::TestCheck` carries the matching
+    regression). The loud channel for a stale entry is ``t3 eval quarantine audit``,
+    which the heal lane runs beside ``green-proof``; the selector's own note never
+    mentions an expired entry, since :meth:`Quarantine.suppressed` excludes it.
     """
 
     def test_it_is_checked_in_where_the_loader_looks(self) -> None:
