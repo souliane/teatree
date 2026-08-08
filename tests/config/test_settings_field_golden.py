@@ -70,6 +70,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "db_backup_cadence_hours",
         "db_backup_disabled",
         "db_backup_retention_days",
+        "deferred_question_age_ceiling_days",
         "directive_loop_enabled",
         "directive_intake_per_tick",
         "directive_verify_days",

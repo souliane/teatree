@@ -12150,13 +12150,15 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ record     Record a deferred question (used by the PreToolUse away-mode      │
-│            hook).                                                            │
-│ list       List pending deferred questions, oldest first.                    │
-│ answer     Resolve a pending question with a user answer.                    │
-│ dismiss    Dismiss a pending question without answering it.                  │
-│ resurface  Re-post the pending backlog to the user's Slack DM (away→present  │
-│            drain).                                                           │
+│ record        Record a deferred question (used by the PreToolUse away-mode   │
+│               hook).                                                         │
+│ list          List pending deferred questions, oldest first.                 │
+│ reachability  Report which automated resolvers can decide each pending       │
+│               question.                                                      │
+│ answer        Resolve a pending question with a user answer.                 │
+│ dismiss       Dismiss a pending question without answering it.               │
+│ resurface     Re-post the pending backlog to the user's Slack DM             │
+│               (away→present drain).                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12206,6 +12208,23 @@ Usage: t3 teatree questions list [OPTIONS]
 │ --json                   Emit the deferred questions as JSON instead of the  │
 │                          human view.                                         │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions reachability`
+
+```
+Usage: t3 teatree questions reachability [OPTIONS]
+
+ Report which automated resolvers can decide each pending question (#4178).
+
+ A row with no resolver is one only a human can ever clear — the gap that let
+ the backlog reach 70 pending with a single automated drain covering 6.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the reachability rows as JSON instead of the human      │
+│                 view.                                                        │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

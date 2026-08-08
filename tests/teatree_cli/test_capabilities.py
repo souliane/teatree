@@ -70,6 +70,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree workspace stamp-owners": workspace.Command.stamp_owners,
         "loop preset show": loop_preset.Command.show,
         "teatree questions list": questions.Command.list_pending,
+        "teatree questions reachability": questions.Command.reachability,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like
         # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,
         # so its real ``--json`` param lives on the registered typer callback.
