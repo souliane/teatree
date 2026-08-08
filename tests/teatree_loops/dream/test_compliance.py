@@ -24,6 +24,7 @@ from teatree.loops.dream.compliance import (
     run_compliance_escalation,
     run_compliance_measurement,
 )
+from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 
@@ -240,6 +241,25 @@ class PersistCompliancePassTestCase(TestCase):
         assert row.remediation == RemediationKind.ESCALATION
         # The escalation is now the standing umbrella (the recurrence rides it + a coding task).
         assert row.escalation_url == UMBRELLA
+
+    def test_a_deferred_recurrence_is_not_stamped_escalated(self) -> None:
+        # #4176 review finding: an exhausted budget must defer the gap AND leave the
+        # audit row alone — nothing was written to the umbrella, so the row must not
+        # read as escalated.
+        host = _fake_host()
+        finding = ComplianceFinding(
+            rule_source=RuleSource.MEMORY,
+            rule_identity="feedback_a",
+            evidence="violated a",
+            is_recurrence=True,
+        )
+        snapshot = persist_compliance_pass([finding], instructions_observed=4)
+        budget = PromotionBudget(remaining=0)
+        run_compliance_escalation(snapshot=snapshot, findings=[finding], host=host, dry_run=False, budget=budget)
+        row = InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a")
+        assert row.remediation == RemediationKind.NONE
+        assert row.escalation_url == ""
+        assert not host.update_issue.called
 
 
 class RunComplianceMeasurementTestCase(TestCase):

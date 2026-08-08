@@ -130,15 +130,18 @@ class EscalationOutcome:
     """The result of driving one recurring rule onto the standing umbrella issue.
 
     ``filed`` is True when a new umbrella checkbox was added OR a coding task was
-    scheduled (the ``promote_gap`` outcome); ``ticket_url`` is the umbrella issue URL;
-    ``withheld`` is True when the rendered body would leak a banned term / bare
-    reference.
+    scheduled (the ``promote_gap`` outcome); ``ticket_url`` is the umbrella issue URL
+    (set ONLY when ``filed`` is True — a withheld or deferred gap carries no URL, so
+    the audit row is never stamped for work that was not actually done); ``withheld``
+    is True when the rendered body would leak a banned term / bare reference;
+    ``deferred`` is True when the pass's promotion cap was already spent (#4176).
     """
 
     rule_identity: str
     filed: bool
     ticket_url: str = ""
     withheld: bool = False
+    deferred: bool = False
     reason: str = ""
 
 
@@ -409,11 +412,17 @@ def escalate_recurrences(
 def stamp_escalations(
     snapshot: InstructionComplianceSnapshot | None, outcomes: Sequence[EscalationOutcome], *, dry_run: bool
 ) -> None:
-    """Stamp each escalated recurrence's audit row with the umbrella it now rides."""
+    """Stamp each escalated recurrence's audit row with the umbrella it now rides.
+
+    Only a ``filed`` outcome stamps — a deferred (cap-exhausted) or withheld
+    (banned-term/bare-reference) outcome wrote nothing to the umbrella, so its audit
+    row must stay ``RemediationKind.NONE`` rather than falsely reading as escalated
+    (#4176).
+    """
     if dry_run or snapshot is None:
         return
     for outcome in outcomes:
-        if outcome.ticket_url:
+        if outcome.filed and outcome.ticket_url:
             _stamp_escalated(snapshot, outcome.rule_identity, outcome.ticket_url)
 
 
@@ -547,6 +556,8 @@ def _escalate_one_recurrence(
     )
     if outcome.withheld:
         return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
+    if outcome.deferred:
+        return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, deferred=True, reason=outcome.reason)
     return EscalationOutcome(
         rule_identity=finding.rule_identity,
         filed=outcome.scheduled or outcome.checkbox_added or dry_run,
