@@ -17,8 +17,11 @@ cannot produce a false RED — a key it flags has no textual reader at all.
 
 import ast
 import re
+import sys
 from functools import cache
 from pathlib import Path
+
+import pytest
 
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
@@ -108,6 +111,23 @@ def test_every_key_string_config_key_has_a_reader() -> None:
     )
 
 
-def test_the_scan_reports_a_key_no_module_mentions() -> None:
-    """The control: a key nothing names must come back unread, or a green above proves nothing."""
-    assert "availability_schedule_that_never_existed" not in _keys_with_a_reader()
+def test_the_scan_would_catch_a_planted_dead_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The REAL control.
+
+    ``_keys_with_a_reader()`` is always a SUBSET of ``_key_names()`` by construction, so
+    asserting a name outside the registry stays unread (the old control) is vacuous — it
+    would pass even if the scan body were replaced with ``return _key_names()``, a lane
+    that can never report anything dead. This plants a synthetic key INSIDE the scanned
+    set itself (exactly where a genuine dead key would sit) and asserts the scan still
+    reports it dead, so a broken scan that marks everything read fails HERE.
+    """
+    planted = "zz_config_key_readers_control_4203_never_referenced_anywhere"
+    live = _key_names()
+    assert planted not in live  # sanity: the plant is not already a real key
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "_key_names", lambda: frozenset({*live, planted}))
+    _keys_with_a_reader.cache_clear()
+    try:
+        assert planted not in _keys_with_a_reader()
+    finally:
+        _keys_with_a_reader.cache_clear()

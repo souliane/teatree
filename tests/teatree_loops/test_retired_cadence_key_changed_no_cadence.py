@@ -1,3 +1,6 @@
+# test-path: cross-cutting
+# Spans teatree.config (retired_settings, seed_defaults) and
+# teatree.loops.issue_implementer — a genuine multi-package contract test.
 """Retiring ``issue_implementer_cadence_hours`` moved no loop's cadence (#4203).
 
 The #4203 hard constraint: no ``*_cadence_hours`` key may be cut before the
