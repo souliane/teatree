@@ -27,6 +27,7 @@ Edit the source command, not this file.
 | `seed` | Provenance-aware DEPLOY seed of *key* → *value* (#3435) |
 | `clear` | Delete the DB override row for *key* in *overlay*'s scope (or global) |
 | `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
+| `inert` | Which gated features shipped and then never ran (#4189) |
 | `get` | Print the resolved value for *key* and name its source (DB vs env/default) |
 | `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
 | `list` | List every DB config override row under its group, naming each row's scope |

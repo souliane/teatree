@@ -11796,6 +11796,7 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 │ import  Seed the DB store from operational  toml keys (one-time).            │
 │ export  Dump the ConfigSetting store to TOML — the inverse of import.        │
 │ flags   Read-only dead-toggle audit report over the FEATURE_FLAGS registry.  │
+│ inert   Which gated features shipped and then never ran (#4189).             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12056,6 +12057,23 @@ Usage: t3 teatree config_setting flags [OPTIONS]
  tracking issue; a ``REMOVE``-stage flag (a toggle whose gated code is now
  permanent) is surfaced LOUD so a dead toggle cannot rot unnoticed. Reads the
  code-level registry only — it writes nothing to the ``ConfigSetting`` store.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting inert`
+
+```
+Usage: t3 teatree config_setting inert [OPTIONS]
+
+ Which gated features shipped and then never ran (#4189).
+
+ One line per gate that is off in every scope and whose declared observable is
+ empty — the feature twin of ``t3 loops audit``'s shipped-seed report. A gate
+ nobody ever decided to leave off is surfaced LOUD; one the owner deliberately
+ staged is listed quietly, so the report stays worth reading.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

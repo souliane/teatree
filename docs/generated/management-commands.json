@@ -49,6 +49,10 @@
           "name": "flags"
         },
         {
+          "help": "Which gated features shipped and then never ran (#4189)",
+          "name": "inert"
+        },
+        {
           "help": "Print the resolved value for *key* and name its source (DB vs env/default)",
           "name": "get"
         },
