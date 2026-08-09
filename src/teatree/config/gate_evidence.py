@@ -150,7 +150,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.ReviewEvidence",
         shipped=dt.date(2026, 7, 4),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 review record-evidence`",
+        rationale=f"{_UNDECIDED}producer is `t3 <overlay> review record-evidence`",
     ),
     GateEvidence(
         setting="require_debt_delta",

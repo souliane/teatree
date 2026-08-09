@@ -23,7 +23,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from teatree.config import get_effective_settings
 from teatree.config.gate_evidence import GATE_EVIDENCE, INERT_AFTER_DAYS, ActivationIntent, GateEvidence, ObservableKind
+from teatree.core.models import ConfigSetting
 
 KIND_NEVER_FIRED = "never_fired"
 KIND_UNOBSERVABLE = "unobservable"
@@ -125,9 +127,6 @@ def enabled_anywhere(entry: GateEvidence) -> bool:
     overlay enumeration is needed, and each is resolved through the real chain rather than by
     re-coercing the stored string.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: lazy config import
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
     scopes = set(ConfigSetting.objects.filter(key=entry.setting).values_list("scope", flat=True))
     return any(
         getattr(get_effective_settings(scope or None), entry.setting) != entry.off_value for scope in {"", *scopes}

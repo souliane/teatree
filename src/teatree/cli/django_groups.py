@@ -413,6 +413,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("import", "Seed the DB store from operational [teatree] toml keys (one-time)."),
             ("export", "Dump the ConfigSetting store to TOML — the inverse of import."),
             ("flags", "Read-only dead-toggle audit report over the FEATURE_FLAGS registry."),
+            ("inert", "Which gated features shipped and then never ran (#4189)."),
         ],
         core_dispatch=True,
     ),
