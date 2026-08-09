@@ -148,11 +148,17 @@ def fallback_marker_path() -> Path:
 
 
 def _dir_is_writable(directory: Path) -> bool:
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return False
-    return os.access(directory, os.W_OK)
+    """Whether a marker could be written under *directory* — WITHOUT creating anything.
+
+    The nearest existing ancestor answers it, because that is what a later
+    ``mkdir(parents=True)`` would need. Asking by ATTEMPTING the directory made
+    :func:`marker_paths` — and so ``degraded_read_report``, ``clear_degraded_read`` and the
+    doctor check — materialise a directory tree on a pure read (#4205).
+    """
+    for candidate in (directory, *directory.parents):
+        if candidate.exists():
+            return candidate.is_dir() and os.access(candidate, os.W_OK)
+    return False
 
 
 def marker_paths() -> tuple[Path, ...]:

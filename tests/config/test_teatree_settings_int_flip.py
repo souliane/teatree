@@ -147,18 +147,18 @@ class TestIntHelperSemantics:
 
 
 class TestDelegatesToColdReader:
-    """Anti-vacuous: patching ``cold_reader.read_setting`` flips the int reader output."""
+    """Anti-vacuous: patching ``cold_reader.read_setting_confirmed`` flips the int reader output."""
 
     def test_reader_routes_through_cold_reader(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from hooks.scripts import teatree_settings  # noqa: PLC0415
 
         seen: list[tuple[str, str]] = []
 
-        def _fake(name: str, *, scope: str = "", **_: object) -> object:
+        def _fake(name: str, *, scope: str = "", **_: object) -> cold_reader.SettingRead:
             seen.append((name, scope))
-            return 17
+            return cold_reader.SettingRead(17, readable=True)
 
-        monkeypatch.setattr(cold_reader, "read_setting", _fake)
+        monkeypatch.setattr(cold_reader, "read_setting_confirmed", _fake)
         assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", default=25, minimum=0) == 17
         assert ("orchestrator_turn_budget", "") in seen
 
@@ -169,5 +169,5 @@ class TestDelegatesToColdReader:
             msg = "db layer exploded"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr(cold_reader, "read_setting", _boom)
+        monkeypatch.setattr(cold_reader, "read_setting_confirmed", _boom)
         assert teatree_settings.teatree_int_setting("orchestrator_turn_budget", default=25, minimum=0) == 25

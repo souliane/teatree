@@ -100,6 +100,25 @@ def _absent_db_read(key: str, *, scope: str, env: Mapping[str, str], db_path: Pa
     return SettingRead(projection.setting(key, scope=scope) if projection is not None else None, readable=True)
 
 
+def _unreadable_db_read(key: str, *, scope: str, env: Mapping[str, str], db_path: Path | None) -> "SettingRead":
+    """The read when the canonical database file is HERE but sqlite could not read it.
+
+    The same projection tier :func:`_absent_db_read` uses, for the file that exists and
+    answers nothing — the 0-byte stub the control-DB migration left at the old host path,
+    or a database locked by a live writer. Keying the fall-through on absence alone left
+    that stub with no tier at all, which is the shape #4197 closed in the shell (#4205).
+
+    Unreadable is preserved when the projection cannot answer either: this widens WHERE an
+    answer may come from, never what counts as having read one.
+    """
+    if db_path is not None:
+        return SettingRead(None, readable=False)
+    projection = canonical_projection(env=env)
+    if projection is None:
+        return SettingRead(None, readable=False)
+    return SettingRead(projection.setting(key, scope=scope), readable=True)
+
+
 def read_setting_confirmed(
     key: str,
     *,
@@ -127,7 +146,7 @@ def read_setting_confirmed(
         (scope, key),
     )
     if not ran:
-        return SettingRead(None, readable=False)
+        return _unreadable_db_read(key, scope=scope, env=env, db_path=db_path)
     if row is None:
         return SettingRead(None, readable=True)
     raw = row[0]
