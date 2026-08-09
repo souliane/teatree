@@ -11,6 +11,7 @@ converted at the PreToolUse layer.
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -145,6 +146,63 @@ class TestWalkThroughSecondQuestionStaysLive:
         second = handle_mirror_question_to_slack(_ask_payload("Approve item 2?", session_id=session_id))
         assert second is False, "second question must still render live, not deny (#2058)"
         assert _stdout(capsys) == {}
+
+
+class TestLoopDeniedRetryDoesNotDoublePostToSlack:
+    """A harness retry of the SAME denied ``AskUserQuestion`` posts to Slack once.
+
+    A denied tool call is the one the harness can plausibly retry with the identical
+    payload (there is no other way for the agent to "try again"). Pre-#4202 this was
+    guarded by an away-mode-only marker; the postureless merge lost that guard for
+    every loop-driven turn (mode no longer exists to gate it on). Restored here as an
+    unconditional property of the deny arm rather than a mode-keyed one.
+    """
+
+    def test_retry_with_identical_question_posts_once(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with (
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D1"),
+        ):
+            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
+            capsys.readouterr()
+            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
+            capsys.readouterr()
+        assert mock_post.call_count == 1
+
+    def test_a_genuinely_different_question_still_posts(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Control: the guard keys on the question, not on blanket session suppression."""
+        with (
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D1"),
+        ):
+            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
+            capsys.readouterr()
+            handle_mirror_question_to_slack(_ask_payload("Merge it?", session_id="s-1", tool_use_id="t-10"))
+            capsys.readouterr()
+        assert mock_post.call_count == 2
+
+    def test_a_live_render_retry_still_posts_every_time(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Control: the guard is scoped to the deny arm only.
+
+        Matches pre-#4202 parity — the live-render arms never had it and must not
+        gain it as a side effect.
+        """
+        session_id = "s-2"
+        router.handle_record_presence({"prompt": "ask me something", "session_id": session_id})
+        with (
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D1"),
+        ):
+            first = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id=session_id, tool_use_id="t-1"))
+            capsys.readouterr()
+            second = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id=session_id, tool_use_id="t-2"))
+            capsys.readouterr()
+        assert first is False, "a live turn must render in-client, not deny"
+        assert second is False, "a live turn must render in-client, not deny"
+        assert mock_post.call_count == 2
 
 
 class TestSection807InteropGate:

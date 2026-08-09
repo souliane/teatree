@@ -19,12 +19,21 @@ but not one-at-a-time, so this closes that gap. WARN, not block (the user's
 choice): a multi-question call still proceeds — stderr (the router's documented
 warn channel) carries the nudge so the NEXT decision is split. Fires on EVERY
 session. The AI eval ``asks_decisions_one_at_a_time`` pins the behaviour.
+
+``denied_question_dedupe_key`` / ``post_denied_question_deduped`` restore the
+away-mode-only marker #4202's postureless merge dropped for every loop-driven
+deny (#1174): a denied call is the one a harness retry can replay verbatim.
 """
 
+import contextlib
+import hashlib
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+
+from hooks.scripts.state_files import append_line, read_lines
 
 # A '?' is necessary but not sufficient: a second-person/decision cue must also
 # be present, which keeps rhetorical asides and explanatory sentences out of the
@@ -537,3 +546,20 @@ def handle_resolve_answered_question(data: dict) -> None:
             row.apply_answer(_answer_text_from_tool_response(data), resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
+
+
+def denied_question_dedupe_key(question: dict) -> str:
+    """Stable hash of *question* — the denied-retry idempotency key."""
+    blob = json.dumps(question, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def post_denied_question_deduped(marker_path: Path, key: str, *, poster: Callable[[], str]) -> str:
+    """Call *poster* and record *key*, unless already recorded (a harness retry)."""
+    if key in read_lines(marker_path):
+        return ""
+    ts = poster()
+    with contextlib.suppress(OSError):
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        append_line(marker_path, key)
+    return ts

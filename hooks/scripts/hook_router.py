@@ -152,9 +152,11 @@ from hooks.scripts.plan_edit_gate import handle_block_edit_before_planned, skip_
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
+    denied_question_dedupe_key,
     handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
+    post_denied_question_deduped,
     preceding_user_rejected_question_and_asked_clarify,
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
@@ -4811,29 +4813,18 @@ def _post_question_to_slack(data: dict) -> None:
 def handle_mirror_question_to_slack(data: dict) -> bool:
     """Mirror an ``AskUserQuestion`` to Slack; deny a loop-driven one (#1174).
 
-    Runs LAST in the PreToolUse chain. Three arms:
+    Runs LAST in the PreToolUse chain. Three arms — live user turn / attended
+    non-owner turn: capture, mirror, return ``False`` so the question renders
+    in-client (#2058 slides the live window forward on the live arm, the #189
+    escape); loop-driven / autonomous turn: capture a generation-stamped
+    mirror-linked ``DeferredQuestion``, deduped against a harness retry of the
+    SAME denied call, then deny so the agent narrates the deferral and proceeds
+    — the answer arrives later via ``additionalContext``.
 
-    - live user turn (the user typed a prompt seconds ago, in this
-    session) — capture and mirror, then return ``False`` so the question
-    renders in-client, sliding the live window forward (#2058) so a
-    multi-question walk-through stays live. This is the #189 escape.
-    - attended non-owner turn (a different live session owns the loop; a
-    human is reading the prose) — same: capture, mirror, return ``False``.
-    - loop-driven / autonomous turn (this session drives the loop, or
-    there is no live owner) — the broken path: rendering in-client
-    suspends the session with no way for a Slack reply to reach it.
-    Instead capture a generation-stamped mirror-linked
-    ``DeferredQuestion``, then deny so the agent narrates the deferral and
-    proceeds; the answer arrives later via ``additionalContext``.
-
-    All three arms now record the question (#3642). The interactive arms used to
-    post the DM WITHOUT a row, which made the mirror unanswerable — a Slack reply had
-    no live generation to bind, and an owner who walked away from the terminal lost the
-    question entirely. Recording puts it in the same owner-thread queue the headless
-    lane feeds (:mod:`teatree.core.owner_threads`); the fast path is unchanged because
-    the arm still returns ``False`` and the modal renders. An in-client answer resolves
-    the row via :func:`handle_resolve_answered_question`, so neither surface can apply
-    an answer the other already took.
+    All three arms record the question (#3642) so a Slack reply always has a live
+    generation to bind and an in-client answer resolves it via
+    :func:`handle_resolve_answered_question` — neither surface can apply an answer
+    the other already took.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
@@ -4850,7 +4841,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     if not str(_first_question(data).get("question", "")).strip():
         _post_question_to_slack(data)
         return False
-    queue_id = _capture_and_defer_question(data)
+    queue_id = _capture_and_defer_question(data, dedupe=True)
     if queue_id is None:
         # Teatree unavailable — fail open so the in-client modal renders.
         return False
@@ -4863,15 +4854,12 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
-def _mirror_question_to_slack(question: dict) -> tuple[str, str]:
+def _mirror_question_to_slack(question: dict, *, dedupe_key: tuple[str, str] | None = None) -> tuple[str, str]:
     """Post the single recorded question to the user's Slack DM; return ``(ts, channel)``.
 
-    Mirrors only the single recorded question, not the full payload, so the DM never
-    shows more rows than are answerable; a harness retry is deduped by generation
-    supersession. The returned ``ts``/``channel`` link the mirror DM to its
-    :class:`DeferredQuestion` so a later Slack reply can bind the live generation.
-    Fail-open: any Slack/IO error yields ``("", "")`` so the deny is never blocked and
-    the loop never wedges.
+    *dedupe_key* — ``(session_id, question hash)`` — is given only by the loop-driven
+    deny arm; a live-render arm passes none and posts on every call, as before #4202.
+    Fail-open: any Slack/IO error yields ``("", "")`` so the deny is never blocked.
     """
     if not question:
         return "", ""
@@ -4879,7 +4867,12 @@ def _mirror_question_to_slack(question: dict) -> tuple[str, str]:
     if slack_cfg is None:
         return "", ""
     try:
-        ts = _perform_slack_post(slack_cfg, [question])
+        if dedupe_key is not None:
+            session_id, key = dedupe_key
+            marker = _state_file(session_id or "no-session", "loop-denied-question-mirror")
+            ts = post_denied_question_deduped(marker, key, poster=lambda: _perform_slack_post(slack_cfg, [question]))
+        else:
+            ts = _perform_slack_post(slack_cfg, [question])
     except Exception:  # noqa: BLE001 — a Slack failure never blocks the capture/deny.
         return "", ""
     return ts, _read_dm_channel_cache(slack_cfg[1])
@@ -4910,15 +4903,15 @@ def _first_question(data: dict) -> dict:
     return first if isinstance(first, dict) else {}
 
 
-def _capture_and_defer_question(data: dict) -> int | None:
+def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | None:
     """Record one mirror-linked ``DeferredQuestion`` and post it to Slack.
 
     The single chokepoint every ``AskUserQuestion`` arm calls (#1174). It supersedes
     any pending older-generation row for the same (session, run), posts the question
     to the user's Slack DM capturing the posted ``ts``, and records the row with its
     mirror fields so the reply matcher can bind a later Slack reply to exactly this
-    generation. Returns the new row id, or ``None`` when teatree is unavailable (the
-    caller then fails open — the in-client modal renders).
+    generation (*dedupe*: the loop-driven deny arm only). Returns the new row id, or
+    ``None`` when teatree is unavailable (fails open — the in-client modal renders).
     """
     if not bootstrap_teatree_django():
         return None
@@ -4941,7 +4934,8 @@ def _capture_and_defer_question(data: dict) -> int | None:
             prior.mark_stale("superseded by newer question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
-    slack_ts, slack_channel = _mirror_question_to_slack(first)
+    dedupe_key = (session_id, denied_question_dedupe_key(first)) if dedupe else None
+    slack_ts, slack_channel = _mirror_question_to_slack(first, dedupe_key=dedupe_key)
     try:
         row = DeferredQuestion.record(
             question_text,
