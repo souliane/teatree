@@ -59,9 +59,13 @@ _GLOBAL_SCOPE = ""
 class SettingRead:
     """One cold read's outcome: the decoded `value`, and whether the store could be READ.
 
-    `readable` is `False` only when sqlite itself errored. Confirmed ABSENCE — no DB file, no
-    row, an undecodable value — is `readable=True` with a `None` value: there was nothing to
-    read, which is a legitimate answer rather than a failure.
+    `readable` is `False` when sqlite itself errored, AND when a present-but-unreadable
+    store's projection fallback has no answer for the key (:func:`_unreadable_db_read`) —
+    that projection gap is indistinguishable from the corrupt store simply holding a value
+    the projection never saw, so it is treated as unread rather than as a confirmed unset
+    (#4205). Confirmed ABSENCE — no DB file at all, no row, an undecodable value — is
+    `readable=True` with a `None` value: there was nothing to read, which is a legitimate
+    answer rather than a failure.
     """
 
     value: object | None
@@ -108,15 +112,24 @@ def _unreadable_db_read(key: str, *, scope: str, env: Mapping[str, str], db_path
     or a database locked by a live writer. Keying the fall-through on absence alone left
     that stub with no tier at all, which is the shape #4197 closed in the shell (#4205).
 
-    Unreadable is preserved when the projection cannot answer either: this widens WHERE an
-    answer may come from, never what counts as having read one.
+    Unreadable is preserved when the projection cannot answer either — no projection at
+    all, OR a trustworthy projection with no row for THIS key. The per-key case matters
+    because `trustworthy` is generation-monotonic, not recency-checked: a projection whose
+    publish failed after the corrupt DB's last write is still FRESH, so a missing key there
+    is not evidence the key is unset — it is evidence the projection never saw it. Reporting
+    `readable=True` for that gap is exactly the fail-open #4008 exists to close: it silently
+    reopened it, letting a corrupt canonical DB collapse to "not configured" for
+    `banned_terms` (measured: `resolve_banned_terms` moved from a raised
+    `BannedTermsUnreadableError`, exit 2, to an allowed exit 0). This widens WHERE an answer
+    may come from, never what counts as having read one.
     """
     if db_path is not None:
         return SettingRead(None, readable=False)
     projection = canonical_projection(env=env)
     if projection is None:
         return SettingRead(None, readable=False)
-    return SettingRead(projection.setting(key, scope=scope), readable=True)
+    value = projection.setting(key, scope=scope)
+    return SettingRead(value, readable=value is not None)
 
 
 def read_setting_confirmed(

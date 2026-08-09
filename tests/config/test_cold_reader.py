@@ -231,6 +231,20 @@ class TestAnUnreadableCanonicalDbFallsThroughToTheProjection:
         read = cold_reader.read_setting_confirmed("autoload", db_path=tmp_path / "stub.sqlite3")
         assert (read.value, read.readable) == (None, False)
 
+    def test_a_projection_with_no_row_for_the_key_stays_unreadable(self, tmp_path: Path) -> None:
+        """A trustworthy projection missing THIS key is not a confirmed unset (#4205).
+
+        `trustworthy` is generation-monotonic, not recency-checked: a projection whose
+        publish failed after the corrupt store's last write is still FRESH, so a missing
+        key here is evidence the projection never saw it, not that the operator left it
+        unset. Reporting ``readable=True`` for that gap reopened #4008: the corrupt DB
+        that gates ``resolve_banned_terms`` would silently collapse to "not configured"
+        instead of raising ``BannedTermsUnreadableError``.
+        """
+        self._publish(tmp_path, [("", "some_other_key", True)])  # answers, but not for "autoload"
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (None, False)
+
 
 class TestTypedWrappers:
     @pytest.fixture
