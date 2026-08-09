@@ -274,6 +274,7 @@ standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done w
 stop_snapshotter_enabled = true # bool — snapshot session findings before a stop, so context survives
 unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalation that cites no artefact the agent read
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
+verbatim_paste_gate_enabled = true # bool — refuse a publish whose body reproduces the operator's own words verbatim
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
 adaptive_intake_concurrency_enabled = true # bool — let the resource loop set intake concurrency from observed headroom

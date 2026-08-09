@@ -6935,6 +6935,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    no-op) kill-switch (self-rescue).                         │
 │ add-all            Whole-tree `git add -A` / `git add .` gate kill-switch    │
 │                    (self-rescue).                                            │
+│ verbatim-paste     Verbatim operator-paste publish gate kill-switch          │
+│                    (self-rescue).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7712,6 +7714,59 @@ Usage: t3 teatree gate add-all disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate add-all enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate verbatim-paste`
+
+```
+Usage: t3 teatree gate verbatim-paste [OPTIONS] COMMAND [ARGS]...
+
+ Verbatim operator-paste publish gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste status`
+
+```
+Usage: t3 teatree gate verbatim-paste status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste disable`
+
+```
+Usage: t3 teatree gate verbatim-paste disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste enable`
+
+```
+Usage: t3 teatree gate verbatim-paste enable [OPTIONS]
 
  Re-enable the gate.
 
