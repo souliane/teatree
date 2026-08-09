@@ -209,7 +209,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
     "issue_implementer_max_concurrent": _parse_strict_int,
-    "issue_implementer_cadence_hours": _parse_strict_int,
     "trusted_issue_authors": _parse_str_list,
     "umbrella_issue_labels": _parse_str_list,
     "fleet_claim_enabled": _parse_strict_bool,
@@ -271,21 +270,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
     # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
     "check_updates": _parse_strict_bool,
-    # DB-home cutover: ``timezone`` was tagged "needed to open the DB", but Django
-    # ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES``
-    # without reading it — so it is not a bootstrap dep. It has no live reader
-    # (DB-home for partition consistency). (The former sibling ``worktrees_dir``
-    # was removed — it duplicated ``worktree_root()``'s "where worktrees are
-    # created" role with a divergent default; see ``tests/config/
-    # test_removed_dead_settings.py``.)
-    "timezone": _parse_strict_str,
-    # DB-home cutover: the last two per-overlay-TOML-overridable carve-out
-    # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
-    # ``orchestrator_bash_gate_enabled``'s reader (``teatree_gate._gate_key_is_enabled``)
-    # is already DB-first via ``cold_reader`` (toml fallback for the cold self-rescue);
-    # ``privacy`` has no live production reader.
+    # DB-home cutover: ``orchestrator_bash_gate_enabled``'s reader
+    # (``teatree_gate._gate_key_is_enabled``) is already DB-first via ``cold_reader``
+    # (toml fallback for the cold self-rescue). Its former carve-out siblings
+    # ``privacy`` / ``timezone`` were retired reader-less (#4203).
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
-    "privacy": _parse_strict_str,
     # DB-home cutover: ``handover_mirror_path``. The pre-Django reader
     # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
     # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the

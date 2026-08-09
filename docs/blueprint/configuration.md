@@ -531,10 +531,10 @@ t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collabor
 t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)
 ```
 
-`privacy` is DB-home too — scope it to a client overlay:
+Any DB-home key can be scoped to a client overlay the same way:
 
 ```bash
-t3 <overlay> config_setting set privacy '"strict"' --overlay client-project
+t3 <overlay> config_setting set on_behalf_post_mode '"ask"' --overlay client-project
 ```
 
 ### 10.1.2 Agent model tiering & session pins (`[agent]`)

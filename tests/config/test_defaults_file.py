@@ -335,7 +335,7 @@ class TestClosedValueSetsNarrowTheSchemaOnly:
 
     def test_the_class_is_not_empty(self) -> None:
         # The control: an empty derivation would make both assertions above vacuous.
-        assert set(_choice_narrowed_str_keys()) == {"privacy", "repo_mode"}
+        assert set(_choice_narrowed_str_keys()) == {"repo_mode"}
 
 
 class TestParityMatrix:
