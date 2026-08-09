@@ -30,6 +30,21 @@ The scanner drops the last candidate.
 - A regression test pins the count.
 """
 
+#: The real shape of souliane/teatree#2663, the standing ledger the factory claimed. It carries
+#: no label, and every checklist item carries prose, so neither of the first two signals fires.
+LEDGER_2663 = """## ⚠️ DO NOT CLOSE — standing ledger
+
+This is a **permanent, reusable tracking issue**. It is **never closed**.
+
+### How to use it (each pass)
+
+1. Run the pass.
+2. Append a new section below.
+
+- [ ] **Dream engine misses raw transcript drift** — keyword-gated extraction.
+- [ ] **Review-comment-bloat gate never built** — comment bloat keeps recurring.
+"""
+
 
 def _reason(body: str, labels: frozenset[str] = frozenset()) -> str:
     return umbrella_reason(body=body, labels=labels, umbrella_labels=SHIPPED_LABELS)
@@ -106,6 +121,37 @@ class TestStructuralSignal:
 
     def test_an_empty_body_is_not_umbrella(self) -> None:
         assert _reason("") == ""
+
+
+class TestStandingLedgerSignal:
+    """The row DECLARES itself never closed — the third signal (souliane/teatree#2663)."""
+
+    def test_the_standing_ledger_is_umbrella(self) -> None:
+        assert "never closed" in _reason(LEDGER_2663)
+
+    def test_a_bold_declaration_needs_no_heading(self) -> None:
+        assert _reason("**DO NOT CLOSE**\n\nA rolling log.\n")
+
+    def test_the_wording_variants_all_declare_it(self) -> None:
+        for line in ("## Do not close", "## Don't close this issue", "**Never close this ticket.**"):
+            assert _reason(f"{line}\n\nA rolling log.\n"), line
+
+    def test_acceptance_criteria_do_not_defeat_an_explicit_declaration(self) -> None:
+        """Unlike the inferred structural shape: a stated criterion does not make the row closable."""
+        assert _reason(f"{LEDGER_2663}\n## Acceptance\n\n- an entry is appended\n")
+
+    def test_unemphasised_prose_asking_to_hold_the_issue_is_not_a_signal(self) -> None:
+        """A temporary hold on implementable work — declining it would starve a real ticket."""
+        assert _reason("Do not close this until the follow-up lands.\n") == ""
+
+    def test_a_heading_naming_another_object_is_not_a_signal(self) -> None:
+        assert _reason("## Do not close the connection pool\n\nIt is pooled per request.\n") == ""
+
+    def test_a_body_merely_mentioning_closing_is_not_a_signal(self) -> None:
+        assert _reason("## Observed\n\nThe reader does not close the file handle.\n") == ""
+
+    def test_the_declaration_must_lead_the_line(self) -> None:
+        assert _reason("## Rule: do not close this issue\n") == ""
 
 
 class TestTitleIsNotASignal:
