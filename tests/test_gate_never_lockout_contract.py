@@ -82,6 +82,10 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     "handle_dispatch_prompt_quote_scanner": (
         "public-egress verbatim-quote leak in an Agent/Task dispatch prompt; fail-closed by design, [quote-ok:] escape"
     ),
+    "handle_block_verbatim_operator_paste": (
+        "public-egress republication of the operator's own messages; fail-closed by design, "
+        "ALLOW_VERBATIM_PASTE=1 escape + gate kill-switch"
+    ),
     # Narrow targeted-command gates — deny one specific command, never arbitrary Bash.
     "handle_block_direct_commands": "denies only specific t3-CLI-bypass commands (_deny_match denylist)",
     "handle_block_raw_review_post": "denies only raw review-post commands that bypass the FSM",

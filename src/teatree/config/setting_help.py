@@ -282,6 +282,7 @@ SETTING_HELP: dict[str, str] = {
     "trusted_issue_authors": "issue authors whose issues may be claimed without extra triage",
     "umbrella_issue_labels": "labels marking an issue as an umbrella/epic parent intake never claims",
     "unbacked_claim_gate_enabled": "refuse a diagnosis or an escalation that cites no artefact the agent read",
+    "verbatim_paste_gate_enabled": "refuse a publish whose body reproduces the operator's own words verbatim",
     "unknown_repo_push_gate_enabled": "refuse a push to a repo teatree does not recognise",
     "user_identity_aliases": "other identities that are the same person as the operator",
     "watchdog_max_cost_usd": "dollars a watched run may spend before the watchdog stops it",
