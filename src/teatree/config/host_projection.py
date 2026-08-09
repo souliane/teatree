@@ -32,7 +32,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -48,7 +48,7 @@ HIGHWATER_FILENAME = ".host-projection-generation"
 GENERATION_KEY = "host_projection_generation"
 
 #: Bumped whenever the projected SHAPE changes — the version this publisher emits.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Every payload schema a reader can still read, which is deliberately a RANGE rather
 #: than the one constant above: the reader ships with the source tree while the publisher
@@ -56,21 +56,12 @@ SCHEMA_VERSION = 2
 #: shape. Refusing it would put every host cold read back on compiled-in defaults — the
 #: exact failure the projection exists to prevent. A version outside the range is a shape
 #: this reader has no business interpreting and is still refused loudly.
-READABLE_SCHEMA_VERSIONS = frozenset({1, 2})
+READABLE_SCHEMA_VERSIONS = frozenset({1, 2, 3})
 
 GLOBAL_SCOPE = ""
 
 _SETTINGS_SQL = "SELECT scope, key, value FROM teatree_config_setting"
 _LOOP_STATE_SQL = "SELECT name, status FROM teatree_loop_state"
-
-# The four mode tables the Django-free posture resolver walks. Read here as whole
-# tables (the projection is the host's only view of them) except the override, whose
-# `ORDER BY set_at DESC LIMIT 1` is the resolver's own query verbatim: the newest row
-# is the only one that governs, so projecting the rest would invite a second answer.
-_MODE_SQL = "SELECT name, defers_questions, pauses_self_pump, presence_sensitive FROM teatree_loop_preset"
-_MODE_OVERRIDE_SQL = "SELECT preset_name, until FROM teatree_loop_preset_override ORDER BY set_at DESC LIMIT 1"
-_MODE_SCHEDULE_SQL = "SELECT name, id, timezone FROM teatree_loop_schedule"
-_MODE_SLOT_SQL = "SELECT schedule_id, days, start_time, preset_name FROM teatree_loop_schedule_slot"
 
 _FILE_MODE = 0o600
 
@@ -107,29 +98,6 @@ class Staleness(StrEnum):
     REGRESSED = "regressed"
 
 
-def _text(value: object) -> str:
-    """A nullable TEXT column as the projected string — ``""`` for a SQL ``NULL``."""
-    return "" if value is None else str(value)
-
-
-def _strings(payload: object, keys: tuple[str, ...]) -> tuple[str, ...] | None:
-    """The *keys* of *payload* when every one of them is a string, else ``None``."""
-    if not isinstance(payload, dict):
-        return None
-    entries = cast("Mapping[str, object]", payload)
-    values = tuple(entries.get(key) for key in keys)
-    return cast("tuple[str, ...]", values) if all(isinstance(value, str) for value in values) else None
-
-
-def _booleans(payload: object, keys: tuple[str, ...]) -> tuple[bool, ...] | None:
-    """The *keys* of *payload* when every one of them is a real bool, else ``None``."""
-    if not isinstance(payload, dict):
-        return None
-    entries = cast("Mapping[str, object]", payload)
-    values = tuple(entries.get(key) for key in keys)
-    return cast("tuple[bool, ...]", values) if all(isinstance(value, bool) for value in values) else None
-
-
 #: A value as the control DB stores it — arbitrary JSON, so the element type is genuinely
 #: open. Naming it says that once, instead of six bare `object`s a reader has to re-derive.
 type JsonValue = object
@@ -139,141 +107,12 @@ type ScopedSettings = dict[str, dict[str, JsonValue]]
 
 
 @dataclass(frozen=True, slots=True)
-class ModeRow:
-    """One ``teatree_loop_preset`` row — the three booleans that ARE a mode's posture."""
-
-    defers_questions: bool
-    pauses_self_pump: bool
-    presence_sensitive: bool
-
-    def as_payload(self) -> dict[str, bool]:
-        return {
-            "defers_questions": self.defers_questions,
-            "pauses_self_pump": self.pauses_self_pump,
-            "presence_sensitive": self.presence_sensitive,
-        }
-
-    @classmethod
-    def from_payload(cls, payload: object) -> "ModeRow | None":
-        values = _booleans(payload, ("defers_questions", "pauses_self_pump", "presence_sensitive"))
-        return None if values is None else cls(*values)
-
-
-@dataclass(frozen=True, slots=True)
-class OverrideRow:
-    """The one ``teatree_loop_preset_override`` row that governs — newest by ``set_at``.
-
-    ``until`` carries the raw ``DateTimeField`` text; empty means the override holds
-    until it is cleared, which is what a SQL ``NULL`` in that column says.
-    """
-
-    preset_name: str
-    until: str
-
-    def as_payload(self) -> dict[str, str]:
-        return {"preset_name": self.preset_name, "until": self.until}
-
-    @classmethod
-    def from_payload(cls, payload: object) -> "OverrideRow | None":
-        values = _strings(payload, ("preset_name", "until"))
-        return None if values is None else cls(*values)
-
-
-@dataclass(frozen=True, slots=True)
-class ScheduleRow:
-    """One ``teatree_loop_schedule`` row: the key its slots group under, and their zone.
-
-    ``schedule_id`` is the table's opaque join key stringified, because it is a mapping
-    key in the payload — the resolver only ever hands it back to look the slots up.
-    """
-
-    schedule_id: str
-    timezone: str
-
-    def as_payload(self) -> dict[str, str]:
-        return {"schedule_id": self.schedule_id, "timezone": self.timezone}
-
-    @classmethod
-    def from_payload(cls, payload: object) -> "ScheduleRow | None":
-        values = _strings(payload, ("schedule_id", "timezone"))
-        return None if values is None else cls(*values)
-
-
-@dataclass(frozen=True, slots=True)
-class SlotRow:
-    """One ``teatree_loop_schedule_slot`` start point, every column as its raw text.
-
-    Projected verbatim — ``days`` still the ``JSONField``'s JSON text, ``start_time``
-    still the ``TimeField``'s ``HH:MM[:SS]`` — so the weekday and time parsers in
-    :mod:`teatree.config.cold_mode` stay the only things that interpret them, on the
-    projected side exactly as on the database one.
-    """
-
-    days: str
-    start_time: str
-    preset_name: str
-
-    def as_payload(self) -> dict[str, str]:
-        return {"days": self.days, "start_time": self.start_time, "preset_name": self.preset_name}
-
-    @classmethod
-    def from_payload(cls, payload: object) -> "SlotRow | None":
-        values = _strings(payload, ("days", "start_time", "preset_name"))
-        return None if values is None else cls(*values)
-
-
-def _parse_mapping[T](payload: object, parse: Callable[[object], T | None]) -> dict[str, T] | None:
-    """Every entry parsed under a string key, or ``None`` — one bad entry refuses the map."""
-    if not isinstance(payload, dict):
-        return None
-    parsed: dict[str, T] = {}
-    for key, value in cast("Mapping[object, object]", payload).items():
-        entry = parse(value)
-        if not isinstance(key, str) or entry is None:
-            return None
-        parsed[key] = entry
-    return parsed
-
-
-def _parse_slot_list(payload: object) -> tuple[SlotRow, ...] | None:
-    """One schedule's slots, or ``None`` when any entry is the wrong shape."""
-    if not isinstance(payload, list):
-        return None
-    parsed = [SlotRow.from_payload(entry) for entry in cast("list[object]", payload)]
-    if any(slot is None for slot in parsed):
-        return None
-    return cast("tuple[SlotRow, ...]", tuple(parsed))
-
-
-def _parse_override(payload: object) -> tuple[OverrideRow | None, bool]:
-    """The projected override row, and whether its payload was a sound shape at all.
-
-    An ABSENT override and a MALFORMED one are different answers: the first is the
-    ordinary no-override state, the second must refuse the whole file.
-    """
-    if payload is None:
-        return None, True
-    row = OverrideRow.from_payload(payload)
-    return row, row is not None
-
-
-@dataclass(frozen=True, slots=True)
 class HostProjection:
-    """The projected read surface: config settings, loop statuses, the mode tables, one generation.
-
-    The four mode tables are here because the Django-free posture resolver walks them
-    on every hook, and on a host the database they live in cannot be opened at all — so
-    without them every cold hook resolved "unreadable" and the deferring postures the
-    owner had configured stopped being honoured.
-    """
+    """The projected read surface: config settings, loop statuses, one generation."""
 
     generation: int
     settings: ScopedSettings
     loop_state: dict[str, str]
-    modes: dict[str, ModeRow]
-    mode_override: OverrideRow | None
-    mode_schedules: dict[str, ScheduleRow]
-    mode_schedule_slots: dict[str, tuple[SlotRow, ...]]
     source: str
     projected_at: str
     schema_version: int = SCHEMA_VERSION
@@ -284,16 +123,6 @@ class HostProjection:
     def loop_status(self, name: str) -> str | None:
         return self.loop_state.get(name)
 
-    def mode(self, name: str) -> ModeRow | None:
-        return self.modes.get(name)
-
-    def schedule(self, name: str) -> ScheduleRow | None:
-        return self.mode_schedules.get(name)
-
-    def slots(self, schedule_id: str) -> tuple[SlotRow, ...]:
-        """The slots of *schedule_id* — the projected side of ``WHERE schedule_id=?``."""
-        return self.mode_schedule_slots.get(schedule_id, ())
-
     def as_payload(self) -> dict[str, JsonValue]:
         return {
             "schema_version": self.schema_version,
@@ -302,13 +131,6 @@ class HostProjection:
             "projected_at": self.projected_at,
             "settings": self.settings,
             "loop_state": self.loop_state,
-            "modes": {name: mode.as_payload() for name, mode in self.modes.items()},
-            "mode_override": self.mode_override.as_payload() if self.mode_override is not None else None,
-            "mode_schedules": {name: schedule.as_payload() for name, schedule in self.mode_schedules.items()},
-            "mode_schedule_slots": {
-                schedule_id: [slot.as_payload() for slot in slots]
-                for schedule_id, slots in self.mode_schedule_slots.items()
-            },
         }
 
     @classmethod
@@ -316,11 +138,9 @@ class HostProjection:
         """Rebuild from a decoded payload; ``None`` when any field is the wrong shape.
 
         Deliberately total: a malformed field is a reason to refuse the whole file,
-        not to substitute a plausible-looking partial answer. The mode tables are
-        the one exception, and only by ABSENCE: an older publisher emits none of them,
-        so a payload without them rebuilds with an empty mode surface rather than
-        forfeiting the settings and loop statuses it does carry. Present-but-malformed
-        mode fields still refuse the whole payload.
+        not to substitute a plausible-looking partial answer. A schema-2 payload's mode
+        tables are simply ignored — a reader that no longer interprets them must not
+        forfeit the settings and loop statuses the same file carries.
         """
         if not isinstance(payload, dict):
             return None
@@ -329,24 +149,14 @@ class HostProjection:
         settings = fields.get("settings")
         loop_state = fields.get("loop_state")
         schema_version = fields.get("schema_version")
-        modes = _parse_mapping(fields.get("modes", {}), ModeRow.from_payload)
-        schedules = _parse_mapping(fields.get("mode_schedules", {}), ScheduleRow.from_payload)
-        slots = _parse_mapping(fields.get("mode_schedule_slots", {}), _parse_slot_list)
-        override, override_sound = _parse_override(fields.get("mode_override"))
         if not isinstance(generation, int) or isinstance(generation, bool):
             return None
         if not isinstance(schema_version, int) or not isinstance(settings, dict) or not isinstance(loop_state, dict):
-            return None
-        if modes is None or schedules is None or slots is None or not override_sound:
             return None
         return cls(
             generation=generation,
             settings=cast("ScopedSettings", settings),
             loop_state=cast("dict[str, str]", loop_state),
-            modes=modes,
-            mode_override=override,
-            mode_schedules=schedules,
-            mode_schedule_slots=slots,
             source=str(fields.get("source", "")),
             projected_at=str(fields.get("projected_at", "")),
             schema_version=schema_version,
@@ -398,10 +208,6 @@ class ProjectionPublisher:
         try:
             settings = self._read_settings(conn)
             loop_state = {str(name): str(status) for name, status in conn.execute(_LOOP_STATE_SQL)}
-            modes = self._read_modes(conn)
-            override = self._read_override(conn)
-            schedules = self._read_schedules(conn)
-            slots = self._read_slots(conn)
         finally:
             conn.close()
         stored = settings.get(GLOBAL_SCOPE, {}).get(GENERATION_KEY)
@@ -409,10 +215,6 @@ class ProjectionPublisher:
             generation=stored if isinstance(stored, int) and not isinstance(stored, bool) else 0,
             settings=settings,
             loop_state=loop_state,
-            modes=modes,
-            mode_override=override,
-            mode_schedules=schedules,
-            mode_schedule_slots=slots,
             source=str(self.db_path),
             projected_at=datetime.now(tz=UTC).isoformat(),
         )
@@ -440,50 +242,6 @@ class ProjectionPublisher:
                 continue
             settings.setdefault(str(scope), {})[str(key)] = value
         return settings
-
-    @staticmethod
-    def _mode_rows(conn: sqlite3.Connection, sql: str) -> list[tuple[object, ...]]:
-        """The rows of *sql*, or none at all when the table has not been migrated.
-
-        A control plane whose mode tables have not been migrated must still publish the
-        settings the kill-switches read: letting one unreachable table forfeit the whole
-        projection is #3499's failure shape, and an empty mode surface resolves to
-        reachable — the direction the posture reader deliberately fails in anyway.
-        """
-        try:
-            return conn.execute(sql).fetchall()
-        except sqlite3.Error:
-            return []
-
-    @classmethod
-    def _read_modes(cls, conn: sqlite3.Connection) -> dict[str, ModeRow]:
-        return {
-            str(name): ModeRow(
-                defers_questions=bool(defers), pauses_self_pump=bool(pauses), presence_sensitive=bool(sensitive)
-            )
-            for name, defers, pauses, sensitive in cls._mode_rows(conn, _MODE_SQL)
-        }
-
-    @classmethod
-    def _read_override(cls, conn: sqlite3.Connection) -> OverrideRow | None:
-        rows = cls._mode_rows(conn, _MODE_OVERRIDE_SQL)
-        return next((OverrideRow(preset_name=str(name), until=_text(until)) for name, until in rows), None)
-
-    @classmethod
-    def _read_schedules(cls, conn: sqlite3.Connection) -> dict[str, ScheduleRow]:
-        return {
-            str(name): ScheduleRow(schedule_id=str(schedule_id), timezone=_text(zone))
-            for name, schedule_id, zone in cls._mode_rows(conn, _MODE_SCHEDULE_SQL)
-        }
-
-    @classmethod
-    def _read_slots(cls, conn: sqlite3.Connection) -> dict[str, tuple[SlotRow, ...]]:
-        grouped: dict[str, list[SlotRow]] = {}
-        for schedule_id, days, start_time, preset_name in cls._mode_rows(conn, _MODE_SLOT_SQL):
-            grouped.setdefault(str(schedule_id), []).append(
-                SlotRow(days=_text(days), start_time=_text(start_time), preset_name=str(preset_name))
-            )
-        return {schedule_id: tuple(slots) for schedule_id, slots in grouped.items()}
 
     def _write_atomically(self, projection: HostProjection) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -571,18 +329,16 @@ class ProjectionReader:
     def _older_schema_advisory(self, projection: HostProjection) -> str:
         """What to say about a payload this reader accepts but that predates its schema.
 
-        Its settings and loop statuses are current and are served; what an older shape
-        cannot carry is the mode rows, so the posture resolver degrades to the answer it
-        gave before they were projected. Naming that is what makes a not-yet-redeployed
-        publisher visible rather than silent.
+        Its settings and loop statuses are current and are served — an older shape is a
+        superset of what this reader interprets. Naming the version is what makes a
+        not-yet-redeployed publisher visible rather than silent.
         """
         if projection.schema_version >= SCHEMA_VERSION:
             return ""
         return (
             f"teatree: the host projection at {self.target} is schema v{projection.schema_version}: its settings and "
-            f"loop statuses are served, but it carries no mode rows (v{SCHEMA_VERSION} projects them), so the mode "
-            "posture resolves as if the control plane were unreadable. The publisher in the containers has not been "
-            "redeployed yet."
+            f"loop statuses are served (v{SCHEMA_VERSION} is the current shape). The publisher in the containers has "
+            "not been redeployed yet."
         )
 
     def _untrusted(self, staleness: Staleness, detail: str) -> ProjectionRead:

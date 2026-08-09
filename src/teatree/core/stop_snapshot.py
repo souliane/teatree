@@ -152,8 +152,6 @@ def _availability_lines() -> list[str]:
     return [
         "## Mode / schedule",
         f"- mode: {resolved.name} (source: {resolved.source})",
-        f"- defers questions: {resolved.defers_questions}",
-        f"- pauses self-pump: {resolved.pauses_self_pump}",
         f"- schedule: {schedule}",
     ]
 

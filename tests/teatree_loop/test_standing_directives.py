@@ -22,6 +22,7 @@ from teatree.loop.standing_directives import (
     MAX_DIRECTIVE_CHARS,
     SCOPE_ATTENDED,
     SCOPE_ATTENDED_SINGLETON,
+    SELF_PUMP_LOOP,
     STANDING_DIRECTIVES,
     StandingDirective,
     StandingDirectivePayload,
@@ -280,11 +281,12 @@ _DEGRADED_STORE = "no such table: core_modeoverride"
 
 
 class TestTheSelfPumpBrake(TestCase):
-    """A self-waking directive IS a self-pump, so the away mode brakes it."""
+    """A self-waking directive IS a self-pump, so a mode masking that loop off brakes it."""
 
     @staticmethod
     def _resolved(*, pauses: bool, source: str = "override") -> ResolvedMode:
-        mode = Mode(name="holiday" if pauses else "reachable", defers_questions=pauses, pauses_self_pump=pauses)
+        entries = {SELF_PUMP_LOOP: False} if pauses else {SELF_PUMP_LOOP: True}
+        mode = Mode(name="off" if pauses else "present", entries=entries)
         return ResolvedMode(mode=mode, source=source, until=None, reason="test")
 
     def test_a_paused_self_pump_drops_the_waking_slots_and_keeps_the_zero_turn_rule(self) -> None:
@@ -312,7 +314,7 @@ class TestTheSelfPumpBrake(TestCase):
         # #4196: the L3/L2 layer cannot see the live-presence upgrade, so braking
         # on it suppresses the rule at an away slot the owner is typing into.
         away_slot = ActivePreset(
-            preset=Mode(name="holiday", defers_questions=True, pauses_self_pump=True),
+            preset=Mode(name="off", entries={SELF_PUMP_LOOP: False}),
             layer="schedule",
             reason="test",
             until=None,

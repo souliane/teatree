@@ -148,7 +148,7 @@ SETTING_HELP: dict[str, str] = {
     "loop_cadence_seconds": "default seconds between ticks of a loop that declares none",
     "loop_runner_enabled": "run the worker that drives the loop ticks",
     "loops": "per-loop overrides, keyed by loop name",
-    "low_power_auto_engage": "switch to the low-power preset by itself when the box is under pressure",
+    "low_power_auto_engage": "switch to the low-token preset by itself when the box is under pressure",
     "low_power_preset_name": "preset engaged when low power is on",
     "main_clone_guard_gate_enabled": "refuse an edit to the main clone's working tree",
     "max_concurrent_local_stacks": "how many tickets may hold a running local stack at once",

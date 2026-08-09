@@ -1445,10 +1445,6 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict |
         # Side-effect-only mirror — always returns ``False`` (posts the
         # AskUserQuestion to Slack, never denies).
         router.handle_mirror_question_to_slack,
-        # Availability router — its deny is a routing conversion of an
-        # AskUserQuestion into a DeferredQuestion, not a content/enforcement
-        # gate with a must-deny corpus payload.
-        router.handle_route_away_mode_question,
         # Responsiveness nudge — advisory only (prints additionalContext once a
         # turn crosses the tool-call budget), returns ``None``, never denies.
         router.handle_orchestrator_turn_budget_nudge,

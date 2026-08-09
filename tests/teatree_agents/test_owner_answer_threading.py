@@ -45,19 +45,16 @@ class TestOwnerAnswerThreading(TestCase):
         assert kwargs["ts"] == owner_ts
         assert kwargs["channel"] == channel
 
-    def test_answer_posts_under_the_merged_offline_mode(self) -> None:
+    def test_answer_posts_under_the_all_off_mode(self) -> None:
         # #61 invariant: the merge must not re-route owner replies through the
-        # merged mode's defer path. Under a REAL offline override (the merged
-        # holiday-away mode: defers_questions=True), the owner reply still sends
+        # deferral path. Under a REAL `off` override the owner reply still sends
         # immediately and is NEVER parked as a DeferredQuestion.
         channel, owner_ts = "D0OWNER", "1700000000.000300"
         task = self._owner_dm_task(channel=channel, slack_ts=owner_ts)
         PendingChatInjection.objects.create(overlay="acme", channel=channel, slack_ts=owner_ts, text="hi")
-        Mode.objects.update_or_create(
-            name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
-        )
-        set_mode_override("offline")
-        assert ModeOverride.objects.current().preset_name == "offline"
+        Mode.objects.update_or_create(name="off", defaults={"entries": {}})
+        set_mode_override("off")
+        assert ModeOverride.objects.current().preset_name == "off"
         backend = MagicMock()
         backend.post_reply.return_value = {"ok": True, "ts": "1700000000.000400"}
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend):

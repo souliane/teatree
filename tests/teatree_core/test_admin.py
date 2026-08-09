@@ -299,11 +299,11 @@ class TestPresetScheduleAdminChangelistsLoad(django.test.TestCase):
         assert self.client.get(url).status_code == 200
 
     def test_loop_preset_changelist_loads(self) -> None:
-        Mode.objects.create(name="heads-down", entries={"review": False})
+        Mode.objects.create(name="maintenance", entries={"review": False})
         self._assert_changelist_loads(Mode)
 
     def test_loop_preset_override_changelist_loads(self) -> None:
-        ModeOverride.objects.set_override("heads-down", reason="deep work")
+        ModeOverride.objects.set_override("maintenance", reason="deep work")
         self._assert_changelist_loads(ModeOverride)
 
     def test_loop_schedule_changelist_loads(self) -> None:
@@ -318,7 +318,7 @@ class TestPresetScheduleAdminChangelistsLoad(django.test.TestCase):
 
     def test_loop_schedule_change_form_shows_slot_inline(self) -> None:
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
-        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="engaged")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(8, 0), preset_name="present")
         url = reverse("admin:core_modeschedule_change", args=[schedule.pk])
         response = self.client.get(url)
         assert response.status_code == 200
@@ -368,7 +368,7 @@ class TestShippedRowsRouteDeletionToTheAuditedSeam(django.test.TestCase):
         assert admin.site._registry[Loop].has_delete_permission(request, loop) is False
 
     def test_a_shipped_preset_and_schedule_route_the_same_way(self) -> None:
-        preset, _ = Mode.objects.get_or_create(name="engaged", defaults={"entries": {}, "description": "shipped"})
+        preset, _ = Mode.objects.get_or_create(name="present", defaults={"entries": {}, "description": "shipped"})
         schedule, _ = ModeSchedule.objects.get_or_create(name="standard", defaults={"description": "shipped"})
         request = self._request()
 

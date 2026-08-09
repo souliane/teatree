@@ -46,33 +46,33 @@ class PresetEntryTriStateTestCase(TestCase):
 
     def setUp(self) -> None:
         _loop("review")
-        self.preset = _preset("engaged", {"review": True})
+        self.preset = _preset("present", {"review": True})
 
     def test_setting_off_stores_false(self) -> None:
-        set_preset_entry("engaged", "review", "off")
-        assert Mode.objects.by_name("engaged").entries == {"review": False}
+        set_preset_entry("present", "review", "off")
+        assert Mode.objects.by_name("present").entries == {"review": False}
 
     def test_setting_on_stores_true(self) -> None:
-        set_preset_entry("engaged", "review", "off")
-        set_preset_entry("engaged", "review", "on")
-        assert Mode.objects.by_name("engaged").entries == {"review": True}
+        set_preset_entry("present", "review", "off")
+        set_preset_entry("present", "review", "on")
+        assert Mode.objects.by_name("present").entries == {"review": True}
 
     def test_setting_inherit_removes_the_key_entirely(self) -> None:
         # The bug this pins: "no opinion" implemented as False would mask the loop
         # instead of falling through to Loop.enabled.
-        set_preset_entry("engaged", "review", "inherit")
-        entries = Mode.objects.by_name("engaged").entries
+        set_preset_entry("present", "review", "inherit")
+        entries = Mode.objects.by_name("present").entries
         assert "review" not in entries
         assert entries.get("review") is not False
 
     def test_inherit_leaves_the_tri_state_read_as_none(self) -> None:
-        set_preset_entry("engaged", "review", "inherit")
-        assert Mode.objects.by_name("engaged").state_for("review") is None
+        set_preset_entry("present", "review", "inherit")
+        assert Mode.objects.by_name("present").state_for("review") is None
 
     def test_unknown_value_is_refused_and_does_not_persist(self) -> None:
         with pytest.raises(PresetEditError):
-            set_preset_entry("engaged", "review", "maybe")
-        assert Mode.objects.by_name("engaged").entries == {"review": True}
+            set_preset_entry("present", "review", "maybe")
+        assert Mode.objects.by_name("present").entries == {"review": True}
 
     def test_unknown_preset_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
@@ -80,7 +80,7 @@ class PresetEntryTriStateTestCase(TestCase):
 
     def test_unknown_loop_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            set_preset_entry("engaged", "ghost", "on")
+            set_preset_entry("present", "ghost", "on")
 
 
 class PresetEntryResolverReflectionTestCase(TestCase):
@@ -88,8 +88,8 @@ class PresetEntryResolverReflectionTestCase(TestCase):
 
     def setUp(self) -> None:
         _loop("review", enabled=False)
-        _preset("engaged", {})
-        ModeOverride.objects.set_override("engaged")
+        _preset("present", {})
+        ModeOverride.objects.set_override("present")
         self.addCleanup(ModeOverride.objects.clear)
 
     def _verdict(self, name: str) -> object:
@@ -101,14 +101,14 @@ class PresetEntryResolverReflectionTestCase(TestCase):
         assert verdict.admitted is False
 
     def test_forcing_on_flips_the_verdict_and_the_deciding_layer(self) -> None:
-        set_preset_entry("engaged", "review", "on")
+        set_preset_entry("present", "review", "on")
         verdict = self._verdict("review")
         assert verdict.admitted is True
         assert verdict.layer == "override"
 
     def test_returning_to_inherit_restores_the_base_layer(self) -> None:
-        set_preset_entry("engaged", "review", "on")
-        set_preset_entry("engaged", "review", "inherit")
+        set_preset_entry("present", "review", "on")
+        set_preset_entry("present", "review", "inherit")
         verdict = self._verdict("review")
         assert verdict.admitted is False
         assert verdict.layer == "base"
@@ -165,18 +165,18 @@ class ActiveScheduleTestCase(TestCase):
 class ScheduleSlotEditingTestCase(TestCase):
     def setUp(self) -> None:
         self.schedule = _schedule("standard")
-        _preset("engaged", {})
+        _preset("present", {})
 
     def test_add_slot_persists_days_time_and_preset(self) -> None:
-        slot = upsert_schedule_slot("standard", days=[0, 1, 2], start_time="08:30", preset_name="engaged")
+        slot = upsert_schedule_slot("standard", days=[0, 1, 2], start_time="08:30", preset_name="present")
         stored = ModeScheduleSlot.objects.get(pk=slot.pk)
         assert stored.weekdays == {0, 1, 2}
         assert stored.start_time.strftime("%H:%M") == "08:30"
-        assert stored.preset_name == "engaged"
+        assert stored.preset_name == "present"
 
     def test_edit_slot_updates_in_place(self) -> None:
-        slot = upsert_schedule_slot("standard", days=[0], start_time="08:00", preset_name="engaged")
-        upsert_schedule_slot("standard", slot_id=slot.pk, days=[5, 6], start_time="20:00", preset_name="engaged")
+        slot = upsert_schedule_slot("standard", days=[0], start_time="08:00", preset_name="present")
+        upsert_schedule_slot("standard", slot_id=slot.pk, days=[5, 6], start_time="20:00", preset_name="present")
         assert ModeScheduleSlot.objects.filter(schedule=self.schedule).count() == 1
         assert ModeScheduleSlot.objects.get(pk=slot.pk).weekdays == {5, 6}
 
@@ -187,20 +187,20 @@ class ScheduleSlotEditingTestCase(TestCase):
 
     def test_slot_with_no_days_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            upsert_schedule_slot("standard", days=[], start_time="08:00", preset_name="engaged")
+            upsert_schedule_slot("standard", days=[], start_time="08:00", preset_name="present")
 
     def test_slot_with_a_bad_time_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            upsert_schedule_slot("standard", days=[0], start_time="25:99", preset_name="engaged")
+            upsert_schedule_slot("standard", days=[0], start_time="25:99", preset_name="present")
 
     def test_delete_slot_removes_it(self) -> None:
-        slot = upsert_schedule_slot("standard", days=[0], start_time="08:00", preset_name="engaged")
+        slot = upsert_schedule_slot("standard", days=[0], start_time="08:00", preset_name="present")
         delete_schedule_slot("standard", slot.pk)
         assert ModeScheduleSlot.objects.filter(schedule=self.schedule).count() == 0
 
     def test_delete_slot_from_the_wrong_schedule_is_refused(self) -> None:
         other = _schedule("holiday")
-        slot = upsert_schedule_slot("standard", days=[0], start_time="08:00", preset_name="engaged")
+        slot = upsert_schedule_slot("standard", days=[0], start_time="08:00", preset_name="present")
         with pytest.raises(PresetEditError):
             delete_schedule_slot(other.name, slot.pk)
         assert ModeScheduleSlot.objects.filter(schedule=self.schedule).count() == 1
@@ -228,23 +228,23 @@ class LoadBearingRefusalTestCase(TestCase):
 
         message = str(exc.value)
         assert "idle_stack_reaper" in message
-        assert "low-power" in message
+        assert "low-token" in message
 
     def test_the_low_power_mode_may_quiet_the_tier(self) -> None:
-        _preset("low-power", {})
+        _preset("low-token", {})
 
-        set_preset_entry("low-power", "resource_pressure", "off")
+        set_preset_entry("low-token", "resource_pressure", "off")
 
-        assert Mode.objects.get(name="low-power").entries == {"resource_pressure": False}
+        assert Mode.objects.get(name="low-token").entries == {"resource_pressure": False}
 
     def test_the_exception_follows_the_setting_not_the_shipped_name(self) -> None:
         _preset("token-guard", {})
         ConfigSetting.objects.set_value(LOW_POWER_PRESET_SETTING, "token-guard")
-        _preset("low-power", {})
+        _preset("low-token", {})
 
         set_preset_entry("token-guard", "resource_pressure", "off")
         with pytest.raises(PresetEditError):
-            set_preset_entry("low-power", "resource_pressure", "off")
+            set_preset_entry("low-token", "resource_pressure", "off")
 
         assert Mode.objects.get(name="token-guard").entries == {"resource_pressure": False}
 
@@ -324,9 +324,9 @@ class BackupWithoutReclaimRefusalTestCase(TestCase):
 
     def test_the_low_power_escape_is_not_exempt_from_this_shape(self) -> None:
         """Low-power escapes the load-bearing refusal only — it never masks the reclaim pair off."""
-        _preset("low-power", {})
+        _preset("low-token", {})
 
         with pytest.raises(PresetEditError) as exc:
-            set_preset_entry("low-power", "db_backup", "on")
+            set_preset_entry("low-token", "db_backup", "on")
 
         assert "db_backup" in str(exc.value)

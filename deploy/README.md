@@ -405,7 +405,7 @@ authoritative planes:
   colleague-facing `review` loop stays off here under any mode. Idempotent.
 - **OWNER-INTAKE loops are never forced off** (`t3 loop intake-loops` —
   `directive_loop` / `dispatch` / `inbox`). They interpret the owner's captured
-  directives and deliver deferred owner questions; `autonomous_away` means the
+  directives and deliver deferred owner questions; an away mode means the
   human is unreachable *now*, so that intent must QUEUE for later, not be dropped
   unread. Any intake loop listed in `TEATREE_DISABLED_LOOPS` is pruned (with a
   warning) before the DISABLED set is applied, so a redeploy can never re-mask it.

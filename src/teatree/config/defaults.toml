@@ -44,7 +44,7 @@
 # the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
 # delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
 # The mirror rule is the LOAD-BEARING tier (`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`):
-# no mask may quiet it (the low-power mode excepted), and none may keep `db_backup` writing
+# no mask may quiet it (the low-token mode excepted), and none may keep `db_backup` writing
 # once every reclaim loop is quiet — that shape can only ever consume disk.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
@@ -332,7 +332,7 @@ test_worker_ram_gb = 1.25 # float — RAM one pytest worker is sized at when the
 [teatree.Registries."Term scanning, agent tables & cold reads"]
 active_loop_schedule = "" # str — name of the weekly schedule deciding when the autonomous loops may run
 danger_gate_fail_open = false # bool — let the danger gate pass when it cannot evaluate, instead of refusing
-low_power_auto_engage = false # bool — switch to the low-power preset by itself when the box is under pressure
+low_power_auto_engage = false # bool — switch to the low-token preset by itself when the box is under pressure
 low_power_preset_name = "" # str — preset engaged when low power is on
 
 [teatree.mr_reminder] # table — when and how often a stale review request is chased
@@ -509,13 +509,10 @@ colleague_facing = false
 default_enabled = false
 description = "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF."
 
-[modes.engaged]
-defers_questions = false
-pauses_self_pump = false
-presence_sensitive = true
+[modes.present]
 description = "Full working-hours mode: deliver, interact, keep improvement loops warm."
 
-[modes.engaged.entries]
+[modes.present.entries]
 inbox = true
 dispatch = true
 tickets = true
@@ -534,38 +531,10 @@ idle_stack_reaper = true
 local_stack_queue = true
 resource_pressure = true
 
-[modes.heads-down]
-defers_questions = false
-pauses_self_pump = false
-presence_sensitive = true
-description = "Deep work: deliver without touching colleagues (review/followup off)."
+[modes.away]
+description = "The factory keeps taking new work while the owner is unreachable; the colleague-facing loop is off."
 
-[modes.heads-down.entries]
-inbox = true
-dispatch = true
-tickets = true
-ship = true
-dream = true
-snapshot_warmer = true
-housekeeping = true
-idle_stack_reaper = true
-local_stack_queue = true
-resource_pressure = true
-review = false
-followup = false
-audit = false
-news = false
-arch_review = false
-eval_local = false
-dogfood = false
-
-[modes.unattended]
-defers_questions = true
-pauses_self_pump = false
-presence_sensitive = true
-description = "The factory keeps producing while the human is unreachable; colleague-facing loops off."
-
-[modes.unattended.entries]
+[modes.away.entries]
 inbox = true
 dispatch = true
 tickets = true
@@ -583,14 +552,13 @@ resource_pressure = true
 followup = false
 
 [modes.maintenance]
-defers_questions = true
-pauses_self_pump = false
-presence_sensitive = true
-description = "Nights: self-maintenance + self-improvement only, no ticket/colleague/delivery work."
+description = "Drain-only (doubles as the holiday preset): finish and merge what is in flight, run the consolidation loops, take no new intake."
 
 [modes.maintenance.entries]
 inbox = true
 dispatch = true
+ship = true
+review = true
 dream = true
 eval_local = true
 dogfood = true
@@ -602,19 +570,14 @@ idle_stack_reaper = true
 local_stack_queue = true
 resource_pressure = true
 tickets = false
-ship = false
-review = false
+issue_implementer = false
 followup = false
 audit = false
-issue_implementer = false
 
-[modes.low-power]
-defers_questions = true
-pauses_self_pump = false
-presence_sensitive = true
+[modes.low-token]
 description = "Token-budget guard: only deterministic model-free local loops stay up."
 
-[modes.low-power.entries]
+[modes.low-token.entries]
 inbox = true
 idle_stack_reaper = true
 local_stack_queue = true
@@ -644,9 +607,6 @@ ci_eval_heal = false
 memory_skim = false
 
 [modes.off]
-defers_questions = false
-pauses_self_pump = false
-presence_sensitive = true
 description = "Every WORK loop off (the reversible 'calendar says nothing runs' mode); the load-bearing tier stays up so the box can still relieve itself."
 
 [modes.off.entries]
@@ -678,65 +638,30 @@ directive_loop = false
 ci_eval_heal = false
 memory_skim = false
 
-[modes.offline]
-defers_questions = true
-pauses_self_pump = true
-presence_sensitive = false
-description = "Holiday: every WORK loop off, questions defer AND the self-pump pauses; the load-bearing tier stays up."
-
-[modes.offline.entries]
-inbox = true
-idle_stack_reaper = true
-local_stack_queue = true
-resource_pressure = true
-housekeeping = true
-snapshot_warmer = false
-dispatch = false
-tickets = false
-review = false
-ship = false
-issue_disposition = false
-audit = false
-followup = false
-issue_implementer = false
-triage_assessor = false
-dm_sweep = false
-arch_review = false
-dogfood = false
-eval_local = false
-db_backup = false
-backlog_sweep = false
-news = false
-dream = false
-outer_loop = false
-directive_loop = false
-ci_eval_heal = false
-memory_skim = false
-
 [schedules.standard]
 timezone = "Europe/Vienna"
-description = "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → engaged (attended); all other times (weekday evenings/nights + weekends) → unattended (autonomous-away)."
+description = "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → present (attended); all other times (weekday evenings/nights + weekends) → away (autonomous, colleague-facing loop off)."
 
 [[schedules.standard.slots]]
 days = [0, 1, 2, 3, 4]
 start_time = 09:00:00
-preset_name = "engaged"
+preset_name = "present"
 
 [[schedules.standard.slots]]
 days = [0, 1, 2, 3, 4]
 start_time = 16:00:00
-preset_name = "unattended"
+preset_name = "away"
 
 [[schedules.standard.slots]]
 days = [5, 6]
 start_time = 00:00:00
-preset_name = "unattended"
+preset_name = "away"
 
-[schedules.always-unattended]
+[schedules.always-away]
 timezone = ""
-description = "The holiday calendar: unattended all week."
+description = "The holiday calendar: away all week."
 
-[[schedules.always-unattended.slots]]
+[[schedules.always-away.slots]]
 days = [0, 1, 2, 3, 4, 5, 6]
 start_time = 00:00:00
-preset_name = "unattended"
+preset_name = "away"

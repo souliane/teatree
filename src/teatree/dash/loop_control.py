@@ -15,8 +15,9 @@ import logging
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
-from teatree.core.mode_resolution import POSTURE_TOKENS, posture_label, resolve_active_mode
+from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models.loop import Loop
+from teatree.core.models.loop_preset import Mode
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
 from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts
@@ -33,11 +34,9 @@ logger = logging.getLogger(__name__)
 LOOP_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "disable", "enable"})
 
 
-# Posture switches the header offers. Each is resolved to the merged Mode
-# carrying that intrinsic posture BY ROW (#3559) — never by a hard-coded mode name,
-# so an operator renaming a seeded mode cannot break the switch. ``auto`` clears the
-# override so the schedule / default decides again.
-POSTURE_ACTIONS: frozenset[str] = frozenset({*POSTURE_TOKENS, "auto"})
+#: Clears the override so the schedule / default decides again — the one switch
+#: value that is not a ``Mode`` row name.
+MODE_SWITCH_AUTO = "auto"
 
 # The exact phrase the operator must type to flip the master fail-open switch —
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
@@ -80,7 +79,8 @@ class LoopControlView:
     infra_slots: tuple[LoopStatusEntry, ...]
     mode_name: str
     mode_source: str
-    mode_posture: str
+    #: Every defined mode, so the header offers the live set rather than a frozen list.
+    mode_names: tuple[str, ...]
     gate_fail_open: bool
     runner_enabled: bool
     #: The global cadence grid, stated ONCE as the table's legend (#4079). It is the same for
@@ -100,7 +100,7 @@ def build_loop_control() -> LoopControlView:
         infra_slots=_infra_slots(),
         mode_name=resolved.name,
         mode_source=resolved.source,
-        mode_posture=posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump),
+        mode_names=tuple(Mode.objects.values_list("name", flat=True)),
         gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
         # Derived from the rows already loaded above rather than re-queried: the page's query

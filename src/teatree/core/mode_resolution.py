@@ -1,34 +1,21 @@
 """The unified operating-mode resolver — one reader for the merged Mode (#61).
 
-Availability and loop presets (#3159) were two parallel override→schedule→default
-machines over different substrate. They are now ONE: a
-:class:`~teatree.core.models.Mode` (the merged *Mode*) carries both the loop mask AND
-the three intrinsic availability booleans, and this module resolves the single active
-mode every Django consumer reads. The bare hooks read the SAME rows Django-free
-through :func:`teatree.config.cold_mode.resolve_cold_posture` (#3826 deleted the
-mirror file that used to stand between them and drift a week out of date).
+A :class:`~teatree.core.models.Mode` is a pure per-loop on/off table, and this module
+resolves the single active one every consumer reads.
 
 The precedence chain (design §2.3) reuses the DB override/schedule resolver that
 already backs presets — :func:`teatree.loop.preset_resolution.resolve_active_preset`
-(L3 manual :class:`ModeOverride` row → L2 active-schedule slot) — and adds
-the two pieces availability contributed:
+(L3 manual :class:`ModeOverride` row → L2 active-schedule slot) — and adds two layers:
 
 *   **L0 default** — the configured ``default_mode`` ``ConfigSetting`` (default
-    ``engaged``) when no override / schedule governs, replacing availability's
-    ``present``-when-no-windows default.
-*   **presence-sensitivity upgrade** — a fresh keystroke (within
-    :data:`teatree.live_presence.PRESENCE_FRESHNESS`) upgrades an away-class
-    mode reached *by schedule / default* to the ``presence_upgrade_mode`` (default
-    ``engaged``). Upgrade-only; never downgrades; never overrides a manual override.
+    ``present``) when no override / schedule governs.
+*   **presence upgrade** — a fresh keystroke (within
+    :data:`teatree.live_presence.PRESENCE_FRESHNESS`) upgrades a mode reached *by
+    schedule / default* to the ``presence_upgrade_mode`` (default ``present``).
+    Upgrade-only; never downgrades; never overrides a manual override.
 
-The returned :class:`ResolvedMode` satisfies every old surface at once: the
-availability ``.defers_questions`` / ``.pauses_self_pump`` predicates AND the
-preset ``.state_for`` per-loop opinion — so a consumer swaps its import and reads
-one object.
-
-Fail-open: any resolution error degrades to a safe present-class default mode with
-a WARNING (mirroring both old resolvers), so a broken mode config can never brick
-the loop fleet or silently mute the user.
+Fail-open: any resolution error degrades to a safe default mode with a WARNING, so a
+broken mode config can never brick the loop fleet.
 """
 
 import datetime as dt
@@ -47,39 +34,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The L0 default mode when no override / schedule governs (design §2.3). Replaces
-# availability's "present when no windows" default — a fresh box with no schedule
-# resolves ``engaged`` (present-class), so it is never silently muted.
+# The L0 default mode when no override / schedule governs (design §2.3): a fresh box
+# with no schedule resolves ``present``, so no loop is silently masked off.
 DEFAULT_MODE_SETTING = "default_mode"
 #: Used only when the setting is unset AND no row of that name exists — the
-#: synthesized present-class fallback. Every other consumer resolves by row.
-FALLBACK_DEFAULT_MODE = "engaged"
+#: synthesized fallback. Every other consumer resolves by row.
+FALLBACK_DEFAULT_MODE = "present"
 
-# The present-class mode a live keystroke upgrades a schedule/default away-class
-# mode to (design §3.3 / owner decision B). Re-pointable; defaults ``engaged``.
+# The mode a live keystroke upgrades a schedule/default mode to (design §3.3 / owner
+# decision B). Re-pointable; defaults ``present``.
 PRESENCE_UPGRADE_SETTING = "presence_upgrade_mode"
-FALLBACK_UPGRADE_MODE = "engaged"
+FALLBACK_UPGRADE_MODE = "present"
 
-#: The dash switch's posture vocabulary: a UI action token as the intrinsic posture
-#: ``(defers_questions, pauses_self_pump)`` it means. Each token resolves to the mode
-#: carrying that posture BY ROW (:func:`mode_name_for_posture`), never by a hard-coded
-#: mode name — so an operator renaming ``offline`` cannot break the switch. An INPUT
-#: vocabulary only: nothing here is ever persisted or read back as state.
-POSTURE_TOKENS: dict[str, tuple[bool, bool]] = {
-    "reachable": (False, False),
-    "defer-questions": (True, False),
-    "pause-everything": (True, True),
-}
+#: A keystroke beats the schedule's GUESS, never the operator's own deliberate override —
+#: which is how `off` / `low-token` are pinned against a stray keystroke.
+_UPGRADABLE_SOURCES = frozenset({"schedule", "default"})
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedMode:
-    """The active mode plus the layer that decided it and when its tenure ends.
-
-    Shaped so BOTH old surfaces are satisfied by one object: availability's
-    ``.defers_questions`` / ``.pauses_self_pump`` predicates and the preset's
-    ``.state_for`` per-loop opinion / ``.until`` boundary.
-    """
+    """The active mode plus the layer that decided it and when its tenure ends."""
 
     mode: "Mode"
     source: str  # "override" | "schedule" | "live" | "default"
@@ -104,16 +78,6 @@ class ResolvedMode:
     def name(self) -> str:
         return self.mode.name
 
-    @property
-    def defers_questions(self) -> bool:
-        """``AskUserQuestion`` defers to the durable backlog (away + autonomous-away)."""
-        return bool(self.mode.defers_questions)
-
-    @property
-    def pauses_self_pump(self) -> bool:
-        """The Stop self-pump is suppressed — holiday-away only."""
-        return bool(self.mode.pauses_self_pump)
-
     def state_for(self, loop_name: str) -> bool | None:
         """The tri-state per-loop opinion of the active mode's loop mask."""
         return self.mode.state_for(loop_name)
@@ -124,8 +88,8 @@ def resolve_active_mode(now: dt.datetime | None = None) -> ResolvedMode:
     """The single active operating mode at *now* (design §2.3).
 
     L3 manual override → L2 active-schedule slot → L0 configured default, then the
-    presence-sensitivity upgrade. Fail-open to a synthesized present-class default
-    on any error, so a consumer never crashes or silently mutes on a broken config.
+    presence upgrade. Fail-open to a synthesized default on any error, so a consumer
+    never crashes on a broken config.
     """
     moment = now or timezone.now()
     try:
@@ -149,21 +113,27 @@ def _resolve_active_mode(now: dt.datetime) -> ResolvedMode:
 
 
 def _apply_presence_upgrade(resolved: ResolvedMode, now: dt.datetime) -> ResolvedMode:
-    """Upgrade a schedule/default away-class mode to the present-class mode on a live keystroke.
+    """Upgrade a schedule/default mode to the ``presence_upgrade_mode`` on a live keystroke.
 
-    Only a mode reached by ``schedule`` / ``default`` that is ``presence_sensitive``
-    AND ``defers_questions`` is a candidate — a manual override (source
-    ``override``) is authoritative and never upgraded. A fresh keystroke within the
-    presence-freshness window is direct evidence the user is at the keyboard now, so
-    it beats the schedule's heuristic guess (the #58-era live-presence rule).
+    Only a mode reached by ``schedule`` / ``default`` that is not ALREADY the upgrade
+    target is a candidate — a manual override (source ``override``) is authoritative
+    and never upgraded, which is what keeps the token-budget escape from being undone
+    by a keystroke. A fresh keystroke within the presence-freshness window is direct
+    evidence the user is at the keyboard now, so it beats the schedule's heuristic
+    guess (the #58-era live-presence rule).
 
     Either way the mode carries its :attr:`~ResolvedMode.presence_alternate` — the side of
     the flip it is NOT on — so a reader that must survive the flip can close over both.
     This is the ONLY producer of that field.
     """
-    if not _is_upgradable(resolved):
+    if resolved.source not in _UPGRADABLE_SOURCES:
         return resolved
-    upgrade = _mode_by_name(_presence_upgrade_mode_name()) or _synthetic_default_mode()
+    # Read the target's NAME once and reuse it for both the precondition and the lookup:
+    # this runs on every resolve, so a second settings read would be a per-tick query.
+    upgrade_name = _presence_upgrade_mode_name()
+    if resolved.name == upgrade_name:
+        return resolved
+    upgrade = _mode_by_name(upgrade_name) or _synthetic_default_mode()
     if not _fresh_keystroke(now):
         return replace(resolved, presence_alternate=upgrade)
     return ResolvedMode(
@@ -172,15 +142,6 @@ def _apply_presence_upgrade(resolved: ResolvedMode, now: dt.datetime) -> Resolve
         until=None,
         reason=f"live keystroke upgraded {resolved.name}",
         presence_alternate=resolved.mode,
-    )
-
-
-def _is_upgradable(resolved: ResolvedMode) -> bool:
-    """Whether a keystroke could move this mode at all — the upgrade's own precondition."""
-    return (
-        resolved.source in {"schedule", "default"}
-        and bool(resolved.mode.presence_sensitive)
-        and bool(resolved.mode.defers_questions)
     )
 
 
@@ -221,114 +182,53 @@ def _mode_by_name(name: str) -> "Mode | None":
     return _mode_model().objects.by_name(name)
 
 
-def mode_name_for_posture(token: str) -> str:
-    """The name of the mode row carrying *token*'s posture, resolved by row not by literal.
-
-    Raises :class:`LookupError` for an unknown token or when no seeded mode carries
-    that posture — refusing to write an override naming a mode that does not exist,
-    rather than leaving a dangling name that silently falls open to base config.
-    """
-    posture = POSTURE_TOKENS.get(token)
-    if posture is None:
-        msg = f"unknown posture token {token!r}; use {'/'.join(POSTURE_TOKENS)}"
-        raise LookupError(msg)
-    defers, pauses = posture
-    mode = _mode_model().objects.by_posture(defers_questions=defers, pauses_self_pump=pauses)
-    if mode is None:
-        msg = f"no mode carries the {token!r} posture — run `t3 setup` to seed the defaults"
-        raise LookupError(msg)
-    return mode.name
-
-
 def set_mode_override(
     name: str,
     *,
     until: dt.datetime | None = None,
     reason: str = "",
-    user_id: str = "",
-    overlay: str = "",
 ) -> None:
-    """Set the manual mode override to *name*, draining the backlog on a return to reachable.
+    """Set the manual mode override to *name* — the single L3 write chokepoint.
 
-    The single L3 override write chokepoint every surface routes through — the
-    ``t3 loop preset use`` CLI and the dash switch. It sets the DB ``ModeOverride``
-    row, which is the ONE source of truth: the Django consumers resolve it through
-    :func:`resolve_active_mode` and the bare hooks cold-read the same row through
-    :func:`teatree.config.cold_mode.resolve_cold_posture` (#3826 deleted the mirror
-    file that used to sit between them and drift). When the switch makes the resolved
-    mode stop deferring (``defers_questions`` T→F, e.g. ``offline``→``engaged``), the
-    deferred-question backlog auto-drains to the user's Slack DM. Fail-open: a drain
-    failure never blocks the override write.
+    Every surface routes through here (the ``t3 loop preset use`` CLI and the dash
+    switch). It sets the DB ``ModeOverride`` row, which is the ONE source of truth
+    every consumer resolves through :func:`resolve_active_mode`.
+
+    Raises :class:`LookupError` when no ``Mode`` row carries *name*, refusing to write
+    an override that would silently fall open to base config.
     """
     from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    before = resolve_active_mode().defers_questions
+    if _mode_by_name(name) is None:
+        msg = f"unknown mode {name!r} — run `t3 loop preset list` for the defined modes"
+        raise LookupError(msg)
     ModeOverride.objects.set_override(name, until=until, reason=reason)
-    _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
 
 
-def clear_mode_override(*, user_id: str = "", overlay: str = "") -> bool:
-    """Clear the manual mode override; drain the backlog if that returns to reachable."""
+def clear_mode_override() -> bool:
+    """Clear the manual mode override so the schedule / default decides again."""
     from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    before = resolve_active_mode().defers_questions
-    cleared = ModeOverride.objects.clear()
-    _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
-    return cleared
-
-
-def posture_label(*, defers: bool, pauses: bool) -> str:
-    """A human-readable name for the mode's posture — DISPLAY ONLY (#3826).
-
-    Derived from the two booleans on every read; never stored, never an input, never
-    an authority. The three legacy availability tokens it replaces
-    (``present`` / ``autonomous_away`` / ``away``) were persisted and read back, which
-    is how a stale serialization outlived the row it mirrored.
-    """
-    if not defers:
-        return "reachable"
-    return "unreachable (pump paused)" if pauses else "unreachable (factory running)"
-
-
-def _drain_if_returned(*, before_defers: bool, user_id: str, overlay: str) -> None:
-    """Fire the deferred-question drain when the resolved mode flips defers T→F (fail-open)."""
-    if not before_defers or resolve_active_mode().defers_questions:
-        return
-    from teatree.core.notify_question_drains import drain_deferred_questions  # noqa: PLC0415 — deferred: cycle-safe
-
-    try:
-        drain_deferred_questions(user_id=user_id, overlay=overlay)
-    except Exception as exc:  # noqa: BLE001 — drain is best-effort; never block the mode flip
-        logger.warning("mode return→reachable auto-drain failed: %s", exc)
+    return ModeOverride.objects.clear()
 
 
 def _synthetic_default_mode() -> "Mode":
-    """An UNSAVED present-class mode: no loop opinion (inherit base), never defers.
+    """An UNSAVED mode with no loop opinion — the fail-open default.
 
-    The fail-open default when the configured default mode row is missing (a fresh
-    DB before seeding, a deleted mode). Empty ``entries`` means every loop resolves
-    ``state_for == None`` → inherit ``Loop.enabled``, i.e. byte-for-byte today's
-    no-preset verdict; the booleans are present-class so nothing is muted.
+    Used when the configured default mode row is missing (a fresh DB before seeding,
+    a deleted mode). Empty ``entries`` means every loop resolves ``state_for == None``
+    → inherit ``Loop.enabled``, i.e. byte-for-byte the no-preset verdict.
     """
-    return _mode_model()(
-        name=FALLBACK_DEFAULT_MODE,
-        entries={},
-        defers_questions=False,
-        pauses_self_pump=False,
-        presence_sensitive=True,
-    )
+    return _mode_model()(name=FALLBACK_DEFAULT_MODE, entries={})
 
 
 __all__ = [
     "DEFAULT_MODE_SETTING",
     "FALLBACK_DEFAULT_MODE",
     "FALLBACK_UPGRADE_MODE",
-    "POSTURE_TOKENS",
     "PRESENCE_UPGRADE_SETTING",
     "ResolvedMode",
     "clear_mode_override",
-    "mode_name_for_posture",
-    "posture_label",
     "resolve_active_mode",
     "set_mode_override",
 ]

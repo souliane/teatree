@@ -42,18 +42,10 @@ silently consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_
 BEFORE building its jobs, so two ticks that read the same anchor cannot both
 drive the loop — exactly one wins the claim and dispatches.
 
-**Colleague-facing loops defer while the mode is unreachable (#2904, #61).** A row
-with ``Loop.colleague_facing`` set is additionally gated on the single active
-:class:`~teatree.core.mode_resolution.ResolvedMode`: whenever the resolved mode
-``defers_questions`` (an away-class mode — the same axis that defers user-directed
-questions), the row is NOT admitted, cadence-bumped, or dispatched — colleague-facing
-work should not fire while the user is unreachable to weigh in, even in an
-autonomous-away mode where every other loop keeps self-pumping (the
-``pauses_self_pump``/``defers_questions`` split). The loop mask AND the
-availability posture now come from the SAME resolved mode (the #61 merge), so the
-two can never drift. Auto-merge under away is preserved as loop membership, not an
-availability read: ``pr_sweep`` is a non-``colleague_facing`` ship-domain scanner,
-so it keeps running while the review loop (``colleague_facing``) is deferred.
+**Colleague-facing loops are held off by the mode's own table (#2904, #61).** A mode
+that means "the owner cannot weigh in" says so by turning ``followup`` — the sole
+``Loop.colleague_facing`` row — OFF in its ``entries``, so the mask the tick already
+applies is the whole mechanism; there is no second posture axis to drift from it.
 
 This is the ``jobs_builder`` the per-loop tick (``t3 loops tick --loop <name>``)
 injects into the shared :func:`teatree.loop.tick.run_tick` pipeline, so reap +
@@ -201,8 +193,6 @@ def _admission_block(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) ->
         return "no Loop row — this loop's config was never seeded"
     if not row.is_due(ctx.now):
         return "not due yet on its own cadence"
-    if row.colleague_facing and ctx.resolved.defers_questions:
-        return f"colleague-facing while mode {ctx.resolved.name!r} defers questions"
     return _control_plane_block(row, loop, ctx)
 
 
@@ -223,9 +213,7 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
 
     A loop is admitted iff it is NOT ``off_live_tick`` (those loops are driven by
     :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops`), it HAS a ``Loop``
-    row that is
-    ``is_due(now)``, it is NOT ``colleague_facing`` while *ctx.resolved*
-    ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND
+    row that is ``is_due(now)``, AND
     :class:`~teatree.loops.enable_verdict.EnablePlanes` admits it — not held (the bulk
     ``LoopState`` read, #2584), then the forced plane, then the active mode's mask over
     ``Loop.enabled``. Those planes are the SAME object chain membership reads (#4185),
@@ -281,11 +269,9 @@ def dispatch_loop_table(
     first, before any DB work — the live tick must never invoke its ``build_jobs``
     or bump its ``last_run_at``. A registry mini-loop with no ``Loop`` row is
     skipped (its config was never seeded). A loop whose row is disabled or
-    not-due is skipped; a ``colleague_facing`` row is skipped while availability
-    defers questions (#2904); and a loop the combined verdict holds — a
-    ``LoopState`` PAUSED/DISABLED row in the single bulk read (#1913, #2584) — is
-    skipped too, ALL BEFORE ``mark_run``, so a held loop's cadence anchor is
-    preserved.
+    not-due is skipped; and a loop the combined verdict holds — a ``LoopState``
+    PAUSED/DISABLED row in the single bulk read (#1913, #2584) — is skipped too, ALL
+    BEFORE ``mark_run``, so a held loop's cadence anchor is preserved.
 
     ``only`` (#2650) scopes the build to a SINGLE named loop — the per-loop
     ``/loop`` fires ``t3 loops tick --loop <name>``, so exactly that one row is

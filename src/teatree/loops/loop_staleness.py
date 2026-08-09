@@ -5,7 +5,7 @@
 can read green while ZERO work happens. Every gate they cover sits BEFORE the one
 that actually decides a tick: the unified admission verdict
 (:func:`teatree.loops.loop_table.admitted_loop_names`). A manual mode override to
-an all-off mask (the ``offline`` holiday mode) leaves the worker RUNNING, the
+an all-off mask (the ``off`` mode) leaves the worker RUNNING, the
 kill-switch ON and a full set of READY timers, while every ``loop_timer`` fire
 returns ``skipped`` and no ``Loop.last_run_at`` moves — a silent freeze the
 operator's own health surface reported as healthy for seven hours.
@@ -16,9 +16,9 @@ when it cries wolf. Two facts are NOT faults on their own:
 *   **Zero loops admitted.** Admission requires ``is_due``, so a healthy fleet that
     just ticked admits nothing for most of any given second. The count is context,
     never the alarm.
-*   **One suppressed loop sitting still.** A colleague-facing loop is admitted through
-    an away window yet has its individual fires skipped; reporting that as a failure
-    every hour is a gate people learn to ignore.
+*   **One suppressed loop sitting still.** A loop the mode's mask turns off stands
+    still by design; reporting that as a failure every hour is a gate people learn to
+    ignore.
 
 So a staleness failure is one of two shapes: an **unexplained** stale loop (no deliberate
 control plane accounts for it — something is actually broken), or a **frozen fleet**
@@ -87,8 +87,7 @@ class StaleLoop:
     age_seconds: float
     ever_ran: bool
     #: A deliberate control plane accounts for this loop standing still — the enable
-    #: verdict refuses it (hold / force-OFF / mode mask), or the colleague gate skips its
-    #: fires while the mode defers questions.
+    #: verdict refuses it (hold / force-OFF / the active mode's mask).
     suppressed: bool
 
     @property
@@ -277,23 +276,16 @@ def _measured_loops(now: dt.datetime) -> list["Loop"]:
 def _is_suppressed(row: "Loop", planes: "EnablePlanes") -> bool:
     """Whether a deliberate control plane accounts for *row* standing still.
 
-    Two shapes, both read off the ONE enable seam so neither can drift from the verdict
-    the tick applies:
+    The enable verdict itself REFUSES it — a ``LoopState`` hold, an emergency force-OFF,
+    or the active mode's mask. Each is an operator turning the loop off; the row is
+    measured (the fleet-wide reading needs to see a total shutdown) but never reported
+    as unexplained.
 
-    *   the enable verdict itself REFUSES it — a ``LoopState`` hold, an emergency
-        force-OFF, or the active mode's mask. Each is an operator turning the loop off;
-        the row is measured (the fleet-wide reading needs to see a total shutdown) but
-        never reported as unexplained.
-    *   the colleague gate — an ADMITTED ``colleague_facing`` loop keeps its chain through
-        an away window while its individual fires are skipped.
-
-    Deriving the first from :meth:`~teatree.loops.enable_verdict.EnablePlanes.admits`
-    rather than re-walking the planes is what stops it from naming a different set of
+    Deriving that from :meth:`~teatree.loops.enable_verdict.EnablePlanes.admits` rather
+    than re-walking the planes is what stops it from naming a different set of
     deliberate arms than the verdict does (#4196).
     """
-    if not planes.admits(row.name, configured_enabled=row.enabled):
-        return True
-    return row.colleague_facing and planes.resolved.defers_questions
+    return not planes.admits(row.name, configured_enabled=row.enabled)
 
 
 def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER) -> list[StaleLoop]:

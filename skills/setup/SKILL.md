@@ -269,7 +269,7 @@ Five contexts — do not generalise one to the others:
 | Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
 | Bare `t3 agent` (no task argument) | unpinned — inherits your `defaultMode` | execs an interactive `claude`; the session is attended, so the mode is yours to choose |
 | `t3 agent "<task>"` | `bypassPermissions` (pinned) | execs `claude -p`; print-mode runs headless with nobody present to answer a denial |
-| The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended under `autonomous_away`, so a classifier denial has nobody to override it |
+| The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended while the owner is away, so a classifier denial has nobody to override it |
 | Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` (pinned) | no human to approve a `Write`; narrowing it strands the run |
 | The quarantined reader phase | `dontAsk` (pinned) | its tool set is meant to be empty, so default-deny is correct |
 

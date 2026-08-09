@@ -252,7 +252,7 @@ def _session_pin_flags() -> list[str]:
     ``start_command`` refuses a non-terminal stdin, and the operator is there to
     see the child's own auth behaviour, which is why the base-URL guard
     deliberately skips this exec. But it long outlives that moment: it drives the
-    autonomous loop and keeps ticking unattended under ``autonomous_away``, with
+    autonomous loop and keeps ticking unattended while the owner is away, with
     nobody present to override a classifier denial. So it must not inherit the
     operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
     there, and pinning here is what makes that advice safe to follow. It is the
