@@ -87,7 +87,7 @@ logger = logging.getLogger(__name__)
 # ``LoopWatchdog`` / ``TaskUsage`` moved to ``headless_watchdog`` but stay part of
 # this module's public surface (overlay_sdk re-exports ``LoopWatchdog``; tests patch
 # ``headless.TaskUsage.for_task`` / ``headless._sample_usage_closing_connection``).
-__all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_headless"]
+__all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_agent"]
 
 _HEARTBEAT_INTERVAL = 60  # seconds
 
@@ -135,17 +135,17 @@ class HarnessOutcome:
     tool_calls: int = 0
 
 
-def run_headless(
+def run_agent(
     task: Task,
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
     """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
-    return _run_headless_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
 
-def _run_headless_agent(
+def _run_agent(
     task: Task,
     *,
     phase: str,
@@ -317,7 +317,7 @@ def _resolve_child_env_or_failure(
 
 def _active_agent_count() -> int:
     """Live headless agents in flight — the divisor for the test-worker budget (#3644/F9)."""
-    return max(1, Task.objects.live_headless_agent_count())
+    return max(1, Task.objects.claimed_agent_count())
 
 
 def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt | None:
@@ -601,7 +601,6 @@ def _record_interrupted_attempt(task: Task, *, summary: str) -> TaskAttempt:
     """The exit-0 attempt an interruption records when it is not the verdict on the work."""
     return TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,
         error="",
@@ -615,7 +614,6 @@ def _record_failure(
     """Record a FAILED attempt carrying *error*, and fail the task."""
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=exit_code,
         error=error,

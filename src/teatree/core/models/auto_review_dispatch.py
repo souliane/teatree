@@ -294,6 +294,5 @@ class AutoReviewDispatch(models.Model):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason=build_review_contract(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url),
         )

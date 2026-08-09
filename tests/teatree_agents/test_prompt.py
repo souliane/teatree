@@ -7,12 +7,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
-from teatree.agents.prompt import (
-    _parent_result_summary,
-    build_interactive_context,
-    build_system_context,
-    build_task_prompt,
-)
+from teatree.agents.prompt import _parent_result_summary, build_system_context, build_task_prompt
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 
 # --- build_task_prompt ---
@@ -359,7 +354,6 @@ class TestBuildSystemContext(TestCase):
         parent = Task.objects.create(ticket=ticket, session=session)
         TaskAttempt.objects.create(
             task=parent,
-            execution_target="headless",
             result={"summary": "Prior work done"},
         )
         child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
@@ -433,126 +427,6 @@ class TestSystemContextByteBudget(TestCase):
         assert "…truncated" not in ctx
 
 
-# --- build_interactive_context ---
-
-
-class TestBuildInteractiveContext(TestCase):
-    def test_basic(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/99")
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "interactive TeaTree session" in ctx
-        assert "https://example.com/issues/99" in ctx
-        assert "99" in ctx
-
-    def test_with_title_and_phase(self) -> None:
-        ticket = Ticket.objects.create(extra={"issue_title": "Implement feature X"})
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "Implement feature X" in ctx
-        assert "Phase: coding" in ctx
-
-    def test_with_reason_shows_diagnosis_prompt(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_reason="Agent needs guidance on API design",
-        )
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "Agent needs guidance on API design" in ctx
-        assert "diagnosis" in ctx
-        assert "Do NOT ask the user what happened" in ctx
-        # Should NOT contain the generic acknowledgment prompt
-        assert "acknowledge the project" not in ctx
-
-    def test_without_reason_shows_acknowledgment_prompt(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "acknowledge the project" in ctx
-        # Should NOT contain the diagnosis prompt
-        assert "diagnosis" not in ctx
-
-    def test_with_skills(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=["code", "test"])
-        assert "/code" in ctx
-        assert "/test" in ctx
-        assert "REQUIRED" in ctx
-
-    def test_with_prs(self) -> None:
-        ticket = Ticket.objects.create(
-            extra={
-                "prs": {
-                    "repo": {
-                        "url": "https://gitlab.com/mr/5",
-                        "title": "MR Title",
-                        "draft": True,
-                        "pipeline_status": "failed",
-                    },
-                },
-            },
-        )
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "https://gitlab.com/mr/5" in ctx
-        assert "(draft)" in ctx
-        assert "pipeline: failed" in ctx
-        assert "MR Title" in ctx
-
-    def test_skips_non_dict_pr(self) -> None:
-        ticket = Ticket.objects.create(
-            extra={"prs": {"bad": 42, "ok": {"url": "https://x.com/mr/7"}}},
-        )
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "https://x.com/mr/7" in ctx
-
-    def test_non_dict_prs(self) -> None:
-        ticket = Ticket.objects.create(extra={"prs": "not-a-dict"})
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "pull requests" not in ctx.lower()
-
-    def test_pr_no_title_no_pipeline(self) -> None:
-        ticket = Ticket.objects.create(
-            extra={"prs": {"repo": {"url": "https://x.com/mr/8"}}},
-        )
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "https://x.com/mr/8" in ctx
-        assert "(draft)" not in ctx
-        assert "pipeline:" not in ctx
-
-    def test_non_dict_extra(self) -> None:
-        ticket = Ticket.objects.create(extra="not-a-dict")
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "interactive TeaTree session" in ctx
-
-
 # --- _parent_result_summary ---
 
 
@@ -566,7 +440,6 @@ class TestParentResultSummary(TestCase):
         parent = Task.objects.create(ticket=self.ticket, session=self.session)
         TaskAttempt.objects.create(
             task=parent,
-            execution_target="headless",
             result={
                 "summary": "Implemented feature X",
                 "files_modified": ["src/a.py", "src/b.py"],
@@ -594,7 +467,7 @@ class TestParentResultSummary(TestCase):
 
     def test_handles_non_dict_result(self) -> None:
         parent = Task.objects.create(ticket=self.ticket, session=self.session)
-        TaskAttempt.objects.create(task=parent, execution_target="headless", result="not-a-dict")
+        TaskAttempt.objects.create(task=parent, result="not-a-dict")
         child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
 
         assert _parent_result_summary(child) == ""
@@ -846,7 +719,7 @@ class TestCacheablePrefixStability(TestCase):
         parent = None
         if parent_summary:
             parent = Task.objects.create(ticket=ticket, session=session, phase=phase)
-            TaskAttempt.objects.create(task=parent, execution_target="headless", result={"summary": parent_summary})
+            TaskAttempt.objects.create(task=parent, result={"summary": parent_summary})
         return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
 
     @staticmethod

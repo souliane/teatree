@@ -34,7 +34,6 @@ def _failed_task(*, phase: str, state: str = Ticket.State.STARTED) -> Task:
 def _add_failed_attempt(task: Task, *, error: str) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,  # an envelope refusal is a clean REFUSAL, not a crash
         error=error,

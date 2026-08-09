@@ -22,7 +22,7 @@ from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
-from teatree.agents.headless import _provider_child_env, run_headless
+from teatree.agents.headless import _provider_child_env, run_agent
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.credentials import CredentialError
@@ -119,7 +119,7 @@ class TestDispatchRecordsTheRefusalRatherThanRunning(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = Ticket.objects.create()
 
-    def test_run_headless_records_a_failed_attempt_naming_the_variable(self) -> None:
+    def test_run_agent_records_a_failed_attempt_naming_the_variable(self) -> None:
         spawned: list[object] = []
 
         def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
@@ -135,7 +135,7 @@ class TestDispatchRecordsTheRefusalRatherThanRunning(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="base-url-guard")
             task = Task.objects.create(ticket=self.ticket, session=session)
-            run_headless(task, phase="coding", overlay_skill_metadata={})
+            run_agent(task, phase="coding", overlay_skill_metadata={})
 
         assert spawned == [], "no claude child may be spawned once the redirect is refused"
         task.refresh_from_db()

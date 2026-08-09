@@ -40,7 +40,7 @@ FACTORY_EXPORTS = frozenset(
         "register_harness",
         "registered_harness_names",
         "resolve_harness_spec",
-        "run_headless",
+        "run_agent",
         "validate_result_keys",
     }
 )

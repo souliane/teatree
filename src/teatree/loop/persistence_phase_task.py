@@ -33,10 +33,7 @@ def create_phase_task(ticket: Ticket, *, phase: str, agent_id: str, reason: str)
 
     Mirrors ``ticket.schedule_coding`` / ``schedule_external_review`` for the
     phases those methods do not cover (``debugging``/``e2e``/``answering``/
-    ``codex_reviewing``). ``Task.save`` routes a loop-dispatched ``(role, phase)``
-    to INTERACTIVE under an ``interactive`` ``agent_runtime`` (the /loop slot is its
-    dispatcher) and leaves it HEADLESS under the shipped headless one, so no explicit
-    ``execution_target`` is set here.
+    ``codex_reviewing``).
 
     **Idempotent in its side effects, not merely in the state it converges to**
     (#3969) — the contract :meth:`Ticket._schedule_headless` holds at the FSM mint,

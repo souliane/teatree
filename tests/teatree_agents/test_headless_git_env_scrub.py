@@ -18,7 +18,7 @@ from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
-from teatree.agents.headless import _provider_child_env, run_headless
+from teatree.agents.headless import _provider_child_env, run_agent
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
@@ -51,7 +51,7 @@ class TestGitEnvStrippedAtDispatch(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="a1")
             task = Task.objects.create(ticket=self.ticket, session=session)
-            run_headless(task, phase="coding", overlay_skill_metadata={})
+            run_agent(task, phase="coding", overlay_skill_metadata={})
 
             assert captured["env"] == set(), f"child inherits GIT_* from os.environ: {captured['env']}"
             assert captured["options_env"] == set()
@@ -116,7 +116,7 @@ class TestReaderPhaseEnvScrubbedAtDispatch(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="reader-1")
             task = Task.objects.create(ticket=self.ticket, session=session)
-            run_headless(task, phase="directive_reading", overlay_skill_metadata={})
+            run_agent(task, phase="directive_reading", overlay_skill_metadata={})
 
             # belt: os.environ (the SDK-inherited child base) is reduced to the allowlist
             assert captured["os_secrets"] == set(), captured["os_secrets"]

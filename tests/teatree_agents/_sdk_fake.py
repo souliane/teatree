@@ -1,6 +1,6 @@
 """Shared in-process harness test doubles for the headless runner.
 
-``run_headless`` drives an in-process agent session behind the ``Harness`` seam
+``run_agent`` drives an in-process agent session behind the ``Harness`` seam
 (:mod:`teatree.agents.harness`). :class:`FakeHarnessSession` is the session double
 — it IS the session surface (``query`` / ``receive_response`` / ``interrupt``),
 yielding a canned typed-message stream. Two ways to inject it.

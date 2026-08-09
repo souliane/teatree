@@ -43,7 +43,7 @@ from teatree.agents.harness_registry import (
     registered_harness_names,
     resolve_harness_spec,
 )
-from teatree.agents.headless import LoopWatchdog, run_headless
+from teatree.agents.headless import LoopWatchdog, run_agent
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.lane_b.compaction import CompactionPolicy
 from teatree.agents.lane_b.config import LaneBToolConfig
@@ -62,7 +62,7 @@ def headless_cost_breakdown() -> CostBreakdown:
     """
     from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — defer the Django model import
 
-    return TaskAttempt.objects.headless().cost_breakdown()
+    return TaskAttempt.objects.cost_breakdown()
 
 
 __all__ = [
@@ -96,6 +96,6 @@ __all__ = [
     "register_harness",
     "registered_harness_names",
     "resolve_harness_spec",
-    "run_headless",
+    "run_agent",
     "validate_result_keys",
 ]

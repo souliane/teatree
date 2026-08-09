@@ -39,8 +39,7 @@ def _last_result_for_tasks(task_ids: list[int]) -> dict[int, str]:
     return result
 
 
-def _build_task_queue(
-    target: str,
+def build_task_queue(
     *,
     include_dismissed: bool = False,
     pending_only: bool = False,
@@ -52,7 +51,7 @@ def _build_task_queue(
     # task and bypass the rescue-before-fail ordering. The boot/tick
     # ``run_boot_sweeps`` owns that lifecycle; the queue just displays current
     # state (``heartbeat_age`` reveals staleness).
-    qs = Task.objects.filter(execution_target=target).select_related("ticket", "session")
+    qs = Task.objects.select_related("ticket", "session")
     if overlay:
         qs = qs.filter(_overlay_q(overlay))
     qs = qs.order_by("pk")
@@ -79,7 +78,6 @@ def _build_task_queue(
             last_error=errors.get(task.pk, ""),
             result_summary=results.get(task.pk, ""),
             session_agent_id=task.session.agent_id if task.session_id else "",
-            execution_target=task.execution_target,
             phase=task.phase,
             issue_url=task.ticket.issue_url,
             elapsed_time=_humanize_duration((now - task.claimed_at).total_seconds()) if task.claimed_at else "",
@@ -87,21 +85,3 @@ def _build_task_queue(
         )
         for task in task_list
     ]
-
-
-def build_headless_queue(*, include_dismissed: bool = False, overlay: str | None = None) -> list[DashboardTaskRow]:
-    return _build_task_queue(Task.ExecutionTarget.HEADLESS, include_dismissed=include_dismissed, overlay=overlay)
-
-
-def build_interactive_queue(
-    *,
-    include_dismissed: bool = False,
-    pending_only: bool = False,
-    overlay: str | None = None,
-) -> list[DashboardTaskRow]:
-    return _build_task_queue(
-        Task.ExecutionTarget.INTERACTIVE,
-        include_dismissed=include_dismissed,
-        pending_only=pending_only,
-        overlay=overlay,
-    )

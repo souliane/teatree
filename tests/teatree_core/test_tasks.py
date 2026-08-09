@@ -13,8 +13,8 @@ from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, 
 from teatree.core.runners import RetroPhaseMarker
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
-    drain_headless_queue,
-    drain_headless_queue_body,
+    drain_queue,
+    drain_queue_body,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -22,7 +22,6 @@ from teatree.core.tasks import (
     refresh_followup_snapshot,
     sync_followup,
 )
-from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -67,9 +66,9 @@ def _stub_headless_runner(testcase: TestCase) -> None:
     """Stub the registered headless runner for the duration of *testcase*.
 
     The drain/dispatch tests run under ``IMMEDIATE_BACKEND``, so a
-    ``execute_headless_task.enqueue(...)`` runs the worker *synchronously*,
+    ``execute_task.enqueue(...)`` runs the worker *synchronously*,
     which — with ``claude`` on the dev host's PATH — would drive the REAL
-    ``run_headless`` → ``_drive_with_heartbeat``. That path samples usage in
+    ``run_agent`` → ``_drive_with_heartbeat``. That path samples usage in
     an ``asyncio.to_thread`` worker whose connection, under ``TestCase``'s
     shared in-memory SQLite, the test harness keeps alive — surfacing as an
     order-dependent ``unclosed database`` ``ResourceWarning`` on GC (the
@@ -80,12 +79,12 @@ def _stub_headless_runner(testcase: TestCase) -> None:
     """
     from unittest.mock import patch  # noqa: PLC0415 - deferred: local import
 
-    from teatree.core import headless_dispatch  # noqa: PLC0415 - deferred: local import
+    from teatree.core import agent_runner  # noqa: PLC0415 - deferred: local import
 
     def _runner(task: Task, *, phase: str = "", overlay_skill_metadata: object = None) -> TaskAttempt:
         return task.complete_with_attempt(exit_code=0, result={"summary": "stubbed"})
 
-    patcher = patch.object(headless_dispatch, "_runner", _runner)
+    patcher = patch.object(agent_runner, "_runner", _runner)
     patcher.start()
     testcase.addCleanup(patcher.stop)
 
@@ -93,77 +92,61 @@ def _stub_headless_runner(testcase: TestCase) -> None:
 class TestDrainHeadlessQueue(TestCase):
     """Drain is a safety net for tasks that missed the post_save auto-enqueue."""
 
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
 
-        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
         self.addCleanup(
             post_save.connect,
-            _auto_enqueue_headless_task,
+            _auto_enqueue_task,
             sender=Task,
-            dispatch_uid="auto_enqueue_headless",
+            dispatch_uid="auto_enqueue_task",
         )
         _stub_headless_runner(self)
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_enqueues_pending_headless_tasks(self) -> None:
+    def test_enqueues_every_pending_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
-        # ``architectural_review`` has no registered phase agent, so it is NOT
-        # loop-dispatched and the drain safety-net owns it.
+        # One free-form phase and one with a registered agent: with a single lane
+        # the drain safety-net owns both.
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
         )
-        # Interactive task should NOT be enqueued
-        Task.objects.create(
+        registered_phase = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-            phase="testing",
-        )
-        # A loop-dispatched author phase (coding) is the loop's sole
-        # responsibility — the drain must NOT also enqueue it (double-dispatch).
-        Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="coding",
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = drain_headless_queue.enqueue()
+            result = drain_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [pending.pk], "rerouted": [], "failed_unknown_overlay": []}
+        assert result.return_value == {
+            "enqueued": [pending.pk, registered_phase.pk],
+            "failed_unknown_overlay": [],
+        }
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_no_pending_tasks(self) -> None:
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = drain_headless_queue.enqueue()
+            result = drain_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
+        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_body_returns_empty_result_on_empty_queue(self) -> None:
         # The shared body the @task wrapper and the maintenance chain both call.
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = drain_headless_queue_body()
+            result = drain_queue_body()
 
-        assert result == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
+        assert result == {"enqueued": [], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_unknown_overlay_task_is_failed_not_enqueued(self) -> None:
@@ -172,67 +155,16 @@ class TestDrainHeadlessQueue(TestCase):
         poison = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = drain_headless_queue.enqueue()
+            result = drain_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": [poison.pk]}
+        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
-
-    @override_settings(**IMMEDIATE_BACKEND)
-    def test_stale_interactive_row_is_rerouted_and_dispatched_under_headless_runtime(self) -> None:
-        # A phase task created during the laptop /loop era: a loop-dispatched
-        # (author, coding) pair routed INTERACTIVE, orphaned once the box moved
-        # to the headless lane with no interactive session to dispatch it. Under
-        # agent_runtime=headless the drain adopts it: route_to_headless + dispatch.
-        from teatree.config import AgentRuntime  # noqa: PLC0415 - deferred: local import
-
-        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
-        session = Session.objects.create(ticket=ticket, overlay="test")
-        stale = Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-            phase="coding",
-        )
-
-        with (
-            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.config.get_effective_settings") as mock_settings,
-        ):
-            mock_settings.return_value.agent_runtime = AgentRuntime.HEADLESS
-            result = drain_headless_queue.enqueue()
-
-        assert result.return_value == {"enqueued": [stale.pk], "rerouted": [stale.pk], "failed_unknown_overlay": []}
-        stale.refresh_from_db()
-        assert stale.execution_target == Task.ExecutionTarget.HEADLESS
-
-    @override_settings(**IMMEDIATE_BACKEND)
-    def test_interactive_row_is_left_untouched_under_interactive_runtime(self) -> None:
-        # Under the default interactive runtime the /loop slot owns interactive
-        # rows — the drain must not adopt them (that would double-dispatch).
-        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
-        session = Session.objects.create(ticket=ticket, overlay="test")
-        interactive = Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-            phase="coding",
-        )
-
-        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = drain_headless_queue.enqueue()
-
-        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
-        interactive.refresh_from_db()
-        assert interactive.execution_target == Task.ExecutionTarget.INTERACTIVE
 
 
 class TestExecuteHeadlessUnknownOverlay(TestCase):
@@ -241,32 +173,31 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
 
-        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
         self.addCleanup(
             post_save.connect,
-            _auto_enqueue_headless_task,
+            _auto_enqueue_task,
             sender=Task,
-            dispatch_uid="auto_enqueue_headless",
+            dispatch_uid="auto_enqueue_task",
         )
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_unknown_overlay_marks_task_failed_with_attempt(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="ghost-overlay")
         session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            result = execute_headless_task.func(task.pk, task.phase)
+            result = execute_task.func(task.pk, task.phase)
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -280,15 +211,14 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         # A claude-agent-sdk ``ProcessError`` stringifies to "Check stderr output
         # for details" and hides the real cause on ``.stderr``. The recorded
         # attempt must carry that stderr so a headless failure is diagnosable.
-        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
         )
@@ -303,11 +233,10 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
 
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
-            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_boom),
+            patch.object(agent_runner_mod, "get_agent_runner", return_value=_boom),
             pytest.raises(_FakeProcessError),
         ):
-            execute_headless_task.func(task.pk, task.phase)
+            execute_task.func(task.pk, task.phase)
 
         attempt = TaskAttempt.objects.get(task=task)
         assert attempt.exit_code == 1
@@ -316,21 +245,20 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="ghost-overlay")
         session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            execute_headless_task.func(task.pk, task.phase)
-            result = drain_headless_queue.enqueue()
+            execute_task.func(task.pk, task.phase)
+            result = drain_queue.enqueue()
 
         assert task.pk not in result.return_value["enqueued"]
 
@@ -345,14 +273,14 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
 
-        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
         self.addCleanup(
             post_save.connect,
-            _auto_enqueue_headless_task,
+            _auto_enqueue_task,
             sender=Task,
-            dispatch_uid="auto_enqueue_headless",
+            dispatch_uid="auto_enqueue_task",
         )
 
     def _make_task(self, *, status: str) -> Task:
@@ -361,42 +289,39 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         return Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=status,
             phase="architectural_review",
         )
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_terminal_task_redelivery_does_not_re_execute(self) -> None:
-        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
         task = self._make_task(status=Task.Status.COMPLETED)
         runner = MagicMock()
 
         with (
-            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
-            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=runner),
+            patch.object(agent_runner_mod, "get_agent_runner", return_value=runner),
         ):
-            result = execute_headless_task.func(task.pk, task.phase)
+            result = execute_task.func(task.pk, task.phase)
 
         runner.assert_not_called()
         assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_task_claimed_by_live_rival_does_not_re_execute(self) -> None:
-        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
         task = self._make_task(status=Task.Status.PENDING)
         task.claim(claimed_by="rival-worker", lease_seconds=900)
         runner = MagicMock()
 
         with (
-            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
-            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=runner),
+            patch.object(agent_runner_mod, "get_agent_runner", return_value=runner),
         ):
-            result = execute_headless_task.func(task.pk, task.phase)
+            result = execute_task.func(task.pk, task.phase)
 
         runner.assert_not_called()
         assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
@@ -1043,7 +968,7 @@ class TestExecuteHeadlessTask(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_records_failure_on_exception(self) -> None:
-        """When run_headless raises, execute_headless_task marks the task as failed."""
+        """When run_agent raises, execute_task marks the task as failed."""
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
 
@@ -1051,7 +976,7 @@ class TestExecuteHeadlessTask(TestCase):
             msg = "headless runtime crashed"
             raise RuntimeError(msg)
 
-        self.monkeypatch.setattr("teatree.core.headless_dispatch._runner", _raise)
+        self.monkeypatch.setattr("teatree.core.agent_runner._runner", _raise)
 
         # ``architectural_review`` has no registered phase agent, so it is NOT
         # loop-dispatched — it rides the auto-enqueue path the executor owns.
@@ -1071,7 +996,7 @@ class TestExecuteHeadlessTask(TestCase):
         """The headless worker resolves the ticket's overlay, not the ambient default.
 
         Regression for souliane/teatree#1814: with two overlays registered a
-        bare ``get_overlay()`` crashes the worker. ``execute_headless_task``
+        bare ``get_overlay()`` crashes the worker. ``execute_task``
         must key off ``task.ticket.overlay`` instead.
         """
         ticket = Ticket.objects.create(overlay="beta")
@@ -1083,7 +1008,7 @@ class TestExecuteHeadlessTask(TestCase):
             captured["metadata"] = overlay_skill_metadata
             return MagicMock(pk=1, exit_code=0, result={})
 
-        self.monkeypatch.setattr("teatree.core.headless_dispatch._runner", _capture)
+        self.monkeypatch.setattr("teatree.core.agent_runner._runner", _capture)
 
         beta_overlay = CommandOverlay()
         beta_metadata = beta_overlay.metadata.get_skill_metadata()
@@ -1315,34 +1240,34 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
 
 class TestHeadlessClaimLease(TestCase):
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
+    def setUp(self) -> None:
+        # The post_save auto-enqueue would run this task through the immediate
+        # backend before the explicit call below, leaving it terminal.
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_headless_worker_claims_with_heartbeat_matched_lease(self) -> None:
+    def test_worker_claims_with_a_heartbeat_matched_lease(self) -> None:
         # The initial claim lease must equal the heartbeat renewal window (900s),
         # not Task.claim's 300s default: under CPU starvation a delayed first
         # heartbeat lets the 300s lease lapse and reclaim_orphaned_claims re-queues
         # the live task, which then aborts "lease lost: re-claimed by another worker".
         from teatree.agents.headless import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
-        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 — deferred: local
-        from teatree.core.tasks import (  # noqa: PLC0415 — deferred: local
-            _HEADLESS_CLAIM_LEASE_SECONDS,
-            execute_headless_task,
-        )
+        from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 — deferred: local
+        from teatree.core.tasks import _CLAIM_LEASE_SECONDS, execute_task  # noqa: PLC0415 — deferred: local
 
-        assert _HEADLESS_CLAIM_LEASE_SECONDS == _LEASE_SECONDS
+        assert _CLAIM_LEASE_SECONDS == _LEASE_SECONDS
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="coding",
         )
@@ -1357,10 +1282,9 @@ class TestHeadlessClaimLease(TestCase):
             raise _StopAfterClaimError
 
         with (
-            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
-            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_capture_lease),
+            patch.object(agent_runner_mod, "get_agent_runner", return_value=_capture_lease),
             pytest.raises(_StopAfterClaimError),
         ):
-            execute_headless_task.func(task.pk, task.phase)
+            execute_task.func(task.pk, task.phase)
 
         assert captured["seconds"] == pytest.approx(_LEASE_SECONDS, abs=1)

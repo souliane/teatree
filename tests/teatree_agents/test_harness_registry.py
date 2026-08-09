@@ -32,7 +32,7 @@ from teatree.agents.harness_registry import (
     resolve_harness_spec,
     valid_providers_for,
 )
-from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
+from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.agents.pydantic_ai_config import PYDANTIC_AI_ROUTER_CAPABILITIES
 from teatree.config import AgentHarness, AgentHarnessProvider
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
@@ -172,7 +172,7 @@ class TestThirdHarnessViaEntryPoint(TestCase):
     def test_dispatch_drives_end_to_end_through_the_entry_point_harness(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS)
+        task = Task.objects.create(ticket=ticket, session=session)
         task.renew_lease = lambda **_kw: None  # threaded ORM read is a TestCase artifact
         with (
             _register_third_harness_via_entry_point(self._monkeypatch),
@@ -181,7 +181,7 @@ class TestThirdHarnessViaEntryPoint(TestCase):
             ConfigSetting.objects.set_value("agent_harness", "fake_third")
             # "debugging" has no phase-evidence gate, so a clean summary completes — proving
             # the whole dispatch → attempt cycle ran through the entry-point harness.
-            attempt = run_headless(task, phase="debugging", overlay_skill_metadata=SkillMetadata())
+            attempt = run_agent(task, phase="debugging", overlay_skill_metadata=SkillMetadata())
 
         assert isinstance(attempt, TaskAttempt)
         assert attempt.exit_code == 0

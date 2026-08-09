@@ -39,11 +39,11 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
     def test_demo_overlay_dispatch_attempt_cost_via_overlay_sdk_only(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS)
+        task = Task.objects.create(ticket=ticket, session=session)
         task.renew_lease = lambda **_kw: None
 
         # DISPATCH + ATTEMPT — the overlay registers its own harness (overlay_sdk surface),
-        # selects it, and drives the dispatch through overlay_sdk.run_headless.
+        # selects it, and drives the dispatch through overlay_sdk.run_agent.
         try:
             sdk.register_harness(
                 "demo_factory",
@@ -52,7 +52,7 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
             )
             with patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
                 ConfigSetting.objects.set_value("agent_harness", "demo_factory")
-                attempt = sdk.run_headless(task, phase="debugging", overlay_skill_metadata=sdk.SkillMetadata())
+                attempt = sdk.run_agent(task, phase="debugging", overlay_skill_metadata=sdk.SkillMetadata())
         finally:
             harness_registry._REGISTRY.pop("demo_factory", None)
 
@@ -67,7 +67,7 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
     def test_attempt_recording_via_overlay_sdk_surface(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS)
+        task = Task.objects.create(ticket=ticket, session=session)
 
         attempt = sdk.record_result_envelope(
             task,

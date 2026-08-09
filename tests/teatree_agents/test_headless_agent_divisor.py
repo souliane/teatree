@@ -26,7 +26,6 @@ def _claimed_headless(phase: str) -> Task:
     task = Task.objects.create(
         ticket=ticket,
         session=session,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         status=Task.Status.PENDING,
         phase=phase,
     )
@@ -37,19 +36,19 @@ def _claimed_headless(phase: str) -> Task:
 class TestLiveHeadlessAgentCount(TestCase):
     def test_a_free_form_headless_agent_is_counted(self) -> None:
         _claimed_headless("architectural_review")
-        assert Task.objects.live_headless_agent_count() == 1
+        assert Task.objects.claimed_agent_count() == 1
 
     def test_an_expired_lease_is_not_in_flight(self) -> None:
         task = _claimed_headless("architectural_review")
         Task.objects.filter(pk=task.pk).update(lease_expires_at=timezone.now() - timezone.timedelta(seconds=1))
-        assert Task.objects.live_headless_agent_count() == 0
+        assert Task.objects.claimed_agent_count() == 0
 
     def test_the_old_dispatchable_scoped_count_undercounts_free_form_agents(self) -> None:
         # The divergence the fix closes: dispatchable_q() excludes the free-form
         # phase, so counting through it saw ZERO while a real agent was live.
         _claimed_headless("architectural_review")
         assert Task.objects.in_flight_claimed_count(Task.dispatchable_q()) == 0
-        assert Task.objects.live_headless_agent_count() == 1
+        assert Task.objects.claimed_agent_count() == 1
 
 
 class TestActiveAgentCountDivisor(TestCase):

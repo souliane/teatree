@@ -34,7 +34,7 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 from pydantic import BeforeValidator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
 
-from teatree.config.agent_enums import AgentHarnessProvider, AgentRuntime, parse_harness_name
+from teatree.config.agent_enums import AgentHarnessProvider, parse_harness_name
 from teatree.config.cold_defaults import DEFAULTS_TOML as _DEFAULTS_TOML
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.cold_hook_settings import ColdHookSetting
@@ -173,7 +173,6 @@ class TeatreeSettingsSchema(BaseSettings):
     agent_harness_provider: Annotated[
         AgentHarnessProvider | None, BeforeValidator(_provider_or_none), _PERSONAL_OVERLAY
     ] = None
-    agent_runtime: Annotated[AgentRuntime, BeforeValidator(AgentRuntime.parse), _DEFAULT_OVERLAY]
     agent_signature: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     allow_destructive_disk: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     allow_destructive_ram: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

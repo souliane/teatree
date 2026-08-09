@@ -28,7 +28,7 @@ import teatree.agents.headless as headless_mod
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_envelope_refusal
 from teatree.agents.harness import PydanticAiHarness
-from teatree.agents.headless import TaskUsage, run_headless
+from teatree.agents.headless import TaskUsage, run_agent
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 _PROSE = "I finished the work but forgot to emit the JSON result envelope."
@@ -103,7 +103,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="debugging")
 
         with _fake_sdk(_PROSE):
-            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
         self._assert_refused(attempt, task, session)
 
@@ -118,7 +118,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
             patch.object(headless_mod, "resolve_harness", return_value=fake_harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
         self._assert_refused(attempt, task, session)
 
@@ -133,7 +133,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="debugging")
 
         with _fake_sdk(_PROSE):
-            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
         assert is_envelope_refusal(attempt.error), (
             f"the correcting sweep must classify the runner's own refusal; got: {attempt.error!r}"
@@ -153,7 +153,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
 
         with _fake_sdk(_PROSE):
-            attempt = run_headless(task, phase="testing", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="testing", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -171,7 +171,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
 
         with _fake_sdk('{"summary": "ran them, honest"}'):
-            attempt = run_headless(task, phase="testing", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="testing", overlay_skill_metadata={})
 
         assert "missing required evidence" in attempt.error
         assert attempt.error != NO_ENVELOPE_ERROR
@@ -185,9 +185,9 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         parsed = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
 
         with _fake_sdk(_PROSE):
-            no_json_attempt = run_headless(no_json, phase="testing", overlay_skill_metadata={})
+            no_json_attempt = run_agent(no_json, phase="testing", overlay_skill_metadata={})
         with _fake_sdk('{"summary": "ran them, honest"}'):
-            parsed_attempt = run_headless(parsed, phase="testing", overlay_skill_metadata={})
+            parsed_attempt = run_agent(parsed, phase="testing", overlay_skill_metadata={})
 
         assert is_envelope_refusal(no_json_attempt.error)
         assert is_envelope_refusal(parsed_attempt.error)
@@ -202,9 +202,9 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         second = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
 
         with _fake_sdk(_PROSE):
-            run_headless(first, phase="testing", overlay_skill_metadata={})
+            run_agent(first, phase="testing", overlay_skill_metadata={})
         with _fake_sdk("A completely different prose ending, still no envelope."):
-            run_headless(second, phase="testing", overlay_skill_metadata={})
+            run_agent(second, phase="testing", overlay_skill_metadata={})
 
         fingerprints = {
             TaskAttempt.objects.get(task=first).error_fingerprint,
@@ -230,7 +230,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="retro")
 
         with _fake_sdk(_PROSE):
-            attempt = run_headless(task, phase="retro", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="retro", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0

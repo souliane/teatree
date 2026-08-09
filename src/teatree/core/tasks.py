@@ -1,6 +1,6 @@
 import datetime as dt
 import logging
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.db import transaction
 from django.tasks import task
@@ -17,6 +17,7 @@ from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
+from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from django.tasks import Task as DjangoTask
@@ -42,7 +43,7 @@ STRANDED_JOB_GRACE_SECONDS = 900
 # reclaim. Claiming with 900s from the start closes that window. Kept equal to
 # ``_LEASE_SECONDS`` by ``test_headless_claim_lease_matches_heartbeat`` (core cannot
 # import the agents layer, so the value is duplicated and drift-guarded by test).
-_HEADLESS_CLAIM_LEASE_SECONDS = 900
+_CLAIM_LEASE_SECONDS = 900
 
 
 def _persist_intake_landscape(ticket: Ticket) -> None:
@@ -99,11 +100,20 @@ class TransitionResult(TypedDict, total=False):
     detail: str
 
 
+class TaskRunResult(TypedDict, total=False):
+    """What one :func:`execute_task` run reports — an admission skip, a refusal, or an attempt."""
+
+    skipped: str
+    exit_code: int | str
+    unknown_overlay: str
+    attempt_id: int
+    result: RawAPIDict
+
+
 @task()
-def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
+def execute_task(task_id: int, phase: str) -> TaskRunResult:
     import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415 — deferred: call-time import
     from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
     task_obj = Task.objects.get(pk=task_id)
@@ -116,9 +126,9 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     # redelivered terminal job, both executing in full). ``claim`` raises
     # ``InvalidTransitionError`` when the row is terminal or held under a live lease.
     # The heartbeat-matched lease means a starved first heartbeat cannot let the initial
-    # 300s window lapse and re-queue this live task (_HEADLESS_CLAIM_LEASE_SECONDS).
+    # 300s window lapse and re-queue this live task (_CLAIM_LEASE_SECONDS).
     try:
-        task_obj.claim(claimed_by="headless-worker", lease_seconds=_HEADLESS_CLAIM_LEASE_SECONDS)
+        task_obj.claim(claimed_by="task-worker", lease_seconds=_CLAIM_LEASE_SECONDS)
     except InvalidTransitionError as exc:
         logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
         return {"skipped": "not claimable (claimed elsewhere or terminal)"}
@@ -134,32 +144,17 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
         task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
         return {"exit_code": 1, "unknown_overlay": reason}
 
-    # Fail-closed billing guard: a loop-dispatched phase task (one whose
-    # (role, phase) has a registered phase agent) must run INTERACTIVE in the
-    # in-session ``/loop`` slot, never as a metered detached headless-SDK run.
-    # The predicate lives in ONE shared helper both headless entry
-    # points consult (``loop_dispatch_refusal``), so the ``work-next-headless`` CLI
-    # path cannot drift from this seam (souliane/teatree#1375). Refuse here and
-    # record a ``routing_error`` instead of shelling out — closing the seam
-    # where a stray enqueue (a re-enqueue, a queue drainer, a manual
-    # ``enqueue``) would silently meter the loop's phase work.
-    routing_refusal = loop_dispatch_refusal(task_obj)
-    if routing_refusal is not None:
-        logger.warning("Task %s: %s", task_obj.pk, routing_refusal)
-        task_obj.complete_with_attempt(exit_code=1, error=routing_refusal, result={"routing_error": routing_refusal})
-        return {"exit_code": 1, "routing_error": routing_refusal}
-
     # A non-agentic phase runs its own implementation, not a generic ticket-work
     # brief its least-privilege toolset cannot satisfy (#3570). Shared with the
-    # ``work-next-headless`` lane so the two entry points cannot drift.
+    # ``work-next`` lane so the two entry points cannot drift.
     if (deterministic := run_deterministic_phase(task_obj)) is not None:
-        return dict(deterministic)
+        return cast("TaskRunResult", dict(deterministic))
 
     try:
-        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — deferred: call-time import
+        from teatree.core.agent_runner import get_agent_runner  # noqa: PLC0415 — deferred: call-time import
 
         overlay = get_overlay_for_ticket(task_obj.ticket)
-        attempt = get_headless_runner()(
+        attempt = get_agent_runner()(
             task_obj,
             phase=phase,
             overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
@@ -181,72 +176,44 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
         return {"attempt_id": attempt.pk, "exit_code": attempt.exit_code, "result": attempt.result}
 
 
-def drain_headless_queue_body() -> dict[str, list[int]]:
-    """Auto-enqueue pending headless tasks for execution (safety net), failing poison rows.
-
-    Tasks the in-session ``/loop`` owns (``runs_in_session`` — a loop-dispatched
-    phase pair under ``agent_runtime=interactive``) are skipped, so draining them
-    here never double-runs work the loop is dispatching (the same guard the
-    ``_auto_enqueue_headless_task`` post_save applies). Under a headless
-    ``agent_runtime`` those phase tasks are headless and ``runs_in_session`` is
-    ``False``, so they drain like any other headless work.
-
-    Under ``agent_runtime=headless`` the drain ALSO adopts stale
-    ``execution_target=interactive`` pending rows — phase tasks created during a
-    laptop ``/loop`` era whose target was routed INTERACTIVE, then orphaned when
-    the box moved to the headless lane with no interactive session ever alive to
-    dispatch them (the undispatchable-forever class the "codex_reviewing"
-    backlog was in). Each is ``route_to_headless``-d before dispatch, permanently
-    closing the laptop->box orphan. Under ``agent_runtime=interactive`` the
-    interactive rows are the ``/loop`` slot's job and are left untouched.
+def drain_queue_body() -> dict[str, list[int]]:
+    """Auto-enqueue pending tasks for execution (safety net), failing poison rows.
 
     A task whose ticket names a non-empty unknown overlay is failed permanently
     rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
-    ``execute_headless_task`` on every tick forever — the poison pill this drain
-    must not keep feeding. A blank overlay is the ambient single-overlay default
-    and stays dispatchable.
+    ``execute_task`` on every tick forever — the poison pill this drain must not
+    keep feeding. A blank overlay is the ambient single-overlay default and stays
+    dispatchable.
 
-    This is the plain body shared by the ``@task drain_headless_queue`` (the
-    default-queue safety net) and the loops-queue maintenance chain
-    (:func:`teatree.loops.timer_reconciler.drain_headless_chain`) that schedules
-    it, so the two call sites can never drift.
+    This is the plain body shared by the ``@task drain_queue`` (the default-queue
+    safety net) and the loops-queue maintenance chain
+    (:func:`teatree.loops.timer_reconciler.drain_chain`) that schedules it, so the
+    two call sites can never drift.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
-    from teatree.core.headless_admission import headless_admission_verdict  # noqa: PLC0415 — deferred: call-time
-    from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
     from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
 
-    headless_runtime = get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
-    targets = [Task.ExecutionTarget.HEADLESS]
-    if headless_runtime:
-        targets.append(Task.ExecutionTarget.INTERACTIVE)
     # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future
     # ``not_before``. Draining it here would re-enqueue it, let the runner pre-flight
     # re-park it, and churn a junk park attempt every ~5 min for the whole park window.
     # The same ``_claimable_now_q`` gate the claim path uses skips it until its window
     # re-arms, so the park is honoured once at both the drain and the claim seam.
     pending = (
-        Task.objects.filter(
-            execution_target__in=targets,
-            status=Task.Status.PENDING,
-        )
+        Task.objects.filter(status=Task.Status.PENDING)
         .filter(_claimable_now_q(timezone.now()))
         .select_related("ticket")
-        .only("pk", "phase", "execution_target", "ticket__role", "ticket__overlay")
+        .only("pk", "phase", "ticket__role", "ticket__overlay")
     )
     # One probe per drain, resolved per row's phase cost class (#4098). A DENY applies
     # backpressure to the ENQUEUE step only — poison rows are still failed this tick,
     # live rows stay PENDING for the next admitted drain.
-    admission = headless_admission_verdict()
+    admission = agent_admission_verdict()
     admission.log_denials()
     enqueued: list[int] = []
-    rerouted: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
-        if runs_in_session(role=task_obj.ticket.role, phase=task_obj.phase):
-            continue
         if not task_obj.ticket.has_dispatchable_overlay():
             reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
             logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
@@ -254,22 +221,17 @@ def drain_headless_queue_body() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
-        if not admission.admit(task_obj.pk, task_obj.phase, at="headless drain"):
+        if not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
             continue
-        if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
-            task_obj.route_to_headless(
-                reason="Stale interactive row adopted by headless drain (laptop->box orphan, agent_runtime=headless)"
-            )
-            rerouted.append(task_obj.pk)
-        execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
+        execute_task.enqueue(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
-    return {"enqueued": enqueued, "rerouted": rerouted, "failed_unknown_overlay": failed_unknown_overlay}
+    return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
 
 
 @task()
-def drain_headless_queue() -> dict[str, list[int]]:
-    """The default-queue ``@task`` wrapper around :func:`drain_headless_queue_body`."""
-    return drain_headless_queue_body()
+def drain_queue() -> dict[str, list[int]]:
+    """The default-queue ``@task`` wrapper around :func:`drain_queue_body`."""
+    return drain_queue_body()
 
 
 @task()

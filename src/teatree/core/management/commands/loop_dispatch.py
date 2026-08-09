@@ -13,7 +13,6 @@ from typing import IO, Annotated, Any, cast
 
 import typer
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.config import cadence_seconds
@@ -31,37 +30,6 @@ logger = logging.getLogger(__name__)
 
 def _subagent_for(task: Task) -> str:
     return subagent_for_phase(task.ticket.role, task.phase)
-
-
-def _dispatchable_q() -> Q:
-    """The in-session claim filter — the ``dispatchable_q`` SSOT narrowed to INTERACTIVE (#6).
-
-    ``Task.dispatchable_q()`` is the single source of truth (role/phase pairs
-    with a registered sub-agent AND not under a live #2104 external-delivery
-    lease, #2217). Sharing it means ``claim-next`` and ``pending-spawn`` honour
-    the external-delivery exclusion the same as the ``orchestrate`` planner — the
-    #2218 "fix landed on one side" recurrence dies.
-
-    The in-session ``/loop`` claims only INTERACTIVE tasks: under a headless
-    ``agent_runtime`` a loop-dispatched phase task is HEADLESS and owned by the
-    headless lane (``execute_headless_task``), so AND-ing ``execution_target ==
-    INTERACTIVE`` keeps the two lanes disjoint — the same task is never claimed
-    in-session AND run headless. The admit-budget count deliberately does NOT
-    apply this narrowing (``_admit_budget_exhausted``), so a headless claim in
-    flight still consumes the boost budget.
-
-    ``execution_target`` alone is not sufficient, because it is written at
-    INSERT time: a phase task created before the runtime was flipped to
-    ``headless`` keeps ``INTERACTIVE`` and would stay claimable in-session. So
-    the LIVE ``agent_runtime`` decides first — under a headless runtime the
-    headless factory owns EVERY loop-dispatched phase, and the in-session
-    claimer matches nothing at all.
-    """
-    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
-
-    if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
-        return Q(pk__in=[])
-    return Task.dispatchable_q() & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
 
 def _admit_budget_exhausted() -> bool:
@@ -87,12 +55,9 @@ def _admit_budget_exhausted() -> bool:
     VERDICT (kill-switch off, or a failed probe) leaves the pre-governor behaviour
     byte-for-byte intact, and then an absent budget really is unclamped.
 
-    #6: the in-flight count runs over ``Task.dispatchable_q()`` WITHOUT the
-    ``execution_target == INTERACTIVE`` narrowing — the SAME filter set the
-    ``orchestrate`` planner used to compute the target. A HEADLESS loop-dispatched
-    phase task in flight (under a headless ``agent_runtime``) therefore consumes
-    the boost budget too; the pre-fix gate counted only INTERACTIVE in-flight and
-    overshot ``N`` whenever headless workers were running.
+    #6: the in-flight count runs over ``Task.dispatchable_q()`` — the SAME filter
+    set the ``orchestrate`` planner used to compute the target, so every
+    loop-dispatched phase task in flight consumes the boost budget.
     """
     try:
         budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
@@ -167,14 +132,14 @@ def _resolve_fanout_directive(task: Task) -> str:
 def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     """Resolve the spawn model tier and skill bundle for a dispatch, loop-side.
 
-    Moved out of the detached headless-SDK run (``run_headless``) so the
-    INTERACTIVE ``/loop`` slot resolves them once at claim time and threads
-    them into the in-session sub-agent. The skill bundle is resolved FIRST so
+    Moved out of the detached agent run (``run_agent``) so the ``/loop`` slot
+    resolves them once at claim time and threads them into the sub-agent it
+    spawns. The skill bundle is resolved FIRST so
     the model is the most-capable-wins floor merge of the phase tier and the
     per-skill ``[agent.skill_models]`` floors of the bundle's skills
     (``resolve_spawn_model``). MODEL only — no effort is threaded into the
-    per-sub-agent dispatch (effort is a session-wide pin on the interactive
-    loop spawn; the Agent tool has no effort param). Overlay/skill discovery
+    per-sub-agent dispatch (effort is a session-wide pin on the loop spawn; the
+    Agent tool has no effort param). Overlay/skill discovery
     failures degrade to an empty bundle so a dispatch is never blocked on
     resolution — the model then collapses to the phase tier and the slot falls
     back to base skills.
@@ -242,12 +207,10 @@ class Command(TyperCommand):
         """List pending Tasks the ``/loop`` slot should spawn in-session.
 
         Tasks are returned in FIFO order (oldest pending first), filtered through
-        the SAME ``_dispatchable_q()`` the atomic ``claim-next`` uses (#6) — the
-        ``Task.dispatchable_q`` SSOT narrowed to INTERACTIVE — so the
-        in-session preview cannot drift from the claim: a non-dispatchable pair,
-        a HEADLESS task owned by the headless lane, and a ticket under a live
-        #2104 external-delivery lease are all excluded here exactly as they are
-        at claim time. The ``subagent`` field tells the slot which subagent_type
+        the SAME ``Task.dispatchable_q()`` SSOT the atomic ``claim-next`` uses
+        (#6), so the preview cannot drift from the claim: a non-dispatchable pair
+        and a ticket under a live #2104 external-delivery lease are both excluded
+        here exactly as they are at claim time. The ``subagent`` field tells the slot which subagent_type
         to pass to its ``Agent`` tool; the ``display_name`` field
         (``t3-<type>-<id>``, PR-12) is the Agent tool ``description`` the slot
         passes, so every spawn is attributable and type-prefixed.
@@ -267,7 +230,7 @@ class Command(TyperCommand):
         else:
             pending = (
                 Task.objects.filter(status=Task.Status.PENDING)
-                .filter(_dispatchable_q())
+                .filter(Task.dispatchable_q())
                 .select_related("ticket")
                 .order_by("pk")
             )
@@ -360,7 +323,7 @@ class Command(TyperCommand):
             task = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,
                 claimed_by_session=session,
-                extra_filter=_dispatchable_q(),
+                extra_filter=Task.dispatchable_q(),
                 ordering=admission_claim_order(),
             )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []

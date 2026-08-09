@@ -73,7 +73,7 @@ class TestSchemaInvariants:
         grep_hint = by_id["signal-for-core-flow"].grep_hint
         assert grep_hint is not None
         pattern = re.compile(grep_hint)
-        assert pattern.search("post_save.connect(_auto_enqueue_headless_task, sender=Task)")
+        assert pattern.search("post_save.connect(_auto_enqueue_task, sender=Task)")
         assert pattern.search("pre_save.connect(_stamp_something, sender=Ticket)")
         assert pattern.search("@receiver(post_save, sender=Task)")
         assert not pattern.search("post_delete.connect(_cleanup_orphans, sender=Task)")

@@ -64,7 +64,6 @@ class RunningRow:
     ticket_number: str
     short_description: str
     phase: str
-    execution_target: str
     lane: str
     model: str
     agent_session_id: str
@@ -85,7 +84,6 @@ class QueuedRow:
     phase: str
     status: str
     claimed_by: str
-    execution_target: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +171,6 @@ def _running_row(attempt: TaskAttempt, now: dt.datetime) -> RunningRow:
         ticket_number=ticket.ticket_number if ticket else "",
         short_description=ticket.short_description if ticket else "",
         phase=attempt.task.phase,
-        execution_target=str(attempt.execution_target),
         lane=str(attempt.lane),
         model=attempt.model,
         agent_session_id=attempt.agent_session_id,
@@ -214,7 +211,6 @@ def _queued() -> tuple[QueuedRow, ...]:
             phase=task.phase,
             status=str(task.status),
             claimed_by=task.claimed_by,
-            execution_target=str(task.execution_target),
         )
         for task in tasks
     )

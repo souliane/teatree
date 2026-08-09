@@ -19,9 +19,9 @@ import pytest
 
 import teatree.agents.headless as headless_mod
 from teatree.agents._headless_options import _get_resume_session_id
-from teatree.agents.headless import run_headless
+from teatree.agents.headless import run_agent
 from teatree.core import notify as notify_module
-from teatree.core.models import BotPing, ConfigSetting, DeferredQuestion, PendingChatInjection, Session, Task, Ticket
+from teatree.core.models import BotPing, DeferredQuestion, PendingChatInjection, Session, Task, Ticket
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
@@ -68,14 +68,12 @@ class FakeBackend:
 
 class TestHeadlessQuestionLoop:
     def _run_parked_headless_task(self) -> Task:
-        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
         task = Task.objects.create(
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         result = {
             "summary": "Blocked on a design decision",
@@ -86,7 +84,7 @@ class TestHeadlessQuestionLoop:
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),
             patch.object(headless_mod, "_provider_child_env", return_value=None),
         ):
-            run_headless(task, phase="coding", overlay_skill_metadata={})
+            run_agent(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()
         return task
 
@@ -94,7 +92,6 @@ class TestHeadlessQuestionLoop:
         # 1. Headless STOP → correlated, un-mirrored DeferredQuestion; no interactive task.
         parked = self._run_parked_headless_task()
         assert parked.status == Task.Status.COMPLETED
-        assert not Task.objects.filter(execution_target=Task.ExecutionTarget.INTERACTIVE).exists()
         question = DeferredQuestion.objects.get()
         assert question.parked_task_id == parked.pk
         assert "Which DB host" in question.question
@@ -127,8 +124,6 @@ class TestHeadlessQuestionLoop:
         assert (_CHANNEL, _REPLY_TS, "white_check_mark") in backend.reacts
 
         resume = parked.child_tasks.get()
-        assert resume.execution_target == Task.ExecutionTarget.HEADLESS
         assert resume.parent_task_id == parked.pk
         assert "use postgres-1" in resume.execution_reason
         assert _get_resume_session_id(resume) == _RESUME_UUID
-        assert not Task.objects.filter(execution_target=Task.ExecutionTarget.INTERACTIVE).exists()

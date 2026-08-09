@@ -132,7 +132,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "answering": _READ_ONLY | _WEB,
     "retro": _READ_ONLY | _WRITE,
     # Scanner-dispatched phases (#3386): a loop scanner writes these directly to
-    # ``Task.phase`` (``execution_target=HEADLESS``), OUTSIDE ``SUBAGENT_BY_PHASE`` —
+    # ``Task.phase``, OUTSIDE ``SUBAGENT_BY_PHASE`` —
     # ``phases.SCANNER_DISPATCHED_PHASES`` makes the totality lane see them as
     # producers, so an EXPLICIT entry here is REQUIRED, never the deny-by-default
     # read-only fallback resolving a dispatchable phase silently.

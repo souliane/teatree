@@ -48,7 +48,7 @@ from teatree.agents.harness import (
 )
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import InvalidHarnessProviderError, register_harness
-from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
+from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
 from teatree.agents.pydantic_ai_config import (
     LANE_BULK,
@@ -265,7 +265,7 @@ class TestPydanticAiThread:
 
 
 class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
-    """``run_headless`` genuinely dispatches through ``PydanticAiHarness`` when selected."""
+    """``run_agent`` genuinely dispatches through ``PydanticAiHarness`` when selected."""
 
     def setUp(self) -> None:
         self.ticket = Ticket.objects.create()
@@ -289,7 +289,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
             patch.object(headless_mod, "resolve_harness", return_value=fake_harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(self.task, phase="planning", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="planning", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -307,7 +307,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         ):
             os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
             os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
-            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert attempt.exit_code == 1
@@ -337,7 +337,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         ):
             os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
             os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
-            attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(resumed_task, phase="coding", overlay_skill_metadata={})
 
         resumed_task.refresh_from_db()
         assert attempt.exit_code == 1
@@ -368,7 +368,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
             pytest.raises(RuntimeError, match="backend router transport unavailable"),
         ):
-            run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+            run_agent(resumed_task, phase="coding", overlay_skill_metadata={})
 
         # The non-CredentialError failure still propagates (the caller records it), but
         # the parked ancestor thread was restored, so the resume is recoverable.
@@ -544,7 +544,7 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     The seam maps the error into the same ``is_error`` ``ResultMessage`` the
     claude_sdk lane yields, so the driver's failure taxonomy (park/rotate or a
     recorded FAILED) fires without any transport special-casing. Before the fix a
-    429 propagated raw out of ``asyncio.run`` and ``run_headless`` re-raised it (a
+    429 propagated raw out of ``asyncio.run`` and ``run_agent`` re-raised it (a
     ``sdk_error`` FAILED-with-traceback), leaving the park path unreachable.
     """
 
@@ -560,7 +560,7 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
             patch.object(headless_mod, "resolve_harness", return_value=harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
         self.task.refresh_from_db()
         return attempt
 
@@ -631,7 +631,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
     """End-to-end park -> resume through the REAL ``resolve_harness`` (#2886).
 
     Unlike ``TestRunHeadlessDrivesPydanticAiHarness`` (which injects a fixed
-    harness, bypassing resolution), this drives ``run_headless`` through the
+    harness, bypassing resolution), this drives ``run_agent`` through the
     genuine ``resolve_harness(task)`` seam for BOTH the parking dispatch and
     the resumed continuation — proving the persisted thread actually reaches
     the resumed session's first turn, not just that the plumbing types check.
@@ -645,7 +645,6 @@ class TestRunHeadlessCachedResumeParity(TestCase):
             ticket=self.ticket,
             session=self.session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
     def test_resumed_dispatch_rehydrates_the_parked_conversation(self) -> None:
@@ -667,7 +666,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
             ),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            park_attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            park_attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert park_attempt.result["needs_user_input"] is True
@@ -686,7 +685,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
             ),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            resume_attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+            resume_attempt = run_agent(resumed_task, phase="coding", overlay_skill_metadata={})
 
         assert resume_attempt.result["summary"] == "done"
         # The resumed turn's model call carried more messages than a bare

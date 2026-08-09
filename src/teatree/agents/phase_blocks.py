@@ -172,7 +172,7 @@ def _phase_fanout_directive(task: Task) -> str:
 
     Headless parity with the interactive composer
     (``loop_dispatch._task_to_dict``): both routes call the single chokepoint
-    ``core.phases.resolve_fanout_directive`` so switching ``agent_runtime``
+    ``core.phases.resolve_fanout_directive`` so switching the harness
     between interactive and a headless runtime keeps the directive identical.
     Empty by default — ``resolve_fanout_directive`` renders nothing until the
     user opts the pair in via ``[agent.phase_fanout]`` — so a headless dispatch

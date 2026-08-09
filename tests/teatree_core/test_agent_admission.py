@@ -2,7 +2,7 @@
 
 The pure decision (``decide_admission``) is exercised by
 ``test_admission_governor``; these cover the CORE-side wiring that F9 added:
-the ``headless_admission_denied_reason`` seam and its consultation at the
+the ``agent_admission_denied_reason`` seam and its consultation at the
 post_save auto-enqueue and the drain safety net, so a governor DENY refuses a
 new headless admission with a VISIBLE log instead of silently admitting into
 the measured congestion collapse.
@@ -25,13 +25,9 @@ import pytest
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from teatree.core import headless_admission as gate_mod
+from teatree.core import agent_admission as gate_mod
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
-from teatree.core.headless_admission import (
-    HeadlessAdmission,
-    headless_admission_denied_reason,
-    headless_admission_verdict,
-)
+from teatree.core.agent_admission import AgentAdmission, agent_admission_denied_reason, agent_admission_verdict
 from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.modelkit.phases import PhaseCost
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
@@ -68,25 +64,25 @@ def _machine(load1: float = 1.0) -> MachineSignal:
     return MachineSignal(cores=8, load1=load1, ram_available_gb=20.0)
 
 
-def _denied(reason: str) -> HeadlessAdmission:
-    return HeadlessAdmission(expensive_denied=reason, cheap_denied=reason)
+def _denied(reason: str) -> AgentAdmission:
+    return AgentAdmission(expensive_denied=reason, cheap_denied=reason)
 
 
-def _admitted() -> HeadlessAdmission:
-    return HeadlessAdmission(expensive_denied=None, cheap_denied=None)
+def _admitted() -> AgentAdmission:
+    return AgentAdmission(expensive_denied=None, cheap_denied=None)
 
 
-class TestHeadlessAdmissionDeniedReason(TestCase):
+class TestAgentAdmissionDeniedReason(TestCase):
     def test_kill_switch_off_admits(self) -> None:
         with patch.object(gate_mod, "governor_enabled", return_value=False):
-            assert headless_admission_denied_reason() is None
+            assert agent_admission_denied_reason() is None
 
     def test_a_signal_read_failure_admits_fail_open(self) -> None:
         with (
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", side_effect=RuntimeError("probe down")),
         ):
-            assert headless_admission_denied_reason() is None
+            assert agent_admission_denied_reason() is None
 
     def test_quota_exhaustion_denies_with_a_reason(self) -> None:
         with (
@@ -94,7 +90,7 @@ class TestHeadlessAdmissionDeniedReason(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_exhausted_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
         ):
-            reason = headless_admission_denied_reason()
+            reason = agent_admission_denied_reason()
         assert reason is not None
         assert "quota-exhausted" in reason
 
@@ -104,7 +100,7 @@ class TestHeadlessAdmissionDeniedReason(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
         ):
-            assert headless_admission_denied_reason() is None
+            assert agent_admission_denied_reason() is None
 
     def test_live_count_at_ceiling_denies(self) -> None:
         # A healthy quota yields a positive ceiling; a live headless-agent count
@@ -113,9 +109,9 @@ class TestHeadlessAdmissionDeniedReason(TestCase):
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
-            patch.object(Task.objects, "live_headless_agent_count", return_value=999),
+            patch.object(Task.objects, "claimed_agent_count", return_value=999),
         ):
-            reason = headless_admission_denied_reason()
+            reason = agent_admission_denied_reason()
         assert reason is not None
         assert "at/over governor ceiling" in reason
 
@@ -136,7 +132,6 @@ class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
             Task.objects.create(
                 ticket=ticket,
                 session=Session.objects.create(ticket=ticket),
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 status=Task.Status.CLAIMED,
                 phase="architectural_review",
                 lease_expires_at=timezone.now() + dt.timedelta(hours=1),
@@ -148,7 +143,7 @@ class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
         ):
-            reason = headless_admission_denied_reason()
+            reason = agent_admission_denied_reason()
         assert reason is not None
         assert "at/over governor ceiling 4" in reason
 
@@ -158,7 +153,7 @@ class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
         ):
-            assert headless_admission_denied_reason() is None
+            assert agent_admission_denied_reason() is None
 
 
 class TestPhaseAwareVerdict(TestCase):
@@ -167,15 +162,15 @@ class TestPhaseAwareVerdict(TestCase):
     #: Past the 5.0-per-core deny watermark on the 8-core ``_machine`` signal.
     _MELTED = 8 * 5.0 + 1
 
-    def _verdict(self, *, load1: float = 1.0, live: int = 0, occupancy: int = 0) -> HeadlessAdmission:
+    def _verdict(self, *, load1: float = 1.0, live: int = 0, occupancy: int = 0) -> AgentAdmission:
         with (
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
-            patch.object(Task.objects, "live_headless_agent_count", return_value=live),
+            patch.object(Task.objects, "claimed_agent_count", return_value=live),
             patch.object(Task.objects, "cheap_lane_occupancy", return_value=occupancy),
         ):
-            return headless_admission_verdict()
+            return agent_admission_verdict()
 
     def test_a_load_brake_denies_the_expensive_class_and_admits_the_cheap_one(self) -> None:
         verdict = self._verdict(load1=self._MELTED)
@@ -207,7 +202,7 @@ class TestPhaseAwareVerdict(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_exhausted_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
         ):
-            verdict = headless_admission_verdict()
+            verdict = agent_admission_verdict()
         assert verdict.denied_for(PhaseCost.CHEAP) is not None
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
 
@@ -219,7 +214,7 @@ class TestPhaseAwareVerdict(TestCase):
 
     def test_the_kill_switch_admits_both_classes(self) -> None:
         with patch.object(gate_mod, "governor_enabled", return_value=False):
-            verdict = headless_admission_verdict()
+            verdict = agent_admission_verdict()
         assert verdict.denied_for(PhaseCost.CHEAP) is None
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
 
@@ -228,7 +223,7 @@ class TestPhaseAwareVerdict(TestCase):
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", side_effect=RuntimeError("probe down")),
         ):
-            verdict = headless_admission_verdict()
+            verdict = agent_admission_verdict()
         assert verdict.denied_for(PhaseCost.CHEAP) is None
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
 
@@ -240,13 +235,13 @@ class TestPhaseAwareVerdict(TestCase):
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=self._MELTED)),
         ):
-            assert headless_admission_denied_reason() is not None
-            assert headless_admission_denied_reason("reviewing") is None
+            assert agent_admission_denied_reason() is not None
+            assert agent_admission_denied_reason("reviewing") is None
 
     def test_every_refused_class_is_announced_and_an_admitted_one_is_not(self) -> None:
         # A refusal is never silent, and the wording lives on the verdict so both
         # chokepoints report it identically.
-        with self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs:
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
             self._verdict(load1=self._MELTED).log_denials()
         assert any("expensive" in line for line in logs.output)
         assert not any("cheap" in line for line in logs.output)
@@ -256,12 +251,10 @@ class TestDrainConsultsTheGovernor(TestCase):
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
 
-        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
-        self.addCleanup(
-            post_save.connect, _auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless"
-        )
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
 
     def _pending_headless(self) -> Task:
         ticket = Ticket.objects.create()
@@ -269,18 +262,17 @@ class TestDrainConsultsTheGovernor(TestCase):
         return Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
         )
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_drain_admits_nothing_on_a_governor_deny(self) -> None:
-        from teatree.core.tasks import drain_headless_queue_body  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
 
         task = self._pending_headless()
-        with patch.object(gate_mod, "headless_admission_verdict", return_value=_denied("weekly window spent")):
-            result = drain_headless_queue_body()
+        with patch.object(gate_mod, "agent_admission_verdict", return_value=_denied("weekly window spent")):
+            result = drain_queue_body()
 
         assert result["enqueued"] == []
         task.refresh_from_db()
@@ -288,15 +280,15 @@ class TestDrainConsultsTheGovernor(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_drain_admits_when_the_governor_is_silent(self) -> None:
-        from teatree.core.tasks import drain_headless_queue_body  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
 
         task = self._pending_headless()
         with (
-            patch.object(gate_mod, "headless_admission_verdict", return_value=_admitted()),
-            patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
+            patch.object(gate_mod, "agent_admission_verdict", return_value=_admitted()),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
         ):
             enqueue_task.enqueue = MagicMock()
-            result = drain_headless_queue_body()
+            result = drain_queue_body()
 
         assert task.pk in result["enqueued"]
 
@@ -318,12 +310,10 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
 
-        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
-        self.addCleanup(
-            post_save.connect, _auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless"
-        )
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
 
     def _pending(self, phase: str) -> Task:
         ticket = Ticket.objects.create()
@@ -331,22 +321,21 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         return Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase=phase,
         )
 
     def _drain_under_load(self, load1: float) -> tuple[dict, MagicMock]:
-        from teatree.core.tasks import drain_headless_queue_body  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
 
         with (
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()) as quota_probe,
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
-            patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
         ):
             enqueue_task.enqueue = MagicMock()
-            return drain_headless_queue_body(), quota_probe
+            return drain_queue_body(), quota_probe
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_a_braked_drain_admits_the_cheap_class_and_holds_the_expensive_one(self) -> None:
@@ -413,7 +402,7 @@ class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
         self._pending("reviewing")
         with (
             patch.object(Task.objects, "cheap_lane_occupancy", return_value=1),
-            self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs,
+            self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs,
         ):
             self._drain_under_load(self._MELTED)
 
@@ -457,12 +446,10 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
 
-        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
-        self.addCleanup(
-            post_save.connect, _auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless"
-        )
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
         self.ticket = Ticket.objects.create()
         self.session = Session.objects.create(ticket=self.ticket)
 
@@ -470,7 +457,6 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         return Task.objects.create(
             ticket=self.ticket,
             session=self.session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="reviewing",
         )
@@ -480,14 +466,14 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now())
         return row
 
-    def _probe(self) -> HeadlessAdmission:
+    def _probe(self) -> AgentAdmission:
         """One chokepoint's verdict, off the live occupancy count — a racer's stale read."""
         with (
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
         ):
-            return headless_admission_verdict()
+            return agent_admission_verdict()
 
     def test_two_racing_chokepoints_cannot_both_take_the_last_seat(self) -> None:
         self._seated_row()
@@ -523,7 +509,6 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         coding = Task.objects.create(
             ticket=self.ticket,
             session=self.session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="coding",
         )
@@ -538,7 +523,7 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         held = [self._cheap_row() for _ in range(3)]
         verdict = self._probe()
 
-        with self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs:
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
             verdict.log_denials()
             for row in held:
                 assert verdict.admit(row.pk, "reviewing", at="headless drain") is False
@@ -551,7 +536,7 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
         released = self._cheap_row()
         Task.objects.filter(pk=released.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
 
-        with self.assertLogs("teatree.core.headless_admission", level="WARNING") as logs:
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
             self._probe().log_denials()
 
         assert any("released 1 unclaimed seat" in line for line in logs.output)
@@ -565,14 +550,13 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         with (
-            patch.object(gate_mod, "headless_admission_verdict", return_value=_denied("load over watermark")),
-            patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
+            patch.object(gate_mod, "agent_admission_verdict", return_value=_denied("load over watermark")),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
         ):
             enqueue_task.enqueue = MagicMock()
             Task.objects.create(
                 ticket=ticket,
                 session=session,
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 status=Task.Status.PENDING,
                 phase="architectural_review",
             )
@@ -584,7 +568,6 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase=phase,
         )
@@ -597,7 +580,7 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=8 * 5.0 + 1)),
-            patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
         ):
             enqueue_task.enqueue = MagicMock()
             self._create_pending("coding")
@@ -617,7 +600,7 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=8 * 5.0 + 1)),
-            patch("teatree.core.tasks.execute_headless_task") as enqueue_task,
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
         ):
             enqueue_task.enqueue = MagicMock()
             for _ in range(6):

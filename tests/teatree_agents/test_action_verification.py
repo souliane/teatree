@@ -28,7 +28,7 @@ import teatree.agents.headless as headless_mod
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.agents.harness import PydanticAiHarness
-from teatree.agents.headless import TaskUsage, _collect, run_headless
+from teatree.agents.headless import TaskUsage, _collect, run_agent
 from teatree.core.models import Session, Task, Ticket, Worktree
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
@@ -122,7 +122,7 @@ class TestRunHeadlessRefusesAToollessCodingRun(TestCase):
             patch.object(headless_mod, "resolve_harness", return_value=fake_harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         assert attempt.error.startswith("action_unverified:"), (
             f"a toolless coding run must be refused by the action gate; got: {attempt.error!r}"

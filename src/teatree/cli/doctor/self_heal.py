@@ -9,9 +9,8 @@ of the stack it watches) can restart the stack and DM the owner:
 - a compose init container that exited non-zero, or any long-running service —
     worker, admin, or the watchdog itself — stuck ``Created``/``Exited``,
 - a free worker flock while the loop machinery has queued, overdue work,
-- an ``execute_headless_task`` claimed RUNNING with no live worker to finish it,
+- an ``execute_task`` claimed RUNNING with no live worker to finish it,
 - a READY loop timer stale past 2x its cadence (a wedged drain),
-- a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
 - a FAILED task on a still-live ticket (the silent-freeze signature),
 - a runtime clone that has drifted off its default branch,
 - a ``worker_quiescing`` gate outliving any deploy that could explain it,
@@ -196,18 +195,18 @@ class _Probe:
 
     @staticmethod
     def stranded_headless_results(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
-        """``(job_id, started_at)`` for ``execute_headless_task`` RUNNING past the stranded grace."""
+        """``(job_id, started_at)`` for ``execute_task`` RUNNING past the stranded grace."""
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep
 
         from teatree.core.tasks import (  # noqa: PLC0415 — deferred: task import needs the registry
             STRANDED_JOB_GRACE_SECONDS,
-            execute_headless_task,
+            execute_task,
         )
 
         cutoff = now - dt.timedelta(seconds=STRANDED_JOB_GRACE_SECONDS)
         rows = DBTaskResult.objects.filter(
-            task_path=execute_headless_task.module_path,
+            task_path=execute_task.module_path,
             status=TaskResultStatus.RUNNING,
         )
         return [(str(row.id), row.started_at) for row in rows if row.started_at is not None and row.started_at < cutoff]
@@ -322,7 +321,7 @@ def _check_loop_worker_alive() -> bool:
 
 
 def _check_stranded_headless_task() -> bool:
-    """FAIL when an ``execute_headless_task`` is RUNNING past its grace with no live worker.
+    """FAIL when an ``execute_task`` is RUNNING past its grace with no live worker.
 
     A headless task claimed RUNNING whose executor died leaves the row RUNNING
     forever — nothing will ever finish it, and the ticket silently freezes. When
@@ -340,7 +339,7 @@ def _check_stranded_headless_task() -> bool:
         return True
     ids = ", ".join(job_id for job_id, _ in stranded)
     typer.echo(
-        f"FAIL  {len(stranded)} execute_headless_task job(s) are RUNNING with no live worker to "
+        f"FAIL  {len(stranded)} execute_task job(s) are RUNNING with no live worker to "
         f"finish them ({ids}) — the claiming executor died mid-run and the ticket is frozen. "
         f"Restart the worker (`t3 worker ensure`); the reconciler re-heads the chain."
     )
@@ -378,38 +377,6 @@ def _check_stale_loop_timer() -> bool:
             f"INFO    {name}: due {run_after.isoformat()}, past 2x its "
             f"{threshold // _STALE_TIMER_CADENCE_MULTIPLIER}s cadence."
         )
-    return False
-
-
-def _check_interactive_task_under_headless() -> bool:
-    """FAIL when PENDING ``interactive`` tasks exist under ``agent_runtime=headless``.
-
-    In headless runtime only the headless lane drains the queue, so a PENDING
-    task pinned ``execution_target=interactive`` can never be claimed — it stalls
-    forever with no error. Surfaces the count so the operator can re-target or
-    flip the runtime.
-    """
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
-        from teatree.config.agent_enums import AgentRuntime  # noqa: PLC0415 — deferred: keeps CLI startup light
-        from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        if get_effective_settings().agent_runtime is not AgentRuntime.HEADLESS:
-            return True
-        stalled = Task.objects.filter(
-            status=Task.Status.PENDING,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        ).count()
-    except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
-        typer.echo(f"WARN  Interactive-under-headless check crashed: {exc.__class__.__name__}: {exc}")
-        return True
-    if not stalled:
-        return True
-    typer.echo(
-        f"FAIL  {stalled} PENDING task(s) are pinned execution_target=interactive under "
-        f"agent_runtime=headless — the headless lane cannot claim them, so they stall silently. "
-        f"Re-target them or run the interactive loop lane."
-    )
     return False
 
 
@@ -524,7 +491,6 @@ def run_self_heal_checks() -> bool:
         _check_loop_worker_alive,
         _check_stranded_headless_task,
         _check_stale_loop_timer,
-        _check_interactive_task_under_headless,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
         check_stranded_quiescing_gate,

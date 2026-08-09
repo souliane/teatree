@@ -42,7 +42,6 @@ class TaskRow(TypedDict):
     ticket_id: int
     ticket_title: str
     status: str
-    execution_target: str
     phase: str
     execution_reason: str
     claimed_by: str
@@ -215,7 +214,6 @@ def render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) ->
             str(row["ticket_id"]),
             short_title(row["ticket_title"]) or "-",
             f"[{style}]{status}[/]" if style else status,
-            row["execution_target"],
             row["phase"] or "-",
             row["claimed_by"] or "-",
             row["execution_reason"] or "-",

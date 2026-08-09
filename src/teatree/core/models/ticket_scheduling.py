@@ -119,7 +119,6 @@ class TicketSchedulingModel(TicketFacet):
                 ticket=self,
                 session=session,
                 phase=phase,
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 execution_reason=reason,
                 parent_task=parent_task,
             )
@@ -140,7 +139,6 @@ class TicketSchedulingModel(TicketFacet):
             ticket=self,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Auto-review before shipping — sub-agent in current session",
             parent_task=parent_task,
         )
@@ -171,7 +169,6 @@ class TicketSchedulingModel(TicketFacet):
             ticket=self,
             session=session,
             phase="shipping",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason=reason,
             parent_task=parent_task,
         )

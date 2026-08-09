@@ -443,7 +443,7 @@ forbidden_modules = [
   "teatree.agents._headless_env",
 ]
 # Direct-only: an overlay may use the SANCTIONED public surface (``teatree.overlay_sdk``,
-# ``run_headless``), which internally touches these agents-private modules — that transitive
+# ``run_agent``), which internally touches these agents-private modules — that transitive
 # chain is fine. Only a DIRECT ``import teatree.agents._headless_*`` from an overlay is the
 # reach-into-privates this gate forbids.
 allow_indirect_imports = "true"

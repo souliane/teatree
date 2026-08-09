@@ -108,7 +108,7 @@ if TYPE_CHECKING:
         register_harness,
         registered_harness_names,
         resolve_harness_spec,
-        run_headless,
+        run_agent,
         validate_result_keys,
     )
 
@@ -219,8 +219,8 @@ __all__ = [
     "register_harness",
     "registered_harness_names",
     "resolve_harness_spec",
+    "run_agent",
     "run_allowed_to_fail",
     "run_checked",
-    "run_headless",
     "validate_result_keys",
 ]

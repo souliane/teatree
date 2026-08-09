@@ -33,7 +33,6 @@ SETTING_HELP: dict[str, str] = {
     "agent_phase_harness": "per-phase harness override, for a phase that needs a different CLI",
     "agent_phase_models": "per-phase model override, keyed by lifecycle phase name",
     "agent_pydantic_ai_tier_models": "model per tier for the pydantic-ai lane",
-    "agent_runtime": "whether dispatched work runs headless or in an interactive terminal",
     "agent_session_effort": "reasoning effort the main session runs at",
     "agent_session_model": "model the main orchestrating session runs on",
     "agent_session_permission_mode": "permission mode the main session is pinned to; empty keeps the unattended pin",

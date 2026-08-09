@@ -23,7 +23,7 @@ from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
-from teatree.agents.headless import TaskUsage, run_headless
+from teatree.agents.headless import TaskUsage, run_agent
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -93,7 +93,7 @@ class TestEvidenceRequiredOnPhaseCompletion(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
 
         with _fake_sdk(bare_summary):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         session.refresh_from_db()
@@ -124,7 +124,7 @@ class TestEvidenceRequiredOnPhaseCompletion(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
 
         with _fake_sdk(good):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         session.refresh_from_db()

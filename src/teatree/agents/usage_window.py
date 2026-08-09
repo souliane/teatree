@@ -279,7 +279,6 @@ def _record_park(task: Task, *, reason: str, not_before: datetime) -> TaskAttemp
     """
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1,
         error=reason,

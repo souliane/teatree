@@ -44,7 +44,7 @@ def _running(**kwargs: object) -> TaskAttempt:
     """An attempt that has started and not ended — the definition of 'running'."""
     ticket = TicketFactory(state=State.STARTED, short_description="live subject")
     task = TaskFactory(ticket=ticket, phase="coding")
-    defaults = {"execution_target": Task.ExecutionTarget.HEADLESS, "ended_at": None}
+    defaults = {"ended_at": None}
     return TaskAttempt.objects.create(task=task, **{**defaults, **kwargs})
 
 
@@ -58,7 +58,6 @@ class RunningWorkIsVisibleTestCase(TestCase):
         assert row.phase == "coding"
         assert row.short_description == "live subject"
         assert row.model == "claude-opus-4-8"
-        assert row.execution_target == Task.ExecutionTarget.HEADLESS
         assert row.elapsed, "a running attempt must report how long it has been going"
         assert row.attempt_id == attempt.pk
 
@@ -126,8 +125,7 @@ class RecentOutcomesTailTestCase(TestCase):
         task = TaskFactory(ticket=ticket, phase="coding")
         now = timezone.now()
         TaskAttempt.objects.bulk_create(
-            TaskAttempt(task=task, execution_target=Task.ExecutionTarget.HEADLESS, ended_at=now, exit_code=0)
-            for _ in range(LIVE_OUTCOME_ROWS + 5)
+            TaskAttempt(task=task, ended_at=now, exit_code=0) for _ in range(LIVE_OUTCOME_ROWS + 5)
         )
         assert len(build_live_view().outcomes) == LIVE_OUTCOME_ROWS
 
@@ -147,13 +145,9 @@ class SkillBundleIsVisiblePerTaskTestCase(TestCase):
         assert row.skills == ("t3:code", "t3:rules")
         assert not row.skills_fault
 
-    def test_a_headless_dispatch_that_recorded_no_bundle_reads_as_a_fault(self) -> None:
+    def test_a_agent_runner_that_recorded_no_bundle_reads_as_a_fault(self) -> None:
         _running(skills_loaded=[])
         assert build_live_view().running[0].skills_fault
-
-    def test_an_interactive_attempt_is_not_faulted_for_an_empty_bundle(self) -> None:
-        _running(execution_target=Task.ExecutionTarget.INTERACTIVE, skills_loaded=[])
-        assert not build_live_view().running[0].skills_fault
 
     def test_the_page_states_the_fault_rather_than_rendering_blank(self) -> None:
         _running(skills_loaded=[])

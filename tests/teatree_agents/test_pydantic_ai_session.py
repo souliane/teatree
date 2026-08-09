@@ -31,7 +31,7 @@ from pydantic_ai.usage import RunUsage
 
 import teatree.agents.headless as headless_mod
 from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
-from teatree.agents.headless import TaskUsage, run_headless
+from teatree.agents.headless import TaskUsage, run_agent
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.pydantic_ai_session import _turns_made
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
@@ -329,7 +329,7 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
             patch.object(headless_mod, "resolve_harness", return_value=harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            return run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            return run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
     def _dispatch_api_error(self, *, status_code: int, error_type: str, message: str) -> TaskAttempt:
         return self._dispatch(

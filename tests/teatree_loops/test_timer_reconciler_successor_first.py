@@ -44,11 +44,11 @@ class TestSuccessorScheduledBeforeBody(django.test.TestCase):
         assert result == {"error": 1}
         assert _ready_successors(timer_reconciler.expire_stale_jobs.module_path) == 1
 
-    def test_drain_headless_chain_survives_body_exception_and_keeps_the_chain(self) -> None:
+    def test_drain_chain_survives_body_exception_and_keeps_the_chain(self) -> None:
         with patch.object(timer_reconciler, "reap_stuck_headless_runs", _boom):
-            result = timer_reconciler.drain_headless_chain.func()
+            result = timer_reconciler.drain_chain.func()
         assert result == {"error": 1}
-        assert _ready_successors(timer_reconciler.drain_headless_chain.module_path) == 1
+        assert _ready_successors(timer_reconciler.drain_chain.module_path) == 1
 
     def test_run_slack_answer_survives_body_exception_and_keeps_the_chain(self) -> None:
         with patch.object(timer_reconciler, "_run_slack_answer_cycle_under_lease", _boom):

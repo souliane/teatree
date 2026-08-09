@@ -1,8 +1,8 @@
 # teatree headless deployment
 
 Run teatree headless on a single existing box, reached over direct SSH, driven
-by one GitHub Action. teatree runs the autonomous loop (`t3 worker`,
-`agent_runtime=headless`), self-updates via its own loop, autostarts on reboot,
+by one GitHub Action. teatree runs the autonomous loop (`t3 worker`),
+self-updates via its own loop, autostarts on reboot,
 and serves the Django admin on the box loopback for SSH-tunnel access. The image
 is **self-contained** — it bakes a pinned source@ref + interpreter + locked deps
 so a fresh box boots deterministically and offline; see
@@ -730,9 +730,8 @@ service is down — exactly the outage it exists to repair.
 3. `t3 doctor check --json` inside a live container — reads the factory health,
    including the H24 self-heal detectors: a compose init container that exited
    non-zero / a worker stuck `Created`, a free worker flock over overdue loop
-   work, an `execute_headless_task` stranded RUNNING with no live worker, a READY
-   loop timer stale past 2× its cadence, a PENDING `interactive` task under
-   `agent_runtime=headless`, a FAILED task on a still-live ticket, a runtime
+   work, an `execute_task` stranded RUNNING with no live worker, a READY
+   loop timer stale past 2× its cadence, a FAILED task on a still-live ticket, a runtime
    clone drifted off its default branch, and a `worker_quiescing` gate older than
    any deploy could explain
    ([#3983](https://github.com/souliane/teatree/issues/3983) — a deploy killed

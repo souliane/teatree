@@ -29,7 +29,6 @@ def _failed_task_on_new_ticket(*, phase: str, error: str) -> Task:
     task = Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1,
         error=error,

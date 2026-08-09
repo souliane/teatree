@@ -28,7 +28,6 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
-        "agent_runtime",
         "agent_signature",
         "allow_destructive_disk",
         "allow_destructive_ram",

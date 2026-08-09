@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
-from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -113,17 +113,8 @@ class _ModeHarnessSettings:
 
     mode: Mode = Mode.AUTO
     autonomy: Autonomy = Autonomy.FULL
-    # The single LANE selector for loop-dispatched phase agents (those whose
-    # (role, phase) has a registered phase sub-agent). ``interactive`` dispatches
-    # them in-session via the ``/loop`` slot's ``Agent`` tool; ``headless`` (the
-    # default) runs them via ``agents/headless.py`` behind the two-layer
-    # ``agent_harness`` (transport) / ``agent_harness_provider`` (credential) pair
-    # (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
-    agent_runtime: AgentRuntime = AgentRuntime.HEADLESS
     # Layer 1 of the two-layer harness config model (#2887): which in-process
-    # TRANSPORT a headless run uses. Orthogonal to ``agent_runtime`` (which LANE —
-    # interactive vs headless — a task dispatches into): once a run IS headless,
-    # this picks the transport that opens the agent session behind the
+    # TRANSPORT an agent run uses — the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
     # behaviour) is the ``claude-agent-sdk`` backend; ``pydantic_ai`` (#2885) is the
     # generic OpenAI-compatible backend. The backend set is OPEN (#3157 E1):
@@ -134,12 +125,11 @@ class _ModeHarnessSettings:
     # overridable; ``T3_AGENT_HARNESS`` env wins.
     agent_harness: str = AgentHarness.CLAUDE_SDK
     # Layer 2 of the two-layer harness config model (#2887): the provider/
-    # credential a headless run authenticates with, CONSTRAINED by Layer 1
+    # credential an agent run authenticates with, CONSTRAINED by Layer 1
     # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum
     # docstring for the full constraint table). Default ``None`` — NO explicit
     # pin: a ``ClaudeSdkHarness`` dispatch inherits the ambient environment
-    # unchanged (today's behaviour, and the legacy default the pre-#2887
-    # ``agent_runtime=interactive``/``api`` fallthrough exercised), so an
+    # unchanged, so an
     # operator who never touches this setting is never forced through an eager
     # credential lookup they haven't configured. An explicit ``subscription_oauth``
     # forces the plan's OAuth token (stripping the API key) — the ``claude_sdk``

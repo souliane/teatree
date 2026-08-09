@@ -364,9 +364,9 @@ class IssueIntakeScanner:
         admits is a new coding ticket, so it is braked exactly as it was before
         the cheap-phase exemption existed.
         """
-        from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred
+        from teatree.core.agent_admission import agent_admission_denied_reason  # noqa: PLC0415 — deferred
 
-        reason = headless_admission_denied_reason()
+        reason = agent_admission_denied_reason()
         if reason is not None:
             logger.info("IssueIntakeScanner deferring new intake: governor DENIED admission: %s", reason)
         return reason is not None

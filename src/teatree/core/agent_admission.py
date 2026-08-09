@@ -17,7 +17,7 @@ the point: reviewing and shipping are what DRAIN the box — a merged PR retires
 worktree and its agent — so refusing them alongside the expensive class removed
 the only work that would have relieved the pressure and the brake held itself on
 (measured 2026-08-03: 3h22m of denied admissions, zero review verdicts, no
-merges). :func:`headless_admission_verdict` therefore probes ONCE and resolves
+merges). :func:`agent_admission_verdict` therefore probes ONCE and resolves
 that probe per :class:`~teatree.core.modelkit.phases.PhaseCost`, so a drain costs
 one probe however many rows it walks.
 
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class HeadlessAdmission:
+class AgentAdmission:
     """One governor probe, resolved per phase cost class (#4098).
 
     Plain fields rather than a per-phase callable: the verdict is a value a caller holds
@@ -180,9 +180,9 @@ def _task_model() -> "type[Task]":
     return Task
 
 
-def _admit_all() -> HeadlessAdmission:
+def _admit_all() -> AgentAdmission:
     """Admit everything, unbounded — the kill-switch answer and the fail-open answer alike."""
-    return HeadlessAdmission(expensive_denied=None, cheap_denied=None)
+    return AgentAdmission(expensive_denied=None, cheap_denied=None)
 
 
 def _cheap_lane_ceiling() -> int:
@@ -206,7 +206,7 @@ def _ceiling_denial(ceiling: int, occupied: int, *, lane: str = "") -> str | Non
     return f"live headless agents {occupied} at/over governor ceiling {ceiling}"
 
 
-def headless_admission_verdict() -> HeadlessAdmission:
+def agent_admission_verdict() -> AgentAdmission:
     """Probe the governor ONCE and resolve the verdict for both phase cost classes.
 
     The EXPENSIVE class is the pre-#4098 answer verbatim: the pure decision over the
@@ -233,10 +233,10 @@ def headless_admission_verdict() -> HeadlessAdmission:
         machine = read_machine_signal()
         cheap_ceiling = _cheap_lane_ceiling()
         decision = decide_admission(quota=quota, machine=machine, static_ceiling=None)
-        live = task_model.objects.live_headless_agent_count()
+        live = task_model.objects.claimed_agent_count()
         expensive = decision.reason if not decision.admit else _ceiling_denial(decision.ceiling, live)
         if cheap_ceiling <= 0:
-            return HeadlessAdmission(expensive_denied=expensive, cheap_denied=expensive)
+            return AgentAdmission(expensive_denied=expensive, cheap_denied=expensive)
         exempt = decide_admission(
             quota=quota, machine=machine, static_ceiling=None, load_brake=MachineBrake(applies=False)
         )
@@ -248,7 +248,7 @@ def headless_admission_verdict() -> HeadlessAdmission:
     except Exception:
         logger.exception("headless admission governor probe failed — admitting (fail-open)")
         return _admit_all()
-    return HeadlessAdmission(
+    return AgentAdmission(
         expensive_denied=expensive,
         cheap_denied=cheap,
         cheap_headroom=max(0, cheap_ceiling - cheap_occupancy),
@@ -257,15 +257,15 @@ def headless_admission_verdict() -> HeadlessAdmission:
     )
 
 
-def headless_admission_denied_reason(phase: str = "") -> str | None:
+def agent_admission_denied_reason(phase: str = "") -> str | None:
     """The governor's reason to DENY one more headless admission of *phase*, or ``None``.
 
     The single-shot wrapper for a caller admitting ONE unit of work: it probes and
     resolves in one call. A caller walking a queue holds a
-    :func:`headless_admission_verdict` instead, so N rows still cost one probe.
+    :func:`agent_admission_verdict` instead, so N rows still cost one probe.
     ``phase`` omitted is the EXPENSIVE class — the pre-#4098 verdict verbatim.
     """
-    return headless_admission_verdict().denied_reason(phase)
+    return agent_admission_verdict().denied_reason(phase)
 
 
-__all__ = ["HeadlessAdmission", "headless_admission_denied_reason", "headless_admission_verdict"]
+__all__ = ["AgentAdmission", "agent_admission_denied_reason", "agent_admission_verdict"]

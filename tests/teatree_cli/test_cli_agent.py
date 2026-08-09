@@ -54,7 +54,7 @@ class TestUnattendedTaskRunPinsPermissionMode:
         flag = argv.index("--permission-mode")
         assert argv[flag + 1] == permission_modes.UNATTENDED
 
-    def test_pinned_mode_matches_the_headless_dispatch_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pinned_mode_matches_the_agent_runner_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Spelled against the shared constant so the two lanes cannot drift apart."""
         argv = _exec_argv(monkeypatch, task="do the thing")
 

@@ -105,7 +105,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "resolve_harness_spec",
         "run_allowed_to_fail",
         "run_checked",
-        "run_headless",
+        "run_agent",
         "validate_result_keys",
     }
 )
@@ -222,7 +222,7 @@ FACTORY_SEAM: frozenset[str] = frozenset(
         "register_harness",
         "registered_harness_names",
         "resolve_harness_spec",
-        "run_headless",
+        "run_agent",
         "LoopWatchdog",
         "TicketBudget",
         "ContextPlan",

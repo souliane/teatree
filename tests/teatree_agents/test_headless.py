@@ -29,17 +29,25 @@ from teatree.agents.headless import (
     _limit_match,
     _provider_child_env,
     _resolve_dispatch_lane,
-    run_headless,
+    run_agent,
 )
 from teatree.agents.headless_result import parse_result
 from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import AgentHarnessProvider
-from teatree.core.models import ConfigSetting, LeaseLostError, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import (
+    ConfigSetting,
+    DeferredQuestion,
+    LeaseLostError,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
-from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import assistant_tool_use as _assistant_tool_use
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
@@ -65,7 +73,7 @@ class TestRunHeadless(TestCase):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -91,7 +99,7 @@ class TestRunHeadless(TestCase):
         with _fake_sdk(stream):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         attempt.refresh_from_db()
         assert attempt.exit_code == 0
@@ -116,7 +124,7 @@ class TestRunHeadless(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         attempt.refresh_from_db()
         assert attempt.reasoning_effort == "xhigh"
@@ -133,7 +141,7 @@ class TestRunHeadless(TestCase):
         with _fake_sdk(stream):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         attempt.refresh_from_db()
         assert attempt.exit_code == 0
@@ -145,7 +153,7 @@ class TestRunHeadless(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 1
@@ -157,7 +165,7 @@ class TestRunHeadless(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = run_headless(task, phase="scoping", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="scoping", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -177,7 +185,7 @@ class TestRunHeadless(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -190,7 +198,7 @@ class TestRunHeadless(TestCase):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert "unexpected keys" in attempt.error
@@ -198,34 +206,27 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.FAILED
 
     def test_routes_to_interactive_when_needs_user_input(self) -> None:
-        # The interactive-followup arm exists only under the interactive runtime; the
-        # shipped one is headless (#3895), which records a DeferredQuestion instead.
         result = {
             "summary": "Blocked on design",
             "needs_user_input": True,
             "user_input_reason": "Need design decision",
         }
-        with interactive_runtime(), _fake_sdk(_success_stream(result)):
+        with _fake_sdk(_success_stream(result)):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(
                 ticket=self.ticket,
                 session=session,
-                execution_target=Task.ExecutionTarget.HEADLESS,
             )
 
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
         assert attempt.result["needs_user_input"] is True
         assert task.status == Task.Status.COMPLETED
-        followup = Task.objects.filter(
-            ticket=self.ticket,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-        ).first()
-        assert followup is not None
-        assert "Need design decision" in followup.execution_reason
+        # There is no terminal to ask at, so the STOP parks as a durable question.
+        question = DeferredQuestion.objects.get(parked_task=task)
+        assert "Need design decision" in question.question
 
 
 class TestNoResultEnvelopeGuard(TestCase):
@@ -248,7 +249,7 @@ class TestNoResultEnvelopeGuard(TestCase):
     def test_prose_only_run_on_an_ungated_phase_is_refused(self) -> None:
         task = self._task(phase="debugging")
         with _fake_sdk([_assistant_text("I would need to run `git log`, but I have no shell."), _result_message()]):
-            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -265,7 +266,7 @@ class TestNoResultEnvelopeGuard(TestCase):
         # run must not leave a phase attestation behind.
         task = self._task(phase="e2e")
         with _fake_sdk([_assistant_text("Nothing to report."), _result_message()]):
-            run_headless(task, phase="e2e", overlay_skill_metadata={})
+            run_agent(task, phase="e2e", overlay_skill_metadata={})
 
         task.refresh_from_db()
         task.session.refresh_from_db()
@@ -281,7 +282,7 @@ class TestNoResultEnvelopeGuard(TestCase):
         for prose in ("First attempt, no envelope.", "Completely different second attempt."):
             task = self._task(phase="debugging")
             with _fake_sdk([_assistant_text(prose), _result_message()]):
-                attempts.append(run_headless(task, phase="debugging", overlay_skill_metadata={}))
+                attempts.append(run_agent(task, phase="debugging", overlay_skill_metadata={}))
 
         assert attempts[0].error_fingerprint == attempts[1].error_fingerprint
         assert attempts[0].error_fingerprint != ""
@@ -296,7 +297,7 @@ class TestNoResultEnvelopeGuard(TestCase):
             patch.object(headless_mod, "resolve_harness", return_value=harness),
             patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
@@ -307,7 +308,7 @@ class TestNoResultEnvelopeGuard(TestCase):
         # is pinned by TestRunHeadless above) — byte-identical to before the guard.
         task = self._task(phase="retro")
         with _fake_sdk([_assistant_text("Lessons: be terser."), _result_message()]):
-            attempt = run_headless(task, phase="retro", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="retro", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
@@ -346,7 +347,7 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
             _result_message(),
         ]
         with _fake_sdk(stream):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
@@ -363,7 +364,7 @@ class _UnresolvableStageConfig:
 class TestRunHeadlessStageSkillResolution(TestCase):
     """#3206: the overlay stage skills resolve exactly once per dispatch.
 
-    ``run_headless`` builds the bundle plus both prompts; before the fix each of
+    ``run_agent`` builds the bundle plus both prompts; before the fix each of
     those three re-ran ``active_overlay_stage_skills`` — three warning lines and
     three SKILL.md-lookup passes for one misconfigured skill.
     """
@@ -383,7 +384,7 @@ class TestRunHeadlessStageSkillResolution(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
-            run_headless(task, phase="coding", overlay_skill_metadata={})
+            run_agent(task, phase="coding", overlay_skill_metadata={})
         assert dispatch_resolve.call_count == 1
         reresolve.assert_not_called()
 
@@ -396,46 +397,9 @@ class TestRunHeadlessStageSkillResolution(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
-            run_headless(task, phase="coding", overlay_skill_metadata={})
+            run_agent(task, phase="coding", overlay_skill_metadata={})
         ghost_warnings = [line for line in logs.output if "ghost-stage-skill-xyz" in line]
         assert len(ghost_warnings) == 1
-
-
-class TestRunHeadlessRoutingRefusal(TestCase):
-    """The loop-dispatch billing guard refuses a registered phase before any SDK call.
-
-    ``run_headless`` is reached only through ``core.tasks.execute_headless_task`` /
-    the ``work-next-headless`` CLI, which both consult ``loop_dispatch_refusal`` and
-    record a ``routing_error`` *before* invoking the runner. This pins that
-    seam: a loop-dispatched phase never instantiates ``ClaudeSDKClient``.
-    """
-
-    def _make_headless_task(self, *, phase: str) -> Task:
-        # Empty overlay → dispatchable (the #1959 poison-pill guard passes), so
-        # execution reaches the loop-dispatch billing guard rather than failing
-        # earlier on an unknown overlay.
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
-        task.route_to_headless(reason="forced headless for the test")
-        return task
-
-    def test_registered_phase_refused_before_sdk_client_built(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
-
-        ConfigSetting.objects.set_value("agent_runtime", "interactive")
-        task = self._make_headless_task(phase="answering")
-        with patch.object(
-            harness_mod,
-            "ClaudeSDKClient",
-            side_effect=AssertionError("SDK client must not be built for a refused phase"),
-        ):
-            result = execute_headless_task.func(task.pk, "answering")
-
-        task.refresh_from_db()
-        assert result["exit_code"] == 1
-        assert "answering" in result["routing_error"]
-        assert task.status == Task.Status.FAILED
 
 
 class TestRunHeadlessUsageLimit(TestCase):
@@ -463,7 +427,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([_assistant_text("starting"), limit_message]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -481,7 +445,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([limit_message]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert "subscription_session" in attempt.error
@@ -501,7 +465,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([_assistant_text("starting"), credit_message]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -522,7 +486,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([credit_message]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert "api_credit" in attempt.error
@@ -541,7 +505,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([session_message]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert "subscription_session" in attempt.error
@@ -559,7 +523,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk(_success_stream(result)):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -579,7 +543,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([_assistant_text('{"summary": "partial"}'), error_message]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -591,7 +555,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         with _fake_sdk([_assistant_text('{"summary": "partial"}')]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -619,7 +583,7 @@ class TestRunHeadlessMaxTokensTruncationAlert(TestCase):
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()
         return attempt, task, notify
 
@@ -683,7 +647,7 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
         with _fake_sdk([_assistant_text("working"), event, terminal]):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-typed")
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         return attempt
@@ -751,7 +715,7 @@ class TestRunHeadlessAllAccountsExhausted(TestCase):
         with _fake_sdk([]):  # the run parks pre-dispatch; the SDK is never opened
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING, "PARKED for auto-resume, NOT terminal FAILED"
@@ -767,7 +731,7 @@ class TestRunHeadlessAllAccountsExhausted(TestCase):
         with _fake_sdk([]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED, "flag off → byte-identical to today (loud FAILED)"
@@ -938,7 +902,7 @@ class TestRunHeadlessResumesParentSession(TestCase):
             child_session = Session.objects.create(ticket=ticket, agent_id="coding")
             child_task = Task.objects.create(ticket=ticket, session=child_session, parent_task=parent_task)
 
-            run_headless(child_task, phase="coding", overlay_skill_metadata={})
+            run_agent(child_task, phase="coding", overlay_skill_metadata={})
 
         assert client_cls.last_options is not None
         assert client_cls.last_options.resume == FAKE_SESSION_UUID
@@ -950,7 +914,7 @@ class TestRunHeadlessResumesParentSession(TestCase):
             session = Session.objects.create(ticket=ticket, agent_id="coding")
             task = Task.objects.create(ticket=ticket, session=session)
 
-            run_headless(task, phase="coding", overlay_skill_metadata={})
+            run_agent(task, phase="coding", overlay_skill_metadata={})
 
         assert client_cls.last_options is not None
         assert client_cls.last_options.resume is None
@@ -1403,7 +1367,7 @@ class TestHeartbeatLeaseRenewalConnectionHygiene(TestCase):
 
 
 class TestRunHeadlessRecordsStuckLoop(TestCase):
-    """run_headless records a stuck_loop TaskAttempt failure when the watchdog fires."""
+    """run_agent records a stuck_loop TaskAttempt failure when the watchdog fires."""
 
     def test_records_stuck_loop_failure_with_observed_deltas(self) -> None:
         ticket = Ticket.objects.create()
@@ -1425,7 +1389,7 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
             patch.object(headless_mod.LoopWatchdog, "from_settings", return_value=watchdog),
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
         ):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
         elapsed = time.monotonic() - start
 
         task.refresh_from_db()
@@ -1441,7 +1405,7 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
 
 
 class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
-    """run_headless refuses dispatch and records a budget_exceeded failure."""
+    """run_agent refuses dispatch and records a budget_exceeded failure."""
 
     def setUp(self) -> None:
         self.ticket = Ticket.objects.create()
@@ -1461,7 +1425,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
                 side_effect=AssertionError("SDK client must not be built over budget"),
             ),
         ):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -1479,7 +1443,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
             override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}),
             _fake_sdk(_success_stream(result)),
         ):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -1505,7 +1469,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parked)
 
         with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}):
-            attempt = run_headless(resumed, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(resumed, phase="coding", overlay_skill_metadata={})
 
         resumed.refresh_from_db()
         assert attempt.exit_code != 0
@@ -1788,7 +1752,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
         with _fake_sdk(_success_stream({"summary": "Done", "files_modified": []})):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            return run_headless(task, phase=phase, overlay_skill_metadata={})
+            return run_agent(task, phase=phase, overlay_skill_metadata={})
 
     def test_every_pinned_verification_phase_dispatches(self) -> None:
         for phase in ("reviewing", "requesting_review", "testing"):
@@ -1825,7 +1789,7 @@ class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
         with _fake_sdk(_success_stream({"summary": "Done", "files_modified": []})), patch.dict(os.environ, env):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
-            return run_headless(task, phase=phase, overlay_skill_metadata={})
+            return run_agent(task, phase=phase, overlay_skill_metadata={})
 
     def test_subscription_oauth_under_pydantic_ai_is_refused(self) -> None:
         for phase in ("coding", "testing"):
@@ -1866,7 +1830,7 @@ class TestResolveDispatchLane:
 
 
 class TestRunHeadlessRecordsLane(TestCase):
-    """``run_headless`` stamps the resolved Layer-2 lane onto the recorded attempt."""
+    """``run_agent`` stamps the resolved Layer-2 lane onto the recorded attempt."""
 
     def test_explicit_subscription_pin_is_recorded(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
@@ -1878,7 +1842,7 @@ class TestRunHeadlessRecordsLane(TestCase):
             _fake_sdk(_success_stream(result)),
             patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x"}),
         ):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         assert attempt.lane == "subscription"
 
@@ -1888,6 +1852,6 @@ class TestRunHeadlessRecordsLane(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         with _fake_sdk(_success_stream(result)):
-            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
 
         assert attempt.lane == ""

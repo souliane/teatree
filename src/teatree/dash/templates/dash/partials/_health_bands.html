@@ -61,7 +61,7 @@
   <h2>Capacity</h2>
   {% if health.capacity.error %}<div class="banner-red">{{ health.capacity.error }}</div>{% endif %}
   {% with cap=health.capacity %}
-    <p>Queue depth — headless <span class="mono">{{ cap.queue.headless }}</span> · interactive <span class="mono">{{ cap.queue.interactive }}</span></p>
+    <p>Queue depth — <span class="mono">{{ cap.queue.depth }}</span></p>
     {% if cap.spend %}
       <p>Spend — {{ cap.spend.chip }} (<span class="mono">${{ cap.spend.cycle_to_date_usd }}</span> of <span class="mono">${{ cap.spend.credit_usd }}</span>, projected <span class="mono">${{ cap.spend.projected_month_end_usd }}</span>)</p>
     {% endif %}

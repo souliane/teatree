@@ -10,12 +10,10 @@ never to a single chaining orchestrator. The table is the contract — adding
 import ast
 import importlib.util
 import json
-from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -31,7 +29,6 @@ from teatree.core.modelkit.phases import (
 from teatree.core.models import Session, Task, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.base import ScanSignal
-from tests._agent_runtime_env import interactive_runtime
 
 #: The golden table: every author lifecycle phase → its dedicated agent.
 #: A new lifecycle phase is added with one row (e.g. ``"planning": "t3:planner"``).
@@ -119,13 +116,6 @@ class TestSubagentForPhaseConformance(TestCase):
 
 class TestLoopDispatchCommandConformance(TestCase):
     """The command's ``_subagent_for`` resolver mirrors ``SUBAGENT_BY_PHASE`` — no drift copy."""
-
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
 
     def test_command_resolver_mirrors_the_canonical_map(self) -> None:
         for (role, phase), agent in SUBAGENT_BY_PHASE.items():

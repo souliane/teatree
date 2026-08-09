@@ -68,7 +68,6 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
-agent_runtime = "headless" # str, one of: interactive | headless — whether dispatched work runs headless or in an interactive terminal
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 enforce_regulated_path = false # bool — route work touching a regulated path through the allowlisted models only
 envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the required result envelope
