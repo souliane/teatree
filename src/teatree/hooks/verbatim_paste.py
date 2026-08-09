@@ -92,9 +92,14 @@ class Verdict:
 # verbatim (a command, a log, a diff), not the operator's voice — excluded from
 # both the recorded message and the scanned body so reproducing one is never a
 # finding. Inline code and URLs are excluded for the same reason.
-_FENCE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)|\Z)", re.MULTILINE | re.DOTALL
-)
+#
+# The close marker is REQUIRED (no ``\Z`` end-of-string fallback, #4195
+# review Blocker 3): the fallback let one stray, unterminated opening fence
+# excise everything from that point to the end of the body, so a single
+# ``` line anywhere made the entire remainder invisible to the scan. An
+# unterminated fence is left as ordinary text instead — undercounting a
+# malformed fence as prose is the safe direction; over-excising is not.
+_FENCE_RE: Final[re.Pattern[str]] = re.compile(r"^[ \t]*(?:```|~~~).*?^[ \t]*(?:```|~~~)", re.MULTILINE | re.DOTALL)
 _INLINE_CODE_RE: Final[re.Pattern[str]] = re.compile(r"`[^`\n]*`")
 _URL_RE: Final[re.Pattern[str]] = re.compile(r"\b\w+://\S+")
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-z]+(?:'[a-z]+)*")

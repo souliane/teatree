@@ -132,6 +132,21 @@ class TestQuotedAndProseWindows:
         vp.record_operator_message(f"run this:\n{fenced}", session_id="sess-code", root=ledger_root)
         assert vp.scan_body(f"Reproduce with:\n{fenced}", session_id="sess-code", root=ledger_root).outcome == vp.CLEAN
 
+    def test_an_unterminated_fence_does_not_blank_the_rest_of_the_body(self, ledger_root: Path) -> None:
+        r"""A stray opening fence with no close must not excise everything after it.
+
+        #4195 review finding (Blocker 3): ``_FENCE_RE`` matched an opening
+        ```` ``` ```` through to end-of-string (``\Z``) when no closing fence
+        followed, so one unterminated fence marker anywhere in a published body
+        made the entire remainder invisible to the gate — the cheapest total
+        bypass of the three, requiring no unusual encoding at all. A properly
+        CLOSED fence (see the sibling test above) is still excluded by design.
+        """
+        long_message = " ".join(f"token{index}" for index in range(60))
+        vp.record_operator_message(long_message, session_id="sess-unterminated", root=ledger_root)
+        body = f"Reproduce with:\n```\n{long_message}"
+        assert vp.scan_body(body, session_id="sess-unterminated", root=ledger_root).outcome == vp.REPRODUCED
+
 
 class TestUnavailableHistoryIsUnknownNotClean:
     def test_a_session_with_no_recorded_history_is_unknown(self, ledger_root: Path) -> None:
