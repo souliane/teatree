@@ -40,9 +40,15 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
     """The stored GLOBAL-scope value for ``[teatree] <name>``, un-coerced, plus HOW it resolved.
 
     Returns ``(value, status)``. ``status`` is :data:`COLD_READ_UNREADABLE` when the
-    read MACHINERY itself failed — ``teatree`` not importable, or ``read_setting``
-    raising — and :data:`COLD_READ_OK` otherwise, INCLUDING when the row is simply
-    absent (``value`` is then ``None``).
+    read MACHINERY itself failed — ``teatree`` not importable, the reader raising, or
+    the STORE itself unreadable — and :data:`COLD_READ_OK` otherwise, INCLUDING when the
+    row is simply absent (``value`` is then ``None``).
+
+    The store's own readability arrives through ``read_setting_confirmed``, never the
+    value half: ``read_setting`` collapses a sqlite that could not be opened into the
+    same ``None`` an absent row yields, so reading through it made this status a report
+    on the IMPORT alone and the unreadable branch below unreachable from a read fault
+    (#4205).
 
     The status exists because the value alone cannot express the difference between
     "the operator never opted in" and "this install cannot read its own settings"
@@ -82,11 +88,13 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
     if added:
         sys.path.insert(0, src_dir)
     try:
-        from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
+        from teatree.config.cold_reader import read_setting_confirmed  # noqa: PLC0415 — deferred: cold-hook import
 
-        return read_setting(name, scope=_GLOBAL_SCOPE), COLD_READ_OK
+        read = read_setting_confirmed(name, scope=_GLOBAL_SCOPE)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None, COLD_READ_UNREADABLE
+    else:
+        return read.value, (COLD_READ_OK if read.readable else COLD_READ_UNREADABLE)
     finally:
         if added:
             with contextlib.suppress(ValueError):

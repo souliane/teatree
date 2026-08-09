@@ -87,14 +87,18 @@ fi
 # Echoes the decoded value — empty when the key is simply unset — and returns:
 #   0  the projection ANSWERED (a value, or a readable projection with no such key)
 #   1  there is no projection on this host to answer with
-#   2  a projection is present but could not be parsed
+#   2  a projection is present but could not be read or parsed
 # The 1/2 split is the whole point: "no store here" is a plain-clone host that has
 # genuinely opted into nothing, while "a store is here and I cannot read it" is an
 # unknown that must never be rendered as a stored value.
 _projection_setting() {
     command -v jq >/dev/null 2>&1 || return 1
     local proj="${TEATREE_HOST_PROJECTION:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/host-projection.json}"
-    [ -r "$proj" ] || return 1
+    if [ ! -r "$proj" ]; then
+        # Present yet denied is the unreadable half of the 1/2 split, not an absence (#4205).
+        [ -e "$proj" ] && return 2
+        return 1
+    fi
     # `settings` is keyed by SCOPE; "" is global. Values are stored decoded, so a
     # bool arrives as `true`/`false` — the same text the sqlite read yields.
     local out
@@ -118,7 +122,10 @@ _projection_setting() {
 # them is what rendered a confident "off" for a setting the DB actually holds as
 # true (#4041). The DB is tested with `-s`, not `-f`: the control-DB migration left
 # a 0-byte stub at the old host path, and a stub that holds nothing is a store this
-# host cannot see — exactly the case the projection exists to answer.
+# host cannot see — exactly the case the projection exists to answer. Presence is
+# then re-tested with `-e` at the end (#4205): the stub, and a non-empty DB on a
+# host with no sqlite3, both reach the projection, and when THAT cannot answer
+# either, a store is here that nothing read — the same unknown, not a fresh clone.
 _config_setting_read() {
     local key="$1" db out rc
     db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
@@ -141,6 +148,9 @@ _config_setting_read() {
         0) return 0 ;;
         2) return 1 ;;
     esac
+    # A store IS on this host (the 0-byte stub, or a DB no sqlite3 exists to open)
+    # and no tier read it — unknown, exactly as in the sqlite branch above.
+    [ -e "$db" ] && return 1
     # No store on this host at all: nothing was ever written here to read, so the
     # shipped default is the answer rather than a guess. This keeps the #256
     # colleague guarantee — a plain clone renders the neutral off hint, not a "?".
