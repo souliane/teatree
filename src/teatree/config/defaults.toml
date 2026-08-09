@@ -65,8 +65,6 @@ autoload = false # bool — load the suggested skills automatically at session s
 check_updates = true # bool — check for a newer teatree on startup
 contribute = false # bool — allow a retro to edit teatree's own skills
 excluded_skills = [] # list — skills never offered to an agent, whatever the loader suggests
-privacy = "" # str, one of: "" | strict | relaxed — how strictly commits and posts are scanned for private data
-timezone = "" # str — timezone every schedule and daily cadence is read in
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
@@ -135,7 +133,6 @@ factory_score_enabled = false # bool — compute and record the factory health s
 fleet_claim_enabled = false # bool — let this box claim work from the shared fleet queue
 gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
 hook_fetch_titles = true # bool — let hooks fetch issue titles, at the cost of a network call per prompt
-issue_implementer_cadence_hours = 1 # int — hours between issue-implementer runs
 issue_implementer_enabled = true # bool — let the loop claim and implement labelled issues
 issue_implementer_label = "" # str — label an issue must carry for the implementer to claim it
 issue_implementer_max_concurrent = 3 # int — fallback in-flight ceiling when the resource loop has no adaptive reading

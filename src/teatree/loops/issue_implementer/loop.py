@@ -43,7 +43,7 @@ def _build_jobs(
 
 MINI_LOOP = MiniLoop(
     name="issue_implementer",
-    default_cadence_seconds=3600,  # 1h tick rate — matches issue_implementer_cadence_hours default
+    default_cadence_seconds=3600,  # seed hint only; the live cadence is this loop's own Loop row
     build_jobs=_build_jobs,
     declared_reach=frozenset({LoopReach.INGRESS}),
     determinism=LoopDeterminism.AI,

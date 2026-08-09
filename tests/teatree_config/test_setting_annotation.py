@@ -26,7 +26,7 @@ class TestTheTypeNameIsDerivedFromTheAnnotation:
             ("clean_ignore", "list"),
             ("mr_reminder", "table"),
             ("wip", "str"),  # a StrEnum is stored as the str it subclasses
-            ("privacy", "str"),  # a Literal is named by its members' shared type
+            ("repo_mode", "str"),  # a Literal is named by its members' shared type
             ("agent_harness_provider", "str"),  # an optional enum is named beside its None
         ],
     )

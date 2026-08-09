@@ -113,12 +113,11 @@ _SECRET_OVERLAY = SettingMeta(Category.SECRET, Registry.OVERLAY)
 _SECRET_COLD = SettingMeta(Category.SECRET, Registry.COLD)
 
 
-# Two closed value sets that have no enum of their own to point at. Declaring them
-# here — rather than as bare ``str`` — is what makes ``setting_choices`` derive them,
-# so the dashboard offers a select instead of a box an invalid value can be typed into.
-# The empty member is a real state in both (auto-detect / unset), never a placeholder.
+# A closed value set with no enum of its own to point at. Declaring it here — rather
+# than as bare ``str`` — is what makes ``setting_choices`` derive it, so the dashboard
+# offers a select instead of a box an invalid value can be typed into. The empty member
+# is a real state (auto-detect), never a placeholder.
 _RepoMode = Literal["", "solo", "collaborative"]
-_Privacy = Literal["", "strict", "relaxed"]
 
 
 def _provider_or_none(value: str | None) -> AgentHarnessProvider | None:
@@ -252,7 +251,6 @@ class TeatreeSettingsSchema(BaseSettings):
     incremental_push_gate: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     intake_ram_per_agent_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     intake_ram_reserve_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
-    issue_implementer_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     issue_implementer_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     issue_implementer_label: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     issue_implementer_max_concurrent: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -286,7 +284,6 @@ class TeatreeSettingsSchema(BaseSettings):
     outer_loop_measure_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_stop_after_consecutive_failures: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     park_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
-    privacy: Annotated[_Privacy, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     pr_review_backend: Annotated[PrReviewBackend, BeforeValidator(PrReviewBackend.parse), _DEFAULT_OVERLAY]
     provision_fast_step_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     provision_max_concurrency: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -370,7 +367,6 @@ class TeatreeSettingsSchema(BaseSettings):
     test_worker_ram_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_budget_max_cost_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     ticket_transition_prune_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
-    timezone: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     mr_triage_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     mr_triage_max_mrs_per_tick: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     triage_assessor_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
@@ -404,7 +400,6 @@ class TeatreeSettingsSchema(BaseSettings):
     agent_skill_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_tier_effort: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_tier_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
-    availability_schedule: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     banned_brands: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_COLD] = []
     banned_term_registry: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _SECRET_COLD] = {}
     banned_terms: Annotated[list[str], BeforeValidator(_parse_str_list), _SECRET_COLD] = []
