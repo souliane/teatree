@@ -122,8 +122,16 @@ class TestAttendedTurnMirrorsButDoesNotDeny(TestCase):
 
     On an attended turn the question still renders in the client; the mirror
     only ADDS a Slack DM so the user sees it on their phone too. The handler
-    must never deny — denying would suppress the in-client prompt.
+    must never deny — denying would suppress the in-client prompt. The #4202
+    mode collapse replaced "present mode" with the live-turn/loop-ownership
+    predicates directly, so "attended" is pinned here the same way
+    ``TestMirrorHandler`` pins it above: a live user turn.
     """
+
+    def setUp(self) -> None:
+        live_turn = patch.object(router, "_is_live_user_turn", lambda _data: True)
+        live_turn.start()
+        self.addCleanup(live_turn.stop)
 
     def _payload(self) -> dict:
         return {
@@ -133,7 +141,7 @@ class TestAttendedTurnMirrorsButDoesNotDeny(TestCase):
 
     def test_attended_turn_posts_and_returns_false(self) -> None:
         with (
-            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
         ):
             mirror_verdict = router.handle_mirror_question_to_slack(self._payload())
