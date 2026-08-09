@@ -116,7 +116,7 @@ def _never_close_declaration(body: str) -> str:
     Both conditions are required of the same line, and neither alone is enough: the line
     must be emphasised, and the directive must LEAD it and end there. So a heading whose
     subject happens to be closing something is prose, and a paragraph asking to hold an
-    issue open for now is a temporary request against work that is still implementable.
+    issue open pending something is a temporary request against still-implementable work.
     """
     for line in body.splitlines():
         emphasised = _EMPHASISED_LINE.match(line)
