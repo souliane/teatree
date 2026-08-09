@@ -118,6 +118,24 @@ class TestUnknownIsAnnouncedNotSilent:
         assert json.loads(audit.strip())["outcome"] == vp.UNKNOWN
 
 
+class TestUnresolvableBodyIsUnknownNotClean:
+    """#4195 review finding: a sentinel-carrying payload must not silently scan clean."""
+
+    _UNRESOLVABLE = (
+        'gh issue create --repo souliane/teatree --title "Post-mortem" --body-file /nonexistent/does-not-exist.md'
+    )
+
+    def test_a_missing_body_file_is_unknown_not_a_silent_clean(self, recorded: None) -> None:
+        blocked, stderr = _run(self._UNRESOLVABLE)
+        assert blocked is False
+        assert "could NOT check" in stderr
+
+    def test_the_unresolvable_body_outcome_is_recorded_as_unknown(self, recorded: None, tmp_path: Path) -> None:
+        _run(self._UNRESOLVABLE)
+        audit = (tmp_path / "state" / "verbatim-paste.jsonl").read_text(encoding="utf-8")
+        assert json.loads(audit.strip())["outcome"] == vp.UNKNOWN
+
+
 class TestEscapes:
     def test_the_env_prefix_override_allows_and_is_recorded(self, recorded: None, tmp_path: Path) -> None:
         blocked, stderr = _run(f"ALLOW_VERBATIM_PASTE=1 {_PUBLIC_POST}")

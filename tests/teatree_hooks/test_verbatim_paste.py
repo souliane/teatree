@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks import verbatim_paste as vp
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
 
 _OPERATOR_MESSAGE = (
     "Stop pasting my chat messages into public issues verbatim. I want you to "
@@ -106,6 +107,25 @@ class TestQuotedAndProseWindows:
         body = f"The operator wrote “{_OPERATOR_MESSAGE}” and that settles it."
         assert vp.scan_body(body, session_id=_SESSION, root=recorded).outcome == vp.REPRODUCED
 
+    def test_a_smart_apostrophe_does_not_defeat_the_quoted_window(self, ledger_root: Path) -> None:
+        """A curly apostrophe must tokenise identically for the recorder and the scan.
+
+        #4195 review finding: the recorder tokenised the raw operator message
+        while the quoted-window scan normalised quotes first (``_quoted_regions``
+        calls :func:`teatree.hooks._quote_normalize.normalize_quotes`), so
+        ``it's`` recorded as two tokens (``it``, ``s``) but scanned as one
+        (``it's``) — the shingles never aligned and a smart-quoted blockquote
+        paste of the identical smart-quoted message read CLEAN.
+        """
+        message = (
+            "I don't want the factory's internals in a public issue; it's my own words "
+            "I'm worried about, and they shouldn't leak."
+        )
+        smart = message.replace("'", "\u2019")
+        vp.record_operator_message(smart, session_id="sess-smart-apos", root=ledger_root)
+        body = "\n".join(f"> {line}" for line in smart.splitlines())
+        assert vp.scan_body(body, session_id="sess-smart-apos", root=ledger_root).outcome == vp.REPRODUCED
+
     def test_a_fenced_command_the_operator_pasted_is_reproducible(self, ledger_root: Path) -> None:
         """A command/log block is a technical artifact, not the operator's voice."""
         fenced = "```\n" + " ".join(f"token{index}" for index in range(60)) + "\n```"
@@ -138,6 +158,19 @@ class TestUnavailableHistoryIsUnknownNotClean:
         message = vp.format_unknown_message(verdict)
         assert "could NOT check" in message
         assert "UNKNOWN, not a clean scan" in message
+
+
+class TestAnUnresolvableBodyIsUnknownNotClean:
+    """#4195 review finding: a sentinel-carrying payload must not scan CLEAN."""
+
+    def test_the_fail_closed_sentinel_is_unknown(self, recorded: Path) -> None:
+        verdict = vp.scan_body(FAIL_CLOSED_SENTINEL, session_id=_SESSION, root=recorded)
+        assert verdict.outcome == vp.UNKNOWN
+        assert verdict.reason
+
+    def test_the_sentinel_alongside_real_text_is_still_unknown(self, recorded: Path) -> None:
+        body = f"Post-mortem\n{FAIL_CLOSED_SENTINEL}"
+        assert vp.scan_body(body, session_id=_SESSION, root=recorded).outcome == vp.UNKNOWN
 
 
 class TestTheLedgerNeverStoresTheOperatorsWords:

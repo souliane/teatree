@@ -28,9 +28,9 @@ must reach :data:`PROSE_RUN_WORDS` before it counts — long enough that a
 restated ticket title or a shared technical phrase cannot trip it.
 
 Failure posture is asymmetric by design (#4041): a REFUSAL is fail-closed, but
-an inability to read the history reports :data:`UNKNOWN` rather than
-:data:`CLEAN`, so "I could not check" can never be mistaken for "I checked and
-it was fine".
+an inability to read the history, or a candidate body the caller could not
+resolve, reports :data:`UNKNOWN` rather than :data:`CLEAN`, so "I could not
+check" can never be mistaken for "I checked and it was fine".
 """
 
 import hashlib
@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from teatree.hooks._hook_state import hook_state_root, note_env_override_once
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._publish_detection import segment_word_lists_raw
 from teatree.hooks._quote_normalize import normalize_quotes
 from teatree.hooks.publish_surface import is_gh_glab_posting_command
@@ -105,8 +106,15 @@ _QUOTED_SPAN_RE: Final[re.Pattern[str]] = re.compile(r'"([^"\n]{20,})"')
 
 
 def _words(text: str) -> list[str]:
-    """Lower-cased word tokens, with code and URLs excised."""
-    stripped = _URL_RE.sub(" ", _INLINE_CODE_RE.sub(" ", _FENCE_RE.sub(" ", text)))
+    """Lower-cased word tokens, with code and URLs excised.
+
+    Quotes are normalised FIRST so a contraction tokenises identically
+    regardless of which apostrophe glyph it carries: :func:`_quoted_regions`
+    already normalises before extracting a quoted span, and the recorder and
+    the plain-prose window must shingle a smart-quoted operator message the
+    same way or the two windows silently diverge (#4195 review).
+    """
+    stripped = _URL_RE.sub(" ", _INLINE_CODE_RE.sub(" ", _FENCE_RE.sub(" ", normalize_quotes(text))))
     return _WORD_RE.findall(stripped.lower())
 
 
@@ -200,7 +208,16 @@ def scan_body(body: str, *, session_id: str, root: Path | None = None) -> Verdic
     The quoted window is tested first — it is where verbatim paste concentrates
     and where the shorter :data:`QUOTED_RUN_WORDS` threshold applies — then the
     whole body at :data:`PROSE_RUN_WORDS`.
+
+    A ``body`` the command parser could not resolve (a missing ``--body-file``,
+    an unexpanded ``$VAR``, a stdin body) carries an injected fail-closed
+    sentinel rather than real content — there is nothing to shingle, so this is
+    :data:`UNKNOWN`, never a scan that happened to find nothing (#4195 review;
+    the sibling quote-scanner and banned-terms gates recognise the same
+    sentinel before content matching, for the same reason).
     """
+    if _is_fail_closed_sentinel(body):
+        return Verdict(UNKNOWN, reason="the publish body could not be resolved before the command runs")
     ledger = _read_ledger(session_id, root)
     if ledger is None:
         reason = (
