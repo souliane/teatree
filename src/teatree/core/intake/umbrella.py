@@ -71,15 +71,22 @@ _ACCEPTANCE_HEADING = re.compile(
 #: announces itself, whereas "please don't close this yet" is a sentence and stays admissible.
 _EMPHASISED_LINE = re.compile(r"^[ \t]{0,3}(?:#{1,6}[ \t]*|[*_]{2})[^0-9A-Za-z\n]*(?P<text>.*?)[ \t]*[*_]{0,2}[ \t]*$")
 
-#: The directive, leading its line, optionally naming the row itself, and then ENDING.
-#: A word character instead means the phrase runs on to some other object ("do not close the
-#: connection pool"), and space is excluded so the class cannot match the gap it must skip.
+#: The directive, leading its line, optionally naming the row itself, and then ENDING at the
+#: line's end, sentence-final punctuation, or a dash introducing an aside ("DO NOT CLOSE --
+#: standing ledger"). A colon, comma, or an attached hyphen instead means the phrase runs on
+#: to describe some other object ("do not close: the modal stays open", "close-fail the
+#: socket") -- prose about a bug, not a declaration about the row.
 _NEVER_CLOSE = re.compile(
     r"(?:do[ \t]*not|don't|never)[ \t-]*close"
     r"(?:[ \t]+th(?:is|e)[ \t]+(?:issue|ticket|row|ledger|page))?"
-    r"[ \t]*(?:$|[^0-9A-Za-z \t])",
+    r"[ \t]*(?:$|[.!?]|[\u2014\u2013])",
     re.IGNORECASE,
 )
+
+#: A commonmark fence marker (``` or ~~~), up to 3 leading spaces. A body that quotes the
+#: declaration inside a fenced example -- documenting the detector, not invoking it -- must
+#: not be read as a live declaration.
+_FENCE = re.compile(r"^[ \t]{0,3}(?:```|~~~)")
 
 #: How much of the declaration the reason quotes back — a log line is fixed-width, a heading is not.
 _REASON_QUOTE_LIMIT = 60
@@ -113,12 +120,20 @@ def _child_ref_count(body: str) -> int:
 def _never_close_declaration(body: str) -> str:
     """The emphasised line on which *body* declares itself never closed, or ``""``.
 
-    Both conditions are required of the same line, and neither alone is enough: the line
-    must be emphasised, and the directive must LEAD it and end there. So a heading whose
-    subject happens to be closing something is prose, and a paragraph asking to hold an
-    issue open pending something is a temporary request against still-implementable work.
+    Three conditions are required of the same line, and no one of them is enough: the line
+    must sit outside a fenced code block (a quoted example documents the detector, it does
+    not invoke it), must be emphasised, and the directive must LEAD it and end there per
+    :data:`_NEVER_CLOSE`. So a heading whose subject happens to be closing something is
+    prose, and a paragraph asking to hold an issue open pending something is a temporary
+    request against still-implementable work.
     """
+    fenced = False
     for line in body.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         emphasised = _EMPHASISED_LINE.match(line)
         if emphasised is None:
             continue

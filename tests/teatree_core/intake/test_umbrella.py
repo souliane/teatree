@@ -153,6 +153,34 @@ class TestStandingLedgerSignal:
     def test_the_declaration_must_lead_the_line(self) -> None:
         assert _reason("## Rule: do not close this issue\n") == ""
 
+    def test_an_unemphasised_bare_directive_ending_in_a_period_is_not_a_signal(self) -> None:
+        """Kills the mutant that drops the emphasis requirement: plain prose, not a heading/bold line."""
+        assert _reason("Do not close.\n") == ""
+
+    def test_a_directive_qualified_by_a_colon_describes_an_object_not_the_row(self) -> None:
+        assert _reason("## Do not close: the modal stays open after submit\n") == ""
+
+    def test_a_directive_joined_by_a_hyphen_is_a_compound_word_not_a_declaration(self) -> None:
+        assert _reason("## Do not close-fail the socket\n") == ""
+
+    def test_a_directive_followed_by_a_comma_clause_is_not_a_declaration(self) -> None:
+        assert _reason("**Never close, then reopen, the writer**\n") == ""
+
+    def test_a_dash_introducing_an_aside_still_declares_it(self) -> None:
+        assert _reason("## Do not close — see the umbrella docs\n")
+
+    def test_a_declaration_quoted_inside_a_fenced_code_block_is_not_live(self) -> None:
+        """Documenting the detector is not invoking it — even alongside an Acceptance heading."""
+        body = (
+            "## Observed\n\nThe docs example renders wrong:\n\n"
+            "```markdown\n## DO NOT CLOSE — standing ledger\n```\n\n"
+            "## Acceptance\n- the fence renders\n"
+        )
+        assert _reason(body) == ""
+
+    def test_the_same_declaration_unfenced_still_fires(self) -> None:
+        assert _reason("## DO NOT CLOSE — standing ledger\n")
+
 
 class TestTitleIsNotASignal:
     """(2) alone is refused: a prefix convention breaks the first time an epic is titled differently."""
