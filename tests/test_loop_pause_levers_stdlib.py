@@ -43,8 +43,8 @@ def _bare_python3_stop_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     The in-process django bootstrap is forced to fail (as in production), and the
     state dir / registry / bash-env are redirected into ``tmp_path`` so a
-    developer's real config never leaks into the test. With no ``availability_schedule``
-    row seeded, the away probe sees no schedule windows and never falls back to the
+    developer's real config never leaks into the test. With no schedule row
+    seeded, the away probe sees no schedule windows and never falls back to the
     ``t3`` subprocess unless a test configures one.
     """
     state = tmp_path / "state"

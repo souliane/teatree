@@ -65,7 +65,6 @@ class _WorkspaceCoreSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Workspace", "Engagement & identity")
 
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
-    privacy: str = ""
     check_updates: bool = True
     # #256 Default-OFF teatree engagement. When false (the default) a fresh
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
@@ -79,7 +78,6 @@ class _WorkspaceCoreSettings:
     # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
     # session regardless of this default.
     autoload: bool = False
-    timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
 

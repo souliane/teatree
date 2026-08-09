@@ -28,9 +28,6 @@ class TestClosedValueSetsDeriveTheirMembers:
     def test_repo_mode_offers_auto_detect_beside_both_pinned_verdicts(self) -> None:
         assert setting_choices("repo_mode") == ("", "solo", "collaborative")
 
-    def test_privacy_offers_unset_beside_both_strictness_levels(self) -> None:
-        assert setting_choices("privacy") == ("", "strict", "relaxed")
-
 
 class TestRegistryNamesStayOpen:
     def test_agent_harness_derives_nothing_so_a_registered_transport_stays_selectable(self) -> None:
