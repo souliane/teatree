@@ -1,6 +1,6 @@
 """Park-not-fail + admission guard for an exhausted Claude usage window (Directive #3).
 
-When a headless dispatch hits a usage-window limit (the ~5h rolling session limit or the
+When a agent dispatch hits a usage-window limit (the ~5h rolling session limit or the
 7-day weekly limit), the old behaviour folded it into a terminal FAILED attempt and the
 headless plane went idle forever until a human poked it — the measured 7.8h loss. This
 module is the DARK, opt-in alternative gated by ``limit_autorecovery_enabled``:

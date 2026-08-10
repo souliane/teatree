@@ -63,7 +63,7 @@ class TestSyncFollowup(TestCase):
 
 
 def _stub_headless_runner(testcase: TestCase) -> None:
-    """Stub the registered headless runner for the duration of *testcase*.
+    """Stub the registered agent runner for the duration of *testcase*.
 
     The drain/dispatch tests run under ``IMMEDIATE_BACKEND``, so a
     ``execute_task.enqueue(...)`` runs the worker *synchronously*,

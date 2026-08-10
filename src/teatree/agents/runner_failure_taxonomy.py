@@ -1,4 +1,4 @@
-"""Terminal-``ResultMessage`` failure taxonomy for the headless runner.
+"""Terminal-``ResultMessage`` failure taxonomy for the agent runner.
 
 The two pure classifiers the driver folds a non-success run through, factored out
 of :mod:`teatree.agents.runner` so the driver keeps only the decision order and

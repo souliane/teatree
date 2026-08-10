@@ -232,7 +232,7 @@ def _headless_task_id(row) -> int | None:  # noqa: ANN001 — duck-typed DBTaskR
 def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 — duck-typed handles
     """Whether a RUNNING ``execute_task`` row is a dead-worker orphan.
 
-    The per-run liveness signal is the ``Task`` lease: the headless runner's
+    The per-run liveness signal is the ``Task`` lease: the agent runner's
     heartbeat thread renews it every few seconds, so a live run always keeps
     ``lease_expires_at`` in the future. A run is dead when its heartbeat has
     stopped — the lease is absent (the claim was lease-reclaimed back to PENDING)

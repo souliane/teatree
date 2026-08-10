@@ -1,4 +1,4 @@
-"""Loop watchdog + per-run usage sampling for the headless executor (#882).
+"""Loop watchdog + per-run usage sampling for the executor (#882).
 
 The stuck-loop / cost-spike detector (:class:`LoopWatchdog`) and the
 accumulated ``TaskAttempt`` delta snapshot (:class:`TaskUsage`) it evaluates,

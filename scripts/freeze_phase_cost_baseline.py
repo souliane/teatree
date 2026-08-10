@@ -135,7 +135,7 @@ _HEADER = """\
 # FROZEN pre-cutover per-phase cost baseline — do not regenerate against a
 # post-cutover window.
 #
-# Every figure below is measured over REAL headless dispatches only (see
+# Every figure below is measured over REAL agent dispatches only (see
 # `coverage`), started strictly before the `cutover` PR merged. It is committed
 # rather than queried because a table holding both populations separates them by
 # nothing it records.

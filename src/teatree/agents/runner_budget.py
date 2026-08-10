@@ -1,4 +1,4 @@
-"""Per-ticket cumulative cost cap for the headless runner.
+"""Per-ticket cumulative cost cap for the agent runner.
 
 Split out of :mod:`teatree.agents.runner` for the module-health LOC cap (the
 same reason ``_runner_options.py`` and ``runner_usage.py`` were split

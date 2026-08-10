@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 def run_agent_deferred(task: "Task", *, phase: str, overlay_skill_metadata: "SkillMetadata") -> "TaskAttempt":
-    """Dispatch to the real headless runner, importing the agent SDKs on first use."""
+    """Dispatch to the real agent runner, importing the agent SDKs on first use."""
     from teatree.agents.runner import run_agent  # noqa: PLC0415 — the deferral IS this function's purpose
 
     return run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)

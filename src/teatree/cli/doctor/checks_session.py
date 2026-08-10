@@ -149,7 +149,7 @@ def _check_interactive_permission_mode() -> bool:
 
     Changing this reaches ONLY the session the operator drives. Every unattended lane
     reads the same file but pins its own mode, so none of them inherit this key:
-    headless dispatch pins it in ``ClaudeAgentOptions`` (the SDK emits
+    agent dispatch pins it in ``ClaudeAgentOptions`` (the SDK emits
     ``--permission-mode``), ``t3 loop start`` pins the same flag on its argv, and
     ``t3 agent`` pins it on the ``-p`` argv it execs. Those pins are the ONLY thing
     keeping the lanes apart — ``tests/teatree_agents/test_runner_least_privilege.py``,

@@ -217,9 +217,9 @@ Most of these are defined in `teatree/types.py` (the Django-free shared types mo
 | `HealthCheck` | dataclass | `name`, `check`, `description` |
 | `MergeGuard` | dataclass (frozen) | `allowed`, `reason`, `escalate` |
 
-## Ship your own harness (headless factory overlays, #3157)
+## Ship your own harness (factory overlays, #3157)
 
-The headless agent runtime drives an in-process agent session behind the
+The agent runner drives an in-process agent session behind the
 `teatree.agents.harness.Harness` protocol (`open(options) -> HarnessSession`). The backend
 set is **open**: an overlay registers a third transport (a direct Anthropic Messages-API
 backend, an enterprise cloud endpoint, a self-hosted model) with **zero core edits** via the

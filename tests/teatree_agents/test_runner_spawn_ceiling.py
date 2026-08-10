@@ -1,4 +1,4 @@
-"""``_build_options`` arms the sub-agent spawn ceiling on every headless dispatch.
+"""``_build_options`` arms the sub-agent spawn ceiling on every agent dispatch.
 
 Wiring it per-phase would need a phase list to keep in step with the delegation
 grant; wiring it unconditionally cannot go stale — a phase that may not delegate

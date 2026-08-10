@@ -8,7 +8,7 @@ the bundle quietly and the dispatch still looks normal.
 
 ``TaskAttempt.skills_loaded`` already records the resolved bundle, and the ticket drawer
 already renders it — but ONLY when it is non-empty, so the one case worth seeing rendered
-as nothing at all. These pin the opposite: a headless dispatch that recorded no bundle
+as nothing at all. These pin the opposite: a agent dispatch that recorded no bundle
 says so, wherever it is listed. An interactive attempt is exempt by construction — it
 runs inside the operator's own session and never resolves a bundle to record.
 """

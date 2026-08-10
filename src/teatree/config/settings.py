@@ -230,7 +230,7 @@ class _ModeHarnessSettings:
     watchdog_max_runtime_seconds: int = 3 * 60 * 60
     watchdog_max_turns: int = 0
     watchdog_max_cost_usd: float = 0.0
-    # Per-TICKET cumulative cost cap for the headless lane (#885 / #398-4, F9.5), folded
+    # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5), folded
     # off the former Django-settings ``TEATREE_TICKET_BUDGET`` dict into the DB-home
     # config tier for the same #1775 provenance reason. ``TicketBudget.from_settings``
     # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.

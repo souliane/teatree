@@ -24,7 +24,7 @@ lightweight entry-point packages. The Python source lives under
 | `src/teatree/core/management/` | django-typer management commands (lifecycle, workspace, worktree, db, ticket, pr, followup, loop_tick, ...) — the DB-touching command tier | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/management/commands/` | The command modules themselves, one file per command group | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/migrations/` | Django schema migrations for the core app | [§4](../BLUEPRINT.md#4-domain-models) |
-| `src/teatree/agents/` | Headless executor runtime: session handover, `claude -p` invocation, prompt building, skill-bundle resolution, model tiering, structured result schema | [§5](../BLUEPRINT.md#5-agent-execution) |
+| `src/teatree/agents/` | Agent runner: session handover, `claude -p` invocation, prompt building, skill-bundle resolution, model tiering, structured result schema | [§5](../BLUEPRINT.md#5-agent-execution) |
 | `src/teatree/loop/` | Background `/loop` tick orchestration: scan in parallel, dispatch to phase agents, render the statusline | [§5](../BLUEPRINT.md#5-agent-execution) |
 | `src/teatree/loop/scanners/` | Pure-Python signal collectors (one file each) feeding the loop tick — active tickets, assigned issues, PRs, approvals, pending tasks, ... | [§5](../BLUEPRINT.md#5-agent-execution) |
 | `src/teatree/loop/self_improve/` | Self-improving monitor — cheap detectors (dispatch gaps, forgotten merges) on a tier-dispatched cadence | [§5](../BLUEPRINT.md#57-self-improving-monitor-loop-phase-1) |

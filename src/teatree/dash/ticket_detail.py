@@ -61,7 +61,7 @@ class AttemptRow:
     model: str
     reasoning_effort: str
     skills_loaded: tuple[str, ...]
-    #: An EMPTY ``skills_loaded`` on a headless dispatch is a fault, not an absence
+    #: An EMPTY ``skills_loaded`` on a agent dispatch is a fault, not an absence
     #: of information (#3886) — the drawer must say so rather than render nothing.
     skills_fault: bool
     duration: str

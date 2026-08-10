@@ -1,6 +1,6 @@
 """The provider-agnostic harness seam for the headless agent runtime.
 
-The headless runner (:mod:`teatree.agents.runner`) drives an in-process agent
+The agent runner (:mod:`teatree.agents.runner`) drives an in-process agent
 session behind a narrow protocol pair — :class:`Harness` opens a session for a
 built set of options, :class:`HarnessSession` is the in-flight session surface the
 driver talks to. :func:`resolve_harness` reads the DB-home ``agent_harness``
@@ -155,7 +155,7 @@ def resolve_effort(options: HarnessOptions) -> ReasoningEffort | None:
     the vendor ``ClaudeAgentOptions`` — the effort axis is provider-agnostic, so the vendor type
     does not reach here. Public seam: the eval ``pydantic_ai`` runner
     (:mod:`teatree.eval.pydantic_ai_runner`) reuses this single effort-vocabulary guard so a
-    headless dispatch and an eval run drop the same out-of-vocabulary rungs.
+    agent dispatch and an eval run drop the same out-of-vocabulary rungs.
 
     ``options.effort`` is already scoped to the ACTIVE harness by
     :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while the SDK options were
@@ -319,7 +319,7 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
-        # lane's own ``request_limit``; ``0`` (a headless dispatch, an SDK-``None`` coercion)
+        # lane's own ``request_limit``; ``0`` (a agent dispatch, an SDK-``None`` coercion)
         # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
         request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._backend.request_limit
         async with agent:
@@ -455,7 +455,7 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     Settings are resolved at the TASK's OVERLAY scope (``task.ticket.overlay``), not
     global/active-only: whether an overlay runs Lane B (``agent_harness=pydantic_ai``)
     and its endpoint / credential / request cap are all per-overlay overridable, and a
-    headless dispatch runs per-task, so a per-overlay override for a NON-active overlay
+    agent dispatch runs per-task, so a per-overlay override for a NON-active overlay
     must apply. A task-less ``resolve_harness()`` (the interactive/default path) keeps
     the active-overlay resolution (env layer included).
 

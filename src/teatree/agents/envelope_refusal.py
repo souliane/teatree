@@ -27,7 +27,7 @@ What this module makes possible is a BOUNDED, satisfiable correction of it.
 
 from teatree.agents.result_schema import required_evidence_for_phase
 
-#: Prefix the headless runner stamps on a run that emitted no JSON object at all.
+#: Prefix the agent runner stamps on a run that emitted no JSON object at all.
 NO_ENVELOPE_PREFIX = "no_result_envelope: "
 
 #: The runner's full refusal reason. Deliberately a CONSTANT with no run-specific detail,

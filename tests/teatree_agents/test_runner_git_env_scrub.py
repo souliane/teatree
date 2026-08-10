@@ -1,6 +1,6 @@
 """A dispatched agent inherits a hermetic environment — no ``GIT_*`` overrides.
 
-When a headless dispatch fires from inside a git hook (pre-commit/pre-push), the
+When a agent dispatch fires from inside a git hook (pre-commit/pre-push), the
 process env carries ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``. The
 claude-agent-sdk transport spawns its child with ``{**os.environ, ...,
 **options.env}`` — a dict merge that cannot DELETE a key ``options.env`` omits —

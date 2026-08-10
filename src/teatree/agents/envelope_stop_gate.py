@@ -45,7 +45,7 @@ DEFAULT_ENVELOPE_STOP_REFUSALS = 2
 class EnvelopeStopGate:
     """Refuses a run's turn-end while its output carries no usable envelope.
 
-    One instance per headless dispatch — the refusal count is that run's, and a
+    One instance per agent dispatch — the refusal count is that run's, and a
     fresh dispatch starts from zero. A *limit* of ``0`` (or below) disables the
     gate, matching the ``0 = disabled`` convention of the spawn ceiling and the
     watchdog ceilings.

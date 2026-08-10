@@ -1,4 +1,4 @@
-"""Child-process credential env for a ``claude_sdk`` headless dispatch.
+"""Child-process credential env for a ``claude_sdk`` agent dispatch.
 
 Split out of :mod:`teatree.agents.runner` for the module-health LOC cap: the
 Layer-2 ``agent_harness_provider``-keyed credential resolution (#2887) plus the overlay

@@ -312,7 +312,7 @@ class TestHeadlessLaneWiresGovernor:
     def test_agent_admission_module_consults_the_pure_governor_decision(self) -> None:
         assert module_references(self._HEADLESS_ADMISSION_MODULE, frozenset({"decide_admission"})), (
             "the headless admission module no longer references decide_admission — "
-            "the headless lane has been un-wired from the governor"
+            "the agent lane has been un-wired from the governor"
         )
 
     def test_runner_env_cap_references_the_governor(self) -> None:

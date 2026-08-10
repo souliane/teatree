@@ -115,7 +115,7 @@ def sdk_spec_synthesizer(
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.agents._runner_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
+    from teatree.agents._runner_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy agent runner
         system_child_env,
     )
 

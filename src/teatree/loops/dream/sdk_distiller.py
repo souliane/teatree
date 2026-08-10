@@ -141,7 +141,7 @@ def _run_distiller_turn(extract: ConsolidationExtract, *, child_env: "ChildEnvRe
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.agents._runner_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
+    from teatree.agents._runner_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy agent runner
         system_child_env,
     )
 
@@ -169,7 +169,7 @@ def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOption
     *env*, when set, pins the ``agent_harness_provider`` credential onto the spawned
     ``claude`` (the caller resolves it via :func:`~teatree.agents._runner_env.system_child_env`);
     ``None`` leaves the SDK default empty env so the child inherits the ambient auth
-    state unchanged — the same "no pin → ambient" contract the headless runner keeps.
+    state unchanged — the same "no pin → ambient" contract the agent runner keeps.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 

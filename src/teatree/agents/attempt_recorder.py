@@ -6,7 +6,7 @@ The single contract for turning a structured agent result into a terminal
 work). ``manage.py task record-attempt`` is the in-session ``/loop`` slot path:
 after the slot's ``Agent`` sub-agent returns, the slot hands the same result
 envelope here so an INTERACTIVE phase task completes (and the ticket advances)
-exactly as the headless path would have.
+exactly as the agent path would have.
 
 Both go through :func:`record_result_envelope`, so the schema-key check, the
 phase-evidence gate (#1284), the usage stamping, and the

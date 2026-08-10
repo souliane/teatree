@@ -550,7 +550,7 @@ class TestGovernorGate(_LoopDispatchTest):
 
     def test_an_absent_sidecar_budget_still_takes_the_governors_ceiling(self) -> None:
         # This lane passes ``static_ceiling=budget``, so an absent budget is the same
-        # ``None`` the headless lane passes (#4097): the governor's own ceiling has to
+        # ``None`` the agent lane passes (#4097): the governor's own ceiling has to
         # apply, or "no operator cap" would read as "no cap".
         from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
         from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import

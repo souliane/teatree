@@ -1,4 +1,4 @@
-"""SDK option-building for the headless runner — the real-environment options.
+"""SDK option-building for the agent runner — the real-environment options.
 
 Split out of :mod:`teatree.agents.runner` for the module-health LOC cap: the
 ``ClaudeAgentOptions`` builder plus its model-tiering glue (:func:`_build_options`),
@@ -71,7 +71,7 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 
 def _disallowed_tools_for_phase(phase: str) -> list[str]:
-    """The full disallow list for a headless dispatch — floor plus per-phase complement.
+    """The full disallow list for a agent dispatch — floor plus per-phase complement.
 
     The property this enforces: NO headless phase can reach the user or an external
     endpoint via a built-in — the only sanctioned user-contact path is the

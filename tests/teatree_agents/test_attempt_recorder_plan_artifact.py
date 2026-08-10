@@ -105,7 +105,7 @@ class TestPlanArtifactPhaseAlias(TestCase):
 
 
 class TestPlanAdequacyIsSatisfiableFromTheEnvelope(TestCase):
-    """``require_plan_adequacy`` is graduatable on the headless lane (SELFCATCH-3).
+    """``require_plan_adequacy`` is graduatable on the agent lane (SELFCATCH-3).
 
     ``_maybe_record_plan_artifact`` reads ``base_sha`` and ``adequacy`` off the
     result envelope, but the schema declared neither, so ``validate_result_keys``

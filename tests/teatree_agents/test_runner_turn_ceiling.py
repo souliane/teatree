@@ -1,6 +1,6 @@
 """The headless per-run TURN ceiling: configurable, armed by default, loud at the cap (#3890).
 
-Cache-read cost on the headless lane is ``turns x context_size``, and the SDK
+Cache-read cost on the agent lane is ``turns x context_size``, and the SDK
 option that bounds the first factor was pinned to ``0`` — unlimited — so nothing
 stopped one dispatch from re-reading a near-full context hundreds of times. These
 pin the three properties that make the cap safe to arm: the ceiling is a DB-home

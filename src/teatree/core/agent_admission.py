@@ -1,9 +1,9 @@
-"""Governor-gated admission for the HEADLESS lane (#3644 / F9, #4098).
+"""Governor-gated admission for the agent lane (#3644 / F9, #4098).
 
 The adaptive admission governor (:mod:`teatree.core.admission_governor`) was
 consulted ONLY by the interactive ``/loop`` claim budget
 (:func:`teatree.loop.admission.governor_verdict`), yet the measured congestion
-collapse — 7,785 attempts at a 2.9% success rate — was on the HEADLESS lane.
+collapse — 7,785 attempts at a 2.9% success rate — was on the agent lane.
 This wires the SAME pure :func:`~teatree.core.admission_governor.decide_admission`
 into the headless admission chokepoints — the post_save auto-enqueue, the drain
 safety net, and issue intake — so a DENY verdict (weekly quota spent, 5h window

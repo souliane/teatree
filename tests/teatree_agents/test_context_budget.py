@@ -151,7 +151,7 @@ class TestProductionSkillBundleFitsOrElidesLegibly:
 
     Measured on this repo's own ``skills/`` tree, so the regression is the same
     on every host. Each production bundle is 1.7-2.3x the append budget today, so
-    every headless dispatch truncates — the contract is that what survives is
+    every agent dispatch truncates — the contract is that what survives is
     whole sections and the marker names the rest.
     """
 

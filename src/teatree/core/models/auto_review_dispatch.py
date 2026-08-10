@@ -64,7 +64,7 @@ DEFAULT_DISPATCH_TTL: dt.timedelta = DEFAULT_LOCK_TTL
 
 #: How many times one head may be armed before the claim is left saturated. A
 #: review that dies three times is not going to succeed on the fourth; re-arming
-#: forever would burn the headless lane on a PR that needs a human. Saturation is
+#: forever would burn the agent lane on a PR that needs a human. Saturation is
 #: surfaced by ``t3 doctor check`` rather than left silent.
 MAX_DISPATCH_ATTEMPTS = 3
 

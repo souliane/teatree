@@ -704,7 +704,7 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
 class TestCacheablePrefixStability(TestCase):
     """The stable framing leads the append; per-task content trails it.
 
-    Prompt caching on the headless lane is CLI-internal and exposes no
+    Prompt caching on the agent lane is CLI-internal and exposes no
     ``cache_control`` surface, so prefix STABILITY is the only lever teatree has
     over the hit rate (``_runner_options._build_options``). Task ID / Ticket /
     the prior-task result diverge on every dispatch, so leading with them

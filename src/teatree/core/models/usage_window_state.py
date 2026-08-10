@@ -1,7 +1,7 @@
 """The parked usage-window ledger — one active row per credential lane (Directive #3).
 
 When a Claude usage window empties (the ~5h rolling session limit or the 7-day weekly
-limit), the headless dispatch plane used to fold the hit into a terminal FAILED attempt and
+limit), the agent dispatch plane used to fold the hit into a terminal FAILED attempt and
 go idle forever until a human poked it. This ledger is the durable park state that replaces
 that dead-silence: a row records that a lane's window is exhausted and the effective instant
 it re-arms, so the ``usage_window_recovery`` loop-timer chain can clear it (and release the

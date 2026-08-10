@@ -1,4 +1,4 @@
-"""Shared in-process harness test doubles for the headless runner.
+"""Shared in-process harness test doubles for the agent runner.
 
 ``run_agent`` drives an in-process agent session behind the ``Harness`` seam
 (:mod:`teatree.agents.harness`). :class:`FakeHarnessSession` is the session double

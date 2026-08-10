@@ -52,7 +52,7 @@ from teatree.core.cost import CostBreakdown, CostReport
 
 
 def agent_cost_breakdown() -> CostBreakdown:
-    """The SDK-equivalent cost breakdown across every headless attempt (#3157 E5/E6).
+    """The SDK-equivalent cost breakdown across every agent attempt (#3157 E5/E6).
 
     The cost half of a factory overlay's dispatch → attempt → cost cycle: aggregates the
     recorded :class:`~teatree.core.models.task_attempt.TaskAttempt` usage into totals split

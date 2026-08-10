@@ -1,4 +1,4 @@
-"""Ceiling-truncation detection + owner escalation for the headless runner.
+"""Ceiling-truncation detection + owner escalation for the agent runner.
 
 Two ceilings can cut a run short, and BOTH must fail loud rather than quietly
 hand back less than the work: the ``pydantic_ai`` per-request ``max_tokens``

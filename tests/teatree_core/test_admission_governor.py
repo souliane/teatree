@@ -430,7 +430,7 @@ class TestUnreadableProbeNeverManufacturesAClamp:
 class TestAnUnknownQuotaIsBoundedNotUnlimited:
     """#4097: not knowing the budget must never buy MORE concurrency than knowing it.
 
-    An unknown quota used to leave ``static_ceiling`` verbatim, so the headless lane —
+    An unknown quota used to leave ``static_ceiling`` verbatim, so the agent lane —
     which passes ``static_ceiling=None`` — got no ceiling at all, while a known-healthy
     quota got ``floor(cores * WRITE_CONCURRENCY_PER_CORE)``. The machine-derived base
     needs no quota information whatsoever, so it is available in both cases; only the

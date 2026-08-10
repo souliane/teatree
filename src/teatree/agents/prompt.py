@@ -149,7 +149,7 @@ def build_system_context(
     tokens. On the reviewing phase the active overlay's primary review skill
     and ``code-review`` are additionally embedded in full, and any remaining
     overlay review companion skills get a verbatim "load before reviewing"
-    instruction, so a headless reviewer reviews WITH the overlay's conventions.
+    instruction, so a reviewer reviews WITH the overlay's conventions.
     *stage_skills* threads the dispatch's single overlay stage-skill resolution
     (#3206) so this builder reuses it rather than re-resolving.
 
