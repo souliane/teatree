@@ -16,7 +16,7 @@ import pytest
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents import harness_registry
 from teatree.agents.harness import CLAUDE_SDK_CAPABILITIES, ClaudeSdkHarness, PydanticAiHarness, resolve_harness
 from teatree.agents.harness_registry import (
@@ -32,8 +32,8 @@ from teatree.agents.harness_registry import (
     resolve_harness_spec,
     valid_providers_for,
 )
-from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.agents.pydantic_ai_config import PYDANTIC_AI_ROUTER_CAPABILITIES
+from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.config import AgentHarness, AgentHarnessProvider
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.types import SkillMetadata
@@ -176,7 +176,7 @@ class TestThirdHarnessViaEntryPoint(TestCase):
         task.renew_lease = lambda **_kw: None  # threaded ORM read is a TestCase artifact
         with (
             _register_third_harness_via_entry_point(self._monkeypatch),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
         ):
             ConfigSetting.objects.set_value("agent_harness", "fake_third")
             # "debugging" has no phase-evidence gate, so a clean summary completes — proving
@@ -207,11 +207,11 @@ class TestNoIsInstanceOnHarnessInDispatch:
 
     _DISPATCH_CALLABLES = (
         harness_mod.resolve_harness,
-        headless_mod._resolve_backend_or_failure,
-        headless_mod._resolve_dispatch_lane,
-        headless_mod._resolve_child_env_or_failure,
-        headless_mod._restore_unconsumed_resume_thread,
-        headless_mod._admission_park_or_child_env,
+        runner_mod._resolve_backend_or_failure,
+        runner_mod._resolve_dispatch_lane,
+        runner_mod._resolve_child_env_or_failure,
+        runner_mod._restore_unconsumed_resume_thread,
+        runner_mod._admission_park_or_child_env,
     )
 
     def test_dispatch_functions_carry_no_isinstance_on_a_harness_class(self) -> None:
@@ -239,16 +239,16 @@ class TestCapabilityDrivenDispatchBehaviour:
     def test_dispatch_lane_reads_metered_flag_not_isinstance(self) -> None:
         # A metered-flagged harness resolves to the METERED lane regardless of provider —
         # a REAL dispatch decision driven off the typed capabilities.metered_lane flag.
-        assert headless_mod._resolve_dispatch_lane(PydanticAiHarness(), None) == TaskAttempt.Lane.METERED
+        assert runner_mod._resolve_dispatch_lane(PydanticAiHarness(), None) == TaskAttempt.Lane.METERED
         # A non-metered harness with no provider pin stays unattributed.
-        assert headless_mod._resolve_dispatch_lane(ClaudeSdkHarness(), None) == ""
+        assert runner_mod._resolve_dispatch_lane(ClaudeSdkHarness(), None) == ""
 
     def test_an_overlay_backend_declaring_the_metered_flag_routes_to_the_metered_lane(self) -> None:
         # An overlay-registered backend that sets capabilities.metered_lane drives the same
         # dispatch decision with ZERO isinstance — proving the seam works for a third harness.
         metered_third = FakeThirdHarness([])
         metered_third.capabilities = HarnessCapabilities(metered_lane=True)
-        assert headless_mod._resolve_dispatch_lane(metered_third, None) == TaskAttempt.Lane.METERED
+        assert runner_mod._resolve_dispatch_lane(metered_third, None) == TaskAttempt.Lane.METERED
 
 
 def test_programmatic_register_harness_is_resolvable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -333,6 +333,6 @@ class TestDriveThroughThirdHarness(TestCase):
         task.renew_lease = lambda **_kw: None
         options = _build_options(task, "ctx", phase="coding", skills=[])
         harness = FakeThirdHarness([assistant_text("hi"), result_message(session_id="s1")])
-        with patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
+        with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
             outcome = asyncio.run(_drive_with_heartbeat(task, "p", options, harness, watchdog=_watchdog()))
         assert outcome.result_message is not None

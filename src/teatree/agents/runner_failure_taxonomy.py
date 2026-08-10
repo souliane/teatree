@@ -1,7 +1,7 @@
 """Terminal-``ResultMessage`` failure taxonomy for the headless runner.
 
 The two pure classifiers the driver folds a non-success run through, factored out
-of :mod:`teatree.agents.headless` so the driver keeps only the decision order and
+of :mod:`teatree.agents.runner` so the driver keeps only the decision order and
 this leaf owns what each terminal message MEANS: was the run stopped by a
 model-access limit (:func:`limit_match`), or did it end in a genuine failure that
 must be recorded rather than laundered into a completion (:func:`error_result_reason`)?

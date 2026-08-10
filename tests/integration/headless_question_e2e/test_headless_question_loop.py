@@ -17,9 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
-import teatree.agents.headless as headless_mod
-from teatree.agents._headless_options import _get_resume_session_id
-from teatree.agents.headless import run_agent
+import teatree.agents.runner as runner_mod
+from teatree.agents._runner_options import _get_resume_session_id
+from teatree.agents.runner import run_agent
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DeferredQuestion, PendingChatInjection, Session, Task, Ticket
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
@@ -82,7 +82,7 @@ class TestHeadlessQuestionLoop:
         }
         with (
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),
-            patch.object(headless_mod, "_provider_child_env", return_value=None),
+            patch.object(runner_mod, "_provider_child_env", return_value=None),
         ):
             run_agent(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()

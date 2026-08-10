@@ -3,7 +3,7 @@
 ``ready()`` runs inside every ``django.setup()``, which is on the critical path of
 EVERY ``t3`` invocation that touches the ORM — including ``t3 mcp serve``, whose
 startup has to fit the MCP client's handshake window. Importing the runners here
-eagerly pulled ``teatree.agents.headless`` -> ``teatree.agents.harness`` ->
+eagerly pulled ``teatree.agents.runner`` -> ``teatree.agents.harness`` ->
 ``pydantic_ai.models.openai`` -> the whole ``openai.types.*`` pydantic model tree,
 measured at ~10s of ``django.setup()`` on a loaded box. A client that gives up
 before that finishes reports only ``Connection closed``.
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 def run_agent_deferred(task: "Task", *, phase: str, overlay_skill_metadata: "SkillMetadata") -> "TaskAttempt":
     """Dispatch to the real headless runner, importing the agent SDKs on first use."""
-    from teatree.agents.headless import run_agent  # noqa: PLC0415 — the deferral IS this function's purpose
+    from teatree.agents.runner import run_agent  # noqa: PLC0415 — the deferral IS this function's purpose
 
     return run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 

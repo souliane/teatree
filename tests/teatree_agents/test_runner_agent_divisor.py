@@ -53,13 +53,13 @@ class TestLiveHeadlessAgentCount(TestCase):
 
 class TestActiveAgentCountDivisor(TestCase):
     def test_divisor_reflects_live_headless_agents(self) -> None:
-        from teatree.agents.headless import _active_agent_count  # noqa: PLC0415 - deferred: local import
+        from teatree.agents.runner import _active_agent_count  # noqa: PLC0415 - deferred: local import
 
         _claimed_headless("architectural_review")
         _claimed_headless("architectural_review")
         assert _active_agent_count() == 2
 
     def test_divisor_floors_at_one_with_no_live_agents(self) -> None:
-        from teatree.agents.headless import _active_agent_count  # noqa: PLC0415 - deferred: local import
+        from teatree.agents.runner import _active_agent_count  # noqa: PLC0415 - deferred: local import
 
         assert _active_agent_count() == 1

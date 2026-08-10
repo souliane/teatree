@@ -34,8 +34,8 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import RateLimitInfo
 from django.utils import timezone
 
-from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
-from teatree.agents._headless_options import SpawnOverrides, _build_options, resolve_headless_max_turns
+from teatree.agents._runner_env import _overlay_scope, _provider_child_env, with_test_worker_cap
+from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_headless_max_turns
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import (
     Harness,
@@ -45,22 +45,22 @@ from teatree.agents.harness import (
     resolve_harness,
 )
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
-from teatree.agents.headless_budget import TicketBudget
-from teatree.agents.headless_failure_taxonomy import error_result_reason as _error_result_reason
-from teatree.agents.headless_failure_taxonomy import limit_match as _limit_match
-from teatree.agents.headless_truncation import (
+from teatree.agents.model_tiering import resolve_spawn_effort
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_limit_park, maybe_persist_on_park
+from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
+from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
+from teatree.agents.runner_budget import TicketBudget
+from teatree.agents.runner_failure_taxonomy import error_result_reason as _error_result_reason
+from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match
+from teatree.agents.runner_truncation import (
     alert_owner_max_tokens_truncation,
     alert_owner_max_turns_truncation,
     is_max_tokens_truncation,
     is_max_turns_truncation,
     max_turns_failure_reason,
 )
-from teatree.agents.headless_usage import DispatchProvenance, _attempt_usage
-from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
-from teatree.agents.model_tiering import resolve_spawn_effort
-from teatree.agents.pydantic_ai_resume import maybe_persist_on_limit_park, maybe_persist_on_park
-from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
-from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
+from teatree.agents.runner_usage import DispatchProvenance, _attempt_usage
+from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.agents.usage_window import (
     maybe_park_for_active_window,
@@ -84,7 +84,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ``LoopWatchdog`` / ``TaskUsage`` moved to ``headless_watchdog`` but stay part of
+# ``LoopWatchdog`` / ``TaskUsage`` moved to ``runner_watchdog`` but stay part of
 # this module's public surface (overlay_sdk re-exports ``LoopWatchdog``; tests patch
 # ``headless.TaskUsage.for_task`` / ``headless._sample_usage_closing_connection``).
 __all__ = ["HarnessOutcome", "LoopWatchdog", "TaskUsage", "run_agent"]
@@ -515,7 +515,7 @@ def _record_success(
 ) -> TaskAttempt:
     """Record a successful SDK run via the shared recorder."""
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
-    from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.runner_result import parse_result  # noqa: PLC0415 — deferred: call-time import
 
     parsed = parse_result(outcome.agent_text)
     result = parsed

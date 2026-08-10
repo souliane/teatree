@@ -1,12 +1,12 @@
-"""Tests for teatree.agents.headless_truncation — max-tokens truncation alerting."""
+"""Tests for teatree.agents.runner_truncation — max-tokens truncation alerting."""
 
 from unittest.mock import patch
 
 from claude_agent_sdk import ResultMessage
 from django.test import TestCase
 
-from teatree.agents.headless_truncation import alert_owner_max_tokens_truncation, is_max_tokens_truncation
 from teatree.agents.pydantic_ai_session import MAX_TOKENS_TRUNCATION_SUBTYPE
+from teatree.agents.runner_truncation import alert_owner_max_tokens_truncation, is_max_tokens_truncation
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.notify import NotifyKind
@@ -40,7 +40,7 @@ class AlertOwnerMaxTokensTruncationTests(TestCase):
         self.task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
 
     def test_dms_the_owner_through_the_audited_escalation_egress(self) -> None:
-        with patch("teatree.agents.headless_truncation.notify_user", return_value=True) as notify:
+        with patch("teatree.agents.runner_truncation.notify_user", return_value=True) as notify:
             alert_owner_max_tokens_truncation(self.task, phase="coding")
         notify.assert_called_once()
         kwargs = notify.call_args.kwargs
@@ -49,6 +49,6 @@ class AlertOwnerMaxTokensTruncationTests(TestCase):
         assert kwargs["idempotency_key"] == f"max-tokens-truncation:{self.task.pk}:coding"
 
     def test_never_raises_when_the_egress_fails(self) -> None:
-        with patch("teatree.agents.headless_truncation.notify_user", side_effect=RuntimeError("egress down")):
+        with patch("teatree.agents.runner_truncation.notify_user", side_effect=RuntimeError("egress down")):
             # best-effort: a failure in the alert must not mask the recorded failure
             alert_owner_max_tokens_truncation(self.task, phase="coding")

@@ -152,7 +152,7 @@ def _check_interactive_permission_mode() -> bool:
     headless dispatch pins it in ``ClaudeAgentOptions`` (the SDK emits
     ``--permission-mode``), ``t3 loop start`` pins the same flag on its argv, and
     ``t3 agent`` pins it on the ``-p`` argv it execs. Those pins are the ONLY thing
-    keeping the lanes apart — ``tests/teatree_agents/test_headless_least_privilege.py``,
+    keeping the lanes apart — ``tests/teatree_agents/test_runner_least_privilege.py``,
     ``tests/teatree_cli/test_cli_loop.py``, and ``tests/teatree_cli/test_cli_agent.py``
     assert each, so dropping one fails loudly rather than silently classifier-gating
     unattended work.

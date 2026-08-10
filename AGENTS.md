@@ -264,7 +264,7 @@ Current implementations: `GitHubSyncBackend` (`backends/github/sync.py`), `GitLa
 Two lanes, one per task kind. Per-phase model overrides come from
 `src/teatree/agents/model_tiering.py` in both.
 
-### Headless Sessions (`src/teatree/agents/headless.py`)
+### Headless Sessions (`src/teatree/agents/runner.py`)
 
 Headless tasks drive an in-process agent session behind the `Harness` seam
 (`src/teatree/agents/harness.py`), whose backend `agent_harness` selects — `claude_sdk`

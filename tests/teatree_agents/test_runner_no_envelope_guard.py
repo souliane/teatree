@@ -24,11 +24,11 @@ from django.test import TestCase
 from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_envelope_refusal
 from teatree.agents.harness import PydanticAiHarness
-from teatree.agents.headless import TaskUsage, run_agent
+from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 _PROSE = "I finished the work but forgot to emit the JSON result envelope."
@@ -71,9 +71,9 @@ def _fake_sdk(agent_text: str) -> Iterator[None]:
 
     snapshot = TaskUsage(turns=0, cost_usd=0.0)
     with (
-        patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+        patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-        patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+        patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
     ):
         yield
 
@@ -115,8 +115,8 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
 
         fake_harness = PydanticAiHarness(model=TestModel(custom_output_text=_PROSE))
         with (
-            patch.object(headless_mod, "resolve_harness", return_value=fake_harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=fake_harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 

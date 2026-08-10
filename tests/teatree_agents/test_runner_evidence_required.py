@@ -22,8 +22,8 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
-from teatree.agents.headless import TaskUsage, run_agent
+import teatree.agents.runner as runner_mod
+from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -71,9 +71,9 @@ def _fake_sdk(agent_text: str) -> Iterator[None]:
 
     snapshot = TaskUsage(turns=0, cost_usd=0.0)
     with (
-        patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+        patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-        patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+        patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
     ):
         yield
 

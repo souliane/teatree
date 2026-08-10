@@ -1,7 +1,7 @@
 """The extracted loop-watchdog concern, tested against the sibling module directly.
 
-``LoopWatchdog`` / ``TaskUsage`` live in ``teatree.agents.headless_watchdog`` and
-are re-exported from ``teatree.agents.headless`` for back-compat. This mirror
+``LoopWatchdog`` / ``TaskUsage`` live in ``teatree.agents.runner_watchdog`` and
+are re-exported from ``teatree.agents.runner`` for back-compat. This mirror
 names the new module's public symbols directly so the per-diff coverage sees the
 seam that owns them; the DB-backed evaluation stays in ``test_headless.py``.
 """
@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
+from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.core.models import Task
 
 

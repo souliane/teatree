@@ -16,7 +16,7 @@ class TestAgentRunnerRegistry:
         """
         reached: list[str] = []
         monkeypatch.setattr(
-            "teatree.agents.headless.run_agent",
+            "teatree.agents.runner.run_agent",
             lambda task, *, phase, overlay_skill_metadata: reached.append(phase),
         )
 

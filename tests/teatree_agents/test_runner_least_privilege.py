@@ -14,7 +14,7 @@ mutate source (``Write``/``Edit``), while a work phase's capability tools
 
 from django.test import TestCase
 
-from teatree.agents._headless_options import _EXTERNAL_CONTACT_BUILTINS, _build_options, _disallowed_tools_for_phase
+from teatree.agents._runner_options import _EXTERNAL_CONTACT_BUILTINS, _build_options, _disallowed_tools_for_phase
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS

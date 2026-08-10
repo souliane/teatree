@@ -15,9 +15,9 @@ from unittest.mock import patch
 from claude_agent_sdk import ResultMessage
 from django.test import TestCase
 
-from teatree.agents._headless_options import SpawnOverrides, _build_options, resolve_headless_max_turns
-from teatree.agents.headless import _outcome_failure, _turn_ceiling
-from teatree.agents.headless_truncation import (
+from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_headless_max_turns
+from teatree.agents.runner import _outcome_failure, _turn_ceiling
+from teatree.agents.runner_truncation import (
     TURN_CEILING_SUBTYPE,
     alert_owner_max_turns_truncation,
     is_max_turns_truncation,
@@ -110,7 +110,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
 
     def test_a_capped_run_is_recorded_failed_naming_the_ceiling(self) -> None:
         task = self._task()
-        with patch("teatree.agents.headless.alert_owner_max_turns_truncation"):
+        with patch("teatree.agents.runner.alert_owner_max_turns_truncation"):
             attempt = _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         assert attempt is not None
         assert attempt.exit_code == 1
@@ -124,7 +124,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
 
     def test_a_capped_run_escalates_to_the_owner(self) -> None:
         task = self._task()
-        with patch("teatree.agents.headless_truncation.notify_user", return_value=True) as notify:
+        with patch("teatree.agents.runner_truncation.notify_user", return_value=True) as notify:
             _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         notify.assert_called_once()
         kwargs = notify.call_args.kwargs
@@ -138,7 +138,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
         # ceiling; the named reason keeps it deterministic, so the repair sweep
         # escalates it durably instead of silently re-spending the run.
         task = self._task()
-        with patch("teatree.agents.headless.alert_owner_max_turns_truncation"):
+        with patch("teatree.agents.runner.alert_owner_max_turns_truncation"):
             attempt = _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         assert attempt is not None
         assert is_transient_failure(attempt.error) is False
@@ -154,12 +154,12 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
     def test_the_owner_alert_never_masks_the_recorded_failure(self) -> None:
         # Best-effort egress: a broken notification must not swallow the FAILED record.
         task = self._task()
-        with patch("teatree.agents.headless_truncation.notify_user", side_effect=RuntimeError):
+        with patch("teatree.agents.runner_truncation.notify_user", side_effect=RuntimeError):
             alert_owner_max_turns_truncation(task, phase="coding", message=_result(TURN_CEILING_SUBTYPE))
 
     def test_a_healthy_run_neither_fails_nor_escalates(self) -> None:
         task = self._task()
-        with patch("teatree.agents.headless_truncation.notify_user", return_value=True) as notify:
+        with patch("teatree.agents.runner_truncation.notify_user", return_value=True) as notify:
             assert _outcome_failure(task, _harness_outcome(_result("success")), phase="coding") is None
         notify.assert_not_called()
 
@@ -172,6 +172,6 @@ class _FakeHarness:
 
 
 def _harness_outcome(message: ResultMessage):
-    from teatree.agents.headless import HarnessOutcome  # noqa: PLC0415 — deferred: keeps the module import light
+    from teatree.agents.runner import HarnessOutcome  # noqa: PLC0415 — deferred: keeps the module import light
 
     return HarnessOutcome(agent_text="", result_message=message, stuck_reason=None)

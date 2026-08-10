@@ -194,7 +194,7 @@ class _Probe:
         return overdue
 
     @staticmethod
-    def stranded_headless_results(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
+    def stranded_runner_results(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
         """``(job_id, started_at)`` for ``execute_task`` RUNNING past the stranded grace."""
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep
@@ -331,7 +331,7 @@ def _check_stranded_headless_task() -> bool:
     try:
         if not _Probe.worker_flock_free():
             return True
-        stranded = _Probe.stranded_headless_results(_now())
+        stranded = _Probe.stranded_runner_results(_now())
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Stranded-headless-task check crashed: {exc.__class__.__name__}: {exc}")
         return True

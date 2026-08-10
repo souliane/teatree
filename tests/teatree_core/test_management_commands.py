@@ -9,7 +9,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 import teatree.core.management.commands.tasks as tasks_cmd
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
@@ -312,7 +312,7 @@ class TestTaskCommands(TestCase):
         boom = RuntimeError("SDK client failed to start")
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(headless_mod, "run_agent", MagicMock(side_effect=boom)) as run_agent_mock,
+            patch.object(runner_mod, "run_agent", MagicMock(side_effect=boom)) as run_agent_mock,
         ):
             sdk_result = cast(
                 "dict[str, str]",

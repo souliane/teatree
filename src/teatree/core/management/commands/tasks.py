@@ -433,7 +433,7 @@ class Command(TyperCommand):
     def _execute(task: Task) -> dict[str, str]:
         import traceback  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.agents.headless import run_agent  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.agents.runner import run_agent  # noqa: PLC0415 — deferred: keeps command import light
 
         # A non-agentic phase (``short_describe``) runs its own implementation, not a
         # generic ticket-work brief its least-privilege toolset cannot satisfy (#3570).

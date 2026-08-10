@@ -1,6 +1,6 @@
 """The provider-agnostic harness seam for the headless agent runtime.
 
-The headless runner (:mod:`teatree.agents.headless`) drives an in-process agent
+The headless runner (:mod:`teatree.agents.runner`) drives an in-process agent
 session behind a narrow protocol pair — :class:`Harness` opens a session for a
 built set of options, :class:`HarnessSession` is the in-flight session surface the
 driver talks to. :func:`resolve_harness` reads the DB-home ``agent_harness``
@@ -14,7 +14,7 @@ provider-agnostic backend, :class:`PydanticAiHarness`: a Pydantic AI
 :class:`~pydantic_ai.Agent` targeting the configured OpenAI-compatible,
 metered endpoint. Both backends yield the SAME ``claude_agent_sdk`` message
 vocabulary (``AssistantMessage`` / ``ResultMessage``) from :meth:`HarnessSession.receive_response`
-so the driver (:func:`teatree.agents.headless._collect`) never special-cases the
+so the driver (:func:`teatree.agents.runner._collect`) never special-cases the
 transport — that vocabulary IS the seam's provider-agnostic contract, proved by
 the ``FakeHarnessSession`` test double yielding the identical shape.
 
@@ -488,13 +488,13 @@ def resolve_dispatch_provider(task: "Task | None" = None, *, phase: str | None =
     the pin was never made for the pinned harness. Reading the configured provider straight
     off the settings would hand the dispatch a credential selector invalid under the harness
     it is actually running, which the claude_sdk child-env resolver
-    (:func:`~teatree.agents._headless_env._provider_child_env`) then refuses, failing every
+    (:func:`~teatree.agents._runner_env._provider_child_env`) then refuses, failing every
     verification dispatch of an otherwise-VALID deployment.
 
     So a pin the phase flip invalidated is DROPPED (to the ambient-credential default,
     ``None``) with a WARNING — never silently, and never by inventing a substitute
     credential the operator did not choose. This mirrors
-    :func:`~teatree.agents._headless_env.system_child_env`, which already warns-and-falls-back
+    :func:`~teatree.agents._runner_env.system_child_env`, which already warns-and-falls-back
     for the same shape.
 
     Nothing else is weakened. A pair no phase pin explains is untouched here and still fails

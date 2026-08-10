@@ -87,7 +87,7 @@ class _WorkspaceCoreSettings:
 #: only bills for tokens actually generated, and the real spend guards on this lane are the
 #: watchdog cost ceiling and ``pydantic_ai_request_limit``, not this cap. Should a run STILL
 #: hit it, the truncation is recorded FAILED AND escalated to the owner
-#: (:func:`teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
+#: (:func:`teatree.agents.runner_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
 #: raised deliberately rather than failing silently. pydantic_ai's Anthropic binding otherwise
 #: defaults to 4096, which truncates a long result envelope mid-JSON.
 #:
@@ -181,7 +181,7 @@ class _ModeHarnessSettings:
     # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (64000) — deliberately generous because a ceiling
     # only bills for tokens actually generated. Should a run STILL hit it, the truncation is
     # recorded FAILED AND escalated to the owner
-    # (``teatree.agents.headless_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
+    # (``teatree.agents.runner_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
     # deliberately rather than failing silently. Keep it ≤ the SMALLEST output limit among the
     # models a dispatch can resolve to (this one value is merged into every request whatever
     # tier ran, and the Anthropic API 400s on a ``max_tokens`` above the addressed model's own
@@ -247,7 +247,7 @@ class _ModeHarnessSettings:
     # matching the ceilings above. Per-overlay overridable.
     envelope_stop_gate_refusals: int = 2
     # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
-    # (``ClaudeAgentOptions.max_turns`` via ``agents/_headless_options``). Cache-read
+    # (``ClaudeAgentOptions.max_turns`` via ``agents/_runner_options``). Cache-read
     # cost is ``turns x context_size`` and each turn re-reads the run's whole context,
     # so the turn count is the multiplier on a dispatch's bill — a dimension the
     # wall-clock ``watchdog_max_runtime_seconds`` cannot see and the
@@ -255,8 +255,8 @@ class _ModeHarnessSettings:
     # in-flight one. The default clears a long healthy phase run with headroom while
     # bounding a run that has stopped converging. Reaching it is NOT silent: the CLI
     # ends the run with ``ResultMessage(subtype="error_max_turns")``, which
-    # ``agents/headless`` records FAILED naming this setting AND escalates to the owner
-    # (``agents/headless_truncation``), so the ceiling is raised deliberately rather
+    # ``agents/runner`` records FAILED naming this setting AND escalates to the owner
+    # (``agents/runner_truncation``), so the ceiling is raised deliberately rather
     # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
     # escape hatch, matching the ceilings above). Per-overlay overridable.
     headless_max_turns: int = 250

@@ -1,10 +1,10 @@
 """SDK option-building for the headless runner — the real-environment options.
 
-Split out of :mod:`teatree.agents.headless` for the module-health LOC cap: the
+Split out of :mod:`teatree.agents.runner` for the module-health LOC cap: the
 ``ClaudeAgentOptions`` builder plus its model-tiering glue (:func:`_build_options`),
 the worktree-cwd resolver (:func:`_resolve_task_cwd`), the resumable-session walker
 (:func:`_get_resume_session_id`), and the spawn constants they read. Re-exported
-from ``teatree.agents.headless`` so ``from teatree.agents.headless import
+from ``teatree.agents.runner`` so ``from teatree.agents.runner import
 _build_options`` (and the ``_PERMISSION_MODE`` / ``UUID_RE`` /
 ``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in
 ``core.management.commands.tasks``) stays valid.

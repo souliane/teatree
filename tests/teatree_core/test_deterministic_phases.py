@@ -113,7 +113,7 @@ class TestBothHeadlessEntryPointsShortCircuit(TestCase):
 
         with (
             patch(_SUMMARIZE, return_value="dark mode toggle"),
-            patch("teatree.agents.headless.run_agent", side_effect=AssertionError("agentic runner reached")),
+            patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
         ):
             result = execute_task.func(task.pk, task.phase)
 
@@ -128,7 +128,7 @@ class TestBothHeadlessEntryPointsShortCircuit(TestCase):
 
         with (
             patch(_SUMMARIZE, return_value="dark mode toggle"),
-            patch("teatree.agents.headless.run_agent", side_effect=AssertionError("agentic runner reached")),
+            patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
         ):
             # ``call_command`` is annotated as returning None upstream; this command
             # returns its result mapping, so the boundary is stated rather than assumed.

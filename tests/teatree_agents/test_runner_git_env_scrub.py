@@ -17,8 +17,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
-from teatree.agents.headless import _provider_child_env, run_agent
+import teatree.agents.runner as runner_mod
+from teatree.agents.runner import _provider_child_env, run_agent
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
@@ -42,12 +42,12 @@ class TestGitEnvStrippedAtDispatch(TestCase):
                 success_stream({"summary": "ok", "files_modified": [{"path": "src/x.py", "action": "modified"}]})
             )
 
-        snapshot = headless_mod.TaskUsage(turns=0, cost_usd=0.0)
+        snapshot = runner_mod.TaskUsage(turns=0, cost_usd=0.0)
         with (
             patch.dict(os.environ, {"GIT_DIR": "/outer/.git", "GIT_INDEX_FILE": "/outer/.git/index"}, clear=False),
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="a1")
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -100,7 +100,7 @@ class TestReaderPhaseEnvScrubbedAtDispatch(TestCase):
             candidate = {"is_directive": True, "normalized_constraint": "cap 1 PR"}
             return FakeHarnessSession(success_stream({"summary": "ok", "directive_candidate": candidate}))
 
-        snapshot = headless_mod.TaskUsage(turns=0, cost_usd=0.0)
+        snapshot = runner_mod.TaskUsage(turns=0, cost_usd=0.0)
         secrets = {
             "ANTHROPIC_API_KEY": "sk-ant",
             "DATABASE_URL": "postgres://u:p@h/db",
@@ -110,9 +110,9 @@ class TestReaderPhaseEnvScrubbedAtDispatch(TestCase):
         }
         with (
             patch.dict(os.environ, secrets, clear=False),
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="reader-1")
             task = Task.objects.create(ticket=self.ticket, session=session)

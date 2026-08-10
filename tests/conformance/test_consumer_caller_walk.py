@@ -298,7 +298,7 @@ class TestHeadlessLaneWiresGovernor:
     """The #3678 case: the HEADLESS admission path references the governor, not only the interactive one."""
 
     _HEADLESS_ADMISSION_MODULE = "core/agent_admission.py"
-    _HEADLESS_ENV_MODULE = "agents/_headless_env.py"
+    _HEADLESS_ENV_MODULE = "agents/_runner_env.py"
     _INTERACTIVE_CONSUMER = "governor_verdict"
     #: The module's governor-admission seams. A chokepoint gates on the governor by
     #: calling EITHER: the single-shot ``…_denied_reason`` (one unit of work, one probe)
@@ -315,7 +315,7 @@ class TestHeadlessLaneWiresGovernor:
             "the headless lane has been un-wired from the governor"
         )
 
-    def test_headless_env_cap_references_the_governor(self) -> None:
+    def test_runner_env_cap_references_the_governor(self) -> None:
         targets = frozenset(_GOVERNOR_DECISION_API | {"admission_governor"})
         assert module_references(self._HEADLESS_ENV_MODULE, targets), (
             "the headless env test-worker cap no longer references the admission governor"

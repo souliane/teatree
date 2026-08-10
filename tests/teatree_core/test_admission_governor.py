@@ -14,8 +14,8 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents import _headless_env
-from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
+from teatree.agents import _runner_env
+from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
     RAM_BRAKE_FLOOR_GB,
@@ -229,8 +229,8 @@ class TestTestWorkerCapWiring:
 
     def test_kill_switch_removes_the_cap_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(admission_governor, "governor_enabled", lambda: False)
-        assert _headless_env.with_test_worker_cap(None, active_agents=4) is None
-        assert _headless_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
+        assert _runner_env.with_test_worker_cap(None, active_agents=4) is None
+        assert _runner_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
 
 
 class TestTheExportedCapRespondsToMemory:

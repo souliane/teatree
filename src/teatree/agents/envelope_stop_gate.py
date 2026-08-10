@@ -11,7 +11,7 @@ It is *satisfiable*, never a filter: the refusal tells the agent what to write,
 and the agent writing the real envelope is the only thing that clears it. Nothing
 here relaxes the contract or manufactures a result — the recorder's verdict is
 unchanged whether this gate fired or not, and the gate reuses the recorder's own
-:func:`~teatree.agents.headless_result.parse_result` +
+:func:`~teatree.agents.runner_result.parse_result` +
 :func:`~teatree.agents.result_schema.check_evidence` so the two can never disagree
 about what counts as an envelope.
 
@@ -30,8 +30,8 @@ from typing import Any, cast
 from claude_agent_sdk.types import HookCallback, HookContext, HookJSONOutput, HookMatcher, StopHookInput
 
 from teatree.agents.envelope_refusal import required_keys_phrase
-from teatree.agents.headless_result import parse_result
 from teatree.agents.result_schema import ProseSummaryPolicy, check_evidence
+from teatree.agents.runner_result import parse_result
 
 logger = logging.getLogger(__name__)
 

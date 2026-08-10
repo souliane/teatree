@@ -1,7 +1,7 @@
 """``AgentsConfig.ready()`` registers runners without importing the agent SDKs.
 
 ``ready()`` runs inside every ``django.setup()``. Importing the runners there pulled
-``teatree.agents.headless`` -> ``teatree.agents.harness`` ->
+``teatree.agents.runner`` -> ``teatree.agents.harness`` ->
 ``pydantic_ai.models.openai`` -> the whole ``openai.types.*`` pydantic model tree, and
 that import alone was ~10s of ``django.setup()`` on a loaded box — enough for
 ``t3 mcp serve`` to miss the MCP client's handshake window and be reported as a bare
@@ -20,7 +20,7 @@ from django.apps import apps
 
 from teatree.agents.apps import run_agent_deferred, run_short_describe_deferred
 
-_HEAVY_MODULES = ["openai", "pydantic_ai.models.openai", "teatree.agents.harness", "teatree.agents.headless"]
+_HEAVY_MODULES = ["openai", "pydantic_ai.models.openai", "teatree.agents.harness", "teatree.agents.runner"]
 
 _INHERITED_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "XDG_DATA_HOME", "T3_DATA_DIR")
 
@@ -73,7 +73,7 @@ class TestReadyDoesNotImportTheAgentSdks:
             seen.append((task, phase))
             return "attempt"
 
-        monkeypatch.setattr("teatree.agents.headless.run_agent", fake_run_agent)
+        monkeypatch.setattr("teatree.agents.runner.run_agent", fake_run_agent)
 
         result = run_agent_deferred("task", phase="coding", overlay_skill_metadata={})
 

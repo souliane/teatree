@@ -160,7 +160,7 @@ def _run_fix_turn(prompt: str, cwd: Path) -> None:  # pragma: no cover
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.agents._headless_env import system_child_env  # noqa: PLC0415 — deferred: avoids the SDK-heavy runner
+    from teatree.agents._runner_env import system_child_env  # noqa: PLC0415 — deferred: avoids the SDK-heavy runner
 
     if shutil.which("claude") is None:
         msg = "claude is not installed — the CI-eval heal fixer cannot run"

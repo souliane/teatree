@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 STRANDED_JOB_GRACE_SECONDS = 900
 
 # The initial claim lease for a headless task must match the heartbeat's renewal
-# window (``agents.headless._LEASE_SECONDS`` = 900s), NOT ``Task.claim``'s 300s
+# window (``agents.runner._LEASE_SECONDS`` = 900s), NOT ``Task.claim``'s 300s
 # default. The heartbeat only renews to 900s from the first tick (~60s); with the
 # 300s default the pre-first-tick window is just ~5 heartbeats, so under CPU
 # starvation (a loaded box running several coders) the first renewal slips past

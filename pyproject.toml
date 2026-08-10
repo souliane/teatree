@@ -439,8 +439,8 @@ name = "Overlays must not import private agents internals"
 type = "forbidden"
 source_modules = [ "teatree.contrib" ]
 forbidden_modules = [
-  "teatree.agents._headless_options",
-  "teatree.agents._headless_env",
+  "teatree.agents._runner_options",
+  "teatree.agents._runner_env",
 ]
 # Direct-only: an overlay may use the SANCTIONED public surface (``teatree.overlay_sdk``,
 # ``run_agent``), which internally touches these agents-private modules — that transitive

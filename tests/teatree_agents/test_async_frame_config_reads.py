@@ -22,10 +22,10 @@ import pytest
 from django.test import TestCase
 from pydantic_ai.models.test import TestModel
 
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.harness import PydanticAiHarness, resolve_harness
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.headless import TaskUsage, run_agent
+from teatree.agents.runner import TaskUsage, run_agent
 from teatree.config.override_read_health import degraded_read_report
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 
@@ -54,8 +54,8 @@ class TestADispatchLeavesTheOverrideTierReadable(TestCase):
         harness = PydanticAiHarness(model=TestModel(custom_output_text=_RESULT_ENVELOPE))
         with (
             patch("teatree.config.override_read_health.marker_path", return_value=self.marker),
-            patch.object(headless_mod, "resolve_harness", return_value=harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
             report = degraded_read_report()

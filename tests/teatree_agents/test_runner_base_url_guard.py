@@ -21,8 +21,8 @@ import pytest
 from django.test import TestCase
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
-from teatree.agents.headless import _provider_child_env, run_agent
+import teatree.agents.runner as runner_mod
+from teatree.agents.runner import _provider_child_env, run_agent
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Session, Task, Ticket
 from teatree.llm.credentials import CredentialError
@@ -126,12 +126,12 @@ class TestDispatchRecordsTheRefusalRatherThanRunning(TestCase):
             spawned.append(options)
             return FakeHarnessSession(success_stream({"summary": "ok"}))
 
-        snapshot = headless_mod.TaskUsage(turns=0, cost_usd=0.0)
+        snapshot = runner_mod.TaskUsage(turns=0, cost_usd=0.0)
         with (
             _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _OAUTH: "sk-ant-oat01-x"}),
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
         ):
             session = Session.objects.create(ticket=self.ticket, agent_id="base-url-guard")
             task = Task.objects.create(ticket=self.ticket, session=session)

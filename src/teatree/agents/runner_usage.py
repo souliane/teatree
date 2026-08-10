@@ -3,7 +3,7 @@
 Maps a ``claude-agent-sdk`` :class:`~claude_agent_sdk.ResultMessage` to the
 ``AttemptUsage`` the attempt recorder persists: token counts, the billed model,
 and the cost (SDK-reported when present, else the price-table estimate). Split out
-of ``agents/headless.py`` so the run/dispatch logic and this accounting concern
+of ``agents/runner.py`` so the run/dispatch logic and this accounting concern
 each stay a focused module.
 """
 

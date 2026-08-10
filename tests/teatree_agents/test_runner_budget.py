@@ -1,7 +1,7 @@
 import pytest
 from django.test import TestCase, override_settings
 
-from teatree.agents.headless_budget import TicketBudget
+from teatree.agents.runner_budget import TicketBudget
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 
 

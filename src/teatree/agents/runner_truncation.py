@@ -6,7 +6,7 @@ ceiling, which amputates the result envelope mid-generation, and the per-run
 ``headless_max_turns`` ceiling, which ends the run between turns. Each is recorded
 FAILED by the driver; silent truncation is the defect this closes, so the owner is
 ALSO told through the audited owner egress and the ceiling can then be raised
-deliberately. Split out of :mod:`teatree.agents.headless` as its own concern so the
+deliberately. Split out of :mod:`teatree.agents.runner` as its own concern so the
 driver stays focused on the run loop.
 """
 

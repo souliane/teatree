@@ -7,7 +7,7 @@ already carries ``Agent``/``Task`` in its disallow list, so the hook is inert th
 
 from django.test import TestCase
 
-from teatree.agents._headless_options import _build_options, resolve_spawn_ceiling
+from teatree.agents._runner_options import _build_options, resolve_spawn_ceiling
 from teatree.agents.subagent_ceiling import DEFAULT_SPAWN_CEILING, SPAWN_TOOL_MATCHER
 from teatree.config import UserSettings
 from teatree.core.models import ConfigSetting, Session, Task, Ticket

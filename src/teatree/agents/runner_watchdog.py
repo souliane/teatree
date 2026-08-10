@@ -2,7 +2,7 @@
 
 The stuck-loop / cost-spike detector (:class:`LoopWatchdog`) and the
 accumulated ``TaskAttempt`` delta snapshot (:class:`TaskUsage`) it evaluates,
-factored out of :mod:`teatree.agents.headless` so the driver stays focused on
+factored out of :mod:`teatree.agents.runner` so the driver stays focused on
 the harness lifecycle. :func:`_sample_usage_closing_connection` is the worker-
 thread sampler the heartbeat loop offloads the aggregate read to.
 """

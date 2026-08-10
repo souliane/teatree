@@ -12,7 +12,7 @@ supports; a lease loss WITHOUT it still records the failure, unchanged.
 
 from django.test import TestCase
 
-from teatree.agents.headless import HarnessOutcome, _outcome_failure
+from teatree.agents.runner import HarnessOutcome, _outcome_failure
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.review_verdict import ReviewVerdict

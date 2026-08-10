@@ -157,7 +157,7 @@ def build_system_context(
     the per-task identity and prior-task result trail. Prompt caching on this lane
     is CLI-internal and exposes no ``cache_control`` surface, so prefix stability
     is the only lever teatree has over the hit rate (see
-    ``_headless_options._build_options``); leading with the task identity diverges
+    ``_runner_options._build_options``); leading with the task identity diverges
     the cached prefix at line 2 and re-processes the whole skill block uncached on
     every dispatch. Mirrors the eval lane, which already leads with the stable
     ``SKILL_BUNDLE_FRAMING``.

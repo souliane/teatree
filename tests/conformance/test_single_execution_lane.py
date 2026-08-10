@@ -19,7 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Where a retired name could plausibly come back. Migrations record history and are
 #: append-only, so the two ``RemoveField`` rows naming the dropped column stay.
-_SEARCH_ROOTS = ("src", "hooks", "tests", "skills", "agents", "docs", "deploy", "evals")
+_SEARCH_ROOTS = ("src", "hooks", "tests", "e2e", "skills", "agents", "docs", "deploy", "evals", "scripts", "dev")
 _SKIP_PARTS = frozenset({".git", "__pycache__", "migrations", "generated", "fixtures"})
 _SKIP_SUFFIXES = frozenset({".jsonl", ".png", ".svg", ".ico", ".lock", ".woff2", ".pyc"})
 
@@ -39,10 +39,10 @@ _RETIRED = (
 )
 
 
-def _searchable_files() -> list[Path]:
+def _searchable_files(repo_root: Path) -> list[Path]:
     files: list[Path] = []
     for root in _SEARCH_ROOTS:
-        base = _REPO_ROOT / root
+        base = repo_root / root
         if not base.is_dir():
             continue
         for path in base.rglob("*"):
@@ -50,30 +50,55 @@ def _searchable_files() -> list[Path]:
                 continue
             if _SKIP_PARTS & set(path.parts):
                 continue
-            if path.relative_to(_REPO_ROOT).as_posix() == _SELF:
+            if path.relative_to(repo_root).as_posix() == _SELF:
                 continue
             files.append(path)
     return files
 
 
-@pytest.mark.parametrize("token", _RETIRED)
-def test_no_surface_still_names_the_retired_second_lane(token: str) -> None:
+def _hits_for(token: str, repo_root: Path = _REPO_ROOT) -> list[str]:
     hits = []
-    for path in _searchable_files():
+    for path in _searchable_files(repo_root):
         try:
             text = path.read_text()
         except (UnicodeDecodeError, OSError):
             continue
         if token in text:
-            hits.append(path.relative_to(_REPO_ROOT).as_posix())
-    assert hits == [], f"{token!r} is retired but still named by: {hits}"
+            hits.append(path.relative_to(repo_root).as_posix())
+    return sorted(hits)
 
 
-def test_the_scanner_can_see_a_planted_reintroduction(tmp_path: Path) -> None:
-    """Control: the sweep above is only evidence if it goes RED on a real hit."""
-    planted = tmp_path / "reintroduced.py"
-    planted.write_text("execution_target = 'headless'\n")
-    assert "execution_target" in planted.read_text()
+@pytest.mark.parametrize("token", _RETIRED)
+def test_no_surface_still_names_the_retired_second_lane(token: str) -> None:
+    assert _hits_for(token) == [], f"{token!r} is retired but still named by: {_hits_for(token)}"
+
+
+class TestTheSweepCanActuallyGoRed:
+    """Control: the sweep above is evidence only if it reports a real hit in every root.
+
+    The first cut planted its file in a bare ``tmp_path`` and re-read that same file,
+    so it exercised none of the walk — and the walk was in fact blind to ``e2e/``,
+    where two live references to the dropped column survived the sweep's green.
+    """
+
+    @staticmethod
+    def _plant(repo_root: Path, relative: str) -> None:
+        path = repo_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("execution_target = 'x'\n")
+
+    @pytest.mark.parametrize("root", _SEARCH_ROOTS)
+    def test_a_reintroduction_in_any_searched_root_is_reported(self, root: str, tmp_path: Path) -> None:
+        self._plant(tmp_path, f"{root}/reintroduced.py")
+        assert _hits_for("execution_target", tmp_path) == [f"{root}/reintroduced.py"]
+
+    def test_an_unsearched_root_is_not_reported(self, tmp_path: Path) -> None:
+        self._plant(tmp_path, "unsearched/reintroduced.py")
+        assert _hits_for("execution_target", tmp_path) == []
+
+    def test_migration_history_stays_exempt(self, tmp_path: Path) -> None:
+        self._plant(tmp_path, "src/migrations/0067_drop.py")
+        assert _hits_for("execution_target", tmp_path) == []
 
 
 class TestInteractiveSkillSurvives:

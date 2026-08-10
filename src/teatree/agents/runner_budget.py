@@ -1,9 +1,9 @@
 """Per-ticket cumulative cost cap for the headless runner.
 
-Split out of :mod:`teatree.agents.headless` for the module-health LOC cap (the
-same reason ``_headless_options.py`` and ``headless_usage.py`` were split
-out). Re-exported from ``teatree.agents.headless`` so ``from
-teatree.agents.headless import TicketBudget`` stays valid.
+Split out of :mod:`teatree.agents.runner` for the module-health LOC cap (the
+same reason ``_runner_options.py`` and ``runner_usage.py`` were split
+out). Re-exported from ``teatree.agents.runner`` so ``from
+teatree.agents.runner import TicketBudget`` stays valid.
 """
 
 from dataclasses import dataclass

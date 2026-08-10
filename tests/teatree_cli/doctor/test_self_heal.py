@@ -257,7 +257,7 @@ class StrandedHeadlessCheckTest(TestCase):
         stranded = [("501", timezone.now() - dt.timedelta(hours=2))]
         with (
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
-            mock.patch(f"{_MOD}._Probe.stranded_headless_results", return_value=stranded),
+            mock.patch(f"{_MOD}._Probe.stranded_runner_results", return_value=stranded),
         ):
             ok, out = _echoes(self_heal._check_stranded_headless_task)
         assert ok is False
@@ -271,7 +271,7 @@ class StrandedHeadlessCheckTest(TestCase):
     def test_no_stranded_rows_is_ok(self) -> None:
         with (
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
-            mock.patch(f"{_MOD}._Probe.stranded_headless_results", return_value=[]),
+            mock.patch(f"{_MOD}._Probe.stranded_runner_results", return_value=[]),
         ):
             ok, _out = _echoes(self_heal._check_stranded_headless_task)
         assert ok is True

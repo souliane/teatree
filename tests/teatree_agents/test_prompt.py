@@ -706,7 +706,7 @@ class TestCacheablePrefixStability(TestCase):
 
     Prompt caching on the headless lane is CLI-internal and exposes no
     ``cache_control`` surface, so prefix STABILITY is the only lever teatree has
-    over the hit rate (``_headless_options._build_options``). Task ID / Ticket /
+    over the hit rate (``_runner_options._build_options``). Task ID / Ticket /
     the prior-task result diverge on every dispatch, so leading with them
     invalidates the cached prefix at line 2 and re-processes the whole ~96 KB
     skill block uncached. The eval lane already leads with the stable framing

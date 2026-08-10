@@ -10,7 +10,7 @@ verdict is reproducible without a task, a harness, or a database.
 from claude_agent_sdk import ResultMessage
 from claude_agent_sdk.types import RateLimitInfo
 
-from teatree.agents.headless_failure_taxonomy import RESULT_ERROR_PREFIX, error_result_reason, limit_match
+from teatree.agents.runner_failure_taxonomy import RESULT_ERROR_PREFIX, error_result_reason, limit_match
 from teatree.llm.anthropic_limits import LimitCause
 
 

@@ -28,9 +28,9 @@ from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, Te
 from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.harness_registry import HarnessCapabilities
-from teatree.agents.headless import TaskUsage
+from teatree.agents.runner import TaskUsage
 
 
 def result_message(**overrides: Any) -> ResultMessage:
@@ -174,8 +174,8 @@ def fake_sdk(
 
     snapshot = task_usage if task_usage is not None else TaskUsage(turns=0, cost_usd=0.0)
     with (
-        patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+        patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-        patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+        patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
     ):
         yield FakeHarnessSession

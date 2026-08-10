@@ -1257,7 +1257,7 @@ class TestHeadlessClaimLease(TestCase):
         # not Task.claim's 300s default: under CPU starvation a delayed first
         # heartbeat lets the 300s lease lapse and reclaim_orphaned_claims re-queues
         # the live task, which then aborts "lease lost: re-claimed by another worker".
-        from teatree.agents.headless import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
+        from teatree.agents.runner import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
         from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 — deferred: local
         from teatree.core.tasks import _CLAIM_LEASE_SECONDS, execute_task  # noqa: PLC0415 — deferred: local
 

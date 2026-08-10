@@ -25,7 +25,7 @@ from teatree.loops.dream.llm_eval_proposer import SynthesizedSpec
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
-    from teatree.agents._headless_env import ChildEnvResolver
+    from teatree.agents._runner_env import ChildEnvResolver
 
 _SYNTH_SYSTEM_PROMPT = (
     "You design ONE under_load behavioural eval that pins a drift rule. From the "
@@ -110,12 +110,12 @@ def sdk_spec_synthesizer(
     success.
 
     *child_env* injects the credential resolver (#3512); ``None`` uses the production
-    :func:`~teatree.agents._headless_env.system_child_env`.
+    :func:`~teatree.agents._runner_env.system_child_env`.
     """
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.agents._headless_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
+    from teatree.agents._runner_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
         system_child_env,
     )
 

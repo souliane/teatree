@@ -17,12 +17,14 @@ from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
-from teatree.agents._headless_env import system_child_env
-from teatree.agents._headless_options import _get_resume_session_id
+import teatree.agents.runner as runner_mod
+from teatree.agents._runner_env import system_child_env
+from teatree.agents._runner_options import _get_resume_session_id
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
-from teatree.agents.headless import (
+from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
+from teatree.agents.pydantic_ai_resume import persist_parked_thread
+from teatree.agents.runner import (
     LoopWatchdog,
     TaskUsage,
     _drive_with_heartbeat,
@@ -31,10 +33,8 @@ from teatree.agents.headless import (
     _resolve_dispatch_lane,
     run_agent,
 )
-from teatree.agents.headless_result import parse_result
-from teatree.agents.headless_usage import _safe_float, _safe_int
-from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
-from teatree.agents.pydantic_ai_resume import persist_parked_thread
+from teatree.agents.runner_result import parse_result
+from teatree.agents.runner_usage import _safe_float, _safe_int
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import (
     ConfigSetting,
@@ -120,7 +120,7 @@ class TestRunHeadless(TestCase):
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         with (
             _fake_sdk(_success_stream(result)),
-            patch.object(headless_mod, "resolve_skill_bundle", return_value=["t3:code", "t3:rules"]),
+            patch.object(runner_mod, "resolve_skill_bundle", return_value=["t3:code", "t3:rules"]),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -149,7 +149,7 @@ class TestRunHeadless(TestCase):
         assert attempt.cost_usd == pytest.approx(3.0)
 
     def test_fails_when_binary_not_found(self) -> None:
-        with patch.object(headless_mod.shutil, "which", return_value=None):
+        with patch.object(runner_mod.shutil, "which", return_value=None):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -294,8 +294,8 @@ class TestNoResultEnvelopeGuard(TestCase):
         task = self._task(phase="debugging")
         harness = PydanticAiHarness(model=TestModel(custom_output_text="I cannot run commands here."))
         with (
-            patch.object(headless_mod, "resolve_harness", return_value=harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
@@ -377,7 +377,7 @@ class TestRunHeadlessStageSkillResolution(TestCase):
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         with (
             _fake_sdk(_success_stream(result)),
-            patch("teatree.agents.headless.active_overlay_stage_skills", return_value=[]) as dispatch_resolve,
+            patch("teatree.agents.runner.active_overlay_stage_skills", return_value=[]) as dispatch_resolve,
             # The bundle + both prompt builders reach this binding only when they
             # re-resolve; a threaded dispatch must leave it untouched.
             patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as reresolve,
@@ -579,7 +579,7 @@ class TestRunHeadlessMaxTokensTruncationAlert(TestCase):
     def _run_with_terminal(self, terminal: Any) -> tuple[TaskAttempt, Task, Any]:
         with (
             _fake_sdk([_assistant_text('{"summary": "partial"}'), terminal]),
-            patch("teatree.agents.headless_truncation.notify_user", return_value=True) as notify,
+            patch("teatree.agents.runner_truncation.notify_user", return_value=True) as notify,
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
@@ -886,7 +886,7 @@ class TestBuildOptionsFailLoudGate(TestCase):
     def test_askuserquestion_is_disallowed(self) -> None:
         session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         task = Task.objects.create(ticket=self.ticket, session=session)
-        options = headless_mod._build_options(task, "ctx", phase="coding", skills=[])
+        options = runner_mod._build_options(task, "ctx", phase="coding", skills=[])
         assert "AskUserQuestion" in (options.disallowed_tools or [])
 
 
@@ -924,7 +924,7 @@ class TestResolveTaskCwd(TestCase):
     def test_worktree_with_real_repo_path_is_returned(self) -> None:
         import tempfile  # noqa: PLC0415
 
-        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
@@ -935,7 +935,7 @@ class TestResolveTaskCwd(TestCase):
             assert _resolve_task_cwd(task) == repo_dir
 
     def test_worktree_with_missing_repo_path_returns_none(self) -> None:
-        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
@@ -951,7 +951,7 @@ class TestResolveTaskCwd(TestCase):
         # accessible checkout of the teatree repo" half of the bug.
         import tempfile  # noqa: PLC0415
 
-        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
@@ -962,7 +962,7 @@ class TestResolveTaskCwd(TestCase):
                 assert _resolve_task_cwd(task) == clone_dir
 
     def test_architectural_review_falls_back_to_clone_root_scan_without_t3_repo(self) -> None:
-        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
@@ -976,7 +976,7 @@ class TestResolveTaskCwd(TestCase):
     def test_non_dispatch_phase_with_no_worktree_keeps_unset_cwd(self) -> None:
         # Only the scanner-dispatched review phase falls back to the main clone; every
         # other phase keeps the historical ``None`` when it has no ticket worktree.
-        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
@@ -986,7 +986,7 @@ class TestResolveTaskCwd(TestCase):
 
 
 def test_collect_ignores_messages_that_are_neither_assistant_nor_result() -> None:
-    from teatree.agents.headless import _collect  # noqa: PLC0415
+    from teatree.agents.runner import _collect  # noqa: PLC0415 — deferred: private helper
 
     class _Other:
         pass
@@ -1009,7 +1009,7 @@ def test_collect_ignores_messages_that_are_neither_assistant_nor_result() -> Non
 
 def test_attempt_usage_for_missing_message_is_empty() -> None:
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
-    from teatree.agents.headless_usage import _attempt_usage  # noqa: PLC0415
+    from teatree.agents.runner_usage import _attempt_usage  # noqa: PLC0415 — deferred: private helper
 
     assert _attempt_usage(None) == AttemptUsage()
 
@@ -1128,7 +1128,7 @@ class TestDriveWithHeartbeat(TestCase):
         self.task.renew_lease = lambda **_kw: None
 
     def _options(self) -> Any:
-        return headless_mod._build_options(self.task, "ctx", phase="coding", skills=[])
+        return runner_mod._build_options(self.task, "ctx", phase="coding", skills=[])
 
     def test_collects_text_and_terminal_result(self) -> None:
         messages = [_assistant_text("hello"), _result_message(session_id="s1", num_turns=2)]
@@ -1153,7 +1153,7 @@ class TestDriveWithHeartbeat(TestCase):
         self.task.renew_lease = counting_renew
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
-        with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
+        with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
             outcome = asyncio.run(
                 _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
             )
@@ -1175,14 +1175,14 @@ class TestDriveWithHeartbeat(TestCase):
         self.task.renew_lease = capturing_renew
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
-        with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
+        with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
             asyncio.run(_drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog))
 
         assert seen_lease, "the heartbeat must renew the lease at least once during the run"
-        assert min(seen_lease) == headless_mod._LEASE_SECONDS, (
+        assert min(seen_lease) == runner_mod._LEASE_SECONDS, (
             "the heartbeat must renew with the starvation-resilient lease constant"
         )
-        assert headless_mod._LEASE_SECONDS >= 900, (
+        assert runner_mod._LEASE_SECONDS >= 900, (
             "the renewed lease must be >= ~15 min so realistic event-loop starvation cannot cause a false lapse"
         )
 
@@ -1192,7 +1192,7 @@ class TestDriveWithHeartbeat(TestCase):
         messages = [_assistant_text("step") for _ in range(1000)]
         watchdog = LoopWatchdog(max_runtime_seconds=0.2, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
-        with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
+        with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
             outcome = asyncio.run(
                 _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
             )
@@ -1212,8 +1212,8 @@ class TestDriveWithHeartbeat(TestCase):
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with (
             _fake_sdk(messages, delay=0.05),
-            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
-            patch.object(headless_mod, "logger") as mock_logger,
+            patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch.object(runner_mod, "logger") as mock_logger,
         ):
             outcome = asyncio.run(
                 _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
@@ -1236,7 +1236,7 @@ class TestDriveWithHeartbeat(TestCase):
         messages = [_assistant_text("step") for _ in range(1000)]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
-        with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
+        with _fake_sdk(messages, delay=0.05), patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02):
             outcome = asyncio.run(
                 _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
             )
@@ -1261,7 +1261,7 @@ class TestDriveWithHeartbeat(TestCase):
         start = time.monotonic()
         with (
             _fake_sdk(messages, delay=0.05),
-            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
             patch.object(Task.objects, "filter", side_effect=OperationalError("database table is locked")),
         ):
             outcome = asyncio.run(
@@ -1285,7 +1285,7 @@ class TestWatchdogResamplesUsageMidRun(TestCase):
         self.task.renew_lease = lambda **_kw: None
 
     def _options(self) -> Any:
-        return headless_mod._build_options(self.task, "ctx", phase="coding", skills=[])
+        return runner_mod._build_options(self.task, "ctx", phase="coding", skills=[])
 
     def test_cost_spike_after_the_pre_run_snapshot_interrupts(self) -> None:
         # The pre-run snapshot is UNDER the ceiling; the spend then spikes over it while
@@ -1306,8 +1306,8 @@ class TestWatchdogResamplesUsageMidRun(TestCase):
         start = time.monotonic()
         with (
             _fake_sdk(messages, delay=0.05),
-            patch.object(headless_mod, "_sample_usage_closing_connection", growing),
-            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch.object(runner_mod, "_sample_usage_closing_connection", growing),
+            patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
         ):
             outcome = asyncio.run(
                 _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
@@ -1351,7 +1351,7 @@ class TestHeartbeatLeaseRenewalConnectionHygiene(TestCase):
 
         def _renew_on_worker() -> None:
             try:
-                headless_mod._renew_lease_closing_connection(task)
+                runner_mod._renew_lease_closing_connection(task)
             except BaseException as exc:  # noqa: BLE001 — surfaced to the parent as an assertion
                 errors.append(exc)
 
@@ -1386,8 +1386,8 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         start = time.monotonic()
         with (
             _fake_sdk(messages, delay=0.05, task_usage=TaskUsage(turns=500, cost_usd=0.0)),
-            patch.object(headless_mod.LoopWatchdog, "from_settings", return_value=watchdog),
-            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
+            patch.object(runner_mod.LoopWatchdog, "from_settings", return_value=watchdog),
+            patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
         ):
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
         elapsed = time.monotonic() - start
@@ -1418,7 +1418,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
 
         with (
             override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}),
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
                 harness_mod,
                 "ClaudeSDKClient",
@@ -1494,7 +1494,7 @@ class TestBuildOptions(TestCase):
         # spawn model/effort resolve through the shipped phase-tier defaults.
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
-        return headless_mod._build_options(task, "ctx", phase=phase, skills=[])
+        return runner_mod._build_options(task, "ctx", phase=phase, skills=[])
 
     def test_retrospecting_runs_on_frontier(self) -> None:
         options = self._options_for_phase("retrospecting")
@@ -1549,7 +1549,7 @@ class TestBuildOptions(TestCase):
         # production run loses the Claude Code preset.
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
-        options = headless_mod._build_options(task, "my context", phase="coding", skills=[])
+        options = runner_mod._build_options(task, "my context", phase="coding", skills=[])
         assert options.system_prompt == {
             "type": "preset",
             "preset": "claude_code",
@@ -1593,9 +1593,9 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
         with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
-            return headless_mod._build_options(task, "ctx", phase=phase, skills=skills)
+            return runner_mod._build_options(task, "ctx", phase=phase, skills=skills)
 
-    def test_skill_floor_raises_the_headless_model(self) -> None:
+    def test_skill_floor_raises_the_runner_model(self) -> None:
         # "testing" starts at the balanced tier (sonnet); an opus skill floor
         # (frontier-ranked) raises it above that baseline.
         options = self._options(
@@ -1716,7 +1716,7 @@ class TestSystemChildEnv(TestCase):
         # its working ambient auth — warned, never broken.
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
-        with self.assertLogs("teatree.agents._headless_env", level="WARNING") as logs:
+        with self.assertLogs("teatree.agents._runner_env", level="WARNING") as logs:
             env = system_child_env()
 
         assert env is None

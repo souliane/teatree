@@ -1,9 +1,9 @@
 """Child-process credential env for a ``claude_sdk`` headless dispatch.
 
-Split out of :mod:`teatree.agents.headless` for the module-health LOC cap: the
+Split out of :mod:`teatree.agents.runner` for the module-health LOC cap: the
 Layer-2 ``agent_harness_provider``-keyed credential resolution (#2887) plus the overlay
-scope the per-account selector routes for. Re-exported from ``teatree.agents.headless``
-so ``from teatree.agents.headless import _provider_child_env`` stays valid.
+scope the per-account selector routes for. Re-exported from ``teatree.agents.runner``
+so ``from teatree.agents.runner import _provider_child_env`` stays valid.
 """
 
 import logging
