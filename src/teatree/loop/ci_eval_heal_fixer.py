@@ -17,7 +17,8 @@ Two guardrails are structural, not left to prose:
     a fix in a THROWAWAY worktree and returns the changed paths, but pushes NOTHING.
     The driver runs the #3282 anti-cheat gate (``record_fix``) over those paths and
     calls :meth:`~CiEvalHealFixer.publish` only when the gate passes, so a diff that
-    edits a scenario (``evals/scenarios/**``) or a red matcher is REJECTED and the
+    edits a scenario (``evals/scenarios/**``) or the eval harness
+    (``src/teatree/eval/**``) is REJECTED and the
     cheating commit is DISCARDED, never reaching the PR branch. A genuinely-failing
     eval can never be greened by editing its test.
 
