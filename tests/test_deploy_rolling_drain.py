@@ -67,6 +67,15 @@ def _compose_helper_block() -> str:
     return f"{head}{rest[: closing + len('\n}\n')]}\n"
 
 
+def _staged_swap_block(body: str) -> str:
+    """deploy.sh's `staged_swap()` body — the shipped stage ORDER, not a copy of it."""
+    start = body.find("staged_swap() {")
+    assert start != -1, "deploy.sh's staged swap moved — re-anchor this probe"
+    end = body.find("\n}\n", start)
+    assert end > start, "deploy.sh's staged_swap() is not closed as expected — re-anchor this probe"
+    return body[start:end]
+
+
 def _fail_safe_block() -> str:
     """deploy.sh's stranded-gate fail-safe, verbatim, anchors included."""
     return _slice(_DEPLOY_SH.read_text(encoding="utf-8"), _FAIL_SAFE_START, _FAIL_SAFE_END, "stranded-gate fail-safe")
@@ -167,13 +176,15 @@ class TestDeployDebounce:
 class TestDeployDrain:
     def test_deploy_script_drains_the_running_worker_before_the_swap(self) -> None:
         body = _DEPLOY_SH.read_text(encoding="utf-8")
-        drain_at = body.find("t3 worker drain")
-        swap_at = body.find("up -d --build")
-        assert drain_at != -1, "deploy.sh must drain the worker before swapping the image"
-        assert swap_at != -1
-        assert drain_at < swap_at, "the drain must run BEFORE `docker compose up -d --build`"
+        staged = _staged_swap_block(body)
+        drains = [m.start() for m in re.finditer(r"^\s+drain_worker$", staged, re.MULTILINE)]
+        # init clears worker_quiescing as its last act, so the gate is asserted once
+        # before migrations and re-asserted between init and the worker's recreate.
+        assert len(drains) == 2, f"the staged swap must drain either side of init; found {len(drains)}"
+        assert drains[0] < staged.index("up -d --no-deps teatree-init")
+        assert staged.index("up -d --no-deps teatree-init") < drains[1] < staged.index("up -d --no-deps teatree-worker")
         # Guarded by worker_running (nothing to drain otherwise) and non-fatal on overrun.
-        assert "if worker_running; then" in body
+        assert "worker_running || return 0" in body
         assert "TEATREE_DRAIN_TIMEOUT" in body
 
     def test_fresh_worker_init_clears_the_quiescing_gate(self) -> None:

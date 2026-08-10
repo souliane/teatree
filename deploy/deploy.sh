@@ -244,37 +244,184 @@ fi
 export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT
 echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit=${TEATREE_WORKER_MEM_LIMIT:-<default>}"
 
-# Drain-then-deploy (rolling / zero-downtime): a deploy must NEVER kill an
-# in-flight agent. Before swapping the worker image, quiesce the RUNNING worker —
-# `t3 worker drain` sets the `worker_quiescing` admission gate (the claim path then
-# admits ZERO new work) and waits up to TEATREE_DRAIN_TIMEOUT seconds for every
-# live CLAIMED lease to finish. The supervisor is never stopped, so in-flight
-# sub-agents keep renewing and complete. On a grace overrun the drain exits non-zero
-# (code 3); we still PROCEED — a stuck task re-queues PENDING via its lease lapse and
-# the fresh worker picks it up. The fresh worker's init clears worker_quiescing so
-# admission resumes. Skipped when no worker is running (nothing to drain).
-if worker_running; then
+# Services the staged swap names, in the order it stages them. Everything compose
+# declares beyond this list is converged last, so a service added later is never
+# orphaned by the staging.
+STAGED_SERVICES="teatree-init teatree-admin teatree-worker teatree-slack-listener"
+ADMIN_PROBE_URL="${TEATREE_ADMIN_PROBE_URL:-http://127.0.0.1:8000/admin/login/}"
+# The dashboard's own container swap is the ONE window the staging does not remove.
+# Exceeding this bound stops the convergence rather than continuing blind, which is
+# what keeps the residual unavailability a stated number instead of an implicit one.
+ADMIN_SWAP_BUDGET="${TEATREE_ADMIN_SWAP_BUDGET:-300}"
+INIT_WAIT_TIMEOUT="${TEATREE_INIT_WAIT_TIMEOUT:-1800}"
+RESUME_TIMEOUT="${TEATREE_RESUME_TIMEOUT:-300}"
+LOG_ARCHIVE_DIR="${TEATREE_DEPLOY_LOG_ARCHIVE_DIR:-$HOME/.local/share/teatree/deploy-logs}"
+LOG_ARCHIVE_KEEP="${TEATREE_DEPLOY_LOG_ARCHIVE_KEEP:-200}"
+
+admin_answers() { curl -fsS -o /dev/null --max-time 5 "$ADMIN_PROBE_URL"; }
+
+# A recreate destroys the container object and its json-file log with it — which is
+# how a live diagnosis lost the very worker ticks it was reading. Copy each service's
+# log to the bind-mounted data dir before recreating it, so a post-incident read
+# spans the swap. Best-effort throughout: losing an archive must not fail a deploy.
+archive_service_logs() {
+    local svc stamp
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d "$LOG_ARCHIVE_DIR" 2>/dev/null || return 0
+    for svc in "$@"; do
+        compose logs --no-color --timestamps --tail "${TEATREE_DEPLOY_LOG_ARCHIVE_LINES:-5000}" "$svc" \
+            >|"$LOG_ARCHIVE_DIR/$svc-$stamp.log" 2>/dev/null || true
+    done
+    { ls -1t "$LOG_ARCHIVE_DIR"/*.log 2>/dev/null || true; } |
+        tail -n "+$((LOG_ARCHIVE_KEEP + 1))" | xargs -r rm -f --
+}
+
+# The one-shot init's state as "<status> <exit-code>" (e.g. "exited 0"), empty when
+# unreadable. The first line is taken by expansion, never `| head`: under `pipefail`
+# a reader closing the pipe early kills the writer with SIGPIPE and fails the whole
+# assignment.
+init_state() {
+    local ids cid
+    ids="$(compose ps --all --quiet teatree-init 2>/dev/null || true)"
+    cid="${ids%%$'\n'*}"
+    [ -n "$cid" ] || return 0
+    docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$cid" 2>/dev/null || true
+}
+
+wait_for_init() {
+    local deadline=$((SECONDS + INIT_WAIT_TIMEOUT)) state
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        state="$(init_state)"
+        case "$state" in
+        "exited 0") return 0 ;;
+        exited*)
+            echo "deploy: FATAL — teatree-init $state. No app service was recreated, so the previous generation is still serving." >&2
+            compose logs --tail 200 teatree-init >&2 || true
+            return 1
+            ;;
+        esac
+        sleep 2
+    done
+    echo "deploy: FATAL — teatree-init did not finish within ${INIT_WAIT_TIMEOUT}s." >&2
+    return 1
+}
+
+# Quiesce the RUNNING worker: `t3 worker drain` sets the `worker_quiescing` admission
+# gate (the claim path then admits ZERO new work) and waits up to
+# TEATREE_DRAIN_TIMEOUT seconds for every live CLAIMED lease to finish. The
+# supervisor is never stopped, so in-flight sub-agents keep renewing and complete. On
+# a grace overrun the drain exits non-zero (code 3); we still PROCEED — a stuck task
+# re-queues PENDING via its lease lapse and the fresh worker picks it up.
+drain_worker() {
+    worker_running || return 0
     echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
     _DRAINED=true
     compose exec -T teatree-worker \
-        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}" \
-        || echo "deploy: drain window exceeded — proceeding (a stuck task re-queues via its lease lapse)"
-fi
+        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}" ||
+        echo "deploy: drain window exceeded — proceeding (a stuck task re-queues via its lease lapse)"
+}
+
+# init's own clear runs BEFORE this convergence quiesces the worker, so nothing else
+# re-opens admission on the fresh one — this does. Never fatal: the stack is up
+# either way, and the stranded-gate EXIT trap re-attempts it.
+resume_admission() {
+    local deadline=$((SECONDS + RESUME_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if compose exec -T teatree-worker \
+            t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1; then
+            _SWAP_DONE=true
+            return 0
+        fi
+        sleep 5
+    done
+    echo "deploy: WARNING could not clear worker_quiescing within ${RESUME_TIMEOUT}s — the fresh worker may admit no new work. Clear it with 't3 teatree config_setting set worker_quiescing false'." >&2
+    return 0
+}
+
+# The dashboard moves ALONE, with the worker still answering as the live control-DB
+# route. A box where nothing was answering has no continuity to keep, so the gap
+# accounting is skipped there and the convergence check at the end owns the wait.
+swap_admin() {
+    local was_up=false started
+    if admin_answers; then was_up=true; fi
+    archive_service_logs teatree-admin
+    started=$SECONDS
+    compose up -d --no-deps teatree-admin || return 1
+    if [ "$was_up" != true ]; then
+        echo "deploy: no dashboard was answering before the swap — nothing to keep continuous."
+        return 0
+    fi
+    while [ "$((SECONDS - started))" -lt "$ADMIN_SWAP_BUDGET" ]; do
+        if admin_answers; then
+            echo "deploy: dashboard unavailable for at most $((SECONDS - started))s (bound ${ADMIN_SWAP_BUDGET}s); the worker answered throughout."
+            return 0
+        fi
+        sleep 1
+    done
+    echo "deploy: FATAL — the dashboard did not answer within ${ADMIN_SWAP_BUDGET}s of its swap; stopping before the worker is touched, so one control-DB route stays up." >&2
+    return 1
+}
+
+# Every compose service the stages do not name. init is excluded by being staged: a
+# plain `up -d` STARTS an exited one-shot, replaying the whole ~minute init.
+remaining_services() {
+    local svc
+    { compose config --services 2>/dev/null || true; } | while IFS= read -r svc; do
+        case " $STAGED_SERVICES " in
+        *" $svc "*) ;;
+        *) printf '%s\n' "$svc" ;;
+        esac
+    done
+}
+
+# Stage the convergence so the control plane is never wholly absent (#4214). One
+# all-at-once recreate replaces all five services together: the dashboard and the
+# only CLI route vanish for the whole init window (~67s measured), every `t3` call
+# inside it fails the way a real outage does, and the container logs a live
+# diagnosis was reading are destroyed. Each stage below leaves at least one of
+# {teatree-admin, teatree-worker} answering.
+staged_swap() {
+    # Build first and recreate nothing: the longest phase of a convergence now runs
+    # against a fully live stack, and a build failure costs no availability at all.
+    compose build || return 1
+
+    drain_worker
+
+    archive_service_logs teatree-init
+    compose up -d --no-deps teatree-init || return 1
+    wait_for_init || return 1
+
+    # init clears worker_quiescing as its last act, so re-assert the gate: without
+    # this the still-live old worker resumes admission and can claim — then lose —
+    # a task in the seconds before it is swapped.
+    drain_worker
+
+    swap_admin || return 1
+
+    archive_service_logs teatree-worker teatree-slack-listener
+    compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
+    resume_admission
+
+    local rest
+    rest="$(remaining_services)"
+    [ -n "$rest" ] || return 0
+    # shellcheck disable=SC2086 # a service list has to word-split into separate args
+    archive_service_logs $rest
+    # shellcheck disable=SC2086 # same
+    compose up -d --no-deps $rest || return 1
+}
 
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before
 # the Action log sees anything but "exited (1)". The banner is load-bearing: the
 # 200 stale container lines below push the real buildkit error hundreds of lines
 # up the Action log, where it reads as unrelated noise. Name the failing step at
 # the top of the dump so triage starts in the right place.
-compose up -d --build || {
-    echo "deploy: FATAL — 'docker compose up -d --build' failed. The cause is the buildkit/compose error ABOVE this line; what follows is stack state for context, not the failure."
+staged_swap || {
+    echo "deploy: FATAL — the staged convergence failed. The cause is the buildkit/compose error ABOVE this line; what follows is stack state for context, not the failure."
     compose ps
     compose logs --tail 200 teatree-init teatree-worker teatree-admin
     exit 1
 } >&2
-# The swap completed: the fresh worker's init clears worker_quiescing, so the
-# stranded-gate fail-safe above becomes a no-op from here on.
-_SWAP_DONE=true
 
 # Wait for the admin dev server on the box loopback (init clone + install can
 # take a few minutes on first run).
