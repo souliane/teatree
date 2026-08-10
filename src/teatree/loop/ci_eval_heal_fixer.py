@@ -48,13 +48,14 @@ logger = logging.getLogger(__name__)
 #: second of the two switches (:func:`autofix_armed`).
 _LOOP_NAME = "ci_eval_heal"
 
-#: The scenario tree and red-matcher paths the fixer is told, in-prompt, it may
+#: The scenario tree and eval-harness paths the fixer is told, in-prompt, it may
 #: NEVER touch. Mirrors the authority in
 #: :mod:`teatree.core.gates.eval_heal_anticheat_gate` (which independently REJECTS
 #: such a diff) — the prompt is defence-in-depth, the gate is the enforcement.
 _FORBIDDEN_HINT = (
-    "evals/scenarios/** (the scenario definitions) and the red matchers "
-    "src/teatree/eval/matchers.py, triage.py, judge.py, matcher_vacuity.py"
+    "evals/scenarios/** (the scenario definitions) and src/teatree/eval/** (the whole eval "
+    "harness — the loader, the matchers, the judge, report.py, and every other module that "
+    "grades a scenario)"
 )
 
 #: Wall-clock bound on the whole write turn — a stalled ``claude`` spawn can never
