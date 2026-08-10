@@ -40,6 +40,43 @@ def clone(tmp_path: Path) -> Iterator[Path]:
         yield root
 
 
+@pytest.fixture
+def two_clones(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
+    """Two independent clones, each holding its own mistracked branch.
+
+    The sweep exists ONLY to walk more than one clone — a fixture that mocks
+    ``known_clone_paths`` down to a single clone can never tell "every clone" from
+    "the first clone" apart.
+    """
+    clones: list[Path] = []
+    for i in range(2):
+        origin = tmp_path / f"origin{i}.git"
+        origin.mkdir()
+        _git(tmp_path, "init", "--bare", "-b", "main", str(origin))
+        root = tmp_path / f"clone{i}"
+        _git(tmp_path, "clone", str(origin), str(root))
+        (root / "file.txt").write_text("hello", encoding="utf-8")
+        _git(root, "add", ".")
+        _git(root, "commit", "-m", "initial")
+        _git(root, "push", "origin", "main")
+        _git(root, "worktree", "add", "-b", f"feat{i}", str(tmp_path / f"wt{i}"), "origin/main")
+        clones.append(root)
+    with mock.patch("teatree.core.worktree.branch_upstream.known_clone_paths", return_value=set(clones)):
+        yield clones[0], clones[1]
+
+
+class TestMultiClone:
+    def test_scan_reports_every_mistracked_clone_not_only_the_first(self, two_clones: tuple[Path, Path]) -> None:
+        found = scan_clones()
+
+        assert {entry.clone for entry in found} == set(two_clones)
+
+    def test_repair_fixes_every_clone_not_only_the_first(self, two_clones: tuple[Path, Path]) -> None:
+        repair_clones()
+
+        assert scan_clones() == []
+
+
 class TestScanClones:
     def test_reports_the_mistracked_branch_with_its_remedy(self, clone: Path) -> None:
         [found] = scan_clones()

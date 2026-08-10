@@ -11,6 +11,7 @@ from unittest import mock
 
 import pytest
 
+from teatree.utils.git_run import check as real_check
 from teatree.utils.git_upstream import (
     BranchUpstream,
     branch_upstream,
@@ -133,6 +134,24 @@ class TestNormalize:
         normalize_branch_upstream(str(clone), "feat")
 
         assert "[gone]" not in _git(clone, "branch", "-v", "--no-color")
+
+    def test_the_repair_never_attempts_set_upstream_to_on_an_absent_ref(self, clone: Path, tmp_path: Path) -> None:
+        # Git itself REFUSES `--set-upstream-to=origin/<absent-ref>` (measured), so
+        # the `[gone]`-state assertion above stays green even on a mutant that
+        # ALWAYS attempts it — git's refusal masks the mutant, not the
+        # implementation. Pin the CALL instead: an unpushed branch's repair must
+        # never emit `--set-upstream-to`.
+        _git(clone, "worktree", "add", "-b", "feat", str(tmp_path / "wt"), "origin/main")
+        calls: list[list[str]] = []
+
+        def spy(*, repo: str, args: list[str]) -> bool:
+            calls.append(args)
+            return real_check(repo=repo, args=args)
+
+        with mock.patch("teatree.utils.git_upstream.check", side_effect=spy):
+            normalize_branch_upstream(str(clone), "feat")
+
+        assert calls == [["branch", "--unset-upstream", "feat"]]
 
     def test_pushed_branch_is_repointed_at_its_own_ref(self, clone: Path, tmp_path: Path) -> None:
         _git(clone, "worktree", "add", "-b", "feat", str(tmp_path / "wt"), "origin/main")
