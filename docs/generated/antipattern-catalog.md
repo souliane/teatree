@@ -9,13 +9,14 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**25 entries** — 4 greppable, 21 judgement.
+**33 entries** — 4 greppable, 29 judgement.
 
 ## Index
 
 - [Test function with no assertion](#assert-nothing-test) — high, judgement
 - [Lower-level module importing a higher-level one](#backwards-dependency-edge) — high, judgement
 - [Test that writes its own baseline / snapshot](#baseline-auto-accept) — high, judgement
+- [Destructive op reachable without its guard](#destructive-op-outside-its-guard) — high, judgement
 - [FloatField for currency](#float-for-money) — high, judgement
 - [Liveness path hard-fails a transient and locks the factory out](#gate-fails-closed-on-transient) — high, judgement
 - [Security or merge gate fails open on exception](#gate-fails-open-on-error) — high, judgement
@@ -23,11 +24,18 @@ holistic (`ac-reviewing-codebase`).
 - [Gate performs the guarded side effect before concluding refusal](#gate-side-effect-before-verdict) — high, judgement
 - [GET request with side effects](#get-with-side-effects) — high, greppable
 - [Strip a qualifier to force an identity match](#identity-strip-to-match) — high, greppable
+- [Long I/O inside the control-plane write transaction](#long-io-holds-control-lock) — high, judgement
 - [One item's exception aborts the whole sweep](#loop-scanner-no-fault-isolation) — high, judgement
 - [Same fact in two co-equal stores with no authority](#multi-store-no-arbiter) — high, judgement
 - [Canonicalization that is not idempotent](#non-idempotent-canonicalization) — high, judgement
 - [Deny handler keyed on a tool no matcher delivers](#phantom-gate) — high, greppable
+- [Authorization resting on a self-declared identity string](#self-declared-identity-authorization) — high, judgement
+- [Feature merged but not in force](#shipped-inert) — high, judgement
+- [Work can stall indefinitely with nothing raising an alarm](#silent-freeze) — high, judgement
+- [Command reports success on a failure it printed](#silent-success-on-failure) — high, judgement
 - [Test mocks the behaviour it is supposed to exercise](#test-mocks-the-unit-under-test) — high, judgement
+- [Absent, unreadable or stale signal reported as a definite verdict](#unknown-reported-as-verdict) — high, judgement
+- [Guard green only where the defect cannot appear](#vacuous-guard) — high, judgement
 - [File placed outside the package whose concern it shares](#file-outside-its-package) — medium, judgement
 - [Identity matching that depends on the filesystem](#fs-dependent-identity-matching) — medium, judgement
 - [Module past the health threshold](#god-module) — medium, judgement
@@ -96,9 +104,9 @@ holistic (`ac-reviewing-codebase`).
 - **consumers:** architecture-design, ac-reviewing-codebase
 - **refs:** enforcement-gate-family
 
-**Anti-pattern.** A gate that protects a privacy/merge/publish boundary swallows an exception and returns "allow", so a transient error silently disables the protection.
+**Anti-pattern.** A gate that protects a privacy/merge/publish boundary swallows an exception and returns "allow", so a transient error silently disables the protection. Empty input is the same defect wearing a different hat: a helper that degrades to a neutral value (empty set, None, 0) both when the answer is genuinely empty AND when its dependency is unavailable, feeding a caller that reads "empty" as "safe to proceed".
 
-**Preferred.** A boundary-protecting gate fails CLOSED — an error denies. Only liveness paths fail open, and never the public-egress leak gate.
+**Preferred.** A boundary-protecting gate fails CLOSED — an error denies, and so does an empty the gate cannot prove is genuine. Only liveness paths fail open, and never the public-egress leak gate.
 
 ## Liveness path hard-fails a transient and locks the factory out
 
@@ -147,6 +155,21 @@ holistic (`ac-reviewing-codebase`).
 
 **Preferred.** Add a gate-liveness corpus row asserting reachability (the matched tool is delivered to the handler's event); a handler whose tool is absent from every matcher is xfail-tracked as a known phantom, never silently shipped.
 
+## Feature merged but not in force
+
+<a id="shipped-inert"></a>
+
+- **id:** `shipped-inert`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4215, gate-liveness-corpus
+
+**Anti-pattern.** Code that reads as protection while not being in force — a feature merged behind a flag whose live value is off, a scanner registered but never ticked, or a setting whose only safe value is held in place by a SEPARATE gate rather than by the code that consumes it. The source reads correct, so nobody re-checks whether it runs.
+
+**Preferred.** Read the LIVE value, not the default in the source, and assert reachability — a test or liveness row proving the path executes in production configuration. A feature that cannot be shown to run is not shipped.
+
 ## Gate performs the guarded side effect before concluding refusal
 
 <a id="gate-side-effect-before-verdict"></a>
@@ -161,6 +184,36 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A path that performs an outward write — a push, a PR/issue create, a merge, a colleague post — and only then evaluates a check that returns "refused". The verdict is a lie about the world: retrying is unsafe, the caller cannot reconcile state from the return value, and escalation fires on a non-event. The shape is invisible unless someone happens to retry, and it hides behind an intermediate write whose own hook creates the artifact (a push that fires the pre-push ensure-pr hook opens the PR the later refusal denies opening).
 
 **Preferred.** Every refusal concludes BEFORE the first outward write in the path — group them and return early, rather than interleaving checks with writes. When a check genuinely cannot run until after the fact, it reports "performed, but flagged" and NAMES the artifact that now exists; a refusal that leaves an artifact behind must say so. The regression test asserts the write did not happen, not merely that the verdict was a refusal.
+
+## Destructive op reachable without its guard
+
+<a id="destructive-op-outside-its-guard"></a>
+
+- **id:** `destructive-op-outside-its-guard`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4215, enforcement-gate-family
+
+**Anti-pattern.** A delete, force-push, reap, drop or overwrite whose safety check sits on ONE caller rather than on the operation itself, so a second call site — a retry, a sibling command, a sub-agent's raw invocation — reaches the destruction with the guard skipped.
+
+**Preferred.** The guard lives at the destructive operation, not at its callers: one chokepoint every path funnels through, refusing on anything it cannot prove disposable. A new call site then inherits the guard instead of re-deriving it.
+
+## Authorization resting on a self-declared identity string
+
+<a id="self-declared-identity-authorization"></a>
+
+- **id:** `self-declared-identity-authorization`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4215, souliane/teatree#1967
+
+**Anti-pattern.** An authorization, approval or maker-not-checker decision keyed on an identity the CALLER supplies — an --approver argument, an author field, a role name in a payload — so the actor being gated chooses the value the gate reads.
+
+**Preferred.** Authorize on an identity the caller cannot mint: a credential the forge or the secret store vouches for, or a durable row written by a different actor. Where a caller-supplied id is unavoidable, refuse the ones the acting agent could be (maker ids, loop ids) rather than trusting the string.
 
 ## Test function with no assertion
 
@@ -206,6 +259,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A test whose subject is replaced by a Mock/patch, asserting on call_args or a MagicMock's return value rather than on real behaviour. It passes against code that never ran, so it survives any regression in the thing it names. Mocking first-party code, Django models, the filesystem under tmp_path, or git itself is this shape. (Distinguishing a legitimate external-boundary mock from one that swallowed the unit under test needs judgement, not a regex.)
 
 **Preferred.** Exercise the real path — Django test client, call_command, a real git repo under tmp_path, an E2E — and mock only unstoppable externals: network, clock, credential stores, third-party subprocesses.
+
+## Guard green only where the defect cannot appear
+
+<a id="vacuous-guard"></a>
+
+- **id:** `vacuous-guard`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase, eval
+- **refs:** souliane/teatree#4215, anti-vacuous-eval
+
+**Anti-pattern.** A test or gate that asserts plenty and still guards nothing, because the only path it exercises is the one where the defect cannot occur — a race reproduced under a lock the buggy code never took, a deny-path probe that never reaches the deny, a fixture whose shape forecloses the failure. It is cited as evidence of safety and survives every mutation of the code it names.
+
+**Preferred.** For any guard cited as evidence of safety, NAME THE MUTATION that turns it red, then make it — revert the fix, break the invariant, plant the violation — and observe the red. A guard no mutation can turn red is itself the finding, not proof of the code it wraps.
 
 ## Business logic in a view or management command
 
@@ -362,6 +430,66 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A loop/scanner sweep where one item raising an exception aborts the entire pass, so a single bad row stops every sibling from being processed.
 
 **Preferred.** Isolate each item — catch and record per-item failure, continue the sweep — so one poison item never starves the rest.
+
+## Long I/O inside the control-plane write transaction
+
+<a id="long-io-holds-control-lock"></a>
+
+- **id:** `long-io-holds-control-lock`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4215, loop-topology
+
+**Anti-pattern.** A network call, subprocess, agent dispatch or multi-second read performed while holding the SQLite control-plane write lock, so every other writer on the box blocks behind one slow external dependency and the factory reads as hung rather than busy.
+
+**Preferred.** Do the I/O outside the transaction and take the write lock only to persist the result — read, call, then open a short atomic block. A transaction's body contains no call whose duration a remote party decides.
+
+## Absent, unreadable or stale signal reported as a definite verdict
+
+<a id="unknown-reported-as-verdict"></a>
+
+- **id:** `unknown-reported-as-verdict`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4041, souliane/teatree#4215
+
+**Anti-pattern.** "I cannot see whether X" rendered as "X is false" — a failed read, an empty result, a stale cache or an unreachable dependency collapsed into a confident negative that a caller then consumes as fact. The report is indistinguishable from a genuine measurement, so nobody re-checks it.
+
+**Preferred.** UNKNOWN is a third value and it propagates: a read that failed says so, distinctly from a read that returned nothing, and the consumer decides what to do with the unknown rather than inheriting a fabricated negative.
+
+## Command reports success on a failure it printed
+
+<a id="silent-success-on-failure"></a>
+
+- **id:** `silent-success-on-failure`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4215, management-command-exit-contract
+
+**Anti-pattern.** A command that writes ERROR to its output and exits 0 — a returned error string, a swallowed exception, a failing step whose status never reaches the exit code. CI, the loop and every unattended caller branch on the code, so the failure is invisible to all of them.
+
+**Preferred.** The exit code carries the verdict the output claims: raise SystemExit(N), or route a structured refusal through the seam that restores the non-zero exit on the argv path. A green exit means the work succeeded.
+
+## Work can stall indefinitely with nothing raising an alarm
+
+<a id="silent-freeze"></a>
+
+- **id:** `silent-freeze`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4215, resilience-invariants
+
+**Anti-pattern.** A claimed task, lease, queue or wait with no bound and no watchdog, so work an invariant says always progresses can sit forever — and because the absence of movement emits nothing, the freeze is only ever noticed by a human wondering why the board stopped.
+
+**Preferred.** Every claim carries a lease and a heartbeat, and a reaper acts on the expiry; the absence of progress is itself a signal something emits, not a silence someone has to notice.
 
 ## Fallback chain that hides the primary failure
 

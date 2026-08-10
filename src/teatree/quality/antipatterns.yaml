@@ -81,9 +81,14 @@
   anti_pattern: >-
     A gate that protects a privacy/merge/publish boundary swallows an exception
     and returns "allow", so a transient error silently disables the protection.
+    Empty input is the same defect wearing a different hat: a helper that
+    degrades to a neutral value (empty set, None, 0) both when the answer is
+    genuinely empty AND when its dependency is unavailable, feeding a caller
+    that reads "empty" as "safe to proceed".
   preferred_pattern: >-
-    A boundary-protecting gate fails CLOSED — an error denies. Only liveness
-    paths fail open, and never the public-egress leak gate.
+    A boundary-protecting gate fails CLOSED — an error denies, and so does an
+    empty the gate cannot prove is genuine. Only liveness paths fail open, and
+    never the public-egress leak gate.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["enforcement-gate-family"]
   linter: null
@@ -142,6 +147,25 @@
   linter: gate-liveness
   eval_invariant: null
 
+- id: shipped-inert
+  name: Feature merged but not in force
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    Code that reads as protection while not being in force — a feature merged
+    behind a flag whose live value is off, a scanner registered but never
+    ticked, or a setting whose only safe value is held in place by a SEPARATE
+    gate rather than by the code that consumes it. The source reads correct, so
+    nobody re-checks whether it runs.
+  preferred_pattern: >-
+    Read the LIVE value, not the default in the source, and assert reachability
+    — a test or liveness row proving the path executes in production
+    configuration. A feature that cannot be shown to run is not shipped.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4215", "gate-liveness-corpus"]
+  linter: null
+  eval_invariant: null
+
 - id: gate-side-effect-before-verdict
   name: Gate performs the guarded side effect before concluding refusal
   severity: high
@@ -163,6 +187,44 @@
     happen, not merely that the verdict was a refusal.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["souliane/teatree#4151", "souliane/teatree#4144", "resilience-invariants"]
+  linter: null
+  eval_invariant: null
+
+- id: destructive-op-outside-its-guard
+  name: Destructive op reachable without its guard
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A delete, force-push, reap, drop or overwrite whose safety check sits on ONE
+    caller rather than on the operation itself, so a second call site — a retry,
+    a sibling command, a sub-agent's raw invocation — reaches the destruction
+    with the guard skipped.
+  preferred_pattern: >-
+    The guard lives at the destructive operation, not at its callers: one
+    chokepoint every path funnels through, refusing on anything it cannot prove
+    disposable. A new call site then inherits the guard instead of re-deriving
+    it.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4215", "enforcement-gate-family"]
+  linter: null
+  eval_invariant: null
+
+- id: self-declared-identity-authorization
+  name: Authorization resting on a self-declared identity string
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    An authorization, approval or maker-not-checker decision keyed on an
+    identity the CALLER supplies — an --approver argument, an author field, a
+    role name in a payload — so the actor being gated chooses the value the gate
+    reads.
+  preferred_pattern: >-
+    Authorize on an identity the caller cannot mint: a credential the forge or
+    the secret store vouches for, or a durable row written by a different actor.
+    Where a caller-supplied id is unavoidable, refuse the ones the acting agent
+    could be (maker ids, loop ids) rather than trusting the string.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4215", "souliane/teatree#1967"]
   linter: null
   eval_invariant: null
 
@@ -218,6 +280,27 @@
     credential stores, third-party subprocesses.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["anti-vacuous-eval", "test-writing-doctrine"]
+  linter: null
+  eval_invariant: null
+
+- id: vacuous-guard
+  name: Guard green only where the defect cannot appear
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A test or gate that asserts plenty and still guards nothing, because the
+    only path it exercises is the one where the defect cannot occur — a race
+    reproduced under a lock the buggy code never took, a deny-path probe that
+    never reaches the deny, a fixture whose shape forecloses the failure. It is
+    cited as evidence of safety and survives every mutation of the code it
+    names.
+  preferred_pattern: >-
+    For any guard cited as evidence of safety, NAME THE MUTATION that turns it
+    red, then make it — revert the fix, break the invariant, plant the
+    violation — and observe the red. A guard no mutation can turn red is itself
+    the finding, not proof of the code it wraps.
+  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  refs: ["souliane/teatree#4215", "anti-vacuous-eval"]
   linter: null
   eval_invariant: null
 
@@ -395,6 +478,79 @@
     so one poison item never starves the rest.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["loop-topology", "fault-isolation-note"]
+  linter: null
+  eval_invariant: null
+
+- id: long-io-holds-control-lock
+  name: Long I/O inside the control-plane write transaction
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A network call, subprocess, agent dispatch or multi-second read performed
+    while holding the SQLite control-plane write lock, so every other writer on
+    the box blocks behind one slow external dependency and the factory reads as
+    hung rather than busy.
+  preferred_pattern: >-
+    Do the I/O outside the transaction and take the write lock only to persist
+    the result — read, call, then open a short atomic block. A transaction's
+    body contains no call whose duration a remote party decides.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4215", "loop-topology"]
+  linter: null
+  eval_invariant: null
+
+# ── Absent or unverifiable signal ──────────────────────────────────────────
+- id: unknown-reported-as-verdict
+  name: Absent, unreadable or stale signal reported as a definite verdict
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    "I cannot see whether X" rendered as "X is false" — a failed read, an empty
+    result, a stale cache or an unreachable dependency collapsed into a
+    confident negative that a caller then consumes as fact. The report is
+    indistinguishable from a genuine measurement, so nobody re-checks it.
+  preferred_pattern: >-
+    UNKNOWN is a third value and it propagates: a read that failed says so,
+    distinctly from a read that returned nothing, and the consumer decides what
+    to do with the unknown rather than inheriting a fabricated negative.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4041", "souliane/teatree#4215"]
+  linter: null
+  eval_invariant: null
+
+- id: silent-success-on-failure
+  name: Command reports success on a failure it printed
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A command that writes ERROR to its output and exits 0 — a returned error
+    string, a swallowed exception, a failing step whose status never reaches the
+    exit code. CI, the loop and every unattended caller branch on the code, so
+    the failure is invisible to all of them.
+  preferred_pattern: >-
+    The exit code carries the verdict the output claims: raise SystemExit(N), or
+    route a structured refusal through the seam that restores the non-zero exit
+    on the argv path. A green exit means the work succeeded.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4215", "management-command-exit-contract"]
+  linter: null
+  eval_invariant: null
+
+- id: silent-freeze
+  name: Work can stall indefinitely with nothing raising an alarm
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A claimed task, lease, queue or wait with no bound and no watchdog, so work
+    an invariant says always progresses can sit forever — and because the
+    absence of movement emits nothing, the freeze is only ever noticed by a
+    human wondering why the board stopped.
+  preferred_pattern: >-
+    Every claim carries a lease and a heartbeat, and a reaper acts on the
+    expiry; the absence of progress is itself a signal something emits, not a
+    silence someone has to notice.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4215", "resilience-invariants"]
   linter: null
   eval_invariant: null
 
