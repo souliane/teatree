@@ -673,9 +673,9 @@ class TestRunHeadlessCachedResumeParity(TestCase):
         self.ticket.refresh_from_db()
         assert str(self.task.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
 
-        from teatree.core.models.task_handoff import schedule_headless_resume  # noqa: PLC0415
+        from teatree.core.models.task_handoff import schedule_resume  # noqa: PLC0415 — deferred: Django-dependent
 
-        resumed_task = schedule_headless_resume(self.task, answer="go ahead")
+        resumed_task = schedule_resume(self.task, answer="go ahead")
 
         with (
             patch.object(

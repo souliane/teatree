@@ -35,7 +35,7 @@ from claude_agent_sdk.types import RateLimitInfo
 from django.utils import timezone
 
 from teatree.agents._runner_env import _overlay_scope, _provider_child_env, with_test_worker_cap
-from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_headless_max_turns
+from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_agent_max_turns
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import (
     Harness,
@@ -256,7 +256,7 @@ def _run_agent(
 
 def _turn_ceiling(harness: Harness) -> int:
     """The per-run turn cap for THIS dispatch's backend — the ``claude_sdk`` lane's, or none."""
-    return resolve_headless_max_turns() if harness.capabilities.spawns_cli_child else 0
+    return resolve_agent_max_turns() if harness.capabilities.spawns_cli_child else 0
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:

@@ -19,7 +19,7 @@ from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverri
 from teatree.core.tasks import execute_task
 from teatree.live_presence import PRESENCE_FRESHNESS
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
-from teatree.loops.timer_reconciler import reap_stuck_headless_runs
+from teatree.loops.timer_reconciler import reap_stuck_runs
 from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
@@ -486,7 +486,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=-120)  # heartbeat stopped: lease lapsed
         row = self._running_headless_row(task, age_seconds=self._dead_age())
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 1, "reenqueued": 1}
         row.refresh_from_db()
@@ -499,7 +499,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=+200)
         row = self._running_headless_row(task, age_seconds=self._dead_age())
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
         row.refresh_from_db()
@@ -510,7 +510,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=-10)
         row = self._running_headless_row(task, age_seconds=30)
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
         row.refresh_from_db()
@@ -520,7 +520,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         task = self._claimed_task(lease_delta_seconds=-120, status=Task.Status.COMPLETED)
         self._running_headless_row(task, age_seconds=self._dead_age())
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 1, "reenqueued": 0}
         assert not DBTaskResult.objects.filter(
@@ -533,7 +533,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         result = execute_task.enqueue(task.pk, task.phase)
         DBTaskResult.objects.filter(id=result.id).update(status=TaskResultStatus.RUNNING, started_at=None)
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
 
@@ -544,7 +544,7 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         row = self._running_headless_row(task, age_seconds=self._dead_age())
         task.delete()
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 1, "reenqueued": 0}
         row.refresh_from_db()
@@ -561,6 +561,6 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
             run_after=get_date_max(),
         )
 
-        counts = reap_stuck_headless_runs()
+        counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}

@@ -2,7 +2,7 @@
 
 ``persistence.py`` owns routing a dispatch signal to a ``Ticket``; this module owns
 the decision to mint a ``Task`` for one, and the guard that stops two dispatchers
-minting two. It is the sibling of ``Ticket._schedule_headless`` for the phases the
+minting two. It is the sibling of ``Ticket._schedule_phase_task`` for the phases the
 FSM scheduler does not cover, and holds the same idempotency contract keyed on the
 same lock.
 """
@@ -36,7 +36,7 @@ def create_phase_task(ticket: Ticket, *, phase: str, agent_id: str, reason: str)
     ``codex_reviewing``).
 
     **Idempotent in its side effects, not merely in the state it converges to**
-    (#3969) — the contract :meth:`Ticket._schedule_headless` holds at the FSM mint,
+    (#3969) — the contract :meth:`Ticket._schedule_phase_task` holds at the FSM mint,
     keyed on the same lock. An in-flight sibling (a PENDING or CLAIMED Task on this
     ``(ticket, phase)``, in any accepted spelling) is RETURNED rather than raced.
     The zone handlers keep their :func:`has_open_task` pre-checks — those

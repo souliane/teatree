@@ -124,7 +124,7 @@ SETTING_HELP: dict[str, str] = {
     "glab_stale_base_remote_gate_enabled": "refuse a merge-request create on a stale glab-base remote (glab no-ops)",
     "handover_mirror_path": "path a hand-off document is mirrored to, beside the durable record",
     "headless_authoring_gate_enabled": "refuse headless authoring outside a live worktree",
-    "headless_max_turns": "turn ceiling for one headless run",
+    "agent_max_turns": "turn ceiling for one agent run",
     "hook_fetch_titles": "let hooks fetch issue titles, at the cost of a network call per prompt",
     "hook_validator_timeout_seconds": "seconds a hook validator may run before it is abandoned",
     "idle_stack_e2e_recent_minutes": "minutes an E2E run keeps a stack safe from the idle reaper",

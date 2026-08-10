@@ -31,7 +31,7 @@ class TicketSchedulingModel(TicketFacet):
 
     def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless planning task after provisioning completes."""
-        return self._schedule_headless(
+        return self._schedule_phase_task(
             "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
         )
 
@@ -43,7 +43,7 @@ class TicketSchedulingModel(TicketFacet):
         plan. NO-OP unless ``require_plan_adequacy`` is on; synthetic corrective
         re-entries that mint a coding task directly are exempt (they carry no plan).
         """
-        return self._schedule_headless(
+        return self._schedule_phase_task(
             "coding",
             "Auto-scheduled coding — implement the ticket",
             parent_task,
@@ -51,7 +51,7 @@ class TicketSchedulingModel(TicketFacet):
             gate="plan_currency",
         )
 
-    def _schedule_headless(
+    def _schedule_phase_task(
         self,
         phase: str,
         reason: str,
@@ -125,11 +125,13 @@ class TicketSchedulingModel(TicketFacet):
 
     def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless testing task after coding completes."""
-        return self._schedule_headless("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
+        return self._schedule_phase_task("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
 
     def schedule_review(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless review+retro task (new session for bias-free evaluation)."""
-        return self._schedule_headless("reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task)
+        return self._schedule_phase_task(
+            "reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task
+        )
 
     def schedule_review_in_session(self, session: "Session", *, parent_task: "Task | None" = None) -> "Task":
         """Create a review task within an existing session (sub-agent, not a new session)."""

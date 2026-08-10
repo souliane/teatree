@@ -259,6 +259,6 @@ Select it with `t3 <overlay> config_setting set agent_harness my_harness`. The d
 resolves the backend from the registry and reads its `capabilities` — it never
 `isinstance`-branches on a concrete harness class. A factory overlay also drives the full
 dispatch → attempt → cost cycle through the SDK: `run_agent`, `record_result_envelope` /
-`AttemptUsage`, `headless_cost_breakdown`, plus `ContextPlan` (cache-control breakpoints on
+`AttemptUsage`, `agent_cost_breakdown`, plus `ContextPlan` (cache-control breakpoints on
 the direct-API binding), `CompactionPolicy`, `TicketBudget` / `LoopWatchdog`, and
 `build_lane_b_toolsets` — all from `teatree.overlay_sdk`.

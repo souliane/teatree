@@ -51,7 +51,7 @@ from teatree.agents.runner_budget import TicketBudget
 from teatree.core.cost import CostBreakdown, CostReport
 
 
-def headless_cost_breakdown() -> CostBreakdown:
+def agent_cost_breakdown() -> CostBreakdown:
     """The SDK-equivalent cost breakdown across every headless attempt (#3157 E5/E6).
 
     The cost half of a factory overlay's dispatch → attempt → cost cycle: aggregates the
@@ -86,11 +86,11 @@ __all__ = [
     "TicketBudget",
     "UnknownHarnessError",
     "UnstableCacheHeadError",
+    "agent_cost_breakdown",
     "assert_byte_stable_head",
     "build_lane_b_toolsets",
     "cache_control_plan",
     "find_unstable_tokens",
-    "headless_cost_breakdown",
     "parse_result_envelope",
     "record_result_envelope",
     "register_harness",

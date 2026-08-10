@@ -259,13 +259,13 @@ class StrandedHeadlessCheckTest(TestCase):
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
             mock.patch(f"{_MOD}._Probe.stranded_runner_results", return_value=stranded),
         ):
-            ok, out = _echoes(self_heal._check_stranded_headless_task)
+            ok, out = _echoes(self_heal._check_stranded_task)
         assert ok is False
         assert "501" in out
 
     def test_worker_alive_is_ok(self) -> None:
         with mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=False):
-            ok, _out = _echoes(self_heal._check_stranded_headless_task)
+            ok, _out = _echoes(self_heal._check_stranded_task)
         assert ok is True
 
     def test_no_stranded_rows_is_ok(self) -> None:
@@ -273,7 +273,7 @@ class StrandedHeadlessCheckTest(TestCase):
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
             mock.patch(f"{_MOD}._Probe.stranded_runner_results", return_value=[]),
         ):
-            ok, _out = _echoes(self_heal._check_stranded_headless_task)
+            ok, _out = _echoes(self_heal._check_stranded_task)
         assert ok is True
 
 
@@ -367,7 +367,7 @@ class RunAllAndJsonTest(TestCase):
         names = (
             "_check_compose_stack",
             "_check_loop_worker_alive",
-            "_check_stranded_headless_task",
+            "_check_stranded_task",
             "_check_stale_loop_timer",
             "_check_failed_tasks_on_live_tickets",
             "_check_runtime_clone_on_default_branch",

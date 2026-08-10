@@ -295,7 +295,7 @@ class TaskQuerySet(models.QuerySet):
         """Pending/claimed tasks for one overlay+phase — the dedupe lock (SSOT).
 
         Read by the periodic cadence scanners AND by the phase-task mint itself
-        (``Ticket._schedule_headless``, #3903), so the one lock the codebase
+        (``Ticket._schedule_phase_task``, #3903), so the one lock the codebase
         documents is consulted at the write rather than restated per caller.
         Matches every accepted spelling of *phase* via ``phase_spellings``, the
         same SSOT ``pending_in_phase`` reads.

@@ -14,7 +14,7 @@ store — precedent: ``more_prs_coming``, ``prs``) under the
 identifier :func:`~teatree.agents._runner_options._get_resume_session_id`
 walks the ``parent_task`` chain to find, so a pydantic_ai resume locates the
 same ancestor a claude_sdk resume would. Entries are single-use: a resume
-POPS its entry, mirroring ``schedule_headless_resume``'s idempotent chaining
+POPS its entry, mirroring ``schedule_resume``'s idempotent chaining
 — the store never accumulates stale threads across repeated park/resume
 cycles. Follows the same unlocked-outer-read + ``merge_extra``-locked-write
 shape ``backends/gitlab/sync_terminal.py`` already uses for the nested

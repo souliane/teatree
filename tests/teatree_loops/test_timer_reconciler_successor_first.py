@@ -45,7 +45,7 @@ class TestSuccessorScheduledBeforeBody(django.test.TestCase):
         assert _ready_successors(timer_reconciler.expire_stale_jobs.module_path) == 1
 
     def test_drain_chain_survives_body_exception_and_keeps_the_chain(self) -> None:
-        with patch.object(timer_reconciler, "reap_stuck_headless_runs", _boom):
+        with patch.object(timer_reconciler, "reap_stuck_runs", _boom):
             result = timer_reconciler.drain_chain.func()
         assert result == {"error": 1}
         assert _ready_successors(timer_reconciler.drain_chain.module_path) == 1

@@ -259,7 +259,7 @@ class _ModeHarnessSettings:
     # (``agents/runner_truncation``), so the ceiling is raised deliberately rather
     # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
     # escape hatch, matching the ceilings above). Per-overlay overridable.
-    headless_max_turns: int = 250
+    agent_max_turns: int = 250
 
 
 @dataclass

@@ -34,7 +34,7 @@ FACTORY_EXPORTS = frozenset(
         "build_lane_b_toolsets",
         "cache_control_plan",
         "find_unstable_tokens",
-        "headless_cost_breakdown",
+        "agent_cost_breakdown",
         "parse_result_envelope",
         "record_result_envelope",
         "register_harness",

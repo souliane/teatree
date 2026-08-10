@@ -110,7 +110,7 @@ class SpawnOverrides:
 
     #: The child env for the ``claude`` CLI. ``None`` inherits the ambient env.
     env: dict[str, str] | None = field(default=None)
-    #: The per-run turn cap. ``None`` defers to :func:`resolve_headless_max_turns`.
+    #: The per-run turn cap. ``None`` defers to :func:`resolve_agent_max_turns`.
     turn_ceiling: int | None = field(default=None)
 
 
@@ -186,13 +186,13 @@ def _build_options(
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
         disallowed_tools=_disallowed_tools_for_phase(phase),
-        # The per-run TURN ceiling (:func:`resolve_headless_max_turns`). Cache-read cost
+        # The per-run TURN ceiling (:func:`resolve_agent_max_turns`). Cache-read cost
         # is ``turns x context_size`` and every turn re-reads the run's context, so turns
         # are the multiplier on a dispatch's bill — the dimension neither the wall-clock
         # runtime ceiling nor the completed-attempt ``watchdog_max_turns`` totals can see
         # while the run is still in flight. Resolved per dispatch so an operator retunes
         # it without a deploy; ``0`` (the escape hatch) leaves the spawn uncapped.
-        max_turns=resolve_headless_max_turns() if overrides.turn_ceiling is None else overrides.turn_ceiling,
+        max_turns=resolve_agent_max_turns() if overrides.turn_ceiling is None else overrides.turn_ceiling,
         resume=resume_session_id or None,
         # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8
         # omits thinking by default). Guarded so the cheap/Haiku tier — which
@@ -229,7 +229,7 @@ def resolve_spawn_ceiling() -> int:
     return get_effective_settings().subagent_spawn_ceiling
 
 
-def resolve_headless_max_turns() -> int:
+def resolve_agent_max_turns() -> int:
     """The configured per-run turn ceiling for this dispatch; ``0`` leaves it uncapped.
 
     Cache-read cost on this lane is ``turns x context_size`` and every turn re-reads
@@ -239,7 +239,7 @@ def resolve_headless_max_turns() -> int:
     has ENDED — so neither bounds the turns of the run in flight. This does, at the one
     place the SDK accepts it (``ClaudeAgentOptions.max_turns``).
     """
-    return get_effective_settings().headless_max_turns
+    return get_effective_settings().agent_max_turns
 
 
 def resolve_envelope_stop_refusals() -> int:

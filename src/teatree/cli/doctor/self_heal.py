@@ -320,7 +320,7 @@ def _check_loop_worker_alive() -> bool:
     return False
 
 
-def _check_stranded_headless_task() -> bool:
+def _check_stranded_task() -> bool:
     """FAIL when an ``execute_task`` is RUNNING past its grace with no live worker.
 
     A headless task claimed RUNNING whose executor died leaves the row RUNNING
@@ -489,7 +489,7 @@ def run_self_heal_checks() -> bool:
     checks: tuple[Callable[[], bool], ...] = (
         _check_compose_stack,
         _check_loop_worker_alive,
-        _check_stranded_headless_task,
+        _check_stranded_task,
         _check_stale_loop_timer,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,

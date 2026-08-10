@@ -93,7 +93,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "gate_relaxation_gate_enabled",
         "gitlab_approval_scanner_enabled",
         "handover_mirror_path",
-        "headless_max_turns",
+        "agent_max_turns",
         "hook_fetch_titles",
         "idle_stack_e2e_recent_minutes",
         "incoming_event_retention_days",

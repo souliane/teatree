@@ -3,7 +3,7 @@
 Two ceilings can cut a run short, and BOTH must fail loud rather than quietly
 hand back less than the work: the ``pydantic_ai`` per-request ``max_tokens``
 ceiling, which amputates the result envelope mid-generation, and the per-run
-``headless_max_turns`` ceiling, which ends the run between turns. Each is recorded
+``agent_max_turns`` ceiling, which ends the run between turns. Each is recorded
 FAILED by the driver; silent truncation is the defect this closes, so the owner is
 ALSO told through the audited owner egress and the ceiling can then be raised
 deliberately. Split out of :mod:`teatree.agents.runner` as its own concern so the
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 #: The terminal ``ResultMessage`` subtype a run carries when it ended because it
 #: reached its own per-run turn ceiling — emitted by the ``claude`` CLI for the
-#: ``ClaudeAgentOptions.max_turns`` cap (``headless_max_turns``) and stamped by
+#: ``ClaudeAgentOptions.max_turns`` cap (``agent_max_turns``) and stamped by
 #: :mod:`teatree.agents.pydantic_ai_session` for that lane's ``UsageLimits`` request
 #: cap (``pydantic_ai_request_limit``). ONE subtype for one meaning, so both lanes
 #: land in the same branch. It distinguishes "the run was cut off at its ceiling"
@@ -109,7 +109,7 @@ def max_turns_failure_reason(message: ResultMessage | None) -> str:
     return (
         f"turn ceiling reached (subtype={TURN_CEILING_SUBTYPE}): the run was stopped at "
         f"{turns} turns before it produced a result envelope — raise the per-run turn "
-        "ceiling if this phase genuinely needs more (`headless_max_turns` on the "
+        "ceiling if this phase genuinely needs more (`agent_max_turns` on the "
         "claude_sdk lane, `pydantic_ai_request_limit` on the pydantic_ai lane)"
     )
 
@@ -139,7 +139,7 @@ def alert_owner_max_turns_truncation(task: Task, *, phase: str, message: ResultM
     text = (
         f"Run stopped at its per-run turn ceiling after {turns} turns on {subject} "
         f"(phase `{named_phase}`). The phase ended between turns without a result envelope "
-        "and was recorded FAILED — raise `headless_max_turns` (claude_sdk lane) or "
+        "and was recorded FAILED — raise `agent_max_turns` (claude_sdk lane) or "
         "`pydantic_ai_request_limit` (pydantic_ai lane) if this recurs."
     )
     try:

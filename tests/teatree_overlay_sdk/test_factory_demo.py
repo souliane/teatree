@@ -60,7 +60,7 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
         assert attempt.result.get("summary") == "demo cycle complete"
 
         # COST — the overlay reads its spend through overlay_sdk, never the model manager.
-        breakdown = sdk.headless_cost_breakdown()
+        breakdown = sdk.agent_cost_breakdown()
         assert isinstance(breakdown, sdk.CostBreakdown)
         assert breakdown.attempts >= 1
 

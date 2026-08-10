@@ -254,7 +254,7 @@ def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 
     return not heartbeat_live
 
 
-def reap_stuck_headless_runs() -> dict[str, int]:
+def reap_stuck_runs() -> dict[str, int]:
     """Fail dead-worker ``execute_task`` runs and re-enqueue their live tasks (#10).
 
     ``timer_reconciler`` recovers only stranded ``loop_timer`` rows, and
@@ -294,7 +294,7 @@ def reap_stuck_headless_runs() -> dict[str, int]:
             execute_task.enqueue(task.pk, task.phase)
             counts["reenqueued"] += 1
     if any(counts.values()):
-        logger.info("reap_stuck_headless_runs: %s", counts)
+        logger.info("reap_stuck_runs: %s", counts)
     return counts
 
 
@@ -319,7 +319,7 @@ def drain_chain() -> dict[str, int]:
         return {"deduped": 1}
     drain_chain.using(run_after=timezone.now() + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
     try:
-        reaped = reap_stuck_headless_runs()
+        reaped = reap_stuck_runs()
         drained = drain_queue_body()
     except Exception:
         logger.exception("drain_chain body failed; successor already queued, the chain survives")

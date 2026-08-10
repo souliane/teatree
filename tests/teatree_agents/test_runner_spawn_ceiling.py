@@ -40,11 +40,11 @@ class TestBuildOptionsArmsTheCeiling(_Dispatch):
 
     def test_the_spawn_ceiling_does_not_move_the_turn_ceiling(self) -> None:
         # The spawn ceiling bounds fan-out; the TURN ceiling is its own DB-home
-        # setting (``headless_max_turns``). Deriving one from the other would make a
+        # setting (``agent_max_turns``). Deriving one from the other would make a
         # fan-out retune silently change a run's turn budget.
         ConfigSetting.objects.set_value("subagent_spawn_ceiling", 3, scope="")
         options = _build_options(self._task("coding"), "ctx", phase="coding", skills=[])
-        assert options.max_turns == UserSettings().headless_max_turns
+        assert options.max_turns == UserSettings().agent_max_turns
 
 
 class TestResolveSpawnCeiling(TestCase):

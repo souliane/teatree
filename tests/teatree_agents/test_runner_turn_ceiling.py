@@ -15,7 +15,7 @@ from unittest.mock import patch
 from claude_agent_sdk import ResultMessage
 from django.test import TestCase
 
-from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_headless_max_turns
+from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_agent_max_turns
 from teatree.agents.runner import _outcome_failure, _turn_ceiling
 from teatree.agents.runner_truncation import (
     TURN_CEILING_SUBTYPE,
@@ -50,31 +50,31 @@ class _Dispatch(TestCase):
 class TestTheCeilingIsConfigurable(_Dispatch):
     def test_the_shipped_default_is_armed(self) -> None:
         # An unarmed default is the defect: a cap nobody sets is not a cap.
-        assert UserSettings().headless_max_turns > 0
-        assert resolve_headless_max_turns() == UserSettings().headless_max_turns
+        assert UserSettings().agent_max_turns > 0
+        assert resolve_agent_max_turns() == UserSettings().agent_max_turns
 
     def test_an_operator_row_wins_over_the_shipped_default(self) -> None:
-        ConfigSetting.objects.set_value("headless_max_turns", 42, scope="")
-        assert resolve_headless_max_turns() == 42
+        ConfigSetting.objects.set_value("agent_max_turns", 42, scope="")
+        assert resolve_agent_max_turns() == 42
 
     def test_zero_disables_the_ceiling(self) -> None:
-        ConfigSetting.objects.set_value("headless_max_turns", 0, scope="")
-        assert resolve_headless_max_turns() == 0
+        ConfigSetting.objects.set_value("agent_max_turns", 0, scope="")
+        assert resolve_agent_max_turns() == 0
 
 
 class TestTheCeilingReachesTheSpawn(_Dispatch):
     def test_the_configured_ceiling_is_pinned_on_the_sdk_options(self) -> None:
-        ConfigSetting.objects.set_value("headless_max_turns", 42, scope="")
+        ConfigSetting.objects.set_value("agent_max_turns", 42, scope="")
         options = _build_options(self._task(), "ctx", phase="coding", skills=[])
         assert options.max_turns == 42
 
     def test_the_default_dispatch_is_bounded(self) -> None:
         options = _build_options(self._task(), "ctx", phase="coding", skills=[])
-        assert options.max_turns == UserSettings().headless_max_turns
+        assert options.max_turns == UserSettings().agent_max_turns
         assert options.max_turns > 0
 
     def test_zero_leaves_the_spawn_uncapped(self) -> None:
-        ConfigSetting.objects.set_value("headless_max_turns", 0, scope="")
+        ConfigSetting.objects.set_value("agent_max_turns", 0, scope="")
         options = _build_options(self._task(), "ctx", phase="coding", skills=[])
         assert options.max_turns == 0
 
@@ -90,7 +90,7 @@ class TestTheCeilingStaysOnItsOwnLane(_Dispatch):
     """
 
     def test_the_cli_spawning_backend_gets_the_ceiling(self) -> None:
-        assert _turn_ceiling(_FakeHarness(spawns_cli_child=True)) == UserSettings().headless_max_turns
+        assert _turn_ceiling(_FakeHarness(spawns_cli_child=True)) == UserSettings().agent_max_turns
 
     def test_a_backend_with_its_own_limit_is_left_alone(self) -> None:
         assert _turn_ceiling(_FakeHarness(spawns_cli_child=False)) == 0
@@ -119,7 +119,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
         # so the truncation is diagnosable from the recorded attempt alone.
         assert "turn ceiling" in attempt.error
         assert TURN_CEILING_SUBTYPE in attempt.error
-        assert "headless_max_turns" in attempt.error
+        assert "agent_max_turns" in attempt.error
         assert TaskAttempt.objects.filter(pk=attempt.pk).exists()
 
     def test_a_capped_run_escalates_to_the_owner(self) -> None:
@@ -148,7 +148,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
         # rather than guessing from ambient config which lane produced the message.
         reason = max_turns_failure_reason(_result(TURN_CEILING_SUBTYPE, num_turns=311))
         assert "311 turns" in reason
-        assert "headless_max_turns" in reason
+        assert "agent_max_turns" in reason
         assert "pydantic_ai_request_limit" in reason
 
     def test_the_owner_alert_never_masks_the_recorded_failure(self) -> None:
