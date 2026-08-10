@@ -803,7 +803,13 @@ service is down — exactly the outage it exists to repair.
    any deploy could explain
    ([#3983](https://github.com/souliane/teatree/issues/3983) — a deploy killed
    between its drain and the swap that clears the gate leaves the claim path
-   admitting ZERO work while every other surface stays green).
+   admitting ZERO work while every other surface stays green). That last budget is
+   **summed from the staged convergence's own per-stage timeouts**
+   (`TEATREE_DRAIN_TIMEOUT` + `TEATREE_INIT_WAIT_TIMEOUT` +
+   `TEATREE_ADMIN_SWAP_BUDGET` + `TEATREE_RESUME_TIMEOUT`, plus slack for the untimed
+   `up -d` steps), because stages 2–7 are serial inside one gate-ON window: raise one
+   on the box and the detector widens with it rather than calling a slower-but-legal
+   convergence an outage.
 4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the

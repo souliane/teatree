@@ -9,6 +9,7 @@ hard-FAILs past it, so the doctor exit code the watchdog keys on turns red.
 
 import datetime as dt
 import io
+import pathlib
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from unittest import mock
@@ -99,16 +100,50 @@ class StrandedQuiescingCheckTest(django.test.TestCase):
         assert ok is False
         assert "worker_quiescing" in out
 
-    def test_the_budget_covers_the_drain_grace_plus_the_swap(self) -> None:
-        with mock.patch.dict("os.environ", {"TEATREE_DRAIN_TIMEOUT": "600"}):
-            assert (
-                self_heal_quiescing.quiescing_deploy_budget_seconds()
-                == 600 + self_heal_quiescing._DEPLOY_SWAP_BUDGET_SECONDS
-            )
+    def test_a_convergence_still_inside_its_init_wait_is_not_reported_stranded(self) -> None:
+        # The staged convergence (#4214) polls init for up to TEATREE_INIT_WAIT_TIMEOUT
+        # AFTER the drain that sets the gate and BEFORE the stage-4 drain that would
+        # re-date it, so both graces are serial inside one gate-ON window. A budget
+        # covering only the drain calls a live deploy a dead one — and the finding is
+        # not deploy-sensitive in watchdog.sh, so it pages on sight, mid-update.
+        set_worker_quiescing(value=True)
+        with mock.patch.dict(
+            "os.environ",
+            {"TEATREE_DRAIN_TIMEOUT": "1800", "TEATREE_INIT_WAIT_TIMEOUT": "1800"},
+        ):
+            _age_the_gate(1700 + 1500)  # a long-but-legal drain, then a legal init wait
 
-    def test_an_unreadable_drain_timeout_falls_back_to_the_deploy_default(self) -> None:
+            ok, out = _echoes(self_heal_quiescing.check_stranded_quiescing_gate)
+
+        assert ok is True, "a convergence inside its own timeouts is an update, not an outage"
+        assert out == ""
+
+    def test_the_budget_covers_every_bounded_stage_between_the_drain_and_the_clear(self) -> None:
+        stages = {"TEATREE_DRAIN_TIMEOUT": 600, "TEATREE_INIT_WAIT_TIMEOUT": 900, "TEATREE_ADMIN_SWAP_BUDGET": 120}
+        with mock.patch.dict("os.environ", {name: str(value) for name, value in stages.items()}):
+            budget = self_heal_quiescing.quiescing_deploy_budget_seconds()
+
+        unset = dict(self_heal_quiescing._DEPLOY_STAGE_BUDGETS)["TEATREE_RESUME_TIMEOUT"]
+
+        assert budget >= sum(stages.values()), "a stage the deploy is allowed to spend cannot read as a strand"
+        assert budget == sum(stages.values()) + unset + self_heal_quiescing._UNTIMED_STAGE_SLACK_SECONDS
+
+    def test_the_budget_stays_finite_so_a_genuine_strand_still_reddens(self) -> None:
+        # The counterweight to widening it: every stage is bounded, so the sum is too.
+        assert self_heal_quiescing.quiescing_deploy_budget_seconds() < 4 * 3600
+
+    def test_an_unreadable_stage_timeout_falls_back_to_that_stages_deploy_default(self) -> None:
         with mock.patch.dict("os.environ", {"TEATREE_DRAIN_TIMEOUT": "not-a-number"}):
-            expected = (
-                self_heal_quiescing._DEFAULT_DRAIN_TIMEOUT_SECONDS + self_heal_quiescing._DEPLOY_SWAP_BUDGET_SECONDS
-            )
-            assert self_heal_quiescing.quiescing_deploy_budget_seconds() == expected
+            polluted = self_heal_quiescing.quiescing_deploy_budget_seconds()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            clean = self_heal_quiescing.quiescing_deploy_budget_seconds()
+
+        assert polluted == clean
+
+    def test_every_bounded_stage_deploy_sh_runs_in_the_window_is_budgeted(self) -> None:
+        # The budget tracks deploy.sh's contract, so drift in either direction — a stage
+        # renamed there, or one budgeted here that the deploy never waits on — is a bug.
+        deploy_sh = (pathlib.Path(__file__).parents[3] / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+
+        for name, default in self_heal_quiescing._DEPLOY_STAGE_BUDGETS:
+            assert f"{name}:-{default}" in deploy_sh, f"{name} default drifted from deploy.sh"
