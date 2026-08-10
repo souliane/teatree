@@ -252,11 +252,14 @@ def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
 
 
 def _task_created(description: str, *, skip: bool) -> dict:
+    """A fanned-out dispatch — ``teammate_name`` is what separates it from a todo entry."""
     token = "[skip-skill-gate: false-trigger] " if skip else ""
     return {
         "session_id": "sess-liveness",
         "task_subject": "do the thing",
         "task_description": f"{token}{description}",
+        "teammate_name": "acme-worker",
+        "team_name": "t3-acme",
     }
 
 

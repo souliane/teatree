@@ -345,7 +345,11 @@ Neither event supports matchers — they fire on every occurrence.
 
 `{"continue": false, "stopReason": "..."}` in hook output stops the entire teammate.
 
-> **TeaTree uses this seam to close the fan-out skill-loading bypass (#1488).** Because the Task/Workflow vehicle bypasses `PreToolUse` (see Known Limitations below), the `PreToolUse`-only skill-loading gate (`handle_enforce_skill_loading`, matcher `Bash|Edit|Write`) was never consulted on a fanned-out task — which is how a bespoke review workflow ran instead of `/t3:review`. `handle_enforce_skill_loading_on_task_create` now rides `TaskCreated` and emits this `{"continue": false, "stopReason": …}` envelope to force the matching teatree skill onto the dispatched task. The exact firing + schema were confirmed against the Claude Code 2.1.156 binary. See BLUEPRINT.md §17.6.4 gate 17 and `hooks/CLAUDE.md`.
+`task_description`, `teammate_name` and `team_name` are all **optional** on both events; only the teammate fields distinguish a fan-out from an entry a session adds to its own task list.
+
+**The block reason does NOT ride `stopReason` (#4216).** The harness's task-creation consumer reads one field — the `blockingError` its hook runner derives. `continue: false` becomes `preventContinuation`, which that consumer never looks at, so an exit-2 deny carrying only the teammate-stop envelope falls through to the runner's fallback `[<command>]: <stderr or "No stderr output">` and surfaces as an empty failure. The documented per-event contract is: exit 0 — stdout/stderr not shown; exit 2 — **stderr** shown to the model and the task creation prevented; other codes — stderr shown to the user only. `decision: "block"` is the one stdout key the runner turns into a `blockingError` carrying the hook's own text.
+
+> **TeaTree uses this seam to close the fan-out skill-loading bypass (#1488).** Because the Task/Workflow vehicle bypasses `PreToolUse` (see Known Limitations below), the `PreToolUse`-only skill-loading gate (`handle_enforce_skill_loading`, matcher `Bash|Edit|Write`) was never consulted on a fanned-out task — which is how a bespoke review workflow ran instead of `/t3:review`. `handle_enforce_skill_loading_on_task_create` rides `TaskCreated`, scoped to a payload carrying the teammate fields, and emits the stop envelope PLUS the `decision`/`reason` pair the consumer reads. The exact firing + schema were confirmed against the Claude Code 2.1.156 binary. See BLUEPRINT.md §17.6.4 gate 17 and `hooks/CLAUDE.md`.
 
 ### Known Limitations
 

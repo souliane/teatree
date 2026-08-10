@@ -36,8 +36,23 @@ search dirs and the ``resolves`` predicate are passed in.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+
+# The only ``TaskCreated`` fields that positively identify a fanned-out dispatch.
+# A session adding an entry to its OWN task list carries neither (#4216).
+_DISPATCH_MARKERS = ("teammate_name", "team_name")
+
+
+def is_subagent_dispatch(data: Mapping[str, object]) -> bool:
+    """Whether a ``TaskCreated`` payload is a fanned-out sub-agent dispatch.
+
+    The event also fires for a plain entry in the session's own task list, where
+    there is no sub-agent and no dispatch prompt — nothing reads that entry's
+    description as a prompt, so a demand that it name its skills is unsatisfiable
+    by construction. Absent positive dispatch evidence the gate does not apply.
+    """
+    return any(str(data.get(marker) or "").strip() for marker in _DISPATCH_MARKERS)
 
 
 def is_file_safe(path: Path) -> bool:

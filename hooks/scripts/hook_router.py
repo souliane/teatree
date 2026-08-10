@@ -194,7 +194,8 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from hooks.scripts.subagent_skill_gate import is_file_safe, is_subagent_dispatch, unreferenced_demand_reason
+from hooks.scripts.task_created_deny import emit_task_create_deny
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
@@ -1243,18 +1244,14 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 # ``unreferenced_demand_reason`` (over ``filter_unreferenced`` /
 # ``build_load_first_reason``); the router only calls that one entry point.
 #
-# The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
-# against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``
-# with ``task_id``/``task_subject``/``task_description``; a hook output of
-# ``{"continue": false, ...}`` sets ``preventContinuation``).
+# ``TaskCreated`` fires for a task-list entry as well as for the fan-out, and
+# only ``teammate_name``/``team_name`` tell them apart — so ``is_subagent_dispatch``
+# scopes the demand to a real dispatch (#4216). A todo entry is nobody's prompt.
 #
 # It enforces SKILL-LOADING ONLY — it never inspects agent count, token
 # budget, ``run_in_background``, or any workflow-size field, so ultracode
-# keeps maximal fan-out room. The deny schema is the teammate-stop
-# envelope (``{"continue": false, "stopReason": ...}``), NOT the
-# ``PreToolUse`` ``hookSpecificOutput`` deny; ``main`` translates the
-# handler's ``True`` return into ``sys.exit(2)`` the same as the
-# ``PreToolUse`` gates.
+# keeps maximal fan-out room. The deny envelope + its unsurfaceable-reason
+# fail-open live in the ``task_created_deny`` sibling.
 
 # ``[skip-skill-gate: <non-empty-reason>]`` anywhere in the subject/description
 # head unblocks the dispatch; an empty reason rejects.
@@ -1285,19 +1282,6 @@ def _task_text_skip_token(text: str) -> str | None:
     return match.group(1).strip() or None
 
 
-def emit_task_create_deny(reason: str) -> bool:
-    """Emit the ``TaskCreated`` deny envelope and return ``True``.
-
-    The harness blocks task creation when a hook emits ``continue: false``
-    (it sets ``preventContinuation``) — a DIFFERENT schema from the
-    ``PreToolUse`` ``hookSpecificOutput`` deny. ``main`` translates the
-    ``True`` return into ``sys.exit(2)``, the documented block signal for
-    the ``TaskCreated``/``TaskCompleted`` events.
-    """
-    json.dump({"continue": False, "stopReason": reason}, sys.stdout)
-    return True
-
-
 def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     """Demand the fanned-out task's DISPATCH PROMPT instruct skill-loading.
 
@@ -1312,11 +1296,11 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     resolvable-and-already-referenced) and its never-lockout fail-open are owned
     by :func:`unreferenced_demand_reason`. Skill-loading ONLY: no agent-count /
     budget / size field is read, so ultracode keeps maximal fan-out room. Fails
-    open on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, or a
-    missing session id.
+    open on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, a
+    missing session id, or a payload that is not a dispatch at all (#4216).
     """
     session_id = data.get("session_id", "")
-    if not session_id or not _skill_loading_gate_enabled():
+    if not session_id or not _skill_loading_gate_enabled() or not is_subagent_dispatch(data):
         return False
 
     subject = data.get("task_subject", "") or ""

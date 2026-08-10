@@ -123,16 +123,29 @@ def _task(
     description: str = "do some work",
     extra: dict | None = None,
 ) -> dict:
-    data = {
+    """A fanned-out sub-agent dispatch — the teammate markers are what identify it."""
+    data = _local_task(session_id=session_id, subject=subject, description=description)
+    data["teammate_name"] = "reviewer-1"
+    data["team_name"] = "t3"
+    if extra:
+        data.update(extra)
+    return data
+
+
+def _local_task(
+    *,
+    session_id: str = "sess-task",
+    subject: str = "do work",
+    description: str = "do some work",
+) -> dict:
+    """An entry in the session's OWN task list — no teammate, no dispatch prompt."""
+    return {
         "session_id": session_id,
         "hook_event_name": "TaskCreated",
         "task_id": "task-1",
         "task_subject": subject,
         "task_description": description,
     }
-    if extra:
-        data.update(extra)
-    return data
 
 
 def _run(data: dict) -> tuple[bool, dict | None]:
@@ -158,6 +171,34 @@ def _run_capturing_stderr(data: dict) -> tuple[bool, str]:
     with patch("sys.stdout", out), patch("sys.stderr", err):
         blocked = handle_enforce_skill_loading_on_task_create(data)
     return blocked, err.getvalue()
+
+
+class TestOnlyAFanOutDispatchIsInScope:
+    """The demand is a claim about a dispatch PROMPT — a local todo entry has none (#4216)."""
+
+    def test_local_task_list_entry_is_never_denied(self, gate: Path) -> None:
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(_local_task(description="review the open PR thoroughly"))
+        assert blocked is False
+        assert payload is None
+
+    def test_local_task_list_entry_is_silent(self, gate: Path) -> None:
+        _write_pending("sess-task", ["review"])
+        blocked, stderr = _run_capturing_stderr(_local_task(description="review the open PR thoroughly"))
+        assert blocked is False
+        assert stderr == ""
+
+    def test_team_name_alone_marks_a_dispatch(self, gate: Path) -> None:
+        _write_pending("sess-task", ["review"])
+        payload = _local_task(description="review the open PR thoroughly") | {"team_name": "t3"}
+        blocked, _ = _run(payload)
+        assert blocked is True
+
+    def test_blank_teammate_markers_are_not_a_dispatch(self, gate: Path) -> None:
+        _write_pending("sess-task", ["review"])
+        payload = _local_task(description="review the open PR") | {"teammate_name": "", "team_name": "  "}
+        blocked, _ = _run(payload)
+        assert blocked is False
 
 
 class TestPendingDemandWithoutReferenceIsDenied:
