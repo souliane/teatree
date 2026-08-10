@@ -16,6 +16,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +37,12 @@ _DISPATCHED_ONE_OFF = "DISPATCHED-RUN"
 # `STUB_RUNNING_SERVICES` is the space-separated set the stub reports as running, so a
 # test can model any stage of a staged swap. `compose ps --status running --quiet
 # <svc>` answers with an id only for a member of that set.
+#
+# `STUB_RUNNING_AT` (epoch seconds) additionally withholds every answer until that
+# instant, modelling a route that is genuinely absent for the first seconds of a swap
+# and comes back mid-wait. A wall-clock gate rather than a probe counter: the wrapper
+# probes each candidate service in turn, so a count is an artifact of the candidate
+# list while elapsed time is what the loop actually waits on.
 _DOCKER_STUB = f"""#!/usr/bin/env bash
 case "$1" in
 version) exit "${{STUB_DAEMON_EXIT:-0}}" ;;
@@ -48,6 +55,9 @@ shift || true
 case "$sub" in
 ps)
     svc="${{@: -1}}"
+    if [ -n "${{STUB_RUNNING_AT:-}}" ] && [ "$(date +%s)" -lt "${{STUB_RUNNING_AT}}" ]; then
+        exit 0
+    fi
     case " ${{STUB_RUNNING_SERVICES:-}} " in
     *" $svc "*) printf '%s\\n' "cid-$svc" ;;
     esac
@@ -172,9 +182,9 @@ class TestAnUpdateIsDistinguishableFromAnOutage:
         assert "update is in progress" in proc.stderr
         assert "is not running" not in proc.stdout
 
-    def test_a_route_that_returns_mid_wait_simply_serves_the_call(self, wrapper: Path, tmp_path: Path) -> None:
-        # The stub reports the admin back from the first probe on, which is what a
-        # staged swap looks like from outside: the window is short and self-clearing.
+    def test_a_live_route_serves_the_call_without_ever_waiting(self, wrapper: Path, tmp_path: Path) -> None:
+        # A convergence is in flight AND a route is up — the staged swap's normal shape.
+        # The wait is for the gap between two stages, so a live route must skip it.
         with _held_lock(tmp_path / "deploy.lock"):
             proc = _run(
                 wrapper,
@@ -184,6 +194,26 @@ class TestAnUpdateIsDistinguishableFromAnOutage:
             )
 
         assert proc.returncode == 0
+        assert "DISPATCHED-EXEC teatree-admin" in proc.stdout
+        assert "waiting up to" not in proc.stderr, "a route that is already up must not enter the wait at all"
+
+    def test_a_route_that_returns_mid_wait_simply_serves_the_call(self, wrapper: Path, tmp_path: Path) -> None:
+        # Nothing answers at first, so the wrapper enters the wait; the admin appears a
+        # few seconds in, as it does when its stage of the swap completes. Only a
+        # re-probe INSIDE the loop can see that, which is what this pins: without one
+        # the loop sleeps out its whole budget and reports the update-in-progress exit
+        # even though the substrate came back.
+        with _held_lock(tmp_path / "deploy.lock"):
+            proc = _run(
+                wrapper,
+                tmp_path,
+                STUB_RUNNING_SERVICES="teatree-admin",
+                STUB_RUNNING_AT=str(int(time.time()) + 3),
+                TEATREE_UPDATE_WAIT_SECONDS="30",
+            )
+
+        assert proc.returncode == 0, f"the wrapper must recover mid-wait, not exit {proc.returncode}: {proc.stderr}"
+        assert "waiting up to" in proc.stderr, "the wait must actually have been entered for this to prove anything"
         assert "DISPATCHED-EXEC teatree-admin" in proc.stdout
 
 

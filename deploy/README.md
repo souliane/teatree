@@ -141,6 +141,17 @@ have been destroyed with the container objects.
 Init is excluded from stage 8 because a plain `up -d` **starts** an exited
 one-shot, replaying the whole ~minute init.
 
+**An aborted convergence fails towards a stall, not a mismatch.** A run that
+drains and then dies before the swap leaves the gate ON, so an EXIT trap clears it
+and admission resumes. Between stages 3 and 6 that clear is deliberately withheld:
+init has migrated the control DB and the live worker is still the pre-migration
+one, so re-opening admission there hands it fresh work to run against a schema its
+code does not match. The `schema_readiness` gate does not cover this direction —
+it refuses when the code is ahead of the DB, and here the DB is ahead of the code.
+Staying quiesced only stalls the box, which is printed, visible in
+`worker_quiescing`, and cleared by the next successful convergence or by
+`t3 teatree config_setting set worker_quiescing false`.
+
 **The residual window, stated rather than implicit.** Stage 5 still swaps the
 dashboard's own container, so the dashboard is unavailable for that swap —
 seconds, not the 67-second init gate, and the worker answers throughout it.
@@ -792,7 +803,13 @@ service is down — exactly the outage it exists to repair.
    any deploy could explain
    ([#3983](https://github.com/souliane/teatree/issues/3983) — a deploy killed
    between its drain and the swap that clears the gate leaves the claim path
-   admitting ZERO work while every other surface stays green).
+   admitting ZERO work while every other surface stays green). That last budget is
+   **summed from the staged convergence's own per-stage timeouts**
+   (`TEATREE_DRAIN_TIMEOUT` + `TEATREE_INIT_WAIT_TIMEOUT` +
+   `TEATREE_ADMIN_SWAP_BUDGET` + `TEATREE_RESUME_TIMEOUT`, plus slack for the untimed
+   `up -d` steps), because stages 2–7 are serial inside one gate-ON window: raise one
+   on the box and the detector widens with it rather than calling a slower-but-legal
+   convergence an outage.
 4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the

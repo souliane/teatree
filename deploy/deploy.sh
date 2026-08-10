@@ -61,20 +61,35 @@ if ! flock -n 9; then
 fi
 
 # Fail-safe against a stranded quiescing gate. If this run drains the worker (which
-# sets `worker_quiescing` ON) but then exits BEFORE the image swap that would
-# recreate the worker and clear the gate via its init (a mid-deploy failure under
-# `set -e`), the still-live OLD worker would stay quiesced forever. The EXIT trap
-# clears the gate so admission resumes. A no-op after a successful swap (the fresh
-# init already cleared it) and when no drain ran; best-effort, never fails the run.
-# Safe under the flock: no other convergence is running to own the gate.
+# sets `worker_quiescing` ON) but then exits BEFORE the swap that would recreate the
+# worker and clear the gate (a mid-deploy failure under `set -e`), the still-live
+# worker would stay quiesced forever. The EXIT trap clears the gate so admission
+# resumes. A no-op after a successful resume and when no drain ran; best-effort,
+# never fails the run. Safe under the flock: no other convergence owns the gate.
+#
+# WHICH WAY TO FAIL depends on which worker is live and what schema it faces. init
+# migrates the control DB at stage 3, so a strand between it and the worker swap
+# leaves PRE-migration code live against the NEW schema — the one window where
+# re-opening admission is worse than leaving it shut, because it hands that worker
+# fresh work to run against a database it does not match. A stall is visible and one
+# command from recovery; a mismatched claim is neither. So the clear is withheld
+# there and taken everywhere else, including after the swap, where the live worker is
+# the fresh one and the clear is `resume_admission`'s retry.
 _DRAINED=false
 _SWAP_DONE=false
+_INIT_RAN=false
+_WORKER_SWAPPED=false
 _clear_quiescing_if_stranded() {
     if [ "$_DRAINED" = true ] && [ "$_SWAP_DONE" = false ]; then
         # Say "cleanup", loudly. This runs LAST, so it is the final line in the
         # Action log and reads as the cause to anyone triaging the failure — it is
         # not; the real error is further up. One triage of this run was nearly
         # anchored on this very line.
+        if [ "$_INIT_RAN" = true ] && [ "$_WORKER_SWAPPED" = false ]; then
+            echo "deploy: [cleanup, NOT the failure cause — see the error above] init already migrated the control DB and the worker was never swapped, so the live worker runs pre-migration code against the new schema." >&2
+            echo "        Leaving worker_quiescing ON: the box admits no new work until a convergence completes. Re-run the deploy, or resume deliberately with 't3 teatree config_setting set worker_quiescing false'." >&2
+            return
+        fi
         echo "deploy: [cleanup, NOT the failure cause — see the error above] exiting after a drain but before the swap; clearing worker_quiescing so admission resumes." >&2
         compose exec -T teatree-worker \
             t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
@@ -390,6 +405,7 @@ staged_swap() {
     archive_service_logs teatree-init
     compose up -d --no-deps teatree-init || return 1
     wait_for_init || return 1
+    _INIT_RAN=true
 
     # init clears worker_quiescing as its last act, so re-assert the gate: without
     # this the still-live old worker resumes admission and can claim — then lose —
@@ -400,6 +416,7 @@ staged_swap() {
 
     archive_service_logs teatree-worker teatree-slack-listener
     compose up -d --no-deps teatree-worker teatree-slack-listener || return 1
+    _WORKER_SWAPPED=true
     resume_admission
 
     local rest

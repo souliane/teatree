@@ -290,6 +290,22 @@ class TestAFailedStageStopsBeforeItCostsAvailability:
         assert proc.returncode != 0
         assert worker_at == -1, "with no dashboard answering, swapping the worker leaves no route at all"
 
+    def test_that_abort_leaves_admission_shut_because_init_already_migrated_the_db(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        # Same abort, one stage later in its consequences: init has already migrated the
+        # control DB, and the worker still live is the pre-migration one. The EXIT trap
+        # must not re-open admission on it. End-to-end through the shipped script, so a
+        # fail-safe whose flags were never wired into the convergence reads as the
+        # regression it is.
+        proc, calls = _run(checkout, tmp_path, STUB_CURL_FAIL_AFTER="1")
+
+        assert proc.returncode != 0
+        assert not any("worker_quiescing false" in c for c in calls), (
+            f"a convergence stranded after init must leave the gate ON, not admit on a mismatched worker: {calls!r}"
+        )
+        assert "worker_quiescing" in proc.stderr, "the deliberate refusal must be stated, not silent"
+
 
 class TestTheResidualWindowIsStated:
     def test_the_dashboard_gap_is_measured_and_reported_with_its_bound(self, checkout: Path, tmp_path: Path) -> None:
