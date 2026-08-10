@@ -141,6 +141,17 @@ have been destroyed with the container objects.
 Init is excluded from stage 8 because a plain `up -d` **starts** an exited
 one-shot, replaying the whole ~minute init.
 
+**An aborted convergence fails towards a stall, not a mismatch.** A run that
+drains and then dies before the swap leaves the gate ON, so an EXIT trap clears it
+and admission resumes. Between stages 3 and 6 that clear is deliberately withheld:
+init has migrated the control DB and the live worker is still the pre-migration
+one, so re-opening admission there hands it fresh work to run against a schema its
+code does not match. The `schema_readiness` gate does not cover this direction —
+it refuses when the code is ahead of the DB, and here the DB is ahead of the code.
+Staying quiesced only stalls the box, which is printed, visible in
+`worker_quiescing`, and cleared by the next successful convergence or by
+`t3 teatree config_setting set worker_quiescing false`.
+
 **The residual window, stated rather than implicit.** Stage 5 still swaps the
 dashboard's own container, so the dashboard is unavailable for that swap —
 seconds, not the 67-second init gate, and the worker answers throughout it.

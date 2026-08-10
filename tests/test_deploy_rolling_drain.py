@@ -19,6 +19,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -81,9 +82,21 @@ def _fail_safe_block() -> str:
     return _slice(_DEPLOY_SH.read_text(encoding="utf-8"), _FAIL_SAFE_START, _FAIL_SAFE_END, "stranded-gate fail-safe")
 
 
-def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> list[str]:
-    """Signal a script carrying *fail_safe* mid-drain; return the `docker` calls it made."""
+class _FailSafeRun(NamedTuple):
+    calls: list[str]
+    stderr: str
+
+
+def _run_fail_safe_under_signal(
+    tmp_path: Path, sig: int, *, fail_safe: str, stage: str = "_DRAINED=true"
+) -> _FailSafeRun:
+    """Signal a script carrying *fail_safe* mid-run; report its `docker` calls and stderr.
+
+    *stage* is the shipped flag assignment naming how far the convergence got, so a test
+    picks the point of death rather than re-implementing the fail-safe's own conditions.
+    """
     docker_log = tmp_path / "docker.log"
+    stderr_log = tmp_path / "stderr.log"
     ready = tmp_path / "ready"
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
@@ -96,22 +109,26 @@ def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> 
         "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\nHOST_IDENTITY_FILE=/dev/null\n"
         f"{_compose_helper_block()}"
         f"{fail_safe}\n"
-        f'_DRAINED=true\ntouch "{ready}"\nsleep 5\n',
+        f'{stage}\ntouch "{ready}"\nsleep 5\n',
         encoding="utf-8",
     )
 
     env = {**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"}
-    proc = subprocess.Popen(["bash", str(script)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S607 — a fixture-authored script under tmp_path
-    try:
-        deadline = time.monotonic() + 10
-        while not ready.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert ready.exists(), "the harness never reached its drain"
-        proc.send_signal(sig)
-        proc.wait(timeout=10)
-    finally:
-        proc.kill()
-    return docker_log.read_text(encoding="utf-8").splitlines() if docker_log.exists() else []
+    with stderr_log.open("w", encoding="utf-8") as stderr_sink:
+        proc = subprocess.Popen(["bash", str(script)], env=env, stdout=subprocess.DEVNULL, stderr=stderr_sink)  # noqa: S607 — a fixture-authored script under tmp_path
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "the harness never reached its drain"
+            proc.send_signal(sig)
+            proc.wait(timeout=10)
+        finally:
+            proc.kill()
+    return _FailSafeRun(
+        calls=docker_log.read_text(encoding="utf-8").splitlines() if docker_log.exists() else [],
+        stderr=stderr_log.read_text(encoding="utf-8"),
+    )
 
 
 def _deploy_workflow() -> dict:
@@ -233,10 +250,10 @@ class TestDrainSurvivesItsTransport:
         # A dropped SSH session kills deploy.sh with one of these, mid-drain and long
         # before the swap. Run deploy.sh's REAL fail-safe under each and prove it
         # clears the gate — otherwise the still-live old worker admits nothing.
-        calls = _run_fail_safe_under_signal(tmp_path, sig, fail_safe=_fail_safe_block())
+        run = _run_fail_safe_under_signal(tmp_path, sig, fail_safe=_fail_safe_block())
 
-        assert any("config_setting set worker_quiescing false" in call for call in calls), (
-            f"a deploy killed by {signal.Signals(sig).name} after its drain must free admission; docker calls={calls}"
+        assert any("config_setting set worker_quiescing false" in call for call in run.calls), (
+            f"a deploy killed by {signal.Signals(sig).name} after its drain must free admission; calls={run.calls}"
         )
 
     @pytest.mark.integration
@@ -244,6 +261,64 @@ class TestDrainSurvivesItsTransport:
         # The control for the parametrised probe above: strip the trap and the same
         # harness must record NO clear, so a green there is evidence and not an artifact.
         without_trap = _fail_safe_block().replace(_FAIL_SAFE_END, "")
-        calls = _run_fail_safe_under_signal(tmp_path, signal.SIGHUP, fail_safe=without_trap)
+        run = _run_fail_safe_under_signal(tmp_path, signal.SIGHUP, fail_safe=without_trap)
 
-        assert calls == []
+        assert run.calls == []
+
+
+class TestAStrandedConvergenceFailsTowardsTheSaferSide:
+    """Which way the fail-safe fails depends on what the still-live worker would run (#4214)."""
+
+    @pytest.mark.integration
+    def test_a_strand_after_init_leaves_admission_closed_rather_than_admitting_on_a_migrated_db(
+        self, tmp_path: Path
+    ) -> None:
+        # init applies migrations at stage 3, so a convergence that dies between it and
+        # the worker swap leaves the OLD worker — pre-migration code — live against the
+        # NEW schema. Re-opening admission there hands it fresh work to run against a
+        # database it does not match; staying quiesced only stalls, which is visible and
+        # recoverable. Fail towards the stall.
+        run = _run_fail_safe_under_signal(
+            tmp_path,
+            signal.SIGTERM,
+            fail_safe=_fail_safe_block(),
+            stage="_DRAINED=true\n_INIT_RAN=true",
+        )
+
+        assert not any("config_setting set worker_quiescing false" in call for call in run.calls), (
+            f"admission must stay closed on the old worker once init has migrated the DB; docker calls={run.calls}"
+        )
+        assert "worker_quiescing" in run.stderr, "the refusal must name the gate it is deliberately leaving ON"
+
+    def test_the_convergence_records_each_stage_the_fail_safe_branches_on(self) -> None:
+        # The trap reads two flags; both are inert unless the shipped stages set them,
+        # and an inert fail-safe silently reverts to always-clear. Pin each assignment
+        # to the stage whose completion it claims.
+        staged = _staged_swap_block(_DEPLOY_SH.read_text(encoding="utf-8"))
+
+        init_ran_at = staged.index("_INIT_RAN=true")
+        assert staged.index("wait_for_init") < init_ran_at < staged.index("up -d --no-deps teatree-worker"), (
+            "_INIT_RAN must be set once init has migrated and while the OLD worker is still the live one"
+        )
+        assert staged.index("up -d --no-deps teatree-worker") < staged.index("_WORKER_SWAPPED=true"), (
+            "_WORKER_SWAPPED must be set only once the fresh worker has actually been created"
+        )
+        assert staged.index("_WORKER_SWAPPED=true") < staged.index("resume_admission"), (
+            "resume_admission's own failure must leave the trap able to retry the clear"
+        )
+
+    @pytest.mark.integration
+    def test_a_strand_after_the_worker_swap_still_retries_the_clear(self, tmp_path: Path) -> None:
+        # Past the swap the live worker is the FRESH one, which matches the migrated
+        # schema — so the trap's retry of a failed `resume_admission` must survive the
+        # refusal above rather than be caught by it.
+        run = _run_fail_safe_under_signal(
+            tmp_path,
+            signal.SIGTERM,
+            fail_safe=_fail_safe_block(),
+            stage="_DRAINED=true\n_INIT_RAN=true\n_WORKER_SWAPPED=true",
+        )
+
+        assert any("config_setting set worker_quiescing false" in call for call in run.calls), (
+            f"a fresh worker must still have admission restored; docker calls={run.calls}"
+        )
