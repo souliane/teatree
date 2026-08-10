@@ -21,6 +21,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
 SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
+# Every control-DB route, preferred first. A convergence recreates them ONE AT A
+# TIME (deploy.sh's staged swap), so the one being replaced always has a live
+# sibling — dispatching there turns what used to be an opaque `service "X" is not
+# running` into a call that simply works. The worker leads because it alone carries
+# the docker-socket group, so `worktree provision` needs it; the admin is the
+# documented second `docker exec` target and shares every mount.
+CLI_SERVICE_FALLBACKS="${TEATREE_DOCKER_CLI_FALLBACK_SERVICES:-teatree-admin teatree-worker}"
+# deploy.sh's single-convergence lock — the authoritative "an update is happening
+# right now" signal, read the same read-only way deploy/watchdog.sh reads it.
+DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
+# How long to wait for a route to come back when a convergence is demonstrably in
+# flight. 0 reports immediately instead of waiting.
+UPDATE_WAIT_SECONDS="${TEATREE_UPDATE_WAIT_SECONDS:-180}"
+# EX_TEMPFAIL, distinct from every code the CLI itself returns, so a caller branches
+# on "the substrate is mid-update" rather than parsing a message.
+UPDATE_IN_PROGRESS_EXIT=75
 # The container path the source mount always lands on (the compose target is
 # fixed — it is what `teatree.paths` resolves inside the container).
 CONTAINER_SOURCE_DIR=/home/teatree/teatree
@@ -347,6 +363,39 @@ warn_unreachable_host_paths "$@"
 
 compose() { docker compose "${COMPOSE_ARGS[@]}" "$@"; }
 
+# The first control-DB route that is actually running, preferring $SERVICE. Echoes
+# its name; non-zero when none of them is up.
+first_running_service() {
+    local svc seen=""
+    for svc in $SERVICE $CLI_SERVICE_FALLBACKS; do
+        case " $seen " in
+        *" $svc "*) continue ;;
+        esac
+        seen="$seen $svc"
+        if [ -n "$(compose ps --status running --quiet "$svc" 2>/dev/null)" ]; then
+            printf '%s' "$svc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# True when deploy.sh's single-convergence flock is held. READ-ONLY by construction:
+# it matches the lock file's device+inode against /proc/locks and never opens the
+# file for locking. A probe that briefly ACQUIRED the lock would make a deploy
+# starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
+# that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
+# (macOS, an unreadable /proc/locks, no lock file), which keeps the stopped-stack
+# path below rather than inventing an update that may not be running.
+deploy_lock_held() {
+    local fields maj min ino
+    [ -r /proc/locks ] || return 1
+    fields="$(stat -c '%Hd %Ld %i' "$DEPLOY_LOCK" 2>/dev/null)" || return 1
+    read -r maj min ino <<<"$fields"
+    [ -n "${ino:-}" ] || return 1
+    grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
+}
+
 # WHICH TREE THE RUNNING CONTAINER ACTUALLY EXECUTES. `TEATREE_SOURCE_MOUNT` above
 # resolves the host project this wrapper was invoked from, so the container runs the
 # code being edited here — but that value reaches a container only through `up` /
@@ -514,18 +563,46 @@ done
 # `set -u` treats an empty array's plain expansion as an unbound-variable error on
 # bash 3.2 (the macOS default), so every use below takes the empty-safe form.
 
-# A running worker is the cheapest, most consistent runtime — exec into it. `-T`
+RUNNING_SERVICE="$(first_running_service || true)"
+
+# A convergence swaps the routes one at a time, so a moment with NONE of them up is
+# short and self-clearing. Waiting it out is what turns the window from an outage an
+# operator escalates on into a call that simply succeeds; a caller who cannot wait
+# sets TEATREE_UPDATE_WAIT_SECONDS=0 and gets the named refusal immediately.
+if [ -z "$RUNNING_SERVICE" ] && deploy_lock_held; then
+    if [ "$UPDATE_WAIT_SECONDS" -gt 0 ]; then
+        echo "deploy/t3: a teatree update is in progress — waiting up to ${UPDATE_WAIT_SECONDS}s for a control-DB route." >&2
+        UPDATE_WAITED=0
+        while [ "$UPDATE_WAITED" -lt "$UPDATE_WAIT_SECONDS" ]; do
+            sleep 2
+            UPDATE_WAITED=$((UPDATE_WAITED + 2))
+            RUNNING_SERVICE="$(first_running_service || true)"
+            [ -z "$RUNNING_SERVICE" ] || break
+        done
+    fi
+    if [ -z "$RUNNING_SERVICE" ]; then
+        echo "deploy/t3: a teatree update is in progress and no control-DB service came back within ${UPDATE_WAIT_SECONDS}s." >&2
+        echo "           This is an UPDATE, not an outage — retry shortly; exit $UPDATE_IN_PROGRESS_EXIT says so to a caller." >&2
+        exit "$UPDATE_IN_PROGRESS_EXIT"
+    fi
+fi
+
+# A running service is the cheapest, most consistent runtime — exec into it. `-T`
 # is added when stdin is not a TTY (a script/pipe) so compose does not fail trying
 # to allocate one; an interactive shell keeps the TTY for prompts/pagers.
-if [ -n "$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" ]; then
+if [ -n "$RUNNING_SERVICE" ]; then
+    if [ "$RUNNING_SERVICE" != "$SERVICE" ]; then
+        echo "deploy/t3: $SERVICE is not running — dispatching in $RUNNING_SERVICE instead. It shares every mount," >&2
+        echo "           but only the worker carries the docker-socket group, so a provisioning command needs it back." >&2
+    fi
     # `compose` is a shell function, not a binary on PATH — `exec` replaces the
     # process image via a real command lookup and cannot resolve a function
     # (`exec: compose: not found`), so the final hop inlines `docker compose`
     # directly instead of calling through the function.
     if [ -t 0 ]; then
-        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
+        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
     fi
-    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
+    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$RUNNING_SERVICE" sh -c "$CONTAINER_GNUPG_PROLOGUE" t3-in-container t3 "$@"
 fi
 
 # Nothing running. Two different worlds reach this line: a merely STOPPED stack,
