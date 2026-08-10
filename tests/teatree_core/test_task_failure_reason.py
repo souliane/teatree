@@ -193,7 +193,6 @@ class TestAttemptStampsFailureKind(TestCase):
         task = _task()
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=1,
             error="stuck_loop: lease lost for task 1: re-claimed by another worker",
@@ -205,7 +204,6 @@ class TestAttemptStampsFailureKind(TestCase):
         task = _task()
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=0,
         )

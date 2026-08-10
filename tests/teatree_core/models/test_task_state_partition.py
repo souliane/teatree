@@ -78,7 +78,7 @@ class TestSessionStalenessBound(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
-        TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.HEADLESS)
+        TaskAttempt.objects.create(task=task)
         Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED)
         _backdate_session(session, hours=48)
 

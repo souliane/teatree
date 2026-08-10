@@ -3,7 +3,7 @@
 The bridge between the domain dispatch table
 (:data:`~teatree.core.modelkit.phases.SUBAGENT_BY_PHASE`) and the platform-layer
 frontmatter reader (:mod:`teatree.skill_support.agent_declarations`), so a
-headless dispatch loads the SAME skills the interactive lane resolves from the
+agent dispatch loads the SAME skills the interactive lane resolves from the
 agent file rather than a parallel one-skill-per-phase table.
 
 Resolution is role-agnostic on purpose: no phase dispatches two DIFFERENT

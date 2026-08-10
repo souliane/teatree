@@ -167,7 +167,7 @@ class TestNeverMovedThroughThisPath:
         assert conservative_keys() == pinned_fail_closed_keys() | WORKFLOW_ENGAGEMENT_KEYS
 
     def test_the_five_owner_named_keys_are_all_conservative(self) -> None:
-        assert {"wip", "mode", "autoload", "contribute", "agent_runtime"} <= WORKFLOW_ENGAGEMENT_KEYS
+        assert {"wip", "mode", "autoload", "contribute"} <= WORKFLOW_ENGAGEMENT_KEYS
 
     def test_a_banned_value_is_declined_and_never_reaches_the_file(self) -> None:
         plan = _plan(

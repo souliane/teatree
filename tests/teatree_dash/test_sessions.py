@@ -34,7 +34,6 @@ class SessionIndexIsReachableTestCase(TestCase):
         ticket = TicketFactory(state=State.STARTED, short_description="session subject")
         TaskAttempt.objects.create(
             task=TaskFactory(ticket=ticket, phase="coding"),
-            execution_target="headless",
             agent_session_id="sess-abc",
             model="claude-opus-4-8",
         )
@@ -57,20 +56,19 @@ class SessionIndexIsBoundedTestCase(TestCase):
     def test_one_row_per_session_however_many_attempts_it_produced(self) -> None:
         task = TaskFactory(ticket=TicketFactory(state=State.STARTED), phase="coding")
         for _ in range(5):
-            TaskAttempt.objects.create(task=task, execution_target="headless", agent_session_id="sess-repeat")
+            TaskAttempt.objects.create(task=task, agent_session_id="sess-repeat")
         assert [row.agent_session_id for row in build_session_index()] == ["sess-repeat"]
 
     def test_the_index_never_exceeds_its_page_size(self) -> None:
         task = TaskFactory(ticket=TicketFactory(state=State.STARTED), phase="coding")
         TaskAttempt.objects.bulk_create(
-            TaskAttempt(task=task, execution_target="headless", agent_session_id=f"sess-{index}")
-            for index in range(SESSION_ROWS + 5)
+            TaskAttempt(task=task, agent_session_id=f"sess-{index}") for index in range(SESSION_ROWS + 5)
         )
         assert len(build_session_index()) == SESSION_ROWS
 
     def test_an_attempt_with_no_transcript_is_not_listed(self) -> None:
         task = TaskFactory(ticket=TicketFactory(state=State.STARTED), phase="coding")
-        TaskAttempt.objects.create(task=task, execution_target="headless", agent_session_id="")
+        TaskAttempt.objects.create(task=task, agent_session_id="")
         assert build_session_index() == ()
 
 
@@ -95,7 +93,6 @@ class NoConfiguredSecretReachesTheResponseTestCase(TestCase):
     def test_the_index_does_not_echo_an_attempts_error_body(self) -> None:
         TaskAttempt.objects.create(
             task=self.task,
-            execution_target="headless",
             agent_session_id="sess-leak",
             error=f"auth failed with {_SECRET}",
         )

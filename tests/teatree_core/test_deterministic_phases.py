@@ -104,21 +104,18 @@ class TestBothHeadlessEntryPointsShortCircuit(TestCase):
     def _pending_headless_task(self) -> Task:
         ticket = Ticket.objects.create(extra={"issue_title": "add dark mode toggle"})
         session = Session.objects.create(ticket=ticket, agent_id="short-describe")
-        task = Task.objects.create(ticket=ticket, session=session, phase="short_describe")
-        task.route_to_headless(reason="forced headless for the regression")
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
-        return task
+        return Task.objects.create(ticket=ticket, session=session, phase="short_describe")
 
     def test_the_worker_lane_never_reaches_the_agentic_runner(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: Django task registry
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: Django task registry
 
         task = self._pending_headless_task()
 
         with (
             patch(_SUMMARIZE, return_value="dark mode toggle"),
-            patch("teatree.agents.headless.run_headless", side_effect=AssertionError("agentic runner reached")),
+            patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
         ):
-            result = execute_headless_task.func(task.pk, task.phase)
+            result = execute_task.func(task.pk, task.phase)
 
         assert result["exit_code"] == "0"
         task.refresh_from_db()
@@ -131,11 +128,11 @@ class TestBothHeadlessEntryPointsShortCircuit(TestCase):
 
         with (
             patch(_SUMMARIZE, return_value="dark mode toggle"),
-            patch("teatree.agents.headless.run_headless", side_effect=AssertionError("agentic runner reached")),
+            patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
         ):
             # ``call_command`` is annotated as returning None upstream; this command
             # returns its result mapping, so the boundary is stated rather than assumed.
-            result = cast("dict[str, str]", call_command("tasks", "work-next-headless", claimed_by="worker-1"))
+            result = cast("dict[str, str]", call_command("tasks", "work-next", claimed_by="worker-1"))
 
         assert result["exit_code"] == "0"
         task.refresh_from_db()

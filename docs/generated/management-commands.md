@@ -562,11 +562,10 @@ Register, clear, or list standing verified-green goals (PR-25).
 | `cancel` | Cancel a pending or (with --confirm) claimed task, driving it to FAILED |
 | `complete` | Mark a claimed or failed task COMPLETED for work finished out-of-band |
 | `claim` |  |
-| `start` | Claim an interactive task and exec ``claude`` in the current terminal |
 | `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
 | `list` | List the teatree tasks queue (not your harness TODO list) |
 | `reconcile-checklist` | Emit the in-session harness-TODO reconciliation checklist (read-only) |
-| `work-next-headless` |  |
+| `work-next` |  |
 
 ## `ticket`
 

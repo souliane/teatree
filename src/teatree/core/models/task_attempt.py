@@ -109,14 +109,6 @@ class TaskAttemptQuerySet(models.QuerySet):
             models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
         )
 
-    def headless(self) -> "TaskAttemptQuerySet":
-        """Only the attempts that ran a billed detached headless-SDK run.
-
-        SDK-equivalent billing covers headless usage only — interactive turns
-        run inside the user's own session, not against the credit.
-        """
-        return self.filter(execution_target=Task.ExecutionTarget.HEADLESS)
-
     def usages(self) -> "list[AttemptUsage]":
         """Map each attempt to the :class:`AttemptUsage` the cost layer reads."""
         AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806 — PascalCase binds a runtime-resolved model class, matching its class name
@@ -230,7 +222,6 @@ class TaskAttempt(models.Model):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
-    execution_target = models.CharField(max_length=32, choices=Task.ExecutionTarget.choices)
     error = models.TextField(blank=True)
     exit_code = models.IntegerField(null=True, blank=True)
     artifact_path = models.CharField(max_length=500, blank=True)
@@ -300,7 +291,6 @@ class TaskAttempt(models.Model):
             # cycle filter leads so the range is the seek; the rest is what makes it cover.
             models.Index(
                 fields=[
-                    "execution_target",
                     "started_at",
                     "model",
                     "lane",

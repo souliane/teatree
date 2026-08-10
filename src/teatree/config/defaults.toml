@@ -68,11 +68,10 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
-agent_runtime = "headless" # str, one of: interactive | headless — whether dispatched work runs headless or in an interactive terminal
+agent_max_turns = 250 # int — turn ceiling for one agent run
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 enforce_regulated_path = false # bool — route work touching a regulated path through the allowlisted models only
 envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the required result envelope
-headless_max_turns = 250 # int — turn ceiling for one headless run
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
 pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request

@@ -72,7 +72,7 @@ class TestHarnessOptionsFromSdk:
         assert HarnessOptions.from_sdk_options(ClaudeAgentOptions(max_turns=3)).max_turns == 3
 
     def test_sdk_none_and_zero_max_turns_coerce_to_zero(self) -> None:
-        # The SDK default is None and headless dispatch sends 0 — both mean "uncapped" → 0, so
+        # The SDK default is None and agent dispatch sends 0 — both mean "uncapped" → 0, so
         # only a genuinely positive cap wins over the lane's request_limit downstream.
         assert HarnessOptions.from_sdk_options(ClaudeAgentOptions()).max_turns == 0
         assert HarnessOptions.from_sdk_options(ClaudeAgentOptions(max_turns=0)).max_turns == 0

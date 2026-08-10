@@ -1,4 +1,4 @@
-"""The INTERPRET phase — headless dispatch that turns raw text into a typed sketch (PR-6).
+"""The INTERPRET phase — agent dispatch that turns raw text into a typed sketch (PR-6).
 
 Mirrors the ``CriticDispatch`` idiom (``critic_gate.build_critic_contract`` +
 ``_enqueue_llm_critic``): :func:`build_interpreter_contract` writes the mechanism-design

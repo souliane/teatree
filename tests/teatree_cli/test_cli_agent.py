@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.agents import _headless_options, permission_modes
+from teatree.agents import _runner_options, permission_modes
 from teatree.cli.agent import _launch_claude
 from teatree.llm.credentials import ANTHROPIC_BASE_URL_ENV, CredentialError
 
@@ -54,11 +54,11 @@ class TestUnattendedTaskRunPinsPermissionMode:
         flag = argv.index("--permission-mode")
         assert argv[flag + 1] == permission_modes.UNATTENDED
 
-    def test_pinned_mode_matches_the_headless_dispatch_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pinned_mode_matches_the_agent_runner_lane(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Spelled against the shared constant so the two lanes cannot drift apart."""
         argv = _exec_argv(monkeypatch, task="do the thing")
 
-        assert argv[argv.index("--permission-mode") + 1] == _headless_options._PERMISSION_MODE
+        assert argv[argv.index("--permission-mode") + 1] == _runner_options._PERMISSION_MODE
 
     def test_bare_interactive_run_pins_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No task means an attended session, whose mode stays the operator's to choose."""

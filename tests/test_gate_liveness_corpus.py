@@ -409,7 +409,6 @@ def _main_clone_bash_allow(ctx: GateContext) -> dict:
 
 def _arrange_headless_interactive(ctx: GateContext) -> Path:
     ctx.write_state("teatree-active", "")
-    ctx.seed_setting("agent_runtime", "headless")
     ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
     ctx.monkeypatch.setenv("CLAUDECODE", "1")
     ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)

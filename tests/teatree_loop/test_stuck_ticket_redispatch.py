@@ -58,7 +58,6 @@ def _finished_task(
     task = Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1 if error else 0,
         error=error,
@@ -182,7 +181,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=f"planning failed run {'x' * (i + 1)}",
@@ -211,7 +209,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=err,
@@ -230,7 +227,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=f"planning failed run {'x' * (i + 1)}",

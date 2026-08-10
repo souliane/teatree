@@ -14,8 +14,8 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents import _headless_env
-from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
+from teatree.agents import _runner_env
+from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
     RAM_BRAKE_FLOOR_GB,
@@ -229,8 +229,8 @@ class TestTestWorkerCapWiring:
 
     def test_kill_switch_removes_the_cap_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(admission_governor, "governor_enabled", lambda: False)
-        assert _headless_env.with_test_worker_cap(None, active_agents=4) is None
-        assert _headless_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
+        assert _runner_env.with_test_worker_cap(None, active_agents=4) is None
+        assert _runner_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
 
 
 class TestTheExportedCapRespondsToMemory:
@@ -430,7 +430,7 @@ class TestUnreadableProbeNeverManufacturesAClamp:
 class TestAnUnknownQuotaIsBoundedNotUnlimited:
     """#4097: not knowing the budget must never buy MORE concurrency than knowing it.
 
-    An unknown quota used to leave ``static_ceiling`` verbatim, so the headless lane —
+    An unknown quota used to leave ``static_ceiling`` verbatim, so the agent lane —
     which passes ``static_ceiling=None`` — got no ceiling at all, while a known-healthy
     quota got ``floor(cores * WRITE_CONCURRENCY_PER_CORE)``. The machine-derived base
     needs no quota information whatsoever, so it is available in both cases; only the

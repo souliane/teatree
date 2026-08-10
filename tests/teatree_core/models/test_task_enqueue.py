@@ -31,10 +31,6 @@ class EnqueuePhaseTaskTestCase(TestCase):
         task = enqueue_phase_task(ticket=self.ticket, phase="scoping", reason="Decide X.")
         assert task.session_id == existing.pk
 
-    def test_the_interactive_flag_selects_the_interactive_lane(self) -> None:
-        task = enqueue_phase_task(ticket=self.ticket, phase="scoping", reason="x", interactive=True)
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
-
     def test_a_blank_phase_is_refused(self) -> None:
         with pytest.raises(TaskEnqueueError):
             enqueue_phase_task(ticket=self.ticket, phase="   ", reason="x")

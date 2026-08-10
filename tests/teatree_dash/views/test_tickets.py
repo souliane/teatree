@@ -173,7 +173,6 @@ class DrawerPayloadIsBoundedTestCase(TestCase):
             TaskAttempt.objects.bulk_create(
                 TaskAttempt(
                     task=task,
-                    execution_target=Task.ExecutionTarget.HEADLESS,
                     model="claude-opus-4-8",
                     error="a recorded failure reason that occupies a realistic amount of the row",
                 )

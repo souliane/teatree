@@ -145,7 +145,7 @@ class TestPresentModeMirrorsButDoesNotDeny(TestCase):
 
 
 class TestInteractiveQuestionReachesTheOwnerQueue(TestCase):
-    """#3642 — an interactive question is answerable from Slack, like the headless lane.
+    """#3642 — an interactive question is answerable from Slack, like the agent lane.
 
     The live-user-turn arm must still render in-client (never deny), but the question
     also enters the shared owner-thread queue with its Slack coordinates bound, so a

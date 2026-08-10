@@ -220,11 +220,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("list", "List tasks with optional filters; --session scopes to the current harness session's todos."),
             ("reconcile-checklist", "Emit the in-session harness-TODO reconciliation checklist (read-only)."),
             ("record-attempt", "Record an in-session sub-agent's result back onto a Task."),
-            ("start", "Claim and run the next interactive task in the current terminal."),
-            (
-                "work-next-headless",
-                ("Claim and execute a headless task; refuses loop-dispatched phases while agent_runtime=interactive."),
-            ),
+            ("work-next", "Claim and execute the next pending task."),
         ],
     ),
     "queue": DjangoGroup(

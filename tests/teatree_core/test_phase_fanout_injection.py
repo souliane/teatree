@@ -9,7 +9,7 @@ interactive payload would pass vacuously).
 Anti-vacuous spine: with no ``[agent.phase_fanout]`` opt-in the dispatch payload
 carries ``fanout_directive == ""`` (byte-identical to today). The PRESENT tests
 prove the opt-in renders the directive; the headless parity tests prove
-``build_system_context`` carries the same directive so switching ``agent_runtime``
+``build_system_context`` carries the same directive so switching the harness
 between interactive and a headless runtime does not lose it. (Under #2650 the
 ``/loop`` body just runs ``t3 loops tick --loop <name>``, so the directive is
 threaded by the dispatch code path — the ``claim-next`` payload + the headless
@@ -22,7 +22,6 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -34,7 +33,6 @@ from django.test import TestCase
 from teatree.agents.prompt import build_system_context
 from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
-from tests._agent_runtime_env import interactive_runtime
 
 
 def _config(fanout: dict[str, bool | int]) -> Path:
@@ -61,13 +59,6 @@ def _config(fanout: dict[str, bool | int]) -> Path:
 
 
 class _FanoutDispatchTest(TestCase):
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     def _reviewer_task(self, *, url: str = "https://example.com/pr/1") -> Task:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -187,7 +178,7 @@ class TestHeadlessParity(_FanoutDispatchTest):
     """Secondary headless-composer parity for the fan-out directive.
 
     ``build_system_context`` (the headless composer) carries the same directive
-    as the interactive composer, so switching ``agent_runtime`` between
+    as the sibling composer, so switching the harness between
     interactive and a headless runtime keeps it.
     """
 

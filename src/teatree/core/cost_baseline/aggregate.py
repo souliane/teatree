@@ -1,6 +1,6 @@
 """Per-phase usage aggregation over REAL dispatch attempts.
 
-``teatree_taskattempt`` mixes two populations. A real headless dispatch records
+``teatree_taskattempt`` mixes two populations. A real agent dispatch records
 ``model`` / token counts / ``cost_usd``; a park-audit row (``limit_parked:`` /
 ``stuck_loop:``) records none of them and outnumbers the real rows ~280:1, so a
 naive aggregate over the table measures the park loop, not the fleet.
@@ -37,7 +37,7 @@ def percentile(values: Iterable[float], fraction: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class AttemptRecord:
-    """One real headless dispatch, as the cost baseline reads it."""
+    """One real agent dispatch, as the cost baseline reads it."""
 
     phase: str
     model: str

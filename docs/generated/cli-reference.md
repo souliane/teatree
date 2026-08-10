@@ -22,8 +22,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 credit.                                                      │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Read text aloud through the local speakers per  (no-op       │
-│                 unless local = all).                                         │
+│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
@@ -235,7 +234,7 @@ Usage: t3 tokens [OPTIONS]
 ```
 Usage: t3 speak [OPTIONS] TEXT
 
- Read text aloud through the local speakers per  (no-op unless local = all).
+ Refuse to speak — local audio cannot reach the user.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
@@ -9542,10 +9541,7 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │                      checklist (read-only).                                  │
 │ record-attempt       Record an in-session sub-agent's result back onto a     │
 │                      Task.                                                   │
-│ start                Claim and run the next interactive task in the current  │
-│                      terminal.                                               │
-│ work-next-headless   Claim and execute a headless task; refuses              │
-│                      loop-dispatched phases while agent_runtime=interactive. │
+│ work-next            Claim and execute the next pending task.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9581,9 +9577,8 @@ Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
 Usage: t3 teatree tasks claim [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --execution-target        TEXT  [default: headless]                          │
-│ --claimed-by              TEXT  [default: worker]                            │
-│ --help                          Show this message and exit.                  │
+│ --claimed-by        TEXT  [default: worker]                                  │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9630,11 +9625,10 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 
  Enqueue the next-phase task for a ticket.
 
- Used by `/t3:next` to hand off from one phase to the next. Headless by default
- so a worker
- claims it immediately; pass `--interactive` for tasks that require human
- input. A machine
- handoff: the created-task record is JSON on stdout, the human confirmation on
+ Used by `/t3:next` to hand off from one phase to the next; a worker claims it
+ immediately.
+ A machine handoff: the created-task record is JSON on stdout, the human
+ confirmation on
  stderr.
 
  ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the
@@ -9646,20 +9640,14 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 │                           [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --phase                              TEXT  Phase: scoping, coding, testing,  │
-│                                            reviewing, shipping.              │
-│ --reason                             TEXT  Prompt body for the worker. Use   │
-│                                            '-' to read from stdin. Overrides │
-│                                            --reason-file.                    │
-│ --reason-file                        PATH  Read the prompt body from a file. │
-│ --interactive    --no-interactive          Create an interactive task        │
-│                                            instead of the default headless   │
-│                                            one.                              │
-│                                            [default: no-interactive]         │
-│ --kind                               TEXT  Classify the ticket as 'fix' or   │
-│                                            'feature' (records Ticket.kind,   │
-│                                            #17).                             │
-│ --help                                     Show this message and exit.       │
+│ --phase              TEXT  Phase: scoping, coding, testing, reviewing,       │
+│                            shipping.                                         │
+│ --reason             TEXT  Prompt body for the worker. Use '-' to read from  │
+│                            stdin. Overrides --reason-file.                   │
+│ --reason-file        PATH  Read the prompt body from a file.                 │
+│ --kind               TEXT  Classify the ticket as 'fix' or 'feature'         │
+│                            (records Ticket.kind, #17).                       │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9677,16 +9665,13 @@ Usage: t3 teatree tasks list [OPTIONS]
  rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --status                              TEXT  Filter by status                 │
-│ --execution-target                    TEXT  Filter by execution target       │
-│ --session             --no-session          Scope to the current harness     │
-│                                             session and group pending /      │
-│                                             claimed / done.                  │
-│                                             [default: no-session]            │
-│ --json                                      Emit the task rows as JSON on    │
-│                                             stdout instead of the human      │
-│                                             table.                           │
-│ --help                                      Show this message and exit.      │
+│ --status                     TEXT  Filter by status                          │
+│ --session    --no-session          Scope to the current harness session and  │
+│                                    group pending / claimed / done.           │
+│                                    [default: no-session]                     │
+│ --json                             Emit the task rows as JSON on stdout      │
+│                                    instead of the human table.               │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9730,7 +9715,7 @@ Usage: t3 teatree tasks record-attempt [OPTIONS] TASK_ID RESULT_JSON
  path).
 
  The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
- hands the same structured result envelope ``run_headless`` would have
+ hands the same structured result envelope ``run_agent`` would have
  parsed out of the detached headless-SDK run, and this drives the Task to its
  terminal state through the SHARED recorder — schema-key check, the
  #1284 phase-evidence gate, then ``complete`` (auto-advancing the
@@ -9753,29 +9738,10 @@ Usage: t3 teatree tasks record-attempt [OPTIONS] TASK_ID RESULT_JSON
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree tasks start`
+##### `t3 teatree tasks work-next`
 
 ```
-Usage: t3 teatree tasks start [OPTIONS] [TASK_ID]
-
- Claim an interactive task and exec ``claude`` in the current terminal.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   task_id      [TASK_ID]  Task ID; omit to start the next pending            │
-│                           interactive task.                                  │
-│                           [default: 0]                                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claimed-by        TEXT  Worker identifier stored on the claim.             │
-│                           [default: cli]                                     │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree tasks work-next-headless`
-
-```
-Usage: t3 teatree tasks work-next-headless [OPTIONS]
+Usage: t3 teatree tasks work-next [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --claimed-by        TEXT  [default: worker]                                  │

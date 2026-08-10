@@ -7,10 +7,8 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.deterministic_phases import run_deterministic_phase
-from teatree.core.headless_dispatch import interactive_claim_refusal, loop_dispatch_refusal
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
-from teatree.core.management.commands.tasks_interactive_launch import build_claude_command, exec_inline
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -18,7 +16,7 @@ from teatree.core.management.commands.tasks_session_view import (
     render_tasks_table,
 )
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
-from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
+from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
@@ -29,7 +27,7 @@ logger = logging.getLogger(__name__)
 class Command(TyperCommand):
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def create(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a CLI flag (ticket/--phase/--reason/--reason-file/--interactive/--kind); the arg list IS the public `tasks create` surface, not an internal design smell.
+    def create(
         self,
         ticket: Annotated[int, typer.Argument(help="Ticket PK (see `ticket_id` in `tasks list`).")],
         *,
@@ -45,10 +43,6 @@ class Command(TyperCommand):
             pathlib.Path | None,
             typer.Option(help="Read the prompt body from a file."),
         ] = None,
-        interactive: Annotated[
-            bool,
-            typer.Option(help="Create an interactive task instead of the default headless one."),
-        ] = False,
         kind: Annotated[
             str,
             typer.Option(help="Classify the ticket as 'fix' or 'feature' (records Ticket.kind, #17)."),
@@ -56,9 +50,9 @@ class Command(TyperCommand):
     ) -> dict[str, int | str]:
         """Enqueue the next-phase task for a ticket.
 
-        Used by `/t3:next` to hand off from one phase to the next. Headless by default so a worker
-        claims it immediately; pass `--interactive` for tasks that require human input. A machine
-        handoff: the created-task record is JSON on stdout, the human confirmation on stderr.
+        Used by `/t3:next` to hand off from one phase to the next; a worker claims it immediately.
+        A machine handoff: the created-task record is JSON on stdout, the human confirmation on
+        stderr.
 
         ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the S2
         defect-escape signal and the fix-record DoD gate for correction work.
@@ -88,21 +82,17 @@ class Command(TyperCommand):
             ticket_obj.save(update_fields=["kind"])
 
         try:
-            task = enqueue_phase_task(ticket=ticket_obj, phase=phase, reason=body, interactive=interactive)
+            task = enqueue_phase_task(ticket=ticket_obj, phase=phase, reason=body)
         except TaskEnqueueError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(1) from None
-        # ``Task.save`` routes a loop-dispatched phase to INTERACTIVE regardless
-        # of ``--interactive``, so report the persisted target, not the request.
-        target = task.execution_target
         payload: dict[str, int | str] = {
             "task_id": task.pk,
             "ticket_id": ticket_obj.pk,
             "phase": phase,
-            "execution_target": target,
         }
         self.print_result = False
-        self.stderr.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}, target={target}).")
+        self.stderr.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}).")
         emit(payload, json_output=True, out=cast("IO[str]", self.stdout), err=cast("IO[str]", self.stderr))
         return payload
 
@@ -150,7 +140,6 @@ class Command(TyperCommand):
             cancel_reason = f"{CANCELLED_PREFIX}{reason.strip() or 'cancelled by an operator with no reason given'}"
             TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=cancel_reason,
@@ -233,7 +222,6 @@ class Command(TyperCommand):
             if note.strip():
                 TaskAttempt.objects.create(
                     task=task,
-                    execution_target=task.execution_target,
                     ended_at=timezone.now(),
                     exit_code=0,
                     result={"complete_note": note},
@@ -272,7 +260,7 @@ class Command(TyperCommand):
         """Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path).
 
         The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
-        hands the same structured result envelope ``run_headless`` would have
+        hands the same structured result envelope ``run_agent`` would have
         parsed out of the detached headless-SDK run, and this drives the Task to its
         terminal state through the SHARED recorder — schema-key check, the
         #1284 phase-evidence gate, then ``complete`` (auto-advancing the
@@ -324,7 +312,6 @@ class Command(TyperCommand):
         self,
         *,
         status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
-        execution_target: Annotated[str | None, typer.Option(help="Filter by execution target")] = None,
         session: Annotated[
             bool,
             typer.Option(help="Scope to the current harness session and group pending / claimed / done."),
@@ -343,12 +330,10 @@ class Command(TyperCommand):
         rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
         """
         if session:
-            return self._list_session_todos(status=status, execution_target=execution_target, json_output=json_output)
+            return self._list_session_todos(status=status, json_output=json_output)
         qs = Task.objects.select_related("ticket").order_by("pk")
         if status:
             qs = qs.filter(status=status)
-        if execution_target:
-            qs = qs.filter(execution_target=execution_target)
         rows = [_task_row(task) for task in qs]
         self.print_result = False
         emit(
@@ -364,7 +349,6 @@ class Command(TyperCommand):
         self,
         *,
         status: str | None,
-        execution_target: str | None,
         json_output: bool,
     ) -> list[TaskRow]:
         """Print the current session's teatree tasks, grouped by status.
@@ -381,8 +365,6 @@ class Command(TyperCommand):
         qs = Task.objects.for_claude_session(session_id).select_related("ticket")
         if status:
             qs = qs.filter(status=status)
-        if execution_target:
-            qs = qs.filter(execution_target=execution_target)
         rows = [_task_row(task) for task in qs]
         self.print_result = False
         emit(
@@ -429,104 +411,41 @@ class Command(TyperCommand):
         )
 
     @command()
-    def claim(self, execution_target: str = "headless", claimed_by: str = "worker") -> int | None:
-        task = self._claim_next_task(execution_target=execution_target, claimed_by=claimed_by)
+    def claim(self, claimed_by: str = "worker") -> int | None:
+        task = self._claim_next_task(claimed_by=claimed_by)
         return int(task.pk) if task else None
 
-    @command()
-    def work_next_headless(self, claimed_by: str = "worker") -> dict[str, str] | None:
-        task = self._claim_next_task(execution_target=Task.ExecutionTarget.HEADLESS, claimed_by=claimed_by)
+    @command(name="work-next")
+    def work_next(self, claimed_by: str = "worker") -> dict[str, str] | None:
+        task = self._claim_next_task(claimed_by=claimed_by)
         if task is None:
             return None
-        return self._execute_headless(task)
+        return self._execute(task)
 
-    @command()
-    def start(
-        self,
-        task_id: Annotated[int, typer.Argument(help="Task ID; omit to start the next pending interactive task.")] = 0,
-        claimed_by: Annotated[str, typer.Option(help="Worker identifier stored on the claim.")] = "cli",
-    ) -> None:
-        """Claim an interactive task and exec ``claude`` in the current terminal."""
-        task = self._resolve_interactive_task(task_id=task_id, claimed_by=claimed_by)
-        if task is None:
-            self.stdout.write("No interactive tasks pending.")
-            return
-
-        command_argv = build_claude_command(task)
-        TaskAttempt.objects.create(task=task, execution_target=task.execution_target, launch_url="")
-
-        self.stdout.write(f"Starting task {task.pk} (ticket {task.ticket.ticket_number}) in the current terminal…")
-        exec_inline(command_argv)
-
-    def _resolve_interactive_task(self, *, task_id: int, claimed_by: str) -> Task | None:
-        if task_id:
-            try:
-                task = Task.objects.get(pk=task_id)
-            except Task.DoesNotExist:
-                self.stderr.write(f"Task {task_id} not found.")
-                raise SystemExit(1) from None
-
-            if task.execution_target != Task.ExecutionTarget.INTERACTIVE:
-                self.stderr.write(f"Task {task_id} is not an interactive task.")
-                raise SystemExit(1)
-
-            if (refusal := interactive_claim_refusal(task)) is not None:
-                self.stderr.write(refusal)
-                raise SystemExit(1)
-
-            try:
-                task.claim(claimed_by=claimed_by)
-            except InvalidTransitionError as exc:
-                self.stderr.write(f"Cannot claim task {task_id}: {exc}")
-                raise SystemExit(1) from None
-            return task
-
-        return self._claim_next_task(execution_target=Task.ExecutionTarget.INTERACTIVE, claimed_by=claimed_by)
-
-    def _claim_next_task(self, *, execution_target: str, claimed_by: str) -> Task | None:
-        interactive = execution_target == Task.ExecutionTarget.INTERACTIVE
-        queryset = Task.objects.claimable_for_interactive() if interactive else Task.objects.claimable_for_headless()
-
-        task = queryset.first()
+    def _claim_next_task(self, *, claimed_by: str) -> Task | None:
+        task = Task.objects.claimable().first()
         if task is None:
             return None
-
-        refusal = interactive_claim_refusal(task) if interactive else None
-        if refusal is not None:
-            self.stderr.write(refusal)
-            return None
-
         task.claim(claimed_by=claimed_by)
         return task
 
     @staticmethod
-    def _execute_headless(task: Task) -> dict[str, str]:
+    def _execute(task: Task) -> dict[str, str]:
         import traceback  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.agents.headless import run_headless  # noqa: PLC0415 — deferred: keeps command import light
-
-        # Fail-closed billing guard, shared with ``execute_headless_task`` via
-        # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
-        # a loop-dispatched phase task must run INTERACTIVE in the ``/loop`` slot,
-        # never as a metered detached headless-SDK run here. The task is already CLAIMED by
-        # ``_claim_next_task``; record a FAILED refusal attempt so it is not left
-        # stuck CLAIMED under the loop slot.
-        refusal = loop_dispatch_refusal(task)
-        if refusal is not None:
-            task.complete_with_attempt(exit_code=1, error=refusal, result={"routing_error": refusal})
-            return {"exit_code": "1", "routing_error": refusal}
+        from teatree.agents.runner import run_agent  # noqa: PLC0415 — deferred: keeps command import light
 
         # A non-agentic phase (``short_describe``) runs its own implementation, not a
         # generic ticket-work brief its least-privilege toolset cannot satisfy (#3570).
-        # ``run_headless`` drives an agent unconditionally, so the short-circuit belongs
-        # at each ENTRY POINT: this one and ``core.tasks.execute_headless_task``, both
+        # ``run_agent`` drives an agent unconditionally, so the short-circuit belongs
+        # at each ENTRY POINT: this one and ``core.tasks.execute_task``, both
         # consulting the single ``teatree.core.deterministic_phases`` registry so the two
-        # lanes cannot drift.
+        # entry points cannot drift.
         if (deterministic := run_deterministic_phase(task)) is not None:
             return deterministic
 
-        # Durable failure recording, the same semantics ``execute_headless_task``
-        # applies (souliane/teatree#2192): ``run_headless`` can RAISE on an SDK
+        # Durable failure recording, the same semantics ``execute_task``
+        # applies (souliane/teatree#2192): ``run_agent`` can RAISE on an SDK
         # client startup / query / response error. The task is already CLAIMED;
         # without this, the raise leaves it silently CLAIMED until lease reap, then
         # re-fires forever with NO durable failed TaskAttempt — a wedge/retry-loop
@@ -535,7 +454,7 @@ class Command(TyperCommand):
         # releasing the claim) and return a nonzero command result, mirroring the
         # refusal path above rather than re-raising and dropping the result dict.
         try:
-            attempt = run_headless(
+            attempt = run_agent(
                 task,
                 phase=task.phase,
                 overlay_skill_metadata=get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata(),
@@ -554,7 +473,6 @@ def _task_row(task: Task) -> TaskRow:
         ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
         ticket_title=task.ticket.short_description,
         status=task.status,
-        execution_target=task.execution_target,
         phase=task.phase,
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
