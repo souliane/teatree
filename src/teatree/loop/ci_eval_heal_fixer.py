@@ -17,7 +17,8 @@ Two guardrails are structural, not left to prose:
     a fix in a THROWAWAY worktree and returns the changed paths, but pushes NOTHING.
     The driver runs the #3282 anti-cheat gate (``record_fix``) over those paths and
     calls :meth:`~CiEvalHealFixer.publish` only when the gate passes, so a diff that
-    edits a scenario (``evals/scenarios/**``) or a red matcher is REJECTED and the
+    edits a scenario (``evals/scenarios/**``) or the eval harness
+    (``src/teatree/eval/**``) is REJECTED and the
     cheating commit is DISCARDED, never reaching the PR branch. A genuinely-failing
     eval can never be greened by editing its test.
 
@@ -48,13 +49,14 @@ logger = logging.getLogger(__name__)
 #: second of the two switches (:func:`autofix_armed`).
 _LOOP_NAME = "ci_eval_heal"
 
-#: The scenario tree and red-matcher paths the fixer is told, in-prompt, it may
+#: The scenario tree and eval-harness paths the fixer is told, in-prompt, it may
 #: NEVER touch. Mirrors the authority in
 #: :mod:`teatree.core.gates.eval_heal_anticheat_gate` (which independently REJECTS
 #: such a diff) — the prompt is defence-in-depth, the gate is the enforcement.
 _FORBIDDEN_HINT = (
-    "evals/scenarios/** (the scenario definitions) and the red matchers "
-    "src/teatree/eval/matchers.py, triage.py, judge.py, matcher_vacuity.py"
+    "evals/scenarios/** (the scenario definitions) and src/teatree/eval/** (the whole eval "
+    "harness — the loader, the matchers, the judge, report.py, and every other module that "
+    "grades a scenario)"
 )
 
 #: Wall-clock bound on the whole write turn — a stalled ``claude`` spawn can never
