@@ -23,7 +23,14 @@ from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
 from teatree.core.management.refusal_exit import RefusalExitTyperCommand
-from teatree.core.merge import MergePreconditionError, normalize_repo_slug, resolve_host_kind, resolve_pr_repo_slug
+from teatree.core.merge import (
+    MergePreconditionError,
+    known_repo_slugs,
+    normalize_repo_slug,
+    resolve_host_kind,
+    resolve_pr_repo_slug,
+    slug_is_registered_repo,
+)
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
@@ -83,14 +90,18 @@ def _verdict_slug(request: ClearRequest, resolved_slug: str) -> str:
     recovered repo, finds nothing, and the CLEAR is unmergeable for its whole life
     with re-issuing reproducing the same wrong slug.
 
-    The reconcile is skipped for an ``owner/repo``-shaped CLEAR slug, which
+    The reconcile is skipped for a slug the registry NAMES as a repo, which
     ``resolve_pr_repo_slug`` returns unchanged and which no fallback could have
-    mis-resolved — so an ordinary CLEAR pays no forge read. A reconcile that refuses
-    (a genuinely moved head, an offline forge) keeps the initial slug: issuance must
-    not become STRICTER than the merge gate it feeds, and the merge's own SHA bind
-    still refuses a moved head.
+    mis-resolved — so an ordinary CLEAR pays no forge read. Shape alone is not
+    enough evidence (#4249): ``_looks_like_owner_repo`` reads a head branch such as
+    ``review-fixes/docs`` as ``owner/repo``, and skipping on that keyed the verdict
+    into a namespace no repo-scoped gate ever reads. An empty registry names
+    nothing, so it contradicts nothing and the shape test still stands. A reconcile
+    that refuses (a genuinely moved head, an offline forge) keeps the initial slug:
+    issuance must not become STRICTER than the merge gate it feeds, and the merge's
+    own SHA bind still refuses a moved head.
     """
-    if normalize_repo_slug(request.slug):
+    if normalize_repo_slug(request.slug) and (slug_is_registered_repo(request.slug) or not known_repo_slugs()):
         return resolved_slug
     try:
         return _reconcile_slug_against_reviewed_sha(

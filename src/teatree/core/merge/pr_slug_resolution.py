@@ -117,6 +117,16 @@ def _ticket_repo_slug(clear: object) -> str:
     return slug_from_issue_or_pr_url(urlparse(issue_url).path)
 
 
+def fallback_repo_slug(clear: object) -> str:
+    """The repo *clear*'s TICKET — then the running clone — binds it to, or ``""``.
+
+    Steps (2) and (3) of :func:`resolve_pr_repo_slug`, exposed as a seam so a caller
+    that has already judged the CLEAR's own slug unusable as a repo claim resolves
+    the remainder in the same order instead of re-deriving it (#4249).
+    """
+    return _ticket_repo_slug(clear) or _project_repo_slug()
+
+
 def resolve_pr_repo_slug(clear: object) -> str:
     """The GitHub ``owner/repo`` to target ``gh`` at for *clear*'s PR.
 
@@ -139,10 +149,7 @@ def resolve_pr_repo_slug(clear: object) -> str:
     pr_id = getattr(clear, "pr_id", "?")
     if _looks_like_owner_repo(slug):
         return slug
-    from_ticket = _ticket_repo_slug(clear)
-    if from_ticket:
-        return from_ticket
-    resolved = _project_repo_slug()
+    resolved = fallback_repo_slug(clear)
     if resolved:
         return resolved
     msg = (
@@ -294,6 +301,28 @@ def _iter_candidate_repo_slugs() -> list[str]:
         _add(slug)
 
     return candidates
+
+
+def known_repo_slugs() -> frozenset[str]:
+    """Every ``owner/repo`` this machine's overlay registry can name — forge-free (#4249).
+
+    The set form of :func:`_iter_candidate_repo_slugs`, promoted as the shared
+    evidence for "does this slug name a repo that EXISTS here?" — the question
+    :func:`_looks_like_owner_repo` can only answer from string shape.
+    """
+    return frozenset(_iter_candidate_repo_slugs())
+
+
+def slug_is_registered_repo(slug: str) -> bool:
+    """True iff *slug* canonicalizes to a repo :func:`known_repo_slugs` names (#4249).
+
+    Positive evidence only: ``False`` covers BOTH "the registry names other repos
+    and not this one" AND "the registry names nothing at all", so a caller that
+    must fail open on an empty registry tests :func:`known_repo_slugs` itself
+    rather than reading a bare ``False`` as a denial.
+    """
+    canonical = normalize_repo_slug(slug)
+    return bool(canonical) and canonical in known_repo_slugs()
 
 
 def _reconcile_slug_against_reviewed_sha(
