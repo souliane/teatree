@@ -6,6 +6,7 @@ happens to say today. The REWORDED case is the one that matters: it is the shape
 a lexical ban is blind to by construction, and the reason the ledger exists.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: The anchor this repo currently keeps a ledger for.
 _ANCHOR = "TaskCreated"
+
+#: The conformance module whose handler cross-check scans the SAME windows.
+_CROSS_CHECK_MODULE = "tests/conformance/test_task_created_is_a_task_list_event.py"
 
 #: One claim, padded so its ±30 window is interior — a later append must not move it.
 _ONE_CLAIM = "Alpha padding text here. ANCHOR is the event. Omega padding text tail here."
@@ -121,6 +125,16 @@ class TestTheRepoLedgerIsCurrent:
             "what is true of the event today, then update tests/quality/anchor_prose_pegs.toml.\n"
             + "\n".join([*drift.added_lines(), *drift.dropped_lines()])
         )
+
+    def test_the_conformance_cross_check_shares_the_pegged_radius(self) -> None:
+        # Read textually rather than imported: a tests/quality -> tests/conformance
+        # import would couple two lanes for one integer. Drift silently re-opens the
+        # coverage hole 400 was chosen to close, so it is pinned rather than trusted.
+        radius, _pegs = load_ledger(_ANCHOR)
+        source = (_REPO_ROOT / _CROSS_CHECK_MODULE).read_text(encoding="utf-8")
+        declared = re.search(r"^_RADIUS = (\d+)$", source, re.MULTILINE)
+        assert declared is not None, f"{_CROSS_CHECK_MODULE} no longer declares a module-level _RADIUS"
+        assert int(declared.group(1)) == radius
 
     @pytest.mark.parametrize("path", doc_surface_files(_ANCHOR), ids=lambda p: p.name)
     def test_no_pegged_surface_lives_under_tests(self, path: Path) -> None:

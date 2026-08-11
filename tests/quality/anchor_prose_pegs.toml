@@ -9,19 +9,22 @@
 # tests/ only, and a digest proves a sentence UNCHANGED, never TRUE.
 
 [TaskCreated]
-radius = 300
+# 400, not 300: at 300 the `ONE gate rides this event: handle_...` sentence in hooks/CLAUDE.md
+# sat 327 chars from its nearest anchor, so the load-bearing bullet's own handler name was
+# outside every window -- measured, not assumed.
+radius = 400
 # The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
-"BLUEPRINT.md" = ["c1c5ea1b08ad011f"]
+"BLUEPRINT.md" = ["b7bf92da3aa32c32"]
 # 1: the skill-loading kill-switch has no TaskCreated counterpart.
 # 2: the quote gate is opt-in, and its setting name predates the correction.
-"docs/blueprint/configuration.md" = ["7118466f60f4cd5b", "721f294dbc42fce3"]
+"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "bd7e933c6fe7119c"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
-"docs/blueprint/factory-architecture.md" = ["92dc859bbe2034ff"]
+"docs/blueprint/factory-architecture.md" = ["273cc5934f99908a"]
 # 1: the harness's 27-event constant list.
-# 2: the task-event table, the optional fields, and the ONE-producer fact.
-# 3: teammate_name/team_name are the CREATING session's identity + the re-check grep.
-# 4: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
-"docs/claude-code-internals.md" = ["4c344c9fbf4896e9", "b764eb7086b1a23f", "17e9449e268c6e23", "b4e7927436d4482e"]
+# 2: the task-event table, the optional fields, the ONE-producer fact, and that stopReason
+# sets preventContinuation the task-creation consumer never reads.
+# 3: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
+"docs/claude-code-internals.md" = ["9abffb84c4d06aef", "592e023064725ca1", "53f5b8c576a81b57"]
 # 1: the router's registered event list.
 # 2: do not conflate the sub-agent dispatch tool with the task-LIST tools.
 # 3: TaskCreated is the only non-PreToolUse deny path, with its own schema.
@@ -30,49 +33,41 @@ radius = 300
 # 6: the admission governor is consulted on the PreToolUse dispatch; the second arm is retired.
 # 7: the escape-marker table rows for the quote and admission tokens.
 "hooks/CLAUDE.md" = [
-  "671b5a2cb3a7c9ed",
-  "d675994f06215605",
-  "35275286a26c2572",
-  "4c0c3a618af4fe74",
-  "1064a3b2cfe9d43a",
-  "7ffd066d3b794488",
-  "411fd040ec626436"
+  "ee50c7da40c5b2a7",
+  "da70d24c3deb479f",
+  "358a6b9e1bd009e3",
+  "00ce882c37c6c8e7",
+  "f807cf99027303d9",
+  "53403ec58ab78f9b",
+  "dba38395e2483f7f"
 ]
 # The TaskCreated event's own hooks.json wiring (no matcher).
-"hooks/hooks.json" = ["7f68ae280436515b"]
+"hooks/hooks.json" = ["9e08240bd68c3563"]
 # There is exactly ONE dispatch interception point, and TaskCreated is not it.
-"hooks/scripts/dispatch_admission_gate.py" = ["62203dd7c63959ed"]
+"hooks/scripts/dispatch_admission_gate.py" = ["a4846901d1d0b751"]
 # 1: the task-list quote gate's default-OFF resolver.
-# 2: the surviving handler's own docstring.
-# 3: its never-lockout paragraph -- it never sees a sub-agent dispatch.
-# 4: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
-# 5: the Agent matcher is the ONLY interception point a dispatch has.
-# 6: the _HANDLERS registration -- one handler on the event.
-# 7: PreToolUse/TaskCreated denies are honoured only at exit 2.
-# 8: the same exit-code contract, stated at the emit site.
+# 2: the surviving handler's docstring and its never-lockout paragraph.
+# 3: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
+# 4: the Agent matcher is the ONLY interception point a dispatch has.
+# 5: the _HANDLERS registration -- one handler on the event.
+# 6: PreToolUse/TaskCreated denies are honoured only at exit 2.
+# 7: the same exit-code contract, stated at the emit site.
 "hooks/scripts/hook_router.py" = [
-  "60a4afdf32ebdf14",
-  "aa1fc2eb8f189fa5",
-  "91f5c7ee9141d68c",
-  "fc1e369ae31691ab",
-  "4ba98d038d1950d6",
-  "764bb9283edcdd5c",
-  "6bc88394e3104ea7",
-  "817e774b16c40ffc"
+  "0237b938b83d6d46",
+  "743caac207b453c5",
+  "4be8b0761b5fc68a",
+  "df0584b2e1507beb",
+  "31f41634023b3999",
+  "379359cbc3bdb8c3",
+  "bc70f9e3ebe9732c"
 ]
 # The no-interpreter warning is suppressed on TaskCreated, whose stderr aborts the event.
-"hooks/scripts/run-hook.sh" = ["34ee0b2fee87284e"]
+"hooks/scripts/run-hook.sh" = ["23aba44d6ec78e7e"]
 # 1: the deny surface exists because the consumer reads one field.
 # 2: decision:block is that field; the deny never writes stderr.
-# 3: the envelope TypedDict and the documented exit-code contract.
-# 4: a reason that would not reach the caller fails OPEN and logs.
-"hooks/scripts/task_created_deny.py" = [
-  "0acb224efb4782ce",
-  "ba0a3ba963b9e91d",
-  "7e1082b62b64243c",
-  "e142454321b244d4"
-]
+# 3: the envelope TypedDict, the exit-code contract, and the fail-OPEN emitter.
+"hooks/scripts/task_created_deny.py" = ["9a8f7011ed5657ba", "dbfc220c35ae6007", "411476f07beba95e"]
 # TaskCreated fires on creation only, so it is not the read/write surface /checking needs.
-"skills/checking/SKILL.md" = ["95e00c251455c492"]
+"skills/checking/SKILL.md" = ["876e9c70a73e280c"]
 # The transcript attachment schema listing hookEvent values.
-"src/teatree/eval/session_transcript.py" = ["d28cfaba82e1b556"]
+"src/teatree/eval/session_transcript.py" = ["707f3e9b837e7517"]

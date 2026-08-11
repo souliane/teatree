@@ -56,10 +56,12 @@ _REPO_SKILLS_DIR = _REPO_ROOT / "skills"
 #: The event whose scope the whole invariant is about.
 _ANCHOR = "TaskCreated"
 
-#: Chars either side of an anchor that count as "describing the event". Wide enough
-#: to span a wrapped docstring sentence, narrow enough that a neighbouring paragraph
-#: about an unrelated gate cannot bleed in. Kept equal to the ledger's own radius.
-_RADIUS = 300
+#: Chars either side of an anchor that count as "describing the event". Kept equal to
+#: the ledger's own radius (pinned from the other side, so drift is loud). 400 rather
+#: than 300 because at 300 the load-bearing hooks/CLAUDE.md bullet's own handler name
+#: sat 327 chars from its nearest anchor — outside every window, so neither instrument
+#: covered it.
+_RADIUS = 400
 
 #: The event's stdin schema, pinned as DATA (hooks/CLAUDE.md § TaskCreated; the
 #: harness re-check grep is in docs/claude-code-internals.md).
