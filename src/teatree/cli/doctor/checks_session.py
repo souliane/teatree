@@ -1,7 +1,7 @@
 """``_check_*`` probes for Slack / session identity invoked by `t3 doctor check`.
 
 Each helper is narrow (single concern, single ``typer.echo`` path) and returns
-``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
+``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
 from pathlib import Path

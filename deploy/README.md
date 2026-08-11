@@ -270,12 +270,20 @@ buys no partial knowledge. The same measurement after the change reports
 `probe_gap` and reclaims 0 bytes.
 
 `--cap-add SYS_PTRACE` leaves 31 pids blind and `--pid host` leaves 31 blind;
-`kernel.yama.ptrace_scope = 1` plus the PID-namespace boundary is what bounds
-them, and no compose knob lifts it. So the sweep ships OFF —
-`scratch_retention_days` defaults to `0` — and inside this container the
-open-file guard's real contribution is `probe_gap`, not a working liveness
-check. Arming the lane needs a venue that can resolve host fds, which is its own
-ticket.
+`kernel.yama.ptrace_scope = 1` alone bounds them, and no compose knob lifts it.
+The PID namespace is not required: `ptrace_scope = 1` denies `readlink` on a
+same-uid non-dumpable process's `fd`, which is the ordinary state of an Ubuntu
+host running `systemd --user` — so this is not a container property.
+
+Nor is the guard uniformly blind in either venue. Three measurements: 35 of 325
+sources blind in the deployed worker, 4 of 4 blind on the CI runner, 0 of 35
+blind in a container reading its own `/proc` (233 paths resolved). The probe
+blinds whenever ANY same-uid pid presents a listable-but-unresolvable gated
+source, which is a property of the live process table at that instant, in EITHER
+venue. Arming is therefore not predictable from the venue — which is why the
+sweep ships OFF (`scratch_retention_days` defaults to `0`) rather than on with a
+venue-conditional guard, and why `probe_gap` in the plan report is the
+operator-visible reason it reclaimed nothing.
 
 The bound-socket source is read per pid, as `<pid>/net/unix`, never the bare
 `/proc/net/unix`: the latter is a magic symlink to `self/net` resolved against

@@ -25,7 +25,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
-from tempfile import mkdtemp
+from tempfile import TemporaryDirectory, mkdtemp
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -33,8 +33,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.core.retention import scratch
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
+from tests._procfs import answering_pid
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -853,6 +855,22 @@ class ScratchSweepLadderTests(TestCase):
         os.utime(self.stale, (old, old))
         self.uv_prune = _patch_uv_cache_prune(self)
         patcher = patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._pin_process_table()
+
+    def _pin_process_table(self) -> None:
+        """Pin the sweep's open-file probe to a synthetic table, not the machine's ``/proc``.
+
+        ``_payload`` passes ``scratch_sweep_root``, so ``resolve_scratch_sweep`` returns
+        ``proc_root=_VENUE_PROC`` — the real ``/proc`` — and "the stale file is gone"
+        becomes a property of whatever else is running (#4165). ``_VENUE_PROC`` is read
+        as a module global at call time, so patching it reaches ``sweep_scratch`` through
+        ``mechanical_resources``' by-name import.
+        """
+        proc = Path(self.enterContext(TemporaryDirectory()))
+        answering_pid(proc, self.tmp / "held-elsewhere")
+        patcher = patch.object(scratch, "_VENUE_PROC", proc)
         patcher.start()
         self.addCleanup(patcher.stop)
 

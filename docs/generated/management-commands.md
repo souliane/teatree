@@ -656,6 +656,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |
 | `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
 | `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
+| `repair-branch-upstreams` | Point every branch tracking someone else's ref back at its own, or untrack it (#4225) |
 
 ## `worktree`
 

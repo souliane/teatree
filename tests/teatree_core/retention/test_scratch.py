@@ -13,6 +13,9 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.models.worktree import Worktree
 from teatree.core.retention import scratch
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweep, ScratchSweepPlan
+from tests._procfs import answering_pid as _answering_pid
+from tests._procfs import listening_socket as _listening_socket
+from tests._procfs import net_unix as _net_unix
 from tests._unreadable_file import skip_if_root
 
 
@@ -26,46 +29,6 @@ def _scratch(root: Path, name: str, *, days: float, size: int = 16) -> Path:
     entry.write_bytes(b"x" * size)
     _age(entry, days=days)
     return entry
-
-
-def _net_unix(namespace_dir: Path, *bind_paths: str) -> None:
-    """Write a synthetic ``net/unix`` table under *namespace_dir*, one socket per bind path.
-
-    *namespace_dir* is a NUMERIC pid dir for the tables the sweep actually reads;
-    passing the bare proc root instead builds the ambiguous ``/proc/net`` decoy the
-    pinning tests below prove is never consulted.
-    """
-    (namespace_dir / "net").mkdir(parents=True, exist_ok=True)
-    rows = "".join(
-        f"0000000000000000: 00000002 00000000 00000000 0001 01 {12345 + index} {path}\n"
-        for index, path in enumerate(bind_paths)
-    )
-    (namespace_dir / "net" / "unix").write_text(
-        "Num       RefCount Protocol Flags    Type St Inode Path\n" + rows, encoding="utf-8"
-    )
-
-
-def _listening_socket(pid_dir: Path, *bind_paths: str) -> None:
-    """A pid holding a bound socket, shaped the way a real ``/proc`` presents one.
-
-    The socket's own fd reads back as ``socket:[inode]`` — never the bind path —
-    which is the whole reason the bind path has to come from ``net/unix``.
-    """
-    (pid_dir / "fd").mkdir(parents=True, exist_ok=True)
-    (pid_dir / "fd" / "4").symlink_to("socket:[12345]")
-    _net_unix(pid_dir, *bind_paths)
-
-
-def _answering_pid(proc_root: Path, target: Path) -> Path:
-    """A pid that RESOLVES one fd — the witness every live procfs carries.
-
-    Seeded into the default table because a pid-less ``proc_root`` is not a quiet
-    box, it is a mount that is not a procfs, and the probe now fails closed on it.
-    """
-    fd_dir = proc_root / "1" / "fd"
-    fd_dir.mkdir(parents=True)
-    (fd_dir / "0").symlink_to(target)
-    return proc_root / "1"
 
 
 class ScratchSweepTestCase(TestCase):
@@ -668,8 +631,15 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
         assert entry.reason == "open by a live process"
 
     def test_an_abstract_namespace_socket_name_is_not_treated_as_a_filesystem_path(self) -> None:
-        stale = _scratch(self.root, "unrelated.sock", days=9)
-        _listening_socket(self.proc / "555", "@abstract-name")
+        """The abstract name TEXTUALLY CONTAINS the stale path, so the filter alone decides.
+
+        Paired with the ``/``-prefixed control directly above: same path, real bind →
+        ``removable is False``. Here the only difference is the leading ``@``, so a
+        ``lstrip("@")``-style implementation would keep the entry and this goes red —
+        an assertion against an unrelated path holds even with the parser deleted.
+        """
+        stale = _scratch(self.root, "held.sock", days=9)
+        _listening_socket(self.proc / "555", f"@{stale}")
 
         entry = self.entry_for(self.sweep().plan(), stale)
 
@@ -874,6 +844,75 @@ class UnsearchableTopLevelEntryTests(ScratchSweepTestCase):
         plan = self.sweep().apply()  # must not raise
 
         assert plan.applied is True
+
+
+class UnsearchableButReadableSubdirectoryTests(ScratchSweepTestCase):
+    """A 0444 subdirectory is LISTABLE, so ``os.walk``'s own error hook never fires.
+
+    Mode 0444 grants read (scandir succeeds, ``onerror`` is not called) but denies
+    search, so every child ``lstat`` raises EACCES. That is a different door from
+    the unscannable 0000 case above: the tree's newest mtime silently stays at the
+    parent's, and content written a second ago classifies as nine days idle.
+    """
+
+    @skip_if_root
+    def test_a_fresh_file_under_an_unsearchable_dir_is_not_reported_stale(self) -> None:
+        tree = self._tree_with_a_fresh_file_under_an_unsearchable_dir()
+
+        entry = self.entry_for(self.sweep().plan(), tree)
+
+        assert entry.removable is False
+        assert "cannot prove it is stale" in entry.reason
+        assert "9.0" not in entry.reason, "an unreadable mtime must not be reported as a measured age"
+
+    def test_apply_never_deletes_a_tree_whose_child_stats_are_denied(self) -> None:
+        """The same claim as ``plan()`` above, proven without ``chmod``.
+
+        A REAL 0444 directory also stops ``shutil.rmtree`` from recursing, so
+        "apply() didn't delete it" passes on UNFIXED code too — the OS's permission
+        wall, not this module's fail-closed logic, does the protecting. Denying only
+        the ``lstat`` leaves the real tree fully deletable, so nothing but the code's
+        own guard decides the outcome.
+        """
+        tree = self.root / "wt-scratch"
+        denied = tree / "unsearchable"
+        denied.mkdir(parents=True)
+        (denied / "fresh.txt").write_bytes(b"just written")
+        _age(denied / "fresh.txt", days=9)
+        _age(denied, days=9)
+        _age(tree, days=9)
+        real_lstat = Path.lstat
+
+        def deny_under_denied(self: Path, **kwargs: object) -> os.stat_result:
+            if denied in self.parents:
+                raise PermissionError(13, "simulated: search denied on the parent directory")
+            return real_lstat(self, **kwargs)
+
+        with patch.object(Path, "lstat", deny_under_denied):
+            self.sweep().apply()
+
+        assert tree.exists()
+
+    def _tree_with_a_fresh_file_under_an_unsearchable_dir(self) -> Path:
+        """A stale tree whose only fresh content sits behind a readable-but-unsearchable dir.
+
+        The rewrite is content-only and lands BEFORE the ``chmod``: creating a new
+        entry afterwards would bump the unsearchable directory's own mtime, which
+        the parent's walk CAN read — letting the unfixed code detect the freshness
+        by accident and pass the test vacuously.
+        """
+        tree = self.root / "wt-scratch"
+        blocked = tree / "unsearchable"
+        nested = blocked / "fresh.txt"
+        blocked.mkdir(parents=True)
+        nested.write_bytes(b"old content")
+        _age(nested, days=9)
+        _age(blocked, days=9)
+        _age(tree, days=9)
+        nested.write_bytes(b"just written")
+        blocked.chmod(0o444)
+        self.addCleanup(blocked.chmod, 0o755)
+        return tree
 
 
 class UnscannableSubdirectoryTests(ScratchSweepTestCase):

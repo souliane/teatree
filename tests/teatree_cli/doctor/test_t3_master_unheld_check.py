@@ -13,9 +13,9 @@ from unittest.mock import patch
 
 import django.test
 
-import teatree.cli.doctor.app as doctor_app
-from teatree.cli.doctor.app import _run_loop_intent_gates
+import teatree.cli.doctor.run_checks as doctor_runner
 from teatree.cli.doctor.checks_loop import _check_t3_master_unheld_while_loops_tick
+from teatree.cli.doctor.run_checks import _run_loop_intent_gates
 from teatree.loops.master_lease_contradiction import UnheldMasterLease
 
 _TARGET = "teatree.loops.master_lease_contradiction.unheld_master_lease_with_live_ticks"
@@ -47,9 +47,9 @@ class TestT3MasterUnheldDoctorCheck(django.test.TestCase):
         # "aggregate with NO finding -> False"). Both arms below are asserted so the
         # aggregate can only flip on THIS check's own verdict.
         with (
-            patch.object(doctor_app, "_check_intent_freshness", return_value=True),
-            patch.object(doctor_app, "_check_intake_budget_deadlock", return_value=True),
-            patch.object(doctor_app, "_check_loop_schedule_liveness", return_value=True),
+            patch.object(doctor_runner, "_check_intent_freshness", return_value=True),
+            patch.object(doctor_runner, "_check_intake_budget_deadlock", return_value=True),
+            patch.object(doctor_runner, "_check_loop_schedule_liveness", return_value=True),
         ):
             with patch(_TARGET, return_value=None):
                 assert _run_loop_intent_gates() is True

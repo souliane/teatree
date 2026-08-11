@@ -11,6 +11,8 @@ from django.test import SimpleTestCase
 
 from teatree.core.retention.liveness import held_paths
 
+_HEADER = "Num       RefCount Protocol Flags    Type St Inode Path"
+
 
 class HeldPathsTests(SimpleTestCase):
     def setUp(self) -> None:
@@ -87,3 +89,47 @@ class HeldPathsTests(SimpleTestCase):
         )
 
         assert held_paths(self.proc) is None
+
+
+class SocketTableParserTests(SimpleTestCase):
+    """``<pid>/net/unix`` is kernel-formatted text, and the parser's tolerances were unpinned.
+
+    Each is conservative in direction — a malformed row yields no bind path rather
+    than a wrong one — but the probe's whole credibility is that it never mistakes a
+    held path for a free one, so its parser's edges are pinned rather than assumed.
+    """
+
+    def setUp(self) -> None:
+        self.proc = Path(self.enterContext(TemporaryDirectory()))
+        self.elsewhere = Path(self.enterContext(TemporaryDirectory()))
+        self.answered = self.elsewhere / "answered"
+        pid = self.proc / "101"
+        (pid / "fd").mkdir(parents=True)
+        (pid / "fd" / "0").symlink_to(self.answered)
+        self.table = pid / "net" / "unix"
+        self.table.parent.mkdir(parents=True)
+
+    def _row(self, path: str, *, fields: int = 8) -> str:
+        columns = ("0000000000000000:", "00000002", "00000000", "00000000", "0001", "01", "12345", path)
+        return " ".join(columns[:fields])
+
+    def test_a_truncated_row_is_skipped_rather_than_crashing_the_probe(self) -> None:
+        held = self.elsewhere / "held.sock"
+        self.table.write_text("\n".join((_HEADER, self._row("", fields=5), self._row(str(held)))), encoding="utf-8")
+
+        assert held_paths(self.proc) == frozenset({str(self.answered), str(held)})
+
+    def test_the_header_row_is_never_read_as_a_bind_path(self) -> None:
+        # A header whose own last column is a path-shaped token parses as a valid
+        # 8-field row, so only dropping line 0 keeps it out of the held set.
+        self.table.write_text("Num RefCount Protocol Flags Type St Inode /header.sock\n", encoding="utf-8")
+
+        assert held_paths(self.proc) == frozenset({str(self.answered)})
+
+    def test_a_non_utf8_byte_in_a_bind_path_does_not_raise(self) -> None:
+        undecodable = b"/run/\xff.sock"
+        self.table.write_bytes(
+            _HEADER.encode() + b"\n0000000000000000: 00000002 00000000 00000000 0001 01 12345 " + undecodable + b"\n"
+        )
+
+        assert held_paths(self.proc) == frozenset({str(self.answered), undecodable.decode(errors="replace")})

@@ -198,10 +198,13 @@ def _tree_stats(path: Path) -> _TreeStats:
     for root, dirs, files in os.walk(path, onerror=_blind, followlinks=False):
         if ".git" in dirs or ".git" in files:
             holds_git = True
-        for info in _lstat_all(root, files):
+        file_stats, files_denied = _lstat_all(root, files)
+        dir_stats, dirs_denied = _lstat_all(root, dirs)
+        unreadable = unreadable or files_denied or dirs_denied
+        for info in file_stats:
             total_size += info.st_size
             newest = max(newest, info.st_mtime)
-        for info in _lstat_all(root, dirs):
+        for info in dir_stats:
             newest = max(newest, info.st_mtime)
     return _TreeStats(
         size_bytes=total_size,
@@ -210,15 +213,25 @@ def _tree_stats(path: Path) -> _TreeStats:
     )
 
 
-def _lstat_all(root: str, names: list[str]) -> list[os.stat_result]:
-    """``lstat()`` each of *names* directly under *root*; a vanished entry is skipped, not fatal."""
+def _lstat_all(root: str, names: list[str]) -> tuple[list[os.stat_result], bool]:
+    """``lstat()`` each of *names* under *root*, plus whether a read was DENIED rather than absent.
+
+    A directory readable but not searchable (0444) lets ``os.walk``'s scandir
+    succeed — so ``onerror`` never fires — while every child ``lstat`` raises
+    EACCES. Swallowing that alongside the vanished-entry case reports the tree's
+    newest mtime as the parent's, so content written seconds ago classifies as
+    stale; a denial is a blind spot, not an absence.
+    """
     stats = []
+    denied = False
     for name in names:
         try:
             stats.append((Path(root) / name).lstat())
+        except PermissionError:
+            denied = True
         except OSError:
             continue
-    return stats
+    return stats, denied
 
 
 def _remove(path: Path) -> bool:
@@ -253,7 +266,7 @@ class ScratchSweep:
         """Classify every top-level entry under the root, size-ranked, touching nothing."""
         if self.retention_days <= 0:
             return self._inert_plan(f"retention disabled (scratch_retention_days={self.retention_days})")
-        held = held_paths(self.proc_root)
+        held = held_paths(self.proc_root)  # the only liveness probe; apply() never re-runs it (#4356)
         if held is None:
             return self._inert_plan(f"open-file probe unreadable at {self.proc_root} — nothing is removable")
         reserved = _worktree_paths()
@@ -268,7 +281,15 @@ class ScratchSweep:
         )
 
     def apply(self) -> ScratchSweepPlan:
-        """Re-plan against live state, then remove only what that fresh plan cleared."""
+        """Re-plan against live state, then remove only what that fresh plan cleared.
+
+        STALENESS is rechecked per entry below; LIVENESS is not — it is probed once,
+        in ``plan()``. A process that opens a stale path between the plan and the
+        unlink is invisible, and the mtime recheck cannot see a read-open. Left open
+        deliberately (#4356): a second probe only narrows the window while looking
+        like a close, and the real fixes — a lease over the root, or per-entry
+        openat+flock — are a design decision. Unreachable while the lane ships off.
+        """
         plan = self.plan()
         cutoff = self._cutoff()
         reclaimed = 0
