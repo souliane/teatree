@@ -241,7 +241,7 @@ Concretely:
 - **Overlay** answers "which GitLab project is this overlay's CI?" (returns a string) — that's overlay-shaped.
 - **Backend** answers "fetch the title of this issue" or "list my open MRs" (calls the GitLab API) — that's backend-shaped, and a protocol method like `CodeHostBackend.get_issue` or `CodeHostBackend.list_my_prs` already exists.
 
-When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The reviewer skill `ac-reviewing-codebase` § Phase 3.5b enforces this rule during audits.
+When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The periodic holistic review (`ac-reviewing-codebase` § 1) enforces this rule during audits, via the catalog entry `plugin-wraps-platform-api`.
 
 ### Sync ABC (`teatree.types`)
 
