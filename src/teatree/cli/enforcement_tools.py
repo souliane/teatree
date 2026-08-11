@@ -167,8 +167,31 @@ def gate_relaxation(
         raise typer.Exit(code=1)
 
 
+def open_pr(
+    *,
+    branch: str = typer.Option("", "--branch", help="Branch to probe (default: the repo's checked-out branch)"),
+    repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
+) -> None:
+    """Report the OPEN PR/MR backing a branch as an explicit tri-state, as JSON.
+
+    The shell-facing face of ``core.forge_pr_probe.find_open_pr_for_branch``, so a
+    cold hook can ask "does the artifact this refusal is about already exist?"
+    without hand-rolling a fourth ``gh pr list`` — the drift that probe exists to
+    prevent. ``outcome`` is ``found`` / ``none`` / ``unknown``; a caller must not
+    read ``unknown`` (missing CLI, auth failure, unparsable JSON) as "no PR".
+
+    Always exits 0: this is a probe, not a gate. The tri-state IS the answer.
+    """
+    from teatree.core.forge_pr_probe import find_open_pr_for_branch  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git import current_branch  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    probe = find_open_pr_for_branch(repo, branch or current_branch(repo=str(repo)))
+    typer.echo(json.dumps({"outcome": probe.outcome.name.lower(), "url": probe.url}))
+
+
 def register(app: typer.Typer) -> None:
     """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
     app.command("ai-sig-scan")(ai_sig_scan)
     app.command("diff-coverage")(diff_coverage)
     app.command("gate-relaxation")(gate_relaxation)
+    app.command("open-pr")(open_pr)

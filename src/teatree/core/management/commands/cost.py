@@ -12,17 +12,11 @@ Also reports GitHub's agentic-workflow ET (effective tokens) metric
 strategy locked in #2565 is observable.
 
 The lane split only covers HEADLESS attempts, matching this command's
-existing scope (the credit tracks headless spend only — see below). Under
-the default ambient-credential dispatch (no explicit
-``agent_harness_provider`` pin) a headless run's lane is unattributed
-(``""``), bucketed under the ``unattributed`` lane in ``per_lane_*``
+existing scope. Under the default ambient-credential dispatch (no explicit
+``agent_harness_provider`` pin) a run's lane is unattributed (``""``),
+bucketed under the ``unattributed`` lane in ``per_lane_*``
 (:data:`~teatree.core.cost.UNATTRIBUTED_LANE`); ``subscription`` only
-appears here for a headless run explicitly pinned to ``subscription_oauth``.
-Interactive ``/loop`` sub-agent turns ride the user's own subscription too
-and DO carry ``lane=subscription`` on their ``TaskAttempt`` row, but that
-row's ``execution_target`` is ``interactive`` so it is excluded from this
-report by design — see ``TaskAttempt.objects.usages()`` for the full,
-lane-unfiltered picture across both execution targets.
+appears here for a run explicitly pinned to ``subscription_oauth``.
 
 Read-only: every query underneath is a select. The billing-cycle anchor day and
 the credit are configurable via ``t3 <overlay> config_setting set
@@ -81,7 +75,7 @@ class Command(MachineOutputCommand):
         today = timezone.localdate()
         start_dt = cycle_start_datetime(today, anchor_day=anchor)
 
-        breakdown = TaskAttempt.objects.headless().filter(started_at__gte=start_dt).cost_breakdown()
+        breakdown = TaskAttempt.objects.filter(started_at__gte=start_dt).cost_breakdown()
         report = CostReport.build(
             breakdown,
             credit_usd=settings.sdk_monthly_credit_usd,

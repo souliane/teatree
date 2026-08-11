@@ -155,7 +155,7 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
         """
         if not _low_power_auto_engage_enabled():
             return False
-        preset_name = _low_power_preset_name()
+        preset_name = low_power_preset_name()
         if Mode.objects.by_name(preset_name) is None:
             logger.warning("low_power_auto_engage on but preset %r is absent — not engaging", preset_name)
             return False
@@ -204,6 +204,7 @@ def _low_power_auto_engage_enabled() -> bool:
     return bool(ConfigSetting.objects.get_effective(LOW_POWER_AUTO_ENGAGE_SETTING))
 
 
-def _low_power_preset_name() -> str:
+def low_power_preset_name() -> str:
+    """The mode the token-budget escape points at — the one mode allowed to quiet the load-bearing tier."""
     value = ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING)
     return value.strip() if isinstance(value, str) and value.strip() else DEFAULT_LOW_POWER_PRESET

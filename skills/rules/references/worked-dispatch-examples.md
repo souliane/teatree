@@ -45,9 +45,9 @@ Monitor(
 
 ```bash
 # do X — flat, repo-native, no prefix (ticket 42, feature add-dark-mode):
-git worktree add ../42-feature-add-dark-mode -b 42-feature-add-dark-mode origin/main
+git worktree add -b 42-feature-add-dark-mode --no-track ../42-feature-add-dark-mode origin/main
 # never Y — do not prefix a flat-scheme repo's branch:
-git worktree add ../ac/add-dark-mode -b ac/add-dark-mode origin/main   # FORBIDDEN
+git worktree add -b ac/add-dark-mode --no-track ../ac/add-dark-mode origin/main   # FORBIDDEN
 ```
 
 - **No reflexive `--draft`.** Opening a PR for your OWN finished, pushed feature branch (a non-e2e repo) is a real PR, not a draft. Issue `pr create` without `--draft` unless the user or the repo's policy asks for a draft.

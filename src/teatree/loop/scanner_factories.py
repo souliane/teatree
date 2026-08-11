@@ -398,7 +398,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         MERGE_STUCK_AFTER_TICKS,
         read_merge_signal,
     )
-    from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
+    from teatree.core.intake import factory_admission  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
@@ -438,8 +438,9 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
             )
     return IssueIntakeScanner(
         host=code_host,
-        admit_label=settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,
+        admit_label=settings.issue_implementer_label or factory_admission.DEFAULT_ADMIT_LABEL,
         overlay_name=backend.name,
+        umbrella_labels=factory_admission.resolve_umbrella_labels(backend.name),
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
         exclude_labels=backend.exclude_labels,

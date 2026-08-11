@@ -12,11 +12,18 @@ Discovery is scoped so the factory never even fetches work it may not do:
     overlay's own repo slugs — a stranger's issue is never fetched;
 * one label-scoped query for the owner-applied admit label, same repo scope —
     this is the ONLY route by which an untrusted author's issue enters, and it
-    requires the owner's explicit label (rule 5).
+    requires the owner's explicit label (the admit-label rule).
 
 Selection narrows; the decision function decides. Every candidate is re-checked
 at claim time through the shared :mod:`~teatree.core.review.author_trust` seam,
-so an over-returning forge query cannot launder an untrusted author past rule 6.
+so an over-returning forge query cannot launder an untrusted author past the
+fail-closed last rule.
+
+An UMBRELLA/epic row is declined outright (#4105). Discovery cannot exclude it —
+it is authored by the same trusted human as everything else — so the decision
+table refuses it: an epic's scope is unbounded, so it holds a bounded in-flight
+slot with no state of the world that ends the claim, displacing implementable
+work for the whole run.
 
 Claims go through the TOCTOU-safe :meth:`ImplementedIssueMarker.claim` (or the
 cross-instance fleet ref when that kill-switch is on), so a re-tick or a
@@ -47,7 +54,14 @@ from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
-from teatree.core.intake.factory_admission import IntakeVerdict, decide_issue_intake
+from teatree.core.intake.factory_admission import (
+    IntakeLabelPolicy,
+    IntakeVerdict,
+    decide_issue_intake,
+    payload_body,
+    payload_labels,
+)
+from teatree.core.intake.umbrella import umbrella_reason
 from teatree.core.models import ImplementedIssueMarker, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.core.review.author_trust import (
     AuthorSubject,
@@ -175,8 +189,8 @@ class IssueIntakeScanner:
 
     ``admit_label`` is the owner-applied admission label (the effective
     ``issue_implementer_label``). It is BOTH the label-scoped discovery query and
-    rule 5 of the decision table — an untrusted author's issue enters only through
-    it.
+    the admit-label rule of the decision table — an untrusted author's issue enters
+    only through it.
 
     ``trusted_authors`` is the CONFIG tier of the trust union (the owner's
     ``user_identity_aliases`` plus the ``trusted_issue_authors`` allowlist); the DB
@@ -189,13 +203,18 @@ class IssueIntakeScanner:
     issue is authored by the operator regardless of who filed the issue.
 
     ``exclude_labels`` is the overlay's denylist (``OverlayConfig.exclude_labels``) —
-    rule 2 of the decision table. It holds an issue whoever filed it, so it is the
-    operator's reservation surface against the factory (#4134).
+    the exclude rule of the decision table. It holds an issue whoever filed it, so it is
+    the operator's reservation surface against the factory (#4134).
     """
 
     host: CodeHostBackend
     admit_label: str
     overlay_name: str = ""
+    #: Labels marking an umbrella/epic parent — the umbrella rule's operator-maintained half,
+    #: resolved from ``umbrella_issue_labels``. Empty is the honest "none configured",
+    #: not a stand-in for the shipped set: the structural half needs no configuration,
+    #: so an empty set still declines an unlabelled epic.
+    umbrella_labels: frozenset[str] = frozenset()
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
     exclude_labels: tuple[str, ...] = field(default_factory=tuple)
@@ -248,18 +267,22 @@ class IssueIntakeScanner:
         UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting)
         return signals
 
+    def _label_policy(self) -> IntakeLabelPolicy:
+        """The overlay's two configured label sets, as the ONE value the table reads."""
+        return IntakeLabelPolicy(exclude=frozenset(self.exclude_labels), umbrella=self.umbrella_labels)
+
     def _admits(self, issue: RawAPIDict, url: str, *, context: "_TickContext") -> "IntakeVerdict | None":
         """The admitting verdict for *issue*, or ``None`` when the table refuses it.
 
         Decides only — the claim is a separate step, so a candidate can be judged
         admissible on a tick that has no budget to act on it.
 
-        Rule 3's "work exists" fact is the union of the local ticket ledger and the
-        forge read-back, so a cross-instance PR that already cites the issue is seen
-        even though no local row exists.
+        The "work exists" fact is the union of the local ticket ledger and the forge
+        read-back, so a cross-instance PR that already cites the issue is seen even
+        though no local row exists.
         """
         work_exists = bool(url) and url in context.tracked
-        readback_reason = ""
+        detail = ""
         if not work_exists and self.readback_enabled:
             hit = existing_work_for_issue(
                 issue_url=url,
@@ -269,22 +292,31 @@ class IssueIntakeScanner:
             )
             if hit is not None:
                 work_exists = True
-                readback_reason = f"{hit.reason} ({hit.evidence_url})"
+                detail = f"{hit.reason} ({hit.evidence_url})"
         verdict = decide_issue_intake(
             issue,
             author_trusted=author_is_trusted(issue, context.trusted),
             work_exists=work_exists,
             admit_label=self.admit_label,
-            exclude_labels=frozenset(self.exclude_labels),
+            label_policy=self._label_policy(),
         )
         if verdict.acts:
             return verdict
+        if verdict is IntakeVerdict.IGNORE_UMBRELLA:
+            # Re-derived rather than threaded out of the verdict: an enum member cannot
+            # carry a per-issue reason, and a decline with no account of itself is how an
+            # issue disappears from intake with every surface still reading green.
+            detail = umbrella_reason(
+                body=payload_body(issue),
+                labels=payload_labels(issue),
+                umbrella_labels=self.umbrella_labels,
+            )
         logger.info(
             "IssueIntakeScanner %s %s (author %r)%s",
             verdict.value,
             url,
             issue_author(issue),
-            f": {readback_reason}" if readback_reason else "",
+            f": {detail}" if detail else "",
         )
         return None
 
@@ -347,9 +379,9 @@ class IssueIntakeScanner:
         admits is a new coding ticket, so it is braked exactly as it was before
         the cheap-phase exemption existed.
         """
-        from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred
+        from teatree.core.agent_admission import agent_admission_denied_reason  # noqa: PLC0415 — deferred
 
-        reason = headless_admission_denied_reason()
+        reason = agent_admission_denied_reason()
         if reason is not None:
             logger.info("IssueIntakeScanner deferring new intake: governor DENIED admission: %s", reason)
         return reason is not None
@@ -385,7 +417,7 @@ class IssueIntakeScanner:
         return config_tier | trusted_handles()
 
     def _tracked_issue_urls(self) -> frozenset[str]:
-        """Issue URLs a ticket already owns — rule 3's local half.
+        """Issue URLs a ticket already owns — the work-exists rule's local half.
 
         Ownership is :meth:`Ticket.issue_owning_states` (every state but IGNORED), the
         SSOT rather than a second hand-maintained list — the list this replaced omitted

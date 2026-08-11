@@ -36,7 +36,6 @@ class TasksCompleteFsmAdvanceFailureTest(TestCase):
             ticket=ticket,
             session=session,
             phase="planning",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         task.claim(claimed_by="worker-1")
         return task
@@ -83,7 +82,6 @@ class CompleteSurfacingAdvanceFailureModelTest(TestCase):
             ticket=ticket,
             session=session,
             phase="planning",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         task.claim(claimed_by="worker-1")
         return task

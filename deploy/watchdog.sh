@@ -15,6 +15,9 @@
 #      EXCLUDED (an empirical fact — `up -d --no-recreate` re-runs a completed
 #      init every pass, which would replay the heavy ~minute init on every tick),
 #      while a missing/failed init IS included so the init-failure outage recovers.
+#      Skipped entirely while a convergence is in flight — deploy.sh stages its
+#      swap service by service, and a restart pass landing between two stages
+#      re-creates the container the deploy is mid-swap on.
 #   2. Announce the repair. State is sampled BEFORE the `up -d` and re-read after, so
 #      every service the watchdog had to bring back is DMed with how long it had been
 #      gone (the liveness ledger below). A silent auto-heal is indistinguishable from
@@ -109,6 +112,14 @@ init_state() {
 # Restart anything that went down, gated on init state (see header rationale).
 restart_down_services() {
   local state
+  # A convergence is not an outage. deploy.sh swaps the services one at a time, so a
+  # `up -d --no-recreate` landing between two of its stages re-creates the very
+  # container it is mid-swap on — the supervisor racing the deploy it should be
+  # standing back from. Same signal the DM paths already gate on, one pass skipped.
+  if deploy_in_flight; then
+    log "deploy in flight — not restarting services this pass"
+    return 0
+  fi
   state="$(init_state)"
   if [ "$state" = "exited 0" ]; then
     log "init complete (exited 0) — restarting app services only: ${APP_SERVICES[*]}"

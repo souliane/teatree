@@ -78,7 +78,6 @@ class TestReapStaleTaskClaims(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
         TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=1,
             error="outage_death: connection refused",

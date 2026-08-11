@@ -155,7 +155,6 @@ def _seed_open_reviewing_task(ticket: Ticket) -> Task:
         session=session,
         phase="reviewing",
         status=Task.Status.PENDING,
-        execution_target=Task.ExecutionTarget.HEADLESS,
     )
 
 

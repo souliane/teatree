@@ -15,6 +15,14 @@ own most recent task rather than from a state map. A failure whose phase output
 DEMONSTRABLY LANDED is excluded: it is a dead artifact, and re-running it is the
 already-done redispatch flood the ``transient_requeue`` sweep retires it to avoid.
 
+Neither class reaches a ticket whose NEWEST task an operator CANCELLED (#4105). A
+cancel leaves exactly the shape both predicates match — non-terminal, nothing in
+flight, a failed newest attempt — so the sweep re-queued the same phase on the next
+tick and the decision lasted one tick; two cancels were needed to stop it, and only
+by exhausting the budget below, which pages a human about a doomed phase rather than
+an honoured decision. Anything the pipeline does afterwards is a newer task, which is
+the "something changed" that puts the ticket back in play.
+
 The re-dispatch is HARD-BOUNDED by the #2009 repair-loop budget, on ONE path for
 both classes: a ticket-phase at its iteration cap, stalled on two consecutive
 identical failures, or stalled on two consecutive failures of the same NAMED
@@ -143,7 +151,7 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
         phase = _implied_phase(ticket)
-        if phase is None:
+        if phase is None or ticket.newest_task_was_cancelled():
             continue
         if _phase_is_failing(ticket, phase=phase) or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))

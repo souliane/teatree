@@ -182,7 +182,6 @@ def dispatch_work(
         session=session,
         subject=(reading.work_summary or text)[:120],
         phase=DISPATCH_PHASE,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         execution_reason=_execution_reason(reading, slack_ts=slack_ts, text=text),
     )
 

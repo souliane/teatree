@@ -1,4 +1,4 @@
-"""Consult the admission governor on an interactive ``Agent``/``Task`` dispatch (#4107).
+"""Consult the admission governor on an interactive ``Agent``/``Task`` dispatch (#4107, #4129).
 
 ``decide_admission`` is described as "one chokepoint every dispatcher asks" and
 had exactly two callers, both factory lanes. Nothing on the INTERACTIVE path
@@ -17,6 +17,11 @@ lanes route through the one pure decision function and can never diverge. The
 kill-switch and rollback lever is the EXISTING ``admission_governor_enabled``
 setting (``t3 <overlay> config_setting set admission_governor_enabled false``) —
 deliberately no second flag, which would let the two drift.
+
+An ADMITTED dispatch also takes a durable seat (#4129), because it creates no
+``Task`` row and so was invisible to the very ceiling it had just cleared — a
+burst of them each read the same live count and every one passed.
+The seat's ordinary end is the ``dispatch_seat_release`` sibling, on ``SubagentStop``.
 
 NEVER-LOCKOUT: the ``PreToolUse`` deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
@@ -71,7 +76,7 @@ def _block_message(reason: str) -> str:
     )
 
 
-def _denied_reason(*, apply_ceiling: bool) -> str | None:
+def _denied_reason(*, apply_ceiling: bool, session_id: str = "") -> str | None:
     """The governor's DENY reason for one more dispatch, or ``None`` to admit.
 
     Fails OPEN (``None``) when ``teatree`` / Django cannot be bootstrapped — the
@@ -83,7 +88,11 @@ def _denied_reason(*, apply_ceiling: bool) -> str | None:
         return None
     from teatree.core.dispatch_admission import dispatch_admission_denied_reason  # noqa: PLC0415 — deferred: post-setup
 
-    return dispatch_admission_denied_reason(apply_ceiling=apply_ceiling)
+    return dispatch_admission_denied_reason(apply_ceiling=apply_ceiling, session_id=session_id)
+
+
+def _session_of(data: dict) -> str:
+    return str(data.get("session_id") or "").strip()
 
 
 def handle_dispatch_admission(data: dict) -> bool:
@@ -93,6 +102,10 @@ def handle_dispatch_admission(data: dict) -> bool:
     admitted it, and its own claim is counted in that ceiling, so re-clamping it
     would deadlock it against itself. The BRAKES still apply there: box
     saturation is real whoever dispatched.
+
+    An ADMITTED dispatch takes a durable seat under its session (#4129) — the
+    dispatch creates no ``Task`` row, so without one the next dispatch in the
+    same burst reads a live count that cannot see it.
     """
     try:
         if data.get("tool_name") not in DISPATCH_TOOLS:
@@ -101,7 +114,7 @@ def handle_dispatch_admission(data: dict) -> bool:
         prompt = tool_input.get("prompt", "") if isinstance(tool_input, dict) else ""
         if isinstance(prompt, str) and _ADMISSION_OK_RE.search(prompt[:_TOKEN_SCAN_CHARS]):
             return False
-        reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data))
+        reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
     except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
         return False
     if reason is None:
@@ -135,6 +148,10 @@ def handle_dispatch_admission_on_task_create(data: dict) -> bool:
     dispatch's origin is unknowable and the CEILING is never applied here —
     unknown must not brake on a count it cannot attribute. The quota and load
     brakes are origin-independent and do apply.
+
+    The exemption is from the ceiling, not from being COUNTED (#4129): this is the
+    highest-burst-risk path, so leaving its agents out of the seat ledger would keep
+    them invisible to the arm that does clamp and let the two gaps compound.
     """
     try:
         with _muzzled():
@@ -143,7 +160,7 @@ def handle_dispatch_admission_on_task_create(data: dict) -> bool:
             payload = f"{data.get('task_subject', '') or ''}\n{data.get('task_description', '') or ''}"
             if _ADMISSION_OK_RE.search(payload[:_TOKEN_SCAN_CHARS]):
                 return False
-            reason = _denied_reason(apply_ceiling=False)
+            reason = _denied_reason(apply_ceiling=False, session_id=_session_of(data))
             if reason is None:
                 return False
             from hooks.scripts.hook_router import emit_task_create_deny  # noqa: PLC0415 — deferred back-import

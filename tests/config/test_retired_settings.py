@@ -81,6 +81,12 @@ class TestRenamedKeyMigrates(TestCase):
         ConfigSetting.objects.set_value("orca_router_pass_path", "provider/factory/api-key")
         assert get_effective_settings().openai_compatible_credential_entry == "provider/factory/api-key"
 
+    def test_retired_turn_ceiling_row_resolves_onto_the_unqualified_key(self) -> None:
+        # The safety net behind ``0068``'s data migration: a row the migration has not
+        # reached still resolves rather than reverting the operator to the shipped 250.
+        ConfigSetting.objects.set_value("headless_max_turns", 400)
+        assert get_effective_settings().agent_max_turns == 400
+
 
 class TestRemovedKeyFailsLoud(TestCase):
     """A row under a removed key is reported LOUDLY, never silently reverted."""

@@ -42,11 +42,11 @@ class TestQuiescingBlocksNewClaims(django.test.TestCase):
         assert claimed.status == Task.Status.CLAIMED
 
     def test_claimable_for_target_is_empty_while_quiescing(self) -> None:
-        TaskFactory(status=Task.Status.PENDING, execution_target=Task.ExecutionTarget.INTERACTIVE)
+        TaskFactory(status=Task.Status.PENDING)
         ConfigSetting.objects.set_value("worker_quiescing", value=True)
 
-        assert not Task.objects.claimable_for_interactive().exists()
-        assert not Task.objects.claimable_for_headless().exists()
+        assert not Task.objects.claimable().exists()
+        assert not Task.objects.claimable().exists()
 
     def test_default_off_admits_new_work(self) -> None:
         TaskFactory(status=Task.Status.PENDING)

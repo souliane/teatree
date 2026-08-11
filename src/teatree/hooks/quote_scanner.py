@@ -46,6 +46,7 @@ from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_cl
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 from teatree.hooks._hook_state import hook_state_root, note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
+from teatree.hooks._quote_normalize import normalize_quotes as _normalize_quotes
 
 _QUOTE_OK_ENV = "QUOTE_OK"
 
@@ -267,37 +268,6 @@ def reset_blocklist_cache() -> None:
     every test so a blocklist written by one test can never leak into another.
     """
     _BLOCKLIST_CACHE.clear()
-
-
-# Unicode smart-quote variants normalised to their ASCII equivalents before
-# pattern matching. Codex round-2 #7 surfaced curly-quoted blockquote bodies
-# bypassing every quote-aware regex — the fix is upstream normalisation, not
-# new patterns per quote shape. Code points referenced by ``\N{...}`` so the
-# lint checker is not confused by ambiguous glyphs in the source file.
-_SMART_QUOTE_TRANSLATIONS: Final[dict[int, str]] = {
-    # Double quotes
-    ord("\N{LEFT DOUBLE QUOTATION MARK}"): '"',
-    ord("\N{RIGHT DOUBLE QUOTATION MARK}"): '"',
-    ord("\N{DOUBLE LOW-9 QUOTATION MARK}"): '"',
-    ord("\N{DOUBLE HIGH-REVERSED-9 QUOTATION MARK}"): '"',
-    ord("\N{LEFT-POINTING DOUBLE ANGLE QUOTATION MARK}"): '"',
-    ord("\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK}"): '"',
-    # Single quotes / apostrophes
-    ord("\N{LEFT SINGLE QUOTATION MARK}"): "'",
-    ord("\N{RIGHT SINGLE QUOTATION MARK}"): "'",
-    ord("\N{SINGLE LOW-9 QUOTATION MARK}"): "'",
-    ord("\N{SINGLE HIGH-REVERSED-9 QUOTATION MARK}"): "'",
-}
-
-
-def _normalize_quotes(text: str) -> str:
-    """Translate Unicode smart-quote variants to straight ASCII quotes.
-
-    The detection regexes are written against ASCII quotes; normalising
-    upstream means a single regex per shape continues to cover every
-    typographic variant a publish surface might emit.
-    """
-    return text.translate(_SMART_QUOTE_TRANSLATIONS)
 
 
 # ── HIGH shape patterns that require adjacent quote evidence (#3240) ──

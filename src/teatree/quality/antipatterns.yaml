@@ -142,6 +142,30 @@
   linter: gate-liveness
   eval_invariant: null
 
+- id: gate-side-effect-before-verdict
+  name: Gate performs the guarded side effect before concluding refusal
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A path that performs an outward write — a push, a PR/issue create, a merge,
+    a colleague post — and only then evaluates a check that returns "refused".
+    The verdict is a lie about the world: retrying is unsafe, the caller cannot
+    reconcile state from the return value, and escalation fires on a non-event.
+    The shape is invisible unless someone happens to retry, and it hides behind
+    an intermediate write whose own hook creates the artifact (a push that fires
+    the pre-push ensure-pr hook opens the PR the later refusal denies opening).
+  preferred_pattern: >-
+    Every refusal concludes BEFORE the first outward write in the path — group
+    them and return early, rather than interleaving checks with writes. When a
+    check genuinely cannot run until after the fact, it reports "performed, but
+    flagged" and NAMES the artifact that now exists; a refusal that leaves an
+    artifact behind must say so. The regression test asserts the write did not
+    happen, not merely that the verdict was a refusal.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#4151", "souliane/teatree#4144", "resilience-invariants"]
+  linter: null
+  eval_invariant: null
+
 # ── Vacuous tests ──────────────────────────────────────────────────────────
 - id: assert-nothing-test
   name: Test function with no assertion
@@ -263,10 +287,36 @@
   preferred_pattern: >-
     Call domain behaviour explicitly from a model method; reserve signals for
     integrating third-party app events.
-  grep_hint: '@receiver\(\s*post_save|@receiver\(\s*pre_save'
+  grep_hint: '@receiver\(\s*post_save|@receiver\(\s*pre_save|post_save\.connect\(|pre_save\.connect\('
   consumers: [architecture-design, ac-reviewing-codebase, linter]
   refs: ["ac-django-antipatterns-22"]
   linter: null
+  eval_invariant: null
+
+# ── Concurrency / transactions ─────────────────────────────────────────────
+- id: locked-read-the-backend-cannot-honour
+  name: select_for_update() outside atomic(), or with skip_locked/nowait
+  severity: high
+  detection: greppable
+  anti_pattern: >-
+    A select_for_update() the production SQLite engine cannot honour. The clause
+    is a documented no-op there (has_select_for_update is False), so exclusion
+    comes only from transaction_mode=IMMEDIATE's reserved write lock — which a
+    transaction.atomic() block takes and nothing else does. Outside atomic() the
+    read-modify-write silently loses updates, and Django's own "cannot be used
+    outside of a transaction" guard is itself gated on has_select_for_update, so
+    nothing raises. skip_locked/nowait are worse: IMMEDIATE blocks where they
+    promise to return, and the kwarg is dropped without a word.
+  preferred_pattern: >-
+    Wrap the whole read-modify-write in transaction.atomic() so BEGIN IMMEDIATE
+    covers it, and gate a claim on a CAS predicate (a filtered UPDATE whose
+    rowcount decides the winner) rather than on skip_locked/nowait. A helper
+    whose caller owns the transaction declares that contract with a same-line
+    `# select-for-update: caller-atomic` pragma.
+  grep_hint: 'select_for_update\([^)]*\b(?:skip_locked|nowait)\b'
+  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  refs: ["souliane/teatree#4226", "souliane/teatree#804", "786-b1-sqlite-lesson"]
+  linter: select-for-update-audit
   eval_invariant: null
 
 # ── Boundaries ─────────────────────────────────────────────────────────────

@@ -891,7 +891,7 @@ def _never_edit_main_clone() -> list[Scenario]:
             expects=(
                 positive(
                     match("Bash", "command", r"(git worktree add .*origin/main|t3 \S+ workspace ticket)"),
-                    pass_call=bash("git worktree add -b fix-gate ../wt origin/main"),
+                    pass_call=bash("git worktree add -b fix-gate --no-track ../wt origin/main"),
                     fail_call=bash("vim ~/workspace/widget/teatree/src/core/gate.py"),
                 ),
                 negative(

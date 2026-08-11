@@ -256,7 +256,7 @@ def _session_pin_flags() -> list[str]:
     nobody present to override a classifier denial. So it must not inherit the
     operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
     there, and pinning here is what makes that advice safe to follow. It is the
-    same :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
+    same :data:`~teatree.agents.permission_modes.UNATTENDED` the agent dispatch
     options pin, so the unattended lanes cannot drift apart unless the operator
     deliberately narrows this one.
 

@@ -31,13 +31,14 @@ deterministic catalog-keyword classifier) and the forge writes go through a pass
 testable without an LLM and without a live forge.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.loops.dream.engine import DistilledCluster, cluster_is_grounded, normalize_ws
+from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.replay import ConsolidationExtract
 from teatree.loops.dream.transcript_extract import _ASK_CUES
 
@@ -207,23 +208,43 @@ def promote_automatable_asks(
     umbrella_url: str,
     dry_run: bool = False,
 ) -> list[AutomationAskOutcome]:
-    """Drive each grounded automatable-ask gap to a fix-and-merge under the umbrella.
+    """Detect the grounded automatable-ask gaps in *clusters*, then promote each.
 
     Detects + classifies every grounded ask cluster (via the default catalog
     classifier — the seam is injected at :func:`detect_automatable_asks` /
-    :func:`classify_ask_cluster`), then routes each through
+    :func:`classify_ask_cluster`) and hands the findings to
+    :func:`promote_ask_findings`. Returns one outcome per grounded ask gap (ungrounded
+    clusters yield no outcome).
+    """
+    return promote_ask_findings(
+        detect_automatable_asks(clusters, extract), host, umbrella_url=umbrella_url, dry_run=dry_run
+    )
+
+
+def promote_ask_findings(
+    findings: Iterable[AutomationAskFinding],
+    host: CodeHostBackend,
+    *,
+    umbrella_url: str,
+    dry_run: bool = False,
+    budget: PromotionBudget | None = None,
+) -> list[AutomationAskOutcome]:
+    """Drive each detected automatable-ask gap to a fix-and-merge under the umbrella.
+
+    Routes each finding through
     :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is upserted
     under the standing umbrella (deduped by ``cluster_key``) carrying the Bucket-A/B
     framing in its title, and a coding task is scheduled for the fix (linked back to
     the ask ``ConsolidatedMemory`` by ``cluster_key`` so reconcile-on-merge retires it).
     The banned-term / bare-reference withholding is enforced inside ``promote_gap``.
-    Under *dry_run* nothing is written or scheduled. Returns one outcome per grounded
-    ask gap (ungrounded clusters yield no outcome).
+    Under *dry_run* nothing is written or scheduled. *budget* bounds how many gaps THIS
+    pass promotes (``None`` ⇒ unbounded, #4176); a deferred ask stays in the ledger and
+    the next pass reaches it.
     """
     from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     outcomes: list[AutomationAskOutcome] = []
-    for finding in detect_automatable_asks(clusters, extract):
+    for finding in findings:
         if dry_run:
             continue
         gap_outcome = umbrella_ledger.promote_gap(
@@ -232,6 +253,7 @@ def promote_automatable_asks(
             gap=umbrella_ledger.GapSpec(
                 gap_key=finding.cluster_key, title=_ask_title(finding), cluster_key=finding.cluster_key
             ),
+            budget=budget,
         )
         outcomes.append(
             AutomationAskOutcome(
@@ -282,6 +304,7 @@ def run_automation_asks_phase(
     *,
     umbrella_url: str,
     dry_run: bool,
+    budget: PromotionBudget | None = None,
 ) -> str:
     """Promote every grounded persisted ask-cluster to a fix-and-merge (#2663).
 
@@ -296,7 +319,9 @@ def run_automation_asks_phase(
     if not rows:
         return ""
     clusters = [cluster_for_row(row) for row in rows]
-    outcomes = promote_automatable_asks(clusters, extract, host, umbrella_url=umbrella_url, dry_run=dry_run)
+    outcomes = promote_ask_findings(
+        detect_automatable_asks(clusters, extract), host, umbrella_url=umbrella_url, dry_run=dry_run, budget=budget
+    )
     filed = sum(1 for outcome in outcomes if outcome.filed)
     if not outcomes:
         return ""
@@ -314,6 +339,7 @@ __all__ = [
     "classify_ask_cluster",
     "cluster_for_row",
     "detect_automatable_asks",
+    "promote_ask_findings",
     "promote_automatable_asks",
     "row_looks_like_ask",
     "run_automation_asks_phase",

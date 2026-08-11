@@ -82,7 +82,6 @@ class CheckingTestBase(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             exit_code=exit_code,
         )
         TaskAttempt.objects.filter(pk=attempt.pk).update(ended_at=self.now - timedelta(hours=hours_ago))

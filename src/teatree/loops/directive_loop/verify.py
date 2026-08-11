@@ -87,10 +87,17 @@ def rollback_and_request_revert(directive: Directive, *, reason: str) -> None:
 
 
 def _activation_live(directive: Directive) -> bool:
-    """Evidence 1: the ratified activation reads back through the REAL resolver."""
+    """Evidence 1: the ratified activation reads back through the REAL resolver.
+
+    A sketch that names no setting (``default_behaviour``, #4181) has no activation to
+    read back — the merged code IS the behaviour — so evidence 1 is carried by the other
+    four classes rather than failed against a setting that was deliberately never minted.
+    """
     sketch = directive.sketch
     if sketch is None:
         return False
+    if not sketch.setting_key:
+        return True
     effective = getattr(get_effective_settings(sketch.activation_scope or None), sketch.setting_key, _MISSING)
     return effective == sketch.activation_value
 

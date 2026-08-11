@@ -255,5 +255,32 @@ class TestEveryOtherFindingPagesImmediately:
         assert "red findings" in dm
 
 
+def _compose_ups(tmp_path: Path) -> list[str]:
+    log = tmp_path / "docker.log"
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return [line for line in lines if " up -d" in line]
+
+
+class TestTheSupervisorStandsBackDuringAConvergence:
+    """A convergence is not an outage the supervisor should repair.
+
+    deploy.sh swaps the services one at a time (#4214), so a restart pass landing
+    between two stages re-creates the container the deploy is mid-swap on.
+    """
+
+    @pytest.mark.skipif(_FLOCK is None, reason="needs flock(1)")
+    def test_a_held_deploy_lock_stops_the_restart_pass(self, tmp_path: Path) -> None:
+        with _deploy_lock_held(tmp_path / "deploy.lock") as lock:
+            _run_pass(tmp_path, TEATREE_WATCHDOG_DEPLOY_LOCK=str(lock))
+
+        assert _compose_ups(tmp_path) == [], "the watchdog must not converge a project a deploy is converging"
+
+    def test_an_ordinary_pass_still_restarts_what_is_down(self, tmp_path: Path) -> None:
+        # The anti-vacuous control: with nothing in flight the self-heal still runs.
+        _run_pass(tmp_path)
+
+        assert _compose_ups(tmp_path), "gating the restart must not disable the self-heal itself"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

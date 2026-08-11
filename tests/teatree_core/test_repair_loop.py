@@ -28,7 +28,6 @@ from teatree.core.repair_loop import (
 def _failed_attempt(task: Task, *, error: str) -> TaskAttempt:
     return TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1,
         error=error,
@@ -38,7 +37,6 @@ def _failed_attempt(task: Task, *, error: str) -> TaskAttempt:
 def _park_attempt(task: Task) -> TaskAttempt:
     return TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1,
         error=f"{LIMIT_PARKED_PREFIX}session window active",
@@ -138,7 +136,6 @@ class TestAttemptStampsFingerprint(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             ended_at=timezone.now(),
             exit_code=0,
         )

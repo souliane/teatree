@@ -144,12 +144,42 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         subsystem="team",
     ),
     RetiredSetting(
+        key="availability_schedule",
+        replacement=None,
+        reason="the availability surface was cut in favour of presets; nothing has resolved this key since (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="issue_implementer_cadence_hours",
+        replacement=None,
+        reason="the issue-implementer cadence is its `Loop` row's `delay_seconds`, which no setting fed (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="privacy",
+        replacement=None,
+        reason="scan strictness resolves from the `T3_PRIVACY` env var; this key never had a production reader (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="timezone",
+        replacement=None,
+        reason="each schedule carries its own zone, set with `t3 loop schedule set-timezone` (#4203)",
+        subsystem=None,
+    ),
+    RetiredSetting(
         key="issue_implementer_require_label",
         replacement=None,
         reason=(
             "admission is decided by the `decide_intake` table, which admits a trusted author "
             "with no label at all; the untrusted-author case uses `issue_implementer_label` (#3634)"
         ),
+        subsystem=None,
+    ),
+    RetiredSetting(
+        key="headless_max_turns",
+        replacement="agent_max_turns",
+        reason="there is one execution lane, so the ceiling qualifies nothing; the value set is identical (#4212)",
         subsystem=None,
     ),
 )

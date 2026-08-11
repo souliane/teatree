@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**24 entries** — 4 greppable, 20 judgement.
+**26 entries** — 5 greppable, 21 judgement.
 
 ## Index
 
@@ -20,8 +20,10 @@ holistic (`ac-reviewing-codebase`).
 - [Liveness path hard-fails a transient and locks the factory out](#gate-fails-closed-on-transient) — high, judgement
 - [Security or merge gate fails open on exception](#gate-fails-open-on-error) — high, judgement
 - [Gate classifies read-vs-write by verb instead of effective mutation](#gate-ignores-effective-write-semantics) — high, judgement
+- [Gate performs the guarded side effect before concluding refusal](#gate-side-effect-before-verdict) — high, judgement
 - [GET request with side effects](#get-with-side-effects) — high, greppable
 - [Strip a qualifier to force an identity match](#identity-strip-to-match) — high, greppable
+- [select_for_update() outside atomic(), or with skip_locked/nowait](#locked-read-the-backend-cannot-honour) — high, greppable
 - [One item's exception aborts the whole sweep](#loop-scanner-no-fault-isolation) — high, judgement
 - [Same fact in two co-equal stores with no authority](#multi-store-no-arbiter) — high, judgement
 - [Canonicalization that is not idempotent](#non-idempotent-canonicalization) — high, judgement
@@ -146,6 +148,21 @@ holistic (`ac-reviewing-codebase`).
 
 **Preferred.** Add a gate-liveness corpus row asserting reachability (the matched tool is delivered to the handler's event); a handler whose tool is absent from every matcher is xfail-tracked as a known phantom, never silently shipped.
 
+## Gate performs the guarded side effect before concluding refusal
+
+<a id="gate-side-effect-before-verdict"></a>
+
+- **id:** `gate-side-effect-before-verdict`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#4151, souliane/teatree#4144, resilience-invariants
+
+**Anti-pattern.** A path that performs an outward write — a push, a PR/issue create, a merge, a colleague post — and only then evaluates a check that returns "refused". The verdict is a lie about the world: retrying is unsafe, the caller cannot reconcile state from the return value, and escalation fires on a non-event. The shape is invisible unless someone happens to retry, and it hides behind an intermediate write whose own hook creates the artifact (a push that fires the pre-push ensure-pr hook opens the PR the later refusal denies opening).
+
+**Preferred.** Every refusal concludes BEFORE the first outward write in the path — group them and return early, rather than interleaving checks with writes. When a check genuinely cannot run until after the fact, it reports "performed, but flagged" and NAMES the artifact that now exists; a refusal that leaves an artifact behind must say so. The regression test asserts the write did not happen, not merely that the verdict was a refusal.
+
 ## Test function with no assertion
 
 <a id="assert-nothing-test"></a>
@@ -248,7 +265,7 @@ holistic (`ac-reviewing-codebase`).
 - **id:** `signal-for-core-flow`
 - **severity:** medium
 - **detection:** greppable
-- **grep hint:** `@receiver\(\s*post_save|@receiver\(\s*pre_save`
+- **grep hint:** `@receiver\(\s*post_save|@receiver\(\s*pre_save|post_save\.connect\(|pre_save\.connect\(`
 - **linter:** _(none — gap)_
 - **consumers:** architecture-design, ac-reviewing-codebase, linter
 - **refs:** ac-django-antipatterns-22
@@ -256,6 +273,22 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A post_save/pre_save receiver implementing core business logic, hiding the flow from the call site and skipping it in data migrations and bulk operations.
 
 **Preferred.** Call domain behaviour explicitly from a model method; reserve signals for integrating third-party app events.
+
+## select_for_update() outside atomic(), or with skip_locked/nowait
+
+<a id="locked-read-the-backend-cannot-honour"></a>
+
+- **id:** `locked-read-the-backend-cannot-honour`
+- **severity:** high
+- **detection:** greppable
+- **grep hint:** `select_for_update\([^)]*\b(?:skip_locked|nowait)\b`
+- **linter:** `select-for-update-audit`
+- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **refs:** souliane/teatree#4226, souliane/teatree#804, 786-b1-sqlite-lesson
+
+**Anti-pattern.** A select_for_update() the production SQLite engine cannot honour. The clause is a documented no-op there (has_select_for_update is False), so exclusion comes only from transaction_mode=IMMEDIATE's reserved write lock — which a transaction.atomic() block takes and nothing else does. Outside atomic() the read-modify-write silently loses updates, and Django's own "cannot be used outside of a transaction" guard is itself gated on has_select_for_update, so nothing raises. skip_locked/nowait are worse: IMMEDIATE blocks where they promise to return, and the kwarg is dropped without a word.
+
+**Preferred.** Wrap the whole read-modify-write in transaction.atomic() so BEGIN IMMEDIATE covers it, and gate a claim on a CAS predicate (a filtered UPDATE whose rowcount decides the winner) rather than on skip_locked/nowait. A helper whose caller owns the transaction declares that contract with a same-line `# select-for-update: caller-atomic` pragma.
 
 ## Module past the health threshold
 

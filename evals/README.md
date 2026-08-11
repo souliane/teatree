@@ -43,6 +43,8 @@ The **eval definitions** (data) live here, in the top-level `evals/`:
   (data), siblings to the scenarios they pin.
 - `evals/cost_bounds.yaml` — the checked-in per-scenario metered-cost ceilings
   (data: read by the declarative `--gate-cost-bounds` gate).
+- `evals/quarantine.yaml` — the known-red quarantine (data: read by the
+  selective-PR selector and `t3 eval quarantine`). See "Known-red quarantine".
 - `evals/README.md` — this file, the architecture SOT.
 
 The **tests over those definitions** live under `tests/`:
@@ -995,6 +997,48 @@ path drives it for real.
   inside the eval. A manual `workflow_dispatch` / `when: manual` run always runs
   (the guard is bypassed). The metered invocation always carries
   `--require-executed`, so once invoked it fails loud if it cannot execute.
+
+### Known-red quarantine (`evals/quarantine.yaml`, #4173)
+
+Selective-PR selection is section-scoped, so while a scenario is red **every PR
+touching the doctrine section it grades reds its eval lane** — on a failure it did
+not cause and cannot reasonably fix. The quarantine bounds that.
+
+```yaml
+scenarios:
+  some_scenario_name:
+    issue: https://github.com/souliane/teatree/issues/1234   # what will fix it
+    until: 2026-09-04                                        # ISO date
+    reason: one line on why it is red
+```
+
+- **Selection scope, never a verdict.** An entry drops the scenario from the bounded
+  selective-PR lane only. It is still run, still graded, and still reds the weekly /
+  heal lane and the green proof — there is no tolerated-red list anywhere, and the
+  no-known-red-allowance rule is untouched.
+- **Every band is suppressed.** Dropping happens after banding, so the `_BROAD`
+  fail-safe (a preamble-only or unreadable diff) cannot smuggle a tracked red back in.
+  The suppressed names are printed on the selector's stderr, so a shrunken lane is as
+  visible in the CI log as a truncated one.
+- **Expiry is self-enforcing.** Past `until` the entry stops suppressing: the scenario
+  re-arms and blocks again exactly as it did before quarantine. A permanent skip list —
+  how a suite rots into decoration — is unreachable by construction.
+- **An entry that becomes a lie is caught.** `t3 eval quarantine audit` reds on an
+  ESCAPED scenario (quarantined but PASSING — delete the entry) and on an expired one;
+  `check` additionally reds on an entry naming a scenario the catalog no longer defines.
+
+```bash
+t3 eval quarantine list                              # entries, with issue + expiry
+t3 eval quarantine check                             # static validator (expired / unknown / malformed)
+t3 eval quarantine audit <merged-eval-heal.json>     # outcome per entry in a run; reds on an escapee
+```
+
+`eval-ci-heal.yml` runs `audit` beside `green-proof` (`if: always()`), which is where a
+quarantined red stays unmissable. The registry sits beside its scenarios dir
+(`evals/scenarios` → `evals/quarantine.yaml`), so a consumer passing its own
+`--scenarios-dir` reaches its own registry with no extra flag. A missing registry is an
+EMPTY quarantine, so an overlay with none of its own selects exactly as before; a
+present but malformed one fails loud.
 
 ### Canonical lane / tier table
 

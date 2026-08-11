@@ -7,6 +7,8 @@ an UNREADABLE store gets its own text naming the breakage, everything else keeps
 original how-to-start line, and fail-closed is unchanged throughout.
 """
 
+from pathlib import Path
+
 import pytest
 
 from hooks.scripts import teatree_settings
@@ -86,6 +88,37 @@ class TestAutoloadResolutionMatchesEnabled:
         _stub_store(monkeypatch, value=None, status=COLD_READ_OK)
         monkeypatch.setenv("T3_AUTOLOAD", env)
         assert autoload_resolution()[0] is autoload_enabled()
+
+
+class TestARealReadFaultReachesTheAdvisory:
+    """No stub: the UNREADABLE branch must be reachable from an actual store fault (#4205).
+
+    Every other test here forces the status. That left the branch pinned but unreached —
+    ``read_cold_setting_status`` called the VALUE half of the cold read, so a store sqlite
+    itself could not open arrived as an indistinguishable ``None`` and resolved to
+    "the operator never opted in". The advisory then named the wrong fault on the one
+    install that needed it, and only an IMPORT failure could ever produce the right line.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_store(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        monkeypatch.delenv("T3_DATA_DIR", raising=False)
+
+    def test_an_unreadable_store_resolves_unreadable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        corrupt = tmp_path / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database")
+        monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+        assert autoload_resolution() == (False, AUTOLOAD_UNREADABLE)
+        assert session_start_advisory() == TEATREE_SETTINGS_UNREADABLE_ADVISORY
+
+    def test_an_absent_store_still_resolves_to_the_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Foil: nothing to read is a confirmed absence, so the how-to-start line is right.
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        assert autoload_resolution() == (False, AUTOLOAD_FROM_DEFAULT)
+        assert session_start_advisory() == TEATREE_NOT_ACTIVE_ADVISORY
 
 
 class TestSessionStartAdvisory:

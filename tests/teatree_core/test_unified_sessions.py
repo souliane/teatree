@@ -22,7 +22,6 @@ class TestBuildUnifiedSessions(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason="Test task",
         )
 
@@ -43,7 +42,6 @@ class TestBuildUnifiedSessions(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
         with patch("teatree.core.selectors.unified.build_active_sessions", return_value=[]):
@@ -59,7 +57,6 @@ class TestBuildUnifiedSessions(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         task.claim(claimed_by="test-agent")
         task.complete_with_attempt(exit_code=0, result={"summary": "Done"})
@@ -80,7 +77,6 @@ class TestBuildUnifiedSessions(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         task.claim(claimed_by="test-agent")
         task.complete_with_attempt(exit_code=1, error="Something broke")
@@ -92,7 +88,7 @@ class TestBuildUnifiedSessions(TestCase):
         assert rows[0].row_status == "failed"
 
     def test_claimed_headless_task_keeps_headless_label_with_unrelated_agent_id(self) -> None:
-        """Regression for #500: badge must reflect Task.execution_target, not the linked Session.agent_id."""
+        """Regression for #500: the row must reflect the Task, not the linked Session.agent_id."""
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="claude-some-id")
         # ``architectural_review`` has no registered agent → genuinely HEADLESS.
@@ -100,16 +96,14 @@ class TestBuildUnifiedSessions(TestCase):
             ticket=ticket,
             session=session,
             phase="architectural_review",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
-        task.claim(claimed_by="headless-worker")
+        task.claim(claimed_by="task-worker")
 
         with patch("teatree.core.selectors.unified.build_active_sessions", return_value=[]):
             rows = build_unified_sessions()
 
         row = next(r for r in rows if r.task_id == task.pk)
         assert row.row_status == "running"
-        assert row.execution_target == "headless"
 
     def test_deduplicates_by_task_id(self) -> None:
         """Tasks that appear in both queued and activity should only appear once."""
@@ -119,7 +113,6 @@ class TestBuildUnifiedSessions(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         # Task is pending (queued) but also has a completed attempt
         task.claim(claimed_by="test")

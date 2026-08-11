@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.intake.factory_admission import resolve_umbrella_labels
 from teatree.core.models import (
     ImplementedIssueMarker,
     Ticket,
@@ -93,14 +94,21 @@ def _issue(
     labels: list[str] | None = None,
     state: str = "open",
     created_at: str = "",
+    **extra: object,
 ) -> RawAPIDict:
-    """A GitHub-shaped issue payload (``user.login`` is the author)."""
+    """A GitHub-shaped issue payload (``user.login`` is the author).
+
+    *extra* overrides any payload field (``title``, ``body``, …) so a test that cares
+    about one of them says so without growing this signature.
+    """
     issue: RawAPIDict = {
         "web_url": url,
         "title": "do it",
         "labels": labels or [],
         "state": state,
         "user": {"login": author},
+        "body": "",
+        **extra,
     }
     if created_at:
         issue["created_at"] = created_at
@@ -136,11 +144,68 @@ class _PublicRepoTestCase(TestCase):
             "host": host,
             "admit_label": self.LABEL,
             "overlay_name": self.OVERLAY,
+            # Resolved, never a literal: the shipped marker set lives in defaults.toml
+            # alone, so these tests exercise what the loop actually builds.
+            "umbrella_labels": resolve_umbrella_labels(self.OVERLAY),
             "trusted_authors": TRUSTED,
             "identities": (OWNER,),
         }
         kwargs.update(overrides)
         return IssueIntakeScanner(**kwargs)
+
+
+class IssueIntakeUmbrellaTests(_PublicRepoTestCase):
+    """An umbrella/epic row is never claimed — a bounded slot for an unbounded scope (#4105)."""
+
+    #: souliane/teatree#4048's real shape: a members checklist, no acceptance criteria.
+    EPIC_BODY = "## Why these are one thing\n\nHarness-owned red.\n\n## Members\n\n- [x] #3848\n- [x] #3892\n"
+    BUG_BODY = "## Observed\n\nThe shard times out.\n\n## Acceptance\n\n- it does not.\n"
+
+    def test_the_implementable_issue_is_claimed_and_the_epic_is_not(self) -> None:
+        """The acceptance criterion: both filed by the owner, only the bounded one is claimed."""
+        epic = _issue(self.URL_A, author=OWNER, labels=["epic"], title="Epic: CI-harness reliability")
+        bug = _issue(self.URL_B, author=OWNER, body=self.BUG_BODY, title="shard times out")
+        host = _Host(authored={OWNER: [epic, bug]})
+
+        signals = self._scanner(host).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.URL_B]
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_an_unlabelled_epic_is_declined_on_its_shape_alone(self) -> None:
+        """The label convention is not load-bearing — the structural signal stands alone."""
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER, body=self.EPIC_BODY)]})
+
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_a_declined_epic_is_not_recorded_as_a_waiting_candidate(self) -> None:
+        """Waiting means "admissible, no budget" — a declined row is neither.
+
+        ``can_claim=False`` is what makes this falsifiable: on a tick that claims
+        nothing, an ADMITTED candidate is recorded as waiting, so a gate that never
+        fired would leave the epic sitting in the queue as a witness (#4238).
+        """
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER, labels=["epic"])]})
+
+        self._scanner(host, can_claim=False).scan()
+
+        assert not UnclaimedIntakeCandidate.objects.filter(overlay=self.OVERLAY).exists()
+
+    def test_the_admit_label_does_not_override_the_umbrella_decline(self) -> None:
+        epic = _issue(self.URL_A, author=STRANGER, labels=["epic", self.LABEL])
+        host = _Host(labeled={self.LABEL: [epic]})
+
+        assert self._scanner(host).scan() == []
+
+    def test_an_overlay_configured_marker_replaces_the_shipped_set(self) -> None:
+        rollup = _issue(self.URL_A, author=OWNER, labels=["roll-up"])
+        shipped = _issue(self.URL_B, author=OWNER, labels=["epic"])
+        host = _Host(authored={OWNER: [rollup, shipped]})
+
+        signals = self._scanner(host, umbrella_labels=frozenset({"roll-up"})).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.URL_B]
 
 
 class IssueIntakeAuthorTrustIntakeTests(_PublicRepoTestCase):
@@ -378,7 +443,7 @@ class IssueIntakeExcludeLabelGateTests(_PublicRepoTestCase):
 
 
 class IssueIntakeAdmitLabelTests(_PublicRepoTestCase):
-    """Rule 5: the owner-applied admit label is the ONLY route in for an untrusted author."""
+    """The admit-label rule: the owner's label is the ONLY route in for an untrusted author."""
 
     def test_labeled_stranger_issue_is_admitted(self) -> None:
         host = _Host(labeled={self.LABEL: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL])]})
@@ -508,7 +573,7 @@ class IssueIntakeGovernorTests(_PublicRepoTestCase):
             authored={OWNER: [_issue("https://github.com/souliane/teatree/issues/900", author=OWNER)]},
         )
         with patch(
-            "teatree.core.headless_admission.headless_admission_denied_reason",
+            "teatree.core.agent_admission.agent_admission_denied_reason",
             return_value="congestion: headless pool saturated",
         ):
             signals = self._scanner(host, max_concurrent=0).scan()
@@ -521,7 +586,7 @@ class IssueIntakeGovernorTests(_PublicRepoTestCase):
             authored={OWNER: [_issue("https://github.com/souliane/teatree/issues/901", author=OWNER)]},
         )
         with patch(
-            "teatree.core.headless_admission.headless_admission_denied_reason",
+            "teatree.core.agent_admission.agent_admission_denied_reason",
             return_value=None,
         ):
             signals = self._scanner(host, max_concurrent=0).scan()
@@ -643,7 +708,7 @@ def _assigned(issue: RawAPIDict, assignee: str) -> RawAPIDict:
 
 
 class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
-    """Rule 3: a ticket already owning the URL blocks a second intake (#4133).
+    """The work-exists rule: a ticket already owning the URL blocks a second intake (#4133).
 
     Ownership is every state but IGNORED. ``_handle_orchestrator`` reuses the
     existing row (``get_or_create(issue_url=...)``) and returns early for anything

@@ -435,7 +435,6 @@ class TestReviewerPrsScanner(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
 
@@ -484,7 +483,6 @@ class TestReviewerPrsScanner(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
 
@@ -522,7 +520,6 @@ class TestReviewerPrsScanner(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
 
@@ -554,7 +551,6 @@ class TestReviewerPrsScanner(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
 
@@ -585,7 +581,6 @@ class TestReviewerPrsScanner(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
             status=Task.Status.COMPLETED,
         )
@@ -618,7 +613,6 @@ class TestReviewerPrsScanner(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
 
@@ -658,7 +652,6 @@ class TestReviewerPrsScanner(TestCase):
                 ticket=ticket,
                 session=session,
                 phase="reviewing",
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 execution_reason="Review needed",
             )
 
@@ -699,7 +692,6 @@ class TestReviewerPrsScanner(TestCase):
                 ticket=ticket,
                 session=session,
                 phase="reviewing",
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 execution_reason="Review needed",
             )
 

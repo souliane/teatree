@@ -56,6 +56,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
+from hooks.scripts.existing_artifact import with_open_pr_note
 from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write, _is_existing_pr_metadata_only_edit
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import extract_mr_target_repo, shlex_flag_value, strip_quoted_and_heredoc
@@ -412,6 +413,11 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
     here, so each one sits next to the :func:`note_gate_skipped` that explains it
     (#4004) — the router keeps only the trigger and the deny. Scattering these
     across the two modules is how one of them stayed silent.
+
+    A real finding on a CREATE-class command carries
+    :func:`existing_artifact.open_pr_note`, so the refusal names a PR that already
+    exists rather than reading as "nothing happened" (#4151). A denied ``gh pr
+    ready`` asks nothing: it guards the UN-DRAFT, which genuinely did not happen.
     """
     repo_dir = coverage_gate_repo_dir(command, cwd)
     if not measured_repo_is_publish_target(command, repo_dir):
@@ -431,4 +437,13 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         note_gate_skipped(f"the diff-coverage measurement did not complete ({type(exc).__name__})")
         return None
-    return diff_coverage_finding(result.stdout or "")
+    finding = diff_coverage_finding(result.stdout or "")
+    if not _is_pr_create_command(command):
+        return finding
+    return with_open_pr_note(finding, repo_dir, shipped_branch(command) or "")
+
+
+def _is_pr_create_command(command: str) -> bool:
+    """Whether *command* is a ``gh pr create`` / ``glab mr create`` — the artifact-creating verb."""
+    skeleton = strip_quoted_and_heredoc(command)
+    return bool(_GLAB_MR_CREATE_RE.search(skeleton) or _GH_PR_CREATE_RE.search(skeleton))

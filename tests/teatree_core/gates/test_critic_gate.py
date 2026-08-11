@@ -393,7 +393,6 @@ class TestProductionRecordingPath(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="c",
         )
         CriticDispatch.objects.create(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, task=task)

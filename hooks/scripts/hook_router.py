@@ -89,6 +89,7 @@ from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission, handle_dispatch_admission_on_task_create
 from hooks.scripts.dispatch_ledger import handle_track_agents
+from hooks.scripts.dispatch_seat_release import handle_subagent_stop_release
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import autoload_skill_demand, engage
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
@@ -119,11 +120,9 @@ from hooks.scripts.handlers.classifier_denial import (
 from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
-from hooks.scripts.loop_registrations import (
-    emit_loop_registrations,
-    emit_standing_directives_once,
-    is_bare_loop_tick_prompt,
-)
+from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa: F401 re-export for sibling + tests
+from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt as _is_bare_loop_prompt
+from hooks.scripts.loop_registrations import emit_loop_registrations, emit_standing_directives_once
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
@@ -134,8 +133,7 @@ from hooks.scripts.managed_repo import overlay_managed_repo_signals as _overlay_
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
 from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
-from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
-from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
+from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write, is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
 from hooks.scripts.mode_posture_probe import resolved_defers_questions as _resolved_defers_questions
 from hooks.scripts.mode_posture_probe import resolved_pauses_self_pump as _resolved_pauses_self_pump_stdlib
@@ -185,7 +183,6 @@ from hooks.scripts.session_nudges import handle_todo_freshness_nudge
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
-from hooks.scripts.skill_loader_input import strip_ambient_context as _strip_ambient_context
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
 from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
@@ -209,6 +206,7 @@ from hooks.scripts.unbacked_claim_gate import handle_unbacked_claim_gate
 from hooks.scripts.unbounded_wait_guard import handle_block_unbounded_wait
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
+from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste, handle_record_operator_message
 
 STATE_DIR = Path(
     os.environ.get(
@@ -655,24 +653,6 @@ def handle_user_prompt_submit(data: dict) -> None:
 # ── UserPromptSubmit: live-presence heartbeat (#58 away-misclassification) ────
 
 
-def _is_bare_loop_prompt(prompt: str) -> bool:
-    """True when *prompt* is a PURE autonomous loop tick (no user content).
-
-    A cron-fired tick reaches ``UserPromptSubmit`` as the loop prompt plus,
-    optionally, the harness-injected ``<system-reminder>`` ambient blocks — both
-    strip down to exactly the bare loop prompt. Two bare shapes count: the legacy
-    fat-tick ``_LOOP_PROMPT`` and a per-loop tick ``t3 loops tick --loop <name>``
-    (#2650, recognised via the seam-synced :func:`is_bare_loop_tick_prompt`). A
-    genuine fresh user prompt that the harness delivers PREFIXED by the loop
-    continuation text leaves residual user content after the strip, so it is NOT
-    bare. The ambient strip reuses :func:`_strip_ambient_context` (the same
-    normalisation the skill-load gate applies), keeping one definition of "what
-    the harness appends".
-    """
-    stripped = _strip_ambient_context(prompt)
-    return stripped == _LOOP_PROMPT.strip() or is_bare_loop_tick_prompt(stripped)
-
-
 def handle_record_presence(data: dict) -> None:
     """Stamp a live-presence heartbeat — a prompt proves the user is here.
 
@@ -713,9 +693,6 @@ def handle_record_presence(data: dict) -> None:
 # ── UserPromptSubmit + PreToolUse: enforce-loop-registration ──────────
 
 _LOOP_CADENCE_DEFAULT = 720
-
-
-_LOOP_PROMPT = "Run `t3 loops tick` in Bash, then briefly report the tick summary."
 
 
 def _loop_cadence_seconds() -> int:
@@ -1918,7 +1895,7 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     matcher, #171) is governed by the ``[teatree]
     mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
     """
-    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
+    if is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
         return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -5617,6 +5594,7 @@ _HANDLERS: dict[str, list] = {
         handle_clear_classifier_deny_marker,
         handle_reset_turn_tool_budget,
         handle_record_presence,
+        handle_record_operator_message,
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
         handle_inject_pending_questions,
@@ -5641,6 +5619,7 @@ _HANDLERS: dict[str, list] = {
         handle_dispatch_prompt_quote_scanner,
         handle_dispatch_admission,
         handle_banned_terms_pretool,
+        handle_block_verbatim_operator_paste,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_block_git_add_all,
@@ -5696,7 +5675,7 @@ _HANDLERS: dict[str, list] = {
         handle_stop_snapshot_slot,
         handle_loop_self_pump,
     ],
-    "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent],
+    "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent, handle_subagent_stop_release],
 }
 
 # Events whose block/deny is carried by a TOP-LEVEL ``decision`` JSON object on

@@ -75,11 +75,10 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
     def test_personal_identifier_keys_are_withheld(self) -> None:
         ConfigSetting.objects.set_value("slack_user_id", "synthetic-user-ref")
         ConfigSetting.objects.set_value("slack_user_channel", "synthetic-channel-ref")
-        ConfigSetting.objects.set_value("availability_schedule", "mon-fri 09:00-17:00")
 
         result = self._export()
         teatree = _teatree(result.toml)
-        for key in ("slack_user_id", "slack_user_channel", "availability_schedule"):
+        for key in ("slack_user_id", "slack_user_channel"):
             assert key not in teatree, f"{key} leaked into the shared export"
             assert self._reason_for(result.redacted, key) == "personal-identifier"
 
