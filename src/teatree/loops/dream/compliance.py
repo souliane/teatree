@@ -129,12 +129,14 @@ class ComplianceSnapshotResult:
 class EscalationOutcome:
     """The result of driving one recurring rule onto the standing umbrella issue.
 
-    ``filed`` is True when a new umbrella checkbox was added OR a coding task was
-    scheduled (the ``promote_gap`` outcome); ``ticket_url`` is the umbrella issue URL
-    (set ONLY when ``filed`` is True — a withheld or deferred gap carries no URL, so
-    the audit row is never stamped for work that was not actually done); ``withheld``
-    is True when the rendered body would leak a banned term / bare reference;
-    ``deferred`` is True when the pass's promotion cap was already spent (#4176).
+    ``filed`` is True when THIS pass did new work — a new umbrella checkbox was added
+    OR a coding task was scheduled (the ``promote_gap`` outcome), so a recurrence
+    already riding the umbrella reports False on every later pass; ``ticket_url`` is
+    the umbrella issue URL, set whenever the gap is neither withheld nor deferred
+    (i.e. it rides the umbrella, whether or not this pass is what put it there);
+    ``withheld`` is True when the rendered body would leak a banned term / bare
+    reference; ``deferred`` is True when the pass's promotion cap was already spent
+    (#4176).
     """
 
     rule_identity: str
@@ -414,15 +416,17 @@ def stamp_escalations(
 ) -> None:
     """Stamp each escalated recurrence's audit row with the umbrella it now rides.
 
-    Only a ``filed`` outcome stamps — a deferred (cap-exhausted) or withheld
-    (banned-term/bare-reference) outcome wrote nothing to the umbrella, so its audit
-    row must stay ``RemediationKind.NONE`` rather than falsely reading as escalated
-    (#4176).
+    Keyed on ``ticket_url``, NOT on ``filed``: the audit row records that the
+    recurrence rides an umbrella checkbox, and ``filed`` only says whether THIS pass
+    put it there — so gating on it would leave every repeat pass's fresh snapshot
+    reading ``RemediationKind.NONE`` for a recurrence with a live checkbox and coding
+    task. A deferred (cap-exhausted) or withheld (banned-term/bare-reference) outcome
+    carries no URL, so it still never stamps (#4176).
     """
     if dry_run or snapshot is None:
         return
     for outcome in outcomes:
-        if outcome.filed and outcome.ticket_url:
+        if outcome.ticket_url:
             _stamp_escalated(snapshot, outcome.rule_identity, outcome.ticket_url)
 
 

@@ -65,6 +65,25 @@ def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
     return host
 
 
+def _stateful_fake_host() -> CodeHostBackend:
+    """A fake umbrella whose ``get_issue`` reflects the prior ``update_issue`` writes.
+
+    ``_fake_host`` pins a fixed body, so a repeat pass re-adds the same checkbox and
+    never reaches the already-promoted dedup path a multi-pass test is about.
+    """
+    host = MagicMock(spec=CodeHostBackend)
+    state = {"body": "## Open gaps\n"}
+    host.search_open_issues.return_value = []
+    host.get_issue.side_effect = lambda _issue_url: {"body": state["body"]}
+
+    def _update(*, body: str, **_rest: str) -> dict[str, int]:
+        state["body"] = body
+        return {"number": 2663}
+
+    host.update_issue.side_effect = _update
+    return host
+
+
 class DetectComplianceFailuresTestCase(TestCase):
     """A memory-backed rule violated in a fresh correction turn is a recurrence."""
 
@@ -260,6 +279,26 @@ class PersistCompliancePassTestCase(TestCase):
         assert row.remediation == RemediationKind.NONE
         assert row.escalation_url == ""
         assert not host.update_issue.called
+
+    def test_an_already_promoted_recurrence_stays_stamped_on_the_next_pass(self) -> None:
+        # #4176: the 2nd nightly pass adds no checkbox and schedules no task (both are
+        # deduped), so promote_gap reports filed=False — but the recurrence IS riding
+        # the umbrella, so the fresh snapshot's row must still read as escalated.
+        host = _stateful_fake_host()
+        finding = ComplianceFinding(
+            rule_source=RuleSource.MEMORY,
+            rule_identity="feedback_a",
+            evidence="violated a",
+            is_recurrence=True,
+        )
+        rows = []
+        for _pass in range(2):
+            snapshot = persist_compliance_pass([finding], instructions_observed=4)
+            run_compliance_escalation(snapshot=snapshot, findings=[finding], host=host, dry_run=False)
+            rows.append(InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a"))
+        assert host.update_issue.call_count == 1, "pass 2 must be the already-promoted dedup path"
+        assert [row.remediation for row in rows] == [RemediationKind.ESCALATION, RemediationKind.ESCALATION]
+        assert [row.escalation_url for row in rows] == [UMBRELLA, UMBRELLA]
 
 
 class RunComplianceMeasurementTestCase(TestCase):
