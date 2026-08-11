@@ -1144,11 +1144,11 @@ one-line frontmatter key. The dedicated pytest gate
 (`tests/eval_replay/test_skill_eval_coverage.py`) is now **Phase-B
 ENFORCING** — it asserts `report.gaps == ()`, so a skill landing with neither an
 eval nor an `eval_exempt` reason is a hard RED on every PR (the corpus is gap-free
-today, so the flip is safe). The softer `t3 eval coverage` lane inside `t3 eval
-all` stays **warn-first** (reports a gap, exit 0) so it never red-blocks an
-unrelated bare-`t3 eval` run; `t3 eval coverage --fail-on-gap` is its explicit
-enforcing form. The shipped corpus is gap-free today (the per-skill scenario
-files under `evals/scenarios/` plus the pure-doc exemptions).
+today, so the flip is safe). The `skill-coverage` lane inside bare `t3 eval` and the
+`t3 eval coverage` subcommand return that same verdict — a gap exits non-zero on all
+three surfaces, so no surface can report a green the others would refuse. The shipped
+corpus is gap-free today (the per-skill scenario files under `evals/scenarios/` plus
+the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 
