@@ -171,6 +171,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
     }
 
@@ -182,7 +183,7 @@ class TestSafetyAndDarkFlagsPinned:
     }
 
     _PINNED: ClassVar[dict[str, Any]] = {
-        # SAFETY_POSTURE_KEYS — the ten write-is-an-authorization keys.
+        # SAFETY_POSTURE_KEYS — the eleven write-is-an-authorization keys.
         "autonomy": "full",
         "enforce_regulated_path": False,
         "regulated_path_model_allowlist": [],
@@ -192,6 +193,7 @@ class TestSafetyAndDarkFlagsPinned:
         "on_behalf_auto_actions": ["post_e2e_evidence"],
         "send_proxy_allowlist": [],
         "trusted_issue_authors": [],
+        "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         # DARK feature-flags — each pinned to its off value.
         "outer_loop_enabled": False,

@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
-from teatree.core.models.merge_clear import normalize_reviewer_identity
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
+from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.utils.pr_ref import PrRef
 
@@ -126,9 +126,9 @@ def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity
     """The reviewer identity must be an independent cold reviewer (§17.8 clause 3).
 
     Two guards: the reviewer must not BE the executing loop (the loop cannot
-    rubber-stamp its own CLEAR), and the reviewer must not be a maker/coding-
-    agent/loop non-reviewer role. ``MergeClear.issue()`` rejects the latter at
-    issue time via the same shared ``is_non_reviewer_role`` helper, but a row
+    rubber-stamp its own CLEAR), and the reviewer must POSITIVELY identify an
+    independent checker. ``MergeClear.issue()`` applies the latter at issue time
+    via the same shared ``is_independent_reviewer_identity`` helper, but a row
     written directly via ``.objects.create()`` (fixture, migration, or the pk-load
     path in ``ticket.py``) would otherwise smuggle a self-attesting maker through
     the equality check, so the issue-time and merge-time gates re-check identically
@@ -141,7 +141,10 @@ def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity
     self-issued its own clearance: exactly the self-attestation §17.8 clause 3
     forbids.
     """
-    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.models.reviewer_identity import (  # noqa: PLC0415 — deferred: ORM/app-registry
+        is_independent_reviewer_identity,
+        unrecognised_reviewer_message,
+    )
 
     if normalize_reviewer_identity(clear.reviewer_identity) == normalize_reviewer_identity(executing_loop_identity):
         msg = (
@@ -150,13 +153,10 @@ def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity
             f"cold reviewer, not self-issued (§17.8 clause 3)"
         )
         raise MergePreconditionError(msg)
-    if is_non_reviewer_role(clear.reviewer_identity):
-        msg = (
-            f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) is a "
-            f"maker/coding-agent/loop non-reviewer role — a CLEAR must be issued "
-            f"by an independent cold reviewer, not self-attested (§17.8 clause 3)"
+    if not is_independent_reviewer_identity(clear.reviewer_identity):
+        raise MergePreconditionError(
+            unrecognised_reviewer_message(clear.reviewer_identity, subject="a CLEAR", verb="issued")
         )
-        raise MergePreconditionError(msg)
 
 
 def _assert_substrate_authorized(clear: "MergeClear", *, slug: str, pr_id: int, human: str) -> None:
