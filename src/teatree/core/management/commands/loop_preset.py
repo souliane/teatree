@@ -158,7 +158,7 @@ class Command(TyperCommand):
             self._refuse(f"preset {name!r} already exists — use `edit`", json_output=False)
         preset = Mode.objects.create(
             name=name,
-            entries=self._entries_from_edits({}, set_, json_output=False),
+            entries=self._entries_from_edits({}, set_, preset_name=name, json_output=False),
             description=description,
             overlay_scope=_scope_list(scope),
         )
@@ -177,7 +177,7 @@ class Command(TyperCommand):
         preset = Mode.objects.by_name(name)
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=False)
-        preset.entries = self._entries_from_edits(preset.entries, set_, json_output=False)
+        preset.entries = self._entries_from_edits(preset.entries, set_, preset_name=preset.name, json_output=False)
         if description:
             preset.description = description
         if scope:
@@ -259,9 +259,11 @@ class Command(TyperCommand):
             return parsed
         return next_boundary()
 
-    def _entries_from_edits(self, entries: object, edits: list[str], *, json_output: bool) -> dict[str, bool]:
+    def _entries_from_edits(
+        self, entries: object, edits: list[str], *, preset_name: str, json_output: bool
+    ) -> dict[str, bool]:
         try:
-            return apply_entry_edits(entries, edits)
+            return apply_entry_edits(entries, edits, preset_name=preset_name)
         except ValueError as exc:
             self._refuse(str(exc), json_output=json_output)
 

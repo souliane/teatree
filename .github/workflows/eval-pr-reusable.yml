@@ -144,7 +144,9 @@ jobs:
       # malformed YAML) and silently skip the eval — indistinguishable from a
       # clean no-change PR. skip-code 3 disambiguates "no scenario changed" from
       # Python's uncaught-exception exit 1 and argparse's exit 2. The git diff is
-      # its own command so a bad ref fails loud (bash `-e`).
+      # its own command so a bad ref fails loud (bash `-e`). A scenario in the
+      # known-red quarantine is dropped from the lane and named on stderr (#4173);
+      # the registry sits beside `--scenarios-dir`, so a consumer reaches its own.
       - name: Select the scenarios this PR changed
         id: select
         env:

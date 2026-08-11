@@ -24,7 +24,7 @@ from types import ModuleType
 from django.test import TestCase
 
 import teatree.loop.scanners as scanners_pkg
-from teatree.agents._headless_options import _disallowed_tools_for_phase
+from teatree.agents._runner_options import _disallowed_tools_for_phase
 from teatree.core.modelkit.phase_tools import _TOOLS_BY_PHASE, tools_for_phase
 from teatree.core.modelkit.phases import SCANNER_DISPATCHED_PHASES, SUBAGENT_BY_PHASE, normalize_phase
 

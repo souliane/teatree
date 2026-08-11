@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 import teatree.utils.singleton as singleton_mod
-from teatree.agents.headless_watchdog import LoopWatchdog
+from teatree.agents.runner_watchdog import LoopWatchdog
 from teatree.core import loop_lease_liveness as liveness
 from teatree.core.claim_liveness import (
     DRIVE_MARKER_GRACE,

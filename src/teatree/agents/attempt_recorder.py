@@ -1,12 +1,12 @@
 """Record an agent result envelope back onto a ``Task`` as a ``TaskAttempt``.
 
 The single contract for turning a structured agent result into a terminal
-``Task`` outcome, shared by two callers. ``run_headless`` is the detached
+``Task`` outcome, shared by two callers. ``run_agent`` is the detached
 ``claude -p`` subprocess path (now reserved for genuinely headless, non-loop
 work). ``manage.py task record-attempt`` is the in-session ``/loop`` slot path:
 after the slot's ``Agent`` sub-agent returns, the slot hands the same result
 envelope here so an INTERACTIVE phase task completes (and the ticket advances)
-exactly as the headless path would have.
+exactly as the agent path would have.
 
 Both go through :func:`record_result_envelope`, so the schema-key check, the
 phase-evidence gate (#1284), the usage stamping, and the
@@ -81,7 +81,7 @@ class ResultEnvelopeError(ValueError):
 def parse_result_envelope(raw: str) -> AgentResultBlob:
     """Parse a JSON result object, raising :class:`ResultEnvelopeError` otherwise.
 
-    Accepts the exact envelope shape ``run_headless`` parses out of the agent
+    Accepts the exact envelope shape ``run_agent`` parses out of the agent
     text: a single JSON object whose keys are the
     :data:`~teatree.agents.result_schema.RESULT_JSON_SCHEMA` fields
     (``summary``, ``files_modified``, ``needs_user_input`` …). A non-object
@@ -172,7 +172,6 @@ def record_result_envelope(
 
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,
         result=result,
@@ -535,7 +534,6 @@ def _record_failure(
 ) -> TaskAttempt:
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,
         error=error,

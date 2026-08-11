@@ -57,9 +57,8 @@ def _claimed_task() -> Task:
         ticket=ticket,
         session=session,
         phase="coding",
-        execution_target=Task.ExecutionTarget.HEADLESS,
     )
-    Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS, status=Task.Status.CLAIMED)
+    Task.objects.filter(pk=task.pk).update(status=Task.Status.CLAIMED)
     task.refresh_from_db()
     return task
 

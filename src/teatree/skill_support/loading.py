@@ -276,7 +276,7 @@ class SkillLoadingPolicy:
             ordered.append(lifecycle_skill)
         # #1135: a reviewer sub-agent dispatch (phase resolving to the
         # ``review`` lifecycle skill) also loads the project's review skills.
-        # Sub-agents do not auto-load skills, so the caller (``run_headless``
+        # Sub-agents do not auto-load skills, so the caller (``run_agent``
         # via ``resolve_skill_bundle``) inlines those SKILL.md bodies into the
         # dispatched prompt via ``_read_skill_contents_scoped``. ``review_skills``
         # (the overlay's full deduped review set) supersedes the single

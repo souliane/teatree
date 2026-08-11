@@ -149,7 +149,7 @@ def build_system_context(
     tokens. On the reviewing phase the active overlay's primary review skill
     and ``code-review`` are additionally embedded in full, and any remaining
     overlay review companion skills get a verbatim "load before reviewing"
-    instruction, so a headless reviewer reviews WITH the overlay's conventions.
+    instruction, so a reviewer reviews WITH the overlay's conventions.
     *stage_skills* threads the dispatch's single overlay stage-skill resolution
     (#3206) so this builder reuses it rather than re-resolving.
 
@@ -157,7 +157,7 @@ def build_system_context(
     the per-task identity and prior-task result trail. Prompt caching on this lane
     is CLI-internal and exposes no ``cache_control`` surface, so prefix stability
     is the only lever teatree has over the hit rate (see
-    ``_headless_options._build_options``); leading with the task identity diverges
+    ``_runner_options._build_options``); leading with the task identity diverges
     the cached prefix at line 2 and re-processes the whole skill block uncached on
     every dispatch. Mirrors the eval lane, which already leads with the stable
     ``SKILL_BUNDLE_FRAMING``.
@@ -286,59 +286,3 @@ def _format_pr_context(extra: _TicketExtra) -> list[str]:
         if pr_title:
             lines.append(f"    {pr_title}")
     return lines
-
-
-def build_interactive_context(task: Task, *, skills: list[str]) -> str:
-    """Build the system context for interactive Claude Code sessions."""
-    ticket: Ticket = task.ticket
-    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-
-    lines = ["You are working in an interactive TeaTree session."]
-    lines.extend((f"Task ID: {task.pk}", f"Ticket: {ticket.ticket_number}"))
-
-    if ticket.issue_url:
-        lines.append(f"Issue: {ticket.issue_url}")
-
-    if title := extra.get("issue_title"):
-        lines.append(f"Title: {title}")
-
-    if task.phase:
-        lines.append(f"Phase: {task.phase}")
-
-    if task.execution_reason:
-        lines.extend(("", f"What to do: {task.execution_reason}"))
-
-    if skills:
-        lines.extend(
-            (
-                "",
-                "REQUIRED: Before starting any work, call the Skill tool for EACH of these skills:",
-                *(f"  - /{skill}" for skill in skills),
-                "Do this FIRST, before reading files, running commands, or responding to the user.",
-            ),
-        )
-
-    lines.extend(_format_pr_context(extra))
-
-    lines.extend(("", "This is an interactive session — the user is present."))
-
-    if task.execution_reason:
-        lines.extend(
-            (
-                "Your FIRST message must present your diagnosis of the problem described above",
-                "and your proposed fix. Do NOT ask the user what happened — you already have",
-                "the error context. Lead with the analysis, then act.",
-                "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
-            ),
-        )
-    else:
-        lines.extend(
-            (
-                "Your FIRST message must acknowledge the project and ticket you are working on.",
-                "Summarize: ticket number, current state, what was done so far, and what you plan to do next.",
-                "Then either begin working or ask the user for guidance.",
-                "Before ending, run /t3:next — it handles retro, result reporting, and pipeline handoff.",
-            ),
-        )
-
-    return "\n".join(lines)

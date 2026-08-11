@@ -4,7 +4,6 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
-from teatree.core.headless_dispatch import runs_in_session
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.pull_request import PullRequest
@@ -201,22 +200,6 @@ def _add_approval_reaction_on_transition(
         logger.exception("Failed to mark ReviewAssignment approved for PR %s", instance.pk)
 
 
-def _runs_in_session(instance: Task) -> bool:
-    """True when the in-session ``/loop`` is the SOLE dispatcher for this task.
-
-    Delegates to ``headless_dispatch.runs_in_session``: a ``(ticket.role, phase)``
-    with a registered phase agent runs in-session ONLY under
-    ``agent_runtime=interactive``, where it defaults to INTERACTIVE
-    at creation (``Task.save`` chokepoint) and the ``execution_target`` guard below
-    already skips it — this remains as defense-in-depth for a row that reaches
-    HEADLESS some other way. Under the shipped headless ``agent_runtime`` the pair runs
-    headless, so this returns ``False`` and the auto-enqueue ships it to
-    ``execute_headless_task``. A pair with NO registered agent is free-form
-    headless and is never in-session — never zero dispatch.
-    """
-    return runs_in_session(role=instance.ticket.role, phase=instance.phase)
-
-
 def _stamp_issue_title_on_create(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
@@ -257,23 +240,15 @@ def _fetch_and_stamp_issue_title(ticket_pk: int) -> None:
         ticket.stamp_issue_title(title)
 
 
-def _auto_enqueue_headless_task(
+def _auto_enqueue_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Task,
     **_kwargs: object,
 ) -> None:
-    """Auto-enqueue HEADLESS tasks for execution when created or re-routed.
-
-    Under ``agent_runtime=interactive``, loop-dispatched phase tasks
-    default to INTERACTIVE at creation and so fail the ``execution_target`` guard;
-    ``_runs_in_session`` stays as a belt-and-braces skip for any HEADLESS row of
-    such a pair, so a ``db_worker`` draining the queue never double-runs loop phase
-    work the in-session ``/loop`` owns. Under a headless ``agent_runtime`` the same
-    phase tasks ARE headless and ``_runs_in_session`` is ``False``, so they are
-    enqueued here like any other headless work.
+    """Auto-enqueue a PENDING task for execution when created or re-opened.
 
     A task whose ticket names a non-empty unknown overlay is never enqueued
-    (souliane/teatree#1959): dispatching it would crash ``execute_headless_task``
+    (souliane/teatree#1959): dispatching it would crash ``execute_task``
     — the drain safety-net fails such rows permanently instead. A blank overlay
     is the ambient single-overlay default and stays dispatchable.
 
@@ -284,22 +259,18 @@ def _auto_enqueue_headless_task(
     hours. The drain and the claim CAS honour the same gate; the lane now stays quiesced
     until ``usage_window_recovery`` releases the task at the window's re-arm instant.
     """
-    if instance.execution_target != Task.ExecutionTarget.HEADLESS:
-        return
     if instance.status != Task.Status.PENDING:
         return
     if instance.is_window_parked():
         logger.debug("Task %s is window-parked until %s — not re-enqueuing", instance.pk, instance.not_before)
         return
-    if _runs_in_session(instance):
-        return
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
-    from teatree.core.headless_admission import headless_admission_verdict  # noqa: PLC0415 — deferred: call-time
+    from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
 
-    admission = headless_admission_verdict()
-    # The governor brakes the headless lane at its admission chokepoint (F9), per the
+    admission = agent_admission_verdict()
+    # The governor brakes the dispatch lane at its admission chokepoint (F9), per the
     # row's phase COST CLASS (#4098) — the same classification AND the same lane bound
     # the drain applies, so the two chokepoints cannot diverge on which work a braked box
     # still admits, nor on how much of it. The seat is taken before the dispatch, so a
@@ -307,13 +278,13 @@ def _auto_enqueue_headless_task(
     # The task stays PENDING; the (also-gated) drain re-admits it once the governor clears.
     if not admission.admit(int(instance.pk), instance.phase, at="auto-enqueue"):
         return
-    from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
-        execute_headless_task.enqueue(int(instance.pk), instance.phase)
-        logger.info("Auto-enqueued headless task %s (phase=%s)", instance.pk, instance.phase)
+        execute_task.enqueue(int(instance.pk), instance.phase)
+        logger.info("Auto-enqueued task %s (phase=%s)", instance.pk, instance.phase)
     except Exception:
-        logger.exception("Failed to auto-enqueue headless task %s", instance.pk)
+        logger.exception("Failed to auto-enqueue task %s", instance.pk)
 
 
 def _close_session_on_terminal_task(
@@ -380,7 +351,7 @@ def _enqueue_ticket_transition_task(
     object than the one in scope when the transition ran.
 
     The deferred import of the executor is call-time (mirroring
-    ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
+    ``_auto_enqueue_task``), so a test patching ``tasks_mod.execute_*``
     still sees its stub. ``transaction.on_commit`` preserves the body's
     "state change + queued work land atomically" guarantee — the worker fires
     only after the transition's save commits.
@@ -485,6 +456,6 @@ def register_signals() -> None:
         sender=Ticket,
         dispatch_uid="ticket_completion_release_issue_markers",
     )
-    post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+    post_save.connect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
     post_save.connect(_close_session_on_terminal_task, sender=Task, dispatch_uid="close_session_on_terminal_task")
     post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")

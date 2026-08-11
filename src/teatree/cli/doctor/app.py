@@ -18,6 +18,7 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_provision_concurrency_from_host,
     run_bootstrap_checks,
 )
+from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _check_cold_hook_settings_readable,
@@ -39,6 +40,7 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
 )
+from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
@@ -159,6 +161,7 @@ __all__ = (
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
+    "_check_gates_shipped_inert",
     "_check_gh_token_permissions",
     "_check_intake_budget_deadlock",
     "_check_intent_freshness",
@@ -420,14 +423,17 @@ def _run_config_posture_advisories() -> None:
         the self-pump under holiday-away) the whole time.
     *   #4074 — every stored ``ConfigSetting`` row whose value differs from the shipped
         default, i.e. a row still shadowing a default that has since moved underneath it.
+    *   #4189 — every gated feature that is off in every scope and whose declared evidence
+        observable is empty, i.e. a gate merged, reviewed, tested and never once fired.
 
-    Both read the ORM, so this runs after ``ensure_django``; both are surfacing-only, so
-    their return values are deliberately discarded and neither can redden the exit code.
-    Grouped for the same reason :func:`_run_daily_advisories` is — to keep
+    All three read the ORM, so this runs after ``ensure_django``; all three are
+    surfacing-only, so their return values are deliberately discarded and none can redden
+    the exit code. Grouped for the same reason :func:`_run_daily_advisories` is — to keep
     :func:`run_doctor_checks` inside its statement budget rather than growing a flat list.
     """
     _check_mode_override_staleness()
     _check_config_rows_shadowing_shipped_defaults()
+    _check_gates_shipped_inert()
 
 
 def _run_advisory_finalisers(*, repair: bool) -> None:
@@ -544,7 +550,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # raised ceiling; and its age is the only one of the three that can say the refresh
     # has stopped rather than merely fallen behind (#4130). All surface here rather than
     # as a shard timeout reddening a PR whose diff could not have caused it (#4048). The
-    # tuple calls all eight before ``all`` short-circuits, so no finding masks another.
+    # last one is a clone's git config rather than an artifact: a branch tracking someone
+    # else's ref leaves push.default's unchosen default as the only thing aiming a routine
+    # push away from main (#4225). The tuple calls all nine before ``all`` short-circuits,
+    # so no finding masks another.
     ok = (
         all(
             (
@@ -556,6 +565,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_test_durations_coverage(),
                 check_test_durations_freshness(),
                 check_test_timeout_headroom(),
+                check_branch_upstreams(),
             )
         )
         and ok

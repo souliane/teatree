@@ -36,9 +36,11 @@ The promote/compliance phases no longer file a fresh `needs-triage` issue per ga
 2. **Schedule the fix** for each NEW gap via the existing `Ticket.schedule_coding()` — a coder implements it TDD in a worktree, opens a PR, and the PR merges through the SAME single keystone flow gated by the overlay's autonomy setting (no per-gap human triage).
 3. **Reconcile on merge**: when a gap's fix Ticket reaches MERGED, the next pass CHECKS its umbrella checkbox and retires the linked `ConsolidatedMemory` (a BINDING memory is never retired). No new model — an in-flight gap is a `Ticket` row + its `ConsolidatedMemory` entry; the #2663 checkbox is the durable cross-night state.
 
-The umbrella-checkbox upsert + `schedule_coding` runs under `t3 dream run --full`, **default OFF** behind `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` (and `[loops.dream] compliance_escalate` / `T3_DREAM_COMPLIANCE_ESCALATE` for recurrences).
+The umbrella-checkbox upsert + `schedule_coding` is **default OFF** behind `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` (and `[loops.dream] compliance_escalate` / `T3_DREAM_COMPLIANCE_ESCALATE` for recurrences). Each toggle ALONE suffices — `--full` turns them all on for one manual pass but is never a phase's only way in, because the nightly `tick` cannot set it ([#4176](https://github.com/souliane/teatree/issues/4176)).
 
-**Compliance is measured on every pass.** The instruction-compliance accountant ([#2663](https://github.com/souliane/teatree/issues/2663) — the root KPI) is split in two: MEASUREMENT persists a snapshot every pass and is **default ON** (`[loops.dream] compliance_measure` / `T3_DREAM_COMPLIANCE_MEASURE`); ESCALATION files the enforcement fixes and is **default OFF**, gated by `--full` AND `compliance_escalate`. So `t3 dream compliance show` starts reflecting the rate after any pass, while ticket-filing stays opt-in. A pass observing 0 instructions records nothing (WARN).
+**One pass promotes at most `[loops.dream] promotion_cap` gaps** (`T3_DREAM_PROMOTION_CAP`, default 5, `0` = unbounded) across ALL its promoting phases, so the first pass after a toggle is turned on cannot dump a whole waiting backlog. Deferred gaps stay in their drain queue and the next pass reaches them; the count is reported on the pass summary line.
+
+**Compliance is measured on every pass.** The instruction-compliance accountant ([#2663](https://github.com/souliane/teatree/issues/2663) — the root KPI) is split in two: MEASUREMENT persists a snapshot every pass and is **default ON** (`[loops.dream] compliance_measure` / `T3_DREAM_COMPLIANCE_MEASURE`); ESCALATION files the enforcement fixes and is **default OFF**, gated by `compliance_escalate`. So `t3 dream compliance show` starts reflecting the rate after any pass, while ticket-filing stays opt-in. A pass observing 0 instructions records nothing (WARN).
 
 ## Drive the rest of the output
 
@@ -50,4 +52,4 @@ The umbrella-checkbox upsert + `schedule_coding` runs under `t3 dream run --full
 
 - Manually: `/t3:dreaming` or `t3 dream run --full`.
 - In a sub-agent: load this skill and run the same command.
-- Unattended: `t3 dream tick` fires on the nightly cadence (no `--full`; it promotes grounded evals but leaves the default-OFF ticket-filing / LLM-derivation phases off).
+- Unattended: `t3 dream tick` fires on the nightly cadence. It never sets `--full`, so the default-OFF ticket-filing / LLM-derivation / live-eval-validation phases stay off — but each is reachable from the tick by setting its own `[loops.dream]` toggle, capped by `promotion_cap`.

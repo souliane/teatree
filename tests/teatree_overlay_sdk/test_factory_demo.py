@@ -16,8 +16,8 @@ from django.test import TestCase
 # The demo overlay's driving code imports the factory surface from ONE place:
 import teatree.overlay_sdk as sdk
 from teatree.agents import harness_registry
-from teatree.agents import headless as headless_mod
-from teatree.agents.headless import TaskUsage
+from teatree.agents import runner as runner_mod
+from teatree.agents.runner import TaskUsage
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
@@ -39,20 +39,20 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
     def test_demo_overlay_dispatch_attempt_cost_via_overlay_sdk_only(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS)
+        task = Task.objects.create(ticket=ticket, session=session)
         task.renew_lease = lambda **_kw: None
 
         # DISPATCH + ATTEMPT — the overlay registers its own harness (overlay_sdk surface),
-        # selects it, and drives the dispatch through overlay_sdk.run_headless.
+        # selects it, and drives the dispatch through overlay_sdk.run_agent.
         try:
             sdk.register_harness(
                 "demo_factory",
                 lambda ctx: _DemoFactoryHarness(success_stream({"summary": "demo cycle complete"})),
                 capabilities=_DemoFactoryHarness.capabilities,
             )
-            with patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
+            with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
                 ConfigSetting.objects.set_value("agent_harness", "demo_factory")
-                attempt = sdk.run_headless(task, phase="debugging", overlay_skill_metadata=sdk.SkillMetadata())
+                attempt = sdk.run_agent(task, phase="debugging", overlay_skill_metadata=sdk.SkillMetadata())
         finally:
             harness_registry._REGISTRY.pop("demo_factory", None)
 
@@ -60,14 +60,14 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
         assert attempt.result.get("summary") == "demo cycle complete"
 
         # COST — the overlay reads its spend through overlay_sdk, never the model manager.
-        breakdown = sdk.headless_cost_breakdown()
+        breakdown = sdk.agent_cost_breakdown()
         assert isinstance(breakdown, sdk.CostBreakdown)
         assert breakdown.attempts >= 1
 
     def test_attempt_recording_via_overlay_sdk_surface(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, execution_target=Task.ExecutionTarget.HEADLESS)
+        task = Task.objects.create(ticket=ticket, session=session)
 
         attempt = sdk.record_result_envelope(
             task,
@@ -104,7 +104,7 @@ class TestDemoOverlayImportsOnlyTheSdk:
                 production_imports.append(node.module)
             elif isinstance(node, ast.Import):
                 production_imports.extend(alias.name for alias in node.names)
-        # The demo may import test infra (tests.*, headless_mod for the usage stub, core models
+        # The demo may import test infra (tests.*, runner_mod for the usage stub, core models
         # to build fixtures) but never a PRIVATE agents internal — that is the forbidden surface.
         for module in production_imports:
             assert not module.startswith("teatree.agents._"), module

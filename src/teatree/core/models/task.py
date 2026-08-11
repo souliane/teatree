@@ -36,10 +36,6 @@ CLAIM_FIELDS = tuple(RELEASED_CLAIM)
 
 
 class Task(models.Model):
-    class ExecutionTarget(models.TextChoices):
-        HEADLESS = "headless", "Headless"
-        INTERACTIVE = "interactive", "Interactive"
-
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         CLAIMED = "claimed", "Claimed"
@@ -68,11 +64,6 @@ class Task(models.Model):
     subject = models.CharField(max_length=120, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     phase = models.CharField(max_length=64, blank=True)
-    execution_target = models.CharField(
-        max_length=32,
-        choices=ExecutionTarget.choices,
-        default=ExecutionTarget.HEADLESS,
-    )
     execution_reason = models.TextField(blank=True)
     # #3957: why this task FAILED, as distinct from ``execution_reason`` (why it was
     # SCHEDULED). Written only by :meth:`fail`, which REQUIRES a reason, so no failure
@@ -126,12 +117,7 @@ class Task(models.Model):
         db_table = "teatree_task"
 
     def __str__(self) -> str:
-        return f"task-{self.pk}-{self.execution_target!s}"
-
-    def save(self, *args: object, **kwargs: object) -> None:
-        if self._state.adding and self.execution_target == self.ExecutionTarget.HEADLESS:
-            self._route_loop_dispatched_lane()
-        super().save(*args, **kwargs)  # type: ignore[arg-type]
+        return f"task-{self.pk}"
 
     def display_subject(self) -> str:
         """A human-readable one-line description of the work this task is about.
@@ -161,13 +147,10 @@ class Task(models.Model):
     def loop_dispatched(cls, *, role: str, phase: str) -> bool:
         """True iff ``(role, phase)`` has a registered phase sub-agent.
 
-        Pure registry membership (``SUBAGENT_BY_PHASE``). Whether such a task
-        runs in-session or headless is the ``agent_runtime`` setting's call,
-        resolved by ``headless_dispatch.runs_in_session``: under the SHIPPED
-        ``headless`` runtime it runs via ``agents/headless.py``; only under
-        ``interactive`` is it dispatched per-phase by the in-session ``/loop``
-        slot (``loop_dispatch claim-next`` → the ``Agent`` tool). A pair with no
-        registered agent is free-form headless work and always runs headless.
+        Pure registry membership (``SUBAGENT_BY_PHASE``): such a pair is worked by
+        that agent, and a pair with no registered agent is free-form work the
+        generic runner takes. Either way the task runs through
+        ``core.tasks.execute_task``.
         """
         from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415 — deferred: call-time import
 
@@ -185,48 +168,14 @@ class Task(models.Model):
 
         The ONE source of truth every dispatch consumer builds on: the
         ``orchestrate`` planner's target + admit sweep and its in-flight budget
-        count, and the live ``claim-next``/``pending-spawn`` in ``loop_dispatch``
-        (which AND ``execution_target == INTERACTIVE`` on top). Because all sites
-        reference this symbol, the external-delivery exclusion and the role/phase
-        set can never diverge across them the way #2218's fix landed on one side.
+        count. Because all sites reference this symbol, the external-delivery
+        exclusion and the role/phase set can never diverge across them the way
+        #2218's fix landed on one side.
         """
         role_phase = Q(pk__in=[])
         for role, phase in SUBAGENT_BY_PHASE:
             role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
         return role_phase & not_under_external_delivery_q()
-
-    def _route_loop_dispatched_lane(self) -> None:
-        """Route a freshly-created loop-dispatched phase task to its configured lane.
-
-        The single chokepoint for which lane a phase task lands in, so every
-        ``schedule_*`` / scanner / CLI creation site inherits the rule here without
-        each having to know it. Under the SHIPPED ``agent_runtime=headless`` the row
-        is left HEADLESS and the headless lane takes it — that is what a freshly
-        created phase task gets on every shipped install, and this method is a no-op
-        for it. Only an ``interactive`` runtime re-targets the row to INTERACTIVE, for
-        the in-session ``/loop`` slot to dispatch per-phase. Only an insert-time
-        HEADLESS row is touched; an explicit ``route_to_interactive`` /
-        ``route_to_headless`` after creation goes through ``_route`` (not an insert)
-        and is never overridden here.
-
-        Mirrors ``headless_dispatch.runs_in_session`` (the predicate the signal /
-        drain / refusal gates share). It is inlined here rather than called because
-        ``core.models`` may not depend on the parent ``teatree.core`` node where
-        ``headless_dispatch`` lives (tach); the ``teatree.config`` edge is allowed.
-        """
-        from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
-
-        try:
-            role = self.ticket.role
-        except Task.ticket.RelatedObjectDoesNotExist:
-            return
-        if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
-            return
-        if not self.loop_dispatched(role=role, phase=self.phase):
-            return
-        self.execution_target = self.ExecutionTarget.INTERACTIVE
-        if not self.execution_reason:
-            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
     def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
         _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
@@ -236,12 +185,6 @@ class Task(models.Model):
 
     def is_window_parked(self, now: datetime | None = None) -> bool:
         return _window_parked(self, now)
-
-    def route_to_headless(self, *, reason: str = "") -> None:
-        self._route(self.ExecutionTarget.HEADLESS, reason)
-
-    def route_to_interactive(self, *, reason: str = "") -> None:
-        self._route(self.ExecutionTarget.INTERACTIVE, reason)
 
     def complete(self, *, result_artifact_path: str = "") -> None:
         """Mark the task COMPLETED and auto-advance the ticket — atomically.
@@ -552,7 +495,6 @@ class Task(models.Model):
             # no result message exists to read spend off — and core cannot import the agent
             # layer to parse one. A harness crash's spend stays unrecorded (#4164).
             task=self,
-            execution_target=self.execution_target,
             ended_at=timezone.now(),
             exit_code=exit_code,
             artifact_path=artifact_path,
@@ -579,7 +521,6 @@ class Task(models.Model):
                 ticket=self.ticket,
                 session=self.session,
                 phase=phase or self.phase,
-                execution_target=self.execution_target,
                 execution_reason=f"Repo: {repo}",
                 parent_task=self,
             )
@@ -610,20 +551,6 @@ class Task(models.Model):
         from teatree.core.models.task_repair import check_requeue_allowed  # noqa: PLC0415 — deferred: import cycle
 
         check_requeue_allowed(self)
-
-    def _route(self, target: ExecutionTarget, reason: str) -> None:
-        self.execution_target = target
-        self.execution_reason = reason
-        self.status = self.Status.PENDING
-        self._clear_claim()
-        self.save(
-            update_fields=[
-                "execution_target",
-                "execution_reason",
-                "status",
-                *CLAIM_FIELDS,
-            ],
-        )
 
     def _clear_claim(self) -> None:
         for field, released in RELEASED_CLAIM.items():

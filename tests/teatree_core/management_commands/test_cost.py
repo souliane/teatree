@@ -43,16 +43,15 @@ class TestCostCommand:
         *,
         cost: float | None,
         when: datetime,
-        target: str = Task.ExecutionTarget.HEADLESS,
         **fields: object,
     ) -> TaskAttempt:
-        attempt = TaskAttempt.objects.create(task=self.task, execution_target=target, cost_usd=cost, **fields)
+        attempt = TaskAttempt.objects.create(task=self.task, cost_usd=cost, **fields)
         # ``started_at`` is auto_now_add; an update() bypasses it to place the
         # row inside or outside the billing cycle under test.
         TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=when)
         return attempt
 
-    def test_sums_headless_cost_in_current_cycle(self) -> None:
+    def test_sums_cost_in_current_cycle(self) -> None:
         now = timezone.now()
         self._attempt(cost=3.0, when=now)
         self._attempt(cost=1.4, when=now)
@@ -62,14 +61,6 @@ class TestCostCommand:
         assert payload["attempts"] == 2
         assert payload["credit_usd"] == pytest.approx(200.0)
         assert payload["chip"] == "SDK mtd ≈$4/$200"
-
-    def test_excludes_interactive_attempts(self) -> None:
-        now = timezone.now()
-        self._attempt(cost=10.0, when=now, target=Task.ExecutionTarget.INTERACTIVE)
-        self._attempt(cost=2.0, when=now)
-        payload = json.loads(_call(json_output=True))
-        assert payload["cycle_to_date_usd"] == pytest.approx(2.0)
-        assert payload["attempts"] == 1
 
     def test_excludes_attempts_before_cycle_start(self) -> None:
         now = timezone.now()

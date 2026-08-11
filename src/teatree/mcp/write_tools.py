@@ -202,7 +202,6 @@ async def _task_create(
     phase: str = "",
     reason: str = "",
     kind: str = "",
-    interactive: bool = False,
 ) -> dict[str, Any]:
     """Enqueue the next-phase task for a ticket — the MCP mirror of ``tasks create``.
 
@@ -217,7 +216,7 @@ async def _task_create(
             "ok": True,
             **cast(
                 "dict[str, Any]",
-                run_command("tasks", "create", ticket, phase=phase, reason=reason, kind=kind, interactive=interactive),
+                run_command("tasks", "create", ticket, phase=phase, reason=reason, kind=kind),
             ),
         },
         thread_sensitive=True,
@@ -466,7 +465,7 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _task_create,
         _WRITE,
         "call_command('tasks', 'create', …) — dispatch-quote gate wiring",
-        "- task_create(ticket, phase, reason, kind, interactive): enqueue the "
+        "- task_create(ticket, phase, reason, kind): enqueue the "
         "next-phase task for a ticket through the `tasks create` seam (same "
         "dispatch-quote gate wiring). A bad ticket / missing phase reports the "
         "command's own message as a structured error.",

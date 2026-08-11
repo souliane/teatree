@@ -8,7 +8,7 @@ win, independent of Lane B).
 
 from django.test import TestCase
 
-from teatree.agents._headless_options import _build_options
+from teatree.agents._runner_options import _build_options
 from teatree.agents.model_tiering import TIER_MODELS, resolve_fallback_model, resolve_tier
 from teatree.core.models import Session, Task, Ticket
 

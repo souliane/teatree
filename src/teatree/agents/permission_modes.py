@@ -6,7 +6,7 @@ live here rather than beside any one consumer — a lane that forgets to pin
 silently inherits whatever the operator set, which is the drift these names
 exist to prevent.
 
-:data:`UNATTENDED` is pinned by the headless dispatch options, by the
+:data:`UNATTENDED` is pinned by the agent dispatch options, by the
 ``t3 loop start`` argv, and by ``t3 agent`` on its ``-p`` branch. None of the
 three has a human able to answer, so a classifier denial has nobody to override
 it. Bare ``t3 agent`` with no task argument execs an INTERACTIVE ``claude`` and

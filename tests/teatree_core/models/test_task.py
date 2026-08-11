@@ -3,36 +3,17 @@
 Lifecycle, child-task spawning, and ``build_task_detail``.
 """
 
-from collections.abc import Iterator
-
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import (
-    ConfigSetting,
-    DeferredQuestion,
-    InvalidTransitionError,
-    Session,
-    Task,
-    TaskAttempt,
-    Ticket,
-)
+from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
-from tests._agent_runtime_env import interactive_runtime
-from tests.teatree_core.models._shared import _advance_ticket_to_tested
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestTask(TestCase):
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
@@ -43,7 +24,6 @@ class TestTask(TestCase):
         assert first_expiry is not None
 
         task.renew_lease(lease_seconds=300)
-        task.route_to_interactive(reason="needs manual follow-up")
         task.complete(result_artifact_path="/tmp/result.json")
 
         failed_task = Task.objects.create(ticket=ticket, session=session)
@@ -51,7 +31,6 @@ class TestTask(TestCase):
 
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             ended_at=timezone.now(),
             exit_code=0,
             artifact_path="/tmp/result.json",
@@ -61,17 +40,14 @@ class TestTask(TestCase):
         failed_task.refresh_from_db()
 
         assert task.status == Task.Status.COMPLETED
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
-        assert task.execution_reason == "needs manual follow-up"
         assert task.result_artifact_path == "/tmp/result.json"
         assert task.claimed_by == ""
         assert task.lease_expires_at is None
         assert failed_task.status == Task.Status.FAILED
-        assert attempt.execution_target == Task.ExecutionTarget.INTERACTIVE
-        assert str(task) == f"task-{task.pk}-{Task.ExecutionTarget.INTERACTIVE}"
+        assert str(task) == f"task-{task.pk}"
         assert str(attempt) == f"attempt-{attempt.pk}"
 
-    def test_claim_rejects_active_lease_and_sdk_routing_resets_claim(self) -> None:
+    def test_claim_rejects_an_active_lease(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
@@ -80,14 +56,6 @@ class TestTask(TestCase):
 
         with pytest.raises(InvalidTransitionError, match="Task already claimed"):
             task.claim(claimed_by="worker-2")
-
-        task.route_to_headless(reason="retry in sdk")
-        task.refresh_from_db()
-
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
-        assert task.execution_reason == "retry in sdk"
-        assert task.status == Task.Status.PENDING
-        assert task.claimed_by == ""
 
     def test_claim_rejects_terminal_tasks(self) -> None:
         ticket = Ticket.objects.create()
@@ -118,29 +86,6 @@ class TestTask(TestCase):
         assert failure_task.status == Task.Status.FAILED
         assert attempt.exit_code == 1
         assert attempt.error == "boom"
-
-    def test_parent_task_linkage_in_interactive_followup(self) -> None:
-        ticket = Ticket.objects.create()
-        _advance_ticket_to_tested(ticket)
-
-        parent = ticket.tasks.get(phase="reviewing")
-        parent.claim(claimed_by="worker")
-
-        TaskAttempt.objects.create(
-            task=parent,
-            execution_target=parent.execution_target,
-            exit_code=0,
-            result={"needs_user_input": True, "user_input_reason": "Need input"},
-        )
-        parent.complete()
-
-        child = ticket.tasks.filter(
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-        ).first()
-        assert child is not None
-        assert child.parent_task_id == parent.pk
-        assert list(parent.child_tasks.values_list("pk", flat=True)) == [child.pk]
 
     def test_reopen_failed_task_resets_to_pending(self) -> None:
         ticket = Ticket.objects.create()
@@ -215,12 +160,6 @@ class TestClaimedBySessionPersistence(TestCase):
         task.park(not_before=timezone.now() + timezone.timedelta(minutes=5))
         assert self._db_session(task) == ""
 
-    def test_route_blanks_session_in_db(self) -> None:
-        task = self._task()
-        task.claim(claimed_by="worker", claimed_by_session="sess-1")
-        task.route_to_headless(reason="retry")
-        assert self._db_session(task) == ""
-
     def test_reclaim_overwrites_stale_session_in_db(self) -> None:
         # A CLAIMED task whose lease has expired is reclaimable; a fresh claim
         # must overwrite the dead owner's session so the row's attribution is
@@ -250,7 +189,6 @@ class TestNeedsUserInputHeadlessLane(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
@@ -260,32 +198,17 @@ class TestNeedsUserInputHeadlessLane(TestCase):
         return task
 
     def test_headless_runtime_records_correlated_deferred_question(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "headless")
         task = self._parked_headless_task()
 
         task.complete()
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
-        assert not Task.objects.filter(execution_target=Task.ExecutionTarget.INTERACTIVE).exists()
         question = DeferredQuestion.objects.get()
         assert question.parked_task_id == task.pk
         assert "Which DB host?" in question.question
         assert question.slack_ts == ""
         assert question.is_pending
-
-    def test_interactive_runtime_keeps_in_session_followup(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "interactive")
-        task = self._parked_headless_task()
-
-        task.complete()
-
-        assert DeferredQuestion.objects.count() == 0
-        followup = Task.objects.filter(
-            parent_task=task,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        ).get()
-        assert followup.parent_task_id == task.pk
 
 
 class TestTaskDisplaySubject(TestCase):
@@ -343,15 +266,6 @@ class TestTaskAttemptQuerySet(TestCase):
     def test_manager_returns_task_attempt_queryset(self) -> None:
         assert isinstance(TaskAttempt.objects.all(), TaskAttemptQuerySet)
 
-    def test_headless_filters_to_headless_attempts(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent")
-        task = Task.objects.create(ticket=ticket, session=session)
-        headless = TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.HEADLESS)
-        TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.INTERACTIVE)
-
-        assert list(TaskAttempt.objects.headless()) == [headless]
-
 
 class TestChildTaskSpawning(TestCase):
     def test_spawn_child_tasks_creates_per_repo_tasks(self) -> None:
@@ -397,7 +311,6 @@ class TestBuildTaskDetail(TestCase):
         child = Task.objects.create(ticket=ticket, session=session, phase="reviewing", parent_task=parent)
         TaskAttempt.objects.create(
             task=parent,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             exit_code=0,
             result={"summary": "done", "files_modified": ["/a.py"]},
         )

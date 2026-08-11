@@ -179,6 +179,5 @@ class CriticDispatch(models.Model):
             ticket=ticket,
             session=session,
             phase="critic_reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason=contract,
         )

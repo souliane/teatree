@@ -13,7 +13,6 @@ import json as _json
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from django.test import TestCase
@@ -23,7 +22,6 @@ from typer.testing import CliRunner
 from teatree.cli import app as cli_app
 from teatree.cli.doctor import self_heal
 from teatree.cli.doctor.self_heal import check_as_json, run_self_heal_checks
-from teatree.config.agent_enums import AgentRuntime
 from teatree.core.models import Ticket
 from tests.factories import TaskFactory, TicketFactory
 
@@ -259,23 +257,23 @@ class StrandedHeadlessCheckTest(TestCase):
         stranded = [("501", timezone.now() - dt.timedelta(hours=2))]
         with (
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
-            mock.patch(f"{_MOD}._Probe.stranded_headless_results", return_value=stranded),
+            mock.patch(f"{_MOD}._Probe.stranded_runner_results", return_value=stranded),
         ):
-            ok, out = _echoes(self_heal._check_stranded_headless_task)
+            ok, out = _echoes(self_heal._check_stranded_task)
         assert ok is False
         assert "501" in out
 
     def test_worker_alive_is_ok(self) -> None:
         with mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=False):
-            ok, _out = _echoes(self_heal._check_stranded_headless_task)
+            ok, _out = _echoes(self_heal._check_stranded_task)
         assert ok is True
 
     def test_no_stranded_rows_is_ok(self) -> None:
         with (
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
-            mock.patch(f"{_MOD}._Probe.stranded_headless_results", return_value=[]),
+            mock.patch(f"{_MOD}._Probe.stranded_runner_results", return_value=[]),
         ):
-            ok, _out = _echoes(self_heal._check_stranded_headless_task)
+            ok, _out = _echoes(self_heal._check_stranded_task)
         assert ok is True
 
 
@@ -293,46 +291,23 @@ class StaleLoopTimerCheckTest(TestCase):
         assert ok is True
 
 
-class InteractiveUnderHeadlessCheckTest(TestCase):
-    def test_pending_interactive_task_under_headless_fails(self) -> None:
-        TaskFactory(status="pending", execution_target="interactive")
-        headless = SimpleNamespace(agent_runtime=AgentRuntime.HEADLESS)
-        with mock.patch("teatree.config.get_effective_settings", return_value=headless):
-            ok, out = _echoes(self_heal._check_interactive_task_under_headless)
-        assert ok is False
-        assert "headless" in out.lower()
-
-    def test_interactive_runtime_is_ok(self) -> None:
-        TaskFactory(execution_target="interactive")
-        interactive = SimpleNamespace(agent_runtime=AgentRuntime.INTERACTIVE)
-        with mock.patch("teatree.config.get_effective_settings", return_value=interactive):
-            ok, _out = _echoes(self_heal._check_interactive_task_under_headless)
-        assert ok is True
-
-    def test_no_interactive_tasks_under_headless_is_ok(self) -> None:
-        headless = SimpleNamespace(agent_runtime=AgentRuntime.HEADLESS)
-        with mock.patch("teatree.config.get_effective_settings", return_value=headless):
-            ok, _out = _echoes(self_heal._check_interactive_task_under_headless)
-        assert ok is True
-
-
 class FailedTaskOnLiveTicketCheckTest(TestCase):
     def test_failed_task_on_live_ticket_fails(self) -> None:
         ticket = TicketFactory(state=Ticket.State.CODED)
-        TaskFactory(ticket=ticket, status="failed", execution_target="interactive")
+        TaskFactory(ticket=ticket, status="failed")
         ok, out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is False
         assert f"#{ticket.ticket_number}" in out
 
     def test_failed_task_on_terminal_ticket_is_ok(self) -> None:
         ticket = TicketFactory(state=Ticket.State.MERGED)
-        TaskFactory(ticket=ticket, status="failed", execution_target="interactive")
+        TaskFactory(ticket=ticket, status="failed")
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
     def test_no_failed_tasks_is_ok(self) -> None:
         ticket = TicketFactory(state=Ticket.State.CODED)
-        TaskFactory(ticket=ticket, status="pending", execution_target="interactive")
+        TaskFactory(ticket=ticket, status="pending")
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
@@ -341,7 +316,7 @@ class FailedTaskOnLiveTicketCheckTest(TestCase):
         # recurring schedule, not deliverable work — it can never reach a terminal
         # state, so any cadence tick that ever failed pins the FAIL forever.
         ticket = TicketFactory(state=Ticket.State.NOT_STARTED, issue_url="scanning-news://t3-teatree")
-        TaskFactory(ticket=ticket, status="failed", execution_target="interactive")
+        TaskFactory(ticket=ticket, status="failed")
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
@@ -350,7 +325,7 @@ class FailedTaskOnLiveTicketCheckTest(TestCase):
         # a write path closed by #3289. `derive_issue_number` still renders it as a
         # forge-looking `#3274`, which is what made it read as frozen issue work.
         ticket = TicketFactory(state=Ticket.State.STARTED, issue_url="3274", overlay="")
-        TaskFactory(ticket=ticket, status="failed", execution_target="interactive")
+        TaskFactory(ticket=ticket, status="failed")
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
@@ -392,9 +367,8 @@ class RunAllAndJsonTest(TestCase):
         names = (
             "_check_compose_stack",
             "_check_loop_worker_alive",
-            "_check_stranded_headless_task",
+            "_check_stranded_task",
             "_check_stale_loop_timer",
-            "_check_interactive_task_under_headless",
             "_check_failed_tasks_on_live_tickets",
             "_check_runtime_clone_on_default_branch",
         )

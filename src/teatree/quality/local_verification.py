@@ -66,7 +66,7 @@ PHASE_MANDATES: tuple[PhaseMandate, ...] = (
     PhaseMandate(surface="skills/ship/SKILL.md", phase="shipping"),
     PhaseMandate(surface="skills/contribute/SKILL.md", phase="contributing"),
     PhaseMandate(surface="skills/retro/references/commit-to-fork.md", phase="contributing (fork pre-flight)"),
-    PhaseMandate(surface="src/teatree/agents/coding_prompt.py", phase="coding (headless dispatch brief)"),
+    PhaseMandate(surface="src/teatree/agents/coding_prompt.py", phase="coding (agent dispatch brief)"),
     PhaseMandate(surface="tests/CLAUDE.md", phase="coding (tests-tree conventions)"),
 )
 

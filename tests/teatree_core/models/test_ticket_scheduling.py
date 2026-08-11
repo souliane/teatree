@@ -1,6 +1,6 @@
 """The phase-task scheduling seam is idempotent in its side effects (#3903).
 
-``_schedule_headless`` is the one chokepoint every auto-FSM phase task is minted
+``_schedule_phase_task`` is the one chokepoint every auto-FSM phase task is minted
 through. It used to mint unconditionally, so a second call for a ticket+phase that
 already had a live task produced a SECOND Session + Task — two agents claimed and
 dispatched against one worktree. The guard now lives at the write rather than in

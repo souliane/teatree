@@ -95,7 +95,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # flat loop_lease_manager.py queryset hub to hold it under the 500-LOC module-health cap.
 # A pure-predicate leaf helper of that flat root hub, owned by no existing subpackage,
 # mirroring managers_overlay.py beside managers.py.
-# 93: +headless_admission.py — the F9 headless-lane admission chokepoint (governor consult)
+# 93: +agent_admission.py — the F9 headless-lane admission chokepoint (governor consult)
 # 94: +managers_task_claim.py — the claim-admission/ordering concern carved from managers.py (module health)
 # 96: +notify_types.py / notify_ledger.py — carved out of notify.py to hold it under the 500-LOC
 # module-health cap. notify_types (the NotifyKind/NotifyReason/NotifyOutcome/NotifyOptions value
@@ -185,7 +185,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 109: +dispatch_admission.py (#4107) — the governor's third admission lane: the harness
 # Agent/Task dispatch, which asked nothing while both factory lanes did. It lands at the
 # root beside the two flat admission leaves it belongs with (admission_governor.py, the
-# pure decision; headless_admission.py, the headless consult); filing it under a
+# pure decision; agent_admission.py, the headless consult); filing it under a
 # subpackage would separate it from its siblings to satisfy a counter. Its callers are
 # the PreToolUse/TaskCreated gates in hooks/scripts, which tach forbids the platform-layer
 # teatree.hooks node from reaching, so it cannot live there either.

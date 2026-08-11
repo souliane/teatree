@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.agents.headless import HarnessOutcome, _outcome_failure
+from teatree.agents.runner import HarnessOutcome, _outcome_failure
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from tests.teatree_agents._sdk_fake import result_message
@@ -135,7 +135,7 @@ class TestPreTurnFailureStaysNull(SpendRecordingCase):
         assert attempt.lane == ""
 
     def test_a_pre_dispatch_refusal_records_null(self) -> None:
-        from teatree.agents.headless import _record_failure  # noqa: PLC0415 — the recorder under test
+        from teatree.agents.runner import _record_failure  # noqa: PLC0415 — the recorder under test
 
         task = self.make_task()
 

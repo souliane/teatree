@@ -234,7 +234,8 @@ class PersistCompliancePassTestCase(TestCase):
             is_recurrence=True,
         )
         snapshot = persist_compliance_pass([finding], instructions_observed=4)
-        escalate_recurrences([finding], host, umbrella_url=UMBRELLA, snapshot=snapshot)
+        # Stamping is the phase entry point's step now, not escalate_recurrences'.
+        run_compliance_escalation(snapshot=snapshot, findings=[finding], host=host, dry_run=False)
         row = InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a")
         assert row.remediation == RemediationKind.ESCALATION
         # The escalation is now the standing umbrella (the recurrence rides it + a coding task).

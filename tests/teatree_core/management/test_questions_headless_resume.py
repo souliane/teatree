@@ -17,8 +17,8 @@ resume child never double-queues.
 import pytest
 from django.core.management import call_command
 
-from teatree.agents._headless_options import _get_resume_session_id
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.agents._runner_options import _get_resume_session_id
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -28,14 +28,12 @@ _RESUME_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 def _parked_task() -> Task:
-    ConfigSetting.objects.set_value("agent_runtime", "headless")
     ticket = Ticket.objects.create()
     session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
     parked = Task.objects.create(
         ticket=ticket,
         session=session,
         phase="coding",
-        execution_target=Task.ExecutionTarget.HEADLESS,
     )
     TaskAttempt.objects.create(task=parked, agent_session_id=_RESUME_UUID)
     return parked
@@ -60,7 +58,6 @@ class TestAnswerResumesParkedTask:
         assert question.answer_text == "use postgres-1"
         assert question.resolved_via == DeferredQuestion.ResolvedVia.LOCAL
         resume = parked.child_tasks.get()
-        assert resume.execution_target == Task.ExecutionTarget.HEADLESS
         assert resume.parent_task_id == parked.pk
         assert "use postgres-1" in resume.execution_reason
         assert _get_resume_session_id(resume) == _RESUME_UUID
@@ -91,7 +88,6 @@ class TestAnswerResumesParkedTask:
             ticket=parked.ticket,
             session=parked.session,
             phase=parked.phase,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             parent_task=parked,
         )
 

@@ -41,6 +41,7 @@ from pathlib import Path
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RuleSource
 from teatree.loops.dream.engine import DistilledCluster
+from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL, points_at_core_fix
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.transcript_extract import looks_like_user_correction
@@ -381,8 +382,8 @@ def escalate_recurrences(
     host: CodeHostBackend,
     *,
     umbrella_url: str = UMBRELLA_ISSUE_URL,
-    snapshot: InstructionComplianceSnapshot | None = None,
     dry_run: bool = False,
+    budget: PromotionBudget | None = None,
 ) -> list[EscalationOutcome]:
     """Drive ONE umbrella checkbox + scheduled gate/eval fix per recurring rule (#2663).
 
@@ -392,17 +393,28 @@ def escalate_recurrences(
     standing umbrella (*umbrella_url*) as a checkbox + a scheduled coding task whose
     title PRESCRIBES the structural fix — a gate, a config self-check, or an
     anti-vacuous eval — and NEVER proposes writing another memory; it no longer files a
-    fresh ``needs-triage`` issue that the scanner skips. When *snapshot* is supplied,
-    the matching audit row is stamped escalated with the umbrella URL.
+    fresh ``needs-triage`` issue that the scanner skips. *budget* bounds how many gaps
+    THIS pass promotes (``None`` ⇒ unbounded, #4176).
+
+    Promotion only — stamping the audit rows is :func:`stamp_escalations`, which the
+    phase entry point runs over the returned outcomes.
     """
     recurring = {f.rule_identity: f for f in findings if f.is_recurrence}
-    outcomes: list[EscalationOutcome] = []
-    for identity, finding in recurring.items():
-        outcome = _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url, dry_run=dry_run)
-        outcomes.append(outcome)
-        if not dry_run and snapshot is not None and outcome.ticket_url:
-            _stamp_escalated(snapshot, identity, outcome.ticket_url)
-    return outcomes
+    return [
+        _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url, dry_run=dry_run, budget=budget)
+        for finding in recurring.values()
+    ]
+
+
+def stamp_escalations(
+    snapshot: InstructionComplianceSnapshot | None, outcomes: Sequence[EscalationOutcome], *, dry_run: bool
+) -> None:
+    """Stamp each escalated recurrence's audit row with the umbrella it now rides."""
+    if dry_run or snapshot is None:
+        return
+    for outcome in outcomes:
+        if outcome.ticket_url:
+            _stamp_escalated(snapshot, outcome.rule_identity, outcome.ticket_url)
 
 
 def run_compliance_measurement(
@@ -448,22 +460,25 @@ def run_compliance_escalation(
     findings: Sequence[ComplianceFinding],
     host: CodeHostBackend | None,
     dry_run: bool,
+    budget: PromotionBudget | None = None,
 ) -> str:
     """ESCALATE each recurrence to a fix-and-merge under the standing umbrella (#2663).
 
-    The default-OFF, ``--full``-gated other half of phase 3c: only recurrences (a
-    memory-backed rule violated AGAIN) escalate, each riding one deduped umbrella
-    checkbox + scheduled gate/eval coding task via *host* — never another memory.
-    A ``None`` *host* (no resolved backlog code host) reports a skip rather than
-    raising. Under *dry_run* nothing is filed. When *snapshot* is supplied, the
-    matching audit row is stamped escalated. Returns the dream-command summary clause.
+    The default-OFF other half of phase 3c: only recurrences (a memory-backed rule
+    violated AGAIN) escalate, each riding one deduped umbrella checkbox + scheduled
+    gate/eval coding task via *host* — never another memory. A ``None`` *host* (no
+    resolved backlog code host) reports a skip rather than raising. Under *dry_run*
+    nothing is filed; *budget* bounds how many gaps this pass promotes. When *snapshot*
+    is supplied, the matching audit row is stamped escalated. Returns the dream-command
+    summary clause.
     """
     recurrences = sum(1 for f in findings if f.is_recurrence)
     if not recurrences:
         return ""
     if host is None:
         return "; WARN compliance escalation skipped — no teatree code host resolved"
-    outcomes = escalate_recurrences(findings, host, snapshot=snapshot, dry_run=dry_run)
+    outcomes = escalate_recurrences(findings, host, dry_run=dry_run, budget=budget)
+    stamp_escalations(snapshot, outcomes, dry_run=dry_run)
     filed = sum(1 for o in outcomes if o.filed)
     return f"; escalated {filed}/{recurrences} compliance recurrence(s)"
 
@@ -502,7 +517,12 @@ def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str
 
 
 def _escalate_one_recurrence(
-    host: CodeHostBackend, finding: ComplianceFinding, *, umbrella_url: str, dry_run: bool = False
+    host: CodeHostBackend,
+    finding: ComplianceFinding,
+    *,
+    umbrella_url: str,
+    dry_run: bool = False,
+    budget: PromotionBudget | None = None,
 ) -> EscalationOutcome:
     """Drive one recurring rule to a fix-and-merge via the umbrella ledger (#2663).
 
@@ -523,6 +543,7 @@ def _escalate_one_recurrence(
         umbrella_url=umbrella_url,
         gap=umbrella_ledger.GapSpec(gap_key=gap_key, title=_escalation_title(finding), cluster_key=gap_key),
         dry_run=dry_run,
+        budget=budget,
     )
     if outcome.withheld:
         return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
@@ -551,4 +572,5 @@ __all__ = [
     "render_compliance_show",
     "run_compliance_escalation",
     "run_compliance_measurement",
+    "stamp_escalations",
 ]

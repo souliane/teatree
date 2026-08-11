@@ -134,9 +134,9 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "directive_interpreting"): "t3:planner",
 }
 
-#: Phases a loop SCANNER writes DIRECTLY to ``Task.phase`` (``execution_target=
-#: HEADLESS``), bypassing the ``SUBAGENT_BY_PHASE`` ``(role, phase)`` dispatch map.
-#: They are still dispatchable headless ``Task`` rows, so the phase-tools totality
+#: Phases a loop SCANNER writes DIRECTLY to ``Task.phase``, bypassing the
+#: ``SUBAGENT_BY_PHASE`` ``(role, phase)`` dispatch map.
+#: They are still dispatchable ``Task`` rows, so the phase-tools totality
 #: lane (``tests/conformance/test_registry_parity.py``) must treat them as producers
 #: that REQUIRE an explicit ``_TOOLS_BY_PHASE`` least-privilege entry — the read-only
 #: fallback must never be the silent resolution for one (#3386). Owned HERE, in the

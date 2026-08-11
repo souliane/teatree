@@ -25,7 +25,7 @@ _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "teatree"
 
 # The spawn-path modules that must route through resolve_spawn_model only.
 _SPAWN_PATH_MODULES = (
-    _SRC_ROOT / "agents" / "headless.py",
+    _SRC_ROOT / "agents" / "runner.py",
     _SRC_ROOT / "core" / "management" / "commands" / "loop_dispatch.py",
 )
 

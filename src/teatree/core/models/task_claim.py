@@ -45,7 +45,7 @@ def drive_claim(task: "Task") -> Iterator[None]:
     """Mark *task* as executing — in-process AND cross-process (#4164 follow-up).
 
     Pairs :func:`~teatree.core.claim_liveness.driving` (the in-memory registry a
-    same-process sweep like ``reap_stuck_headless_runs`` reads directly) with a
+    same-process sweep like ``reap_stuck_runs`` reads directly) with a
     persisted ``owner_driving_since`` timestamp: the twin a sweep running in a
     SEPARATE ``loops_tick`` subprocess reads instead, since nothing there can see
     this process's own memory. ``run_boot_sweeps``' two claim sweeps

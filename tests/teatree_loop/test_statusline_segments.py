@@ -54,7 +54,6 @@ class TestSegmentsInTickMeta:
     def _headless(self, cost: float) -> None:
         TaskAttempt.objects.create(
             task=self.task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             cost_usd=cost,
             started_at=timezone.now(),
         )

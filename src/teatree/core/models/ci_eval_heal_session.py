@@ -13,7 +13,7 @@ Two invariants are enforced structurally on the model, not left to the loop:
     terminal states are ``GREEN`` (genuinely clean) and ``HALTED`` (escalated).
 * **Fix the code, never the test.** ``record_fix`` runs the anti-cheat gate
     (``eval_heal_anticheat``, fetched from the gate registry so the model → gate
-    edge stays inverted); a fix diff touching the scenario tree or the red matcher
+    edge stays inverted); a fix diff touching the scenario tree or the eval harness
     raises :class:`EvalHealCheatError` and the transition rolls back to ``FIXING``.
 
 The bounded fix budget (``max_fix_attempts``) makes "un-greenable" decidable:

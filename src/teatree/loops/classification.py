@@ -46,7 +46,7 @@ from teatree.loops.base import MiniLoop
 #: RESULT schema is not mistaken for a call.
 MODEL_CALLING_MODULES: tuple[str, ...] = (
     "claude_agent_sdk",
-    "teatree.agents.headless",
+    "teatree.agents.runner",
     "teatree.agents.one_shot",
     "teatree.agents.pydantic_ai_session",
 )

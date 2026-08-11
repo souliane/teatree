@@ -30,7 +30,6 @@ tests/cli_setup/test_slack_provision.py
 tests/cli_setup/test_slack_token_store.py
 tests/cli_setup/test_slack_user_token.py
 tests/cli_setup/test_validate_repo.py
-tests/config/test_agent_runtime_config.py
 tests/config/test_cold_reader.py
 tests/config/test_dirs_and_helpers.py
 tests/config/test_load_config.py

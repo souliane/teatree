@@ -236,12 +236,11 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
         candidates = list(
             qs.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).values_list(
                 "pk",
-                "execution_target",
                 "claimed_by",
                 *OWNER_COLUMNS,
             ),
         )
-        for pk, execution_target, claimed_by, owner_pid, owner_pid_namespace, owner_driving_since in candidates:
+        for pk, claimed_by, owner_pid, owner_pid_namespace, owner_driving_since in candidates:
             owner = ClaimOwner(owner_pid, owner_pid_namespace or "", owner_driving_since)
             if owner_is_executing(owner, pk, now=now):
                 logger.info("stale-claim reap skip task=%s: %s", pk, executing_owner_reason(owner))
@@ -259,7 +258,6 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
             reaped += 1
             attempt_model.objects.create(
                 task_id=pk,
-                execution_target=execution_target,
                 ended_at=now,
                 exit_code=1,
                 error=_lease_expired_reason(claimed_by),

@@ -21,6 +21,15 @@
 #   list is empty the `eval` job is skipped entirely — a PR that touches nothing a
 #   scenario is built from spends zero API budget here.
 #
+# KNOWN-RED QUARANTINE (#4173)
+#   Section-scoping is precise, which means that while a scenario is red every PR
+#   touching the doctrine section it grades reds this lane. A scenario listed in
+#   `evals/quarantine.yaml` — with the issue that will fix it and an expiry date — is
+#   dropped from the selection and NAMED on the resolver's stderr. It is a SELECTION
+#   scope only: the scenario is still run, still graded and still reds the weekly /
+#   heal lane (`t3 eval quarantine audit`), so there is no verdict allowance. Past its
+#   expiry an entry stops suppressing and the scenario blocks again on its own.
+#
 # AUTH — `agent_harness_provider` selects the eval credential
 #   The eval step wires `T3_AGENT_HARNESS_PROVIDER` (`subscription_oauth`) and both
 #   repo secrets; every eval chokepoint resolves the selected credential through

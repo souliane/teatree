@@ -41,7 +41,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 - `worktree start`
 - `worktree status`
 - `worktree teardown`
-- `tasks work-next-headless`
+- `tasks work-next`
 - `followup refresh`
 - `followup remind`
 - `checking show`

@@ -1,7 +1,7 @@
 """A completed ``short_describe`` task actually writes ``Ticket.short_description`` (#3570).
 
 The deterministic writer had no caller in the dispatch path: the scanner
-enqueued the task, ``execute_headless_task`` handed it to the generic agentic
+enqueued the task, ``execute_task`` handed it to the generic agentic
 runner, and the runner recorded a plausible exit-0 narration while the field
 stayed blank forever (the scanner's COMPLETED dedup then suppressed the
 re-enqueue permanently). The phase now routes through its deterministic writer.
@@ -12,7 +12,7 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.tasks import execute_headless_task
+from teatree.core.tasks import execute_task
 
 
 def _ticket(title: str = "Loop lease is reclaimed on every tick") -> Ticket:
@@ -27,7 +27,6 @@ def _short_describe_task(ticket: Ticket) -> Task:
         ticket=ticket,
         session=Session.objects.create(ticket=ticket, agent_id="t"),
         phase="short_describe",
-        execution_target=Task.ExecutionTarget.HEADLESS,
         status=Task.Status.PENDING,
     )
 
@@ -44,7 +43,7 @@ class TestShortDescribeWritesTheField(TestCase):
         ticket = _ticket()
         task = _short_describe_task(ticket)
 
-        result = execute_headless_task.func(task.pk, "short_describe")
+        result = execute_task.func(task.pk, "short_describe")
 
         ticket.refresh_from_db()
         assert ticket.short_description, "a completed short_describe task must populate the field"
@@ -57,12 +56,12 @@ class TestShortDescribeWritesTheField(TestCase):
             msg = "short_describe must not route to the generic agentic runner"
             raise AssertionError(msg)
 
-        patched = mock.patch("teatree.core.headless_dispatch.get_headless_runner", return_value=_explode)
+        patched = mock.patch("teatree.core.agent_runner.get_agent_runner", return_value=_explode)
         patched.start()
         self.addCleanup(patched.stop)
         task = _short_describe_task(_ticket())
 
-        execute_headless_task.func(task.pk, "short_describe")
+        execute_task.func(task.pk, "short_describe")
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
@@ -72,7 +71,7 @@ class TestShortDescribeWritesTheField(TestCase):
         ticket = Ticket.objects.create(issue_url="https://example.invalid/org/repo/issues/2", extra={})
         task = _short_describe_task(ticket)
 
-        result = execute_headless_task.func(task.pk, "short_describe")
+        result = execute_task.func(task.pk, "short_describe")
 
         ticket.refresh_from_db()
         assert ticket.short_description == ""

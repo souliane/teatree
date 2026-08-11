@@ -443,6 +443,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         umbrella_labels=factory_admission.resolve_umbrella_labels(backend.name),
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
+        exclude_labels=backend.exclude_labels,
         repo_slugs=_owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
         max_concurrent=limit,

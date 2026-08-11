@@ -43,16 +43,16 @@ from teatree.agents.harness_registry import (
     registered_harness_names,
     resolve_harness_spec,
 )
-from teatree.agents.headless import LoopWatchdog, run_headless
-from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.lane_b.compaction import CompactionPolicy
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
+from teatree.agents.runner import LoopWatchdog, run_agent
+from teatree.agents.runner_budget import TicketBudget
 from teatree.core.cost import CostBreakdown, CostReport
 
 
-def headless_cost_breakdown() -> CostBreakdown:
-    """The SDK-equivalent cost breakdown across every headless attempt (#3157 E5/E6).
+def agent_cost_breakdown() -> CostBreakdown:
+    """The SDK-equivalent cost breakdown across every agent attempt (#3157 E5/E6).
 
     The cost half of a factory overlay's dispatch → attempt → cost cycle: aggregates the
     recorded :class:`~teatree.core.models.task_attempt.TaskAttempt` usage into totals split
@@ -62,7 +62,7 @@ def headless_cost_breakdown() -> CostBreakdown:
     """
     from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415 — defer the Django model import
 
-    return TaskAttempt.objects.headless().cost_breakdown()
+    return TaskAttempt.objects.cost_breakdown()
 
 
 __all__ = [
@@ -86,16 +86,16 @@ __all__ = [
     "TicketBudget",
     "UnknownHarnessError",
     "UnstableCacheHeadError",
+    "agent_cost_breakdown",
     "assert_byte_stable_head",
     "build_lane_b_toolsets",
     "cache_control_plan",
     "find_unstable_tokens",
-    "headless_cost_breakdown",
     "parse_result_envelope",
     "record_result_envelope",
     "register_harness",
     "registered_harness_names",
     "resolve_harness_spec",
-    "run_headless",
+    "run_agent",
     "validate_result_keys",
 ]
