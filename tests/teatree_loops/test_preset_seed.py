@@ -10,6 +10,7 @@ against the real DB.
 import datetime as dt
 import io
 import zoneinfo
+from importlib import import_module
 from pathlib import Path
 
 import django.test
@@ -437,3 +438,34 @@ class TestNoShippedModeConsumesWhatItCannotReclaim:
         specs = {spec.name: spec for spec in default_preset_specs()}
 
         assert all(specs["off"].entries.get(loop) is True for loop in LOAD_BEARING_LOOPS)
+
+
+class TestTheCollapseMigrationsReplacementTextMatchesWhatShips:
+    """The collapse's REPLACEMENT text is what a refreshed row ends up carrying.
+
+    ``0071`` rewrites a description only while the row still holds the SHIPPED text, so
+    drift between its replacement and ``defaults.toml`` leaves a live box's wording
+    permanently behind the shipped table with nothing failing — the two files had no
+    link at all until this test.
+    """
+
+    @staticmethod
+    def _collapse():
+        return import_module("teatree.core.migrations.0071_collapse_modes_to_five_presets")
+
+    def test_every_replacement_description_equals_the_shipped_mode_description(self) -> None:
+        shipped = {name: entry["description"] for name, entry in shipped_seed_table("modes").items()}
+
+        drift = {
+            name: (replacement, shipped.get(name))
+            for name, (_, replacement) in self._collapse()._DESCRIPTIONS.items()
+            if shipped.get(name) != replacement
+        }
+
+        assert drift == {}, drift
+
+    def test_the_replacement_schedule_description_equals_the_shipped_one(self) -> None:
+        _, replacement = self._collapse()._SCHEDULE_DESCRIPTIONS
+        _, new_name = self._collapse()._SCHEDULE_RENAME
+
+        assert shipped_seed_table("schedules")[new_name]["description"] == replacement

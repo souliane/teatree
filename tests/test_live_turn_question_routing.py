@@ -236,6 +236,42 @@ class TestLoopDeniedRetryKeepsOneBindableRow:
         assert bound is not None, "the operator's Slack answer has no live row to bind"
         assert bound.pk == row.pk
 
+    @pytest.mark.parametrize(
+        ("resolution", "label"),
+        [({"answer": "ship it"}, "answered"), ({"dismissed_reason": "stale"}, "dismissed")],
+    )
+    def test_a_reask_after_the_operator_resolved_gets_a_fresh_row(
+        self, capsys: pytest.CaptureFixture[str], resolution: dict[str, str], label: str
+    ) -> None:
+        """The dedupe lookup reads ``pending()``, so a RESOLVED row can never be reused.
+
+        Reused, the hook returns the resolved row's pk, posts nothing, and the re-ask is
+        swallowed forever — the operator is asked once and never hears about it again.
+        """
+        payload = _ask_payload("Ship it?", session_id="s-6", tool_use_id="t-14")
+        with (
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D1"),
+        ):
+            handle_mirror_question_to_slack(payload)
+            capsys.readouterr()
+            resolved = DeferredQuestion.consume(DeferredQuestion.objects.get().pk, **resolution)
+            assert resolved is not None
+            post.return_value = "1700.0003"
+            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-15"))
+            capsys.readouterr()
+
+            assert post.call_count == 2, f"the re-ask after a {label} row was swallowed"
+
+        assert DeferredQuestion.objects.count() == 2
+        fresh = DeferredQuestion.pending().get()
+        assert fresh.pk != resolved.pk
+        assert fresh.slack_ts == "1700.0003"
+        bound = DeferredQuestion.live_for_reply(channel="D1", after_ts="1700.0004")
+        assert bound is not None
+        assert bound.pk == fresh.pk
+
     def test_a_second_session_asking_the_same_question_gets_its_own_row(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

@@ -1,3 +1,5 @@
+# test-path: cross-cutting — a core data migration whose correctness is only observable
+# through teatree.loops' shipped preset table and resolver; the subject stays core.
 """The ``0071`` data migration collapses the seven pre-decision modes to five (#4202).
 
 Every name a stored row can point at travels with the rename — schedule slots, the
@@ -17,6 +19,10 @@ from django.core.management import call_command
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
+from django.utils import timezone
+
+from teatree.loops.enable_verdict import EnablePlanes
+from teatree.loops.preset_seed import default_preset_specs, seed_default_presets_and_schedules
 
 _BEFORE = ("core", "0068_rename_headless_max_turns")
 _AFTER = ("core", "0071_collapse_modes_to_five_presets")
@@ -25,6 +31,15 @@ _AFTER = ("core", "0071_collapse_modes_to_five_presets")
 _LIVE_MODES = ("engaged", "heads-down", "low-power", "maintenance", "off", "offline", "unattended")
 
 _SHIPPED_MAINTENANCE = "Nights: self-maintenance + self-improvement only, no ticket/colleague/delivery work."
+
+#: The five loops the pre-collapse ``offline`` mask left ON, read from
+#: ``git show edde5c080:src/teatree/config/defaults.toml`` → ``[modes.offline.entries]``.
+#: Set-equality against these (never a frozen 27-key literal) so a future new loop that
+#: ships OFF does not break the pin.
+_OFFLINE_ADMITS = frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"})
+
+#: The loops a holiday hold most visibly must NOT re-admit, restated for the reader.
+_OFFLINE_REFUSES = ("tickets", "ship", "dispatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +190,59 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
 
         assert not apps.get_model("core", "ModeOverride").objects.exists()
         assert not apps.get_model("core", "ConfigSetting").objects.filter(key="default_mode").exists()
+
+    def test_a_stored_offline_hold_migrates_to_a_preset_that_admits_no_work(self) -> None:
+        """The successor is judged by its RESOLVED MASK, never by the name it stores.
+
+        Every mode name survives the migration, so a name assertion passes whichever
+        successor is chosen — which is how a successor that re-admits ``tickets`` /
+        ``ship`` / ``dispatch`` under an operator's holiday hold reads as correct.
+        """
+        self._seed_before(
+            refs=StoredRefs(
+                slots=("offline",),
+                override=("offline", "holiday hold"),
+                settings={"default_mode": "offline"},
+                schedule_name="always-unattended",
+            )
+        )
+
+        apps = self._after()
+        successors = {
+            "slot": apps.get_model("core", "ModeScheduleSlot").objects.get().preset_name,
+            "override": apps.get_model("core", "ModeOverride").objects.get().preset_name,
+            "default_mode": apps.get_model("core", "ConfigSetting").objects.get(key="default_mode").value,
+        }
+        assert len(set(successors.values())) == 1, successors
+
+        shipped = {spec.name: spec.entries for spec in default_preset_specs()}
+        successor = successors["override"]
+        assert successor in shipped, f"{successor} is not a shipped preset"
+        mask = shipped[successor]
+
+        assert {loop for loop, on in mask.items() if on} == set(_OFFLINE_ADMITS)
+        for loop in _OFFLINE_REFUSES:
+            assert mask[loop] is False, f"{successor} re-admits {loop} under a holiday hold"
+
+    def test_a_migrated_holiday_hold_resolves_to_a_mask_that_admits_nothing(self) -> None:
+        """The same property one layer out: through the seed and the live resolver.
+
+        A real box reaches the successor's mask only after the idempotent seed recreates
+        the row, so the migration alone proving the reference moved is not the operator's
+        experience — this is.
+        """
+        self._seed_before(modes=("offline",), refs=StoredRefs(override=("offline", "holiday hold")))
+        self._after()
+        seed_default_presets_and_schedules()
+
+        planes = EnablePlanes.resolve(timezone.now())
+
+        assert planes.resolved.source == "override"
+        for loop in _OFFLINE_REFUSES:
+            admitted = planes.admits(loop, configured_enabled=True)
+            assert admitted is False, f"{planes.resolved.name} admits {loop} under a holiday hold"
+        for loop in _OFFLINE_ADMITS:
+            assert planes.admits(loop, configured_enabled=True) is True, f"{planes.resolved.name} quiets {loop}"
 
     def test_the_three_posture_columns_are_gone_from_the_table(self) -> None:
         self._seed_before()

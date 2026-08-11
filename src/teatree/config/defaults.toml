@@ -548,7 +548,7 @@ resource_pressure = true
 followup = false
 
 [modes.maintenance]
-description = "Drain-only (doubles as the holiday preset): finish and merge what is in flight, run the consolidation loops, take no new intake."
+description = "Drain-only: finish and merge what is in flight, run the consolidation loops, take no new intake."
 
 [modes.maintenance.entries]
 inbox = true
@@ -603,7 +603,7 @@ ci_eval_heal = false
 memory_skim = false
 
 [modes.off]
-description = "Every WORK loop off (the reversible 'calendar says nothing runs' mode); the load-bearing tier stays up so the box can still relieve itself."
+description = "Every WORK loop off — the hard hold (a holiday, or a calendar that says nothing runs); the load-bearing tier stays up so the box can still relieve itself."
 
 [modes.off.entries]
 inbox = true
@@ -655,7 +655,7 @@ preset_name = "away"
 
 [schedules.always-away]
 timezone = ""
-description = "The holiday calendar: away all week."
+description = "Away all week: the owner is unreachable, the factory keeps taking work."
 
 [[schedules.always-away.slots]]
 days = [0, 1, 2, 3, 4, 5, 6]

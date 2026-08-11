@@ -35,12 +35,16 @@ Load `/t3:mode` when the user wants to:
 |---|---|
 | `present` | the full working-hours table — deliver, interact, keep the improvement loops warm |
 | `away` | the factory keeps TAKING new work while the owner is unreachable; `followup` (the sole colleague-facing loop) is OFF |
-| `maintenance` | drain-only: `ship` / `review` ON, `tickets` / `issue_implementer` OFF; doubles as the holiday preset |
+| `maintenance` | drain-only: `ship` / `review` ON, `tickets` / `issue_implementer` OFF |
 | `low-token` | only the deterministic model-free local loops — the token-budget guard |
-| `off` | every WORK loop off; the load-bearing tier stays up so the box can still relieve itself |
+| `off` | every WORK loop off — the hard hold; the load-bearing tier stays up so the box can still relieve itself |
 
 `away` and `maintenance` differ on INTAKE: `away` keeps taking new work, `maintenance`
-drains only what is already in flight.
+drains only what is already in flight. For a holiday, pick by what you want to happen
+while you are gone — `off` for a hard stop, `maintenance` to drain first.
+
+A stored `offline` override / slot / setting migrates to `off` (#4202): the two shipped
+the same loop mask and differed only in the three posture booleans that are now gone.
 
 The names are operator-editable data, but an override naming a mode no row carries is
 REFUSED rather than written — a dangling name would silently fall open to base config.
@@ -71,7 +75,10 @@ t3 loop preset show
 # Every mode, with the ACTIVE marker.
 t3 loop preset list
 
-# Holiday / drain-only, until a time or until cleared.
+# Hard hold — every work loop off (a holiday, or "nothing runs today").
+t3 loop preset use off --hold
+
+# Drain-only — finish and merge what is in flight, take no new intake.
 t3 loop preset use maintenance --until 2026-05-18T22:00:00+02:00
 t3 loop preset use maintenance --hold
 

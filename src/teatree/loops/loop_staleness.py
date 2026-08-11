@@ -216,8 +216,8 @@ class LoopHealth:
                 f"FAIL the worker is RUNNING but ticking NOTHING — all {self.considered} measured "
                 f"loop(s) are behind their cadence under the resolved mode {self.admission.mode!r} "
                 f"(source={self.admission.source}). Inspect it with `t3 loop preset show`; "
-                "clear a manual override with `t3 loop preset auto`, or keep questions "
-                "deferred while loops still run with `t3 loop preset use unattended`."
+                "clear a manual override with `t3 loop preset auto`, or pick a narrower "
+                "preset with `t3 loop preset use <name>`."
             )
         return (
             "FAIL the worker holds the flock but these loops are not advancing their cadence "

@@ -16,20 +16,34 @@ from teatree.loops.preset_seed import seed_default_presets_and_schedules
 _META_FORM = 'form[action*="/presets/meta/"]'
 
 
+_OPEN_PRESET = "present"
+
+
 def _description_field(page: Page) -> Locator:
     return page.locator(f'{_META_FORM} input[name="description"]')
 
 
+def _open_card(live_server: LiveServer, page: Page) -> None:
+    """Open the requested card AND prove it is the one that opened.
+
+    ``_selected_name`` falls back to the active tab, then the first tab, so a spec
+    naming a preset that no longer exists still renders a card and passes while
+    exercising an arbitrary one.
+    """
+    page.goto(f"{live_server.url}/dash/presets/?preset={_OPEN_PRESET}")
+    expect(page.locator(f'{_META_FORM} input[name="preset"]')).to_have_value(_OPEN_PRESET)
+
+
 @pytest.fixture
 def seeded_presets(request: pytest.FixtureRequest) -> None:
-    """The 7 shipped presets, committed so the ``live_server`` thread sees them."""
+    """The 5 shipped presets, committed so the ``live_server`` thread sees them."""
     request.getfixturevalue("transactional_db")
     seed_default_presets_and_schedules()
 
 
 @pytest.mark.usefixtures("seeded_presets")
 def test_saving_a_description_round_trips_on_the_open_card(live_server: LiveServer, page: Page) -> None:
-    page.goto(f"{live_server.url}/dash/presets/?preset=engaged")
+    _open_card(live_server, page)
     _description_field(page).fill("nine to five, hands on deck")
 
     page.get_by_role("button", name="save description").click()
@@ -39,7 +53,7 @@ def test_saving_a_description_round_trips_on_the_open_card(live_server: LiveServ
 
 @pytest.mark.usefixtures("seeded_presets")
 def test_the_meta_form_offers_no_availability_pin(live_server: LiveServer, page: Page) -> None:
-    page.goto(f"{live_server.url}/dash/presets/?preset=engaged")
+    _open_card(live_server, page)
 
     # The description field anchors the absence assertions to a meta form that really
     # rendered — a scoped absence alone would pass against a form that never existed.
