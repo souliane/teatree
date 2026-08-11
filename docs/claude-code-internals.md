@@ -343,7 +343,7 @@ Anthropic replaced `TodoWrite`/`TodoRead` with a four-tool Tasks API (v2.1.19 de
 
 Neither event supports matchers — they fire on every occurrence.
 
-`{"continue": false, "stopReason": "..."}` in hook output stops the entire teammate.
+`{"continue": false, "stopReason": "..."}` in hook output sets `preventContinuation` — which the task-creation consumer never reads (see "The block reason does NOT ride `stopReason`" below).
 
 `task_description`, `teammate_name` and `team_name` are all **optional** on both events.
 

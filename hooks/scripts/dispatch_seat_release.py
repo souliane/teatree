@@ -11,10 +11,10 @@ rather than the live population it is written to bound: four quick sub-agents wo
 the lane shut long after the last of them exited, and a window short enough to avoid that
 would forget agents that are still running.
 
-Its own module rather than a third handler in the admission gate: that gate answers
-"admit or deny" on ``PreToolUse``/``TaskCreated``, this rides a different event and
-denies nothing. The router is shrink-only, so a new handler goes in a bare sibling
-(``hooks/CLAUDE.md``).
+Its own module rather than a second handler in the admission gate: that gate answers
+"admit or deny" on the ``Agent``/``Task`` ``PreToolUse`` matcher, this rides a different
+event and denies nothing. The router is shrink-only, so a new handler goes in a bare
+sibling (``hooks/CLAUDE.md``).
 
 Cold-import safe: stdlib only at module top — never Django / ``teatree.core``.
 """

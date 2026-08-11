@@ -1,5 +1,5 @@
 # test-path: cross-cutting — a whole-tree harness-contract invariant; no src/teatree/ mirror.
-"""``TaskCreated`` is the task-LIST tools' event, never a dispatch seam (#4216).
+""":data:`TaskCreated` is the task-LIST tools' event, never a dispatch seam (#4216).
 
 Gate 17 was founded (#1488) on the premise that ``TaskCreated`` is "the one seam
 the harness Workflow/Task fan-out does NOT bypass". It is not. On the installed
@@ -8,33 +8,37 @@ binary the event has exactly ONE producer — the ``TaskCreate`` tool body — s
 ``teammate_name``/``team_name`` carry the CREATING session's ambient agent
 identity rather than anything about a dispatch target.
 
-**Wording is never the proof.** An assertion and its negation share the whole
-vocabulary, so no lexical predicate over that vocabulary separates them —
-measured by execution, not assumed: the ``fanned-out`` ban is GREEN on both
-recorded residuals, widening it to ``fan-out`` is RED on the correct prose
-(which is REQUIRED to say fan-out), and a sentence-scoped polarity rule is GREEN
-on both again. Three layers follow from that:
+**Wording was never the proof, and a ban over wording was never the guard.** A
+lexical ban asks "does this sentence contain word W" and is silent on every other
+sentence, so a rephrasing walks past it — measured three times here, three
+residuals, one mechanism. It is retired. Three layers replace it:
 
 BEHAVIOUR (load-bearing) — every handler the router registers on the event,
-enumerated FROM the registration so a new one is covered the day it is added,
-leaves a bare local todo alone: no deny, no output, no admission seat.
+enumerated FROM the registration, leaves a task-list entry alone: no deny, no
+output, no admission seat. Driven over the event's SCHEMA rather than one
+example — see :data:`_EVENT_SCHEMA` for the rule and why.
 
-INVENTORY — the registered chain and the set of tracked files that mention the
-event are both pinned, so a new handler or a new describing file fails the build
-until a human reads the claim and adds it deliberately.
+INVENTORY — the registered chain, the set of tracked files that mention the
+event, and every handler name those files spell near it are all pinned or derived
+from the live registration, so a new handler, a new describing file, or a handler
+name that has died fails the build until a human reads the claim.
 
-TRIPWIRE (cheap, and NOT the proof) — the ``fanned-out`` adjective ban, whose
-control fixture carries the shapes it must catch, the correct prose it must not
-fire on, and — named as such — the residual shapes it provably cannot see.
+LEDGER — the doc-surface prose is content-addressed in
+``tests/quality/anchor_prose_pegs.toml`` (the gate is
+``tests/quality/test_anchor_prose_pegs.py``). Its scope is a LIMIT, not coverage:
+it forces a human to re-read a CHANGED sentence; it does not verify the sentence
+is true, and it does not cover test-file prose.
 """
 
 import io
 import json
+import re
 import subprocess
 from collections.abc import Iterator
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from itertools import product
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Final
 from unittest.mock import patch
 
 import pytest
@@ -54,16 +58,41 @@ _ANCHOR = "TaskCreated"
 
 #: Chars either side of an anchor that count as "describing the event". Wide enough
 #: to span a wrapped docstring sentence, narrow enough that a neighbouring paragraph
-#: about an unrelated gate cannot bleed in.
+#: about an unrelated gate cannot bleed in. Kept equal to the ledger's own radius.
 _RADIUS = 300
 
-#: Retired vocabulary. Naming a ``TaskCreated`` payload "fanned-out" IS the false
-#: claim — the event cannot carry one. A tripwire, not the proof (module docstring).
-_RETIRED_VOCABULARY = ("fanned-out", "fanned out")
+#: The event's stdin schema, pinned as DATA (hooks/CLAUDE.md § TaskCreated; the
+#: harness re-check grep is in docs/claude-code-internals.md).
+#:
+#: THE RULE a behaviour pin follows, recorded once here rather than re-derived per
+#: case: drive the event's SCHEMA, not one convenient example. Every OPTIONAL field
+#: is driven present AND absent, because an optional field is exactly where a
+#: handler hides a discriminator a single example never exercises. And for a
+#: RETIREMENT specifically, every field the retired premise READ is driven at the
+#: value that would have FIRED it — otherwise the pin proves only that the handler
+#: ignores inputs nobody ever keyed on.
+_EVENT_SCHEMA: Final[dict[str, tuple[str, ...]]] = {
+    "required": ("session_id", "task_id", "task_subject", "task_description"),
+    "optional": ("teammate_name", "team_name"),
+}
 
-#: The retired predicate names. Each read as a dispatch test while reading the
-#: creator's identity — the same false claim stated where a reader checks least.
-_RETIRED_PREDICATES = ("is_subagent_dispatch", "has_teammate_identity")
+#: The ambient agent identity the retired dispatch-ness predicate read. Driving the
+#: optional fields at THIS value is what makes the matrix a behaviour pin rather
+#: than a wording one.
+_AMBIENT_IDENTITY: Final[dict[str, str]] = {"teammate_name": "t3:coder", "team_name": "factory"}
+
+#: Symbols the correction retired. A stale-SYMBOL sweep — a dead import, a dead
+#: ``patch()`` target string (which fails VACUOUSLY rather than loudly), a dead doc
+#: reference. Never a behaviour ban: the behaviour is the matrix above.
+_RETIRED_SYMBOLS: Final[tuple[str, ...]] = (
+    "is_subagent_dispatch",
+    "has_teammate_identity",
+    "handle_enforce_skill_loading_on_task_create",
+    "handle_dispatch_admission_on_task_create",
+    "subagent_skill_gate",
+    "_task_text_skip_token",
+    "skip-skill-gate",
+)
 
 #: Substrings whose conjunction is the fact the correction rests on. Split so a
 #: rewording of the sentence does not fail the guard, while deleting the claim does.
@@ -73,6 +102,12 @@ _PRODUCER_FACT = ("ONE producer", "TaskCreate` tool body")
 #: counted: adding one is a claim about what the event carries, so it fails the
 #: build until a human reads the claim.
 _REGISTERED_CHAIN: Final[tuple[str, ...]] = ("handle_dispatch_prompt_quote_scanner_on_task_create",)
+
+_HANDLER_IDENT_RE: Final[re.Pattern[str]] = re.compile(r"handle_[a-z0-9_]+")
+
+#: Files whose JOB is to name a handler that no longer exists, so the liveness
+#: cross-check below cannot apply to them.
+_DEAD_NAME_LEDGERS: Final[frozenset[str]] = frozenset({"tests/quality/test_no_dead_plan_gate_refs.py"})
 
 #: Every tracked file that mentions the event, repo-relative. A NEW one fails the
 #: build until added deliberately — a subset assertion cannot detect a new file
@@ -86,14 +121,15 @@ _ANCHOR_FILE_INVENTORY: Final[frozenset[str]] = frozenset(
         "hooks/CLAUDE.md",
         "hooks/hooks.json",
         "hooks/scripts/dispatch_admission_gate.py",
-        "hooks/scripts/dispatch_seat_release.py",
         "hooks/scripts/hook_router.py",
         "hooks/scripts/run-hook.sh",
         "hooks/scripts/task_created_deny.py",
         "skills/checking/SKILL.md",
         "src/teatree/eval/session_transcript.py",
         "tests/conformance/test_consumer_caller_walk.py",
+        "tests/quality/anchor_prose_pegs.toml",
         "tests/quality/deferred_import_pegs.toml",
+        "tests/quality/test_anchor_prose_pegs.py",
         "tests/quality/test_no_dead_plan_gate_refs.py",
         "tests/quality/test_no_flat_core_regrowth.py",
         "tests/teatree_hooks/test_hook_router_dispatch_quote_scanner.py",
@@ -125,20 +161,32 @@ def _tracked_files() -> list[Path]:
     return [path for path in tracked if path.is_file() and path.resolve() != here]
 
 
-def _windows(text: str, anchor: str, radius: int) -> list[str]:
-    """Every ``±radius`` window around an ``anchor`` occurrence, lowercased."""
-    low = text.lower()
-    found: list[str] = []
+def _anchor_spans(text: str, anchor: str, radius: int) -> list[tuple[int, int]]:
+    """``(start, end)`` of every ``±radius`` window around *anchor*, overlaps merged.
+
+    Spans rather than substrings so an identifier scan can match against the WHOLE
+    text: a name clipped by a window edge would otherwise read as a dead symbol.
+    """
+    merged: list[tuple[int, int]] = []
     start = 0
-    while (i := low.find(anchor.lower(), start)) != -1:
-        found.append(low[max(0, i - radius) : i + len(anchor) + radius])
+    while (i := text.find(anchor, start)) != -1:
+        lo, hi = max(0, i - radius), min(len(text), i + len(anchor) + radius)
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
         start = i + 1
-    return found
+    return merged
 
 
-def _tripwire_offenders(text: str) -> list[str]:
-    """Anchor windows in *text* that call the payload by the retired adjective."""
-    return [w for w in _windows(text, _ANCHOR, _RADIUS) if any(term in w for term in _RETIRED_VOCABULARY)]
+def _handler_names_near_the_anchor(text: str) -> set[str]:
+    """Complete ``handle_*`` identifiers overlapping an anchor window in *text*."""
+    spans = _anchor_spans(text, _ANCHOR, _RADIUS)
+    return {
+        match.group()
+        for match in _HANDLER_IDENT_RE.finditer(text)
+        if any(lo < match.end() and match.start() < hi for lo, hi in spans)
+    }
 
 
 def _files_describing_the_event() -> list[Path]:
@@ -146,34 +194,54 @@ def _files_describing_the_event() -> list[Path]:
     return sorted(p for p in _tracked_files() if _ANCHOR in p.read_text(encoding="utf-8", errors="ignore"))
 
 
-def _local_todo() -> dict:
-    """A top-level session's OWN task-list entry — the payload every handler sees.
+def _registered_handler_names() -> set[str]:
+    """Every handler the router registers, on any event."""
+    return {handler.__name__ for handlers in router._HANDLERS.values() for handler in handlers}
 
-    No teammate fields, a description naming no skill: the shape the retired
-    demand was unsatisfiable on, and the shape the retired seat booked an agent for.
+
+def _local_todos() -> list[dict[str, str]]:
+    """The event's full optional-field matrix — a session's OWN task-list entries.
+
+    Subject and description stay innocuous so the surviving quote scanner is not
+    legitimately tripped; the pending demand below is what the retired skill-loading
+    arm keyed on, and the ambient identity what the retired dispatch-ness one read.
     """
-    return {
+    base = {
         "session_id": "sess-conformance",
-        "hook_event_name": _ANCHOR,
         "task_id": "task-1",
         "task_subject": "rebase the branch",
         "task_description": "Bring the branch up to date and re-run the affected lane.",
     }
+    rows: list[dict[str, str]] = []
+    for present in product((False, True), repeat=len(_EVENT_SCHEMA["optional"])):
+        extra = {
+            field: _AMBIENT_IDENTITY[field]
+            for field, is_present in zip(_EVENT_SCHEMA["optional"], present, strict=True)
+            if is_present
+        }
+        rows.append(base | extra)
+    return rows
 
 
-def _drive_the_chain() -> list[tuple[str, bool | None, str, str]]:
-    """Run every registered handler on a bare local todo; return its full outcome.
+def _drive_the_chain() -> list[tuple[str, dict[str, str], bool | None, str, str]]:
+    """Run every registered handler over every matrix row; return each full outcome.
 
-    Each tuple is ``(name, verdict, stdout, stderr)``. Stdout is where a deny
+    Each tuple is ``(name, payload, verdict, stdout, stderr)``. Stdout is where a deny
     envelope lands and stderr ABORTS the event, so both are part of the contract.
     """
-    outcomes: list[tuple[str, bool | None, str, str]] = []
+    outcomes: list[tuple[str, dict[str, str], bool | None, str, str]] = []
     for handler in router._HANDLERS[_ANCHOR]:
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            verdict = handler(_local_todo())
-        outcomes.append((handler.__name__, verdict, out.getvalue(), err.getvalue()))
+        for payload in _local_todos():
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                verdict = handler(dict(payload))
+            outcomes.append((handler.__name__, payload, verdict, out.getvalue(), err.getvalue()))
     return outcomes
+
+
+def _label(name: str, payload: dict[str, str]) -> str:
+    driven = ",".join(f for f in _EVENT_SCHEMA["optional"] if f in payload) or "no-optional-fields"
+    return f"{name}[{driven}]"
 
 
 @pytest.fixture
@@ -193,27 +261,29 @@ def pending_demand(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     router.STATE_DIR = original
 
 
-class TestWindowsHelper:
-    """Anti-vacuity for the scanner the tripwire rests on."""
+class TestTheMatrixCoversTheSchema:
+    """A field the schema gains tomorrow fails the build until it is driven."""
 
-    def test_every_occurrence_gets_its_own_window(self) -> None:
-        assert len(_windows("x A y A z", "a", radius=1)) == 2
+    def test_every_schema_field_is_driven(self) -> None:
+        driven = {key for payload in _local_todos() for key in payload}
+        assert driven == set(_EVENT_SCHEMA["required"]) | set(_EVENT_SCHEMA["optional"])
 
-    def test_a_window_is_clipped_at_the_text_edges(self) -> None:
-        assert _windows("ab", "a", radius=99) == ["ab"]
+    def test_each_optional_field_is_driven_both_absent_and_present(self) -> None:
+        for field in _EVENT_SCHEMA["optional"]:
+            values = [payload.get(field) for payload in _local_todos()]
+            assert None in values, f"{field} is never driven ABSENT"
+            assert _AMBIENT_IDENTITY[field] in values, f"{field} is never driven at the ambient identity"
 
-    def test_an_absent_anchor_yields_nothing(self) -> None:
-        assert _windows("nothing here", _ANCHOR, radius=10) == []
-
-    def test_a_window_carries_the_neighbouring_words(self) -> None:
-        assert _windows("a fanned-out TaskCreated payload", _ANCHOR, radius=20) == ["a fanned-out taskcreated payload"]
+    def test_the_matrix_is_the_full_cross_product(self) -> None:
+        assert len(_local_todos()) == 2 ** len(_EVENT_SCHEMA["optional"])
 
 
 class TestEveryRegisteredHandlerLeavesALocalTodoAlone:
     """The load-bearing pin: a property of BEHAVIOUR, immune to wording.
 
     Enumerated from the live registration rather than a hand-written list, so a
-    handler added tomorrow is covered the day it is added.
+    handler added tomorrow is covered the day it is added, and driven over the whole
+    schema so a handler keying on an optional field cannot hide behind one example.
     """
 
     def test_the_chain_is_not_empty(self) -> None:
@@ -221,17 +291,17 @@ class TestEveryRegisteredHandlerLeavesALocalTodoAlone:
         assert router._HANDLERS[_ANCHOR], "no handler registered on the event — the walk below checks nothing"
 
     def test_a_local_todo_is_allowed_by_every_taskcreated_handler(self, pending_demand: None) -> None:
-        denied = [name for name, verdict, _out, _err in _drive_the_chain() if verdict is True]
+        denied = [_label(name, payload) for name, payload, verdict, _o, _e in _drive_the_chain() if verdict is True]
         assert denied == [], f"handler(s) denied a plain task-list entry: {denied}"
 
     def test_no_handler_writes_a_deny_envelope_for_a_local_todo(self, pending_demand: None) -> None:
-        wrote = {name: out for name, _v, out, _err in _drive_the_chain() if out.strip()}
+        wrote = {_label(n, p): out for n, p, _v, out, _e in _drive_the_chain() if out.strip()}
         assert wrote == {}, f"handler(s) emitted a payload for a plain task-list entry: {wrote}"
 
     def test_no_handler_writes_stderr_for_a_local_todo(self, pending_demand: None) -> None:
         # The harness ABORTS task creation on ANY TaskCreated handler stderr, so a
         # diagnostic there is a lockout rather than a diagnostic.
-        noisy = {name: err for name, _v, _out, err in _drive_the_chain() if err.strip()}
+        noisy = {_label(n, p): err for n, p, _v, _o, err in _drive_the_chain() if err.strip()}
         assert noisy == {}, f"handler(s) wrote stderr, which aborts the event: {noisy}"
 
 
@@ -295,101 +365,55 @@ class TestTheSurfaceInventoryIsPinned:
         )
 
 
-class TripwireCase(NamedTuple):
-    """One sentence and the tripwire verdict it is MEASURED to produce."""
+class TestEveryHandlerNamedNearTheEventIsLive:
+    """Derived from the live registration, so a name fails the day its handler dies.
 
-    label: str
-    sentence: str
-    is_red: bool
+    Deliberately NOT "must ride TaskCreated": the anchor windows legitimately name
+    handlers on other events (the router's own registered-event list is one), so
+    that stricter set is red on correct prose. Which handlers ride the event is
+    already pinned exactly, from the registration, by ``_REGISTERED_CHAIN`` above.
+    """
 
-
-#: Verbatim prose kept as data, so the tripwire's reach is measured rather than
-#: asserted. The blind-spot rows are the point: both state the retired premise and
-#: neither carries a banned adjective, so no lexical ban reaches them.
-_TRIPWIRE_CASES: Final[tuple[TripwireCase, ...]] = (
-    TripwireCase(
-        "residual-the-retired-adjective",
-        "The gate scans a fanned-out TaskCreated payload before the entry is created.",
-        is_red=True,
-    ),
-    TripwireCase(
-        "residual-the-retired-adjective-unhyphenated",
-        "A fanned out task reaching TaskCreated is the premise this ticket retires.",
-        is_red=True,
-    ),
-    TripwireCase(
-        "correct-the-single-producer-fact",
-        (
-            "``TaskCreated`` has exactly ONE producer — the ``TaskCreate`` tool body — so "
-            "every payload is an entry in some session's own task list; an "
-            "``Agent``/``Task``/Workflow sub-agent fan-out never reaches this event."
-        ),
-        is_red=False,
-    ),
-    TripwireCase(
-        "correct-the-governor-has-nothing-to-admit",
-        (
-            "The task-LIST tools bypass ``PreToolUse``, but their ``TaskCreated`` event has "
-            "ONE producer, so no dispatch reaches it and the governor has nothing to admit "
-            "or brake there."
-        ),
-        is_red=False,
-    ),
-    TripwireCase(
-        "blindspot-assertion-the-tripwire-cannot-see",
-        (
-            "The harness Workflow/Task fan-out — where dispatch prompts are actually "
-            "created — BYPASSES ``PreToolUse``, so that gate never fires on the real "
-            "dispatch path. This ``TaskCreated`` counterpart closes that bypass."
-        ),
-        is_red=False,
-    ),
-    TripwireCase(
-        "blindspot-assertion-with-a-stray-negator",
-        (
-            "Distinct from the SEPARATE ``Task``/``Workflow`` fan-out vehicle, which "
-            "genuinely bypasses ``PreToolUse`` and fires ``TaskCreated`` — no "
-            "``run_in_background`` in that schema."
-        ),
-        is_red=False,
-    ),
-)
-
-
-class TestTheTripwireDiscriminates:
-    """What the cheap ban catches, what it must not fire on, and what it cannot see."""
-
-    @pytest.mark.parametrize("case", _TRIPWIRE_CASES, ids=[case.label for case in _TRIPWIRE_CASES])
-    def test_the_tripwire_verdict_is_measured(self, case: TripwireCase) -> None:
-        assert bool(_tripwire_offenders(case.sentence)) is case.is_red
-
-    def test_the_blind_spots_are_recorded_as_such(self) -> None:
-        # A shrinking blind-spot list is welcome; losing it silently is not — an
-        # empty one would read as "the tripwire sees everything", which it does not.
-        assert [c for c in _TRIPWIRE_CASES if c.label.startswith("blindspot-")], (
-            "the recorded blind spots are gone — either the tripwire genuinely covers "
-            "them now (state how in the docstring) or the control was quietly emptied"
-        )
-
-
-class TestNoSurfaceCallsTheEventADispatch:
     @pytest.mark.parametrize("path", _files_describing_the_event(), ids=lambda p: p.name)
-    def test_no_event_mention_uses_the_retired_vocabulary(self, path: Path) -> None:
-        offenders = _tripwire_offenders(path.read_text(encoding="utf-8"))
-        assert offenders == [], f"{path.name} calls a {_ANCHOR} payload fanned-out: …{offenders[0]}…"
+    def test_no_dead_handler_name_sits_next_to_the_event(self, path: Path) -> None:
+        if path.relative_to(_REPO_ROOT).as_posix() in _DEAD_NAME_LEDGERS:
+            pytest.skip("this file's job is to ban a handler name that no longer exists")
+        named = _handler_names_near_the_anchor(path.read_text(encoding="utf-8", errors="ignore"))
+        dead = sorted(named - _registered_handler_names())
+        assert dead == [], f"{path.name} names handler(s) the router no longer registers: {dead}"
 
 
-class TestTheRetiredPredicateNamesAreGone:
-    @pytest.mark.parametrize("predicate", _RETIRED_PREDICATES)
-    def test_no_tracked_file_still_names_the_retired_predicate(self, predicate: str) -> None:
-        # Catches a stale import, a stale patch-target string, and a stale doc
-        # reference — the patch-target one fails vacuously rather than loudly.
+class TestTheAnchorSpanHelper:
+    """Anti-vacuity for the scanner the cross-check above rests on."""
+
+    def test_each_isolated_occurrence_gets_its_own_span(self) -> None:
+        assert len(_anchor_spans("A" + "." * 50 + "A", "A", radius=5)) == 2
+
+    def test_overlapping_spans_merge(self) -> None:
+        assert _anchor_spans("A.A", "A", radius=5) == [(0, 3)]
+
+    def test_an_absent_anchor_yields_nothing(self) -> None:
+        assert _anchor_spans("nothing here", _ANCHOR, radius=10) == []
+
+    def test_an_identifier_clipped_by_a_window_edge_is_not_reported(self) -> None:
+        # The failure this forecloses: a live handler whose name runs off the window
+        # edge reads as a dead symbol, and the cross-check reds on correct prose.
+        text = f"{_ANCHOR}{'.' * _RADIUS}handle_dispatch_prompt_quote_scanner_on_task_create"
+        assert _handler_names_near_the_anchor(text) == set()
+
+    def test_an_identifier_inside_a_window_is_reported(self) -> None:
+        assert _handler_names_near_the_anchor(f"{_ANCHOR} handle_thing") == {"handle_thing"}
+
+
+class TestTheRetiredSymbolsAreGone:
+    @pytest.mark.parametrize("symbol", _RETIRED_SYMBOLS)
+    def test_no_tracked_file_still_names_the_retired_symbol(self, symbol: str) -> None:
         stale = [
             path.relative_to(_REPO_ROOT).as_posix()
             for path in _tracked_files()
-            if predicate in path.read_text(encoding="utf-8", errors="ignore")
+            if symbol in path.read_text(encoding="utf-8", errors="ignore")
         ]
-        assert stale == [], f"stale '{predicate}' reference(s): {stale}"
+        assert stale == [], f"stale '{symbol}' reference(s): {stale}"
 
 
 class TestTheCanonicalDocStillCarriesTheFact:

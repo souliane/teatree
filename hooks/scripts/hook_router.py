@@ -1056,9 +1056,8 @@ def normalize_skill_name(name: str) -> str:
     return _canonical_skill_token(name, owned, namespace) or name
 
 
-# Per-call escape mirroring the ``[skill-load-ok: <reason>]`` token of
-# the sibling TaskCreated gate and the ``[fg-ok: <reason>]`` precedent of
-# the orchestrator-boundary gate: ``[skill-load-ok: <non-empty-reason>]``
+# Per-call escape mirroring the ``[fg-ok: <reason>]`` precedent of the
+# orchestrator-boundary gate: ``[skill-load-ok: <non-empty-reason>]``
 # in the CURRENT tool call's command/args unblocks this single Bash/Edit/
 # Write, an empty reason rejects. A false skill-trigger can therefore
 # never wedge the loop — but a genuine intent match still hard-blocks
@@ -1073,9 +1072,9 @@ def _skill_load_ok_token(data: dict) -> str | None:
     Scans the current tool call's command/args — for ``Bash`` the
     ``command`` string, for ``Edit``/``Write`` the written text
     (``new_string`` / ``content``) and the ``file_path`` — within the
-    first 512 characters of each field (matching
-    :func:`_task_text_skip_token`) so a buried token in a long body does
-    not silently authorise the call. An empty reason returns None.
+    first 512 characters of each field (matching :data:`_FG_OK_RE`'s cap)
+    so a buried token in a long body does not silently authorise the
+    call. An empty reason returns None.
     """
     tool_input = data.get("tool_input", {})
     if not isinstance(tool_input, dict):

@@ -70,7 +70,7 @@ Every over-deny gate ships a never-lockout path. This is the ONE catalog of them
 | `[add-all-ok: <reason>]` | whole-tree `git add -A` / `git add .` gate | Bash `command` (first 512) |
 | `[skill-load-ok: <reason>]` | skill-loading `PreToolUse` gate | Bash `command` / Edit-Write args (first 512) |
 | `[quote-ok: <reason>]` | dispatch-prompt quote scanner (`PreToolUse` + `TaskCreated` arms) | `Agent`/`Task` prompt / task fields |
-| `[admission-ok: <reason>]` | admission-governor dispatch gate (`PreToolUse` + `TaskCreated` arms) | `Agent`/`Task` prompt / task subject+description (first 512 chars) |
+| `[admission-ok: <reason>]` | admission-governor dispatch gate (`PreToolUse`, `Agent`/`Task`) | `Agent`/`Task` prompt (first 512 chars) |
 | `[config-overwrite-ok: <reason>]` | read-before-overwrite config/dotfile gate | Edit / Write args |
 | `[scope-push-ok: <reason>]` | unknown-owned-repo push/merge gate | Bash `command` |
 | `[reviewer-ok: <reason>]` | no-self-reviewer-assign gate | Bash `command` |
