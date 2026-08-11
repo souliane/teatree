@@ -1,34 +1,24 @@
 """teatree.core.models.loop_preset — Mode + ModeOverride behaviour.
 
 The tri-state entry map (``state_for``), the overlay-scope accessor, the
-single-live-override contract, and the low-power auto-engage manager methods
+single-live-override contract, and the low-token auto-engage manager methods
 (#3159 item 6).
 """
 
 import datetime as dt
 
 import django.test
-import pytest
-from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
 
 
-class TestModeBooleans(django.test.SimpleTestCase):
-    """The three intrinsic booleans ARE the reachability payload."""
+class TestModeCarriesOnlyTheLoopTable(django.test.SimpleTestCase):
+    """#4202: a mode is its ``entries`` table plus an overlay scope — nothing else."""
 
-    def test_pauses_requires_defers_is_rejected_by_clean(self) -> None:
-        # The nonsensical 4th point (pump paused but questions answered in-band).
-        with pytest.raises(ValidationError):
-            Mode(name="bad", pauses_self_pump=True, defers_questions=False).clean()
-
-    def test_reachable_postures_pass_clean(self) -> None:
-        for defers, pauses in [(False, False), (True, False), (True, True)]:
-            Mode(name="ok", defers_questions=defers, pauses_self_pump=pauses).clean()
-
-    def test_presence_sensitive_defaults_true(self) -> None:
-        assert Mode(name="x").presence_sensitive is True
+    def test_no_posture_boolean_survives_on_the_model(self) -> None:
+        field_names = {field.name for field in Mode._meta.get_fields()}
+        assert {"defers_questions", "pauses_self_pump", "presence_sensitive"} & field_names == set()
 
 
 class TestLoopPresetTriState(django.test.SimpleTestCase):
@@ -67,7 +57,7 @@ class TestLoopPresetOverride(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestLowPowerAutoEngage(django.test.TestCase):
     def setUp(self) -> None:
-        Mode.objects.create(name="low-power", entries={"inbox": True})
+        Mode.objects.create(name="low-token", entries={"inbox": True})
         self.reset = timezone.now() + dt.timedelta(hours=2)
 
     def _enable(self) -> None:
@@ -81,14 +71,14 @@ class TestLowPowerAutoEngage(django.test.TestCase):
         self._enable()
         assert ModeOverride.objects.auto_engage_low_power(resets_at=self.reset) is True
         override = ModeOverride.objects.current()
-        assert override.preset_name == "low-power"
+        assert override.preset_name == "low-token"
         assert override.until == self.reset
 
     def test_never_overwrites_a_live_user_override(self) -> None:
         self._enable()
-        ModeOverride.objects.set_override("engaged", reason="user hold")
+        ModeOverride.objects.set_override("present", reason="user hold")
         assert ModeOverride.objects.auto_engage_low_power(resets_at=self.reset) is False
-        assert ModeOverride.objects.current().preset_name == "engaged"
+        assert ModeOverride.objects.current().preset_name == "present"
 
     def test_no_op_when_target_preset_absent(self) -> None:
         self._enable()
@@ -109,6 +99,6 @@ class TestLowPowerAutoEngage(django.test.TestCase):
         assert ModeOverride.objects.current() is None
 
     def test_clear_leaves_a_user_override_intact(self) -> None:
-        ModeOverride.objects.set_override("engaged", reason="user hold")
+        ModeOverride.objects.set_override("present", reason="user hold")
         assert ModeOverride.objects.clear_auto_engaged_low_power() is False
-        assert ModeOverride.objects.current().preset_name == "engaged"
+        assert ModeOverride.objects.current().preset_name == "present"

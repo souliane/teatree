@@ -117,13 +117,21 @@ class TestMirrorHandler(TestCase):
         mock_post.assert_not_called()
 
 
-class TestPresentModeMirrorsButDoesNotDeny(TestCase):
-    """Present-mode AskUserQuestion mirrors to Slack and is NOT denied (#182).
+class TestAttendedTurnMirrorsButDoesNotDeny(TestCase):
+    """An attended AskUserQuestion mirrors to Slack and is NOT denied (#182).
 
-    In present mode the question still renders in the client; the mirror
-    only ADDS a Slack DM so the user sees it on their phone too. The
-    handler must never deny — denying would suppress the in-client prompt.
+    On an attended turn the question still renders in the client; the mirror
+    only ADDS a Slack DM so the user sees it on their phone too. The handler
+    must never deny — denying would suppress the in-client prompt. The #4202
+    mode collapse replaced "present mode" with the live-turn/loop-ownership
+    predicates directly, so "attended" is pinned here the same way
+    ``TestMirrorHandler`` pins it above: a live user turn.
     """
+
+    def setUp(self) -> None:
+        live_turn = patch.object(router, "_is_live_user_turn", lambda _data: True)
+        live_turn.start()
+        self.addCleanup(live_turn.stop)
 
     def _payload(self) -> dict:
         return {
@@ -131,15 +139,12 @@ class TestPresentModeMirrorsButDoesNotDeny(TestCase):
             "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}]}]},
         }
 
-    def test_present_mode_posts_and_returns_false(self) -> None:
+    def test_attended_turn_posts_and_returns_false(self) -> None:
         with (
-            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
-            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
         ):
-            away_verdict = router.handle_route_away_mode_question(self._payload())
             mirror_verdict = router.handle_mirror_question_to_slack(self._payload())
-        assert away_verdict is False
         assert mirror_verdict is False
         mock_post.assert_called_once()
 
@@ -227,10 +232,10 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         state_dir.start()
         self.addCleanup(state_dir.stop)
 
-    def _payload(self, **extra: str) -> dict:
+    def _payload(self, question: str = "Ship it?", **extra: str) -> dict:
         payload: dict = {
             "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}, {"label": "No"}]}]},
+            "tool_input": {"questions": [{"question": question, "options": [{"label": "Yes"}, {"label": "No"}]}]},
         }
         payload.update(extra)
         return payload
@@ -238,7 +243,6 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_loop_driven_present_turn_denies_with_row_id(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_perform_slack_post", return_value="1700.0001"),
@@ -259,7 +263,6 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_live_user_turn_mirrors_without_deny(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=True),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_perform_slack_post", return_value="1700.0002") as mock_post,
@@ -275,7 +278,6 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_attended_non_owner_turn_mirrors_without_deny(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=False),
             patch.object(router, "_perform_slack_post", return_value="1700.0003") as mock_post,
@@ -291,7 +293,6 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_supersession_marks_prior_generation_stale(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_perform_slack_post", side_effect=["1700.0001", "1700.0005"]),
@@ -300,7 +301,9 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         ):
             router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
             self.drain_stdout()
-            router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
+            # A byte-identical re-ask is a harness RETRY (#4202) and binds to the live row,
+            # so supersession is only reachable from a genuinely different question.
+            router.handle_mirror_question_to_slack(self._payload("Merge it?", session_id="s-loop", run_id="r1"))
         self.drain_stdout()
         rows = list(DeferredQuestion.objects.order_by("generation"))
         assert len(rows) == 2
@@ -311,7 +314,6 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
 
     def test_teatree_unavailable_fails_open_no_deny(self) -> None:
         with (
-            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_capture_and_defer_question", return_value=None),

@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import ClassVar
 
 import pytest
@@ -50,6 +51,44 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(self.body)))
         self.end_headers()
         self.wfile.write(self.body)
+
+
+@dataclass
+class _BlackHole:
+    """A listener that completes the TCP handshake and never answers — every GET read-times-out."""
+
+    url: str
+    connections: list[socket.socket]
+
+
+@pytest.fixture
+def black_hole_server() -> Iterator[_BlackHole]:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(32)
+    listener.settimeout(0.05)
+    black_hole = _BlackHole(url=f"http://127.0.0.1:{listener.getsockname()[1]}", connections=[])
+    stop = threading.Event()
+
+    def _accept_and_hold() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            black_hole.connections.append(conn)
+
+    thread = threading.Thread(target=_accept_and_hold, daemon=True)
+    thread.start()
+    try:
+        yield black_hole
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+        for conn in black_hole.connections:
+            conn.close()
+        listener.close()
 
 
 @pytest.fixture
@@ -156,7 +195,60 @@ class TestHTTPProbe:
         )
         result = probe.check()
         assert result.passed is False
-        assert "after 2 retries" in result.reason
+        assert "after 3 attempts" in result.reason
+
+
+class TestHTTPProbeRetryPredicate:
+    """A read timeout is a transport failure and must be retried like a connection error."""
+
+    def test_retries_on_read_timeout(self, black_hole_server: _BlackHole) -> None:
+        probe = http_probe(
+            name="warming",
+            description="d",
+            spec=HTTPProbeSpec(
+                url=f"{black_hole_server.url}/",
+                timeout_seconds=0.2,
+                retries=2,
+                retry_delay=0.01,
+            ),
+        )
+        result = probe.check()
+        assert result.passed is False
+        assert "ReadTimeout" in result.reason
+        assert "after 3 attempts" in result.reason
+        assert len(black_hole_server.connections) == 3
+
+    def test_reports_one_attempt_rather_than_the_configured_ceiling(self) -> None:
+        probe = http_probe(
+            name="typo",
+            description="d",
+            spec=HTTPProbeSpec(url="htp://127.0.0.1:1/", retries=20, retry_delay=5.0),
+        )
+        started = time.monotonic()
+        result = probe.check()
+        elapsed = time.monotonic() - started
+        assert result.passed is False
+        assert "after 1 attempt" in result.reason
+        assert "20" not in result.reason
+        assert elapsed < 1.0
+
+    def test_backoff_delay_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        slept: list[float] = []
+        monkeypatch.setattr(time, "sleep", slept.append)
+        port = _free_port()
+        probe = http_probe(
+            name="capped",
+            description="d",
+            spec=HTTPProbeSpec(
+                url=f"http://127.0.0.1:{port}/",
+                timeout_seconds=0.5,
+                retries=4,
+                retry_delay=1.0,
+                max_retry_delay=2.0,
+            ),
+        )
+        assert probe.check().passed is False
+        assert slept == [1.0, 2.0, 2.0, 2.0]
 
     def test_checks_response_header_value(self, http_server: tuple[str, type[_Handler]]) -> None:
         url, handler = http_server

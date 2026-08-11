@@ -10,6 +10,7 @@ seeded production loops.
 """
 
 import datetime as dt
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import django.test
@@ -48,7 +49,10 @@ _ADMITTED_SEAM = "teatree.loops.loop_table.admitted_loop_names"
 # and the suppression arm read, so patching it here moves BOTH — a patch that moved
 # only one would recreate the two-resolver split #4196 removed.
 _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
-_HOLDS_SEAM = "teatree.loop.loop_state_db.control_planes_in_db"
+# The IMPORT-SITE binding, not the definition: ``enable_verdict`` binds this name at
+# module import, so a patch on ``teatree.loop.loop_state_db`` resolves fine and still
+# never reaches the read — a dead mock that only LOOKS like it stubs the planes.
+_HOLDS_SEAM = "teatree.loops.enable_verdict.control_planes_in_db"
 
 
 def _mini(name: str, *, off_live_tick: bool = False) -> MiniLoop:
@@ -80,12 +84,8 @@ def _loop(
     )
 
 
-def _mode(name: str = "engaged", *, entries: dict[str, bool] | None = None, defers: bool = False) -> ResolvedMode:
-    return ResolvedMode(
-        mode=Mode(name=name, entries=entries or {}, defers_questions=defers),
-        source="override",
-        until=None,
-    )
+def _mode(name: str = "present", *, entries: dict[str, bool] | None = None) -> ResolvedMode:
+    return ResolvedMode(mode=Mode(name=name, entries=entries or {}), source="override", until=None)
 
 
 class _LoopTableCase(django.test.TestCase):
@@ -301,13 +301,13 @@ class TestSuppressionClassification(_LoopTableCase):
         ):
             return stale_loops(timezone.now())[0]
 
-    def test_colleague_loop_is_suppressed_while_questions_defer(self) -> None:
+    def test_a_loop_the_mode_masks_off_is_suppressed(self) -> None:
         _loop("review", ran_ago=dt.timedelta(hours=7), colleague_facing=True)
-        assert self._stale_one(name="unattended", defers=True).suppressed
+        assert self._stale_one(name="away", entries={"review": False}).suppressed
 
-    def test_colleague_loop_is_not_suppressed_while_questions_are_live(self) -> None:
+    def test_a_loop_the_mode_admits_is_not_suppressed(self) -> None:
         _loop("review", ran_ago=dt.timedelta(hours=7), colleague_facing=True)
-        assert not self._stale_one(name="engaged", defers=False).suppressed
+        assert not self._stale_one(name="present", entries={"review": True}).suppressed
 
     def test_unmasked_loop_is_not_suppressed(self) -> None:
         _loop("review", ran_ago=dt.timedelta(hours=7))
@@ -316,20 +316,27 @@ class TestSuppressionClassification(_LoopTableCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestLoopHealth(_LoopTableCase):
-    def _health(self, *, admitted: list[str], mode: ResolvedMode, registry: tuple[MiniLoop, ...]) -> LoopHealth:
-        with (
-            patch(_REGISTRY_SEAM, return_value=registry),
-            patch(_ADMITTED_SEAM, return_value=admitted),
-            patch(_MODE_SEAM, return_value=mode),
-            patch(_HOLDS_SEAM, return_value=(set(), {})),
-        ):
+    def _health(
+        self,
+        *,
+        admitted: list[str],
+        mode: ResolvedMode,
+        registry: tuple[MiniLoop, ...],
+        stub_planes: bool = True,
+    ) -> LoopHealth:
+        with ExitStack() as stack:
+            stack.enter_context(patch(_REGISTRY_SEAM, return_value=registry))
+            stack.enter_context(patch(_ADMITTED_SEAM, return_value=admitted))
+            stack.enter_context(patch(_MODE_SEAM, return_value=mode))
+            if stub_planes:
+                stack.enter_context(patch(_HOLDS_SEAM, return_value=(set(), {})))
             return loop_health(timezone.now())
 
     def test_health_is_ok_when_every_loop_advances(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(seconds=60))
         health = self._health(admitted=["tickets"], mode=_mode(), registry=(_mini("tickets"),))
         assert health.ok
-        assert health.lines() == ["mode: engaged (source=override) — 1/1 admitted loop(s) due"]
+        assert health.lines() == ["mode: present (source=override) — 1/1 admitted loop(s) due"]
 
     def test_healthy_fleet_that_is_simply_not_due_is_ok(self) -> None:
         # Admission requires ``is_due``, so a fleet that ticked a second ago admits
@@ -350,7 +357,7 @@ class TestLoopHealth(_LoopTableCase):
         ):
             verdict = admission(timezone.now())
         assert isinstance(verdict, Admission)
-        assert verdict.mode == "engaged"
+        assert verdict.mode == "present"
         assert verdict.source == "override"
         assert verdict.admitted == ("tickets",)
         assert verdict.admitted_total == 1
@@ -362,14 +369,14 @@ class TestLoopHealth(_LoopTableCase):
             _loop(name, ran_ago=dt.timedelta(hours=7))
         health = self._health(
             admitted=[],
-            mode=_mode(name="offline", entries=dict.fromkeys(names, False), defers=True),
+            mode=_mode(name="off", entries=dict.fromkeys(names, False)),
             registry=tuple(_mini(name) for name in names),
         )
         rendered = "\n".join(health.lines())
         assert not health.ok
         assert health.frozen_fleet
         assert "ticking NOTHING" in rendered
-        assert "'offline'" in rendered
+        assert "'off'" in rendered
         assert "loop preset auto" in rendered
 
     def test_one_deliberately_suppressed_loop_does_not_fail(self) -> None:
@@ -379,7 +386,7 @@ class TestLoopHealth(_LoopTableCase):
         _loop("review", ran_ago=dt.timedelta(hours=7), colleague_facing=True)
         health = self._health(
             admitted=["tickets"],
-            mode=_mode(name="unattended", defers=True),
+            mode=_mode(name="away", entries={"review": False}),
             registry=(_mini("tickets"), _mini("review")),
         )
         rendered = "\n".join(health.lines())
@@ -395,16 +402,28 @@ class TestLoopHealth(_LoopTableCase):
         # arm no health-verdict test exercised.
         _loop("tickets", ran_ago=dt.timedelta(seconds=30))
         _loop("review", ran_ago=dt.timedelta(hours=7))
+        # The forced plane is this test's INPUT, so it reads the real one — stubbing it
+        # empty would grade the arm against a plane the test never wrote.
         LoopState.objects.override("review", on=False)
         health = self._health(
             admitted=["tickets"],
             mode=_mode(),
             registry=(_mini("tickets"), _mini("review")),
+            stub_planes=False,
         )
         rendered = "\n".join(health.lines())
         assert health.ok
         assert [loop.name for loop in health.stale if loop.suppressed] == ["review"]
         assert "FAIL" not in rendered
+
+    def test_the_planes_stub_reaches_the_read_path(self) -> None:
+        # Harness pin, not a product claim. Pointed at the DEFINITION module the patch
+        # still resolves, stubs nothing, and the DB hold below quietly governs instead —
+        # which is how the force-masked test above came to pass on a dead mock (#4237).
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        LoopState.objects.pause("review")
+        health = self._health(admitted=[], mode=_mode(), registry=(_mini("review"),))
+        assert [loop.suppressed for loop in health.stale] == [False]
 
     def test_unexplained_stale_loop_fails_even_beside_healthy_ones(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(seconds=30))
@@ -424,10 +443,10 @@ class TestLoopHealth(_LoopTableCase):
         _loop("tickets", ran_ago=dt.timedelta(hours=7))
         payload = self._health(
             admitted=[],
-            mode=_mode(name="offline", entries={"tickets": False}),
+            mode=_mode(name="off", entries={"tickets": False}),
             registry=(_mini("tickets"),),
         ).as_json()
-        assert payload["mode"] == "offline"
+        assert payload["mode"] == "off"
         assert payload["mode_source"] == "override"
         assert payload["admitted"] == []
         # An all-off mask makes the loop a non-member — nothing is CHAINED to drive it —
@@ -444,7 +463,7 @@ class TestLoopHealth(_LoopTableCase):
         rendered = "\n".join(
             self._health(
                 admitted=[],
-                mode=_mode(name="offline", entries=dict.fromkeys(names, False)),
+                mode=_mode(name="off", entries=dict.fromkeys(names, False)),
                 registry=tuple(_mini(name) for name in names),
             ).lines()
         )
@@ -469,13 +488,13 @@ class TestFrozenFleetPredicate(django.test.SimpleTestCase):
     def test_a_box_with_no_measured_loops_is_not_frozen(self) -> None:
         # No loops to judge is idle by configuration, not a freeze — the alarm needs a
         # denominator before "all of them are behind" means anything.
-        verdict = Admission(mode="offline", source="override", admitted=(), admitted_total=0)
+        verdict = Admission(mode="off", source="override", admitted=(), admitted_total=0)
         assert not LoopHealth(admission=verdict, stale=(), considered=0).frozen_fleet
 
     def test_all_suppressed_still_counts_as_a_frozen_fleet(self) -> None:
         # Precisely the incident: every loop off ON PURPOSE, and forgotten. Deliberate
         # does not mean fine once it is total.
-        verdict = Admission(mode="offline", source="override", admitted=(), admitted_total=2)
+        verdict = Admission(mode="off", source="override", admitted=(), admitted_total=2)
         health = LoopHealth(
             admission=verdict,
             stale=(self._stale("tickets", suppressed=True), self._stale("ship", suppressed=True)),
@@ -523,7 +542,7 @@ class TestDriverlessLoops(django.test.SimpleTestCase):
 class TestDriverlessHealthVerdict(django.test.SimpleTestCase):
     @staticmethod
     def _verdict() -> Admission:
-        return Admission(mode="engaged", source="override", admitted=("tickets",), admitted_total=1)
+        return Admission(mode="present", source="override", admitted=("tickets",), admitted_total=1)
 
     def test_a_driverless_loop_fails_health_even_with_nothing_stale(self) -> None:
         health = LoopHealth(admission=self._verdict(), stale=(), considered=1, driverless=("directive_loop",))

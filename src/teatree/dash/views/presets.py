@@ -73,9 +73,9 @@ def preset_use(request: "HttpRequest") -> "HttpResponse":
     name = request.POST.get("preset", "").strip()
     try:
         if name == "auto":
-            clear_preset_override(user_id=actor(request))
+            clear_preset_override()
         else:
-            activate_preset(name, hold=True, reason="dashboard", user_id=actor(request))
+            activate_preset(name, hold=True, reason="dashboard")
     except PresetEditError as exc:
         return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:use", after=name)

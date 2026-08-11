@@ -242,6 +242,10 @@ def _resolve_text(directive: StandingDirective, overrides: dict[str, str]) -> st
 #: WARNING with ``exc_info=True``.
 _MODE_READ_LOGGERS = ("teatree.core.mode_resolution", "teatree.loop.preset_resolution")
 
+#: The loop the Stop self-pump drives. A mode that masks it OFF is not self-driving,
+#: so a self-waking directive slot has nothing to wake into.
+SELF_PUMP_LOOP = "dispatch"
+
 
 def _drop_record(_record: logging.LogRecord) -> bool:
     return False
@@ -271,7 +275,7 @@ def _mode_read_unlogged() -> Iterator[None]:
 
 
 def _self_pump_paused() -> bool:
-    """Whether the active mode pauses the self-pump — a self-waking directive IS one.
+    """Whether the active mode masks the self-pump's loop OFF — a self-waking directive IS one.
 
     Reads the MERGED mode (#4196), never the L3/L2 preset layer: that layer stops
     at ``None`` when neither an override nor a schedule slot governs, so it cannot
@@ -279,13 +283,12 @@ def _self_pump_paused() -> bool:
     live-presence upgrade. Braking a self-waking directive on it would suppress
     the rule at a scheduled away slot the owner is demonstrably typing into.
 
-    Fails OPEN to delivering. The polarity matches this module's doctrine
-    everywhere else: an unresolvable state degrades to delivering the rule, never
-    to silently suppressing it. Only a positively-resolved away mode brakes.
+    Fails OPEN to delivering: only an explicit force-OFF brakes, so a mode holding no
+    opinion (tri-state ``None``) and an unresolvable one both still deliver.
     """
     try:
         with _mode_read_unlogged():
-            return resolve_active_mode().pauses_self_pump
+            return resolve_active_mode().state_for(SELF_PUMP_LOOP) is False
     except Exception:  # noqa: BLE001 — an unresolvable mode degrades to delivering.
         return False
 

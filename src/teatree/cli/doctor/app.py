@@ -18,6 +18,7 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_provision_concurrency_from_host,
     run_bootstrap_checks,
 )
+from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _check_cold_hook_settings_readable,
@@ -417,9 +418,8 @@ def _run_config_posture_advisories() -> None:
 
     Two readings of the same question, "is the box configured the way anyone thinks it is":
 
-    *   #3274 — a no-expiry away / autonomous_away mode override that has sat past the
-        staleness threshold, silently suppressing the colleague-facing loops (and pausing
-        the self-pump under holiday-away) the whole time.
+    *   #3274 — a no-expiry mode override that has sat past the staleness threshold,
+        silently masking whichever loops it forces off the whole time.
     *   #4074 — every stored ``ConfigSetting`` row whose value differs from the shipped
         default, i.e. a row still shadowing a default that has since moved underneath it.
     *   #4189 — every gated feature that is off in every scope and whose declared evidence
@@ -549,7 +549,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # raised ceiling; and its age is the only one of the three that can say the refresh
     # has stopped rather than merely fallen behind (#4130). All surface here rather than
     # as a shard timeout reddening a PR whose diff could not have caused it (#4048). The
-    # tuple calls all eight before ``all`` short-circuits, so no finding masks another.
+    # last one is a clone's git config rather than an artifact: a branch tracking someone
+    # else's ref leaves push.default's unchosen default as the only thing aiming a routine
+    # push away from main (#4225). The tuple calls all nine before ``all`` short-circuits,
+    # so no finding masks another.
     ok = (
         all(
             (
@@ -561,6 +564,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_test_durations_coverage(),
                 check_test_durations_freshness(),
                 check_test_timeout_headroom(),
+                check_branch_upstreams(),
             )
         )
         and ok

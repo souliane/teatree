@@ -135,8 +135,6 @@ from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branc
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write, is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
-from hooks.scripts.mode_posture_probe import resolved_defers_questions as _resolved_defers_questions
-from hooks.scripts.mode_posture_probe import resolved_pauses_self_pump as _resolved_pauses_self_pump_stdlib
 from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
     extract_api_mr_fields,
@@ -154,6 +152,8 @@ from hooks.scripts.plan_edit_gate import handle_block_edit_before_planned, skip_
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
+    denied_question_dedupe_key,
+    denied_question_row_marker,
     handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
@@ -657,11 +657,10 @@ def handle_user_prompt_submit(data: dict) -> None:
 def handle_record_presence(data: dict) -> None:
     """Stamp a live-presence heartbeat — a prompt proves the user is here.
 
-    Both mode readers — ``core.mode_resolution`` and the Django-free
-    ``config.cold_mode`` — read this stamp to upgrade a schedule-derived
-    deferring mode to a reachable one: a user actively submitting prompts is
-    demonstrably reachable, so their ``AskUserQuestion`` calls must not be
-    deferred just because the clock is outside their configured work hours.
+    ``core.mode_resolution`` reads this stamp to upgrade a schedule-derived mode to
+    the configured presence-upgrade mode: a user actively submitting prompts is
+    demonstrably here, so the loops must not stay masked off just because the clock
+    is outside their configured work hours.
     Fail-open and silent — an unwritable heartbeat never blocks the prompt.
     """
     prompt = data.get("prompt")
@@ -4258,25 +4257,6 @@ def handle_loop_self_pump(data: dict) -> bool | None:
 _DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
 
 
-def _pause_suppresses_self_pump() -> bool:
-    """True when an explicit user pause must win over the standing loop directive.
-
-    The self-pump is teatree's own re-firing Stop directive (#2247/#2250). Only the
-    holiday posture (``pauses_self_pump``) parks it — an unattended mode defers
-    questions but keeps the factory running (#2544), so it is correctly NOT a pause
-    here.
-
-    FAIL SAFE — suppress on a raising probe: the stdlib probe already collapses an
-    unreadable posture to "does not pause" (it fails toward asking, #3826), which
-    here would mean "keep pumping"; this arm additionally suppresses if the call
-    itself raises, so the pump runs ONLY when the posture resolved cleanly.
-    """
-    try:
-        return _resolved_pauses_self_pump()
-    except Exception:  # noqa: BLE001 — indeterminate ⇒ suppress (allow stop, never nag through a pause)
-        return True
-
-
 def _self_pump_suppressed(session_id: str) -> bool:
     """Is the Stop self-pump gated off for this session (#959)?
 
@@ -4304,14 +4284,10 @@ def _self_pump_suppressed(session_id: str) -> bool:
     even the owner's Stop hook a clean no-op, so a session can stop driving
     the loop in-process without touching the registry or ending the session.
 
-    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) also
-    gates it off.
     """
     if db_loop_state_suppresses_self_pump():
         return True
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
-        return True
-    if _pause_suppresses_self_pump():
         return True
     return not _session_owns_loop(session_id)
 
@@ -4738,43 +4714,37 @@ def _post_question_to_slack(data: dict) -> None:
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
-    """Mirror a present-mode ``AskUserQuestion`` to Slack; deny a loop-driven one (#1174).
+    """Mirror an ``AskUserQuestion`` to Slack; deny a loop-driven one (#1174).
 
-    Runs LAST in the PreToolUse chain (the away handler ran first and
-    already short-circuited an away turn). Three present-mode arms:
+    Runs LAST in the PreToolUse chain. Three arms — live user turn / attended
+    non-owner turn: capture, mirror, return ``False`` so the question renders
+    in-client (#2058 slides the live window forward on the live arm, the #189
+    escape); loop-driven / autonomous turn: capture a generation-stamped
+    mirror-linked ``DeferredQuestion``, deduped against a harness retry of the
+    SAME denied call, then deny so the agent narrates the deferral and proceeds
+    — the answer arrives later via ``additionalContext``.
 
-    - live user turn (the user typed a prompt seconds ago, in this
-    session) — capture and mirror, then return ``False`` so the question
-    renders in-client. Preserves ``TestPresentModeMirrorsButDoesNotDeny``
-    and the #189 live-turn escape.
-    - attended non-owner turn (a different live session owns the loop; a
-    human is reading the prose) — same: capture, mirror, return ``False``.
-    - loop-driven / autonomous turn (this session drives the loop, or
-    there is no live owner) — the broken path: rendering in-client
-    suspends the session with no way for a Slack reply to reach it.
-    Instead capture a generation-stamped mirror-linked
-    ``DeferredQuestion``, then deny so the agent narrates the deferral and
-    proceeds; the answer arrives later via ``additionalContext``.
-
-    All three arms now record the question (#3642). The interactive arms used to
-    post the DM WITHOUT a row, which made the mirror unanswerable — a Slack reply had
-    no live generation to bind, and an owner who walked away from the terminal lost the
-    question entirely. Recording puts it in the same owner-thread queue the headless
-    lane feeds (:mod:`teatree.core.owner_threads`); the fast path is unchanged because
-    the arm still returns ``False`` and the modal renders. An in-client answer resolves
-    the row via :func:`handle_resolve_answered_question`, so neither surface can apply
-    an answer the other already took.
+    All three arms record the question (#3642) so a Slack reply always has a live
+    generation to bind and an in-client answer resolves it via
+    :func:`handle_resolve_answered_question` — neither surface can apply an answer
+    the other already took.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
-    if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
-        if _capture_and_defer_question(data, mode="present") is None:
+    live = _is_live_user_turn(data)
+    if live or not _session_drives_loop(str(data.get("session_id", ""))):
+        if live:
+            # #2058: an already-live turn rendering in-client is fresh evidence the user
+            # is still driving, so the NEXT question in the same walk-through stays live
+            # across an intervening notification turn (which never stamps a heartbeat).
+            _refresh_live_turn(data)
+        if _capture_and_defer_question(data) is None:
             _post_question_to_slack(data)
         return False
     if not str(_first_question(data).get("question", "")).strip():
         _post_question_to_slack(data)
         return False
-    queue_id = _capture_and_defer_question(data, mode="present")
+    queue_id = _capture_and_defer_question(data, dedupe=True)
     if queue_id is None:
         # Teatree unavailable — fail open so the in-client modal renders.
         return False
@@ -4787,33 +4757,10 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
-_AWAY_MIRROR_SUFFIX = "away-question-mirror"
-
-
-def _away_mirror_key(question: dict) -> str:
-    """Stable hash of the recorded question — the idempotency key.
-
-    The marker file is already namespaced by ``session_id`` (it is the
-    ``_state_file`` name), so the hash need not repeat the session.
-    """
-    blob = json.dumps(question, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def _mirror_question_to_slack(question: dict, session_id: str, *, mode: str) -> tuple[str, str]:
+def _mirror_question_to_slack(question: dict) -> tuple[str, str]:
     """Post the single recorded question to the user's Slack DM; return ``(ts, channel)``.
 
-    Both the away-mode handler and the present-mode deny arm mirror through
-    here (the user reads Slack, not ``t3 teatree questions list``). Mirrors only
-    the single recorded question, not the full payload, so the DM never
-    shows more rows than are answerable. In ``away`` mode an idempotent
-    session-namespaced STATE_DIR marker keyed on a stable hash of the
-    question stops a harness retry of the same tool call double-posting;
-    present mode relies on generation supersession instead. The returned
-    ``ts``/``channel`` link the mirror DM to its :class:`DeferredQuestion`
-    so a later Slack reply can bind the live generation. Fail-open: any
-    Slack/IO error yields ``("", "")`` so the deny is never blocked and
-    the loop never wedges.
+    Fail-open: any Slack/IO error yields ``("", "")`` so the deny is never blocked.
     """
     if not question:
         return "", ""
@@ -4821,23 +4768,10 @@ def _mirror_question_to_slack(question: dict, session_id: str, *, mode: str) -> 
     if slack_cfg is None:
         return "", ""
     try:
-        if mode == "away":
-            key = _away_mirror_key(question)
-            marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
-            if key in _read_lines(marker):
-                return "", ""
-            ts = _perform_slack_post(slack_cfg, [question])
-            with contextlib.suppress(OSError):
-                _ensure_state_dir()
-                _append_line(marker, key)
-        else:
-            ts = _perform_slack_post(slack_cfg, [question])
+        ts = _perform_slack_post(slack_cfg, [question])
     except Exception:  # noqa: BLE001 — a Slack failure never blocks the capture/deny.
         return "", ""
     return ts, _read_dm_channel_cache(slack_cfg[1])
-
-
-# ── PreToolUse: route-away-mode-question (#58, BLUEPRINT §17.1 invariant 9) ────
 
 
 def _run_id(data: dict) -> str:
@@ -4854,7 +4788,7 @@ def _run_id(data: dict) -> str:
 
 
 def _options_hash(options: list[dict]) -> str:
-    """SHA-256 of canonicalized options — same shape as :func:`_away_mirror_key`."""
+    """SHA-256 of canonicalized options — the stable identity a re-ask is matched on."""
     blob = json.dumps(options, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -4865,16 +4799,19 @@ def _first_question(data: dict) -> dict:
     return first if isinstance(first, dict) else {}
 
 
-def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
+def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | None:
     """Record one mirror-linked ``DeferredQuestion`` and post it to Slack.
 
-    The single chokepoint both the away-mode handler and the present-mode
-    deny arm call (#1174). It supersedes any pending older-generation row
-    for the same (session, run), posts the question to the user's Slack DM
-    capturing the posted ``ts``, and records the row with its mirror
-    fields so the reply matcher can bind a later Slack reply to exactly
-    this generation. Returns the new row id, or ``None`` when teatree is
-    unavailable (the caller then fails open — the in-client modal renders).
+    The single chokepoint every ``AskUserQuestion`` arm calls (#1174). It supersedes
+    any pending older-generation row for the same (session, run), posts the question
+    to the user's Slack DM capturing the posted ``ts``, and records the row with its
+    mirror fields so the reply matcher can bind a later Slack reply to exactly this
+    generation. Returns the new row id, or ``None`` when teatree is unavailable (fails
+    open — the in-client modal renders).
+
+    *dedupe* (the loop-driven deny arm) makes the row itself the idempotency record: a
+    harness retry returns the live row rather than superseding it into a mirrorless twin
+    ``live_for_reply`` cannot bind, which silently drops the operator's Slack answer.
     """
     if not bootstrap_teatree_django():
         return None
@@ -4889,42 +4826,33 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
     options = first.get("options", []) if isinstance(first.get("options"), list) else []
     session_id = str(data.get("session_id", ""))
     run_id = _run_id(data)
+    marker = denied_question_row_marker(session_id, denied_question_dedupe_key(first)) if dedupe else ""
     try:
+        row = DeferredQuestion.pending().filter(dedupe_marker=marker).first() if marker else None
         generation = DeferredQuestion.next_generation(session_id=session_id, run_id=run_id)
-        for prior in DeferredQuestion.objects.filter(
-            session_id=session_id, run_id=run_id, answered_at__isnull=True, dismissed_at__isnull=True
-        ):
-            prior.mark_stale("superseded by newer question")
+        if row is None:
+            for prior in DeferredQuestion.pending().filter(session_id=session_id, run_id=run_id):
+                prior.mark_stale("superseded by newer question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
-    slack_ts, slack_channel = _mirror_question_to_slack(first, session_id, mode=mode)
-    try:
-        row = DeferredQuestion.record(
-            question_text,
-            options_json=json.dumps(options) if options else "",
-            session_id=session_id,
-            tool_use_id=str(data.get("tool_use_id", "")),
-            slack_ts=slack_ts,
-            slack_channel=slack_channel,
-            options_hash=_options_hash(options),
-            generation=generation,
-            run_id=run_id,
-        )
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+    if row is None:
+        slack_ts, slack_channel = _mirror_question_to_slack(first)
+        try:
+            row = DeferredQuestion.record(
+                question_text,
+                options_json=json.dumps(options) if options else "",
+                session_id=session_id,
+                tool_use_id=str(data.get("tool_use_id", "")),
+                slack_ts=slack_ts,
+                slack_channel=slack_channel,
+                options_hash=_options_hash(options),
+                generation=generation,
+                run_id=run_id,
+                dedupe_marker=marker,
+            )
+        except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+            return None
     return int(row.pk)
-
-
-def _resolved_pauses_self_pump() -> bool:
-    """True when the active mode parks the Stop self-pump (#3826, #2559).
-
-    Delegates to the stdlib sibling
-    :func:`mode_posture_probe.resolved_pauses_self_pump`, which cold-reads the mode
-    posture off the control DB — the bare-``python3`` hook has no ``uv`` env, so an
-    in-process ``django.setup()`` cannot be relied on. The thin wrapper stays here as
-    the single patchable seam every caller and test already targets.
-    """
-    return _resolved_pauses_self_pump_stdlib()
 
 
 def _is_live_user_turn(data: dict) -> bool:
@@ -4966,64 +4894,6 @@ def _refresh_live_turn(data: dict) -> None:
         PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
-
-
-def handle_route_away_mode_question(data: dict) -> bool:
-    """Convert an ``AskUserQuestion`` to a ``DeferredQuestion`` when availability=away.
-
-    Runs FIRST in the PreToolUse chain for ``AskUserQuestion`` and denies,
-    short-circuiting the chain before the present-mode
-    ``handle_mirror_question_to_slack`` (the last handler) would run. So
-    this handler is the only place that can mirror an away-mode question
-    to the user's Slack DM — and it does, between recording the row and
-    emitting the deny (the user reads Slack, not ``t3 teatree questions list``).
-    Returns ``True`` with a ``permissionDecision=deny`` and a friendly
-    reason that names the recorded row so the agent narrates the
-    conversion correctly. The denied tool_use block still appears in the
-    transcript, so the §807 structured-question Stop gate
-    ``_last_assistant_turn`` detects ``used_question_tool=True`` and lets
-    the turn complete.
-
-    Exception (#189): on a USER-DRIVEN turn — a fresh same-session
-    ``UserPromptSubmit`` within ``LIVE_TURN_FRESHNESS`` — the question
-    renders in-client instead of deferring, even under a manual-away
-    override. That is what lets ``/checking`` walk the user through the
-    backlog without flipping availability. An autonomous / loop-driven
-    turn is not live, so it still defers (invariant 9 intact).
-    """
-    if data.get("tool_name") != "AskUserQuestion":
-        return False
-    if not _resolved_defers_questions():
-        return False
-    if _is_live_user_turn(data):
-        # The user is driving THIS turn (a fresh same-session prompt seconds
-        # ago) — let the question render in-client even under away. This is
-        # the #189 escape that makes `/checking` work without an availability
-        # flip. An autonomous / loop-driven turn is NOT live, so it still
-        # defers below — invariant 9 holds for the loop's own questions.
-        #
-        # Slide the live window forward: the user answering this question is
-        # fresh evidence they are still driving, so the NEXT question in the
-        # same walk-through stays live even after an intervening background
-        # task-notification turn (which never refreshes the heartbeat) — #2058.
-        _refresh_live_turn(data)
-        return False
-    if not str(_first_question(data).get("question", "")).strip():
-        # No question text — fail open rather than emit a deny that
-        # blocks an empty payload the user can debug separately.
-        return False
-    queue_id = _capture_and_defer_question(data, mode="away")
-    if queue_id is None:
-        # Teatree unavailable — fail open so the user is never blocked
-        # by a hook crash. The standard interactive flow then runs.
-        return False
-    reason = (
-        f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
-        f"and the user will answer it via `t3 teatree questions answer {queue_id} <text>`. "
-        "Proceed with any work that does not depend on the answer; the response will surface "
-        "in a future turn's additionalContext when the user resolves it."
-    )
-    return emit_pretooluse_deny(reason)
 
 
 # ── UserPromptSubmit: inject pending-question backlog into context ────────────
@@ -5509,7 +5379,6 @@ _HANDLERS: dict[str, list] = {
     ],
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,
-        handle_route_away_mode_question,
         handle_block_edit_before_planned,
         handle_block_config_overwrite,
         handle_protect_default_branch,

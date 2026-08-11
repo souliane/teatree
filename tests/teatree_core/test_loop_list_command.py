@@ -226,14 +226,14 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
     def test_masked_off_loop_shows_masked(self) -> None:
         Loop.objects.all().delete()
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("heads-down", {"review": False})
+        self._activate("maintenance", {"review": False})
         line = next(ln for ln in _run().splitlines() if "review" in ln)
         assert "masked" in line
 
     def test_forced_on_base_disabled_loop_shows_forced_on(self) -> None:
         Loop.objects.all().delete()
         _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        self._activate("engaged", {"audit": True})
+        self._activate("present", {"audit": True})
         # ``audit`` is a registered loop, so a forced-on row with no timer chain is
         # genuinely ``starved`` and that label wins the column (#4185). Give it a driver
         # so this stays a test of the forced-on label, not of starvation.
@@ -251,7 +251,7 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
     def test_json_carries_admitted_verdict(self) -> None:
         Loop.objects.all().delete()
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("heads-down", {"review": False})
+        self._activate("maintenance", {"review": False})
         review = next(e for e in json.loads(_run_json())["mini_loops"] if e["name"] == "review")
         assert review["admitted"] is False
         assert review["enabled"] is True
@@ -422,8 +422,8 @@ class TestLoopListRendersStarved(django.test.TestCase):
     def setUp(self) -> None:
         Loop.objects.all().delete()
         _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        Mode.objects.create(name="engaged", entries={"audit": True})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.create(name="present", entries={"audit": True})
+        ModeOverride.objects.set_override("present")
 
     def test_a_driverless_admitted_loop_reads_starved(self) -> None:
         with patch(_STARVED_SEAM, return_value={"audit"}):

@@ -596,7 +596,7 @@ seed_setting() {
 #
 # OWNER-INTAKE loops are NEVER forced off here (#3632): `directive_loop` interprets
 # the owner's captured directives and `dispatch` posts deferred owner questions.
-# `autonomous_away` means the human is unreachable *now* — captured intent must
+# an away mode means the human is unreachable *now* — captured intent must
 # QUEUE for later, not be dropped unread. A prior default forced `directive_loop`
 # off on every deploy, so captured owner directives sat uninterpreted for days; the
 # owner-intake set (`t3 loop intake-loops`) is pruned from the DISABLED set below.
@@ -687,7 +687,7 @@ apply_fleet_loop_policy() {
             echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         elif grep -qxF "$loop" <<<"$intake"; then
             dropped+=("$loop")
-            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
+            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even while the owner is away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         else
             pruned_disable+=("$loop")
         fi

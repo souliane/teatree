@@ -43,6 +43,7 @@ import os
 from django.tasks import task
 from django.utils import timezone
 
+from teatree.core.claim_liveness import ClaimOwner, owner_is_executing
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
 from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
@@ -232,14 +233,23 @@ def _headless_task_id(row) -> int | None:  # noqa: ANN001 — duck-typed DBTaskR
 def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 — duck-typed handles
     """Whether a RUNNING ``execute_task`` row is a dead-worker orphan.
 
-    The per-run liveness signal is the ``Task`` lease: the agent runner's
-    heartbeat thread renews it every few seconds, so a live run always keeps
-    ``lease_expires_at`` in the future. A run is dead when its heartbeat has
-    stopped — the lease is absent (the claim was lease-reclaimed back to PENDING)
-    or lapsed into the past. The ``started_at`` floor rules out the brief window
-    between the row going RUNNING and the worker claiming + setting the lease, so
-    a just-started healthy run is never reaped. A vanished ``Task`` row leaves an
-    orphaned DBTaskResult that is likewise dead (and un-re-enqueueable).
+    Two independent liveness signals, and the run is dead only when NEITHER holds.
+
+    The first is the ``Task`` lease: the agent runner's heartbeat thread renews it every
+    few seconds, so a live run keeps ``lease_expires_at`` in the future, and a stopped
+    heartbeat leaves the lease absent (lease-reclaimed back to PENDING) or lapsed. The
+    second is the owner PROCESS (#4164) — a lapsed lease is evidence about the lease
+    alone, and under memory pressure the runner's event loop stalls past its 900s lease
+    while the agent is still producing work. Reaping on the lease alone marked that row
+    FAILED (which does not kill the process) and enqueued a SECOND ``execute_task``; the
+    re-enqueued job's claim CAS treats an expired lease as claimable, so the duplicate won
+    the claim and the ORIGINAL aborted ``LeaseLostError`` — one memory blip costing a run
+    plus a full re-execution, with both agents briefly live on the same worktree.
+
+    The ``started_at`` floor rules out the brief window between the row going RUNNING and
+    the worker claiming + setting the lease, so a just-started healthy run is never reaped.
+    A vanished ``Task`` row leaves an orphaned DBTaskResult that is likewise dead (and
+    un-re-enqueueable).
     """
     from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
@@ -251,7 +261,7 @@ def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 
         return True
     lease = task.lease_expires_at
     heartbeat_live = task.status == Task.Status.CLAIMED and lease is not None and lease > now
-    return not heartbeat_live
+    return not heartbeat_live and not owner_is_executing(ClaimOwner.of(task), task.pk, now=now)
 
 
 def reap_stuck_runs() -> dict[str, int]:
@@ -268,6 +278,14 @@ def reap_stuck_runs() -> dict[str, int]:
     is enqueued so the work resumes. The claim CAS in ``execute_task``
     makes a redundant re-enqueue safe (a second run loses the claim and fails
     cleanly, never double-executes).
+
+    The invariant this must not break: it may not create a second executor for work that
+    is still executing (#4164). The claim CAS alone does not give that — it treats an
+    EXPIRED lease as claimable, so against a live-but-stalled run the duplicate WINS the
+    claim and the original aborts, briefly putting two agents on one worktree.
+    :func:`_headless_run_is_dead` therefore probes the owner process too, and a
+    stalled-but-alive run is left entirely alone — nothing failed, nothing enqueued — so
+    the concurrent-worktree hazard cannot arise from this reaper.
     """
     from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site

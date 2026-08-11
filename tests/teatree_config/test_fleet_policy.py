@@ -103,7 +103,7 @@ class TestUnattendedReseedAdmitsIntakeLoops(django.test.TestCase):
         # The operator opted `directive_loop` in (it ships disabled behind its flag);
         # under the unattended posture it must keep interpreting captured directives.
         Loop.objects.filter(name="directive_loop").update(enabled=True)
-        ModeOverride.objects.set_override("unattended")
+        ModeOverride.objects.set_override("away")
 
         # A box that lists the intake loops in its DISABLED config — the prune is
         # what keeps them runnable (anti-vacuous: without it directive_loop/dispatch

@@ -9,8 +9,9 @@ from django.urls import reverse
 from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.loop import Loop
+from teatree.core.models.loop_preset import Mode
 from teatree.core.models.loop_state import LoopState, LoopStatus
-from teatree.dash.loop_control import LOOP_ACTIONS, POSTURE_ACTIONS
+from teatree.dash.loop_control import LOOP_ACTIONS, MODE_SWITCH_AUTO
 
 
 def _make_loop(name: str = "dashloop") -> Loop:
@@ -21,8 +22,8 @@ def test_control_verbs_are_the_four_paired_actions() -> None:
     assert {"pause", "resume", "disable", "enable"} == LOOP_ACTIONS
 
 
-def test_posture_actions_cover_the_switch() -> None:
-    assert {"reachable", "defer-questions", "pause-everything", "auto"} == POSTURE_ACTIONS
+def test_auto_is_the_one_switch_value_that_is_not_a_mode_name() -> None:
+    assert MODE_SWITCH_AUTO == "auto"
 
 
 class LoopActionPostTestCase(TestCase):
@@ -71,27 +72,25 @@ class LoopActionPostTestCase(TestCase):
         assert resp.status_code == 403
 
 
-class PosturePostTestCase(TestCase):
+class ModeSwitchPostTestCase(TestCase):
     def setUp(self) -> None:
-        self.url = reverse("dash:posture")
+        self.url = reverse("dash:mode-switch")
+        Mode.objects.get_or_create(name="off", defaults={"entries": {}})
         self.addCleanup(clear_mode_override)
 
-    def test_pause_everything_sets_the_offline_mode_override(self) -> None:
-        # The posture token is resolved to the mode carrying it BY ROW: "pause
-        # everything" lands on the seeded holiday 'offline' mode (migration 0022).
-        self.client.post(self.url, {"posture": "pause-everything"})
+    def test_naming_a_mode_sets_the_override(self) -> None:
+        self.client.post(self.url, {"mode": "off"})
         resolved = resolve_active_mode()
-        assert resolved.name == "offline"
-        assert resolved.defers_questions is True
-        assert resolved.pauses_self_pump is True
+        assert resolved.source == "override"
+        assert resolved.name == "off"
 
     def test_auto_clears_the_override(self) -> None:
-        self.client.post(self.url, {"posture": "pause-everything"})
-        self.client.post(self.url, {"posture": "auto"})
+        self.client.post(self.url, {"mode": "off"})
+        self.client.post(self.url, {"mode": "auto"})
         assert resolve_active_mode().source == "default"
 
-    def test_unknown_posture_rejected(self) -> None:
-        resp = self.client.post(self.url, {"posture": "banana"})
+    def test_unknown_mode_rejected(self) -> None:
+        resp = self.client.post(self.url, {"mode": "banana"})
         assert resp.status_code == 400
 
 
@@ -219,7 +218,7 @@ class LoopsHtmxSwapTestCase(TestCase):
 
     def test_every_mutating_form_on_the_page_is_wired_to_swap(self) -> None:
         body = self.client.get(reverse("dash:loops")).content.decode()
-        for action in ("dash:loop_action", "dash:posture", "dash:gate_toggle", "dash:runner_toggle"):
+        for action in ("dash:loop_action", "dash:mode-switch", "dash:gate_toggle", "dash:runner_toggle"):
             marker = f'hx-post="{reverse(action)}"'
             assert marker in body, f"{action} form is not wired to an htmx swap"
 

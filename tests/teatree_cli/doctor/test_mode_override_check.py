@@ -44,69 +44,61 @@ class AvailabilityOverrideDoctorCheckTestCase(TestCase):
             defaults={"delay_seconds": 60, "colleague_facing": True, "script": "src/teatree/loops/review/loop.py"},
         )
 
-    def test_old_no_expiry_deferring_override_warns_and_names_loops(self) -> None:
+    def test_old_no_expiry_suppressing_override_warns_and_names_loops(self) -> None:
         self._seed_review_loop()
-        Mode.objects.update_or_create(name="unattended", defaults={"entries": {}, "defers_questions": True})
-        ModeOverride.objects.set_override("unattended")
+        Mode.objects.update_or_create(name="away", defaults={"entries": {"review": False}})
+        ModeOverride.objects.set_override("away")
         _backdate_override(30)
         out = _run()
         assert "WARN" in out
-        assert "unattended" in out
+        assert "away" in out
         assert "review" in out
 
     def test_no_override_is_silent(self) -> None:
         assert _run() == ""
 
     def test_recent_override_is_silent(self) -> None:
-        Mode.objects.update_or_create(name="unattended", defaults={"entries": {}, "defers_questions": True})
-        ModeOverride.objects.set_override("unattended")
+        self._seed_review_loop()
+        Mode.objects.update_or_create(name="away", defaults={"entries": {"review": False}})
+        ModeOverride.objects.set_override("away")
         _backdate_override(1)
         assert _run() == ""
 
-    def test_present_class_override_is_silent(self) -> None:
-        Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
-        ModeOverride.objects.set_override("engaged")
+    def test_a_mode_that_suppresses_nothing_is_silent(self) -> None:
+        self._seed_review_loop()
+        Mode.objects.update_or_create(name="present", defaults={"entries": {"review": True}})
+        ModeOverride.objects.set_override("present")
         _backdate_override(30)
         assert _run() == ""
 
 
 class TestStaleOverrideFinding:
-    """#3274: `t3 doctor` flags a no-expiry deferring override that has outlived the threshold."""
+    """#3274: `t3 doctor` flags a no-expiry suppressing override that outlived the threshold."""
 
     _NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
-    _LOOPS = ("review", "followup")
+    _LOOPS = ("followup", "review")
 
     def _finding(
         self,
         *,
-        defers: bool = True,
-        pauses: bool = False,
+        suppressed: tuple[str, ...] = _LOOPS,
         has_expiry: bool = False,
         set_at: datetime | None,
-        mode_name: str = "unattended",
+        mode_name: str = "away",
     ) -> str | None:
         posture = OverridePosture(
-            mode_name=mode_name,
-            defers_questions=defers,
-            pauses_self_pump=pauses,
-            has_expiry=has_expiry,
-            set_at=set_at,
+            mode_name=mode_name, suppressed_loops=suppressed, has_expiry=has_expiry, set_at=set_at
         )
-        return stale_override_finding(posture, now=self._NOW, colleague_facing_loops=self._LOOPS)
+        return stale_override_finding(posture, now=self._NOW)
 
-    def test_old_no_expiry_deferring_is_flagged(self) -> None:
+    def test_old_no_expiry_suppressing_is_flagged(self) -> None:
         msg = self._finding(set_at=self._NOW - timedelta(hours=30))
         assert msg is not None
-        assert "unattended" in msg
+        assert "away" in msg
         assert "followup, review" in msg
         # The remediation points at the real mode-set command (``t3 mode`` is not a
         # typer leaf; the mode IS the loop preset post-merge).
         assert "t3 loop preset auto" in msg
-
-    def test_old_no_expiry_pausing_notes_self_pump_park(self) -> None:
-        msg = self._finding(defers=True, pauses=True, mode_name="offline", set_at=self._NOW - timedelta(hours=30))
-        assert msg is not None
-        assert "self-pump" in msg
 
     def test_recent_override_is_not_flagged(self) -> None:
         assert self._finding(set_at=self._NOW - timedelta(hours=1)) is None
@@ -114,8 +106,8 @@ class TestStaleOverrideFinding:
     def test_bounded_override_is_not_flagged(self) -> None:
         assert self._finding(has_expiry=True, set_at=self._NOW - timedelta(hours=30)) is None
 
-    def test_present_class_override_is_not_flagged(self) -> None:
-        assert self._finding(defers=False, set_at=self._NOW - timedelta(hours=30)) is None
+    def test_a_mode_that_suppresses_nothing_is_not_flagged(self) -> None:
+        assert self._finding(suppressed=(), set_at=self._NOW - timedelta(hours=30)) is None
 
     def test_missing_set_at_is_not_flagged(self) -> None:
         assert self._finding(set_at=None) is None

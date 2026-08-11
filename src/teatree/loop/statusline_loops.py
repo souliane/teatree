@@ -399,8 +399,8 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     *   ``mode: <name>`` (schedule/default) / ``mode: manual`` (manual override) —
         the merged operating mode (#61), replacing the old ``preset:`` +
         ``availability:`` handles. The mode name conveys reachability, so an
-        away-class mode (``unattended`` / ``offline``) needs no separate
-        availability segment. A NON-``off`` mode is the summary handle the domain
+        away-class mode (``away``) needs no separate availability segment.
+        A NON-``off`` mode is the summary handle the domain
         loops fold under.
     *   the loop section:
 

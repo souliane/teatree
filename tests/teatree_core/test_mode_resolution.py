@@ -1,10 +1,8 @@
-"""teatree.core.mode_resolution — the unified operating-mode resolver (#61).
+"""teatree.core.mode_resolution — the unified operating-mode resolver (#61, #4202).
 
-Proves the merged ``resolve_active_mode`` satisfies BOTH old surfaces (the
-``.defers_questions`` / ``.pauses_self_pump`` posture predicates and the
-preset ``.state_for`` per-loop opinion), the override→schedule→default
-precedence, the presence-sensitivity upgrade, and the return-to-reachable drain.
-Integration-first against the real DB.
+Proves the override→schedule→default precedence, the per-loop ``.state_for`` opinion a
+resolved mode carries, the presence upgrade, and the refusal to override onto a mode
+name no row carries. Integration-first against the real DB.
 """
 
 import datetime as dt
@@ -17,17 +15,13 @@ import pytest
 from django.utils import timezone
 
 from teatree.core import mode_resolution
-from teatree.core.mode_resolution import (
-    POSTURE_TOKENS,
-    clear_mode_override,
-    posture_label,
-    resolve_active_mode,
-    set_mode_override,
-)
+from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.live_presence import PresenceHeartbeat
 
-_DRAIN = "teatree.core.notify_question_drains.drain_deferred_questions"
+#: Names the #4202 collapse retired. An override onto one must refuse rather than
+#: silently fall open to the configured default.
+RETIRED_MODES = ("engaged", "heads-down", "low-power", "unattended", "offline")
 
 
 class _TmpStateMixin(django.test.TestCase):
@@ -52,62 +46,55 @@ class _TmpStateMixin(django.test.TestCase):
 class TestResolveActiveMode(_TmpStateMixin):
     def setUp(self) -> None:
         super().setUp()
-        self.engaged = Mode.objects.create(
-            name="engaged", entries={"review": True}, defers_questions=False, pauses_self_pump=False
-        )
-        self.unattended = Mode.objects.create(
-            name="unattended", entries={"review": False}, defers_questions=True, pauses_self_pump=False
-        )
-        self.offline = Mode.objects.create(
-            name="offline",
-            entries={"review": False},
-            defers_questions=True,
-            pauses_self_pump=True,
-            presence_sensitive=False,
-        )
+        self.present = Mode.objects.create(name="present", entries={"review": True})
+        self.away = Mode.objects.create(name="away", entries={"review": False})
 
     def test_default_when_no_override_is_the_configured_default_mode(self) -> None:
         resolved = resolve_active_mode()
         assert resolved.source == "default"
-        assert resolved.name == "engaged"
-        assert resolved.defers_questions is False
-        assert resolved.pauses_self_pump is False
+        assert resolved.name == "present"
+        assert resolved.state_for("review") is True
 
-    def test_manual_override_wins_and_carries_both_surfaces(self) -> None:
-        set_mode_override("offline")
+    def test_manual_override_wins_and_carries_the_per_loop_opinion(self) -> None:
+        set_mode_override("away")
         resolved = resolve_active_mode()
         assert resolved.source == "override"
-        assert resolved.name == "offline"
-        # posture surface
-        assert resolved.defers_questions is True
-        assert resolved.pauses_self_pump is True
-        # preset surface
+        assert resolved.name == "away"
         assert resolved.state_for("review") is False
 
-    def test_autonomous_away_defers_but_does_not_pause(self) -> None:
-        set_mode_override("unattended")
-        resolved = resolve_active_mode()
-        assert resolved.defers_questions is True
-        assert resolved.pauses_self_pump is False
-
-    def test_missing_default_mode_fails_open_to_present(self) -> None:
+    def test_missing_default_mode_fails_open_to_no_opinion(self) -> None:
         Mode.objects.all().delete()
         resolved = resolve_active_mode()
-        assert resolved.defers_questions is False
-        assert resolved.pauses_self_pump is False
+        assert resolved.name == mode_resolution.FALLBACK_DEFAULT_MODE
         assert resolved.state_for("anything") is None  # no opinion → inherit base
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestOverrideRefusesAnUnknownMode(_TmpStateMixin):
+    """A dangling override name would silently fall open to base config — refuse it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        Mode.objects.create(name="present", entries={})
+
+    def test_a_retired_preset_name_resolves_to_nothing(self) -> None:
+        for name in RETIRED_MODES:
+            with self.subTest(name=name), pytest.raises(LookupError):
+                set_mode_override(name)
+        assert not ModeOverride.objects.exists()
+
+    def test_a_defined_mode_is_accepted(self) -> None:
+        set_mode_override("present")
+        assert resolve_active_mode().name == "present"
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestPresenceUpgrade(_TmpStateMixin):
     def setUp(self) -> None:
         super().setUp()
-        Mode.objects.create(name="engaged", entries={}, defers_questions=False)
-        # A default away-class mode that IS presence-sensitive.
-        self.away_sensitive = Mode.objects.create(
-            name="unattended", entries={}, defers_questions=True, presence_sensitive=True
-        )
-        ConfigSetting.objects.set_value("default_mode", "unattended")
+        Mode.objects.create(name="present", entries={})
+        Mode.objects.create(name="away", entries={})
+        ConfigSetting.objects.set_value("default_mode", "away")
 
     def _stamp_keystroke(self, *, ago: dt.timedelta) -> None:
         mode_resolution.PRESENCE.record(session_id="s", now=timezone.now() - ago)
@@ -116,76 +103,30 @@ class TestPresenceUpgrade(_TmpStateMixin):
         self._stamp_keystroke(ago=dt.timedelta(minutes=1))
         resolved = resolve_active_mode()
         assert resolved.source == "live"
-        assert resolved.name == "engaged"
-        assert resolved.defers_questions is False
+        assert resolved.name == "present"
 
     def test_stale_keystroke_does_not_upgrade(self) -> None:
         self._stamp_keystroke(ago=dt.timedelta(hours=2))
         resolved = resolve_active_mode()
         assert resolved.source == "default"
-        assert resolved.defers_questions is True
+        assert resolved.name == "away"
 
     def test_manual_override_is_never_upgraded_by_presence(self) -> None:
-        set_mode_override("unattended")
+        """The override is how an operator pins a mode a keystroke must not lift."""
+        set_mode_override("away")
         self._stamp_keystroke(ago=dt.timedelta(minutes=1))
         resolved = resolve_active_mode()
         assert resolved.source == "override"
-        assert resolved.defers_questions is True
+        assert resolved.name == "away"
 
-    def test_presence_insensitive_mode_holds_under_a_keystroke(self) -> None:
-        self.away_sensitive.presence_sensitive = False
-        self.away_sensitive.save()
+    def test_the_upgrade_target_itself_is_not_re_upgraded(self) -> None:
+        ConfigSetting.objects.set_value("default_mode", "present")
         self._stamp_keystroke(ago=dt.timedelta(minutes=1))
         resolved = resolve_active_mode()
         assert resolved.source == "default"
-        assert resolved.defers_questions is True
+        assert resolved.name == "present"
 
-
-@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestReturnToReachableDrain(_TmpStateMixin):
-    def setUp(self) -> None:
-        super().setUp()
-        Mode.objects.create(name="engaged", entries={}, defers_questions=False)
-        Mode.objects.create(name="offline", entries={}, defers_questions=True, pauses_self_pump=True)
-
-    def test_returning_from_deferring_mode_drains_the_backlog(self) -> None:
-        set_mode_override("offline")
-        with mock.patch(_DRAIN) as drain:
-            set_mode_override("engaged", user_id="U1", overlay="ov")
-        drain.assert_called_once_with(user_id="U1", overlay="ov")
-
-    def test_clearing_to_reachable_drains(self) -> None:
-        set_mode_override("offline")
-        ConfigSetting.objects.set_value("default_mode", "engaged")
-        with mock.patch(_DRAIN) as drain:
-            clear_mode_override()
-        drain.assert_called_once()
-
-    def test_no_drain_when_staying_deferring(self) -> None:
-        set_mode_override("offline")
-        with mock.patch(_DRAIN) as drain:
-            set_mode_override("offline")
-        drain.assert_not_called()
-
-
-class TestPostureLabel:
-    """The display-only label, derived from the booleans rather than stored (#3826)."""
-
-    @pytest.mark.parametrize(
-        ("posture", "expected"),
-        [
-            ((False, False), "reachable"),
-            ((False, True), "reachable"),
-            ((True, False), "unreachable (factory running)"),
-            ((True, True), "unreachable (pump paused)"),
-        ],
-    )
-    def test_each_posture_has_its_own_label(self, posture: tuple[bool, bool], expected: str) -> None:
-        defers, pauses = posture
-        assert posture_label(defers=defers, pauses=pauses) == expected
-
-    def test_every_switch_token_labels_distinctly(self) -> None:
-        # The dash switch offers these three; a label collision would make two
-        # distinct postures indistinguishable in the UI.
-        labels = {token: posture_label(defers=d, pauses=p) for token, (d, p) in POSTURE_TOKENS.items()}
-        assert len(set(labels.values())) == len(POSTURE_TOKENS), labels
+    def test_clearing_the_override_returns_to_the_default_mode(self) -> None:
+        set_mode_override("present")
+        assert clear_mode_override() is True
+        assert resolve_active_mode().name == "away"
