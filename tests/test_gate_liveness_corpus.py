@@ -26,10 +26,10 @@ orchestrator-boundary foreground-Agent guard is additionally default-ON (#1733),
 with its never-lockout off-ramps intact (sub-agent context,
 ``run_in_background: true``, ``[fg-ok: <reason>]`` token, kill-switch,
 deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). Distinguish the
-PreToolUse ``Agent`` path from the ``Task``/``Workflow`` fan-out vehicle, which
-genuinely DOES bypass PreToolUse and fires ``TaskCreated`` instead (no
-``run_in_background`` in its schema) — that is why the dispatch-quote concern
-also carries a reachable ``TaskCreated`` counterpart.
+PreToolUse ``Agent`` dispatch path from the task-LIST tools, which DO bypass
+PreToolUse and fire ``TaskCreated`` instead (no ``run_in_background`` in that
+schema) — that is why the dispatch-quote concern also carries a reachable
+``TaskCreated`` counterpart, which governs task-list entries only (#4216).
 The phantom roster is now asserted EMPTY (also visible via ``-rsx``); a row
 silently gaining phantom status without a deliberate update FAILS the build.
 """
@@ -252,7 +252,7 @@ def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
 
 
 def _task_created(description: str, *, skip: bool) -> dict:
-    """A fanned-out dispatch — ``teammate_name`` is what separates it from a todo entry."""
+    """A task-list entry whose creator carries a teammate identity — the gate's scope."""
     token = "[skip-skill-gate: false-trigger] " if skip else ""
     return {
         "session_id": "sess-liveness",
@@ -613,11 +613,11 @@ def _dispatch_quote_allow(ctx: GateContext) -> dict:
     }
 
 
-# dispatch-prompt quote-scanner ON TaskCreated (the fan-out arm, #171): the
-# fan-out path bypasses PreToolUse, so this TaskCreated handler scans the
-# task subject/description. Ships default-OFF (opt-in pending #1640-class
-# fan-out validation), so the corpus enables it explicitly to prove it CAN
-# fire when on: reachable + denies a HIGH-quote fan-out + allows a clean one.
+# quote-scanner ON TaskCreated (the task-list arm, #171): the task-LIST tools
+# bypass PreToolUse, so this TaskCreated handler scans the task
+# subject/description. Ships default-OFF (opt-in pending #1640-class
+# validation), so the corpus enables it explicitly to prove it CAN fire when
+# on: reachable + denies a HIGH-quote entry + allows a clean one.
 
 
 def _arrange_dispatch_quote_on_task(ctx: GateContext) -> None:
@@ -993,11 +993,11 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 # `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
 # are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
 # `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
-# additionally default-ON (#1733). The SEPARATE `Task`/`Workflow` fan-out vehicle
-# still bypasses PreToolUse and fires TaskCreated (no `run_in_background` in its
-# schema; verified against the Claude Code binary, docs/claude-code-internals.md
-# §9) — that is why the dispatch-quote concern ALSO carries a reachable
-# TaskCreated counterpart. Do not conflate the two.
+# additionally default-ON (#1733). The SEPARATE task-LIST tools still bypass
+# PreToolUse and fire TaskCreated (no `run_in_background` in that schema;
+# verified against the Claude Code binary, docs/claude-code-internals.md §9) —
+# that is why the dispatch-quote concern ALSO carries a reachable TaskCreated
+# counterpart, bounded to task-list entries (#4216). Do not conflate the two.
 
 
 GATE_REGISTRY: Final[tuple[GateRow, ...]] = (

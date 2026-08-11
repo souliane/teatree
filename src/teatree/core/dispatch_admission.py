@@ -40,7 +40,7 @@ live agent. Two separate corrections, at two separate call sites:
     the ceiling was written to stop.
 
 ``apply_ceiling=False`` is for a caller whose own lane ALREADY admitted it (a
-sub-agent's onward dispatch, the ``TaskCreated`` fan-out): re-clamping it against
+sub-agent's onward dispatch, the ``TaskCreated`` arm): re-clamping it against
 a ceiling its own claim is counted in would deadlock it against itself. It still
 takes a seat, because it puts an agent on the box either way and the arm that
 DOES clamp has to see it — otherwise the burstiest path stays invisible to the

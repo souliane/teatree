@@ -9,8 +9,9 @@ population on the box is the SUM of both. Measured at load 58 on 8 cores with
 1 GB free while the factory's own ``issue_implementer_max_concurrent = 3`` held.
 
 The dispatch interception point already existed — this module supplies the
-admission DECISION on it, in both arms, because the ``Task``/``Workflow`` fan-out
-bypasses ``PreToolUse`` and only ``TaskCreated`` reaches it.
+admission DECISION on it. The second arm rides ``TaskCreated`` because the
+task-LIST tools bypass ``PreToolUse``; that event has one producer, so the arm
+books seats for task-list entries and never sees a dispatch (#4216).
 
 The verdict itself lives in :mod:`teatree.core.dispatch_admission`, so all three
 lanes route through the one pure decision function and can never diverge. The
@@ -141,13 +142,14 @@ def _muzzled() -> Iterator[None]:
 
 
 def handle_dispatch_admission_on_task_create(data: dict) -> bool:
-    """Deny a fanned-out ``Task`` the admission governor refuses — the ``TaskCreated`` arm.
+    """Deny a new ``Task`` the admission governor refuses — the ``TaskCreated`` arm.
 
-    The ``Task``/``Workflow`` fan-out bypasses ``PreToolUse``, so the arm above
-    never fires on it. The ``TaskCreated`` schema carries no ``agent_id``, so the
-    dispatch's origin is unknowable and the CEILING is never applied here —
-    unknown must not brake on a count it cannot attribute. The quota and load
-    brakes are origin-independent and do apply.
+    The task-LIST tools bypass ``PreToolUse``, so the arm above never fires on
+    them. ``TaskCreated`` has one producer — the ``TaskCreate`` tool — so this
+    arm sees task-list entries, never a sub-agent fan-out (#4216). Its schema
+    carries no ``agent_id``, so origin is unknowable and the CEILING is never
+    applied here — unknown must not brake on a count it cannot attribute. The
+    quota and load brakes are origin-independent and do apply.
 
     The exemption is from the ceiling, not from being COUNTED (#4129): this is the
     highest-burst-risk path, so leaving its agents out of the seat ledger would keep

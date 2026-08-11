@@ -1,12 +1,12 @@
-"""Sub-agent skill-loading enforcement for the ``TaskCreated`` fan-out gate.
+"""Skill-loading enforcement for the ``TaskCreated`` task-list gate.
 
-Split out of ``hook_router.py`` by concern (module health). The teatree skill
-injection reaches the MAIN agent only; a sub-agent spawned via the harness
-Workflow/Task fan-out starts BLANK — it has only its task prompt and lacks the
-``Skill`` tool, so it never loads the t3 / overlay lifecycle skills. The
-``TaskCreated`` gate therefore cannot be satisfied by what the PARENT session
-loaded (that state does not transfer to the blank sub-agent); it is satisfied
-only when the DISPATCH PROMPT itself instructs the sub-agent to load the skill.
+Split out of ``hook_router.py`` by concern (module health). ``TaskCreated`` has
+exactly ONE producer — the ``TaskCreate`` tool body — so this gate governs an
+entry a session adds to its OWN task list; an ``Agent``/``Task``/Workflow
+sub-agent fan-out never reaches the event, and no payload field marks a dispatch
+(``docs/claude-code-internals.md`` carries the re-check grep). What the creating
+session loaded does not travel to whoever later picks the entry up, so the gate
+is satisfied only when the entry's own DESCRIPTION names the skills.
 
 The demand is the parent session's ``<session>.pending`` set — the explicit
 cwd/overlay-context skills (framework skill, overlay skill + companion skills)
@@ -14,16 +14,19 @@ the UserPromptSubmit hook recorded. There is no free-text scan of the task
 description: which skills a task needs is expressed explicitly (the parent's
 recorded demand), never inferred from prose.
 
-This module owns three pieces.
+This module owns four pieces.
 
-``task_references_skill`` tests whether a task prompt already instructs the
-sub-agent to load a given skill: a ``/t3:<name>`` / ``/<name>`` token, a
+``has_teammate_identity`` is the gate's SCOPE test, reading the fields that
+carry the creating session's own ambient agent identity.
+
+``task_references_skill`` tests whether a task description already instructs a
+reader to load a given skill: a ``/t3:<name>`` / ``/<name>`` token, a
 ``<name>/SKILL.md`` path reference, or a ``load the <name> skill`` / ``Skill
 tool`` instruction naming it — but a NEGATED mention (``do not load the code
 skill``, ``skip the ship skill``) does NOT count as a reference.
 
 ``build_load_first_reason`` is the deny message listing the exact
-``Read …/<name>/SKILL.md`` lines the orchestrator must embed in the dispatch.
+``Read …/<name>/SKILL.md`` lines the description must carry.
 
 ``unreferenced_demand_reason`` is the whole demand computation + never-lockout
 fail-open the router calls.
@@ -39,20 +42,20 @@ import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-# The only ``TaskCreated`` fields that positively identify a fanned-out dispatch.
-# A session adding an entry to its OWN task list carries neither (#4216).
-_DISPATCH_MARKERS = ("teammate_name", "team_name")
+# The harness fills these from the CREATING session's ambient agent context
+# (``agentName``/``teamName``), so they identify the author, not a target (#4216).
+_TEAMMATE_IDENTITY_FIELDS = ("teammate_name", "team_name")
 
 
-def is_subagent_dispatch(data: Mapping[str, object]) -> bool:
-    """Whether a ``TaskCreated`` payload is a fanned-out sub-agent dispatch.
+def has_teammate_identity(data: Mapping[str, object]) -> bool:
+    """Whether a ``TaskCreated`` payload's creator carries a teammate identity.
 
-    The event also fires for a plain entry in the session's own task list, where
-    there is no sub-agent and no dispatch prompt — nothing reads that entry's
-    description as a prompt, so a demand that it name its skills is unsatisfiable
-    by construction. Absent positive dispatch evidence the gate does not apply.
+    The gate's scope test, NOT a dispatch test: the event has one producer, so
+    every payload is a task-list entry. A top-level session's entry carries
+    neither field and is left alone — a demand that a plain todo name its skills
+    is unsatisfiable by construction, which is how task tracking died silently.
     """
-    return any(str(data.get(marker) or "").strip() for marker in _DISPATCH_MARKERS)
+    return any(str(data.get(field) or "").strip() for field in _TEAMMATE_IDENTITY_FIELDS)
 
 
 def is_file_safe(path: Path) -> bool:
@@ -123,13 +126,12 @@ _CLAUSE_BOUNDARY_RE = re.compile(r"[.;:\n]")
 
 
 def task_references_skill(task_text: str, skill_name: str) -> bool:
-    """Whether *task_text* instructs the sub-agent to load *skill_name*.
+    """Whether *task_text* instructs a reader to load *skill_name*.
 
     The satisfaction test for the ``TaskCreated`` gate: a required skill is
-    satisfied when the DISPATCH PROMPT references loading it (so the blank
-    sub-agent is told to), NOT when the parent session happens to hold it. A
-    NEGATED mention in the reference's own clause (``do not load the code
-    skill``) is not a reference.
+    satisfied when the task's own DESCRIPTION references loading it, NOT when
+    the creating session happens to hold it. A NEGATED mention in the
+    reference's own clause (``do not load the code skill``) is not a reference.
     """
     if not task_text or not skill_name:
         return False
@@ -167,20 +169,18 @@ def _skill_md_path(skill_name: str, search_dirs: list[Path]) -> str:
 
 
 def build_load_first_reason(unreferenced: list[str], search_dirs: list[Path]) -> str:
-    """The ``TaskCreated`` deny message listing the lines to ADD to the prompt.
+    """The ``TaskCreated`` deny message listing the lines to ADD to the task.
 
     Lists one ``Read <abs>/SKILL.md`` line per unreferenced required skill so
-    the orchestrator embeds skill-loading in the dispatch prompt — which is what
-    guarantees the blank sub-agent is told to load skills.
+    the entry itself carries the skill-loading instruction — what the creating
+    session loaded does not travel to whoever picks the entry up.
     """
     add_lines = "\n".join(f"  Read {_skill_md_path(s, search_dirs)}" for s in unreferenced)
     slash = " ".join(f"/{_skill_segment(s)}" for s in unreferenced)
     return (
-        "SKILL LOADING ENFORCEMENT (TaskCreated): this fanned-out sub-agent "
-        "starts BLANK and will not load teatree skills unless its dispatch "
-        "prompt tells it to. The prompt does not reference these required "
-        f"skills: {slash}. Add these lines to the task description so the "
-        f"sub-agent loads them first:\n{add_lines}\n"
+        "SKILL LOADING ENFORCEMENT (TaskCreated): this task's description does "
+        f"not reference these required skills: {slash}. Add these lines to it so "
+        f"whoever picks the task up loads them first:\n{add_lines}\n"
         "(Disable with `t3 <overlay> gate skill-loading disable` or prefix the "
         "task with `[skip-skill-gate: <reason>]`.)"
     )
@@ -218,9 +218,9 @@ def unreferenced_demand_reason(
 ) -> str:
     """The ``TaskCreated`` deny reason, or ``""`` when nothing is unreferenced.
 
-    Demands the fanned-out dispatch prompt reference every resolvable skill in
-    the parent session's ``<session>.pending`` (the explicit cwd/overlay-context
-    demand) — minus the ones already referenced. Owns its never-lockout
+    Demands the task description reference every resolvable skill in the parent
+    session's ``<session>.pending`` (the explicit cwd/overlay-context demand) —
+    minus the ones already referenced. Owns its never-lockout
     fail-open: ANY internal error — notably a 255+ byte pending name making
     ``is_file`` raise ``OSError`` — returns ``""`` (allow) rather than
     propagating, since TaskCreated aborts on any handler stderr.

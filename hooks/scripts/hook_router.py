@@ -194,7 +194,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.subagent_skill_gate import is_file_safe, is_subagent_dispatch, unreferenced_demand_reason
+from hooks.scripts.subagent_skill_gate import has_teammate_identity, is_file_safe, unreferenced_demand_reason
 from hooks.scripts.task_created_deny import emit_task_create_deny
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
@@ -1224,29 +1224,29 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 
 # ── TaskCreated: enforce-skill-loading-on-task-create (#1488) ─────────
 #
-# ``ultracode`` (and any harness Workflow/Task fan-out) spawns sub-agents
-# through the Task/Workflow vehicle, which BYPASSES ``PreToolUse`` hooks
-# (a known regression from TodoWrite — see ``docs/claude-code-internals.md``
-# §9). The ``PreToolUse`` skill-loading gate above
+# The task-LIST tools (``TaskCreate``/``TaskUpdate``/``TaskList``) BYPASS
+# ``PreToolUse`` hooks (a known regression from TodoWrite — see
+# ``docs/claude-code-internals.md`` §9), which is why they carry their own
+# ``TaskCreated`` event. The ``PreToolUse`` skill-loading gate above
 # (:func:`handle_enforce_skill_loading`, matcher ``Bash|Edit|Write``) is
-# therefore never consulted on the fan-out, so sub-agents skip
-# auto-loading the matching teatree lifecycle skill. That is the loophole
-# that let a bespoke review workflow run instead of ``/t3:review``.
+# therefore never consulted on a task-list write, and this gate is that
+# family's arm of the same demand.
 #
-# The teatree skill injection reaches the MAIN agent only. The fanned-out
-# sub-agent starts BLANK: it holds only its task prompt and lacks the
-# ``Skill`` tool, so what the PARENT session loaded does NOT transfer to it.
-# The gate is therefore satisfied by the DISPATCH PROMPT instructing the
-# sub-agent to load the skill — not by the parent's loaded set. The demand is
-# the parent's ``<session>.pending`` set (the explicit cwd/overlay-context
-# skills the UserPromptSubmit hook recorded); the demand computation +
-# never-lockout fail-open lives in the ``subagent_skill_gate`` sibling behind
-# ``unreferenced_demand_reason`` (over ``filter_unreferenced`` /
+# ``TaskCreated`` has exactly ONE producer — the ``TaskCreate`` tool body — so
+# every payload is an entry in some session's own task list; an
+# ``Agent``/``Task``/Workflow sub-agent fan-out never reaches this event, and
+# nothing on the payload marks a dispatch (#4216). What the creating session
+# loaded does not travel to whoever picks the entry up, so the gate is
+# satisfied by the DESCRIPTION naming the skills, not by the creator's loaded
+# set. The demand is that session's ``<session>.pending`` set (the explicit
+# cwd/overlay-context skills the UserPromptSubmit hook recorded); the demand
+# computation + never-lockout fail-open lives in the ``subagent_skill_gate``
+# sibling behind ``unreferenced_demand_reason`` (over ``filter_unreferenced`` /
 # ``build_load_first_reason``); the router only calls that one entry point.
 #
-# ``TaskCreated`` fires for a task-list entry as well as for the fan-out, and
-# only ``teammate_name``/``team_name`` tell them apart — so ``is_subagent_dispatch``
-# scopes the demand to a real dispatch (#4216). A todo entry is nobody's prompt.
+# ``has_teammate_identity`` is the SCOPE test: the teammate fields carry the
+# CREATING session's ambient agent identity, so a top-level session's own todo
+# entries are left alone rather than denied for an unsatisfiable demand.
 #
 # It enforces SKILL-LOADING ONLY — it never inspects agent count, token
 # budget, ``run_in_background``, or any workflow-size field, so ultracode
@@ -1283,24 +1283,23 @@ def _task_text_skip_token(text: str) -> str | None:
 
 
 def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
-    """Demand the fanned-out task's DISPATCH PROMPT instruct skill-loading.
+    """Demand the new task's DESCRIPTION instruct skill-loading.
 
-    A sub-agent spawned via the Workflow/Task fan-out starts BLANK — it holds
-    only its task prompt and lacks the ``Skill`` tool, so what the PARENT
-    session loaded does NOT transfer to it. The gate is therefore satisfied by
-    the dispatch PROMPT referencing the skill (a ``/t3:<name>`` token, a
-    ``<name>/SKILL.md`` path, or a ``Skill tool`` / ``load the <name> skill``
-    instruction), NOT by the parent's loaded set.
+    ``TaskCreated`` has one producer, so this is always a task-list entry — what
+    the creating session loaded does not travel to whoever picks the entry up.
+    The gate is therefore satisfied by the description referencing the skill (a
+    ``/t3:<name>`` token, a ``<name>/SKILL.md`` path, or a ``Skill tool`` /
+    ``load the <name> skill`` instruction), NOT by the creator's loaded set.
 
     The deny reason (un-derivable ROOTS + ``<session>.pending``, minus
     resolvable-and-already-referenced) and its never-lockout fail-open are owned
     by :func:`unreferenced_demand_reason`. Skill-loading ONLY: no agent-count /
-    budget / size field is read, so ultracode keeps maximal fan-out room. Fails
-    open on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, a
-    missing session id, or a payload that is not a dispatch at all (#4216).
+    budget / size field is read. Fails open on the kill-switch, a valid
+    ``[skip-skill-gate: <reason>]`` token, a missing session id, or a creator
+    carrying no teammate identity (#4216).
     """
     session_id = data.get("session_id", "")
-    if not session_id or not _skill_loading_gate_enabled() or not is_subagent_dispatch(data):
+    if not session_id or not _skill_loading_gate_enabled() or not has_teammate_identity(data):
         return False
 
     subject = data.get("task_subject", "") or ""
@@ -2173,7 +2172,7 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
     return False
 
 
-# ── TaskCreated: pre-dispatch quote-scanner gate (#171, fan-out arm) ─
+# ── TaskCreated: quote-scanner gate (#171, task-list arm) ─────────
 
 
 def _dispatch_quote_gate_on_task_create_enabled() -> bool:
@@ -2199,31 +2198,31 @@ def _dispatch_quote_gate_on_task_create_enabled() -> bool:
 
 
 def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
-    """Deny a fanned-out ``Task`` whose subject/description carries a HIGH verbatim quote.
+    """Deny a new ``Task`` whose subject/description carries a HIGH verbatim quote.
 
-    Closes the fan-out loophole in :func:`handle_dispatch_prompt_quote_scanner`:
-    the ``PreToolUse`` Agent/Task dispatch-quote gate is skipped on the
-    Workflow/Task fan-out path (only ``TaskCreated`` reaches it), so a verbatim
-    user-voice/PII fragment pasted into a fan-out brief as "context" would reach
-    the sub-agent and could later be echoed into a published output — defeating
-    the #1213 publish gate. This handler scans the ``task_subject`` +
-    ``task_description`` through the SAME ``quote_scanner.scan_text`` detector
-    (HIGH-severity deny only, mirroring the PreToolUse handler) before the
-    sub-agent is spawned.
+    The task-list arm of :func:`handle_dispatch_prompt_quote_scanner`: the
+    ``PreToolUse`` gate is skipped on the task-LIST tools (only ``TaskCreated``
+    reaches them), so a verbatim user-voice/PII fragment pasted into a task as
+    "context" would sit in the list and could later be echoed into a published
+    output — defeating the #1213 publish gate. This handler scans the
+    ``task_subject`` + ``task_description`` through the SAME
+    ``quote_scanner.scan_text`` detector (HIGH-severity deny only, mirroring the
+    PreToolUse handler) before the entry is created. It never sees a sub-agent
+    dispatch: that event has one producer, the ``TaskCreate`` tool (#4216).
 
     NEVER-LOCKOUT:
     this does NOT route through ``_fail_open_or_deny`` / ``_is_self_rescue``
     (those are PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
     command). The gate ships default-OFF (opt-in via ``[teatree]
-    dispatch_quote_gate_on_task_create_enabled = true``) — a #1640-class fan-out
-    gate whose live behavior is unvalidated stays inert by default. When enabled,
+    dispatch_quote_gate_on_task_create_enabled = true``) — a #1640-class gate
+    whose live behavior is unvalidated stays inert by default. When enabled,
     the off-ramps that keep the operator from being locked out are: the opt-in
     flag itself (unset/``false`` to disable), the ``[quote-ok: <reason>]`` token
     in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
     a missing ``session_id`` (fail-open), an unreadable config store
     (fail-disabled), and ``main``'s per-handler exception swallow. The master
     ``danger_gate_fail_open`` switch still protects the operator because rescue
-    commands run as ``Bash``, never as fanned-out ``Task``s.
+    commands run as ``Bash``, never as task-list entries.
     """
     session_id = data.get("session_id", "")
     if not session_id or not _dispatch_quote_gate_on_task_create_enabled():

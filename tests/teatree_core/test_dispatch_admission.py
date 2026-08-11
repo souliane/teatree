@@ -174,7 +174,7 @@ class TestTheCeilingSeesItsOwnAdmissions(TestCase):
         assert InteractiveDispatch.objects.live_seats().count() == 0
 
     def test_the_ceiling_exempt_arm_is_still_counted(self) -> None:
-        # A sub-agent's onward dispatch and the TaskCreated fan-out keep their documented
+        # A sub-agent's onward dispatch and the TaskCreated arm keep their documented
         # exemption from the CEILING, but they put an agent on the box either way — so the
         # arm that does clamp must be able to see them.
         with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):

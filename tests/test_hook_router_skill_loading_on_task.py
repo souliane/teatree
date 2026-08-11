@@ -1,11 +1,10 @@
-"""Tests for the TaskCreated sub-agent skill-loading gate (#1488, #1189).
+"""Tests for the TaskCreated skill-loading gate (#1488, #1189).
 
-A sub-agent spawned via the harness Workflow/Task fan-out starts BLANK: it
-holds only its task prompt and lacks the ``Skill`` tool, so the teatree skill
-injection (which reaches the MAIN agent only) never reaches it. The gate
-therefore cannot be satisfied by what the PARENT session loaded — that state
-does not transfer to the blank sub-agent. It is satisfied only when the
-DISPATCH PROMPT itself instructs the sub-agent to load the demanded skills.
+``TaskCreated`` has one producer — the ``TaskCreate`` tool — so every payload is
+an entry in some session's own task list, never a sub-agent fan-out (#4216).
+What the creating session loaded does not travel to whoever picks the entry up,
+so the gate cannot be satisfied by that session's loaded set. It is satisfied
+only when the task's own DESCRIPTION names the demanded skills.
 
 The demand is the parent session's ``<session>.pending`` set — the explicit
 cwd/overlay-context skills the UserPromptSubmit hook recorded. There is no
@@ -123,7 +122,7 @@ def _task(
     description: str = "do some work",
     extra: dict | None = None,
 ) -> dict:
-    """A fanned-out sub-agent dispatch — the teammate markers are what identify it."""
+    """An entry whose CREATING session carries a teammate identity — in scope."""
     data = _local_task(session_id=session_id, subject=subject, description=description)
     data["teammate_name"] = "reviewer-1"
     data["team_name"] = "t3"
@@ -138,7 +137,7 @@ def _local_task(
     subject: str = "do work",
     description: str = "do some work",
 ) -> dict:
-    """An entry in the session's OWN task list — no teammate, no dispatch prompt."""
+    """An entry a TOP-LEVEL session added — no teammate identity, out of scope."""
     return {
         "session_id": session_id,
         "hook_event_name": "TaskCreated",
@@ -173,8 +172,8 @@ def _run_capturing_stderr(data: dict) -> tuple[bool, str]:
     return blocked, err.getvalue()
 
 
-class TestOnlyAFanOutDispatchIsInScope:
-    """The demand is a claim about a dispatch PROMPT — a local todo entry has none (#4216)."""
+class TestOnlyATeammateAuthoredEntryIsInScope:
+    """A top-level session's own todo cannot satisfy the demand, so it is never asked (#4216)."""
 
     def test_local_task_list_entry_is_never_denied(self, gate: Path) -> None:
         _write_pending("sess-task", ["review"])
@@ -188,13 +187,13 @@ class TestOnlyAFanOutDispatchIsInScope:
         assert blocked is False
         assert stderr == ""
 
-    def test_team_name_alone_marks_a_dispatch(self, gate: Path) -> None:
+    def test_team_name_alone_is_a_teammate_identity(self, gate: Path) -> None:
         _write_pending("sess-task", ["review"])
         payload = _local_task(description="review the open PR thoroughly") | {"team_name": "t3"}
         blocked, _ = _run(payload)
         assert blocked is True
 
-    def test_blank_teammate_markers_are_not_a_dispatch(self, gate: Path) -> None:
+    def test_blank_teammate_fields_are_no_identity(self, gate: Path) -> None:
         _write_pending("sess-task", ["review"])
         payload = _local_task(description="review the open PR") | {"teammate_name": "", "team_name": "  "}
         blocked, _ = _run(payload)
@@ -202,7 +201,7 @@ class TestOnlyAFanOutDispatchIsInScope:
 
 
 class TestPendingDemandWithoutReferenceIsDenied:
-    """A pending demand the dispatch prompt does not reference is denied."""
+    """A pending demand the task description does not reference is denied."""
 
     def test_unreferenced_pending_blocks_with_add_lines(self, gate: Path) -> None:
         _write_pending("sess-task", ["review"])

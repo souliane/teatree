@@ -18,7 +18,7 @@ gate is built to allow.
 
 A second gate rides the same self-rescue surface: the skill-loading-on-task
 gate (``handle_enforce_skill_loading_on_task_create``, [#1488]) can deny a
-fanned-out ``TaskCreated`` until the matching teatree skill is loaded. If its
+``TaskCreated`` task-list entry until the matching teatree skill is loaded. If its
 detection ever misbehaves, ``t3 <overlay> gate skill-loading disable`` flips the
 ``skill_loading_gate_enabled`` kill-switch — reachable for the same reason
 (``t3 …`` is the orchestration prefix every gate allows; the ``TaskCreated``

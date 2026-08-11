@@ -4,7 +4,7 @@
 The governor governed the headless population only: an ``Agent``/``Task``
 dispatch from an orchestrator session was admitted unconditionally, so the two
 agent populations summed unchecked. These cover the hook arms that close it —
-the ``PreToolUse`` ``Agent``/``Task`` gate and its ``TaskCreated`` fan-out
+the ``PreToolUse`` ``Agent``/``Task`` gate and its ``TaskCreated`` task-list
 counterpart — plus the never-lockout escapes each ships with.
 """
 
