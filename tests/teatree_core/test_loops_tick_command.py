@@ -10,7 +10,6 @@ lease + ``loop-tick:<name>`` mutex, re-anchors a deferred reinstall behind the
 
 import datetime as dt
 import io
-import json
 import os
 from unittest.mock import patch
 
@@ -19,21 +18,10 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.management.commands.loops_tick import Command
-from teatree.core.mode_resolution import ResolvedMode
-from teatree.core.models import Loop, LoopLease, Mode, Worktree
+from teatree.core.models import Loop, LoopLease, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 from teatree.loop.tick import TickReport
 from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
-
-_MODE_SEAM = "teatree.core.management.commands.loops_tick.resolve_active_mode"
-
-
-def _resolved(*, pauses: bool, name: str = "offline") -> ResolvedMode:
-    return ResolvedMode(
-        mode=Mode(name=name, entries={}, defers_questions=pauses, pauses_self_pump=pauses),
-        source="override",
-        until=None,
-    )
 
 
 class TestHardExitGuard:
@@ -234,57 +222,6 @@ class TestPerLoopRehomedMasterSteps(django.test.TestCase):
         # per-loop countdowns without a master tick.
         assert set_reader.call_count == 2
         assert set_reader.call_args_list[-1].args == (None,)
-
-
-class TestAvailabilityPauseReconciliation(django.test.TestCase):
-    """Per-loop tick parks silently when availability pauses the self-pump (#2544).
-
-    Both drivers of a per-loop tick converge on this exact command: the
-    ``t3 worker``'s deadlined subprocess timer tick (``python -m teatree
-    loops_tick --loop <name>``) and the legacy native Claude ``/loop`` cron
-    (which fires ``t3 loops tick --loop <name>``). Gating in ONE place reconciles both.
-    """
-
-    def test_holiday_away_parks_the_tick_before_claiming_any_lease(self) -> None:
-        with (
-            patch(_MODE_SEAM, return_value=_resolved(pauses=True)),
-            patch.object(LoopLease.objects, "claim_ownership") as claim,
-            patch("teatree.loop.tick.run_tick") as run_tick,
-        ):
-            out = _run(loop="inbox", json_output=True)
-        claim.assert_not_called()
-        run_tick.assert_not_called()
-        payload = json.loads(out)
-        assert payload["skipped"] is True
-        assert "self-pump paused" in payload["skipped_reason"]
-
-    def test_autonomous_away_does_not_park_the_tick(self) -> None:
-        report = TickReport(started_at=dt.datetime.now(dt.UTC))
-        with (
-            patch(_MODE_SEAM, return_value=_resolved(pauses=False, name="unattended")),
-            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
-            patch.object(LoopLease.objects, "acquire", return_value=True),
-            patch.object(LoopLease.objects, "release"),
-            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
-            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
-        ):
-            _run(loop="inbox")
-        # The whole point of #2544: unlike holiday-away, an autonomous-away mode must
-        # NOT park the tick — the factory keeps self-pumping.
-        run_tick.assert_called_once()
-
-    def test_present_does_not_park_the_tick(self) -> None:
-        report = TickReport(started_at=dt.datetime.now(dt.UTC))
-        with (
-            patch(_MODE_SEAM, return_value=_resolved(pauses=False, name="engaged")),
-            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
-            patch.object(LoopLease.objects, "acquire", return_value=True),
-            patch.object(LoopLease.objects, "release"),
-            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
-            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
-        ):
-            _run(loop="inbox")
-        run_tick.assert_called_once()
 
 
 class TestPerLoopConnectorIsolation(django.test.TestCase):

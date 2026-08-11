@@ -6,7 +6,7 @@ weekly cannot produce a second question, and slowing it past a week would starve
 the inner cadence.
 
 Ships disabled (``default_enabled`` is absent from its ``[loops.memory_skim]``
-seed entry) and the ``off``/``low-power`` presets mask it like every other loop —
+seed entry) and the ``off``/``low-token`` presets mask it like every other loop —
 an operator enables it deliberately.
 """
 

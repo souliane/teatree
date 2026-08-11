@@ -20,12 +20,12 @@ from teatree.loops.mode_shape import BACKUP_LOOP, LOAD_BEARING_LOOPS
 from teatree.loops.preset_seed import default_preset_specs
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
-_HALT_MODES = ("off", "offline")
+_HALT_MODES = ("off",)
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestHaltModesKeepTheBoxAlive(django.test.TestCase):
-    """The shipped ``off`` / ``offline`` masks, judged by what they actually admit."""
+    """The shipped ``off`` mask, judged by what it actually admits."""
 
     def setUp(self) -> None:
         Loop.objects.all().delete()
@@ -38,12 +38,7 @@ class TestHaltModesKeepTheBoxAlive(django.test.TestCase):
         spec = self.specs[name]
         Mode.objects.update_or_create(
             name=name,
-            defaults={
-                "entries": spec.entries,
-                "defers_questions": spec.defers_questions,
-                "pauses_self_pump": spec.pauses_self_pump,
-                "presence_sensitive": spec.presence_sensitive,
-            },
+            defaults={"entries": spec.entries},
         )
         ModeOverride.objects.set_override(name)
         self.addCleanup(ModeOverride.objects.clear)

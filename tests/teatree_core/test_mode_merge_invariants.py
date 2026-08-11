@@ -6,7 +6,7 @@ Locks the five owner-flagged invariants around the merged :class:`Mode` (Mode):
     merged-mode resolver / defer predicate (static guard; the functional proof lives
     in ``tests/teatree_agents/test_owner_answer_threading.py``).
 2.  Auto-merge under away — loop membership, proven in
-    ``tests/teatree_loops/test_loop_table.py::TestAutoMergePathAdmittedUnderAutonomousAway``.
+    ``tests/teatree_loops/test_loop_table.py::TestAutoMergePathAdmittedUnderAway``.
 3.  Live-presence #189 escape — ``PresenceHeartbeat.is_live_user_turn`` still gates a
     per-turn in-client render, independent of the named mode.
 4.  autoload gate — untouched by the merge (no mode read added to it).
@@ -43,8 +43,8 @@ class TestRequireHumanApprovalStaysSeparate(django.test.SimpleTestCase):
     def test_mode_has_no_merge_approval_field(self) -> None:
         field_names = {field.name for field in Mode._meta.get_fields()}
         assert "require_human_approval_to_merge" not in field_names
-        # The merged Mode carries only the loop mask + the three availability booleans.
-        assert {"defers_questions", "pauses_self_pump", "presence_sensitive"} <= field_names
+        # Since #4202 the merged Mode carries only the loop mask + its overlay scope.
+        assert {"entries", "overlay_scope"} <= field_names
         assert not any("approval" in name or "merge" in name for name in field_names)
 
 

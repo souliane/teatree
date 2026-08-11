@@ -42,9 +42,6 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # A live user pause (away mode) is its own suppression path; pin present so
-    # only the DB LoopState decides here.
-    monkeypatch.setattr(router, "_pause_suppresses_self_pump", lambda: False)
 
 
 def _own_loop(session_id: str) -> None:

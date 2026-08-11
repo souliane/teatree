@@ -236,19 +236,19 @@ class TestLoopsListPresetEffectiveColumn(django.test.TestCase):
 
     def test_masked_off_loop_is_annotated(self) -> None:
         Loop.objects.create(name="demo-mask", delay_seconds=60, prompt=_prompt(), enabled=True)
-        self._activate("heads-down", {"demo-mask": False})
+        self._activate("maintenance", {"demo-mask": False})
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-mask"))
         assert "masked" in line
 
     def test_forced_on_loop_is_annotated(self) -> None:
         Loop.objects.create(name="demo-forced", delay_seconds=60, prompt=_prompt(), enabled=False)
-        self._activate("engaged", {"demo-forced": True})
+        self._activate("present", {"demo-forced": True})
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-forced"))
         assert "forced-on" in line
 
     def test_json_carries_effective_layer(self) -> None:
         Loop.objects.create(name="demo-json-mask", delay_seconds=60, prompt=_prompt(), enabled=True)
-        self._activate("heads-down", {"demo-json-mask": False})
+        self._activate("maintenance", {"demo-json-mask": False})
         demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-json-mask")
         assert demo["effective_layer"] == "override"
         assert demo["effective_admitted"] is False
@@ -280,8 +280,8 @@ class TestLoopsListRendersTheVerdictNotTheRawColumn(django.test.TestCase):
     def setUp(self) -> None:
         Loop.objects.all().delete()
         Loop.objects.create(name="audit", delay_seconds=60, prompt=_prompt(), enabled=False)
-        Mode.objects.create(name="engaged", entries={"audit": True})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.create(name="present", entries={"audit": True})
+        ModeOverride.objects.set_override("present")
 
     def _line(self) -> str:
         return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
@@ -308,7 +308,7 @@ class TestLoopsListRendersTheVerdictNotTheRawColumn(django.test.TestCase):
 
     def test_a_masked_off_loop_still_renders_disabled_with_no_countdown(self) -> None:
         Loop.objects.filter(name="audit").update(enabled=True)
-        Mode.objects.filter(name="engaged").update(entries={"audit": False})
+        Mode.objects.filter(name="present").update(entries={"audit": False})
         line = self._line()
         assert "disabled" in line
         assert "next —" in line

@@ -19,12 +19,8 @@ from teatree.config.host_projection import (
     GENERATION_KEY,
     GLOBAL_SCOPE,
     HostProjection,
-    ModeRow,
-    OverrideRow,
     ProjectionPublisher,
     ProjectionReader,
-    ScheduleRow,
-    SlotRow,
     Staleness,
     next_generation,
 )
@@ -46,44 +42,6 @@ CREATE TABLE teatree_loop_state (
 );
 """
 
-#: The four mode tables in the column shapes Django's migrations produce — the ``days``
-#: JSONField and the ``start_time`` TimeField are TEXT, which is what the projection
-#: hands the cold parsers verbatim.
-_MODE_SCHEMA = """
-CREATE TABLE teatree_loop_preset (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-    defers_questions BOOL NOT NULL, pauses_self_pump BOOL NOT NULL, presence_sensitive BOOL NOT NULL
-);
-CREATE TABLE teatree_loop_preset_override (
-    id INTEGER PRIMARY KEY, preset_name TEXT NOT NULL, until TEXT, reason TEXT NOT NULL DEFAULT '',
-    set_at TEXT NOT NULL
-);
-CREATE TABLE teatree_loop_schedule (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, timezone TEXT NOT NULL);
-CREATE TABLE teatree_loop_schedule_slot (
-    id INTEGER PRIMARY KEY, schedule_id INTEGER NOT NULL, days TEXT NOT NULL,
-    start_time TEXT NOT NULL, preset_name TEXT NOT NULL
-);
-"""
-
-#: The four mode tables, in the column shapes Django's migrations produce — the ``days``
-#: JSONField and the ``start_time`` TimeField are TEXT, which is what the projection
-#: hands the cold parsers verbatim.
-_MODE_SCHEMA = """
-CREATE TABLE teatree_loop_preset (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-    defers_questions BOOL NOT NULL, pauses_self_pump BOOL NOT NULL, presence_sensitive BOOL NOT NULL
-);
-CREATE TABLE teatree_loop_preset_override (
-    id INTEGER PRIMARY KEY, preset_name TEXT NOT NULL, until TEXT, reason TEXT NOT NULL DEFAULT '',
-    set_at TEXT NOT NULL
-);
-CREATE TABLE teatree_loop_schedule (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, timezone TEXT NOT NULL);
-CREATE TABLE teatree_loop_schedule_slot (
-    id INTEGER PRIMARY KEY, schedule_id INTEGER NOT NULL, days TEXT NOT NULL,
-    start_time TEXT NOT NULL, preset_name TEXT NOT NULL
-);
-"""
-
 
 def _build_source(db_path: Path, settings: dict[tuple[str, str], object], loops: dict[str, str]) -> None:
     conn = sqlite3.connect(db_path)
@@ -97,47 +55,6 @@ def _build_source(db_path: Path, settings: dict[tuple[str, str], object], loops:
         conn.commit()
     finally:
         conn.close()
-
-
-def _seed_mode_tables(db_path: Path) -> None:
-    """Two modes, two override rows (only the newest governs), one two-slot schedule."""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.executescript(_MODE_SCHEMA)
-        conn.executemany(
-            "INSERT INTO teatree_loop_preset (name, defers_questions, pauses_self_pump, presence_sensitive) "
-            "VALUES (?, ?, ?, ?)",
-            [("engaged", 0, 0, 1), ("unattended", 1, 0, 1)],
-        )
-        conn.executemany(
-            "INSERT INTO teatree_loop_preset_override (preset_name, until, set_at) VALUES (?, ?, ?)",
-            [("offline", "2026-07-01 08:00:00", "2026-07-01 07:00:00"), ("unattended", None, "2026-07-28 07:00:00")],
-        )
-        conn.execute("INSERT INTO teatree_loop_schedule (id, name, timezone) VALUES (1, 'standard', 'Europe/Vienna')")
-        conn.executemany(
-            "INSERT INTO teatree_loop_schedule_slot (schedule_id, days, start_time, preset_name) VALUES (?, ?, ?, ?)",
-            [(1, "[0, 1, 2, 3, 4]", "09:00:00", "engaged"), (1, "[5, 6]", "20:00:00", "unattended")],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _mode_projection() -> HostProjection:
-    """A current-schema projection carrying one row of each mode table."""
-    return HostProjection(
-        generation=3,
-        settings={GLOBAL_SCOPE: {"autoload": True}},
-        loop_state={"dispatch": "enabled"},
-        modes={"unattended": ModeRow(defers_questions=True, pauses_self_pump=False, presence_sensitive=True)},
-        mode_override=OverrideRow(preset_name="unattended", until=""),
-        mode_schedules={"standard": ScheduleRow(schedule_id="1", timezone="UTC")},
-        mode_schedule_slots={
-            "1": (SlotRow(days="[0, 1, 2, 3, 4, 5, 6]", start_time="09:00:00", preset_name="engaged"),)
-        },
-        source="/var/lib/teatree/control-db/db.sqlite3",
-        projected_at="2026-07-28T00:00:00+00:00",
-    )
 
 
 def _previous_schema_payload() -> dict[str, object]:
@@ -165,7 +82,6 @@ def source_db(tmp_path: Path) -> Path:
         },
         {"dispatch": "paused"},
     )
-    _seed_mode_tables(db_path)
     return db_path
 
 
@@ -294,9 +210,11 @@ class TestColdReadersFallThroughToTheProjection:
     """The five Django-free hooks reach the DB through these two functions and no other."""
 
     @pytest.fixture(autouse=True)
-    def _unreachable_source(self, data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _unreachable_source(self, tmp_path: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Must be a path that cannot exist: on a box where the real control-DB volume IS
+        # mounted, naming it makes the fall-through under test silently not happen.
         monkeypatch.setattr(cold_db, "canonical_data_dir", lambda **_: data_dir)
-        monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: Path("/var/lib/teatree/control-db/db.sqlite3"))
+        monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: tmp_path / "absent" / "db.sqlite3")
 
     def test_settings_resolve_from_the_projection(self, source_db: Path, data_dir: Path) -> None:
         ProjectionPublisher(source_db, data_dir).publish()
@@ -336,93 +254,6 @@ class TestProjectionHasZeroAuthority:
         assert json.loads(stored[0]) == 7, "the source is the authority; the file is strictly derived"
 
 
-class TestProjectionCarriesTheModeTables:
-    """The four tables the posture resolver walks, on the side that cannot open the DB."""
-
-    def test_publishes_every_mode_posture(self, source_db: Path, data_dir: Path) -> None:
-        published = ProjectionPublisher(source_db, data_dir).publish()
-
-        assert published.mode("unattended") == ModeRow(
-            defers_questions=True, pauses_self_pump=False, presence_sensitive=True
-        )
-        assert published.mode("engaged") == ModeRow(
-            defers_questions=False, pauses_self_pump=False, presence_sensitive=True
-        )
-        assert published.mode("no-such-mode") is None
-
-    def test_publishes_only_the_override_row_that_governs(self, source_db: Path, data_dir: Path) -> None:
-        # The resolver reads `ORDER BY set_at DESC LIMIT 1`; carrying the older row too
-        # would offer the host an answer the container never had.
-        published = ProjectionPublisher(source_db, data_dir).publish()
-
-        assert published.mode_override == OverrideRow(preset_name="unattended", until="")
-
-    def test_slots_are_reachable_through_their_schedules_join_key(self, source_db: Path, data_dir: Path) -> None:
-        published = ProjectionPublisher(source_db, data_dir).publish()
-        schedule = published.schedule("standard")
-
-        assert schedule == ScheduleRow(schedule_id="1", timezone="Europe/Vienna")
-        assert set(published.slots(schedule.schedule_id)) == {
-            SlotRow(days="[0, 1, 2, 3, 4]", start_time="09:00:00", preset_name="engaged"),
-            SlotRow(days="[5, 6]", start_time="20:00:00", preset_name="unattended"),
-        }
-        assert published.slots("no-such-schedule") == ()
-
-    def test_every_column_is_projected_as_its_raw_text(self, source_db: Path, data_dir: Path) -> None:
-        # `days`, `start_time` and `until` stay exactly what the column holds, so the one
-        # weekday / time / datetime parser in `cold_mode` remains the only interpreter.
-        published = ProjectionPublisher(source_db, data_dir).publish()
-
-        assert {slot.days for slot in published.slots("1")} == {"[0, 1, 2, 3, 4]", "[5, 6]"}
-        assert published.mode_override.until == "", "a NULL expiry projects as empty, which reads as 'holds'"
-
-    def test_absent_mode_tables_still_publish_the_settings(self, tmp_path: Path, data_dir: Path) -> None:
-        # A control plane whose mode tables are not migrated yet must not forfeit the
-        # kill-switch settings — that is #3499's failure with a new cause.
-        db = tmp_path / "unmigrated" / "db.sqlite3"
-        db.parent.mkdir()
-        _build_source(db, {(GLOBAL_SCOPE, "memory_recall_enabled"): False}, {"dispatch": "paused"})
-
-        published = ProjectionPublisher(db, data_dir).publish()
-
-        assert published.setting("memory_recall_enabled") is False
-        assert published.modes == {}
-        assert published.mode_override is None
-
-
-class TestModePayloadShapeIsTotal:
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            (
-                "modes",
-                {"unattended": {"defers_questions": "yes", "pauses_self_pump": False, "presence_sensitive": True}},
-            ),
-            ("modes", {"unattended": ["defers", "pauses", "sensitive"]}),
-            ("modes", "unattended"),
-            ("mode_override", {"preset_name": "unattended"}),
-            ("mode_override", {"preset_name": "unattended", "until": 7}),
-            ("mode_schedules", {"standard": {"timezone": "UTC"}}),
-            ("mode_schedule_slots", {"1": {"days": "[]", "start_time": "09:00:00", "preset_name": "engaged"}}),
-            ("mode_schedule_slots", {"1": [{"days": "[]", "start_time": "09:00:00"}]}),
-        ],
-    )
-    def test_a_malformed_mode_field_refuses_the_whole_payload(self, field: str, value: object) -> None:
-        payload = _mode_projection().as_payload()
-        payload[field] = value
-
-        assert HostProjection.from_payload(payload) is None
-
-    def test_an_absent_override_is_not_a_malformed_one(self) -> None:
-        payload = _mode_projection().as_payload()
-        payload["mode_override"] = None
-
-        rebuilt = HostProjection.from_payload(payload)
-
-        assert rebuilt is not None
-        assert rebuilt.mode_override is None
-
-
 class TestAnOlderPublishersPayloadIsStillServed:
     """The deploy window: the reader ships with the source tree, the publisher in the container.
 
@@ -440,17 +271,6 @@ class TestAnOlderPublishersPayloadIsStillServed:
         assert read.trustworthy
         assert read.projection.setting("memory_recall_enabled") is False
         assert read.projection.loop_status("dispatch") == "paused"
-
-    def test_a_previous_schema_says_the_mode_rows_are_not_projected_yet(self, data_dir: Path) -> None:
-        reader = ProjectionReader(data_dir)
-        reader.target.write_text(json.dumps(_previous_schema_payload()), encoding="utf-8")
-
-        read = reader.read()
-
-        assert read.projection.modes == {}
-        assert read.projection.mode_override is None
-        assert "no mode rows" in read.advisory
-        assert "not been redeployed" in read.advisory
 
     def test_a_cold_setting_read_still_resolves_from_a_previous_schema(
         self, data_dir: Path, monkeypatch: pytest.MonkeyPatch
@@ -482,7 +302,13 @@ def _plant_generation(target: Path, generation: int) -> None:
 
 
 def test_projection_round_trips_through_its_payload() -> None:
-    projection = _mode_projection()
+    projection = HostProjection(
+        generation=3,
+        settings={GLOBAL_SCOPE: {"autoload": True}},
+        loop_state={"dispatch": "enabled"},
+        source="/var/lib/teatree/control-db/db.sqlite3",
+        projected_at="2026-07-28T00:00:00+00:00",
+    )
 
     assert HostProjection.from_payload(projection.as_payload()) == projection
 
