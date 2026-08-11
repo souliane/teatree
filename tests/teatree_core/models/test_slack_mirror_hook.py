@@ -232,10 +232,10 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         state_dir.start()
         self.addCleanup(state_dir.stop)
 
-    def _payload(self, **extra: str) -> dict:
+    def _payload(self, question: str = "Ship it?", **extra: str) -> dict:
         payload: dict = {
             "tool_name": "AskUserQuestion",
-            "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}, {"label": "No"}]}]},
+            "tool_input": {"questions": [{"question": question, "options": [{"label": "Yes"}, {"label": "No"}]}]},
         }
         payload.update(extra)
         return payload
@@ -301,7 +301,9 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         ):
             router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
             self.drain_stdout()
-            router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
+            # A byte-identical re-ask is a harness RETRY (#4202) and binds to the live row,
+            # so supersession is only reachable from a genuinely different question.
+            router.handle_mirror_question_to_slack(self._payload("Merge it?", session_id="s-loop", run_id="r1"))
         self.drain_stdout()
         rows = list(DeferredQuestion.objects.order_by("generation"))
         assert len(rows) == 2

@@ -20,20 +20,18 @@ choice): a multi-question call still proceeds — stderr (the router's documente
 warn channel) carries the nudge so the NEXT decision is split. Fires on EVERY
 session. The AI eval ``asks_decisions_one_at_a_time`` pins the behaviour.
 
-``denied_question_dedupe_key`` / ``post_denied_question_deduped`` restore the
-away-mode-only marker #4202's postureless merge dropped for every loop-driven
+``denied_question_dedupe_key`` / ``denied_question_row_marker`` restore the
+away-mode-only guard #4202's postureless merge dropped for every loop-driven
 deny (#1174): a denied call is the one a harness retry can replay verbatim.
 """
 
-import contextlib
 import hashlib
 import json
 import re
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
-from hooks.scripts.state_files import append_line, read_lines
+DENIED_QUESTION_MARKER_PREFIX = "denied-q-"
 
 # A '?' is necessary but not sufficient: a second-person/decision cue must also
 # be present, which keeps rhetorical asides and explanatory sentences out of the
@@ -554,12 +552,11 @@ def denied_question_dedupe_key(question: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def post_denied_question_deduped(marker_path: Path, key: str, *, poster: Callable[[], str]) -> str:
-    """Call *poster* and record *key*, unless already recorded (a harness retry)."""
-    if key in read_lines(marker_path):
-        return ""
-    ts = poster()
-    with contextlib.suppress(OSError):
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        append_line(marker_path, key)
-    return ts
+def denied_question_row_marker(session_id: str, key: str) -> str:
+    """The ``DeferredQuestion.dedupe_marker`` a denied (session, question) collapses onto.
+
+    Session-scoped so two sessions asking a byte-identical question never share one
+    row, and truncated to the indexed column's 64 chars.
+    """
+    digest = hashlib.sha256(f"{session_id}\x00{key}".encode()).hexdigest()
+    return f"{DENIED_QUESTION_MARKER_PREFIX}{digest}"[:64]

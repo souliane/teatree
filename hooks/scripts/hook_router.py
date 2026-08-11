@@ -153,10 +153,10 @@ from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
     denied_question_dedupe_key,
+    denied_question_row_marker,
     handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
-    post_denied_question_deduped,
     preceding_user_rejected_question_and_asked_clarify,
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
@@ -4854,11 +4854,9 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
-def _mirror_question_to_slack(question: dict, *, dedupe_key: tuple[str, str] | None = None) -> tuple[str, str]:
+def _mirror_question_to_slack(question: dict) -> tuple[str, str]:
     """Post the single recorded question to the user's Slack DM; return ``(ts, channel)``.
 
-    *dedupe_key* — ``(session_id, question hash)`` — is given only by the loop-driven
-    deny arm; a live-render arm passes none and posts on every call, as before #4202.
     Fail-open: any Slack/IO error yields ``("", "")`` so the deny is never blocked.
     """
     if not question:
@@ -4867,12 +4865,7 @@ def _mirror_question_to_slack(question: dict, *, dedupe_key: tuple[str, str] | N
     if slack_cfg is None:
         return "", ""
     try:
-        if dedupe_key is not None:
-            session_id, key = dedupe_key
-            marker = _state_file(session_id or "no-session", "loop-denied-question-mirror")
-            ts = post_denied_question_deduped(marker, key, poster=lambda: _perform_slack_post(slack_cfg, [question]))
-        else:
-            ts = _perform_slack_post(slack_cfg, [question])
+        ts = _perform_slack_post(slack_cfg, [question])
     except Exception:  # noqa: BLE001 — a Slack failure never blocks the capture/deny.
         return "", ""
     return ts, _read_dm_channel_cache(slack_cfg[1])
@@ -4910,8 +4903,12 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | No
     any pending older-generation row for the same (session, run), posts the question
     to the user's Slack DM capturing the posted ``ts``, and records the row with its
     mirror fields so the reply matcher can bind a later Slack reply to exactly this
-    generation (*dedupe*: the loop-driven deny arm only). Returns the new row id, or
-    ``None`` when teatree is unavailable (fails open — the in-client modal renders).
+    generation. Returns the new row id, or ``None`` when teatree is unavailable (fails
+    open — the in-client modal renders).
+
+    *dedupe* (the loop-driven deny arm) makes the row itself the idempotency record: a
+    harness retry returns the live row rather than superseding it into a mirrorless twin
+    ``live_for_reply`` cannot bind, which silently drops the operator's Slack answer.
     """
     if not bootstrap_teatree_django():
         return None
@@ -4926,30 +4923,32 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | No
     options = first.get("options", []) if isinstance(first.get("options"), list) else []
     session_id = str(data.get("session_id", ""))
     run_id = _run_id(data)
+    marker = denied_question_row_marker(session_id, denied_question_dedupe_key(first)) if dedupe else ""
     try:
+        row = DeferredQuestion.pending().filter(dedupe_marker=marker).first() if marker else None
         generation = DeferredQuestion.next_generation(session_id=session_id, run_id=run_id)
-        for prior in DeferredQuestion.objects.filter(
-            session_id=session_id, run_id=run_id, answered_at__isnull=True, dismissed_at__isnull=True
-        ):
-            prior.mark_stale("superseded by newer question")
+        if row is None:
+            for prior in DeferredQuestion.pending().filter(session_id=session_id, run_id=run_id):
+                prior.mark_stale("superseded by newer question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return None
-    dedupe_key = (session_id, denied_question_dedupe_key(first)) if dedupe else None
-    slack_ts, slack_channel = _mirror_question_to_slack(first, dedupe_key=dedupe_key)
-    try:
-        row = DeferredQuestion.record(
-            question_text,
-            options_json=json.dumps(options) if options else "",
-            session_id=session_id,
-            tool_use_id=str(data.get("tool_use_id", "")),
-            slack_ts=slack_ts,
-            slack_channel=slack_channel,
-            options_hash=_options_hash(options),
-            generation=generation,
-            run_id=run_id,
-        )
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
+    if row is None:
+        slack_ts, slack_channel = _mirror_question_to_slack(first)
+        try:
+            row = DeferredQuestion.record(
+                question_text,
+                options_json=json.dumps(options) if options else "",
+                session_id=session_id,
+                tool_use_id=str(data.get("tool_use_id", "")),
+                slack_ts=slack_ts,
+                slack_channel=slack_channel,
+                options_hash=_options_hash(options),
+                generation=generation,
+                run_id=run_id,
+                dedupe_marker=marker,
+            )
+        except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+            return None
     return int(row.pk)
 
 
