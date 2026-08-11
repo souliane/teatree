@@ -1,9 +1,22 @@
 """The shared label gate every issue-intake path runs before creating work."""
 
-from teatree.core.intake.label_admission import LabelPolicy, intake_admits
+from teatree.core.intake.label_admission import LabelPolicy, excluded, intake_admits
 
 READY = ("ready-for-dev",)
 EXCLUDE = ("blocked",)
+
+
+class TestExcludedPredicate:
+    """The one definition of "excluded" both intakes share (#4134)."""
+
+    def test_a_matching_label_is_excluded(self) -> None:
+        assert excluded(["backend", "blocked"], EXCLUDE) is True
+
+    def test_an_unmatched_label_is_not_excluded(self) -> None:
+        assert excluded(["backend"], EXCLUDE) is False
+
+    def test_an_empty_denylist_excludes_nothing(self) -> None:
+        assert excluded(["blocked"], ()) is False
 
 
 class TestEmptyAllowlistAdmitsEverything:
