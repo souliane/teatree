@@ -293,6 +293,32 @@
   linter: null
   eval_invariant: null
 
+# ── Concurrency / transactions ─────────────────────────────────────────────
+- id: locked-read-the-backend-cannot-honour
+  name: select_for_update() outside atomic(), or with skip_locked/nowait
+  severity: high
+  detection: greppable
+  anti_pattern: >-
+    A select_for_update() the production SQLite engine cannot honour. The clause
+    is a documented no-op there (has_select_for_update is False), so exclusion
+    comes only from transaction_mode=IMMEDIATE's reserved write lock — which a
+    transaction.atomic() block takes and nothing else does. Outside atomic() the
+    read-modify-write silently loses updates, and Django's own "cannot be used
+    outside of a transaction" guard is itself gated on has_select_for_update, so
+    nothing raises. skip_locked/nowait are worse: IMMEDIATE blocks where they
+    promise to return, and the kwarg is dropped without a word.
+  preferred_pattern: >-
+    Wrap the whole read-modify-write in transaction.atomic() so BEGIN IMMEDIATE
+    covers it, and gate a claim on a CAS predicate (a filtered UPDATE whose
+    rowcount decides the winner) rather than on skip_locked/nowait. A helper
+    whose caller owns the transaction declares that contract with a same-line
+    `# select-for-update: caller-atomic` pragma.
+  grep_hint: 'select_for_update\([^)]*\b(?:skip_locked|nowait)\b'
+  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  refs: ["souliane/teatree#4226", "souliane/teatree#804", "786-b1-sqlite-lesson"]
+  linter: select-for-update-audit
+  eval_invariant: null
+
 # ── Boundaries ─────────────────────────────────────────────────────────────
 - id: god-module
   name: Module past the health threshold
