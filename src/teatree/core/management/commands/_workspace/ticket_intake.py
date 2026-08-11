@@ -249,7 +249,7 @@ def locked_get_or_create_ticket(
     )
     if created:
         return ticket
-    return Ticket.objects.select_for_update().get(pk=ticket.pk)
+    return Ticket.objects.select_for_update().get(pk=ticket.pk)  # select-for-update: caller-atomic
 
 
 def build_ticket(
