@@ -19,8 +19,10 @@ to today. This module owns the ``LimitCause`` → horizon resolution (it imports
 ``teatree.llm``); the domain model stays llm-free and only persists the resolved instant.
 """
 
+import dataclasses
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -28,7 +30,31 @@ from teatree.config import get_effective_settings
 from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
+if TYPE_CHECKING:
+    from teatree.agents.attempt_recorder import AttemptUsage
+
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class LimitSignal:
+    """What the triggering result told the reactive limit handler — evidence, not disposal.
+
+    ``sdk_resets_at`` and ``usage`` are both read off the SAME outcome that hit the limit
+    (#4164): one is the SDK's own hint about when the window re-arms, the other is what that
+    same result billed. Bundled so a park-chain function's signature does not grow every time
+    a new fact about "the result that triggered this" needs threading through. The all-default
+    ``LimitSignal()`` is the genuinely pre-dispatch case — nothing observed yet.
+    """
+
+    sdk_resets_at: int | None = None
+    usage: "AttemptUsage | None" = None
+
+
+#: The genuinely pre-dispatch case — nothing observed yet. A module-level singleton rather
+#: than ``LimitSignal()`` inline in each signature (both fields are immutable, so sharing
+#: this one instance is safe; ruff B008 bans a call directly in an argument default).
+_NO_SIGNAL = LimitSignal()
 
 #: The subscription causes a mid-run limit can ROTATE off (an account hit its 5h/weekly
 #: window while others may still be healthy). A transient rate limit is lane-wide and
@@ -104,9 +130,9 @@ def park_task_on_limit(
     task: Task,
     match: LimitMatch,
     *,
-    sdk_resets_at: int | None,
     lane: str,
     now: datetime | None = None,
+    signal: LimitSignal = _NO_SIGNAL,
 ) -> TaskAttempt | None:
     """Park *task* behind the exhausted window instead of failing it — or ``None``.
 
@@ -114,12 +140,15 @@ def park_task_on_limit(
     the flag is OFF or the cause has no time-based recovery (API-credit exhaustion). When it
     parks, it records the lane's :class:`UsageWindowState`, records a distinct
     ``limit_parked:`` :class:`TaskAttempt`, and returns the task to the queue PENDING with
-    ``not_before`` at the window's re-arm instant.
+    ``not_before`` at the window's re-arm instant. ``signal.usage`` carries the spend the SDK
+    reported on the SAME result that triggered this park — pass it whenever a turn ran
+    (#4164); leave the default ``LimitSignal()`` only when this park is genuinely pre-dispatch
+    (nothing billed yet).
     """
     if not autorecovery_enabled():
         return None
     moment = now or timezone.now()
-    reset = effective_resets_at(match.cause, _epoch_to_datetime(sdk_resets_at), moment)
+    reset = effective_resets_at(match.cause, _epoch_to_datetime(signal.sdk_resets_at), moment)
     if reset is None:
         return None
     # The SDK's own ``resets_at`` can arrive already elapsed (processing delay, clock skew),
@@ -138,11 +167,16 @@ def park_task_on_limit(
         lane or "ambient",
         reset.isoformat(),
     )
-    return _record_park(task, reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()}", not_before=reset)
+    return _record_park(task, reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()}", not_before=reset, usage=signal.usage)
 
 
 def park_or_rotate_on_limit(
-    task: Task, match: LimitMatch, *, sdk_resets_at: int | None, lane: str, now: datetime | None = None
+    task: Task,
+    match: LimitMatch,
+    *,
+    lane: str,
+    now: datetime | None = None,
+    signal: LimitSignal = _NO_SIGNAL,
 ) -> TaskAttempt | None:
     """Reactive limit handler: rotate accounts before parking (multi-account #C1), or park.
 
@@ -153,50 +187,59 @@ def park_or_rotate_on_limit(
     lane park (auto-resume at the earliest reset). A single unrouted credential, a transient
     rate limit, or an API-credit cause falls through to :func:`park_task_on_limit` unchanged.
     ``None`` (→ caller records a terminal FAILED, byte-identical to today) when the flag is OFF
-    or the cause has no time-based recovery.
+    or the cause has no time-based recovery. ``signal.usage`` is the spend the triggering
+    result billed — this handler only ever fires POST-turn (a limit was reported ON a result),
+    so it is carried through to whichever :class:`TaskAttempt` records the park (#4164).
     """
     if not autorecovery_enabled():
         return None
     moment = now or timezone.now()
-    reset = effective_resets_at(match.cause, _epoch_to_datetime(sdk_resets_at), moment)
+    reset = effective_resets_at(match.cause, _epoch_to_datetime(signal.sdk_resets_at), moment)
     if reset is None:
         return None
     if lane == TaskAttempt.Lane.SUBSCRIPTION and match.cause in _ROTATABLE_SUBSCRIPTION_CAUSES:
-        scope = task.ticket.overlay or ""  # the overlay the per-account selector routes for
-        rotated = _rotate_or_none(task, match, reset=reset, scope=scope, moment=moment)
+        rotated = _rotate_or_none(task, match, reset=reset, moment=moment, usage=signal.usage)
         if rotated is not None:
             return rotated
-    return park_task_on_limit(task, match, sdk_resets_at=sdk_resets_at, lane=lane, now=moment)
+    return park_task_on_limit(task, match, lane=lane, now=moment, signal=signal)
 
 
 def _rotate_or_none(
-    task: Task, match: LimitMatch, *, reset: datetime, scope: str, moment: datetime
+    task: Task,
+    match: LimitMatch,
+    *,
+    reset: datetime,
+    moment: datetime,
+    usage: "AttemptUsage | None" = None,
 ) -> TaskAttempt | None:
     """Record the current account exhausted + reselect: requeue to rotate, park if all spent, else ``None``.
 
     ``None`` means nothing was routed (no sticky account), so the caller falls back to the
     plain lane park. The credential import is call-time so the domain credential factory is
-    only pulled in when a subscription limit actually fires.
+    only pulled in when a subscription limit actually fires. The routing scope is always the
+    task's own ticket overlay — derived here rather than pre-computed by the caller, so it is
+    not a second parameter naming the same fact.
     """
     from teatree.credential_config import (  # noqa: PLC0415 — call-time import (domain credential factory)
         AllTokensExhaustedError,
         record_reactive_exhaustion_and_reselect,
     )
 
+    scope = task.ticket.overlay or ""  # the overlay the per-account selector routes for
     weekly = match.cause is LimitCause.SUBSCRIPTION_WEEKLY
     try:
         healthy = record_reactive_exhaustion_and_reselect(scope=scope, resets_at=reset, weekly=weekly, now=moment)
     except AllTokensExhaustedError as exc:
         return park_task_on_all_exhausted(
-            task, resets_at=exc.earliest_reset or reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=moment
+            task, resets_at=exc.earliest_reset or reset, lane=TaskAttempt.Lane.SUBSCRIPTION, now=moment, usage=usage
         )
     if healthy is None:
         return None
     logger.info("Task %s rotating off an exhausted subscription account to a healthy one", task.pk)
-    return _requeue_for_rotation(task, moment=moment)
+    return _requeue_for_rotation(task, moment=moment, usage=usage)
 
 
-def _requeue_for_rotation(task: Task, *, moment: datetime) -> TaskAttempt:
+def _requeue_for_rotation(task: Task, *, moment: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
     """Return *task* to the queue immediately (PENDING) so the next dispatch rotates accounts.
 
     Records the same ``limit_parked:`` audit attempt shape :func:`_record_park` uses (excluded
@@ -204,11 +247,16 @@ def _requeue_for_rotation(task: Task, *, moment: datetime) -> TaskAttempt:
     parks with ``not_before`` at *moment* so the task is claimable on the next tick.
     """
     reason = f"{LIMIT_PARKED_PREFIX}rotating to a healthy subscription account (an account hit its window)"
-    return _record_park(task, reason=reason, not_before=moment)
+    return _record_park(task, reason=reason, not_before=moment, usage=usage)
 
 
 def park_task_on_all_exhausted(
-    task: Task, *, resets_at: datetime | None, lane: str, now: datetime | None = None
+    task: Task,
+    *,
+    resets_at: datetime | None,
+    lane: str,
+    now: datetime | None = None,
+    usage: "AttemptUsage | None" = None,
 ) -> TaskAttempt | None:
     """Park *task* behind an ALL-ACCOUNTS-exhausted lane (multi-account #C2) — or ``None``.
 
@@ -227,6 +275,10 @@ def park_task_on_all_exhausted(
     stale reset is normally an outage artefact that clears in minutes, so the grace clamp keeps
     recovery at minutes scale while still keying the window in the FUTURE (no instant
     self-clear).
+
+    ``usage`` is ``None`` at this function's own pre-dispatch caller (a ``CredentialError``
+    raised before any turn ran) but carries real spend when reached via the post-turn rotation
+    path (:func:`_rotate_or_none`), so it is a caller-supplied parameter, never assumed either way.
     """
     if not autorecovery_enabled() or resets_at is None:
         return None
@@ -241,7 +293,7 @@ def park_task_on_all_exhausted(
         reset.isoformat(),
     )
     reason = f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted — auto-resume at reset"
-    return _record_park(task, reason=reason, not_before=reset)
+    return _record_park(task, reason=reason, not_before=reset, usage=usage)
 
 
 def _auto_engage_low_power(reset: datetime, moment: datetime) -> None:
@@ -270,18 +322,27 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
     return _record_park(task, reason=reason, not_before=window.resets_at)
 
 
-def _record_park(task: Task, *, reason: str, not_before: datetime) -> TaskAttempt:
+def _record_park(task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
     """Record the parked ``TaskAttempt`` and return the task to the queue (never fail it).
 
     The park sibling of ``headless._record_failure``: it creates the audit attempt with the
     ``limit_parked:`` marker (excluded from the repair-loop budget) then calls
     :meth:`Task.park` — the task ends PENDING with a future ``not_before``, never FAILED.
+
+    ``usage`` is ``None`` only for a genuinely PRE-dispatch park (the admission guard, a
+    pre-turn credential gap) — those callers pass nothing and the spend columns stay NULL. A
+    REACTIVE park (a limit reported ON a result the SDK already returned) is POST-turn like
+    every other outcome branch and passes its sampled ``usage`` through (#4164) — a park is
+    not exempt from that rule, only genuinely pre-dispatch callers are.
     """
+    from teatree.agents.attempt_recorder import usage_fields  # noqa: PLC0415 — deferred: call-time import
+
     attempt = TaskAttempt.objects.create(
         task=task,
         ended_at=timezone.now(),
         exit_code=1,
         error=reason,
+        **usage_fields(usage),
     )
     task.park(not_before=not_before)
     return attempt
