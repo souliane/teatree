@@ -14,7 +14,7 @@ live forge. The umbrella body is plain markdown — a task-list whose lines each
 carry an invisible ``<!-- dream-gap <key> -->`` marker for stable dedup.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
@@ -22,6 +22,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import umbrella_ledger as ul
+from teatree.loops.dream.pass_config import PromotionBudget
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 REPO = "souliane/teatree"
@@ -179,8 +180,6 @@ class PromoteGapTestCase(TestCase):
         assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
 
     def test_banned_term_title_is_withheld_not_filed(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
         host = _fake_host(body="## Open gaps\n")
         with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
             outcome = ul.promote_gap(
@@ -206,6 +205,72 @@ class PromoteGapTestCase(TestCase):
         assert outcome.scheduled is False
         host.update_issue.assert_not_called()
         assert Ticket.objects.filter(extra__dream_gap_key="gap-1").count() == 1
+
+
+class GapPresentTestCase(TestCase):
+    """Read-only discovery (#4176) — does this gap already ride the umbrella?"""
+
+    def test_a_riding_gap_is_present_and_nothing_is_written(self) -> None:
+        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
+        assert ul.gap_present(host, umbrella_url=UMBRELLA, gap_key="gap-1") is True
+        host.update_issue.assert_not_called()
+
+    def test_an_absent_gap_is_absent(self) -> None:
+        assert ul.gap_present(_fake_host(), umbrella_url=UMBRELLA, gap_key="gap-1") is False
+
+    def test_an_unreadable_body_is_unknown_never_absent(self) -> None:
+        # None, not False: a caller must never conclude "absent" from a forge it could
+        # not read, nor "present" — both are claims the read does not support.
+        host = MagicMock(spec=CodeHostBackend)
+        host.get_issue.side_effect = RuntimeError("forge down")
+        assert ul.gap_present(host, umbrella_url=UMBRELLA, gap_key="gap-1") is None
+
+
+class ShortCircuitReportsWhatAlreadyRidesTestCase(TestCase):
+    """A branch that returns before the upsert first discovers what already rides (#4176)."""
+
+    def _gap(self) -> ul.GapSpec:
+        return ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
+
+    def test_a_spent_cap_turns_away_nothing_for_an_already_riding_gap(self) -> None:
+        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
+        budget = PromotionBudget(remaining=0)
+        outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap(), budget=budget)
+        assert outcome.already_present is True
+        assert outcome.deferred is False
+        assert outcome.checkbox_added is False
+        assert outcome.scheduled is False
+        host.update_issue.assert_not_called()
+        assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
+        assert budget.deferred == 0
+
+    def test_a_spent_cap_still_defers_a_gap_that_rides_nothing(self) -> None:
+        host = _fake_host()
+        budget = PromotionBudget(remaining=0)
+        outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap(), budget=budget)
+        assert outcome.deferred is True
+        assert outcome.already_present is False
+        host.update_issue.assert_not_called()
+        assert budget.deferred == 1
+
+    def test_an_unreadable_umbrella_defers_rather_than_claiming_presence(self) -> None:
+        host = MagicMock(spec=CodeHostBackend)
+        host.get_issue.side_effect = RuntimeError("forge down")
+        budget = PromotionBudget(remaining=0)
+        outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap(), budget=budget)
+        assert outcome.already_present is False
+        assert outcome.deferred is True
+        assert budget.deferred == 1
+
+    def test_a_newly_withheld_title_still_reports_the_umbrella_it_rides(self) -> None:
+        # The banned-terms ruleset is versioned, so a title promoted last night can be
+        # withheld tonight while its checkbox and coding task stay live.
+        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
+            outcome = ul.promote_gap(host, umbrella_url=UMBRELLA, gap=self._gap())
+        assert outcome.withheld is True
+        assert outcome.already_present is True
+        host.update_issue.assert_not_called()
 
 
 class ReconcileMergedGapsTestCase(TestCase):

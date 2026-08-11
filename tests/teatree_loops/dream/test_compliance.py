@@ -8,7 +8,7 @@ transcripts so the whole phase runs without an LLM or a live forge.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -82,6 +82,15 @@ def _stateful_fake_host() -> CodeHostBackend:
 
     host.update_issue.side_effect = _update
     return host
+
+
+def _recurrence(rule_identity: str, *, evidence: str = "") -> ComplianceFinding:
+    return ComplianceFinding(
+        rule_source=RuleSource.MEMORY,
+        rule_identity=rule_identity,
+        evidence=evidence or f"violated {rule_identity}",
+        is_recurrence=True,
+    )
 
 
 class DetectComplianceFailuresTestCase(TestCase):
@@ -280,25 +289,67 @@ class PersistCompliancePassTestCase(TestCase):
         assert row.escalation_url == ""
         assert not host.update_issue.called
 
-    def test_an_already_promoted_recurrence_stays_stamped_on_the_next_pass(self) -> None:
-        # #4176: the 2nd nightly pass adds no checkbox and schedules no task (both are
-        # deduped), so promote_gap reports filed=False — but the recurrence IS riding
-        # the umbrella, so the fresh snapshot's row must still read as escalated.
+    def test_each_pass_reports_the_umbrella_each_recurrence_actually_rides(self) -> None:
+        # Idempotency is invisible to a single pass, so this drives THREE against a
+        # stateful umbrella with a REAL budget each time (never None — an unbounded
+        # budget never reaches the branch this is about). Rule A is promoted on pass 1
+        # and must keep reading ESCALATION afterwards, including on the pass whose cap
+        # is already spent when A is reached; rule B, genuinely turned away, must keep
+        # reading NONE until the cap actually reaches it (#4176).
         host = _stateful_fake_host()
-        finding = ComplianceFinding(
-            rule_source=RuleSource.MEMORY,
-            rule_identity="feedback_a",
-            evidence="violated a",
-            is_recurrence=True,
-        )
-        rows = []
-        for _pass in range(2):
-            snapshot = persist_compliance_pass([finding], instructions_observed=4)
-            run_compliance_escalation(snapshot=snapshot, findings=[finding], host=host, dry_run=False)
-            rows.append(InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a"))
-        assert host.update_issue.call_count == 1, "pass 2 must be the already-promoted dedup path"
-        assert [row.remediation for row in rows] == [RemediationKind.ESCALATION, RemediationKind.ESCALATION]
-        assert [row.escalation_url for row in rows] == [UMBRELLA, UMBRELLA]
+        findings = [_recurrence("feedback_a"), _recurrence("feedback_b")]
+        rows: list[dict[str, InstructionComplianceRecord]] = []
+        deferrals: list[int] = []
+        for remaining in (1, 0, 1):
+            budget = PromotionBudget(remaining=remaining)
+            snapshot = persist_compliance_pass(findings, instructions_observed=4)
+            run_compliance_escalation(snapshot=snapshot, findings=findings, host=host, dry_run=False, budget=budget)
+            rows.append(
+                {
+                    rule: InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity=rule)
+                    for rule in ("feedback_a", "feedback_b")
+                }
+            )
+            deferrals.append(budget.deferred)
+        assert [[row["feedback_a"].remediation, row["feedback_b"].remediation] for row in rows] == [
+            [RemediationKind.ESCALATION, RemediationKind.NONE],
+            [RemediationKind.ESCALATION, RemediationKind.NONE],
+            [RemediationKind.ESCALATION, RemediationKind.ESCALATION],
+        ]
+        assert [row["feedback_a"].escalation_url for row in rows] == [UMBRELLA] * 3
+        assert rows[0]["feedback_b"].escalation_url == ""
+        # Pass 2's spent cap turned away only B — the already-riding A is not a deferral.
+        assert deferrals == [1, 1, 0]
+        # One checkbox each and no re-adds: A on pass 1, B on pass 3.
+        assert host.update_issue.call_count == 2
+
+    def test_every_row_of_one_rule_is_stamped_not_just_the_first(self) -> None:
+        # One row per FINDING is persisted, but escalation dedups to one outcome per
+        # rule_identity — so a sibling row of the same rule would keep reading NONE for
+        # a recurrence that rides the umbrella (#4176).
+        host = _fake_host()
+        findings = [_recurrence("feedback_a", evidence="violated 0"), _recurrence("feedback_a", evidence="violated 1")]
+        snapshot = persist_compliance_pass(findings, instructions_observed=4)
+        run_compliance_escalation(snapshot=snapshot, findings=findings, host=host, dry_run=False)
+        rows = list(InstructionComplianceRecord.objects.filter(snapshot=snapshot, rule_identity="feedback_a"))
+        assert len(rows) == 2
+        assert {row.remediation for row in rows} == {RemediationKind.ESCALATION}
+        assert {row.escalation_url for row in rows} == {UMBRELLA}
+
+    def test_a_newly_withheld_title_does_not_unstamp_a_riding_recurrence(self) -> None:
+        # The banned-terms ruleset is versioned: tonight's pass can withhold a title it
+        # promoted last night, while that checkbox and its coding task stay live (#4176).
+        host = _stateful_fake_host()
+        finding = _recurrence("feedback_a")
+        first = persist_compliance_pass([finding], instructions_observed=4)
+        run_compliance_escalation(snapshot=first, findings=[finding], host=host, dry_run=False)
+        second = persist_compliance_pass([finding], instructions_observed=4)
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
+            run_compliance_escalation(snapshot=second, findings=[finding], host=host, dry_run=False)
+        row = InstructionComplianceRecord.objects.get(snapshot=second, rule_identity="feedback_a")
+        assert row.remediation == RemediationKind.ESCALATION
+        assert row.escalation_url == UMBRELLA
+        assert host.update_issue.call_count == 1
 
 
 class RunComplianceMeasurementTestCase(TestCase):

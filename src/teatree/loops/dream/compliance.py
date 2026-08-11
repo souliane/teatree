@@ -132,11 +132,11 @@ class EscalationOutcome:
     ``filed`` is True when THIS pass did new work — a new umbrella checkbox was added
     OR a coding task was scheduled (the ``promote_gap`` outcome), so a recurrence
     already riding the umbrella reports False on every later pass; ``ticket_url`` is
-    the umbrella issue URL, set whenever the gap is neither withheld nor deferred
-    (i.e. it rides the umbrella, whether or not this pass is what put it there);
-    ``withheld`` is True when the rendered body would leak a banned term / bare
-    reference; ``deferred`` is True when the pass's promotion cap was already spent
-    (#4176).
+    the umbrella issue URL, set whenever the recurrence RIDES the umbrella — this pass
+    promoted it, or a withheld / cap-spent pass discovered it already there — and empty
+    only when nothing rides it; ``withheld`` is True when the rendered body would leak a
+    banned term / bare reference; ``deferred`` is True when the pass's promotion cap was
+    already spent and this recurrence is what it turned away (#4176).
     """
 
     rule_identity: str
@@ -522,10 +522,15 @@ def render_compliance_show() -> list[str]:
 
 
 def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str, ticket_url: str) -> None:
-    row = InstructionComplianceRecord.objects.filter(
+    """Stamp EVERY row this rule left on the snapshot, not just the first.
+
+    ``persist_compliance_pass`` writes one row per FINDING while ``escalate_recurrences``
+    dedups to one outcome per ``rule_identity``, so two findings sharing a rule leave a
+    sibling row reading ``NONE`` for a recurrence that rides the umbrella (#4176).
+    """
+    for row in InstructionComplianceRecord.objects.filter(
         snapshot=snapshot, rule_identity=rule_identity, is_recurrence=True
-    ).first()
-    if row is not None:
+    ):
         row.mark_escalated(ticket_url)
 
 
@@ -558,6 +563,16 @@ def _escalate_one_recurrence(
         dry_run=dry_run,
         budget=budget,
     )
+    if outcome.already_present:
+        # The recurrence rides the umbrella already, so a withheld title or a spent cap
+        # turned away no work — the audit row must name the umbrella either way (#4176).
+        return EscalationOutcome(
+            rule_identity=finding.rule_identity,
+            filed=False,
+            ticket_url=umbrella_url,
+            withheld=outcome.withheld,
+            reason=outcome.reason,
+        )
     if outcome.withheld:
         return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
     if outcome.deferred:
