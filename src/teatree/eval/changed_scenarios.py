@@ -34,18 +34,27 @@ WEEKLY sharded lane's job (``eval-weekly-reusable.yml`` fans the catalog into
 budget-safe shards via :mod:`teatree.eval.lane_shard`); the PR lane stays "bounded
 by what changed" (BLUEPRINT §"Selective-PR eval") by capping at this ceiling.
 
+A scenario listed in the known-red QUARANTINE (:mod:`teatree.eval.quarantine`) is
+dropped from the selection after banding (#4173): section-scoping is precise, but
+it makes a pre-existing behavioural failure a merge blocker for every unrelated
+edit of the prose it grades. Suppression is SELECTION-scope only — a quarantined
+scenario that runs still reds its run, and the weekly lane keeps grading it — and
+the dropped names are surfaced on :attr:`ScenarioSelection.quarantined` so the
+shrunken lane is visible in the CI log rather than silent.
+
 This is the shared core behind both ``t3 eval changed-scenarios`` (the reusable
 overlay-facing CLI) and ``scripts/eval/scenarios_for_changed.py`` (the thin
 script the host workflow shells out to). Both delegate here; the logic lives once.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD
 from teatree.eval.models import EvalSpec
+from teatree.eval.quarantine import suppressed_scenario_names
 
 REPO_ROOT = SCENARIOS_DIR.parents[1]
 
@@ -68,11 +77,18 @@ class ScenarioSelection:
     scenarios are deferred to the weekly sharded lane — :meth:`truncation_note` renders
     the one-line signal so a corpus-wide PR's truncated coverage is visible in the CI
     log instead of hidden.
+
+    ``quarantined`` is the disjoint set the diff matched but the known-red registry
+    suppressed (#4173). It is kept OUT of ``total_matched`` because "suppressed" and
+    "deferred to the weekly lane" are different claims, and rendered by
+    :meth:`quarantine_note` so a suppression is visible in the same CI log rather than
+    silently shrinking the lane.
     """
 
     names: list[str]
     total_matched: int
     cap: int
+    quarantined: tuple[str, ...] = ()
 
     @property
     def truncated(self) -> bool:
@@ -88,6 +104,15 @@ class ScenarioSelection:
         return (
             f"selected {self.total_matched} changed scenarios, capped to {self.cap} for the "
             f"selective-PR lane; deferred {self.deferred} to the weekly sharded lane"
+        )
+
+    def quarantine_note(self) -> str | None:
+        if not self.quarantined:
+            return None
+        return (
+            f"suppressed {len(self.quarantined)} quarantined known-red scenario(s) from this PR "
+            f"lane — still graded and reported weekly, see evals/quarantine.yaml: "
+            f"{', '.join(self.quarantined)}"
         )
 
 
@@ -137,16 +162,22 @@ def selection_for_changed(
     repo_root: Path,
     *,
     changed_sections: Mapping[str, frozenset[str]] | None = None,
+    quarantined: Collection[str] = (),
 ) -> ScenarioSelection:
     wanted = {_relative_to_root(Path(line.strip()), repo_root) for line in changed if line.strip()}
     sections = changed_sections or {}
-    banded = [(band, spec.name) for spec in specs if (band := _band(spec, wanted, sections, repo_root)) is not None]
+    matched = {(band, spec.name) for spec in specs if (band := _band(spec, wanted, sections, repo_root)) is not None}
+    # Suppression happens AFTER banding and covers every band, so the _BROAD fail-safe
+    # (a preamble-only or unreadable diff) cannot smuggle a tracked red back into the lane.
+    suppressed = sorted({name for _, name in matched if name in quarantined})
+    kept = sorted((band, name) for band, name in matched if name not in quarantined)
     # Cap to keep the single-job PR lane inside its step budget; band-then-name is
     # deterministic, so the same diff always selects the same bounded subset.
     return ScenarioSelection(
-        names=[name for _, name in sorted(set(banded))][:MAX_SELECTIVE_PR_SCENARIOS],
-        total_matched=len(banded),
+        names=[name for _, name in kept][:MAX_SELECTIVE_PR_SCENARIOS],
+        total_matched=len(kept),
         cap=MAX_SELECTIVE_PR_SCENARIOS,
+        quarantined=tuple(suppressed),
     )
 
 
@@ -156,8 +187,11 @@ def names_for_changed(
     repo_root: Path,
     *,
     changed_sections: Mapping[str, frozenset[str]] | None = None,
+    quarantined: Collection[str] = (),
 ) -> list[str]:
-    return selection_for_changed(changed, specs, repo_root, changed_sections=changed_sections).names
+    return selection_for_changed(
+        changed, specs, repo_root, changed_sections=changed_sections, quarantined=quarantined
+    ).names
 
 
 def specs_under(specs: Iterable[EvalSpec], scenarios_dir: Path) -> list[EvalSpec]:
@@ -179,6 +213,7 @@ def select_changed_scenarios(
     repo_root: Path = REPO_ROOT,
     specs: Iterable[EvalSpec] | None = None,
     changed_sections: Mapping[str, frozenset[str]] | None = None,
+    quarantined: Collection[str] | None = None,
 ) -> ScenarioSelection:
     """The full selection (names + truncation) the selective-PR entry points surface.
 
@@ -188,7 +223,16 @@ def select_changed_scenarios(
     consuming overlay passes its own scenarios-dir-filtered subset (see :func:`specs_under`).
     ``changed_sections`` is the optional prose-granularity refinement from
     :func:`teatree.eval.changed_sections.changed_sections_by_path`; omitting it keeps the fail-safe
-    whole-file reading of every changed ``agent_path``.
+    whole-file reading of every changed ``agent_path``. ``quarantined`` defaults to the tracked
+    known-reds in ``evals/quarantine.yaml`` (:mod:`teatree.eval.quarantine`) — pass an explicit
+    collection to select against a different registry, or ``()`` to suppress nothing.
     """
     resolved_specs = discover_specs() if specs is None else specs
-    return selection_for_changed(changed, resolved_specs, repo_root, changed_sections=changed_sections)
+    resolved_quarantine = suppressed_scenario_names() if quarantined is None else quarantined
+    return selection_for_changed(
+        changed,
+        resolved_specs,
+        repo_root,
+        changed_sections=changed_sections,
+        quarantined=resolved_quarantine,
+    )

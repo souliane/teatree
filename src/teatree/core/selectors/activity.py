@@ -77,7 +77,6 @@ def build_active_sessions() -> list[ActiveSessionRow]:
             ActiveSessionRow(
                 pid=pid,
                 uptime=_uptime_from_epoch_ms(data.get("startedAt", 0)) if data.get("startedAt") else "",
-                kind="headless" if task and task.execution_target == Task.ExecutionTarget.HEADLESS else "interactive",
                 task_id=task.pk if task else None,
                 ticket_id=task.ticket.pk if task else None,
                 ticket_display_id=task.ticket.ticket_number if task else "",
@@ -113,7 +112,6 @@ def build_recent_activity(overlay: str | None = None) -> list[RecentActivityRow]
                 result_summary=str(result_data.get("summary", "")),
                 error=attempt.error[:200] if attempt.error else "",
                 ended_at=attempt.ended_at.isoformat() if attempt.ended_at else "",
-                execution_target=attempt.get_execution_target_display(),
                 input_tokens=attempt.input_tokens,
                 output_tokens=attempt.output_tokens,
                 cost_usd=attempt.cost_usd,

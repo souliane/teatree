@@ -10,20 +10,18 @@ import pytest
 from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
 
-from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from tests.factories import TaskFactory
 
 
 @pytest.fixture
 def running_attempt(request: pytest.FixtureRequest) -> TaskAttempt:
-    """One in-flight headless attempt with a recorded bundle, committed for the server thread."""
+    """One in-flight attempt with a recorded bundle, committed for the server thread."""
     request.getfixturevalue("transactional_db")
     board = request.getfixturevalue("seeded_board")
     task = TaskFactory(ticket=board.building, phase="coding")
     return TaskAttempt.objects.create(
         task=task,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         model="claude-opus-4-8",
         skills_loaded=["t3:code", "t3:rules"],
         agent_session_id="e2e-live-session",

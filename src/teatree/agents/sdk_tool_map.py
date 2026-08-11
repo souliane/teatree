@@ -3,7 +3,7 @@
 :mod:`teatree.core.modelkit.phase_tools` is the single source of truth for WHICH
 tools a phase may call, named in teatree's own provider-neutral capability
 vocabulary (the Lane-B ``FunctionToolset`` names). Lane A (``claude_sdk`` /
-headless dispatch) speaks the bundled ``claude`` CLI's tool names, so this module
+agent dispatch) speaks the bundled ``claude`` CLI's tool names, so this module
 is the boundary translation the SSOT docstring points at: it maps each disallowed
 capability to its SDK-native equivalent so ``_build_options`` can inject the
 per-phase complement as ``ClaudeAgentOptions.disallowed_tools``.

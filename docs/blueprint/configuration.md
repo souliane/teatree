@@ -25,7 +25,6 @@ The keys and value shapes below are illustrative — set each one with
 # workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
 # a value left here is ignored on read. T3_WORKSPACE_DIR env still overrides (back-compat).
-privacy = "strict"
 orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django, DB-first w/ TOML self-rescue)
 # statusline_chain is DB-home now (extra statusline scripts, glob patterns, chained after the loop's zones).
 # Set it with `t3 <overlay> config_setting set statusline_chain '[...]'`; a value left here is ignored on read (the bash hook reads the DB via the sqlite3 CLI).
@@ -145,9 +144,11 @@ DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
 `check_for_updates` now reads the DB via the Django-free `cold_reader` — `timezone`
 — the Django settings module hardcodes `TIME_ZONE` and configures
 `DATABASES` without reading it, so it was not a bootstrap dep (its former sibling
-`worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the two former
-per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
-per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
+`worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the former
+per-overlay-TOML-overridable field `orchestrator_bash_gate_enabled` — per-overlay
+override now lives in a `ConfigSetting` overlay-scope row (`timezone` and its carve-out
+sibling `privacy` made the same DB-home move and were later retired reader-less by
+[#4203](https://github.com/souliane/teatree/issues/4203)) — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
 the same default bootstrap path `write_mirror` uses when unset; that default is the SHARED
 data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatree`) plus
@@ -350,7 +351,6 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
 | `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and `on_behalf_post_mode` for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
 | `wip` | Bounded-WIP throughput dial `slow < medium < full < boost`: how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
-| `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |
 | `loop_cadence_seconds` | Per-overlay tick cadence (e.g. tighter on a hot overlay, looser on a maintenance one) |
@@ -533,10 +533,10 @@ t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collabor
 t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)
 ```
 
-`privacy` is DB-home too — scope it to a client overlay:
+Any DB-home key can be scoped to a client overlay the same way:
 
 ```bash
-t3 <overlay> config_setting set privacy '"strict"' --overlay client-project
+t3 <overlay> config_setting set on_behalf_post_mode '"ask"' --overlay client-project
 ```
 
 ### 10.1.2 Agent model tiering & session pins (`[agent]`)
@@ -620,7 +620,6 @@ default, so nothing routes to one without an operator writing the id into
 
 | Setting | Type | Purpose |
 |---------|------|---------|
-| `TEATREE_HEADLESS_RUNTIME` | str | Runtime for headless tasks (default: "claude-code") |
 | `TEATREE_CLAUDE_STATUSLINE_STATE_DIR` | str | Directory for Claude Code's per-session statusline state files used by `src/teatree/agents/handover.py` (default: `/tmp/claude-statusline`). Distinct from the loop's rendered statusline file — see env var `TEATREE_STATUSLINE_FILE` below. |
 | `TEATREE_EDITABLE` | bool | Declare teatree is editable (verified by `t3 doctor check`) |
 | `OVERLAY_EDITABLE` | bool | Declare overlay is editable (verified by `t3 doctor check`) |

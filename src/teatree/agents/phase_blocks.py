@@ -1,4 +1,4 @@
-"""The per-phase trailing blocks of the headless system context.
+"""The per-phase trailing blocks of the agent system context.
 
 ``prompt.build_system_context`` assembles the append; this module owns the block
 it appends LAST — the directive set for the dispatched phase. Reviewing, answering,
@@ -59,7 +59,7 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
 )
 
-# Injected into a headless answering brief: the answering phase is denied the
+# Injected into an answering brief: the answering phase is denied the
 # shell (agents/answerer.md tools = Read/Grep/Glob only), so it CANNOT post the
 # reply itself via the Replier / `t3 <overlay> notify` CLI. It RETURNS the draft
 # in the result envelope instead; the orchestrator (``attempt_recorder`` →
@@ -83,7 +83,7 @@ _ANSWER_RETURN_LINES: tuple[str, ...] = (
     "make), draft a clarifying-question reply as the `answer` text rather than returning nothing.",
 )
 
-# Injected into a headless planning brief (#3584): the phase evidence gate
+# Injected into a planning brief (#3584): the phase evidence gate
 # (``PHASE_REQUIRED_EVIDENCE["planning"]``) refuses a run whose result envelope
 # omits ``plan_text``, so the planner MUST place the full plan under that key —
 # not only as prose or a PlanArtifact. Without this reinforcing directive the
@@ -98,7 +98,7 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
     '                strategy, and the E2E test plan / Acceptance scenarios section when UI-visible>"',
     "A summary-only result with no `plan_text` drops the plan and the phase is refused, wasting the run.",
     "ALSO return `base_sha` and `adequacy` — under `require_plan_adequacy` PlanArtifact.record",
-    "REFUSES a plan without them, and the headless lane can only supply them through this envelope:",
+    "REFUSES a plan without them, and the agent lane can only supply them through this envelope:",
     '  "base_sha": "<`git rev-parse origin/<target-branch>` — the full 40-char hex HEAD you planned against>",',
     '  "adequacy": {"design": {"content": "<the approach>"},',
     '               "integration_seams": {"content": ["<registry/contract/sibling path the change touches>"]},',
@@ -108,7 +108,7 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
     '(e.g. {"none_reason": "no seams: single leaf module, no registry touched"}); silence never passes.',
 )
 
-# Injected into a headless scanning_news brief (#3584): the shell-denied scanner
+# Injected into a scanning_news brief (#3584): the shell-denied scanner
 # cannot enqueue candidates itself, so it RETURNS them, and the phase evidence
 # gate (``PHASE_REQUIRED_EVIDENCE["scanning_news"]``) refuses a run whose envelope
 # omits ``article_suggestions``. Symmetric to ``_ANSWER_RETURN_LINES``.
@@ -132,8 +132,8 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     """Build a review sub-agent's dispatch prompt with the overlay review skills required up front.
 
     A review sub-agent dispatched through the Agent tool, a dynamic workflow,
-    or a headless reviewer does not auto-load the active overlay's review
-    conventions. ``build_system_context`` embeds them for the headless path,
+    or a reviewer does not auto-load the active overlay's review
+    conventions. ``build_system_context`` embeds them for the agent path,
     but an orchestrator-built dispatch prompt previously relied on the
     orchestrator remembering to list the skills. This shared builder prepends a
     REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
@@ -172,10 +172,10 @@ def _phase_fanout_directive(task: Task) -> str:
 
     Headless parity with the interactive composer
     (``loop_dispatch._task_to_dict``): both routes call the single chokepoint
-    ``core.phases.resolve_fanout_directive`` so switching ``agent_runtime``
+    ``core.phases.resolve_fanout_directive`` so switching the harness
     between interactive and a headless runtime keeps the directive identical.
     Empty by default — ``resolve_fanout_directive`` renders nothing until the
-    user opts the pair in via ``[agent.phase_fanout]`` — so a headless dispatch
+    user opts the pair in via ``[agent.phase_fanout]`` — so a agent dispatch
     is byte-identical to today out of the box.
     """
     return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
@@ -216,7 +216,7 @@ def intake_survey_json(task: Task) -> str:
 
 
 def _planning_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: planning`` block — intake survey (#2541), envelope directive (#3584), opted-in fan-out."""
+    """The ``PHASE: planning`` block — intake survey (#2541), envelope directive (#3584), opted-in fan-out."""
     lines = list(_intake_landscape_lines(task))
     lines.extend(_PLAN_RETURN_LINES)
     if fanout := _phase_fanout_directive(task):
@@ -225,12 +225,12 @@ def _planning_phase_lines(task: Task) -> tuple[str, ...]:
 
 
 def _scanning_news_phase_lines() -> tuple[str, ...]:
-    """The headless ``PHASE: scanning_news`` block — RETURN the article_suggestions envelope (#3584)."""
+    """The ``PHASE: scanning_news`` block — RETURN the article_suggestions envelope (#3584)."""
     return ("", "PHASE: scanning_news", *_ARTICLE_SUGGESTIONS_RETURN_LINES)
 
 
 def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: reviewing`` block, plus an opted-in fan-out directive."""
+    """The ``PHASE: reviewing`` block, plus an opted-in fan-out directive."""
     lines = [
         "",
         "PHASE: reviewing",
@@ -247,7 +247,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
 
 
 def _answering_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: answering`` block — draft, then RETURN the answer envelope.
+    """The ``PHASE: answering`` block — draft, then RETURN the answer envelope.
 
     The shell-denied answerer cannot post the reply itself; it hands the draft
     back and the orchestrator posts on confirmation. Surfaces the inbound thread
@@ -271,7 +271,7 @@ def _answering_phase_lines(task: Task) -> tuple[str, ...]:
 
 
 def _shipping_phase_lines() -> tuple[str, ...]:
-    """The headless ``PHASE: shipping`` auto-review-gate block."""
+    """The ``PHASE: shipping`` auto-review-gate block."""
     reviewer_dispatch = build_reviewer_dispatch_prompt(
         review_instruction="Review the diff on this ticket's branch and report findings."
     )

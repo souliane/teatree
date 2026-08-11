@@ -25,7 +25,6 @@ class TestClaimHonoursNotBefore(TestCase):
         return Task.objects.create(
             ticket=self.ticket,
             session=self.session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
             phase="architectural_review",
             not_before=not_before,
@@ -34,7 +33,7 @@ class TestClaimHonoursNotBefore(TestCase):
     def test_parked_task_refuses_claim(self) -> None:
         parked = self._pending(not_before=timezone.now() + dt.timedelta(hours=4))
         with pytest.raises(InvalidTransitionError, match="parked"):
-            parked.claim(claimed_by="headless-worker")
+            parked.claim(claimed_by="task-worker")
         parked.refresh_from_db()
         assert parked.status == Task.Status.PENDING  # untouched — no CLAIMED, no fresh lease
 
@@ -42,12 +41,12 @@ class TestClaimHonoursNotBefore(TestCase):
         # Control: an elapsed park window claims normally, proving the gate keys on a
         # FUTURE not_before, not on the field's presence.
         ready = self._pending(not_before=timezone.now() - dt.timedelta(minutes=1))
-        ready.claim(claimed_by="headless-worker")
+        ready.claim(claimed_by="task-worker")
         ready.refresh_from_db()
         assert ready.status == Task.Status.CLAIMED
 
     def test_unparked_task_claims(self) -> None:
         task = self._pending(not_before=None)
-        task.claim(claimed_by="headless-worker")
+        task.claim(claimed_by="task-worker")
         task.refresh_from_db()
         assert task.status == Task.Status.CLAIMED

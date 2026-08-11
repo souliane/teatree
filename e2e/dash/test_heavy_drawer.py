@@ -34,7 +34,6 @@ def heavy_ticket(request: pytest.FixtureRequest) -> Ticket:
         TaskAttempt.objects.bulk_create(
             TaskAttempt(
                 task=task,
-                execution_target="headless",
                 model="claude-opus-4-8",
                 error="a recorded failure reason that occupies a realistic amount of the row",
             )

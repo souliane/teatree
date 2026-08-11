@@ -18,13 +18,11 @@ from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
 from teatree.core.models import DeferredQuestion, Directive, DirectiveError
-from teatree.core.models.mechanism_sketch import MechanismSketchError, sketch_from_envelope
+from teatree.core.models.mechanism_sketch import ACTIVATION_ONLY, MechanismSketchError, sketch_from_envelope
 from teatree.core.overlay_loader import resolve_overlay_name
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
-
-_ACTIVATION_ONLY = "activation_only"
 
 
 def validate_activation_scope(raw_sketch: dict) -> str | None:
@@ -51,7 +49,7 @@ def validate_setting_key(raw_sketch: dict) -> str | None:
     the acceptance tests guard that case. Lives in the gate because it reads the settings
     registry, which the pure model layer must not import.
     """
-    if str(raw_sketch.get("kind", "")).strip() != _ACTIVATION_ONLY:
+    if str(raw_sketch.get("kind", "")).strip() != ACTIVATION_ONLY:
         return None
     setting_key = str(raw_sketch.get("setting_key", "")).strip()
     if not hasattr(get_effective_settings(None), setting_key):

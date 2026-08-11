@@ -53,7 +53,7 @@ def redaction_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> st
     (``SECRET_SETTINGS``); a credential coordinate (the SAME suffix rule the dashboard
     credential band uses — ``anthropic_oauth_pass_paths`` / ``*_credential_entry`` /
     ``*_token_ref`` etc.); a personal identifier (``slack_user_id`` /
-    ``slack_user_channel`` / ``availability_schedule``); or a value carrying a banned
+    ``slack_user_channel``); or a value carrying a banned
     customer/brand term. The credential + personal classes close the F2 leak where
     pass-store coordinates and personal handles shipped by default on export.
     """

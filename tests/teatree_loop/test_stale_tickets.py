@@ -45,7 +45,6 @@ class StaleTicketsScannerTests(TestCase):
         task = Task.objects.create(ticket=ticket, session=session)
         attempt = TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             ended_at=timezone.now() - timedelta(days=days),
         )
         TaskAttempt.objects.filter(pk=attempt.pk).update(

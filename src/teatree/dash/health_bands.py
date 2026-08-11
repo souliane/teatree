@@ -25,7 +25,7 @@ from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.usage_window_state import UsageWindowState
-from teatree.core.selectors import build_headless_queue, build_interactive_queue
+from teatree.core.selectors import build_task_queue
 from teatree.dash.gate_state import dash_gate_fail_open
 from teatree.loops.live import LoopStatusReport, build_report
 
@@ -81,8 +81,7 @@ class SpendSummary:
 
 @dataclass(frozen=True, slots=True)
 class QueueDepth:
-    headless: int
-    interactive: int
+    depth: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +89,7 @@ class CapacityBand:
     parked_lanes: tuple[ParkedLane, ...] = ()
     accounts: tuple[AccountUtilization, ...] = ()
     spend: SpendSummary | None = None
-    queue: QueueDepth = field(default_factory=lambda: QueueDepth(headless=0, interactive=0))
+    queue: QueueDepth = field(default_factory=lambda: QueueDepth(depth=0))
     error: str | None = None
 
     @classmethod
@@ -218,7 +217,7 @@ def _compute_spend_summary() -> SpendSummary | None:
         anchor = settings.billing_cycle_anchor_day or None
         today = timezone.localdate()
         start_dt = cycle_start_datetime(today, anchor_day=anchor)
-        breakdown = TaskAttempt.objects.headless().filter(started_at__gte=start_dt).cost_breakdown()
+        breakdown = TaskAttempt.objects.filter(started_at__gte=start_dt).cost_breakdown()
         report = CostReport.build(
             breakdown,
             credit_usd=settings.sdk_monthly_credit_usd,
@@ -237,7 +236,7 @@ def _compute_spend_summary() -> SpendSummary | None:
 
 
 def _queue_depth() -> QueueDepth:
-    return QueueDepth(headless=len(build_headless_queue()), interactive=len(build_interactive_queue()))
+    return QueueDepth(depth=len(build_task_queue()))
 
 
 def _mode_band() -> ModeBand:

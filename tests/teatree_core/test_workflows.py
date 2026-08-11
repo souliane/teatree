@@ -20,7 +20,7 @@ import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
-from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models import DeferredQuestion, Session, Task, Ticket, Worktree
 from teatree.core.overlay import (
     OverlayBase,
     OverlayMetadata,
@@ -32,7 +32,6 @@ from teatree.core.overlay import (
     ToolCommand,
 )
 from teatree.core.overlay_loader import reset_overlay_cache
-from tests._agent_runtime_env import interactive_runtime
 
 pytestmark = [
     pytest.mark.filterwarnings(
@@ -412,11 +411,11 @@ class TestOverlayFiltering(TestCase):
         ticket_b = Ticket.objects.create(overlay="beta")
         session_a = Session.objects.create(ticket=ticket_a, overlay="alpha", agent_id="a")
         session_b = Session.objects.create(ticket=ticket_b, overlay="beta", agent_id="b")
-        Task.objects.create(ticket=ticket_a, session=session_a, execution_target="headless")
-        Task.objects.create(ticket=ticket_b, session=session_b, execution_target="headless")
+        Task.objects.create(ticket=ticket_a, session=session_a)
+        Task.objects.create(ticket=ticket_b, session=session_b)
 
-        assert Task.objects.claimable_for_headless(overlay="alpha").count() == 1
-        assert Task.objects.claimable_for_headless(overlay=None).count() == 2
+        assert Task.objects.claimable(overlay="alpha").count() == 1
+        assert Task.objects.claimable(overlay=None).count() == 2
 
 
 # ---------------------------------------------------------------------------
@@ -425,13 +424,6 @@ class TestOverlayFiltering(TestCase):
 
 
 class TestTaskWorkflow(TestCase):
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
@@ -481,7 +473,7 @@ class TestTaskWorkflow(TestCase):
         # so the in-session slot claims it from the interactive queue.
         claimed_id = cast(
             "int",
-            call_command("tasks", "claim", execution_target="interactive", claimed_by="review-agent"),
+            call_command("tasks", "claim", claimed_by="review-agent"),
         )
         assert claimed_id == review_task.id
 
@@ -545,7 +537,6 @@ class TestTaskWorkflow(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         task.claim(claimed_by="worker-1")
 
@@ -557,14 +548,8 @@ class TestTaskWorkflow(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
 
-        followup = Task.objects.filter(
-            ticket=ticket,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            parent_task=task,
-        ).first()
-        assert followup is not None
-        assert followup.status == Task.Status.PENDING
-        assert "approval" in followup.execution_reason.lower()
+        question = DeferredQuestion.objects.get(parked_task=task)
+        assert "approval" in question.question.lower()
 
 
 # ---------------------------------------------------------------------------

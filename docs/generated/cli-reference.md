@@ -22,8 +22,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 credit.                                                      │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Read text aloud through the local speakers per  (no-op       │
-│                 unless local = all).                                         │
+│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
@@ -235,7 +234,7 @@ Usage: t3 tokens [OPTIONS]
 ```
 Usage: t3 speak [OPTIONS] TEXT
 
- Read text aloud through the local speakers per  (no-op unless local = all).
+ Refuse to speak — local audio cannot reach the user.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
@@ -1663,6 +1662,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           grade captured sessions.                           │
 │ label                     Corpus-label curation: list nominations, scaffold  │
 │                           a label, review the corpus.                        │
+│ quarantine                The known-red quarantine: scenarios the bounded PR │
+│                           lane does not select.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3061,6 +3062,74 @@ Usage: t3 eval label review [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval quarantine`
+
+```
+Usage: t3 eval quarantine [OPTIONS] COMMAND [ARGS]...
+
+ The known-red quarantine: scenarios the bounded PR lane does not select.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list   Print every quarantined scenario with its tracking issue and expiry.  │
+│ check  Validate the registry: no expired entry, no entry naming a scenario   │
+│        that does not exist.                                                  │
+│ audit  Report each quarantined scenario's outcome in a run; red on one that  │
+│        has escaped.                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine list`
+
+```
+Usage: t3 eval quarantine list [OPTIONS]
+
+ Print every quarantined scenario with its tracking issue and expiry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine check`
+
+```
+Usage: t3 eval quarantine check [OPTIONS]
+
+ Validate the registry: no expired entry, no entry naming a scenario that does
+ not exist.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file            PATH  The registry to read (default:                       │
+│                         evals/quarantine.yaml).                              │
+│ --scenario        TEXT  Catalog scenario name to validate entries against    │
+│                         (default: the discovered catalog).                   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine audit`
+
+```
+Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
+
+ Report each quarantined scenario's outcome in a run; red on one that has
+ escaped.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    summary_json      PATH  A merged eval-heal §2.4 summary JSON to audit   │
+│                              against.                                        │
+│                              [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6865,6 +6934,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    no-op) kill-switch (self-rescue).                         │
 │ add-all            Whole-tree `git add -A` / `git add .` gate kill-switch    │
 │                    (self-rescue).                                            │
+│ verbatim-paste     Verbatim operator-paste publish gate kill-switch          │
+│                    (self-rescue).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7642,6 +7713,59 @@ Usage: t3 teatree gate add-all disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate add-all enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate verbatim-paste`
+
+```
+Usage: t3 teatree gate verbatim-paste [OPTIONS] COMMAND [ARGS]...
+
+ Verbatim operator-paste publish gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste status`
+
+```
+Usage: t3 teatree gate verbatim-paste status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste disable`
+
+```
+Usage: t3 teatree gate verbatim-paste disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste enable`
+
+```
+Usage: t3 teatree gate verbatim-paste enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -9417,10 +9541,7 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │                      checklist (read-only).                                  │
 │ record-attempt       Record an in-session sub-agent's result back onto a     │
 │                      Task.                                                   │
-│ start                Claim and run the next interactive task in the current  │
-│                      terminal.                                               │
-│ work-next-headless   Claim and execute a headless task; refuses              │
-│                      loop-dispatched phases while agent_runtime=interactive. │
+│ work-next            Claim and execute the next pending task.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9456,9 +9577,8 @@ Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
 Usage: t3 teatree tasks claim [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --execution-target        TEXT  [default: headless]                          │
-│ --claimed-by              TEXT  [default: worker]                            │
-│ --help                          Show this message and exit.                  │
+│ --claimed-by        TEXT  [default: worker]                                  │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9505,11 +9625,10 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 
  Enqueue the next-phase task for a ticket.
 
- Used by `/t3:next` to hand off from one phase to the next. Headless by default
- so a worker
- claims it immediately; pass `--interactive` for tasks that require human
- input. A machine
- handoff: the created-task record is JSON on stdout, the human confirmation on
+ Used by `/t3:next` to hand off from one phase to the next; a worker claims it
+ immediately.
+ A machine handoff: the created-task record is JSON on stdout, the human
+ confirmation on
  stderr.
 
  ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the
@@ -9521,20 +9640,14 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 │                           [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --phase                              TEXT  Phase: scoping, coding, testing,  │
-│                                            reviewing, shipping.              │
-│ --reason                             TEXT  Prompt body for the worker. Use   │
-│                                            '-' to read from stdin. Overrides │
-│                                            --reason-file.                    │
-│ --reason-file                        PATH  Read the prompt body from a file. │
-│ --interactive    --no-interactive          Create an interactive task        │
-│                                            instead of the default headless   │
-│                                            one.                              │
-│                                            [default: no-interactive]         │
-│ --kind                               TEXT  Classify the ticket as 'fix' or   │
-│                                            'feature' (records Ticket.kind,   │
-│                                            #17).                             │
-│ --help                                     Show this message and exit.       │
+│ --phase              TEXT  Phase: scoping, coding, testing, reviewing,       │
+│                            shipping.                                         │
+│ --reason             TEXT  Prompt body for the worker. Use '-' to read from  │
+│                            stdin. Overrides --reason-file.                   │
+│ --reason-file        PATH  Read the prompt body from a file.                 │
+│ --kind               TEXT  Classify the ticket as 'fix' or 'feature'         │
+│                            (records Ticket.kind, #17).                       │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9552,16 +9665,13 @@ Usage: t3 teatree tasks list [OPTIONS]
  rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --status                              TEXT  Filter by status                 │
-│ --execution-target                    TEXT  Filter by execution target       │
-│ --session             --no-session          Scope to the current harness     │
-│                                             session and group pending /      │
-│                                             claimed / done.                  │
-│                                             [default: no-session]            │
-│ --json                                      Emit the task rows as JSON on    │
-│                                             stdout instead of the human      │
-│                                             table.                           │
-│ --help                                      Show this message and exit.      │
+│ --status                     TEXT  Filter by status                          │
+│ --session    --no-session          Scope to the current harness session and  │
+│                                    group pending / claimed / done.           │
+│                                    [default: no-session]                     │
+│ --json                             Emit the task rows as JSON on stdout      │
+│                                    instead of the human table.               │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9605,7 +9715,7 @@ Usage: t3 teatree tasks record-attempt [OPTIONS] TASK_ID RESULT_JSON
  path).
 
  The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
- hands the same structured result envelope ``run_headless`` would have
+ hands the same structured result envelope ``run_agent`` would have
  parsed out of the detached headless-SDK run, and this drives the Task to its
  terminal state through the SHARED recorder — schema-key check, the
  #1284 phase-evidence gate, then ``complete`` (auto-advancing the
@@ -9628,29 +9738,10 @@ Usage: t3 teatree tasks record-attempt [OPTIONS] TASK_ID RESULT_JSON
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree tasks start`
+##### `t3 teatree tasks work-next`
 
 ```
-Usage: t3 teatree tasks start [OPTIONS] [TASK_ID]
-
- Claim an interactive task and exec ``claude`` in the current terminal.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   task_id      [TASK_ID]  Task ID; omit to start the next pending            │
-│                           interactive task.                                  │
-│                           [default: 0]                                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claimed-by        TEXT  Worker identifier stored on the claim.             │
-│                           [default: cli]                                     │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree tasks work-next-headless`
-
-```
-Usage: t3 teatree tasks work-next-headless [OPTIONS]
+Usage: t3 teatree tasks work-next [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --claimed-by        TEXT  [default: worker]                                  │
@@ -11758,6 +11849,7 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 │ import  Seed the DB store from operational  toml keys (one-time).            │
 │ export  Dump the ConfigSetting store to TOML — the inverse of import.        │
 │ flags   Read-only dead-toggle audit report over the FEATURE_FLAGS registry.  │
+│ inert   Which gated features shipped and then never ran (#4189).             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12018,6 +12110,23 @@ Usage: t3 teatree config_setting flags [OPTIONS]
  tracking issue; a ``REMOVE``-stage flag (a toggle whose gated code is now
  permanent) is surfaced LOUD so a dead toggle cannot rot unnoticed. Reads the
  code-level registry only — it writes nothing to the ``ConfigSetting`` store.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting inert`
+
+```
+Usage: t3 teatree config_setting inert [OPTIONS]
+
+ Which gated features shipped and then never ran (#4189).
+
+ One line per gate that is off in every scope and whose declared observable is
+ empty — the feature twin of ``t3 loops audit``'s shipped-seed report. A gate
+ nobody ever decided to leave off is surfaced LOUD; one the owner deliberately
+ staged is listed quietly, so the report stays worth reading.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

@@ -40,6 +40,15 @@ class TestQuestionMetrics:
         assert metrics.interventions == 1
         assert metrics.declines == 1
 
+    def test_a_prose_ratify_approval_is_not_a_decline(self) -> None:
+        # The dial re-tightens on distrust of the auto-graduation, and the owner
+        # approving in their own words is not distrust — the exact-token reading this
+        # module used to carry scored every real approval as one (#4184).
+        _answered("directive_ratify:7:0", "RATIFIED, NO SETTING — just do it.")
+        metrics = compute_metrics(DIRECTIVE_ADMIT)
+        assert metrics.resolved == 1
+        assert metrics.declines == 0
+
     def test_a_question_of_another_class_is_not_counted(self) -> None:
         _answered("directive_ratify:5:0", "no")
         assert compute_metrics(OUTER_LOOP_KEEP).interventions == 0

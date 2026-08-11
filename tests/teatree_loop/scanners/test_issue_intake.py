@@ -520,7 +520,7 @@ class IssueIntakeGovernorTests(_PublicRepoTestCase):
             authored={OWNER: [_issue("https://github.com/souliane/teatree/issues/900", author=OWNER)]},
         )
         with patch(
-            "teatree.core.headless_admission.headless_admission_denied_reason",
+            "teatree.core.agent_admission.agent_admission_denied_reason",
             return_value="congestion: headless pool saturated",
         ):
             signals = self._scanner(host, max_concurrent=0).scan()
@@ -533,7 +533,7 @@ class IssueIntakeGovernorTests(_PublicRepoTestCase):
             authored={OWNER: [_issue("https://github.com/souliane/teatree/issues/901", author=OWNER)]},
         )
         with patch(
-            "teatree.core.headless_admission.headless_admission_denied_reason",
+            "teatree.core.agent_admission.agent_admission_denied_reason",
             return_value=None,
         ):
             signals = self._scanner(host, max_concurrent=0).scan()

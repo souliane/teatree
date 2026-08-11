@@ -44,6 +44,7 @@ from django.utils import timezone
 
 from teatree.config import get_effective_settings
 from teatree.core.models import Directive
+from teatree.core.models.mechanism_sketch import ACTIVATION_ONLY
 from teatree.core.models.ticket import Ticket
 from teatree.loops.directive_loop.configure import apply_activation
 from teatree.loops.directive_loop.guards import DirectiveLoopSettings, evaluate_execution_guards, evaluate_intake_guards
@@ -64,8 +65,6 @@ from teatree.loops.directive_loop.verify import (
 from teatree.loops.outer_loop.guards import GuardSeams
 
 logger = logging.getLogger(__name__)
-
-_ACTIVATION_ONLY = "activation_only"
 
 #: The pre-admission arc — inert steps that terminate at the human ratify gate.
 _INTAKE_STATES = frozenset(
@@ -124,7 +123,7 @@ def _ticket_merged(directive: Directive) -> bool:
 
 def _is_activation_only(directive: Directive) -> bool:
     sketch = directive.sketch
-    return sketch is not None and sketch.kind == _ACTIVATION_ONLY
+    return sketch is not None and sketch.kind == ACTIVATION_ONLY
 
 
 def run_tick(

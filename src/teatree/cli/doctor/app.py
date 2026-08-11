@@ -39,6 +39,7 @@ from teatree.cli.doctor.checks_environment import (
     _check_stale_uv_venv,
     _check_t3_shim_receipt,
 )
+from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
@@ -160,6 +161,7 @@ __all__ = (
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
+    "_check_gates_shipped_inert",
     "_check_gh_token_permissions",
     "_check_intake_budget_deadlock",
     "_check_intent_freshness",
@@ -423,14 +425,17 @@ def _run_config_posture_advisories() -> None:
         the self-pump under holiday-away) the whole time.
     *   #4074 — every stored ``ConfigSetting`` row whose value differs from the shipped
         default, i.e. a row still shadowing a default that has since moved underneath it.
+    *   #4189 — every gated feature that is off in every scope and whose declared evidence
+        observable is empty, i.e. a gate merged, reviewed, tested and never once fired.
 
-    Both read the ORM, so this runs after ``ensure_django``; both are surfacing-only, so
-    their return values are deliberately discarded and neither can redden the exit code.
-    Grouped for the same reason :func:`_run_daily_advisories` is — to keep
+    All three read the ORM, so this runs after ``ensure_django``; all three are
+    surfacing-only, so their return values are deliberately discarded and none can redden
+    the exit code. Grouped for the same reason :func:`_run_daily_advisories` is — to keep
     :func:`run_doctor_checks` inside its statement budget rather than growing a flat list.
     """
     _check_mode_override_staleness()
     _check_config_rows_shadowing_shipped_defaults()
+    _check_gates_shipped_inert()
 
 
 def _run_advisory_finalisers(*, repair: bool) -> None:

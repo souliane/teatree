@@ -73,9 +73,12 @@ class TestFixerPrompt:
         prompt = build_fixer_prompt(session)
         assert "rules_under_load" in prompt
         assert "budget_turns" in prompt
-        # The conservative anti-cheat instruction is present.
+        # The conservative anti-cheat instruction is present, and names the WHOLE
+        # harness — the pre-#4220 hint listed four matchers and left report.py, the
+        # module computing the verdict, reading as a legal fix target.
         assert "evals/scenarios/**" in prompt
-        assert "matchers.py" in prompt
+        assert "src/teatree/eval/**" in prompt
+        assert "report.py" in prompt
         assert "make NO change" in prompt
 
     def test_default_fixer_is_a_headless_fixer(self) -> None:

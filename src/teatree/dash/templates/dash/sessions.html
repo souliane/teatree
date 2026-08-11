@@ -7,7 +7,7 @@
       <thead>
         <tr>
           <th>session</th><th>ticket</th><th>phase</th><th>model</th>
-          <th>lane / target</th><th>skills</th><th>outcome</th><th>started</th><th>duration</th>
+          <th>lane</th><th>skills</th><th>outcome</th><th>started</th><th>duration</th>
         </tr>
       </thead>
       <tbody>
@@ -22,7 +22,7 @@
             </td>
             <td>{{ s.phase|default:"—" }}</td>
             <td class="mono">{{ s.model|default:"—" }}</td>
-            <td>{{ s.lane|default:"—" }} · {{ s.execution_target }}</td>
+            <td>{{ s.lane|default:"—" }}</td>
             <td>{% include "dash/partials/_skills.html" with skills=s.skills skills_fault=s.skills_fault %}</td>
             <td>{{ s.outcome|default:"—" }}</td>
             <td>{{ s.started_at }}</td>

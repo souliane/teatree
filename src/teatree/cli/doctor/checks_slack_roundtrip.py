@@ -1,4 +1,4 @@
-"""``t3 doctor`` — active Slack round-trip comms verification for headless teatree (#3411).
+"""``t3 doctor`` — active Slack round-trip comms verification for teatree (#3411).
 
 The "reacts-but-never-answers" detector. Headless teatree in Docker RECEIVES a
 Slack DM and REACTS (👀 ack) but never POSTS an answer back — a silent half-broken

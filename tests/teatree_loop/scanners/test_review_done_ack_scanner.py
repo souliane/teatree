@@ -71,7 +71,6 @@ def _seed_reviewed_ticket(*, url: str = MR_URL, overlay: str = "team-overlay") -
         session=session,
         phase="reviewing",
         status=Task.Status.COMPLETED,
-        execution_target=Task.ExecutionTarget.HEADLESS,
     )
     Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_POSTED)
     ticket.refresh_from_db()

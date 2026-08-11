@@ -1,7 +1,7 @@
 """``AgentsConfig.ready()`` registers runners without importing the agent SDKs.
 
 ``ready()`` runs inside every ``django.setup()``. Importing the runners there pulled
-``teatree.agents.headless`` -> ``teatree.agents.harness`` ->
+``teatree.agents.runner`` -> ``teatree.agents.harness`` ->
 ``pydantic_ai.models.openai`` -> the whole ``openai.types.*`` pydantic model tree, and
 that import alone was ~10s of ``django.setup()`` on a loaded box — enough for
 ``t3 mcp serve`` to miss the MCP client's handshake window and be reported as a bare
@@ -18,9 +18,9 @@ from pathlib import Path
 import pytest
 from django.apps import apps
 
-from teatree.agents.apps import run_headless_deferred, run_short_describe_deferred
+from teatree.agents.apps import run_agent_deferred, run_short_describe_deferred
 
-_HEAVY_MODULES = ["openai", "pydantic_ai.models.openai", "teatree.agents.harness", "teatree.agents.headless"]
+_HEAVY_MODULES = ["openai", "pydantic_ai.models.openai", "teatree.agents.harness", "teatree.agents.runner"]
 
 _INHERITED_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "XDG_DATA_HOME", "T3_DATA_DIR")
 
@@ -69,13 +69,13 @@ class TestReadyDoesNotImportTheAgentSdks:
         """A thunk that never reaches the real runner would pass the guard above and ship nothing."""
         seen: list[tuple[object, str]] = []
 
-        def fake_run_headless(task: object, *, phase: str, overlay_skill_metadata: object) -> str:
+        def fake_run_agent(task: object, *, phase: str, overlay_skill_metadata: object) -> str:
             seen.append((task, phase))
             return "attempt"
 
-        monkeypatch.setattr("teatree.agents.headless.run_headless", fake_run_headless)
+        monkeypatch.setattr("teatree.agents.runner.run_agent", fake_run_agent)
 
-        result = run_headless_deferred("task", phase="coding", overlay_skill_metadata={})
+        result = run_agent_deferred("task", phase="coding", overlay_skill_metadata={})
 
         assert seen == [("task", "coding")]
         assert result == "attempt"
@@ -89,11 +89,11 @@ class TestReadyDoesNotImportTheAgentSdks:
         assert run_short_describe_deferred("task-7") == "OK    task-7"
 
     def test_ready_registers_both_runners(self) -> None:
+        from teatree.core.agent_runner import get_agent_runner  # noqa: PLC0415 — post-setup read
         from teatree.core.deterministic_phases import deterministic_phase_runner  # noqa: PLC0415 — post-setup read
-        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — post-setup read
         from teatree.core.modelkit.phases import SHORT_DESCRIBE_PHASE  # noqa: PLC0415 — post-setup read
 
         apps.get_app_config("agents").ready()
 
-        assert get_headless_runner() is run_headless_deferred
+        assert get_agent_runner() is run_agent_deferred
         assert deterministic_phase_runner(SHORT_DESCRIBE_PHASE) is run_short_describe_deferred

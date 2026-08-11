@@ -16,6 +16,8 @@ from teatree.core.models import ConfigSetting
 
 EPIC_BODY = "## Members\n\n- [x] #3848\n- [x] #3892\n- [x] #4035\n"
 
+LEDGER_BODY = "## DO NOT CLOSE — standing ledger\n\n- [ ] **A gap** — with prose, so no child list.\n"
+
 
 def _facts(
     *,
@@ -159,6 +161,18 @@ class TestPayloadFacade:
         assert (
             decide_issue_intake(
                 {"body": EPIC_BODY},
+                author_trusted=True,
+                work_exists=False,
+                admit_label="t3-auto",
+            )
+            is IntakeVerdict.IGNORE_UMBRELLA
+        )
+
+    def test_an_unlabelled_standing_ledger_from_a_trusted_author_is_declined(self) -> None:
+        """The souliane/teatree#2663 shape: no label and prose items, so only the declaration decides."""
+        assert (
+            decide_issue_intake(
+                {"body": LEDGER_BODY},
                 author_trusted=True,
                 work_exists=False,
                 admit_label="t3-auto",

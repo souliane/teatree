@@ -1,6 +1,6 @@
 """``git_env_without_overrides`` keeps non-``GIT_*`` env — incl. TMPDIR.
 
-The headless ``claude`` child env (``teatree.agents._headless_env``) is built on
+The headless ``claude`` child env (``teatree.agents._runner_env``) is built on
 this base when a Layer-2 credential provider is pinned. Routing runtime temp to
 disk relies on the spawned child inheriting the ``TMPDIR`` the entrypoint exports,
 so this locks the contract that the base strips ONLY ``GIT_*`` overrides and never

@@ -217,11 +217,10 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
         candidates = list(
             qs.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).values_list(
                 "pk",
-                "execution_target",
                 "claimed_by",
             ),
         )
-        for pk, execution_target, claimed_by in candidates:
+        for pk, claimed_by in candidates:
             claimed = qs.filter(pk=pk, status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
                 status=task_model.Status.FAILED,
                 claimed_at=None,
@@ -239,7 +238,6 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
             reaped += 1
             attempt_model.objects.create(
                 task_id=pk,
-                execution_target=execution_target,
                 ended_at=now,
                 exit_code=1,
                 error=_lease_expired_reason(claimed_by),

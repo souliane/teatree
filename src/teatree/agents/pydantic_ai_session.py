@@ -2,7 +2,7 @@
 
 Split out of :mod:`teatree.agents.harness` (module-health LOC cap): the session adapts
 a pydantic_ai run into the SAME ``claude_agent_sdk`` message vocabulary every
-harness backend yields, so the driver (:func:`teatree.agents.headless._collect`) never
+harness backend yields, so the driver (:func:`teatree.agents.runner._collect`) never
 special-cases the transport. It depends on neither the ``Harness`` protocol nor the registry
 — only the message vocabulary and the Lane-B compaction policy — so it lives below the
 harness module with no import cycle. Re-exported from ``teatree.agents.harness`` for
@@ -46,7 +46,7 @@ _RUN_ERRORS = (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded)
 
 #: The terminal ``ResultMessage.subtype`` a max-tokens truncation is surfaced under by
 #: :meth:`PydanticAiHarnessSession.receive_response`. Shared with the headless driver
-#: (:func:`teatree.agents.headless._outcome_failure`) so the "detect here, alert the owner
+#: (:func:`teatree.agents.runner._outcome_failure`) so the "detect here, alert the owner
 #: there" seam keys on ONE constant rather than a literal duplicated across two modules.
 MAX_TOKENS_TRUNCATION_SUBTYPE: Final[str] = "error_max_tokens"
 
@@ -130,7 +130,7 @@ def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[
     :class:`~claude_agent_sdk.ToolResultBlock` (``is_error`` set for a refusal),
     each carried in its own :class:`~claude_agent_sdk.AssistantMessage`. This is
     what turns the ``pydantic_ai`` lane from text-in/text-out into a tool-emitting
-    session the driver (:func:`teatree.agents.headless._collect`) sees in the same
+    session the driver (:func:`teatree.agents.runner._collect`) sees in the same
     vocabulary the ``claude_sdk`` lane yields. *start* is the message count of the
     (compacted) seed history, so only THIS turn's messages are mapped.
     """
@@ -193,7 +193,7 @@ def _model_identity_usage(model_name: str) -> dict[str, Any]:
     ``ModelUsage`` TypedDict documents the shape the CLI sends rather than a constructor
     contract this lane must satisfy. There is no CLI on the metered lane and pydantic_ai
     reports no per-model breakdown, so the entry is deliberately EMPTY: it exists because
-    ``headless_usage._billed_model`` reads the billed model from this map's single KEY.
+    ``runner_usage._billed_model`` reads the billed model from this map's single KEY.
     The authoritative figures for the turn are ``usage`` and ``total_cost_usd`` on the same
     message. Zero-filling the breakdown to satisfy the TypedDict would publish
     measured-looking zeros for cost, context window, and output cap that nothing observed.
@@ -337,8 +337,8 @@ class PydanticAiHarnessSession:
         A provider/run failure (:data:`_RUN_ERRORS`) ends the turn with an
         ``is_error`` :class:`~claude_agent_sdk.ResultMessage` instead of escaping as a
         raw exception, so the driver's own taxonomy —
-        :func:`teatree.agents.headless_failure_taxonomy.limit_match` → ``park_or_rotate_on_limit``,
-        :func:`teatree.agents.headless_failure_taxonomy.error_result_reason` → ``_record_failure`` —
+        :func:`teatree.agents.runner_failure_taxonomy.limit_match` → ``park_or_rotate_on_limit``,
+        :func:`teatree.agents.runner_failure_taxonomy.error_result_reason` → ``_record_failure`` —
         fires on this lane exactly as it does on the ``claude_sdk`` one, with no
         driver change and no transport special-casing.
         """
@@ -451,7 +451,7 @@ class PydanticAiHarnessSession:
         """A truthful terminal ``ResultMessage`` for a provider/run error (``is_error=True``).
 
         The SAME error-shaped envelope the claude_sdk lane yields, so the driver's
-        failure taxonomy (:mod:`teatree.agents.headless_failure_taxonomy`)
+        failure taxonomy (:mod:`teatree.agents.runner_failure_taxonomy`)
         keys on ``is_error`` and classifies (or fails) it without special-casing the
         transport. ``api_error_status`` carries the HTTP status for a
         :class:`~pydantic_ai.exceptions.ModelHTTPError` (rendered by

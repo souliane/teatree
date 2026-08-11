@@ -90,7 +90,7 @@ UNCONVERTED: frozenset[str] = frozenset(
         "run:Command.verify:typed-return-unpinned",
         "standup:Command.generate:typed-return-unpinned",
         "standup:Command.stale:typed-return-unpinned",
-        "tasks:Command.work_next_headless:typed-return-unpinned",
+        "tasks:Command.work_next:typed-return-unpinned",
         "ticket:Command.clear:typed-return-unpinned",
         "ticket:Command.comment:typed-return-unpinned",
         "ticket:Command.create_sub:typed-return-unpinned",

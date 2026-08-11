@@ -1,80 +1,15 @@
-"""Agent-lane config enums — runtime lane, harness transport, provider/credential, eval credential."""
+"""Agent-lane config enums — harness transport, provider/credential, eval credential."""
 
 from enum import StrEnum
 
 
-class AgentRuntime(StrEnum):
-    """WHICH LANE a loop-dispatched phase agent executes in — interactive vs headless.
-
-    A loop-dispatched phase task is one whose ``(role, phase)`` has a registered
-    phase sub-agent (``t3:coder`` / ``t3:reviewer`` / …, see
-    ``SUBAGENT_BY_PHASE``). This setting decides ONLY the lane such a task runs
-    in. WHICH in-process transport a headless run rides, and WHICH
-    provider/credential that transport authenticates with, is the orthogonal
-    two-layer pair :class:`AgentHarness` (Layer 1) / :class:`AgentHarnessProvider`
-    (Layer 2) — [#2887](https://github.com/souliane/teatree/issues/2887) retired
-    the credential distinction this enum used to carry itself (the former
-    ``sdk_oauth`` / ``sdk_apikey`` / ``api`` members): conflating "which lane"
-    with "which credential" in one enum meant the two could never be set
-    independently, and the not-yet-implemented ``api`` member had no home once
-    the credential axis moved to Layer 2. A stored pre-#2887 value is no longer a
-    member of this enum; the resolver rejects it loudly rather than silently
-    misreading it.
-
-    Tiers (default :attr:`HEADLESS`):
-
-    *   :attr:`INTERACTIVE` — the in-session ``/loop`` slot claims the
-        task (``loop_dispatch claim-next``) and spawns the phase sub-agent via the
-        ``Agent`` tool, in the live Claude Code session (subscription-covered,
-        visible in the agent view).
-    *   :attr:`HEADLESS` (default) — ``run_headless`` (``agents/headless.py``) drives an
-        in-process agent session behind the :class:`AgentHarness` transport seam.
-        The transport (``claude_sdk`` default | ``pydantic_ai``) is
-        :class:`AgentHarness`'s call; for ``claude_sdk`` the Anthropic credential
-        (subscription OAuth default | metered API key) is
-        :class:`AgentHarnessProvider`'s call.
-
-    ``agent_runtime`` is a DB-home setting: opt in via ``t3 <overlay>
-    config_setting set agent_runtime headless`` (per-overlay overridable with
-    ``--overlay <name>``) or the ``T3_AGENT_RUNTIME`` environment variable — a
-    ``[teatree] agent_runtime`` TOML value is ignored on read.
-    """
-
-    INTERACTIVE = "interactive"
-    HEADLESS = "headless"
-
-    @classmethod
-    def parse(cls, value: str) -> "AgentRuntime":
-        """Parse an agent-runtime string; invalid values raise ``ValueError``.
-
-        Mirrors :meth:`Mode.parse`: the dataclass default (:attr:`HEADLESS`)
-        is applied by the caller when the setting is absent, so this validates
-        only explicit values and a typo raises rather than switching the runtime.
-        """
-        normalised = value.strip().lower()
-        normalised = _PROVIDER_VALUE_ALIASES.get(normalised, normalised)
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid agent_runtime {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-    @property
-    def is_headless(self) -> bool:
-        """True for :attr:`HEADLESS` — the sole non-interactive lane."""
-        return self is AgentRuntime.HEADLESS
-
-
 class AgentHarness(StrEnum):
-    """Which in-process TRANSPORT drives a headless agent run — the harness backend.
+    """Which in-process TRANSPORT drives an agent run — the harness backend.
 
-    Orthogonal to :class:`AgentRuntime`, which selects the interactive-vs-headless
-    lane and its credential: once a run IS headless, ``agent_harness`` picks the
-    in-process transport that opens the agent session behind the narrow
-    ``teatree.agents.harness.Harness`` protocol. Transport is not the same axis as
-    interactive/headless, so it is its own setting rather than a fold into
-    :class:`AgentRuntime`.
+    ``agent_harness`` picks the transport that opens the agent session behind the
+    narrow ``teatree.agents.harness.Harness`` protocol; WHICH provider/credential
+    that transport authenticates with is the orthogonal
+    :class:`AgentHarnessProvider`.
 
     Tiers (default :attr:`CLAUDE_SDK`, today's behaviour):
 

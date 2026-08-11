@@ -1156,7 +1156,7 @@ def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
 
 
 class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase):
-    """Phase 3c measurement runs on EVERY pass (default ON); escalation is --full + toggle gated (#2663)."""
+    """Phase 3c measurement runs on EVERY pass (default ON); escalation is toggle-gated (#2663, #4176)."""
 
     def test_measurement_runs_on_a_plain_run_and_records_a_snapshot(self) -> None:
         # RED before the measure/escalate split: compliance was wired ONLY under
@@ -1222,13 +1222,16 @@ class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase)
         esc.assert_called_once()
 
     def test_escalation_skipped_under_full_when_toggle_off(self) -> None:
-        # Green pin: escalation stays gated on --full AND its own default-OFF toggle,
-        # so --full alone (toggle off) measures but never files.
+        # The must-block pin, unchanged by #4176: escalation FILES tickets, so it stays
+        # behind its own default-OFF toggle — --full alone measures but never files.
         esc = self._run_full(escalate="0")
         esc.assert_not_called()
 
-    def test_run_without_full_never_escalates_even_with_toggle_on(self) -> None:
-        # The AND-gate: the toggle alone (no --full) measures but does not escalate.
+    def test_run_with_the_toggle_on_escalates_without_full(self) -> None:
+        # Inverted by #4176. The gate was `force_all_phases and compliance_escalate_enabled()`,
+        # and the cron tick never sets force_all_phases — so the toggle was dead on the
+        # nightly path. The default-OFF opt-in is unchanged; only the extra --full term,
+        # which cron cannot satisfy, is gone.
         esc_patch = patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="")
         with (
             patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
@@ -1241,7 +1244,7 @@ class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase)
             ),
         ):
             call_command("dream", "run", stdout=StringIO())
-        esc.assert_not_called()
+        esc.assert_called_once()
 
 
 class DreamFullFlagTestCase(TestCase):

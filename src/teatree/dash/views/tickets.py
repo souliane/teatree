@@ -121,7 +121,7 @@ def task_action(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
         actor=who,
         action=f"task:enqueue:{phase}",
         target=str(ticket_id),
-        after=f"TODO-{task.pk} {task.execution_target}",
+        after=f"TODO-{task.pk} {task.phase}",
     )
     if not is_htmx(request):
         return redirect("dash:board")
