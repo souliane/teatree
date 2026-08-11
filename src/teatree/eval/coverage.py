@@ -13,7 +13,8 @@ a non-empty string; this module only reads it.
 
 A skill that is neither covered nor exempt is a GAP. The coverage report is a
 pure function over ``discover_specs()`` + frontmatter — deterministic, free, no
-model — feeding ``t3 eval coverage`` and the warn-first per-PR gate.
+model — feeding ``t3 eval coverage``, the bare-suite ``skill-coverage`` lane and the
+``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate. All three FAIL on a gap.
 """
 
 import dataclasses

@@ -921,6 +921,35 @@ class TestEvalPersistAndHistory:
         assert second.exit_code == 1, second.output
         assert "REGRESSED alpha" in second.output
 
+    def test_gate_regressions_reports_an_errored_scenario_as_unmeasured_not_regressed(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ApiInProcessRunner", _PassRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            first = CliRunner().invoke(app, ["eval", "run", "--backend", "api", "--baseline"])
+            assert first.exit_code == 0, first.output
+
+        class _ErroredRunner:
+            def __init__(self, *_: object, **__: object) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, is_error=True, terminal_reason="throttled: 529 overloaded")
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ApiInProcessRunner", _ErroredRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            second = CliRunner().invoke(app, ["eval", "run", "--backend", "api", "--gate-regressions"])
+
+        # Still non-zero — a gate that could not compare the scenario cannot report a
+        # green — but the headline is the honest one, not a behavioral 1.00 -> 0.00.
+        assert second.exit_code == 1, second.output
+        assert "UNMEASURED alpha" in second.output
+        assert "REGRESSED alpha" not in second.output
+
 
 def _cost_runner(cost_usd: float) -> type:
     class _CostRunner:
@@ -2041,9 +2070,8 @@ class TestEvalAll:
         assert "skill-prose-judge" not in result.output, result.output
 
     def test_a_coverage_gap_fails_the_suite(self, tmp_path: Path) -> None:
-        # Phase-B enforcement shipped: `test_no_shipped_skill_is_an_uncovered_gap`
-        # is a hard RED on the same corpus, so a lane hard-coded to pass reported
-        # the gap in green while the pytest gate failed on it. The two agree now.
+        # Phase-B enforcement shipped: this lane, `t3 eval coverage` and
+        # `test_no_shipped_skill_is_an_uncovered_gap` all FAIL on the same corpus.
         with _patch_all_lanes([_spec("worktree_first")], coverage_gaps=("loops",)):
             result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
@@ -2479,27 +2507,24 @@ class TestEvalCoverage:
         assert "ship" in result.output
         assert "0 gap(s)" in result.output
 
-    def test_gap_is_warn_first_exit_zero_by_default(self) -> None:
+    def test_a_gap_exits_nonzero_and_still_reports_it(self) -> None:
         with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
             result = CliRunner().invoke(app, ["eval", "coverage"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "loops" in result.output
         assert "1 gap(s)" in result.output
 
-    def test_fail_on_gap_exits_nonzero(self) -> None:
-        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
-            result = CliRunner().invoke(app, ["eval", "coverage", "--fail-on-gap"])
-        assert result.exit_code == 1, result.output
-
-    def test_fail_on_gap_with_clean_corpus_exits_zero(self) -> None:
+    def test_the_retired_opt_in_flag_is_gone(self) -> None:
+        # The verdict is the default now, so the flag that used to buy it must not
+        # linger as a no-op that reads like the enforcement is still opt-in.
         with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage()):
             result = CliRunner().invoke(app, ["eval", "coverage", "--fail-on-gap"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 2, result.output
 
     def test_json_format_lists_gaps(self) -> None:
         with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
             result = CliRunner().invoke(app, ["eval", "coverage", "--format", "json"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["gaps"] == ["loops"]
 
