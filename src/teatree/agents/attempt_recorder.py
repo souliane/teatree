@@ -16,7 +16,7 @@ the two dispatch backends.
 
 import dataclasses
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.utils import timezone
 
@@ -161,11 +161,11 @@ def record_result_envelope(
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
-        return _record_failure(task, error=checked.error, result=result)
+        return _record_failure(task, error=checked.error, result=result, usage=usage)
 
     server_side_error = _record_returned_envelopes(task, result, phase=phase)
     if server_side_error:
-        return _record_failure(task, error=server_side_error, result=result)
+        return _record_failure(task, error=server_side_error, result=result, usage=usage)
 
     _maybe_record_plan_artifact(task, result, phase=phase)
     record_reactive_envelopes(task, result, phase=phase)
@@ -175,6 +175,44 @@ def record_result_envelope(
         ended_at=timezone.now(),
         exit_code=0,
         result=result,
+        **usage_fields(usage),
+    )
+    task.complete(result_artifact_path="")
+    return attempt
+
+
+class SpendColumns(TypedDict, total=False):
+    """The ``TaskAttempt`` columns describing what a run cost. Absent = not recorded."""
+
+    agent_session_id: str
+    model: str
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+    num_turns: int | None
+    lane: str
+    cost_is_estimated: bool
+    reasoning_effort: str
+    skills_loaded: list[str]
+
+
+def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
+    """The ``TaskAttempt`` spend columns for *usage* — or NONE of them when there is none.
+
+    One mapping the success and failure recorders share, because they diverged: only the
+    success path wrote spend, so every post-turn failure (a lost lease, an evidence-gate
+    refusal, a harness crash) discarded tokens already billed — a measured 916 rows, and
+    zero of 8,217 failed attempts in the table's history carry a token count (#4164).
+
+    ``None`` writes nothing, leaving the columns NULL. That is the whole point of the
+    distinction: a pre-turn park never spent, and a zero there would be a WORSE lie than a
+    NULL because a zero reads as a measurement.
+    """
+    if usage is None:
+        return SpendColumns()
+    return SpendColumns(
         agent_session_id=usage.agent_session_id,
         model=usage.model,
         input_tokens=usage.input_tokens,
@@ -188,8 +226,6 @@ def record_result_envelope(
         reasoning_effort=usage.reasoning_effort,
         skills_loaded=list(usage.skills_loaded),
     )
-    task.complete(result_artifact_path="")
-    return attempt
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -489,13 +525,20 @@ def _base_ref(repo_path: str) -> str:
         return "main"
 
 
-def _record_failure(task: Task, *, error: str, result: AgentResultBlob | None = None) -> TaskAttempt:
+def _record_failure(
+    task: Task,
+    *,
+    error: str,
+    result: AgentResultBlob | None = None,
+    usage: AttemptUsage | None = None,
+) -> TaskAttempt:
     attempt = TaskAttempt.objects.create(
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
         error=error,
         result=result or {},
+        **usage_fields(usage),
     )
     task.fail(reason=error)
     return attempt

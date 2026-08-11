@@ -1,4 +1,4 @@
-"""The ``0069`` data migration collapses the seven pre-decision modes to five (#4202).
+"""The ``0071`` data migration collapses the seven pre-decision modes to five (#4202).
 
 Every name a stored row can point at travels with the rename — schedule slots, the
 manual override, the mode-valued ``ConfigSetting`` rows and the renamed holiday
@@ -19,7 +19,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
 _BEFORE = ("core", "0068_rename_headless_max_turns")
-_AFTER = ("core", "0069_collapse_modes_to_five_presets")
+_AFTER = ("core", "0071_collapse_modes_to_five_presets")
 
 #: The seven live rows as the issue measured them, reduced to the columns that matter here.
 _LIVE_MODES = ("engaged", "heads-down", "low-power", "maintenance", "off", "offline", "unattended")

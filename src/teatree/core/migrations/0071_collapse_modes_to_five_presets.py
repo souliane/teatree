@@ -121,7 +121,7 @@ def _repoint_references(apps, renamed: dict[str, str]) -> None:
 
 
 class Migration(migrations.Migration):
-    dependencies = [("core", "0068_rename_headless_max_turns")]
+    dependencies = [("core", "0070_task_owner_driving_since")]
 
     operations = [
         migrations.RunPython(_rename_modes, migrations.RunPython.noop),
