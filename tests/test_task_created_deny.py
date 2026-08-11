@@ -27,7 +27,7 @@ from hooks.scripts.task_created_deny import (
     harness_surfaced_deny_text,
 )
 
-_REASON = "SKILL LOADING ENFORCEMENT (TaskCreated): add `Read skills/code/SKILL.md` to the prompt."
+_REASON = "DISPATCH QUOTE BLOCK (TaskCreated): the task body carries a verbatim user quote. Paraphrase it."
 
 
 def _emit(reason: str) -> tuple[bool, dict | None, str]:

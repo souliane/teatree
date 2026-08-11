@@ -354,7 +354,7 @@ class TestDispatchGateWiresGovernor:
 
     _DISPATCH_MODULE = "core/dispatch_admission.py"
     _DISPATCH_CONSUMER = "dispatch_admission_denied_reason"
-    #: Both arms — ``PreToolUse`` misses the task-LIST tools, which only ``TaskCreated`` sees.
+    #: The ``Agent``/``Task`` ``PreToolUse`` matcher — the ONE interception point a dispatch has.
     _DISPATCH_GATE = "hooks/scripts/dispatch_admission_gate.py"
 
     def test_the_dispatch_module_consults_the_pure_governor_decision(self) -> None:

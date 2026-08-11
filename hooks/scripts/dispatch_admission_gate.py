@@ -9,9 +9,11 @@ population on the box is the SUM of both. Measured at load 58 on 8 cores with
 1 GB free while the factory's own ``issue_implementer_max_concurrent = 3`` held.
 
 The dispatch interception point already existed — this module supplies the
-admission DECISION on it. The second arm rides ``TaskCreated`` because the
-task-LIST tools bypass ``PreToolUse``; that event has one producer, so the arm
-books seats for task-list entries and never sees a dispatch (#4216).
+admission DECISION on it. There is exactly ONE such point, the ``Agent``/``Task``
+``PreToolUse`` matcher (#4216): the task-LIST tools bypass ``PreToolUse``, but
+their ``TaskCreated`` event has ONE producer — the ``TaskCreate`` tool body — so
+no dispatch reaches it, a todo puts no agent on the box, and the governor has
+nothing to admit or brake there.
 
 The verdict itself lives in :mod:`teatree.core.dispatch_admission`, so all three
 lanes route through the one pure decision function and can never diverge. The
@@ -24,26 +26,19 @@ An ADMITTED dispatch also takes a durable seat (#4129), because it creates no
 burst of them each read the same live count and every one passed.
 The seat's ordinary end is the ``dispatch_seat_release`` sibling, on ``SubagentStop``.
 
-NEVER-LOCKOUT: the ``PreToolUse`` deny routes through the router's shared
+NEVER-LOCKOUT: the deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
 self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
-a per-call ``[admission-ok: <reason>]`` token in the dispatch prompt / task
-fields allows one call (an empty reason does not); and ANY internal error,
-an unbootstrappable Django and an unimportable ``teatree`` all fail OPEN. The
-``TaskCreated`` arm additionally swallows its own exceptions and emits no
-stderr — the harness ABORTS ``TaskCreated`` on any handler stderr, so
-``main()``'s traceback-writing swallow is a lockout there, not a backstop.
+a per-call ``[admission-ok: <reason>]`` token in the dispatch prompt allows one
+call (an empty reason does not); and ANY internal error, an unbootstrappable
+Django and an unimportable ``teatree`` all fail OPEN.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
 ``orchestration_boundary_signals`` sibling — never Django / ``teatree.core``.
 """
 
-import contextlib
-import io
-import logging
 import re
 import sys
-from collections.abc import Iterator
 
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
 
@@ -123,50 +118,3 @@ def handle_dispatch_admission(data: dict) -> bool:
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 — deferred back-import: avoids a cycle
 
     return _fail_open_or_deny(data, _block_message(reason), gate_id="dispatch_admission")
-
-
-@contextlib.contextmanager
-def _muzzled() -> Iterator[None]:
-    """Suppress every stderr channel for the block — ``TaskCreated`` aborts on any.
-
-    Both channels are stopped because a probe failure inside the governor logs
-    through ``logging``, whose handlers captured the ORIGINAL ``sys.stderr`` at
-    construction time and so survive ``redirect_stderr`` alone.
-    """
-    logging.disable(logging.CRITICAL)
-    try:
-        with contextlib.redirect_stderr(io.StringIO()):
-            yield
-    finally:
-        logging.disable(logging.NOTSET)
-
-
-def handle_dispatch_admission_on_task_create(data: dict) -> bool:
-    """Deny a new ``Task`` the admission governor refuses — the ``TaskCreated`` arm.
-
-    The task-LIST tools bypass ``PreToolUse``, so the arm above never fires on
-    them. ``TaskCreated`` has one producer — the ``TaskCreate`` tool — so this
-    arm sees task-list entries, never a sub-agent fan-out (#4216). Its schema
-    carries no ``agent_id``, so origin is unknowable and the CEILING is never
-    applied here — unknown must not brake on a count it cannot attribute. The
-    quota and load brakes are origin-independent and do apply.
-
-    The exemption is from the ceiling, not from being COUNTED (#4129): this is the
-    highest-burst-risk path, so leaving its agents out of the seat ledger would keep
-    them invisible to the arm that does clamp and let the two gaps compound.
-    """
-    try:
-        with _muzzled():
-            if not data.get("session_id"):
-                return False
-            payload = f"{data.get('task_subject', '') or ''}\n{data.get('task_description', '') or ''}"
-            if _ADMISSION_OK_RE.search(payload[:_TOKEN_SCAN_CHARS]):
-                return False
-            reason = _denied_reason(apply_ceiling=False, session_id=_session_of(data))
-            if reason is None:
-                return False
-            from hooks.scripts.hook_router import emit_task_create_deny  # noqa: PLC0415 — deferred back-import
-
-            return emit_task_create_deny(_block_message(reason))
-    except Exception:  # noqa: BLE001 — crash-proof hook: a TaskCreated traceback on stderr is a LOCKOUT
-        return False

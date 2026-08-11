@@ -1,7 +1,7 @@
 """The ``TaskCreated`` deny surface — the reason the caller actually reads (#4216).
 
 Split out of ``hook_router.py`` by concern (module health; the router is
-shrink-only). All three ``TaskCreated`` gates deny through this one emitter.
+shrink-only). Every ``TaskCreated`` gate denies through this one emitter.
 
 The harness's task-creation consumer reads exactly ONE field of a hook result:
 the ``blockingError`` its runner derives. ``{"continue": false, "stopReason":
@@ -24,7 +24,7 @@ a reason that would NOT reach the caller fails OPEN and logs (on the allow path,
 where the documented contract shows neither stream), rather than blocking
 silently.
 
-A bare sibling module (like ``subagent_skill_gate`` / ``django_bootstrap``): the
+A bare sibling module (like ``skill_path_probe`` / ``django_bootstrap``): the
 router puts its own dir on ``sys.path``, so the import resolves both as the live
 hook and when imported as ``hooks.scripts.hook_router`` in tests. It never
 imports the router back.

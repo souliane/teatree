@@ -39,13 +39,12 @@ live agent. Two separate corrections, at two separate call sites:
     bigger exemption would let a burst of cheap claims buy a burst of dispatches
     the ceiling was written to stop.
 
-``apply_ceiling=False`` is for a caller whose own lane ALREADY admitted it (a
-sub-agent's onward dispatch, the ``TaskCreated`` arm): re-clamping it against
-a ceiling its own claim is counted in would deadlock it against itself. It still
-takes a seat, because it puts an agent on the box either way and the arm that
-DOES clamp has to see it — otherwise the burstiest path stays invisible to the
-only bounded one, and the two gaps compound. The brakes apply there too: box
-saturation is real whoever dispatched.
+``apply_ceiling=False`` is for a caller whose own lane ALREADY admitted it — a
+sub-agent's onward dispatch: re-clamping it against a ceiling its own claim is
+counted in would deadlock it against itself. It still takes a seat, because it
+puts an agent on the box either way and the arm that DOES clamp has to see it —
+otherwise that path stays invisible to the only bounded one, and the two gaps
+compound. The brakes apply there too: box saturation is real whoever dispatched.
 
 Fail-OPEN by construction: the kill-switch, any signal-read failure, and a seat
 write that raises all return ``None`` (admit). A governor that cannot read its

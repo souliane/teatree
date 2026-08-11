@@ -58,12 +58,11 @@ class InteractiveDispatchManager(models.Manager["InteractiveDispatch"]):
         return True
 
     def record_seat(self, *, session_id: str) -> "InteractiveDispatch":
-        """Take a seat with no ceiling to clear — the ceiling-EXEMPT arms' stamp.
+        """Take a seat with no ceiling to clear — the ceiling-EXEMPT arm's stamp.
 
-        A sub-agent's onward dispatch and the ``TaskCreated`` arm keep their
-        documented exemption from the ceiling, but each still puts an agent on the box:
-        uncounted, they are invisible to the arm that does clamp, and the two gaps
-        compound.
+        A sub-agent's onward dispatch keeps its documented exemption from the ceiling,
+        but still puts an agent on the box: uncounted, it is invisible to the arm that
+        does clamp, and the two gaps compound.
         """
         return self._open_seat(session_id)
 
