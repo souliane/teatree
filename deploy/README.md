@@ -253,21 +253,29 @@ open-file via fd/cwd/mmap/bound-AF_UNIX-socket, git repository anywhere in the
 tree whether registered or ad-hoc, protected-name), each of which keeps an entry
 it cannot evaluate.
 
-**The open-file guard fails CLOSED when it cannot see the process table it was
-bind-mounted to watch, not just when a single source errors.** Measured in the
-real `teatree-worker` container (uid 1001, no added caps, bridge network, its
-own PID namespace, reading the host's `/proc` through the read-only bind):
-every per-pid source — `fd`, `cwd`, `map_files` — comes back unreadable for
-every pid. That is not "a quiet process table" — it is the probe
-itself unable to see the namespace it was asked to watch, and the guard now
-recognizes the distinction: when not one pid anywhere answers through any
-per-pid source, it reports `probe_gap` and the sweep removes nothing, rather
-than reading zero holders as "nothing is held" and proceeding. Until the
-underlying capability/LSM restriction is separately addressed — not yet
-isolated; measured across four container configurations without separating
-AppArmor's `docker-default` ptrace deny from the dropped `CAP_SYS_PTRACE` —
-the open-file guard's real contribution inside this container is `probe_gap`,
-not a working liveness check.
+**The open-file guard's witness is RESOLUTION, not listability, and it fails
+CLOSED probe-wide.** Measured in a container matching the worker's image, uid
+and caps (uid 1001, no added caps, its own PID namespace, reading the host's
+`/proc` through the read-only bind): of 325 host pids, 35 present an `fd` or
+`map_files` directory this uid can LIST while every `readlink()` inside it
+raises. Scoring that listing as an answer is what let the guard report an
+unreadable world as an empty one — `_held_paths()` returned a 300-entry
+frozenset, `probe_gap` was empty, and `apply()` deleted a stale entry outright.
+A source is now ANSWERED only when it resolves at least one entry (or is
+genuinely empty and readable — every kernel thread presents that), SKIP when
+the listing itself fails (the ordinary another-uid case), and BLIND when
+entries exist and none resolve. One BLIND source anywhere blinds the whole
+probe: an unknowable pid may hold ANY candidate path, so a sibling that answers
+buys no partial knowledge. The same measurement after the change reports
+`probe_gap` and reclaims 0 bytes.
+
+`--cap-add SYS_PTRACE` leaves 31 pids blind and `--pid host` leaves 31 blind;
+`kernel.yama.ptrace_scope = 1` plus the PID-namespace boundary is what bounds
+them, and no compose knob lifts it. So the sweep ships OFF —
+`scratch_retention_days` defaults to `0` — and inside this container the
+open-file guard's real contribution is `probe_gap`, not a working liveness
+check. Arming the lane needs a venue that can resolve host fds, which is its own
+ticket.
 
 The bound-socket source is read per pid, as `<pid>/net/unix`, never the bare
 `/proc/net/unix`: the latter is a magic symlink to `self/net` resolved against

@@ -20,12 +20,10 @@ not a git repository anywhere in its tree (a registered ``Worktree`` row OR an
 ad-hoc clone the DB never learned about), and not protected by name. A guard
 that cannot be answered keeps the entry with its reason recorded, so a read
 failure is never laundered into a deletion — including when the open-file probe
-sees every pid but every ACCESS-GATED per-pid source (fd, cwd, map_files) still
-comes back unreadable for ALL of them: that is not an empty process table, it is
-the probe itself unable to see the namespace it was asked to watch, and it
-blinds the whole sweep rather than reporting nothing held. The socket table is
-world-readable and so answers even there, which is why it supplies holder paths
-but never counts as one of those witnesses.
+(:mod:`~teatree.core.retention.liveness`) can see a pid's ``fd`` directory but
+resolve nothing inside it: that is not an empty process table, it is the probe
+itself unable to see the namespace it was asked to watch, and it blinds the
+whole sweep rather than reporting nothing held.
 
 The process table and the temp root must describe the SAME namespace or the
 open-file guard is blind: ``root`` is what this venue writes through, and
@@ -47,11 +45,13 @@ from pathlib import Path
 from django.utils import timezone
 
 from teatree.core.models.worktree import Worktree
+from teatree.core.retention.liveness import held_paths
 
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_DAY = 86400
 _BYTES_PER_GIB = 1024**3
+
 
 # Never swept at any age. The X11/ICE sockets and the deploy flock are live
 # rendezvous points whose absence breaks a running process; the statusline dir
@@ -253,7 +253,7 @@ class ScratchSweep:
         """Classify every top-level entry under the root, size-ranked, touching nothing."""
         if self.retention_days <= 0:
             return self._inert_plan(f"retention disabled (scratch_retention_days={self.retention_days})")
-        held = self._held_paths()
+        held = held_paths(self.proc_root)
         if held is None:
             return self._inert_plan(f"open-file probe unreadable at {self.proc_root} — nothing is removable")
         reserved = _worktree_paths()
@@ -393,117 +393,9 @@ class ScratchSweep:
             return None
         return (self._clock().timestamp() - mtime) / _SECONDS_PER_DAY
 
-    def _held_paths(self) -> frozenset[str] | None:
-        """Every path a live process holds open; ``None`` when unreadable.
-
-        Four distinct liveness forms, every one of them read PER PID and folded
-        into one set: a plain open ``fd`` or ``cwd``; a memory-mapped file
-        (``map_files``) — a process that ``mmap()``s a file and then closes the
-        original fd holds it live with NO entry under ``fd/`` at all, so skipping
-        ``map_files`` misses exactly that case; and a bound ``AF_UNIX`` socket,
-        which is not reachable through any fd walk (a socket fd reads back as
-        ``socket:[inode]``, never the bind path) and is instead read from that
-        pid's own ``net/unix`` table.
-
-        A pid whose sources are unreadable belongs to another uid and is skipped
-        rather than failing the whole probe — that is the normal state of any
-        multi-user process table, and the ownership guard already refuses to
-        consider an entry this uid does not own. But when pids exist and NOT ONE
-        of them answers through ANY ACCESS-GATED source, that is not "a quiet,
-        single-user box" — it is the probe itself structurally blind (a container
-        without ptrace/LSM access into the host process table it was bind-mounted
-        to read), and reporting it as "nothing held" is exactly the fail-open this
-        module's docstring forbids. The socket table is deliberately NOT one of
-        those witnesses: ``<pid>/net`` is mode 0555 and ``<pid>/net/unix`` 0444, so
-        it answers for every pid whatever this uid may reach, while ``fd`` and
-        ``map_files`` are 0500 behind ``ptrace_may_access``. Letting a source that
-        always answers vouch for the probe would retire this guard on any real
-        ``/proc``, precisely where it is load-bearing. An unlistable ``proc_root``
-        blinds the WHOLE probe outright: it is the one process-table-wide read
-        left, so a failure there is a namespace problem, not a single pid's.
-        """
-        try:
-            pids = [entry for entry in self.proc_root.iterdir() if entry.name.isdigit()]
-        except OSError:
-            return None
-        held: set[str] = set()
-        any_pid_answered = False
-        for base in pids:
-            fd_entries, fd_ok = _listable(base / "fd")
-            map_entries, map_ok = _listable(base / "map_files")
-            held.update(_bound_socket_paths(base))
-            try:
-                held.add(str((base / "cwd").readlink()))
-                cwd_ok = True
-            except OSError:
-                cwd_ok = False
-            if fd_ok or map_ok or cwd_ok:
-                any_pid_answered = True
-            for link in (*fd_entries, *map_entries):
-                try:
-                    held.add(str(link.readlink()))
-                except OSError:
-                    continue
-        if pids and not any_pid_answered:
-            return None
-        return frozenset(held)
-
 
 def _ranked(entries: list[ScratchEntry]) -> tuple[ScratchEntry, ...]:
     return tuple(sorted(entries, key=lambda entry: (-entry.size_bytes, entry.path)))
-
-
-def _listable(path: Path) -> tuple[list[Path], bool]:
-    """*path*'s entries, and whether the read itself succeeded.
-
-    ``([], True)`` is a genuinely empty directory — the read worked, nothing is
-    there. ``([], False)`` is indistinguishable from that BY RESULT, but not by
-    what it means: only the caller, pooling this across every pid, can tell "one
-    pid belongs to another uid" (normal) apart from "no pid anywhere answered"
-    (the probe itself is blind) — see ``ScratchSweep._held_paths``.
-    """
-    try:
-        return list(path.iterdir()), True
-    except OSError:
-        return [], False
-
-
-def _bound_socket_paths(pid_dir: Path) -> frozenset[str]:
-    """Paths bound by a live ``AF_UNIX`` socket in *pid_dir*'s own network namespace.
-
-    Always read through a NUMERIC pid dir, never the bare
-    ``proc_root/net/unix``: ``/proc/net`` is a magic symlink to ``self/net``,
-    resolved against the READING process, so even when ``proc_root`` is a bind
-    mount of the host's ``/proc`` that read SUCCEEDS and silently hands back
-    this container's own (empty) socket table instead of the host's — no
-    exception, so no fail-closed path ever fires on it. ``<pid>/net`` is a real
-    directory naming that pid's namespace, the same handle
-    ``nsenter --net=/proc/<pid>/ns/net`` enters a foreign one by.
-
-    An unreadable table is a per-pid gap (a pid that exited mid-walk is the
-    common one), not a probe-wide blind: pooled across every pid, one
-    namespace's absence cannot be told from a genuinely socket-less one, and
-    the probe-wide fail-closed contract is carried by ``_held_paths``' own
-    access-gated witness instead.
-
-    Each line carries the bind path (when the socket has one, rather than being
-    abstract-namespaced or anonymous) as the LAST whitespace-separated field. An
-    abstract-namespace name starts with ``@`` and is not a filesystem path, so
-    it is excluded.
-    """
-    try:
-        text = (pid_dir / "net" / "unix").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return frozenset()
-    paths: set[str] = set()
-    for line in text.splitlines()[1:]:  # header: "Num RefCount Protocol Flags Type St Inode Path"
-        fields = line.split(None, 7)
-        if len(fields) < 8:  # noqa: PLR2004 — the fixed /proc/net/unix column count
-            continue
-        candidate = fields[7]
-        if candidate.startswith("/"):
-            paths.add(candidate)
-    return frozenset(paths)
 
 
 def _worktree_paths() -> frozenset[str] | None:

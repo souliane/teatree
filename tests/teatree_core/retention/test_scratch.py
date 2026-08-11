@@ -56,12 +56,29 @@ def _listening_socket(pid_dir: Path, *bind_paths: str) -> None:
     _net_unix(pid_dir, *bind_paths)
 
 
+def _answering_pid(proc_root: Path, target: Path) -> Path:
+    """A pid that RESOLVES one fd — the witness every live procfs carries.
+
+    Seeded into the default table because a pid-less ``proc_root`` is not a quiet
+    box, it is a mount that is not a procfs, and the probe now fails closed on it.
+    """
+    fd_dir = proc_root / "1" / "fd"
+    fd_dir.mkdir(parents=True)
+    (fd_dir / "0").symlink_to(target)
+    return proc_root / "1"
+
+
 class ScratchSweepTestCase(TestCase):
     """Shared temp root + a synthetic process table the sweep reads instead of /proc."""
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(TemporaryDirectory()))
         self.proc = Path(self.enterContext(TemporaryDirectory()))
+        # A second, deliberately un-seeded table for the fail-closed tests: their
+        # subject is a probe with no witness anywhere, which self.proc now has.
+        self.blind_proc = Path(self.enterContext(TemporaryDirectory()))
+        self.elsewhere = Path(self.enterContext(TemporaryDirectory()))
+        _answering_pid(self.proc, self.elsewhere / "held-elsewhere")
 
     def sweep(
         self,
@@ -373,11 +390,14 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
     def test_sweep_scratch_applies_only_when_asked(self) -> None:
         stale = _scratch(self.root, "t3db.sqlite3", days=9, size=64)
 
-        planned = scratch.sweep_scratch(configured_root=str(self.root), retention_days=3, apply=False)
-        assert planned.candidate_bytes == 64
-        assert stale.exists()
+        # The synthetic table stands in for this venue's own /proc: a real one
+        # decides the outcome differently on a host than in a container.
+        with patch.object(scratch, "_VENUE_PROC", self.proc):
+            planned = scratch.sweep_scratch(configured_root=str(self.root), retention_days=3, apply=False)
+            assert planned.candidate_bytes == 64
+            assert stale.exists()
 
-        applied = scratch.sweep_scratch(configured_root=str(self.root), retention_days=3, apply=True)
+            applied = scratch.sweep_scratch(configured_root=str(self.root), retention_days=3, apply=True)
         assert applied.reclaimed_bytes == 64
         assert not stale.exists()
 
@@ -686,16 +706,23 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
 
         assert entry.removable is True
 
-    def test_an_unreadable_net_unix_leaves_the_probe_blind_via_the_gated_sources(self) -> None:
-        """The sole visible pid answers through nothing at all — the C2 fail-closed path."""
-        _scratch(self.root, "t3after", days=9, size=2048)
+    def test_an_unreadable_net_unix_beside_an_answering_fd_is_an_accepted_residual(self) -> None:
+        """Site F's residual: one namespace's socket table is a per-pid gap, not a probe-wide blind.
+
+        Pooled across pids an absent namespace cannot be told from a socket-less
+        one, so the fail-closed contract is carried by the access-gated sources.
+        """
+        stale = _scratch(self.root, "t3after", days=9, size=2048)
+        answering = self.blind_proc / "777"
+        (answering / "fd").mkdir(parents=True)
+        (answering / "fd" / "3").symlink_to(self.elsewhere / "unrelated")
         # A directory where the table should be, so read_text() raises IsADirectoryError.
-        (self.proc / "777" / "net" / "unix").mkdir(parents=True)
+        (answering / "net" / "unix").mkdir(parents=True)
 
-        plan = self.sweep().plan()
+        plan = self.sweep(proc_root=self.blind_proc).plan()
 
-        assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert plan.probe_gap == ""
+        assert self.entry_for(plan, stale).removable is True
 
     def test_a_readable_socket_table_alone_never_vouches_for_a_blind_probe(self) -> None:
         """``<pid>/net/unix`` is 0444 where ``fd``/``map_files`` are 0500 behind ptrace.
@@ -707,9 +734,9 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
         cannot see the holders of.
         """
         stale = _scratch(self.root, "t3after", days=9, size=64)
-        _net_unix(self.proc / "777", str(self.root / "some-other.sock"))
+        _net_unix(self.blind_proc / "777", str(self.root / "some-other.sock"))
 
-        plan = self.sweep().plan()
+        plan = self.sweep(proc_root=self.blind_proc).plan()
 
         assert plan.candidates == ()
         assert "open-file probe unreadable" in plan.probe_gap
@@ -795,6 +822,27 @@ class UnsearchableTopLevelEntryTests(ScratchSweepTestCase):
 
         assert entry.removable is False
         assert "cannot prove it is stale" in entry.reason
+
+    @skip_if_root
+    def test_the_git_probes_fail_open_stays_masked_by_the_unscannable_walk(self) -> None:
+        """Site E's accepted residual, pinned as a COUPLING so neither half can move alone.
+
+        ``(path / ".git").exists()`` swallows the EACCES into ``holds_git_repo =
+        False`` — a fail-OPEN on its own. It is safe only because the same
+        unsearchable directory forces ``newest_mtime`` to None in the very same
+        walk. Assert both halves together: a future edit that fixes the walk to
+        report a time, or drops the onerror handler, unmasks the fail-open.
+        """
+        blocked = self.root / "another-uids-scratch"
+        blocked.mkdir()
+        _age(blocked, days=9)
+        blocked.chmod(0o000)
+        self.addCleanup(blocked.chmod, 0o755)
+
+        stats = scratch._tree_stats(blocked)
+
+        assert stats.holds_git_repo is False
+        assert stats.newest_mtime is None
 
     @skip_if_root
     def test_the_retention_disabled_path_does_not_crash_either(self) -> None:
@@ -917,18 +965,18 @@ class OpenFileProbeStructuralBlindnessTests(ScratchSweepTestCase):
         _scratch(self.root, "t3after", days=9, size=64)
         # A pid is visible (this is not "no processes"), but none of its
         # per-pid sources exist to read — the exact container-side shape.
-        (self.proc / "777").mkdir()
+        (self.blind_proc / "777").mkdir()
 
-        plan = self.sweep().plan()
+        plan = self.sweep(proc_root=self.blind_proc).plan()
 
         assert plan.candidates == ()
         assert "open-file probe unreadable" in plan.probe_gap
 
     def test_apply_removes_nothing_when_the_probe_is_structurally_blind(self) -> None:
         stale = _scratch(self.root, "t3after", days=9, size=64)
-        (self.proc / "777").mkdir()
+        (self.blind_proc / "777").mkdir()
 
-        self.sweep().apply()
+        self.sweep(proc_root=self.blind_proc).apply()
 
         assert stale.exists()
 
@@ -938,12 +986,12 @@ class OpenFileProbeStructuralBlindnessTests(ScratchSweepTestCase):
         That alone must never blind the probe.
         """
         held = _scratch(self.root, "still-open.db", days=9)
-        (self.proc / "111").mkdir()  # another uid's pid: nothing readable
-        readable = self.proc / "222" / "fd"
+        (self.blind_proc / "111").mkdir()  # another uid's pid: nothing readable
+        readable = self.blind_proc / "222" / "fd"
         readable.mkdir(parents=True)
         (readable / "3").symlink_to(held)
 
-        entry = self.entry_for(self.sweep().plan(), held)
+        entry = self.entry_for(self.sweep(proc_root=self.blind_proc).plan(), held)
 
         assert entry.removable is False
         assert entry.reason == "open by a live process"
@@ -951,14 +999,138 @@ class OpenFileProbeStructuralBlindnessTests(ScratchSweepTestCase):
     def test_a_lone_readable_cwd_among_unreadable_pids_still_answers(self) -> None:
         """Cwd alone (no fd, no map_files) must count as an answer too."""
         stale = _scratch(self.root, "t3after", days=9, size=64)
-        (self.proc / "111").mkdir()  # another uid's pid: nothing readable
-        (self.proc / "222").mkdir()
-        (self.proc / "222" / "cwd").symlink_to(self.root)
+        (self.blind_proc / "111").mkdir()  # another uid's pid: nothing readable
+        (self.blind_proc / "222").mkdir()
+        (self.blind_proc / "222" / "cwd").symlink_to(self.root)
 
-        plan = self.sweep().plan()
+        plan = self.sweep(proc_root=self.blind_proc).plan()
 
         # Not blind (222's cwd answered) — the entry is decided on its own
         # merits (staleness), not forced KEEP by a blind probe.
         entry = self.entry_for(plan, stale)
         assert "open-file probe unreadable" not in plan.probe_gap
         assert entry.removable is True
+
+
+class ResolutionWitnessTests(ScratchSweepTestCase):
+    """Verdict 1001: the witness is RESOLUTION, never mere listability.
+
+    Measured in the worker's own image at uid 1001 against a bind-mounted host
+    ``/proc``: 26-31 pids present an fd directory this uid can LIST while every
+    ``readlink()`` inside it raises — all of them uid 1001, the same uid whose
+    scratch the sweep deletes. Counting that listing as an answer reported an
+    unreadable world as an empty one, and ``apply()`` deleted a live process's
+    open file.
+    """
+
+    def test_a_listable_fd_dir_that_resolves_nothing_blinds_the_whole_probe(self) -> None:
+        held = _scratch(self.root, "still-open.db", days=9, size=64)
+        fd_dir = self.blind_proc / "777" / "fd"
+        fd_dir.mkdir(parents=True)
+        # A REGULAR FILE where a symlink belongs: iterdir() lists it, readlink()
+        # raises EINVAL — the in-container EACCES shape, reproducible anywhere.
+        (fd_dir / "3").write_bytes(b"")
+
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unreadable" in plan.probe_gap
+        assert self.entry_for(plan, held).removable is False
+
+    def test_the_same_entry_as_a_resolvable_symlink_is_the_control_that_keeps_it(self) -> None:
+        """Control for the test above: resolution succeeds, so the probe answers.
+
+        Without it, "kept" is indistinguishable from the blind path's
+        keep-everything and the RED test proves nothing.
+        """
+        held = _scratch(self.root, "still-open.db", days=9, size=64)
+        fd_dir = self.blind_proc / "777" / "fd"
+        fd_dir.mkdir(parents=True)
+        (fd_dir / "3").symlink_to(held)
+
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert plan.probe_gap == ""
+        entry = self.entry_for(plan, held)
+        assert entry.removable is False
+        assert entry.reason == "open by a live process"
+
+    def test_a_blind_source_blinds_the_probe_even_beside_an_answering_pid(self) -> None:
+        """The failure is PROBE-WIDE: an unknowable pid may hold ANY candidate path.
+
+        A sibling pid that answers says nothing about what the blind one holds,
+        so no partial answer is available to fall back on.
+        """
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        blind_fd = self.proc / "777" / "fd"  # self.proc already carries an answering pid
+        blind_fd.mkdir(parents=True)
+        (blind_fd / "3").write_bytes(b"")
+
+        plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unreadable" in plan.probe_gap
+        assert stale.exists()
+
+    def test_an_empty_but_readable_fd_dir_is_an_answer_not_a_blind(self) -> None:
+        """Every kernel thread presents one.
+
+        Scoring it a non-answer would blind the probe on every real ``/proc`` and
+        leave the sweep permanently inert.
+        """
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        (self.blind_proc / "777" / "fd").mkdir(parents=True)
+
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert plan.probe_gap == ""
+        assert self.entry_for(plan, stale).removable is True
+
+    def test_an_answering_fd_dir_does_not_excuse_a_blind_map_files(self) -> None:
+        """Control for the pair above: the two gated sources are judged separately."""
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        pid = self.blind_proc / "777"
+        (pid / "fd").mkdir(parents=True)
+        (pid / "map_files").mkdir()
+        (pid / "map_files" / "7f0000-7f1000").write_bytes(b"")
+
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert "open-file probe unreadable" in plan.probe_gap
+        assert stale.exists()
+
+    def test_a_process_table_with_no_numeric_pid_is_not_a_procfs_and_blinds(self) -> None:
+        """A live procfs always carries pid 1.
+
+        Zero numeric entries means the mount is not a process table at all — the
+        shape 40 of the pre-existing tests in this file had.
+        """
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        (self.blind_proc / "sys").mkdir()  # listable, and nothing numeric in it
+
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unreadable" in plan.probe_gap
+        assert stale.exists()
+
+    def test_one_numeric_answering_pid_is_the_control_for_the_empty_table(self) -> None:
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        (self.blind_proc / "sys").mkdir()
+        _answering_pid(self.blind_proc, self.elsewhere / "held-elsewhere")
+
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert plan.probe_gap == ""
+        assert self.entry_for(plan, stale).removable is True
+
+    def test_apply_reclaims_nothing_when_a_pid_resolves_nothing(self) -> None:
+        stale = _scratch(self.root, "t3db.sqlite3", days=9, size=64)
+        fd_dir = self.blind_proc / "777" / "fd"
+        fd_dir.mkdir(parents=True)
+        (fd_dir / "3").write_bytes(b"")
+
+        plan = self.sweep(proc_root=self.blind_proc).apply()
+
+        assert plan.reclaimed_bytes == 0
+        assert stale.exists()
