@@ -76,9 +76,25 @@ class TestPaginatedThreadCount:
         with patch.object(pr_reads, "_run_gh", side_effect=pages):
             assert pr_reads.count_unresolved_review_threads(repo="o/r", pr_iid=9, token="t") is None
 
-    def test_a_hasnextpage_with_no_usable_cursor_ends_the_walk(self) -> None:
-        # Nothing can advance the walk, so the count stands on what was read rather
-        # than spinning on the same page.
+    def test_a_hasnextpage_with_no_usable_cursor_is_unreadable(self) -> None:
+        # hasNextPage says threads exist past this read and nothing can advance to
+        # them, so what was read is a partial count — the exact under-report the
+        # walk exists to prevent, not a terminating page.
         pages = _Pages([_page(unresolved=3, next_cursor="")])
         with patch.object(pr_reads, "_run_gh", side_effect=pages):
-            assert pr_reads.count_unresolved_review_threads(repo="o/r", pr_iid=9, token="t") == 3
+            assert pr_reads.count_unresolved_review_threads(repo="o/r", pr_iid=9, token="t") is None
+
+    def test_a_hasnextpage_with_an_absent_cursor_key_is_unreadable(self) -> None:
+        body = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": True}, "nodes": [{"isResolved": False}]}
+                        }
+                    }
+                }
+            }
+        )
+        with patch.object(pr_reads, "_run_gh", return_value=_completed(body)):
+            assert pr_reads.count_unresolved_review_threads(repo="o/r", pr_iid=9, token="t") is None

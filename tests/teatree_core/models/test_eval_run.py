@@ -169,6 +169,67 @@ class TestRegressionDiff(TestCase):
         assert diff["added"].baseline_pass_rate == pytest.approx(0.0)
         assert diff["added"].regressed is False
 
+    def test_an_all_errored_candidate_scenario_is_unmeasured_not_regressed(self) -> None:
+        # An API 529 across every trial is recorded as `error`, which graded() drops —
+        # so defaulting the absent rate to 0.0 turned a network blip into a behavioral
+        # regression, the exact reading `_pass_at_k_verdict` says can never happen.
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="alpha", verdict=EvalVerdict.ERROR, is_error=True)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["alpha"].regressed is False
+        assert diff["alpha"].improved is False
+        assert diff["alpha"].candidate_pass_rate is None
+        assert diff["alpha"].delta is None
+        assert diff["alpha"].unmeasured is True
+
+    def test_an_all_skipped_candidate_scenario_is_unmeasured_not_regressed(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="alpha", verdict=EvalVerdict.SKIP)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["alpha"].regressed is False
+        assert diff["alpha"].unmeasured is True
+
+    def test_one_graded_trial_beside_an_errored_one_is_still_measured(self) -> None:
+        # Partial gradeability is a real rate, not an unmeasured scenario.
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="alpha", verdict=EvalVerdict.ERROR, is_error=True)
+        candidate.record_scenario(scenario_name="alpha", verdict=EvalVerdict.FAIL)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["alpha"].unmeasured is False
+        assert diff["alpha"].regressed is True
+
+    def test_the_model_filter_scopes_the_unmeasured_read(self) -> None:
+        # A row under a DIFFERENT model must not rescue this model's scenario from
+        # the zero-default: the gate is per model, so the read has to be too.
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="alpha", verdict=EvalVerdict.PASS, model="haiku")
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="alpha", verdict=EvalVerdict.ERROR, model="sonnet", is_error=True)
+
+        diff = {
+            d.scenario_name: d
+            for d in EvalRunRecord.regression_diff(baseline=baseline, candidate=candidate, model="haiku")
+        }
+
+        assert diff["alpha"].unmeasured is False
+        assert diff["alpha"].regressed is True
+
 
 class TestScenarioCost(TestCase):
     def test_cost_usd_round_trips_and_defaults_to_zero(self) -> None:

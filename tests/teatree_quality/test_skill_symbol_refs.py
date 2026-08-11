@@ -11,8 +11,9 @@ and unlike a stale import or a stale patch target, nothing mechanical catches it
 BEFORE any skill — ``BLUEPRINT.md``, ``AGENTS.md``, ``CLAUDE.md`` and the
 ``docs/blueprint/`` appendices — which the skills-only scan could not see at all.
 Their currently-unresolved references are pinned in
-:data:`_KNOWN_UNRESOLVED_CHARTER_REFS`, a shrink-only ratchet: the listed ones are
-visible instead of invisible, and a NEW stale citation reds.
+:data:`_KNOWN_UNRESOLVED_CHARTER_REFS`, a shrink-only ratchet asserted in BOTH
+directions: the listed ones are visible instead of invisible, a NEW stale citation
+reds, and a listed one that got FIXED reds until its entry is deleted.
 
 :class:`TestGoldenCorpus` proves the scanner is neither vacuous nor
 over-blocking against a committed ``*.md.txt`` corpus — a must-FLAG set (absent
@@ -104,18 +105,35 @@ _KNOWN_UNRESOLVED_CHARTER_REFS: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+def _unresolved_charter_refs() -> set[tuple[str, str]]:
+    """Every ``(charter doc, unresolved reference)`` pair the scanner reports right now."""
+    return {
+        (str(doc.relative_to(_REPO_ROOT)), finding.ref)
+        for doc in _CHARTER_DOCS
+        if doc.is_file()
+        for finding in _unresolved(scan_file(doc, _REPO_ROOT))
+    }
+
+
 class TestCharterDocs:
     def test_no_new_charter_document_reference_is_unresolved(self) -> None:
-        unresolved = {
-            (str(doc.relative_to(_REPO_ROOT)), finding.ref)
-            for doc in _CHARTER_DOCS
-            if doc.is_file()
-            for finding in _unresolved(scan_file(doc, _REPO_ROOT))
-        }
-        new = unresolved - _KNOWN_UNRESOLVED_CHARTER_REFS
+        new = _unresolved_charter_refs() - _KNOWN_UNRESOLVED_CHARTER_REFS
         assert new == set(), (
             "charter document(s) naming a symbol the tree does not have — an agent reads "
             f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
+        )
+
+    def test_no_known_charter_reference_is_stale(self) -> None:
+        """The other direction: an entry the scanner no longer reports must be deleted.
+
+        A lingering entry re-widens the ratchet — it would grandfather a future stale
+        citation of the same symbol in the same doc. It also proves each recorded pair
+        still resolves to a real scan result rather than exempting nothing.
+        """
+        stale = _KNOWN_UNRESOLVED_CHARTER_REFS - _unresolved_charter_refs()
+        assert stale == set(), (
+            "Pinned charter reference(s) the scanner no longer reports as unresolved — "
+            f"delete them from _KNOWN_UNRESOLVED_CHARTER_REFS so the ratchet stays tight: {sorted(stale)}"
         )
 
     def test_the_charter_documents_are_actually_walked(self) -> None:

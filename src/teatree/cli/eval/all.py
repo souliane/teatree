@@ -115,9 +115,9 @@ def coverage_lane(report: CoverageReport) -> LaneResult:
         if report.gaps
         else f"{len(report.rows)} skills, all covered or eval_exempt"
     )
-    # Phase-B enforcement has shipped (``test_no_shipped_skill_is_an_uncovered_gap``
-    # is a hard RED), so a lane hard-coded to pass reported gaps in green while the
-    # pytest gate failed on the same corpus. The verdicts now agree.
+    # Phase-B enforcement has shipped, so all three surfaces reading this one report —
+    # this lane, ``test_no_shipped_skill_is_an_uncovered_gap`` and ``t3 eval coverage`` —
+    # FAIL on a gap. One predicate, one verdict.
     return LaneResult(name="skill-coverage", cost="model-free", passed=not report.gaps, skipped=False, detail=detail)
 
 
