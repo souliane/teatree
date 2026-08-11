@@ -942,7 +942,6 @@ init)
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
-    seed_setting agent_runtime '"headless"'
     seed_setting loop_runner_enabled true
     # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
     # provenance-aware seeder intentionally SKIPS it — the runtime already

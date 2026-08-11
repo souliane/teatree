@@ -1081,10 +1081,6 @@
           "name": "claim"
         },
         {
-          "help": "Claim an interactive task and exec ``claude`` in the current terminal",
-          "name": "start"
-        },
-        {
           "help": "Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path)",
           "name": "record-attempt"
         },
@@ -1098,7 +1094,7 @@
         },
         {
           "help": "",
-          "name": "work-next-headless"
+          "name": "work-next"
         }
       ]
     },
@@ -1339,6 +1335,10 @@
         {
           "help": "Release registered rows whose checkout is provably dead \u2014 ROWS ONLY (dry run unless --apply)",
           "name": "release-dead-rows"
+        },
+        {
+          "help": "Point every branch tracking someone else's ref back at its own, or untrack it (#4225)",
+          "name": "repair-branch-upstreams"
         }
       ]
     },

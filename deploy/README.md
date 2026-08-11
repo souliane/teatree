@@ -1,8 +1,8 @@
 # teatree headless deployment
 
 Run teatree headless on a single existing box, reached over direct SSH, driven
-by one GitHub Action. teatree runs the autonomous loop (`t3 worker`,
-`agent_runtime=headless`), self-updates via its own loop, autostarts on reboot,
+by one GitHub Action. teatree runs the autonomous loop (`t3 worker`),
+self-updates via its own loop, autostarts on reboot,
 and serves the Django admin on the box loopback for SSH-tunnel access. The image
 is **self-contained** — it bakes a pinned source@ref + interpreter + locked deps
 so a fresh box boots deterministically and offline; see
@@ -22,8 +22,9 @@ overlay is the built-in `t3-teatree`.
    checking.
 3. Writes the box secrets file `deploy/teatree.env` over SSH (piped over stdin,
    mode 600 — never on a command line or in logs).
-4. Runs `deploy/deploy.sh` on the box, which brings the checkout current and runs
-   `docker compose up -d --build`.
+4. Runs `deploy/deploy.sh` on the box, which brings the checkout current and
+   converges the stack one service at a time — see
+   [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
 
 The stack is five services from one image (`deploy/Dockerfile`), selected by
 `TEATREE_ROLE`:
@@ -112,6 +113,66 @@ there. Boot logs the switch. Notes:
   it spawns. A `docker exec` into a running service bypasses the entrypoint and so
   still sees the image's `GNUPGHOME`; pass `-e GNUPGHOME=/home/teatree/.gnupg-run/gnupg`
   for a one-off `exec` that needs to decrypt.
+
+### Staged convergence: the control plane never goes fully down (#4214)
+
+A single `up -d --build` recreates every service at once. `teatree-admin`,
+`teatree-worker` and `teatree-slack-listener` each `depends_on` init with
+`service_completed_successfully`, so compose creates all five container objects
+and holds three of them in `Created` until init exits — **67 seconds measured on
+the box**, once per merged PR. In that window the dashboard is gone, the only
+control-DB CLI route is gone, and the container logs a live diagnosis was reading
+have been destroyed with the container objects.
+
+`deploy.sh` therefore stages the convergence. Every stage leaves at least one of
+`teatree-admin` / `teatree-worker` answering:
+
+| # | Stage | What is still serving |
+| --- | --- | --- |
+| 1 | `compose build` | everything — the longest phase recreates nothing, so a failed build costs no availability |
+| 2 | `t3 worker drain` | everything; in-flight agents finish before migrations run |
+| 3 | `up -d --no-deps teatree-init`, poll for `exited 0` | the OLD admin and worker; a failed init recreates no app service at all |
+| 4 | `t3 worker drain` again | init clears `worker_quiescing` as its last act, so the gate is re-asserted before the worker can claim — and then lose — a task |
+| 5 | `up -d --no-deps teatree-admin`, poll the dashboard | the worker |
+| 6 | `up -d --no-deps teatree-worker teatree-slack-listener` | the new admin |
+| 7 | clear `worker_quiescing` on the fresh worker | — |
+| 8 | `up -d --no-deps <every remaining service>` | — |
+
+Init is excluded from stage 8 because a plain `up -d` **starts** an exited
+one-shot, replaying the whole ~minute init.
+
+**An aborted convergence fails towards a stall, not a mismatch.** A run that
+drains and then dies before the swap leaves the gate ON, so an EXIT trap clears it
+and admission resumes. Between stages 3 and 6 that clear is deliberately withheld:
+init has migrated the control DB and the live worker is still the pre-migration
+one, so re-opening admission there hands it fresh work to run against a schema its
+code does not match. The `schema_readiness` gate does not cover this direction —
+it refuses when the code is ahead of the DB, and here the DB is ahead of the code.
+Staying quiesced only stalls the box, which is printed, visible in
+`worker_quiescing`, and cleared by the next successful convergence or by
+`t3 teatree config_setting set worker_quiescing false`.
+
+**The residual window, stated rather than implicit.** Stage 5 still swaps the
+dashboard's own container, so the dashboard is unavailable for that swap —
+seconds, not the 67-second init gate, and the worker answers throughout it.
+`deploy.sh` measures it and prints `deploy: dashboard unavailable for at most Ns
+(bound …)`. Exceeding `TEATREE_ADMIN_SWAP_BUDGET` (default 300s) **stops the
+convergence before the worker is touched**, so a broken new admin can never leave
+the box with no route at all.
+
+**Logs survive the recreate.** Each service's container log is copied to
+`${TEATREE_DEPLOY_LOG_ARCHIVE_DIR:-~/.local/share/teatree/deploy-logs}` immediately
+before that service is recreated (newest `TEATREE_DEPLOY_LOG_ARCHIVE_KEEP`, default
+200, files kept), so a post-incident read spans the swap.
+
+**An update is distinguishable from an outage.** `deploy/t3` dispatches into
+whichever control-DB service is running, so a call landing mid-swap uses the
+sibling and simply succeeds. When none is running it probes `deploy.sh`'s
+convergence flock read-only (the same `/proc/locks` match the watchdog uses) and,
+if a deploy is in flight, waits up to `TEATREE_UPDATE_WAIT_SECONDS` (default 180,
+`0` disables) for a route to return — then either dispatches or exits **75**
+(`EX_TEMPFAIL`) saying an update is in progress. It never reports docker's bare
+`service "…" is not running`, which is the text a genuine outage produces.
 
 ### Worker sizing: derived from the host
 
@@ -640,10 +701,12 @@ the deploy workflow never rewrites the on-disk secret file for it.
 
 teatree runs **exclusively in Docker** — the CLI as well as the servers — so the
 box needs no host Python / uv / py3.13 / prek / direnv / ttyd. `deploy/t3` is a
-container-wrapping entry: it `docker compose exec`s into the running
-`teatree-worker` (falling back to a one-off `run --rm` when the stack is down) so
-`t3 <args>` executes inside a container that shares the live DB, credential, and
-session mounts.
+container-wrapping entry: it `docker compose exec`s into the first running
+control-DB service — `teatree-worker`, then `teatree-admin` (falling back to a
+one-off `run --rm` when the stack is down) — so `t3 <args>` executes inside a
+container that shares the live DB, credential, and session mounts. Only the worker
+carries the docker-socket group, so a provisioning command needs it specifically;
+the fallback is announced on stderr when it is used.
 
 `t3 setup` (run by the `init` role, and available to run on the host) installs a
 shell alias into `~/.bashrc` (and `~/.zshrc` when present) so `t3 …` on the host
@@ -658,8 +721,9 @@ alias t3="/home/teatree/teatree-deploy/deploy/t3"
 `deploy/t3` entry executable, `docker` on PATH, and the alias not pointing at a
 stale clone path) and WARNs with the fix — re-run `t3 setup` — when a piece is
 missing. The alias install and the doctor check both no-op **inside** a container
-(there the container *is* the CLI). Override the target service with
-`TEATREE_DOCKER_CLI_SERVICE` if needed.
+(there the container *is* the CLI). Override the preferred service with
+`TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
+`TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)
 
@@ -714,7 +778,10 @@ service is down — exactly the outage it exists to repair.
    from the `up -d`, because `up -d --no-recreate` re-runs a completed one-shot
    init on every pass (verified empirically) and that would replay the heavy
    ~minute init every 5 minutes; a *missing or failed* init is included, so the
-   init-failure outage still recovers.
+   init-failure outage still recovers. Skipped entirely while a convergence is in
+   flight: `deploy.sh` stages its swap service by service, so a restart pass
+   landing between two stages would re-create the container the deploy is mid-swap
+   on. One pass is given up; the next heals whatever the deploy left down.
 2. **Announces the repair.** The pass samples container state *before* the `up -d`,
    re-reads it after, and DMs the owner naming every service it had to bring back —
    with how long it had been gone, carried in the `<service> <last-seen-running>`
@@ -730,14 +797,19 @@ service is down — exactly the outage it exists to repair.
 3. `t3 doctor check --json` inside a live container — reads the factory health,
    including the H24 self-heal detectors: a compose init container that exited
    non-zero / a worker stuck `Created`, a free worker flock over overdue loop
-   work, an `execute_headless_task` stranded RUNNING with no live worker, a READY
-   loop timer stale past 2× its cadence, a PENDING `interactive` task under
-   `agent_runtime=headless`, a FAILED task on a still-live ticket, a runtime
+   work, an `execute_task` stranded RUNNING with no live worker, a READY
+   loop timer stale past 2× its cadence, a FAILED task on a still-live ticket, a runtime
    clone drifted off its default branch, and a `worker_quiescing` gate older than
    any deploy could explain
    ([#3983](https://github.com/souliane/teatree/issues/3983) — a deploy killed
    between its drain and the swap that clears the gate leaves the claim path
-   admitting ZERO work while every other surface stays green).
+   admitting ZERO work while every other surface stays green). That last budget is
+   **summed from the staged convergence's own per-stage timeouts**
+   (`TEATREE_DRAIN_TIMEOUT` + `TEATREE_INIT_WAIT_TIMEOUT` +
+   `TEATREE_ADMIN_SWAP_BUDGET` + `TEATREE_RESUME_TIMEOUT`, plus slack for the untimed
+   `up -d` steps), because stages 2–7 are serial inside one gate-ON window: raise one
+   on the box and the detector widens with it rather than calling a slower-but-legal
+   convergence an outage.
 4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the

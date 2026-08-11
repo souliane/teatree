@@ -3,7 +3,7 @@
 from teatree.core.selectors._types import UnifiedSessionRow
 
 from .activity import build_active_sessions, build_recent_activity
-from .queues import build_headless_queue, build_interactive_queue
+from .queues import build_task_queue
 
 
 def build_unified_sessions(
@@ -22,7 +22,6 @@ def build_unified_sessions(
         rows.append(
             UnifiedSessionRow(
                 row_status="running",
-                execution_target=s.kind,
                 task_id=s.task_id,
                 ticket_id=s.ticket_id,
                 ticket_display_id=s.ticket_display_id,
@@ -43,11 +42,8 @@ def build_unified_sessions(
             ),
         )
 
-    # 2. Queued/claimed tasks (headless + interactive)
-    for task_row in [
-        *build_headless_queue(include_dismissed=include_dismissed, overlay=overlay),
-        *build_interactive_queue(include_dismissed=include_dismissed, overlay=overlay),
-    ]:
+    # 2. Queued/claimed tasks
+    for task_row in build_task_queue(include_dismissed=include_dismissed, overlay=overlay):
         if task_row.task_id in seen_task_ids:
             continue
         seen_task_ids.add(task_row.task_id)
@@ -56,7 +52,6 @@ def build_unified_sessions(
         rows.append(
             UnifiedSessionRow(
                 row_status=row_status,
-                execution_target=task_row.execution_target,
                 task_id=task_row.task_id,
                 ticket_id=task_row.ticket_id,
                 ticket_display_id=task_row.ticket_display_id,
@@ -83,7 +78,6 @@ def build_unified_sessions(
         rows.append(
             UnifiedSessionRow(
                 row_status=row_status,
-                execution_target=act.execution_target,
                 task_id=act.task_id,
                 ticket_id=act.ticket_id,
                 ticket_display_id=act.ticket_display_id,

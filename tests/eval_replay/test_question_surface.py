@@ -59,7 +59,7 @@ def test_the_headless_question_contract_is_graded_and_blocking() -> None:
 
 
 def test_the_headless_contract_never_depends_on_the_interactive_tool() -> None:
-    # The point of the headless lane is that it grades a contract no bundled-CLI rendering
+    # The point of the agent lane is that it grades a contract no bundled-CLI rendering
     # can swallow, so none of its scenarios may even OFFER the interactive question tool.
     by_name = {spec.name: spec for spec in discover_specs()}
     offenders = sorted(

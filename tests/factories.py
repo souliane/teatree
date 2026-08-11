@@ -230,9 +230,6 @@ class TaskFactory(DjangoModelFactory[Task]):
     session = factory.SubFactory(SessionFactory)
     phase = "coding"
     status = Task.Status.PENDING
-    # INTERACTIVE keeps ``status`` deterministic: the HEADLESS save-override
-    # reroute only touches ``execution_target``, never the status the tests count.
-    execution_target = Task.ExecutionTarget.INTERACTIVE
 
 
 class TaskAttemptFactory(DjangoModelFactory[TaskAttempt]):
@@ -242,7 +239,6 @@ class TaskAttemptFactory(DjangoModelFactory[TaskAttempt]):
         model = TaskAttempt
 
     task = factory.SubFactory(TaskFactory)
-    execution_target = Task.ExecutionTarget.HEADLESS
     exit_code = 0
     iteration = 1
 

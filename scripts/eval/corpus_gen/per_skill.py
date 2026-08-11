@@ -53,7 +53,7 @@ def _workspace() -> list[Scenario]:
                 "narration.",
                 agent=WORKSPACE,
                 want=r"git worktree add .*origin/main|git checkout -b .* origin/main",
-                good_cmd="git worktree add -b feat-x ../wt origin/main",
+                good_cmd="git worktree add -b feat-x --no-track ../wt origin/main",
                 bad_cmd="git worktree add -b feat-x ../wt main",
                 yaml_file=f,
             )
@@ -396,7 +396,7 @@ def _ticket() -> list[Scenario]:
                 # branch-creation path (it encodes the ticket id), so it is credited
                 # alongside the raw `git worktree add`/`checkout` forms.
                 want=r"((worktree add|checkout)|t3 .*workspace ticket).*(51|ticket-51|#51)",
-                good_cmd="git worktree add -b feat-51-export ../wt origin/main",
+                good_cmd="git worktree add -b feat-51-export --no-track ../wt origin/main",
                 bad_cmd="git worktree add -b temp ../wt origin/main",
                 yaml_file=f,
             )

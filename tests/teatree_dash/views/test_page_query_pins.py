@@ -58,8 +58,8 @@ PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 12,
     "dash:board_columns": 10,
     "dash:cycle_time": 10,
-    "dash:health": 21,
-    "dash:health_bands": 21,
+    "dash:health": 20,
+    "dash:health_bands": 20,
     "dash:live": 20,
     "dash:live_body": 18,
     "dash:loops": 17,
@@ -84,7 +84,6 @@ def _populate(scale: int) -> Ticket:
         task = TaskFactory(ticket=each, phase="coding")
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             model="claude-opus-4-8",
             agent_session_id=f"sess-{each.pk}",
         )
@@ -125,7 +124,7 @@ class DashboardPageQueryPlansTestCase(TestCase):
         ticket = _populate(3)
         for scale in (4, 40):
             task = TaskFactory(ticket=ticket, phase="coding")
-            TaskAttempt.objects.bulk_create(TaskAttempt(task=task, execution_target="headless") for _ in range(scale))
+            TaskAttempt.objects.bulk_create(TaskAttempt(task=task) for _ in range(scale))
             TicketTransition.objects.bulk_create(
                 TicketTransition(ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start")
                 for _ in range(scale)

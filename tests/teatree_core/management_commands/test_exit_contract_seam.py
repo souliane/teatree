@@ -123,7 +123,7 @@ def _teatree_command_classes() -> dict[str, type]:
     """Every registered management command teatree itself ships, by CLI name.
 
     Imported directly rather than through ``load_command_class`` — that helper
-    instantiates, and a helper module in the same package (``tasks_interactive_launch``)
+    instantiates, and a helper module in the same package (``tasks_session_view``)
     deliberately exposes no ``Command``.
     """
     classes: dict[str, type] = {}

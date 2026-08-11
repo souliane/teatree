@@ -322,12 +322,17 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
+    # The `worktree add` call, not calls[-1]: a created branch is followed by the
+    # upstream normalisation's own git calls (#4225).
+    def last_worktree_add() -> list[str]:
+        return [call for call in calls if "worktree" in call and "add" in call][-1]
+
     assert git.worktree_add("/tmp/r", "/tmp/wt", "feat-1", create_branch=True) is True
-    assert "-b" in calls[-1]
+    assert "-b" in last_worktree_add()
 
     assert git.worktree_add("/tmp/r", "/tmp/wt2", "feat-1", create_branch=False) is True
-    assert "-b" not in calls[-1]
-    assert "feat-1" in calls[-1]
+    assert "-b" not in last_worktree_add()
+    assert "feat-1" in last_worktree_add()
 
 
 def _orphan_ref_worktree(tmp_path: Path) -> tuple[Path, str]:

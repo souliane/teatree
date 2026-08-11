@@ -122,6 +122,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "release-dead-rows",
                 "Delete Worktree rows whose checkout is provably gone — the row alone, nothing else touched.",
             ),
+            (
+                "repair-branch-upstreams",
+                "Point every branch tracking someone else's ref back at its own, or untrack it.",
+            ),
             ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
             ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
         ],
@@ -220,11 +224,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("list", "List tasks with optional filters; --session scopes to the current harness session's todos."),
             ("reconcile-checklist", "Emit the in-session harness-TODO reconciliation checklist (read-only)."),
             ("record-attempt", "Record an in-session sub-agent's result back onto a Task."),
-            ("start", "Claim and run the next interactive task in the current terminal."),
-            (
-                "work-next-headless",
-                ("Claim and execute a headless task; refuses loop-dispatched phases while agent_runtime=interactive."),
-            ),
+            ("work-next", "Claim and execute the next pending task."),
         ],
     ),
     "queue": DjangoGroup(

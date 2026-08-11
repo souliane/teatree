@@ -10,14 +10,14 @@ brief demands the shell the phase is (correctly) denied, so the agent follows it
 stop-rule, records ``needs_user_input`` and parks. The scanner's dedup filter ignores
 FAILED, so the next tick re-enqueues it — a retry storm of unanswerable questions.
 
-Both headless entry points consult this registry — the ``tasks work-next-headless``
-command AND the django-tasks worker ``core.tasks.execute_headless_task`` (#3570: that
+Both headless entry points consult this registry — the ``tasks work-next``
+command AND the django-tasks worker ``core.tasks.execute_task`` (#3570: that
 second lane went straight to the agentic runner, so every ``short_describe`` task
 completed exit-0 with the agent NARRATING a summary it had no path to persist, and the
 scanner's COMPLETED dedup then suppressed the ticket forever).
 
 It lives in the domain layer because both callers must reach it, and registration is
-INVERTED (mirroring :mod:`teatree.core.headless_dispatch`): a runner that needs the
+INVERTED (mirroring :mod:`teatree.core.agent_runner`): a runner that needs the
 model seam lives in ``teatree.agents`` and registers itself at app-ready, so ``core``
 never imports the higher layer.
 """

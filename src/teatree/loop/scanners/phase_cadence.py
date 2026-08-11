@@ -141,7 +141,6 @@ class PhaseCadence:
                     ticket=ticket,
                     session=session,
                     phase=self.phase,
-                    execution_target=task_model.ExecutionTarget.HEADLESS,
                     subject=subject,
                     execution_reason=execution_reason,
                 )

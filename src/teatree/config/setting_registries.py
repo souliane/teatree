@@ -12,7 +12,7 @@ declares the dataclasses themselves; re-exported from ``teatree.config`` so ever
 from collections.abc import Callable
 from typing import Any, Final
 
-from teatree.config.agent_enums import AgentHarnessProvider, AgentRuntime, parse_harness_name
+from teatree.config.agent_enums import AgentHarnessProvider, parse_harness_name
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -60,7 +60,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "wip": Wip.parse,
     "write_wip": _parse_strict_int,
     "merge_wip": _parse_strict_int,
-    "agent_runtime": AgentRuntime.parse,
     "agent_harness": parse_harness_name,
     "agent_harness_provider": AgentHarnessProvider.parse,
     "enforce_regulated_path": _parse_strict_bool,
@@ -76,7 +75,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "ticket_budget_max_cost_usd": _parse_strict_float,
     "subagent_spawn_ceiling": _parse_strict_int,
     "envelope_stop_gate_refusals": _parse_strict_int,
-    "headless_max_turns": _parse_strict_int,
+    "agent_max_turns": _parse_strict_int,
     "openai_compatible_base_url": _parse_strict_str,
     "openai_compatible_model": _parse_strict_str,
     "openai_compatible_credential_entry": _parse_strict_str,
@@ -357,7 +356,6 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_WIP": ("wip", Wip.parse),
     "T3_WRITE_WIP": ("write_wip", int),
     "T3_MERGE_WIP": ("merge_wip", int),
-    "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", parse_harness_name),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
     "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),

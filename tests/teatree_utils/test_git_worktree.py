@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils.git_worktree import locked_worktree_paths
+from teatree.utils.git_upstream import branch_upstream
+from teatree.utils.git_worktree import locked_worktree_paths, worktree_add
 from teatree.utils.git_worktree_query import (
     WorktreeRecord,
     canonical_repo_root,
@@ -144,3 +145,47 @@ class TestLockedWorktreePaths:
 
     def test_empty_when_nothing_locked(self, repo: Path) -> None:
         assert locked_worktree_paths(str(repo)) == set()
+
+
+@pytest.fixture
+def cloned(tmp_path: Path) -> Path:
+    """A clone of a bare origin, on ``main``, with one pushed commit."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(tmp_path, "init", "--bare", "-b", "main", str(origin))
+    root = tmp_path / "cloned"
+    _git(tmp_path, "clone", str(origin), str(root))
+    (root / "file.txt").write_text("hello", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "initial")
+    _git(root, "push", "origin", "main")
+    return root
+
+
+class TestWorktreeAddUpstream:
+    """``worktree_add`` never leaves a branch tracking someone else's ref (#4225)."""
+
+    def test_a_new_branch_does_not_inherit_the_default_branchs_upstream(self, cloned: Path, tmp_path: Path) -> None:
+        # `inherit` is the operator config that turns worktree_add's own
+        # no-start-point fallback into a generator: without the normalisation the
+        # new branch comes out carrying refs/heads/main.
+        _git(cloned, "config", "branch.autoSetupMerge", "inherit")
+
+        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat") is True
+        assert branch_upstream(str(cloned), "feat").merge_ref == ""
+
+    def test_an_existing_remote_branch_still_tracks_its_own_ref(self, cloned: Path, tmp_path: Path) -> None:
+        _git(cloned, "worktree", "add", "-b", "feat", str(tmp_path / "seed"))
+        _git(cloned, "push", "origin", "feat")
+        _git(cloned, "worktree", "remove", str(tmp_path / "seed"))
+        _git(cloned, "branch", "-D", "feat")
+
+        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat") is True
+        assert branch_upstream(str(cloned), "feat").merge_ref == "refs/heads/feat"
+
+    def test_checking_out_an_existing_branch_leaves_its_upstream_alone(self, cloned: Path, tmp_path: Path) -> None:
+        _git(cloned, "worktree", "add", "-b", "feat", str(tmp_path / "seed"), "origin/main")
+        _git(cloned, "worktree", "remove", str(tmp_path / "seed"))
+
+        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat", create_branch=False) is True
+        assert branch_upstream(str(cloned), "feat").merge_ref == "refs/heads/main"

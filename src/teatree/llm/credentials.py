@@ -367,7 +367,7 @@ def reject_ambient_base_url_redirect() -> None:
     """Refuse an ambient-auth ``claude`` spawn that also carries a base-URL redirect.
 
     The guard for every AUTONOMOUS seam that spawns a ``claude`` child WITHOUT
-    pinning a credential onto its env — the headless dispatch's unpinned default,
+    pinning a credential onto its env — the agent dispatch's unpinned default,
     the clean-room one-shot turn, and the maker pane. Those children authenticate
     however the CLI's own login state resolves, which this process cannot observe,
     and both the CLI and the Anthropic SDK read

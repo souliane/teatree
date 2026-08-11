@@ -176,6 +176,12 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         ),
         subsystem=None,
     ),
+    RetiredSetting(
+        key="headless_max_turns",
+        replacement="agent_max_turns",
+        reason="there is one execution lane, so the ceiling qualifies nothing; the value set is identical (#4212)",
+        subsystem=None,
+    ),
 )
 
 #: Retired key -> the live field its stored value migrates onto.

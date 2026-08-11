@@ -366,39 +366,33 @@ class TestBuildAutomationSummary(TestCase):
         running_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
         )
         completed_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.COMPLETED,
         )
         failed_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.FAILED,
         )
         # Successful attempt
         TaskAttempt.objects.create(
             task=completed_task,
-            execution_target="headless",
             exit_code=0,
             ended_at=timezone.now(),
         )
         # Failed attempt
         TaskAttempt.objects.create(
             task=failed_task,
-            execution_target="headless",
             exit_code=1,
             ended_at=timezone.now(),
         )
         # Running attempt (no ended_at)
         TaskAttempt.objects.create(
             task=running_task,
-            execution_target="headless",
         )
 
         summary = build_automation_summary()
@@ -414,13 +408,11 @@ class TestBuildAutomationSummary(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.COMPLETED,
         )
         old_time = timezone.now() - timezone.timedelta(hours=25)
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=0,
             ended_at=old_time,
         )
@@ -436,13 +428,11 @@ class TestBuildAutomationSummary(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.COMPLETED,
         )
         now = timezone.now()
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=0,
             ended_at=now,
         )
@@ -458,12 +448,10 @@ class TestBuildAutomationSummary(TestCase):
             task = Task.objects.create(
                 ticket=ticket,
                 session=session,
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 status=Task.Status.COMPLETED,
             )
             TaskAttempt.objects.create(
                 task=task,
-                execution_target="headless",
                 exit_code=0,
                 ended_at=timezone.now(),
                 input_tokens=input_t,

@@ -562,11 +562,10 @@ Register, clear, or list standing verified-green goals (PR-25).
 | `cancel` | Cancel a pending or (with --confirm) claimed task, driving it to FAILED |
 | `complete` | Mark a claimed or failed task COMPLETED for work finished out-of-band |
 | `claim` |  |
-| `start` | Claim an interactive task and exec ``claude`` in the current terminal |
 | `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
 | `list` | List the teatree tasks queue (not your harness TODO list) |
 | `reconcile-checklist` | Emit the in-session harness-TODO reconciliation checklist (read-only) |
-| `work-next-headless` |  |
+| `work-next` |  |
 
 ## `ticket`
 
@@ -656,6 +655,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |
 | `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
 | `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
+| `repair-branch-upstreams` | Point every branch tracking someone else's ref back at its own, or untrack it (#4225) |
 
 ## `worktree`
 

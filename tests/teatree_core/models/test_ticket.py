@@ -4,7 +4,7 @@ Number derivation, locked ``extra`` RMW, FSM transitions, and the
 shippable-diff gate.
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,10 +13,18 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import (
+    DeferredQuestion,
+    E2eMandatoryRun,
+    PlanArtifact,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
-from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -217,13 +225,6 @@ class TestStampIssueTitle(TestCase):
 
 class TestTicketTransitions(TestCase):
     @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
-    @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
@@ -284,7 +285,6 @@ class TestTicketTransitions(TestCase):
         # test() auto-schedules a reviewing task; reviewing is loop-dispatched
         # ((author, reviewing) → t3:reviewer) so it runs in-session.
         task = ticket.tasks.get(phase="reviewing")
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.session.agent_id == "review"
         assert ticket.state == Ticket.State.TESTED
 
@@ -333,7 +333,6 @@ class TestTicketTransitions(TestCase):
         # Simulate agent output with needs_user_input
         TaskAttempt.objects.create(
             task=task,
-            execution_target=task.execution_target,
             exit_code=0,
             result={"needs_user_input": True, "user_input_reason": "Need design decision"},
         )
@@ -343,13 +342,9 @@ class TestTicketTransitions(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
 
-        # Should have created a new interactive task
-        interactive = ticket.tasks.filter(
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            status=Task.Status.PENDING,
-        )
-        assert interactive.count() == 1
-        assert interactive.first().execution_reason == "Need design decision"
+        # There is no terminal to ask at, so the STOP parks as a durable question.
+        question = DeferredQuestion.objects.get(parked_task=task)
+        assert "Need design decision" in question.question
 
     def test_rework_returns_to_started_and_clears_testing_fact(self) -> None:
         ticket = Ticket.objects.create()

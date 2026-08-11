@@ -29,7 +29,6 @@ def schedule_external_review(ticket: Ticket, *, parent_task: Task | None = None)
         ticket=ticket,
         session=session,
         phase="reviewing",
-        execution_target=Task.ExecutionTarget.HEADLESS,
         execution_reason=f"Auto-scheduled external review — review {ticket.issue_url}",
         parent_task=parent_task,
     )

@@ -131,10 +131,10 @@ records.
 
 ### Task — Agent work unit (FSM, FK → Ticket, Session)
 
-- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_target (headless/interactive), execution_reason, failure_reason + failure_kind, status (FSMField: pending/claimed/completed/failed)
+- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_reason, failure_reason + failure_kind, status (FSMField: pending/claimed/completed/failed)
 - `execution_reason` is why the task was SCHEDULED; `failure_reason` is why it FAILED, named by `core/task_failure_taxonomy.py`. `Task.fail()` requires a reason, so no failure path can land a task in FAILED with no cause attached.
 - **Claim/lease:** claimed_at, claimed_by, lease_expires_at, heartbeat_at, result_artifact_path
-- **Key methods:** claim(), route_to_headless(), route_to_interactive(), complete(), fail()
+- **Key methods:** claim(), complete(), fail(), reopen(), park()
 
 ### PullRequest — PR/MR lifecycle (FSM)
 
@@ -150,7 +150,7 @@ records.
 
 ### TaskAttempt — Execution history (FK → Task)
 
-- **Fields:** task (FK), started_at, ended_at, execution_target, error, exit_code, artifact_path, result (JSONField), input_tokens, output_tokens, cost_usd, num_turns, launch_url, agent_session_id
+- **Fields:** task (FK), started_at, ended_at, error, exit_code, artifact_path, result (JSONField), input_tokens, output_tokens, cost_usd, num_turns, launch_url, agent_session_id
 - Enables cross-task failure querying and audit trail
 
 Other supporting models include `TicketTransition` (phase-change log),
@@ -174,7 +174,7 @@ outage still surfaces via `_run_job`. Canonical exemplars:
 
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
-| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-headless`, `followup refresh`, `loop_tick` | Yes |
+| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next`, `followup refresh`, `loop_tick` | Yes |
 | Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info`, `t3 loop start/stop/status` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
 
@@ -264,7 +264,7 @@ Current implementations: `GitHubSyncBackend` (`backends/github/sync.py`), `GitLa
 Two lanes, one per task kind. Per-phase model overrides come from
 `src/teatree/agents/model_tiering.py` in both.
 
-### Headless Sessions (`src/teatree/agents/headless.py`)
+### Headless Sessions (`src/teatree/agents/runner.py`)
 
 Headless tasks drive an in-process agent session behind the `Harness` seam
 (`src/teatree/agents/harness.py`), whose backend `agent_harness` selects — `claude_sdk`
@@ -276,16 +276,6 @@ so the driver never special-cases the transport.
 - If the result carries `needs_user_input: true`, reroutes the task to the user-input queue
 - Stores the parsed result in `TaskAttempt.result`
 - **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, the harness opens the session with the SDK-native `resume=` option (`pydantic_ai` rehydrates the equivalent message history from `src/teatree/agents/pydantic_ai_resume.py`).
-
-### Interactive Sessions (`core/management/commands/tasks_interactive_launch.py`)
-
-Interactive tasks (`tasks start`) launch `claude` inline in
-the invoking terminal — no ttyd, no terminal-mode strategies. The binary is
-resolved via `shutil.which("claude")` and the argv is built by
-`build_claude_command`:
-
-- Fresh session: `claude --append-system-prompt <interactive context>` (context from `src/teatree/agents/prompt.py:build_interactive_context`).
-- Resume: when `Session.agent_id` holds a Claude session UUID, `claude --resume <uuid>` — preserving context from the prior headless run.
 
 ### Skill Loading
 

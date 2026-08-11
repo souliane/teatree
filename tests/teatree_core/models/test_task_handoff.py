@@ -27,7 +27,6 @@ class TestRecordDeferredQuestionAudience(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             result={"needs_user_input": True, "user_input_reason": reason},
         )
         return task

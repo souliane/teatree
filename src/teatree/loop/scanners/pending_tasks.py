@@ -1,6 +1,6 @@
 """Scan the ``Task`` table for rows in pending state.
 
-Pending tasks are dispatched to the headless executor (BLUEPRINT § 5.2),
+Pending tasks are dispatched to the executor (BLUEPRINT § 5.2),
 which routes each one to the appropriate phase agent.
 
 The Django ``Task`` model is resolved lazily through ``apps.get_model``

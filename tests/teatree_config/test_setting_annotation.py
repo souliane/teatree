@@ -20,7 +20,7 @@ class TestTheTypeNameIsDerivedFromTheAnnotation:
         ("key", "expected"),
         [
             ("autoload", "bool"),
-            ("headless_max_turns", "int"),
+            ("agent_max_turns", "int"),
             ("disk_crit_free_gb", "float"),
             ("agent_harness", "str"),
             ("clean_ignore", "list"),
@@ -61,7 +61,7 @@ class TestTheChoiceTokenMakesTheInvisibleValuesVisible:
 
 class TestTheAnnotationSaysWhatMayIPutHere:
     def test_an_open_typed_key_names_its_type_alone(self) -> None:
-        assert setting_annotation("headless_max_turns") == "int"
+        assert setting_annotation("agent_max_turns") == "int"
 
     def test_a_constrained_key_names_its_alternatives(self) -> None:
         assert setting_annotation("wip") == "str, one of: slow | medium | full | boost"

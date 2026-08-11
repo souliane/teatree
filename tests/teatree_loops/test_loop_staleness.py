@@ -10,6 +10,7 @@ seeded production loops.
 """
 
 import datetime as dt
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import django.test
@@ -48,7 +49,10 @@ _ADMITTED_SEAM = "teatree.loops.loop_table.admitted_loop_names"
 # and the suppression arm read, so patching it here moves BOTH — a patch that moved
 # only one would recreate the two-resolver split #4196 removed.
 _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
-_HOLDS_SEAM = "teatree.loop.loop_state_db.control_planes_in_db"
+# The IMPORT-SITE binding, not the definition: ``enable_verdict`` binds this name at
+# module import, so a patch on ``teatree.loop.loop_state_db`` resolves fine and still
+# never reaches the read — a dead mock that only LOOKS like it stubs the planes.
+_HOLDS_SEAM = "teatree.loops.enable_verdict.control_planes_in_db"
 
 
 def _mini(name: str, *, off_live_tick: bool = False) -> MiniLoop:
@@ -312,13 +316,20 @@ class TestSuppressionClassification(_LoopTableCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestLoopHealth(_LoopTableCase):
-    def _health(self, *, admitted: list[str], mode: ResolvedMode, registry: tuple[MiniLoop, ...]) -> LoopHealth:
-        with (
-            patch(_REGISTRY_SEAM, return_value=registry),
-            patch(_ADMITTED_SEAM, return_value=admitted),
-            patch(_MODE_SEAM, return_value=mode),
-            patch(_HOLDS_SEAM, return_value=(set(), {})),
-        ):
+    def _health(
+        self,
+        *,
+        admitted: list[str],
+        mode: ResolvedMode,
+        registry: tuple[MiniLoop, ...],
+        stub_planes: bool = True,
+    ) -> LoopHealth:
+        with ExitStack() as stack:
+            stack.enter_context(patch(_REGISTRY_SEAM, return_value=registry))
+            stack.enter_context(patch(_ADMITTED_SEAM, return_value=admitted))
+            stack.enter_context(patch(_MODE_SEAM, return_value=mode))
+            if stub_planes:
+                stack.enter_context(patch(_HOLDS_SEAM, return_value=(set(), {})))
             return loop_health(timezone.now())
 
     def test_health_is_ok_when_every_loop_advances(self) -> None:
@@ -391,16 +402,28 @@ class TestLoopHealth(_LoopTableCase):
         # arm no health-verdict test exercised.
         _loop("tickets", ran_ago=dt.timedelta(seconds=30))
         _loop("review", ran_ago=dt.timedelta(hours=7))
+        # The forced plane is this test's INPUT, so it reads the real one — stubbing it
+        # empty would grade the arm against a plane the test never wrote.
         LoopState.objects.override("review", on=False)
         health = self._health(
             admitted=["tickets"],
             mode=_mode(),
             registry=(_mini("tickets"), _mini("review")),
+            stub_planes=False,
         )
         rendered = "\n".join(health.lines())
         assert health.ok
         assert [loop.name for loop in health.stale if loop.suppressed] == ["review"]
         assert "FAIL" not in rendered
+
+    def test_the_planes_stub_reaches_the_read_path(self) -> None:
+        # Harness pin, not a product claim. Pointed at the DEFINITION module the patch
+        # still resolves, stubs nothing, and the DB hold below quietly governs instead —
+        # which is how the force-masked test above came to pass on a dead mock (#4237).
+        _loop("review", ran_ago=dt.timedelta(hours=7))
+        LoopState.objects.pause("review")
+        health = self._health(admitted=[], mode=_mode(), registry=(_mini("review"),))
+        assert [loop.suppressed for loop in health.stale] == [False]
 
     def test_unexplained_stale_loop_fails_even_beside_healthy_ones(self) -> None:
         _loop("tickets", ran_ago=dt.timedelta(seconds=30))

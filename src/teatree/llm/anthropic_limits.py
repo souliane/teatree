@@ -231,7 +231,7 @@ def classify_limit(text: str) -> LimitMatch | None:
     Case-insensitive substring match against :data:`_SIGNATURES` in order, so the
     most-specific phrase wins. The caller is responsible for gating on whatever
     "this is an error" signal its transport carries (``ResultMessage.is_error``
-    for the headless path, a raised SDK exception for the eval path) before
+    for the agent path, a raised SDK exception for the eval path) before
     handing the text here — this function only classifies the text.
     """
     haystack = text.casefold()

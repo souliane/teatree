@@ -9,7 +9,7 @@ as the monolith does (teatree#2237: the appendices ARE the BLUEPRINT).
 That type exemption is withdrawn for a commit staging the shipped
 ``config/defaults.toml`` or an enum vocabulary — the values the docs quote
 literally. #3895's ``chore(config)`` defaults flip invalidated the mode/wip/
-agent_runtime prose and passed the gate by prefix alone.
+dispatch-lane prose and passed the gate by prefix alone.
 
 The exemption depends on the hook reading the *commit message*. The hook must
 therefore source the commit type robustly — from the commit-message file git

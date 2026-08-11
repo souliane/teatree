@@ -104,8 +104,8 @@ class TestTheDumpSaysWhatEachKeyAccepts(TestCase):
             assert choice_token(choice) in offered, f"{choice!r} missing from {offered!r}"
 
     def test_an_open_typed_keys_line_names_its_type_and_offers_no_list(self) -> None:
-        ConfigSetting.objects.set_value("headless_max_turns", 400)
-        line = self._line("headless_max_turns")
+        ConfigSetting.objects.set_value("agent_max_turns", 400)
+        line = self._line("agent_max_turns")
         assert "# int" in line
         assert "one of:" not in line
 
@@ -114,13 +114,13 @@ class TestTheDumpSaysWhatEachKeyAccepts(TestCase):
         # Both values diverge from their shipped default, so a row is genuinely rewritten
         # (import skips a value equal to the default, which would prove nothing here).
         ConfigSetting.objects.set_value("wip", "slow")
-        ConfigSetting.objects.set_value("headless_max_turns", 400)
+        ConfigSetting.objects.set_value("agent_max_turns", 400)
         dumped = export_db_to_toml(scan_terms=()).toml
         ConfigSetting.objects.all().delete()
         result = import_toml_to_db(dumped, scan_terms=())
         assert not result.rejected, result.rejected
         assert ConfigSetting.objects.get_effective("wip") == "slow"
-        assert ConfigSetting.objects.get_effective("headless_max_turns") == 400
+        assert ConfigSetting.objects.get_effective("agent_max_turns") == 400
 
 
 class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):

@@ -3,8 +3,8 @@
 :class:`~teatree.agents.pydantic_ai_session.PydanticAiHarnessSession` is the single
 point translating pydantic_ai reality into the ``claude_agent_sdk`` message vocabulary
 the driver consumes, and the driver's whole failure taxonomy
-(:func:`~teatree.agents.headless_failure_taxonomy.limit_match` -> ``park_or_rotate_on_limit``,
-:func:`~teatree.agents.headless_failure_taxonomy.error_result_reason` -> FAILED) keys on
+(:func:`~teatree.agents.runner_failure_taxonomy.limit_match` -> ``park_or_rotate_on_limit``,
+:func:`~teatree.agents.runner_failure_taxonomy.error_result_reason` -> FAILED) keys on
 ``ResultMessage.is_error``. A terminal message that is unconditionally ``success``
 therefore makes a bad run indistinguishable from a good one on this lane: a 429
 escapes as a raw exception and lands as a ``sdk_error`` traceback instead of a park,
@@ -29,11 +29,11 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
-from teatree.agents.headless import TaskUsage, run_headless
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.pydantic_ai_session import _turns_made
+from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 
 _MODEL = "claude-opus-4-8"
@@ -326,10 +326,10 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
 
     def _dispatch(self, harness: PydanticAiHarness) -> TaskAttempt:
         with (
-            patch.object(headless_mod, "resolve_harness", return_value=harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            return run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            return run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
     def _dispatch_api_error(self, *, status_code: int, error_type: str, message: str) -> TaskAttempt:
         return self._dispatch(
