@@ -1891,3 +1891,53 @@ class TestRunHeadlessRecordsLane(TestCase):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
 
         assert attempt.lane == ""
+
+
+class TestDriveClaimMarker(TestCase):
+    """``run_headless`` drives inside ``drive_claim`` (#4164).
+
+    ``reclaim_orphaned_claims`` / ``reap_stale_claims`` run in the ``loops_tick`` subprocess,
+    where the in-memory ``driving`` registry is always empty — the persisted
+    ``owner_driving_since`` is the only evidence that reaches them. Observed mid-drive at the
+    seam the wrapper wraps: the assertion is that the marker is on the row WHILE the agent
+    runs, which is exactly what stripping the wrapper takes away.
+    """
+
+    @staticmethod
+    def _task() -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session)
+
+    @staticmethod
+    def _stored_marker(task: Task) -> Any:
+        return Task.objects.filter(pk=task.pk).values_list("owner_driving_since", flat=True).first()
+
+    def test_the_row_carries_the_drive_marker_while_the_agent_runs(self) -> None:
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        task = self._task()
+        observed: list[Any] = []
+        real_drive = headless_mod._run_headless_agent
+
+        def _observing_drive(driven: Task, **kwargs: Any) -> TaskAttempt:
+            observed.append(self._stored_marker(driven))
+            return real_drive(driven, **kwargs)
+
+        with _fake_sdk(_success_stream(result)), patch.object(headless_mod, "_run_headless_agent", _observing_drive):
+            run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        assert len(observed) == 1
+        assert observed[0] is not None
+
+    def test_the_marker_is_cleared_when_the_drive_raises(self) -> None:
+        """The ``finally``: a drive that dies still releases the row to ordinary recovery."""
+        task = self._task()
+
+        def _boom(*_args: Any, **_kwargs: Any) -> TaskAttempt:
+            msg = "drive died"
+            raise RuntimeError(msg)
+
+        with patch.object(headless_mod, "_run_headless_agent", _boom), pytest.raises(RuntimeError, match="drive died"):
+            run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        assert self._stored_marker(task) is None

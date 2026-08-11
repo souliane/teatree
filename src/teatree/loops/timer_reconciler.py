@@ -260,7 +260,7 @@ def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 
         return True
     lease = task.lease_expires_at
     heartbeat_live = task.status == Task.Status.CLAIMED and lease is not None and lease > now
-    return not heartbeat_live and not owner_is_executing(ClaimOwner.of(task), task.pk)
+    return not heartbeat_live and not owner_is_executing(ClaimOwner.of(task), task.pk, now=now)
 
 
 def reap_stuck_headless_runs() -> dict[str, int]:

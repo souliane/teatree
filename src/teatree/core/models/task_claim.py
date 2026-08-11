@@ -129,6 +129,7 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
             lease_expires_at=now + timedelta(seconds=lease_seconds),
             owner_pid=owner_pid,
             owner_pid_namespace=owner_pid_namespace,
+            owner_driving_since=None,
         )
     )
     if won != 1:

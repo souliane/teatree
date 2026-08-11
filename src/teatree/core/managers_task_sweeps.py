@@ -21,11 +21,19 @@ from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
-from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, executing_owner_reason, owner_is_executing
+from teatree.core.claim_liveness import (
+    OWNER_COLUMNS,
+    RELEASED_CLAIM,
+    ClaimOwner,
+    executing_owner_reason,
+    owner_is_executing,
+)
 from teatree.core.modelkit.task_failure_taxonomy import LEASE_EXPIRED_PREFIX, FailureKind
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from django.db import models
 
     from teatree.core.models.task import Task
@@ -88,27 +96,17 @@ def reclaim_orphaned_claims(qs: "models.QuerySet") -> int:
         candidate_pks = list(
             qs.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).values_list("pk", flat=True)
         )
-        requeueable = _requeueable_within_budget(qs, candidate_pks)
+        requeueable = _requeueable_within_budget(qs, candidate_pks, now=now)
         if not requeueable:
             return 0
         return qs.filter(
             pk__in=requeueable,
             status=task_model.Status.CLAIMED,
             lease_expires_at__lt=now,
-        ).update(
-            status=task_model.Status.PENDING,
-            claimed_at=None,
-            claimed_by="",
-            claimed_by_session="",
-            lease_expires_at=None,
-            heartbeat_at=None,
-            owner_pid=None,
-            owner_pid_namespace="",
-            owner_driving_since=None,
-        )
+        ).update(status=task_model.Status.PENDING, **RELEASED_CLAIM)
 
 
-def _requeueable_within_budget(qs: "models.QuerySet", candidate_pks: list[int]) -> list[int]:
+def _requeueable_within_budget(qs: "models.QuerySet", candidate_pks: list[int], *, now: "datetime") -> list[int]:
     """Filter *candidate_pks* to those whose ticket-phase may still re-queue (#2009, #4164).
 
     Consults the repair-loop budget per row: a phase at its iteration cap
@@ -121,7 +119,7 @@ def _requeueable_within_budget(qs: "models.QuerySet", candidate_pks: list[int]) 
     allowed: list[int] = []
     for task in qs.filter(pk__in=candidate_pks).select_related("ticket", "session"):
         owner = ClaimOwner.of(task)
-        if owner_is_executing(owner, task.pk):
+        if owner_is_executing(owner, task.pk, now=now):
             logger.info("reclaim skip task=%s ticket=%s: %s", task.pk, task.ticket_id, executing_owner_reason(owner))
             continue
         try:
@@ -245,21 +243,14 @@ def reap_stale_claims(qs: "models.QuerySet") -> int:
         )
         for pk, execution_target, claimed_by, owner_pid, owner_pid_namespace, owner_driving_since in candidates:
             owner = ClaimOwner(owner_pid, owner_pid_namespace or "", owner_driving_since)
-            if owner_is_executing(owner, pk):
+            if owner_is_executing(owner, pk, now=now):
                 logger.info("stale-claim reap skip task=%s: %s", pk, executing_owner_reason(owner))
                 continue
             claimed = qs.filter(pk=pk, status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
                 status=task_model.Status.FAILED,
-                claimed_at=None,
-                claimed_by="",
-                claimed_by_session="",
-                lease_expires_at=None,
-                heartbeat_at=None,
-                owner_pid=None,
-                owner_pid_namespace="",
-                owner_driving_since=None,
                 failure_reason=_lease_expired_reason(claimed_by),
                 failure_kind=FailureKind.LEASE_EXPIRED,
+                **RELEASED_CLAIM,
             )
             if not claimed:
                 # The lease was renewed between the scan and this write — a live

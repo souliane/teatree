@@ -31,7 +31,8 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import TypedDict
 
 from teatree.core.loop_lease_liveness import namespace_is_attributable, pid_alive_probe, reader_pid_namespace
 
@@ -43,6 +44,53 @@ _driving_lock = threading.Lock()
 #: The three columns :class:`ClaimOwner` reads, so a ``.values_list()`` caller cannot
 #: silently omit one and hand the predicate a blank field that reads as an absent fact.
 OWNER_COLUMNS = ("owner_pid", "owner_pid_namespace", "owner_driving_since")
+
+
+class ReleasedClaim(TypedDict):
+    """What every claim column holds once the claim is RELEASED.
+
+    Each field is typed by its RELEASED value, not by the column's own type, because
+    that is the whole content of the contract: a released claim is blank in all eight.
+    """
+
+    claimed_at: None
+    claimed_by: str
+    claimed_by_session: str
+    lease_expires_at: None
+    heartbeat_at: None
+    owner_pid: None
+    owner_pid_namespace: str
+    owner_driving_since: None
+
+
+#: The ``.update()`` kwargs each compare-and-swap release splats, rather than re-enumerating
+#: eight literals per site. Hand-enumerated release sites are how a column added to the claim
+#: gets omitted by some of them, leaving a dead owner's pid and drive marker on a row the next
+#: holder then claims — precisely what :func:`owner_is_executing` reads as "still executing".
+RELEASED_CLAIM: ReleasedClaim = {
+    "claimed_at": None,
+    "claimed_by": "",
+    "claimed_by_session": "",
+    "lease_expires_at": None,
+    "heartbeat_at": None,
+    "owner_pid": None,
+    "owner_pid_namespace": "",
+    "owner_driving_since": None,
+}
+
+#: How long a cross-process ``owner_driving_since`` marker stays evidence.
+#:
+#: Unlike the sibling :data:`~teatree.core.loop_lease_liveness.UNVERIFIABLE_OWNER_GRACE`,
+#: whose ``acquired_at`` IS a per-tick heartbeat, this marker is written ONCE at drive-entry
+#: and never renewed — a starved event loop that cannot heartbeat is the whole case it
+#: exists for. So it dates the drive rather than proving recent liveness, and the bound is
+#: the longest a drive can legitimately last: twice ``LoopWatchdog``'s 3h default runtime
+#: ceiling, past which the watchdog would itself have interrupted the run and
+#: :func:`~teatree.core.models.task_claim.drive_claim`'s ``finally`` cleared the marker.
+#: Unbounded, a ``finally`` skipped by a hard kill (SIGKILL, an OOM kill) pinned the row
+#: CLAIMED forever as soon as the OS reused that pid for any long-lived process — an
+#: unrecoverable stall, where the bounded worst case is one late reclaim the sweep retries.
+DRIVE_MARKER_GRACE = timedelta(hours=6)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +122,16 @@ class ClaimOwner:
 
     def is_this_process(self) -> bool:
         return self.owner_pid == os.getpid() and namespace_is_attributable(self.owner_pid_namespace)
+
+    def within_drive_grace(self, now: datetime) -> bool:
+        """Whether this owner's drive marker is recent enough to still be evidence.
+
+        An absent marker is not within grace: no marker is no evidence, the same verdict
+        it had before the bound existed.
+        """
+        if self.owner_driving_since is None:
+            return False
+        return self.owner_driving_since + DRIVE_MARKER_GRACE > now
 
 
 def current_owner() -> tuple[int, str]:
@@ -109,31 +167,35 @@ def reset_driving_registry() -> None:
         _driving.clear()
 
 
-def owner_is_executing(owner: ClaimOwner, task_pk: int) -> bool:
+def owner_is_executing(owner: ClaimOwner, task_pk: int, *, now: datetime) -> bool:
     """Whether the owner *owner* describes is still executing the claim on *task_pk*.
 
     Two tiers, tried in order. Tier one, SAME process: the recorded owner IS this
     process (pid + attributable namespace) AND this process is inside :func:`driving`
     for that task — a fact, read from this interpreter's own memory, not an inference.
+    Registry membership is released by a ``finally``, so it needs no time bound.
 
     Tier two, A DIFFERENT process (#4164 follow-up): the recorded owner's namespace is
     attributable but the pid is NOT this process's own (the ``loops_tick`` subprocess
     case, where tier one is always empty). Trusts ``owner.owner_driving_since`` only
-    while ``owner.owner_pid`` is independently proven alive via
-    :func:`~teatree.core.loop_lease_liveness.pid_alive_probe` — a bare pid alone is no
-    evidence (trivially alive in a single-worker deployment whether or not the job it
-    claimed still exists), and a bare timestamp alone cannot self-clear on a hard crash.
+    while it is within :data:`DRIVE_MARKER_GRACE` AND ``owner.owner_pid`` is independently
+    proven alive via :func:`~teatree.core.loop_lease_liveness.pid_alive_probe`. Neither
+    half stands alone: a bare pid is trivially alive in a single-worker deployment whether
+    or not the job it claimed still exists, and a bare marker cannot self-clear on a hard
+    crash — which is also why it is bounded, since a kill that skips the ``finally`` leaves
+    a marker that would otherwise pin the row for as long as the OS keeps that pid in use.
 
     Everything else is ``False``: an unattributable namespace, no recorded pid, no
-    ``owner_driving_since``, or a provably dead pid. That leaves the caller on
-    today's lease-only verdict rather than holding a row it cannot prove is alive.
+    ``owner_driving_since``, a marker past its grace, or a provably dead pid. That leaves
+    the caller on today's lease-only verdict rather than holding a row it cannot prove is
+    alive — so this guard can only ever WITHHOLD a reap it can prove premature.
     """
     if owner.is_this_process():
         with _driving_lock:
             return task_pk in _driving
     if owner.owner_pid is None or not namespace_is_attributable(owner.owner_pid_namespace):
         return False
-    if owner.owner_driving_since is None:
+    if not owner.within_drive_grace(now):
         return False
     probe = pid_alive_probe()
     return probe is not None and probe(owner.owner_pid)

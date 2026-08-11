@@ -7,6 +7,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django_fsm import FSMField, TransitionNotAllowed
 
+from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, classify_failure
@@ -27,19 +28,11 @@ from teatree.core.models.ticket import Ticket
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
 
-#: Every column a claim writes, so the ``update_fields`` lists that release one cannot
-#: drift from :meth:`Task._clear_claim` — a released claim that kept a stale ``owner_pid``
-#: would report a dead owner as the executor of whoever holds the row next.
-CLAIM_FIELDS = (
-    "claimed_at",
-    "claimed_by",
-    "claimed_by_session",
-    "lease_expires_at",
-    "heartbeat_at",
-    "owner_pid",
-    "owner_pid_namespace",
-    "owner_driving_since",
-)
+#: Every column a claim writes, so the ``update_fields`` lists that release one cannot drift
+#: from :meth:`Task._clear_claim` nor from the compare-and-swap releases that splat
+#: :data:`~teatree.core.claim_liveness.RELEASED_CLAIM` — a released claim that kept a stale
+#: ``owner_pid`` would report a dead owner as the executor of whoever holds the row next.
+CLAIM_FIELDS = tuple(RELEASED_CLAIM)
 
 
 class Task(models.Model):
@@ -633,11 +626,5 @@ class Task(models.Model):
         )
 
     def _clear_claim(self) -> None:
-        self.claimed_at = None
-        self.claimed_by = ""
-        self.claimed_by_session = ""
-        self.lease_expires_at = None
-        self.heartbeat_at = None
-        self.owner_pid = None
-        self.owner_pid_namespace = ""
-        self.owner_driving_since = None
+        for field, released in RELEASED_CLAIM.items():
+            setattr(self, field, released)

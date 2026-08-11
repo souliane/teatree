@@ -207,3 +207,34 @@ class TestDescribeLeaseLoss(TestCase):
         assert reason.startswith(f"lease lost for task {task.pk}:")
         assert "could not be read back" in reason
         assert "OperationalError" in reason
+
+
+class TestTakingAClaimClearsThePreviousDriveMarker(TestCase):
+    """A claim TAKE stamps this process as the owner, so it must not inherit the last one's marker.
+
+    ``owner_driving_since`` paired with the NEW owner's live pid reads as "this process is
+    driving it" to ``owner_is_executing`` — before the new holder has entered ``drive_claim``
+    at all — so every sweep withholds its reap on evidence about a run that already ended.
+    """
+
+    def _task_with_a_stale_marker(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        Task.objects.filter(pk=task.pk).update(owner_driving_since=timezone.now() - timedelta(hours=1))
+        return Task.objects.get(pk=task.pk)
+
+    def test_the_single_row_claim_clears_it(self) -> None:
+        task = self._task_with_a_stale_marker()
+
+        claim(task, claimed_by="worker", lease_seconds=300)
+
+        assert Task.objects.get(pk=task.pk).owner_driving_since is None
+
+    def test_the_queryset_claim_clears_it(self) -> None:
+        task = self._task_with_a_stale_marker()
+
+        claimed = Task.objects.claim_next_pending(claimed_by="worker")
+
+        assert claimed is not None
+        assert Task.objects.get(pk=task.pk).owner_driving_since is None

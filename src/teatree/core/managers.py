@@ -393,6 +393,7 @@ class TaskQuerySet(models.QuerySet):
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
                 owner_pid=owner_pid,
                 owner_pid_namespace=owner_pid_namespace,
+                owner_driving_since=None,
             )
             if claimed_count != 1:
                 return None

@@ -69,6 +69,7 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
+from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.task_claim import describe_lease_loss, drive_claim
@@ -617,16 +618,7 @@ def _record_landed(task: Task, *, evidence: str, lease_loss: str, usage: "Attemp
     attempt = _record_interrupted_attempt(
         task, summary=f"phase landed despite a lost lease — {evidence}; {lease_loss}", usage=usage
     )
-    Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).update(
-        status=Task.Status.COMPLETED,
-        claimed_at=None,
-        claimed_by="",
-        claimed_by_session="",
-        lease_expires_at=None,
-        heartbeat_at=None,
-        owner_pid=None,
-        owner_pid_namespace="",
-    )
+    Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).update(status=Task.Status.COMPLETED, **RELEASED_CLAIM)
     logger.warning("Task %s lost its lease but its phase landed: %s", task.pk, evidence)
     return attempt
 
