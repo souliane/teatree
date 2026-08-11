@@ -129,16 +129,21 @@ class ComplianceSnapshotResult:
 class EscalationOutcome:
     """The result of driving one recurring rule onto the standing umbrella issue.
 
-    ``filed`` is True when a new umbrella checkbox was added OR a coding task was
-    scheduled (the ``promote_gap`` outcome); ``ticket_url`` is the umbrella issue URL;
-    ``withheld`` is True when the rendered body would leak a banned term / bare
-    reference.
+    ``filed`` is True when THIS pass did new work — a new umbrella checkbox was added
+    OR a coding task was scheduled (the ``promote_gap`` outcome), so a recurrence
+    already riding the umbrella reports False on every later pass; ``ticket_url`` is
+    the umbrella issue URL, set whenever the recurrence RIDES the umbrella — this pass
+    promoted it, or a withheld / cap-spent pass discovered it already there — and empty
+    only when nothing rides it; ``withheld`` is True when the rendered body would leak a
+    banned term / bare reference; ``deferred`` is True when the pass's promotion cap was
+    already spent and this recurrence is what it turned away (#4176).
     """
 
     rule_identity: str
     filed: bool
     ticket_url: str = ""
     withheld: bool = False
+    deferred: bool = False
     reason: str = ""
 
 
@@ -409,7 +414,15 @@ def escalate_recurrences(
 def stamp_escalations(
     snapshot: InstructionComplianceSnapshot | None, outcomes: Sequence[EscalationOutcome], *, dry_run: bool
 ) -> None:
-    """Stamp each escalated recurrence's audit row with the umbrella it now rides."""
+    """Stamp each escalated recurrence's audit row with the umbrella it now rides.
+
+    Keyed on ``ticket_url``, NOT on ``filed``: the audit row records that the
+    recurrence rides an umbrella checkbox, and ``filed`` only says whether THIS pass
+    put it there — so gating on it would leave every repeat pass's fresh snapshot
+    reading ``RemediationKind.NONE`` for a recurrence with a live checkbox and coding
+    task. A deferred (cap-exhausted) or withheld (banned-term/bare-reference) outcome
+    carries no URL, so it still never stamps (#4176).
+    """
     if dry_run or snapshot is None:
         return
     for outcome in outcomes:
@@ -509,10 +522,15 @@ def render_compliance_show() -> list[str]:
 
 
 def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str, ticket_url: str) -> None:
-    row = InstructionComplianceRecord.objects.filter(
+    """Stamp EVERY row this rule left on the snapshot, not just the first.
+
+    ``persist_compliance_pass`` writes one row per FINDING while ``escalate_recurrences``
+    dedups to one outcome per ``rule_identity``, so two findings sharing a rule leave a
+    sibling row reading ``NONE`` for a recurrence that rides the umbrella (#4176).
+    """
+    for row in InstructionComplianceRecord.objects.filter(
         snapshot=snapshot, rule_identity=rule_identity, is_recurrence=True
-    ).first()
-    if row is not None:
+    ):
         row.mark_escalated(ticket_url)
 
 
@@ -545,8 +563,20 @@ def _escalate_one_recurrence(
         dry_run=dry_run,
         budget=budget,
     )
+    if outcome.already_present:
+        # The recurrence rides the umbrella already, so a withheld title or a spent cap
+        # turned away no work — the audit row must name the umbrella either way (#4176).
+        return EscalationOutcome(
+            rule_identity=finding.rule_identity,
+            filed=False,
+            ticket_url=umbrella_url,
+            withheld=outcome.withheld,
+            reason=outcome.reason,
+        )
     if outcome.withheld:
         return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
+    if outcome.deferred:
+        return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, deferred=True, reason=outcome.reason)
     return EscalationOutcome(
         rule_identity=finding.rule_identity,
         filed=outcome.scheduled or outcome.checkbox_added or dry_run,
