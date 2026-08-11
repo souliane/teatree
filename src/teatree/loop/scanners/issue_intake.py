@@ -54,7 +54,13 @@ from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
-from teatree.core.intake.factory_admission import IntakeVerdict, decide_issue_intake, payload_body, payload_labels
+from teatree.core.intake.factory_admission import (
+    IntakeLabelPolicy,
+    IntakeVerdict,
+    decide_issue_intake,
+    payload_body,
+    payload_labels,
+)
 from teatree.core.intake.umbrella import umbrella_reason
 from teatree.core.models import ImplementedIssueMarker, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.core.review.author_trust import (
@@ -195,6 +201,10 @@ class IssueIntakeScanner:
     ``identities`` is the OPERATOR's own handle set. It is deliberately NOT the
     trust set: it scopes the read-back's PR queries, because the PR implementing an
     issue is authored by the operator regardless of who filed the issue.
+
+    ``exclude_labels`` is the overlay's denylist (``OverlayConfig.exclude_labels``) —
+    the exclude rule of the decision table. It holds an issue whoever filed it, so it is
+    the operator's reservation surface against the factory (#4134).
     """
 
     host: CodeHostBackend
@@ -207,6 +217,7 @@ class IssueIntakeScanner:
     umbrella_labels: frozenset[str] = frozenset()
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
+    exclude_labels: tuple[str, ...] = field(default_factory=tuple)
     #: The overlay's OWN repo slugs (``owner/name``). Every discovery query is
     #: scoped to them. Empty keeps the pre-scope global search (back-compat).
     repo_slugs: tuple[str, ...] = field(default_factory=tuple)
@@ -256,6 +267,10 @@ class IssueIntakeScanner:
         UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting)
         return signals
 
+    def _label_policy(self) -> IntakeLabelPolicy:
+        """The overlay's two configured label sets, as the ONE value the table reads."""
+        return IntakeLabelPolicy(exclude=frozenset(self.exclude_labels), umbrella=self.umbrella_labels)
+
     def _admits(self, issue: RawAPIDict, url: str, *, context: "_TickContext") -> "IntakeVerdict | None":
         """The admitting verdict for *issue*, or ``None`` when the table refuses it.
 
@@ -283,7 +298,7 @@ class IssueIntakeScanner:
             author_trusted=author_is_trusted(issue, context.trusted),
             work_exists=work_exists,
             admit_label=self.admit_label,
-            umbrella_labels=self.umbrella_labels,
+            label_policy=self._label_policy(),
         )
         if verdict.acts:
             return verdict

@@ -94,6 +94,7 @@ from django.utils import timezone
 
 from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
 from teatree.agents.usage_window import autorecovery_enabled
+from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
@@ -246,11 +247,7 @@ def _self_repair_reopen(task: Task) -> int | None:
     new_reason = f"{task.execution_reason}\n{repair.stamp()}".strip() if task.execution_reason else repair.stamp()
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
-        claimed_at=None,
-        claimed_by="",
-        claimed_by_session="",
-        lease_expires_at=None,
-        heartbeat_at=None,
+        **RELEASED_CLAIM,
         execution_reason=new_reason,
     )
 
@@ -287,11 +284,7 @@ def _corrective_reopen(task: Task, note: str) -> int:
     new_reason = f"{task.execution_reason}\n{stamped}".strip() if task.execution_reason else stamped
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
-        claimed_at=None,
-        claimed_by="",
-        claimed_by_session="",
-        lease_expires_at=None,
-        heartbeat_at=None,
+        **RELEASED_CLAIM,
         execution_reason=new_reason,
     )
 
@@ -364,11 +357,7 @@ def _reopen(task: Task) -> int:
     """
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
-        claimed_at=None,
-        claimed_by="",
-        claimed_by_session="",
-        lease_expires_at=None,
-        heartbeat_at=None,
+        **RELEASED_CLAIM,
     )
 
 

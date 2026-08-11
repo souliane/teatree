@@ -222,6 +222,21 @@ def _reset_forge_pr_budget_memo() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_claim_driving_registry() -> Iterator[None]:
+    """Reset the pk-keyed claim-liveness registry around every test (#4164).
+
+    ``claim_liveness._driving`` holds the task pks this process is executing. Under sqlite
+    ``TestCase`` rollback rowids recycle, so a leaked entry makes a later test's fresh task
+    read as still-executing and the sweep withholds the reap that test asserts it takes.
+    """
+    from teatree.core.claim_liveness import reset_driving_registry  # noqa: PLC0415 deferred, see #4164
+
+    reset_driving_registry()
+    yield
+    reset_driving_registry()
+
+
+@pytest.fixture(autouse=True)
 def _reset_log_throttle() -> Iterator[None]:
     """Reset the process-local log-throttle memo around every test.
 

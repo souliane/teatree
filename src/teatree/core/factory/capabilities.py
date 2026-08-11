@@ -94,6 +94,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json: per-row disposition for the dead-checkout rows; dry run unless --apply",
     ),
     Capability(
+        "teatree workspace repair-branch-upstreams",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-branch outcome for branches tracking someone else's ref (#4225)",
+    ),
+    Capability(
         "teatree do",
         json_output=True,
         exit_codes=("0", "1"),

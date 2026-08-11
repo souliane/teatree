@@ -7,6 +7,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django_fsm import FSMField, TransitionNotAllowed
 
+from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, classify_failure
@@ -26,6 +27,12 @@ from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
+
+#: Every column a claim writes, so the ``update_fields`` lists that release one cannot drift
+#: from :meth:`Task._clear_claim` nor from the compare-and-swap releases that splat
+#: :data:`~teatree.core.claim_liveness.RELEASED_CLAIM` — a released claim that kept a stale
+#: ``owner_pid`` would report a dead owner as the executor of whoever holds the row next.
+CLAIM_FIELDS = tuple(RELEASED_CLAIM)
 
 
 class Task(models.Model):
@@ -72,6 +79,19 @@ class Task(models.Model):
     claimed_by_session = models.CharField(max_length=255, blank=True, default="")
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # #4164 The OS process currently executing this claim, so a sweep can tell a stalled
+    # worker from a dead one — a lapsed lease is evidence about the LEASE, not the process.
+    # The namespace rides along because a bare pid means nothing outside the namespace it
+    # was recorded in (#4253): each service in the deployment has its own, so the same
+    # integer names a different process — or none — depending on who reads it.
+    owner_pid = models.PositiveIntegerField(null=True, blank=True)
+    owner_pid_namespace = models.CharField(max_length=64, blank=True, default="")
+    # #4164 follow-up: SET once when a drive begins, CLEARED once when it ends — never
+    # periodically renewed, so a memory-thrashed event loop that cannot heartbeat still
+    # recorded it before the stall began. The cross-process twin of claim_liveness's
+    # in-memory ``driving`` registry: a sweep running in a SEPARATE loops_tick subprocess
+    # cannot see that registry, but can read this column plus verify owner_pid is alive.
+    owner_driving_since = models.DateTimeField(null=True, blank=True)
     # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
     # window (and ``limit_autorecovery_enabled`` is on) the task is returned to the
     # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
@@ -188,11 +208,7 @@ class Task(models.Model):
                 update_fields=[
                     "status",
                     "result_artifact_path",
-                    "claimed_at",
-                    "claimed_by",
-                    "claimed_by_session",
-                    "lease_expires_at",
-                    "heartbeat_at",
+                    *CLAIM_FIELDS,
                 ],
             )
             self._advance_ticket()
@@ -226,11 +242,7 @@ class Task(models.Model):
                 update_fields=[
                     "status",
                     "result_artifact_path",
-                    "claimed_at",
-                    "claimed_by",
-                    "claimed_by_session",
-                    "lease_expires_at",
-                    "heartbeat_at",
+                    *CLAIM_FIELDS,
                 ],
             )
         try:
@@ -431,11 +443,7 @@ class Task(models.Model):
                 "status",
                 "failure_reason",
                 "failure_kind",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -468,11 +476,7 @@ class Task(models.Model):
             update_fields=[
                 "status",
                 "not_before",
-                "claimed_at",
-                "claimed_by",
-                "claimed_by_session",
-                "lease_expires_at",
-                "heartbeat_at",
+                *CLAIM_FIELDS,
             ],
         )
 
@@ -487,6 +491,9 @@ class Task(models.Model):
         task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
         attempt = task_attempt_model.objects.create(
+            # no-usage: the caller reaches here from an exception that ESCAPED the drive, so
+            # no result message exists to read spend off — and core cannot import the agent
+            # layer to parse one. A harness crash's spend stays unrecorded (#4164).
             task=self,
             ended_at=timezone.now(),
             exit_code=exit_code,
@@ -546,8 +553,5 @@ class Task(models.Model):
         check_requeue_allowed(self)
 
     def _clear_claim(self) -> None:
-        self.claimed_at = None
-        self.claimed_by = ""
-        self.claimed_by_session = ""
-        self.lease_expires_at = None
-        self.heartbeat_at = None
+        for field, released in RELEASED_CLAIM.items():
+            setattr(self, field, released)

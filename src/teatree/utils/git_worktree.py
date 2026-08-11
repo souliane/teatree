@@ -8,6 +8,7 @@ and the #706 "absent from all remotes" guard, all via the
 from pathlib import Path
 
 from teatree.utils.git_run import check, run, run_strict
+from teatree.utils.git_upstream import normalize_branch_upstream
 from teatree.utils.git_worktree_query import list_worktrees
 from teatree.utils.run import CommandFailedError, run_checked
 
@@ -161,6 +162,13 @@ def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = Tru
     So a created branch starts at ``origin/<branch>`` whenever the remote holds
     one (git then sets up tracking), and only falls back to HEAD for a branch
     that is genuinely new.
+
+    Whatever tracking git derives from that start point is then normalised
+    (#4225): under ``branch.autoSetupMerge = inherit`` the HEAD fallback copies
+    the DEFAULT branch's upstream onto the new branch, so ``git push`` on it aims
+    at ``main`` under ``push.default = upstream``. Only the created branch is
+    normalised — an existing branch's upstream is the repair command's business,
+    not a side effect of checking it out.
     """
     args = ["worktree", "add"]
     if create_branch:
@@ -174,4 +182,6 @@ def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = Tru
         run_checked(["git", "-C", repo, *args])
     except CommandFailedError:
         return False
+    if create_branch:
+        normalize_branch_upstream(repo, branch)
     return True

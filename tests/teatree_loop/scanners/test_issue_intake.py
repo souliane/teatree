@@ -389,8 +389,61 @@ class IssueIntakeNeedsTriageGateTests(_PublicRepoTestCase):
         assert not ImplementedIssueMarker.objects.exists()
 
 
+class IssueIntakeExcludeLabelGateTests(_PublicRepoTestCase):
+    """The overlay's ``exclude_labels`` HOLDS an issue on GitHub intake too (#4134).
+
+    Before this the field was accepted, echoed back, and read by nobody on this path —
+    the operator's reservation label bought no behaviour change at all.
+    """
+
+    def test_an_excluded_label_holds_a_trusted_author_issue(self) -> None:
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER, labels=["interactive-implementation"])]})
+
+        scanner = self._scanner(host, exclude_labels=("interactive-implementation",))
+
+        assert scanner.scan() == []
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_an_excluded_label_does_not_starve_a_clean_sibling(self) -> None:
+        host = _Host(
+            authored={
+                OWNER: [
+                    _issue(self.URL_A, author=OWNER, labels=["interactive-implementation"]),
+                    _issue(self.URL_B, author=OWNER),
+                ]
+            }
+        )
+
+        signals = self._scanner(host, exclude_labels=("interactive-implementation",)).scan()
+
+        assert {s.payload["url"] for s in signals} == {self.URL_B}
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_an_excluded_label_outranks_the_admit_label_for_a_stranger(self) -> None:
+        host = _Host(labeled={self.LABEL: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL, "on-hold"])]})
+
+        assert self._scanner(host, exclude_labels=("on-hold",)).scan() == []
+        assert not ImplementedIssueMarker.objects.exists()
+
+    def test_dict_shaped_excluded_label_is_honoured(self) -> None:
+        issue = _issue(self.URL_A, author=OWNER)
+        issue["labels"] = [{"name": "on-hold"}]
+        host = _Host(authored={OWNER: [issue]})
+
+        assert self._scanner(host, exclude_labels=("on-hold",)).scan() == []
+        assert not ImplementedIssueMarker.objects.exists()
+
+    def test_no_exclude_policy_claims_the_issue_as_before(self) -> None:
+        """Back-compat: an overlay that set nothing keeps its pre-#4134 intake."""
+        host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER, labels=["on-hold"])]})
+
+        signals = self._scanner(host).scan()
+
+        assert [s.payload["url"] for s in signals] == [self.URL_A]
+
+
 class IssueIntakeAdmitLabelTests(_PublicRepoTestCase):
-    """Rule 4: the owner-applied admit label is the ONLY route in for an untrusted author."""
+    """The admit-label rule: the owner's label is the ONLY route in for an untrusted author."""
 
     def test_labeled_stranger_issue_is_admitted(self) -> None:
         host = _Host(labeled={self.LABEL: [_issue(self.URL_A, author=STRANGER, labels=[self.LABEL])]})
@@ -655,7 +708,7 @@ def _assigned(issue: RawAPIDict, assignee: str) -> RawAPIDict:
 
 
 class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
-    """Rule 2: a ticket already owning the URL blocks a second intake (#4133).
+    """The work-exists rule: a ticket already owning the URL blocks a second intake (#4133).
 
     Ownership is every state but IGNORED. ``_handle_orchestrator`` reuses the
     existing row (``get_or_create(issue_url=...)``) and returns early for anything

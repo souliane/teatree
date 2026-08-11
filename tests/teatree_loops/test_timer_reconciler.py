@@ -6,6 +6,7 @@ deletes a disabled/unknown loop's timers — all without dispatching anything.
 """
 
 import datetime as dt
+import os
 import types
 from unittest import mock
 
@@ -15,11 +16,13 @@ from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult, get_date_max
 
 from teatree.core import mode_resolution
+from teatree.core.claim_liveness import driving
 from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
 from teatree.core.tasks import execute_task
 from teatree.live_presence import PRESENCE_FRESHNESS
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_runs
+from tests.teatree_core.test_claim_liveness import _READER_NS, pinned_reader_namespace
 from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
@@ -459,7 +462,13 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
     def setUp(self) -> None:
         DBTaskResult.objects.all().delete()
 
-    def _claimed_task(self, *, lease_delta_seconds: int, status: str = Task.Status.CLAIMED) -> Task:
+    def _claimed_task(
+        self,
+        *,
+        lease_delta_seconds: int,
+        status: str = Task.Status.CLAIMED,
+        owner_pid: int | None = None,
+    ) -> Task:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket, overlay="test")
         return Task.objects.create(
@@ -468,7 +477,10 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
             phase="architectural_review",
             status=status,
             claimed_by="task-worker",
+            heartbeat_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(seconds=lease_delta_seconds),
+            owner_pid=owner_pid,
+            owner_pid_namespace=_READER_NS if owner_pid is not None else "",
         )
 
     def _running_headless_row(self, task: Task, *, age_seconds: int) -> DBTaskResult:
@@ -549,6 +561,35 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         assert counts == {"failed": 1, "reenqueued": 0}
         row.refresh_from_db()
         assert row.status == TaskResultStatus.FAILED
+
+    def test_a_stalled_but_still_driving_run_is_neither_failed_nor_duplicated(self) -> None:
+        """#4164: ``set_failed`` marks the row only — it does not kill the process.
+
+        So re-enqueuing here puts a SECOND agent on the same worktree while the first is
+        still executing, and the duplicate wins the claim because the CAS reads an expired
+        lease as claimable.
+        """
+        task = self._claimed_task(lease_delta_seconds=-120, owner_pid=os.getpid())
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+
+        with pinned_reader_namespace(), driving(task.pk):
+            counts = reap_stuck_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.RUNNING
+        assert not DBTaskResult.objects.filter(
+            task_path=execute_task.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_a_run_nothing_is_driving_is_still_reaped(self) -> None:
+        """A crashed job leaves this worker alive; the stranded row must still recover."""
+        task = self._claimed_task(lease_delta_seconds=-120, owner_pid=os.getpid())
+        self._running_headless_row(task, age_seconds=self._dead_age())
+
+        counts = reap_stuck_runs()
+
+        assert counts == {"failed": 1, "reenqueued": 1}
 
     def test_headless_run_with_no_args_is_skipped(self) -> None:
         # A malformed row carrying no args resolves to no task id and is left alone.

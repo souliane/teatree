@@ -122,6 +122,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "release-dead-rows",
                 "Delete Worktree rows whose checkout is provably gone — the row alone, nothing else touched.",
             ),
+            (
+                "repair-branch-upstreams",
+                "Point every branch tracking someone else's ref back at its own, or untrack it.",
+            ),
             ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
             ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
         ],
