@@ -225,6 +225,21 @@ class OuterLoopExperiment(models.Model):
         self.state = self.State.RATIFY_PENDING
         self.save(update_fields=["ratify_question", "state"])
 
+    def reask_ratification(self, question: DeferredQuestion) -> None:
+        """``RATIFY_PENDING`` → ``RATIFY_PENDING``: rebind a FRESH unanswered ratify question.
+
+        Rejection is terminal with no recovery transition, so an answer that decides
+        nothing must not resolve toward it: the experiment holds and the human is asked
+        again. Refuses an already-answered question, so this can never stand in for the
+        consumed-question evidence :meth:`admit` demands.
+        """
+        self._require_state(self.State.RATIFY_PENDING)
+        if question.answered_at is not None:
+            msg = "cannot re-ask ratification with an already-answered question"
+            raise OuterLoopExperimentError(msg)
+        self.ratify_question = question
+        self.save(update_fields=["ratify_question"])
+
     def admit(self) -> None:
         """``RATIFY_PENDING`` → ``ADMITTED`` — the ONLY writer of the admitted state.
 

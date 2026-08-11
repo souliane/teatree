@@ -20,7 +20,7 @@ from typing import Any, cast
 from claude_agent_sdk.types import HookContext, StopHookInput
 from django.test import TestCase
 
-from teatree.agents._headless_options import _build_options, resolve_envelope_stop_refusals
+from teatree.agents._runner_options import _build_options, resolve_envelope_stop_refusals
 from teatree.agents.envelope_stop_gate import DEFAULT_ENVELOPE_STOP_REFUSALS, EnvelopeStopGate, envelope_stop_hooks
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 

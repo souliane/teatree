@@ -53,7 +53,7 @@ class TestBuildReviewerDispatchPrompt(TestCase):
     """The shared reviewer dispatch-prompt builder embeds the overlay review skills.
 
     A review sub-agent dispatched via the Agent tool / a dynamic workflow /
-    a headless reviewer structurally loads them through the REQUIRED load
+    a reviewer structurally loads them through the REQUIRED load
     block instead of relying on the orchestrator to remember.
     """
 

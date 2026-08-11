@@ -6,9 +6,11 @@ threshold breach auto-re-tightens the class back to ASK. The metrics are derived
 from the two ledgers a graduated class actually touches:
 
 * the :class:`~teatree.core.models.deferred_question.DeferredQuestion` ledger — the
-    human touchpoints for the ratify/keep classes. A question answered by a human
-    with a non-approval word is a *decline* (distrust of the auto-graduation); a
-    policy auto-answer (``resolved_via='policy'``) is never a decline.
+    human touchpoints for the ratify/keep classes. A question the human answered
+    without approving is a *decline* (distrust of the auto-graduation), read through
+    the one shared :func:`classify_ratification_answer` so an approval the loop admits
+    is never scored as one; a policy auto-answer (``resolved_via='policy'``) is never
+    a decline.
 * the :class:`~teatree.core.models.send_audit.SendAudit` ledger (#117) — the
     outbound posts for the on-behalf / public-issue classes. An ``enforce``-mode
     ``DENIED`` verdict is a *defect escape* (the class authorized a send the
@@ -34,6 +36,7 @@ from django.utils import timezone
 
 from teatree.core.models.approval_policy import DIRECTIVE_ADMIT, ON_BEHALF_POST, OUTER_LOOP_KEEP, PUBLIC_ISSUE_CREATE
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.ratification import RatificationVerdict, classify_ratification_answer
 from teatree.core.models.send_audit import SendAudit
 
 #: Trailing window the metrics are computed over — "interventions/week" etc.
@@ -43,11 +46,10 @@ WINDOW_DAYS = 7
 #: window exceeds this fraction of the answered questions.
 DECLINE_RATE_THRESHOLD = 0.25
 
-#: Answers that count as an approval (so their inverse is a decline). Covers both
-#: the ratify vocabulary ("approve"/"yes"/…) and the keep vocabulary ("kept").
-_APPROVAL_ANSWERS: frozenset[str] = frozenset(
-    {"approve", "approved", "yes", "y", "1", "ratify", "admit", "ok", "kept", "keep"}
-)
+#: The KEEP vocabulary, which the ratify classifier does not speak. The ratify half of
+#: the answer space is read by :func:`classify_ratification_answer` — one reading of one
+#: question, so a prose approval the loop admits is never scored here as a decline.
+_KEEP_ANSWERS: frozenset[str] = frozenset({"kept", "keep"})
 
 #: ``DeferredQuestion.options_hash`` prefix → the approval class it records for.
 #: ``directive_ratify`` is the directive-admit ledger; ``outer_loop_keep`` the keep one.
@@ -127,10 +129,12 @@ def _question_metrics(action_class: str, cutoff: datetime) -> tuple[int, int, in
 
 
 def _is_decline(row: DeferredQuestion) -> bool:
-    """A human answer that is not an approval word — a policy auto-answer is never a decline."""
+    """A human answer that did not approve — a policy auto-answer is never a decline."""
     if row.resolved_via == DeferredQuestion.ResolvedVia.POLICY:
         return False
-    return row.answer_text.strip().lower() not in _APPROVAL_ANSWERS
+    if row.answer_text.strip().lower() in _KEEP_ANSWERS:
+        return False
+    return classify_ratification_answer(row.answer_text) is not RatificationVerdict.APPROVAL
 
 
 def _send_metrics(action_class: str, cutoff: datetime) -> tuple[int, int]:

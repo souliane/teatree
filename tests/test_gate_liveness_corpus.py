@@ -46,11 +46,13 @@ from typing import Any, Final
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.verbatim_paste_gate as _verbatim_paste_gate
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
+from teatree.hooks import verbatim_paste as _verbatim_paste
 from tests._git_repo import _GIT, git_identity_env, make_git_repo
 
 # ── environment & invocation context ────────────────────────────────────
@@ -407,7 +409,6 @@ def _main_clone_bash_allow(ctx: GateContext) -> dict:
 
 def _arrange_headless_interactive(ctx: GateContext) -> Path:
     ctx.write_state("teatree-active", "")
-    ctx.seed_setting("agent_runtime", "headless")
     ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
     ctx.monkeypatch.setenv("CLAUDECODE", "1")
     ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
@@ -684,6 +685,33 @@ def _arrange_banned_terms(ctx: GateContext) -> None:
     ctx.seed_setting("banned_terms", ["acme"])
     ctx.monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
     _pin_public_probe(ctx)
+
+
+# block-verbatim-operator-paste (PreToolUse Bash): a public issue body that
+# blockquotes a recorded operator message denies; a paraphrase allows. The
+# operator message carries no banned term, so the denial is this gate's alone.
+
+_OPERATOR_SAID = (
+    "Stop pasting my chat messages into public issues verbatim. I want you to "
+    "write the summary in your own words every single time, without exception."
+)
+
+
+def _arrange_verbatim_paste(ctx: GateContext) -> None:
+    _pin_public_probe(ctx)
+    ctx.monkeypatch.delenv(_verbatim_paste.OVERRIDE_ENV, raising=False)
+    _verbatim_paste_gate.handle_record_operator_message({"session_id": ctx.session_id, "prompt": _OPERATOR_SAID})
+
+
+def _verbatim_paste_deny(ctx: GateContext) -> dict:
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "> {_OPERATOR_SAID}"')
+
+
+def _verbatim_paste_allow(ctx: GateContext) -> dict:
+    return _bash(
+        "gh issue create --repo souliane/teatree --title t "
+        '--body "The operator asked for their chat text to be summarised, never reproduced."'
+    )
 
 
 def _banned_bash_deny(ctx: GateContext) -> dict:
@@ -1151,6 +1179,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_banned_bash_deny,
         allow_input=_banned_bash_allow,
         arrange=_arrange_banned_terms,
+    ),
+    GateRow(
+        gate_id="block-verbatim-operator-paste",
+        handler=router.handle_block_verbatim_operator_paste,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_verbatim_paste_deny,
+        allow_input=_verbatim_paste_allow,
+        arrange=_arrange_verbatim_paste,
     ),
     GateRow(
         gate_id="block-glab-stale-base-remote",

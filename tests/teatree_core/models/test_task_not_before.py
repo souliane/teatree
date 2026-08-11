@@ -20,13 +20,11 @@ def _pending_task(not_before: datetime | None = None) -> Task:
         ticket=ticket,
         session=session,
         phase="coding",
-        execution_target=Task.ExecutionTarget.HEADLESS,
         not_before=not_before,
     )
     # A "coding" phase auto-routes to INTERACTIVE on save (the loop-dispatch chokepoint);
     # force HEADLESS with a direct UPDATE so the not_before gate is exercised on the
     # headless claim path this test targets.
-    Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS)
     task.refresh_from_db()
     return task
 
@@ -51,15 +49,15 @@ class TestClaimHonoursNotBefore(django.test.TestCase):
         assert claimed is not None
         assert claimed.pk == task.pk
 
-    def test_claimable_for_headless_skips_future_not_before(self) -> None:
+    def test_claimable_skips_future_not_before(self) -> None:
         now = timezone.now()
         _pending_task(not_before=now + timedelta(hours=5))
-        assert not Task.objects.claimable_for_headless().exists()
+        assert not Task.objects.claimable().exists()
 
-    def test_claimable_for_headless_includes_elapsed_not_before(self) -> None:
+    def test_claimable_includes_elapsed_not_before(self) -> None:
         now = timezone.now()
         _pending_task(not_before=now - timedelta(minutes=1))
-        assert Task.objects.claimable_for_headless().exists()
+        assert Task.objects.claimable().exists()
 
 
 class TestPark(django.test.TestCase):

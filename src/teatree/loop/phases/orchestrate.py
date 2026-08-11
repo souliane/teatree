@@ -249,9 +249,7 @@ def _dispatchable_filter() -> Q:
 
     Role/phase pairs with a registered sub-agent AND not under a live #2104
     external-delivery lease (#2217). The planner counts in-flight and admits
-    through this WITHOUT any ``execution_target`` narrowing, so a headless
-    in-flight claim consumes the boost budget exactly as an interactive one does
-    (``loop_dispatch`` gates its live claim on the same count).
+    through this, and ``loop_dispatch`` gates its live claim on the same count.
     """
     from teatree.core.models.task import Task  # noqa: PLC0415 — deferred, matches this module's other Task imports
 

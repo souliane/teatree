@@ -13,10 +13,8 @@ so ``persist_agent_actions`` returned ``[]`` and created no rows — every
 ``created`` / ``Task.objects.filter(...)`` assertion here was RED before the fix.
 """
 
-from collections.abc import Iterator
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
 
 from teatree.core.models import Task, Ticket
@@ -25,7 +23,6 @@ from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
-from tests._agent_runtime_env import interactive_runtime
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -35,13 +32,6 @@ def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
 
 class TestDebugZoneRevived(TestCase):
     """``my_pr.failed`` → author ``debugging`` task + persist-time RedMrFixAttempt."""
-
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
 
     def _signal(self, *, pr_url: str = "https://example.com/o/r/pull/5", head_sha: str = "sha-red-1") -> ScanSignal:
         return ScanSignal(
@@ -56,7 +46,6 @@ class TestDebugZoneRevived(TestCase):
         task = created[0]
         assert task.phase == "debugging"
         assert task.ticket.role == Ticket.Role.AUTHOR
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
 
     def test_claims_red_mr_fix_marker_at_persist_time(self) -> None:
         persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/9", head_sha="sha-9")))

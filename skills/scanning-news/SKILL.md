@@ -150,7 +150,7 @@ candidates are recorded" above) with a one-line `summary` and every candidate in
 `article_suggestions`. Fold the step-6b drop count into the `summary`.
 
 Write each `rationale` so it renders well in the digest: name real file paths and
-symbols (`src/teatree/loop/tick.py`, `teatree.core.tasks.execute_headless_task`) rather than paraphrasing
+symbols (`src/teatree/loop/tick.py`, `teatree.core.tasks.execute_task`) rather than paraphrasing
 them. `teatree.core.news_digest` renders every citation as a clickable Slack link and
 puts paths/symbols in monospace, per the owner's standing Slack-formatting directive.
 

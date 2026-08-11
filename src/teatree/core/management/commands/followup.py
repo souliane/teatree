@@ -182,12 +182,7 @@ class Command(RefusalExitTyperCommand):
     @command()
     def remind(self) -> list[int]:
         return list(
-            Task.objects.filter(
-                execution_target=Task.ExecutionTarget.INTERACTIVE,
-                status=Task.Status.PENDING,
-            )
-            .order_by("pk")
-            .values_list("id", flat=True),
+            Task.objects.filter(status=Task.Status.PENDING).order_by("pk").values_list("id", flat=True),
         )
 
 

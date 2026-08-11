@@ -73,7 +73,6 @@ def serialize_task(task: "Task") -> dict[str, Any]:
         "overlay": task.ticket.overlay,
         "phase": task.phase,
         "status": task.status,
-        "execution_target": task.execution_target,
         "subject": task.display_subject(),
         "claimed_by": task.claimed_by,
         "created_at": _iso(task.created_at),

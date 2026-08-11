@@ -28,9 +28,7 @@ class DrawerHistoryIsCappedTestCase(TestCase):
             for _ in range(TRANSITION_ROWS + cls.EXTRA)
         )
         cls.tasks = [TaskFactory(ticket=cls.ticket, phase="coding") for _ in range(TASK_ROWS + cls.EXTRA)]
-        TaskAttempt.objects.bulk_create(
-            TaskAttempt(task=cls.tasks[-1], execution_target="headless") for _ in range(ATTEMPT_ROWS + cls.EXTRA)
-        )
+        TaskAttempt.objects.bulk_create(TaskAttempt(task=cls.tasks[-1]) for _ in range(ATTEMPT_ROWS + cls.EXTRA))
 
     def test_transition_history_keeps_the_cap_and_reports_the_total(self) -> None:
         detail = build_ticket_detail(self.ticket.pk)

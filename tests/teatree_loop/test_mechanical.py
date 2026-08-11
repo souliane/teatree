@@ -167,7 +167,6 @@ class TestReviewerTaskOrphaned(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
         return ticket, task
@@ -208,7 +207,6 @@ class TestReviewerTaskSelfAuthoredAuthorTrust(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
         return ticket, task

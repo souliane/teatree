@@ -49,6 +49,7 @@ OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
 STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
 GLAB_STALE_BASE_REMOTE_GATE_KEY = "glab_stale_base_remote_gate_enabled"
 GIT_ADD_ALL_GATE_KEY = "git_add_all_gate_enabled"
+VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -317,6 +318,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="add-all",
         key=GIT_ADD_ALL_GATE_KEY,
         label="Whole-tree `git add -A` / `git add .` gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="verbatim-paste",
+        key=VERBATIM_PASTE_GATE_KEY,
+        label="Verbatim operator-paste publish gate",
     )
 
     overlay_app.add_typer(gate_group, name="gate")

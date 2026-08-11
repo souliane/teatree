@@ -18,8 +18,11 @@ from teatree.quality.catalog import AntiPatternEntry, CatalogError, catalog_path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HOOKS_DIR = _REPO_ROOT / "scripts" / "hooks"
 
-# External tools (not scripts/hooks/*.py) that legitimately mechanize an entry.
-_EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness"})
+# Mechanizers that are not a scripts/hooks/*.py — a third-party tool, or a test
+# lane that owns the check. Each names its own binding test, so the entry here
+# cannot outlive the mechanizer: gate-liveness → the gate-liveness corpus,
+# select-for-update-audit → tests/conformance/test_select_for_update_is_backed_by_immediate.py.
+_EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness", "select-for-update-audit"})
 
 _KNOWN_INVARIANT_IDS = frozenset(inv.id for inv in INVARIANT_REGISTRY)
 
@@ -73,7 +76,7 @@ class TestSchemaInvariants:
         grep_hint = by_id["signal-for-core-flow"].grep_hint
         assert grep_hint is not None
         pattern = re.compile(grep_hint)
-        assert pattern.search("post_save.connect(_auto_enqueue_headless_task, sender=Task)")
+        assert pattern.search("post_save.connect(_auto_enqueue_task, sender=Task)")
         assert pattern.search("pre_save.connect(_stamp_something, sender=Ticket)")
         assert pattern.search("@receiver(post_save, sender=Task)")
         assert not pattern.search("post_delete.connect(_cleanup_orphans, sender=Task)")

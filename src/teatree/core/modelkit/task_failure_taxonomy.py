@@ -6,7 +6,7 @@ kanban card saw a cause-less error and could not tell a genuine review defect fr
 lost lease, a bad harness pin, or an exhausted credential — they render identically.
 
 This module is the vocabulary that fixes that, and it deliberately extends the
-existing one rather than inventing a second: :mod:`teatree.agents.headless_failure_taxonomy`
+existing one rather than inventing a second: :mod:`teatree.agents.runner_failure_taxonomy`
 already names a terminal run's outcome instead of emitting a generic string, because a
 GENERIC reason was actively harmful — a capped run matched the transient marker set and
 was auto-requeued straight back into the same ceiling. The same argument applies to a

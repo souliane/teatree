@@ -11,7 +11,7 @@ at call-time, which both breaks the import cycle and keeps a single
 ``patch("teatree.config.<name>")`` honoured by every internal caller.
 """
 
-from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, ColdHookSetting
 from teatree.config.discovery import (
     _active_overlay_entry,
@@ -99,7 +99,6 @@ __all__ = [
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
     "AgentHarness",
     "AgentHarnessProvider",
-    "AgentRuntime",
     "Autonomy",
     "ColdHookSetting",
     "CriticGateMode",

@@ -13,7 +13,7 @@ corrective retry never fired for: the first prose-only run parked the task and
 paged a human. These tests pin the routing (retry once, then escalate) and the
 phase-accuracy of the instruction; the producer/consumer parity that let the two
 strings drift apart is pinned on the runner side, in
-``tests/teatree_agents/test_headless_no_envelope_guard.py``.
+``tests/teatree_agents/test_runner_no_envelope_guard.py``.
 """
 
 from django.test import TestCase
@@ -34,7 +34,6 @@ def _failed_task(*, phase: str, state: str = Ticket.State.STARTED) -> Task:
 def _add_failed_attempt(task: Task, *, error: str) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,  # an envelope refusal is a clean REFUSAL, not a crash
         error=error,

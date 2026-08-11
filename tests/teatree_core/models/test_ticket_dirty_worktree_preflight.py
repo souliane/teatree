@@ -120,7 +120,6 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
             ticket=ticket,
             session=ticket.sessions.create(agent_id="coding"),
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="coding",
         )
         coding_task.claim(claimed_by="worker", lease_seconds=300)

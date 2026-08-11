@@ -39,7 +39,6 @@ def _parked_task(not_before: datetime) -> Task:
     session = Session.objects.create(ticket=ticket)
     task = Task.objects.create(ticket=ticket, session=session, phase="coding")
     Task.objects.filter(pk=task.pk).update(
-        execution_target=Task.ExecutionTarget.HEADLESS,
         status=Task.Status.PENDING,
         not_before=not_before,
     )

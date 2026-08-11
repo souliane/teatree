@@ -9,13 +9,13 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents.headless import HarnessOutcome, _outcome_failure
 from teatree.agents.pydantic_ai_resume import (
     maybe_persist_on_limit_park,
     maybe_persist_on_park,
     persist_parked_thread,
     rehydrate_thread_for_resume,
 )
+from teatree.agents.runner import HarnessOutcome, _outcome_failure
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 
 

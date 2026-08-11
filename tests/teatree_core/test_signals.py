@@ -71,7 +71,6 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
             task = Task.objects.create(
                 ticket=ticket,
                 session=session,
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 phase="architectural_review",
             )
 
@@ -86,7 +85,6 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             phase="coding",
         )
 
@@ -101,7 +99,6 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.COMPLETED,
         )
 
@@ -124,11 +121,10 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         # ``architectural_review`` is NOT loop-dispatched, so the auto-enqueue
         # actually fires and hits the broken backend (a loop-dispatched phase
         # would skip the enqueue entirely and never exercise this path).
-        with patch.object(tasks_mod, "execute_headless_task", BrokenEnqueue):
+        with patch.object(tasks_mod, "execute_task", BrokenEnqueue):
             task = Task.objects.create(
                 ticket=ticket,
                 session=session,
-                execution_target=Task.ExecutionTarget.HEADLESS,
                 phase="architectural_review",
             )
 
@@ -136,8 +132,8 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         assert task.status == Task.Status.PENDING
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_route_to_headless_triggers_enqueue(self) -> None:
-        """Re-routing an interactive task to headless triggers auto-enqueue."""
+    def test_reopen_triggers_enqueue(self) -> None:
+        """Re-opening a failed task re-arms the auto-enqueue."""
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
 
@@ -146,16 +142,16 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             phase="architectural_review",
         )
         assert task.status == Task.Status.PENDING
+        task.fail(reason="test: deliberate failure")
 
         with (
             fake_sdk(success_stream({"summary": "OK"})),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
-            task.route_to_headless(reason="Auto-rerouted for testing")
+            task.reopen()
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
@@ -705,7 +701,6 @@ class TestSessionClosedOnTerminalTask(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         return session, task
 
@@ -731,7 +726,6 @@ class TestSessionClosedOnTerminalTask(TestCase):
             ticket=session.ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
         task.fail(reason="test: deliberate failure")

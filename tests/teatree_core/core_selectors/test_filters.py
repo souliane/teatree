@@ -49,9 +49,9 @@ class TestOverlayScopeQ(TestCase):
 
     def test_prefix_scopes_a_related_model(self) -> None:
         acme = self._task("acme")
-        acme_attempt = TaskAttempt.objects.create(task=acme, execution_target="headless")
+        acme_attempt = TaskAttempt.objects.create(task=acme)
         other = self._task("other")
-        TaskAttempt.objects.create(task=other, execution_target="headless")
+        TaskAttempt.objects.create(task=other)
 
         matched = set(TaskAttempt.objects.filter(overlay_scope_q("acme", prefix="task__")).values_list("pk", flat=True))
 

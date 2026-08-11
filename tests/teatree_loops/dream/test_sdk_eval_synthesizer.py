@@ -197,7 +197,7 @@ class SdkSynthesizerCredentialEnvTestCase(TestCase):
 
         with (
             patch(
-                "teatree.agents._headless_env.resolve_subscription_credential",
+                "teatree.agents._runner_env.resolve_subscription_credential",
                 side_effect=CredentialError("no subscription token resolvable"),
             ),
             patch("shutil.which", return_value="/usr/bin/claude"),

@@ -44,7 +44,6 @@ def record_task(ticket: Ticket, *, phase: str, queued: float, admitted: float | 
         ticket=ticket,
         session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
         phase=phase,
-        execution_target=Task.ExecutionTarget.INTERACTIVE,
     )
     Task.objects.filter(pk=task.pk).update(
         created_at=at(queued),
@@ -62,7 +61,6 @@ def record_attempt(task: Task, *, ended: float, row_written: float | None = None
     """
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         exit_code=0,
         ended_at=at(ended),
         **fields,

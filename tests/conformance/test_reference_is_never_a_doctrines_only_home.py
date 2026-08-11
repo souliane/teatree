@@ -26,18 +26,28 @@ Scoped two ways, because a reference page is SUPPOSED to be full of commands:
 The house style writes commands as ``t3 <overlay> <group> <sub>``, so a
 whole-word ``<...>``/ellipsis placeholder is SKIPPED rather than collected — the
 alternative dropped 27% of the corpus (24 of 89 spans), including the §17.4
-keystone itself. Skipping placeholders means the reference's token
-(``t3 ticket clear``) no longer spells the spine's text (``t3 <overlay> ticket
-clear``), so spine matching is SYMMETRIC: the spine is parsed with the same
-parser, over its inline backticks AND its fenced blocks, and a token counts as
-present on any of four one-directional clauses. Every clause can only mark a
-token PRESENT, never absent, so the widening strictly reduces false positives.
+keystone itself. The overlay slot is skipped whether it is spelled as the
+placeholder or as a literal name, so one command carries ONE token either way;
+without that, ``t3 teatree gate disable`` read as ``t3 teatree gate`` — a token
+no spine can spell, cleared only by an accident of prose. Skipping the slot
+means the reference's token (``t3 ticket clear``) no longer spells the spine's
+text (``t3 <overlay> ticket clear``), so spine matching is SYMMETRIC: the spine
+is parsed with the same parser, over its inline backticks AND its fenced blocks,
+and a token counts as present on any of four one-directional clauses. Every
+clause can only mark a token PRESENT, never absent, so the widening strictly
+reduces false positives.
 
-``_ORPHANED_ON_MAIN`` is the set that PREDATES this guard, re-derived
+All four clauses read the spine's COMMAND SPANS, never its prose. A clause that
+searched the whole body cleared ``t3 teatree gate`` against the ordinary
+sentence "When a teatree gate running in the main clone…" — the one shape this
+guard exists to catch, inside the guard itself: "I could not determine whether
+this command is documented" rendering as "it is".
+
+``_ORPHANED_BEFORE_THIS_GUARD`` is the set that PREDATES this guard, re-derived
 mechanically by running this module's own sweep over the skills tree as it stood
-BEFORE the vendor-sync branch landed. The five orphans that branch introduced are
-deliberately NOT in it — they are returned to the spines by this change, which is
-why ``origin/main`` reports 29 orphans today and this branch reports 24. It is a
+BEFORE the vendor-sync branch landed — 24 rows at ``ef9f70437^``. The five
+orphans that branch introduced are deliberately NOT in it: it returned them to
+the spines rather than recording them here. It is a
 shrink-only ratchet, not a suppression: a NEW orphan fails
 immediately, ``test_the_baseline_has_not_gone_stale`` fails once an entry is
 fixed without being removed, and ``test_the_baseline_can_only_drain`` fails when
@@ -46,6 +56,7 @@ a row is ADDED. The list can only drain.
 
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -82,11 +93,16 @@ _TOO_GENERIC = frozenset(
     }
 )
 
+#: Overlay names spelled literally in the ``t3 <overlay>`` slot. The slot is
+#: positional, so an unlisted name shifts the token window right — which now surfaces
+#: as a loud orphan rather than a token quietly cleared by prose.
+_OVERLAY_LITERALS = frozenset({"teatree"})
+
 #: Orphaned BEFORE the vendor-sync branch — pre-existing, and out of scope for the
 #: change that added this check. The five that branch introduced are absent by
 #: design: they are fixed in the spines, not recorded here. SHRINK ONLY: never add
 #: a row here to make a new failure go away; return the command to the spine instead.
-_ORPHANED_ON_MAIN: frozenset[tuple[str, str]] = frozenset(
+_ORPHANED_BEFORE_THIS_GUARD: frozenset[tuple[str, str]] = frozenset(
     {
         ("skills/platforms/references/gitlab.md", "glab auth token"),
         ("skills/platforms/references/gitlab.md", "glab ci status --branch"),
@@ -122,8 +138,8 @@ _CEILING = 24
 #: Anti-vacuity floor on the corpus the parser recognises, not on the baseline.
 #: Fixing an orphan moves the command INTO the spine and leaves the reference's
 #: mandate in place, so this count does not shrink as the ratchet drains. Measured
-#: 56 here and 57 on ``origin/main`` — the difference is the one incidental mention
-#: this change de-backticks. A broken glob or a dead mandate regex produces 0.
+#: 55: normalizing the overlay slot collapses the two spellings of one command onto
+#: one token. A broken glob or a dead mandate regex produces 0.
 _MANDATED_SPAN_FLOOR = 40
 
 
@@ -133,6 +149,8 @@ def _parse_command(span: str) -> CommandSignature | None:
         return None
 
     rest = words[1:]
+    if words[0] == "t3" and rest[0] in _OVERLAY_LITERALS:
+        rest = rest[1:]
     command_words: list[str] = []
     cursor = 0
     while cursor < len(rest) and len(command_words) < 2:
@@ -177,21 +195,37 @@ def _spine_spans(body: str) -> Iterator[str]:
             yield from _BACKTICKED_RE.findall(line)
 
 
-def _spine_index(body: str) -> set[CommandSignature]:
-    return {signature for span in _spine_spans(body) if (signature := _parse_command(span)) is not None}
+@dataclass(frozen=True, slots=True)
+class _Spine:
+    """A sibling SKILL.md as the guard reads it: its command spans and nothing else."""
+
+    spans: tuple[str, ...]
+    index: frozenset[CommandSignature]
+
+    @classmethod
+    def parse(cls, body: str) -> "_Spine":
+        spans = tuple(_spine_spans(body))
+        return cls(spans, frozenset(signature for span in spans if (signature := _parse_command(span)) is not None))
+
+    def spells(self, text: str) -> bool:
+        return any(text in span for span in self.spans)
+
+    def spells_words(self, words: str) -> bool:
+        pattern = re.compile(rf"(?<![\w-]){re.escape(words)}(?![\w-])")
+        return any(pattern.search(span) for span in self.spans)
 
 
-def _satisfied_by_spine(signature: CommandSignature, index: set[CommandSignature], body: str) -> bool:
+def _satisfied_by_spine(signature: CommandSignature, spine: _Spine) -> bool:
     runner, command_words, _ = signature
-    if signature in index:
+    if signature in spine.index:
         return True
     base = " ".join((runner, *command_words))
-    if base not in _TOO_GENERIC and any(runner == other and command_words == words for other, words, _ in index):
+    if base not in _TOO_GENERIC and any(runner == other and command_words == words for other, words, _ in spine.index):
         return True
     joined = " ".join(command_words)
-    if len(command_words) >= 2 and re.search(rf"(?<![\w-]){re.escape(joined)}(?![\w-])", body):
+    if len(command_words) >= 2 and spine.spells_words(joined):
         return True
-    return _render(signature) in body
+    return spine.spells(_render(signature))
 
 
 def _mandated_signatures(page: Path) -> set[CommandSignature]:
@@ -213,16 +247,15 @@ def _orphans(skills_root: Path = _SKILLS) -> set[tuple[str, str]]:
     """Every ``(reference page, mandated command)`` whose sibling spine omits it."""
     found: set[tuple[str, str]] = set()
     for page in _pages(skills_root):
-        spine = page.parents[1] / "SKILL.md"
-        if not spine.is_file():
+        spine_page = page.parents[1] / "SKILL.md"
+        if not spine_page.is_file():
             continue
-        body = spine.read_text(encoding="utf-8")
-        index = _spine_index(body)
+        spine = _Spine.parse(spine_page.read_text(encoding="utf-8"))
         rel = page.relative_to(skills_root.parent).as_posix()
         found.update(
             (rel, _render(signature))
             for signature in _mandated_signatures(page)
-            if not _satisfied_by_spine(signature, index, body)
+            if not _satisfied_by_spine(signature, spine)
         )
     return found
 
@@ -262,26 +295,45 @@ def test_the_sweep_clears_a_planted_command_named_in_the_spine(tmp_path: Path) -
     assert not _orphans(skills_root)
 
 
+def test_a_spine_sentence_that_merely_uses_the_words_does_not_clear_the_command(tmp_path: Path) -> None:
+    # "I could not determine whether this command is documented" must never render as
+    # "it is": the clauses read the spine's command spans, never its English.
+    _plant(
+        skills_root := tmp_path / "skills",
+        "# Planted\n\nWhen a planted-group planted-sub runs in the main clone, stop and read this.\n",
+    )
+    assert ("skills/planted/references/page.md", "t3 planted-group planted-sub --force") in _orphans(skills_root)
+
+
+def test_the_overlay_slot_reads_the_same_however_it_is_spelled() -> None:
+    # A literal overlay name in the slot the house style writes as ``<overlay>`` used to
+    # shift the whole window right, so one command carried two tokens and the phantom
+    # one was graded against prose.
+    assert _parse_command("t3 teatree gate disable") == ("t3", ("gate", "disable"), None)
+    assert _parse_command("t3 teatree gate disable") == _parse_command("t3 <overlay> gate disable")
+
+
 def test_no_new_command_is_mandated_only_in_a_reference() -> None:
-    new = sorted(_orphans() - _ORPHANED_ON_MAIN)
+    new = sorted(_orphans() - _ORPHANED_BEFORE_THIS_GUARD)
     assert not new, (
         "these commands are MANDATED in a reference but appear nowhere in the sibling SKILL.md, so "
         "skill injection reaches no sub-agent with them:\n"
         + "\n".join(f"  {token!r} in {page}" for page, token in new)
-        + "\nName the command in the spine; the reference keeps the recipe. Do NOT add it to _ORPHANED_ON_MAIN."
+        + "\nName the command in the spine; the reference keeps the recipe."
+        + " Do NOT add it to _ORPHANED_BEFORE_THIS_GUARD."
     )
 
 
 def test_the_baseline_has_not_gone_stale() -> None:
-    fixed = sorted(_ORPHANED_ON_MAIN - _orphans())
+    fixed = sorted(_ORPHANED_BEFORE_THIS_GUARD - _orphans())
     assert not fixed, (
-        "these baseline rows are no longer orphaned — delete them from _ORPHANED_ON_MAIN so the ratchet "
+        "these baseline rows are no longer orphaned — delete them from _ORPHANED_BEFORE_THIS_GUARD so the ratchet "
         "keeps its teeth:\n" + "\n".join(f"  {token!r} in {page}" for page, token in fixed)
     )
 
 
 def test_the_baseline_can_only_drain() -> None:
-    assert len(_ORPHANED_ON_MAIN) <= _CEILING, (
+    assert len(_ORPHANED_BEFORE_THIS_GUARD) <= _CEILING, (
         "a row was ADDED to the orphan baseline. Return the command to the spine instead; "
         "if the addition is genuinely pre-existing on origin/main, say so in review and "
         "lower nothing."

@@ -55,13 +55,11 @@ def ticket_taking(
         ticket=ticket,
         session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
         phase="coding",
-        execution_target=Task.ExecutionTarget.INTERACTIVE,
     )
     if admitted:
         Task.objects.filter(pk=task.pk).update(admitted_at=entered + timedelta(minutes=minutes / 4))
     TaskAttempt.objects.create(
         task=task,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         exit_code=0,
         ended_at=left,
         cost_usd=phase_cost,

@@ -43,6 +43,9 @@
 # That inheritance is why a mode masking DELIVERY off (`ship` / `tickets`) must also name
 # the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
 # delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
+# The mirror rule is the LOAD-BEARING tier (`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`):
+# no mask may quiet it (the low-power mode excepted), and none may keep `db_backup` writing
+# once every reclaim loop is quiet — that shape can only ever consume disk.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
 # the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
@@ -62,16 +65,13 @@ autoload = false # bool — load the suggested skills automatically at session s
 check_updates = true # bool — check for a newer teatree on startup
 contribute = false # bool — allow a retro to edit teatree's own skills
 excluded_skills = [] # list — skills never offered to an agent, whatever the loader suggests
-privacy = "" # str, one of: "" | strict | relaxed — how strictly commits and posts are scanned for private data
-timezone = "" # str — timezone every schedule and daily cadence is read in
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
-agent_runtime = "headless" # str, one of: interactive | headless — whether dispatched work runs headless or in an interactive terminal
+agent_max_turns = 250 # int — turn ceiling for one agent run
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
 enforce_regulated_path = false # bool — route work touching a regulated path through the allowlisted models only
 envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the required result envelope
-headless_max_turns = 250 # int — turn ceiling for one headless run
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
 pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request
@@ -132,7 +132,6 @@ factory_score_enabled = false # bool — compute and record the factory health s
 fleet_claim_enabled = false # bool — let this box claim work from the shared fleet queue
 gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
 hook_fetch_titles = true # bool — let hooks fetch issue titles, at the cost of a network call per prompt
-issue_implementer_cadence_hours = 1 # int — hours between issue-implementer runs
 issue_implementer_enabled = true # bool — let the loop claim and implement labelled issues
 issue_implementer_label = "" # str — label an issue must carry for the implementer to claim it
 issue_implementer_max_concurrent = 3 # int — fallback in-flight ceiling when the resource loop has no adaptive reading
@@ -271,6 +270,7 @@ standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done w
 stop_snapshotter_enabled = true # bool — snapshot session findings before a stop, so context survives
 unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalation that cites no artefact the agent read
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
+verbatim_paste_gate_enabled = true # bool — refuse a publish whose body reproduces the operator's own words verbatim
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
 adaptive_intake_concurrency_enabled = true # bool — let the resource loop set intake concurrency from observed headroom
@@ -643,13 +643,14 @@ memory_skim = false
 defers_questions = false
 pauses_self_pump = false
 presence_sensitive = true
-description = "Every Loop-table loop off (the reversible 'calendar says nothing runs' mode)."
+description = "Every WORK loop off (the reversible 'calendar says nothing runs' mode); the load-bearing tier stays up so the box can still relieve itself."
 
 [modes.off.entries]
-inbox = false
-idle_stack_reaper = false
-local_stack_queue = false
-resource_pressure = false
+inbox = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+housekeeping = true
 snapshot_warmer = false
 dispatch = false
 tickets = false
@@ -661,7 +662,6 @@ followup = false
 issue_implementer = false
 triage_assessor = false
 dm_sweep = false
-housekeeping = false
 arch_review = false
 dogfood = false
 eval_local = false
@@ -678,13 +678,14 @@ memory_skim = false
 defers_questions = true
 pauses_self_pump = true
 presence_sensitive = false
-description = "Holiday: every loop off, questions defer AND the self-pump pauses (was 'off' preset + 'away')."
+description = "Holiday: every WORK loop off, questions defer AND the self-pump pauses; the load-bearing tier stays up."
 
 [modes.offline.entries]
-inbox = false
-idle_stack_reaper = false
-local_stack_queue = false
-resource_pressure = false
+inbox = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+housekeeping = true
 snapshot_warmer = false
 dispatch = false
 tickets = false
@@ -696,7 +697,6 @@ followup = false
 issue_implementer = false
 triage_assessor = false
 dm_sweep = false
-housekeeping = false
 arch_review = false
 dogfood = false
 eval_local = false

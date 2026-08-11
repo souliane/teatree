@@ -21,6 +21,13 @@ setting on a fresh install — they exist to be selected by hand (``t3 loop pres
 "unreferenced" is their shipped state, not a fault. Reporting it would make the report noisy
 on every new box, which is how a health surface becomes one people learn to ignore.
 
+A mask can also kill the BOX (#4188). The live ``off`` row masked every survival loop off
+— including the two that recovered this box from both of one day's out-of-memory
+emergencies — while ``db_backup`` stayed forced ON, so the one mode an operator reaches for
+mid-incident could only ever consume disk. Both shapes are faults wherever they are found:
+a mask that quiets the load-bearing tier (the low-power mode excepted) and a mask that
+admits the backup once every reclaim loop is quiet.
+
 Presence alone was not enough (#4096). A live ``standard`` calendar carrying an extra
 ``Mon-Fri 19:00 -> maintenance`` slot, against a ``maintenance`` mask that stopped delivery
 while leaving intake admitted, stalled the merge lane 13h a night — with every row present,
@@ -38,7 +45,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from teatree.loops.mode_shape import INTAKE_LOOPS, intake_without_delivery
+from teatree.loops.mode_shape import (
+    BACKUP_LOOP,
+    DISK_RECLAIM_LOOPS,
+    INTAKE_LOOPS,
+    backup_without_reclaim,
+    intake_without_delivery,
+    quieted_load_bearing,
+)
 from teatree.loops.preset_seed import PresetSpec, ScheduleSpec, default_preset_specs, default_schedule_specs
 from teatree.loops.seed import LoopSeedSpec, load_loop_specs
 from teatree.loops.seed_drift import SlotShape, mode_entry_drift, schedule_slot_drift
@@ -58,8 +72,11 @@ KIND_INACTIVE = "inactive"
 KIND_ENTRIES_OVERRIDDEN = "entries_overridden"
 KIND_SLOTS_OVERRIDDEN = "slots_overridden"
 KIND_INTAKE_WITHOUT_DELIVERY = "intake_without_delivery"
+KIND_BACKUP_WITHOUT_RECLAIM = "backup_without_reclaim"
+KIND_QUIETED_LOAD_BEARING = "quieted_load_bearing"
 
 __all__ = [
+    "KIND_BACKUP_WITHOUT_RECLAIM",
     "KIND_DANGLING_SLOT",
     "KIND_DISABLED",
     "KIND_DISABLED_VS_SHIPPED",
@@ -69,6 +86,7 @@ __all__ = [
     "KIND_INACTIVE",
     "KIND_INTAKE_WITHOUT_DELIVERY",
     "KIND_MISSING",
+    "KIND_QUIETED_LOAD_BEARING",
     "KIND_SLOTS_OVERRIDDEN",
     "KIND_STALE",
     "KIND_SUPPRESSED",
@@ -219,24 +237,29 @@ def _preset_findings(path: Path | None) -> list[InertFinding]:
     name that happens to ship.
     """
     from teatree.core.models import Loop, Mode  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.models.loop_preset import (  # noqa: PLC0415 — deferred: ORM-backed setting read
+        low_power_preset_name,
+    )
 
     specs = {spec.name: spec for spec in default_preset_specs(path)}
     rows = {row.name: row for row in Mode.objects.all()}
-    # An absent mask entry INHERITS, so the asymmetry is only real where the base flag is on.
-    base_enabled = dict(Loop.objects.filter(name__in=INTAKE_LOOPS).values_list("name", "enabled"))
+    # An absent mask entry INHERITS, so both asymmetries turn on the base flags.
+    judged = (*INTAKE_LOOPS, *DISK_RECLAIM_LOOPS, BACKUP_LOOP)
+    base_enabled = dict(Loop.objects.filter(name__in=judged).values_list("name", "enabled"))
+    low_power = low_power_preset_name()
     findings = [_missing("preset", spec.name, spec.description) for spec in specs.values() if spec.name not in rows]
     findings.extend(
         finding
         for name, row in rows.items()
-        if (finding := _live_preset_finding(name, row, specs.get(name), base_enabled=base_enabled))
+        if (finding := _live_preset_finding(name, row, specs.get(name), base_enabled=base_enabled, low_power=low_power))
     )
     return findings
 
 
 def _live_preset_finding(
-    name: str, row: "Mode", spec: PresetSpec | None, *, base_enabled: dict[str, bool]
+    name: str, row: "Mode", spec: PresetSpec | None, *, base_enabled: dict[str, bool], low_power: str
 ) -> InertFinding | None:
-    """Inert mask, then the stalling asymmetry, then drift — the actionable line wins."""
+    """Inert mask, then the box-killing shapes, then the stall, then drift — the actionable line wins."""
     mask = row.entries if isinstance(row.entries, dict) else {}
     if spec is not None and spec.entries and not mask:
         return InertFinding(
@@ -246,6 +269,24 @@ def _live_preset_finding(
             detail=(
                 f"its mask is empty but ships {len(spec.entries)} loop opinion(s) — every loop now "
                 "inherits its own flag, so activating this preset changes nothing"
+            ),
+            is_fault=True,
+        )
+    consuming = backup_without_reclaim(mask, base_enabled=base_enabled)
+    if consuming is not None:
+        return InertFinding(
+            family="preset", name=name, kind=KIND_BACKUP_WITHOUT_RECLAIM, detail=consuming.detail, is_fault=True
+        )
+    quieted = quieted_load_bearing(mask) if name != low_power else ()
+    if quieted:
+        return InertFinding(
+            family="preset",
+            name=name,
+            kind=KIND_QUIETED_LOAD_BEARING,
+            detail=(
+                f"masks load-bearing loop(s) off ({', '.join(quieted)}) — activating this mode leaves "
+                "nothing that can free disk or RAM when the box is under pressure, and no way in to do "
+                "it by hand. Admit them, or move the mask to the low-power mode"
             ),
             is_fault=True,
         )

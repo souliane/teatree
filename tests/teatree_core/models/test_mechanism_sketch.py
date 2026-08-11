@@ -42,6 +42,42 @@ def valid_envelope(**overrides: object) -> dict[str, object]:
     return envelope
 
 
+def default_behaviour_envelope(**overrides: object) -> dict[str, object]:
+    envelope: dict[str, object] = {
+        "kind": "default_behaviour",
+        "setting_key": "",
+        "setting_type": "",
+        "neutral_default": None,
+        "policy_chokepoint": _CORE_CHOKEPOINT,
+        "activation_scope": "",
+        "activation_value": None,
+        "rejected_alternatives": ["a per-overlay knob — no second overlay wants a different value"],
+        "acceptance_tests": ["tests/teatree_core/gates/test_pr_budget_gate.py::TestCheckPrBudget"],
+        "refactors": [],
+        "behavior_probe": "",
+        "probe_none_reason": "covered by acceptance tests",
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+#: Directive #38's sketch as the interpreter actually queued it, verbatim from the control
+#: DB — the shipped-inert shape #4181 exists to refuse (a global `terse_output_enforced`
+#: whose activation value already equals its neutral default).
+_QUEUED_DIRECTIVE_38_SKETCH: dict[str, object] = {
+    "kind": "setting_policy_gate",
+    "setting_key": "terse_output_enforced",
+    "setting_type": "bool",
+    "neutral_default": True,
+    "policy_chokepoint": "src/teatree/agents/prompt.py::build_system_context",
+    "activation_scope": "",
+    "activation_value": True,
+    "rejected_alternatives": ["extend the unconditional prompt block as more hardcoded prose"],
+    "acceptance_tests": ["tests/teatree_agents/test_prompt.py::TestBuildSystemContext"],
+    "refactors": [],
+}
+
+
 class TestValidateSketchStructure(TestCase):
     def test_a_generic_sketch_naming_a_core_seam_and_a_rejected_alternative_is_valid(self) -> None:
         assert validate_sketch_structure(valid_envelope()) is None
@@ -89,6 +125,60 @@ class TestValidateSketchStructure(TestCase):
         # nothing new to prove — only the activation to apply.
         envelope = valid_envelope(kind="activation_only", acceptance_tests=[])
         assert validate_sketch_structure(envelope) is None
+
+
+class TestDefaultBehaviourFirst(TestCase):
+    """#4181: the constraint IS the unconditional behaviour unless a second consumer differs."""
+
+    def test_a_default_behaviour_sketch_names_no_setting(self) -> None:
+        assert validate_sketch_structure(default_behaviour_envelope()) is None
+
+    def test_a_default_behaviour_sketch_carrying_a_setting_key_is_refused(self) -> None:
+        finding = validate_sketch_structure(default_behaviour_envelope(setting_key="terse_output_enforced"))
+        assert finding is not None
+        assert "must be empty" in finding
+
+    def test_a_default_behaviour_sketch_carrying_an_activation_scope_is_refused(self) -> None:
+        finding = validate_sketch_structure(default_behaviour_envelope(activation_scope="t3-teatree"))
+        assert finding is not None
+        assert "activation_scope" in finding
+
+    def test_a_default_behaviour_sketch_still_needs_acceptance_tests(self) -> None:
+        finding = validate_sketch_structure(default_behaviour_envelope(acceptance_tests=[]))
+        assert finding is not None
+        assert "acceptance_tests" in finding
+
+    def test_a_setting_policy_gate_naming_no_second_overlay_is_refused(self) -> None:
+        finding = validate_sketch_structure(valid_envelope(activation_scope=""))
+        assert finding is not None
+        assert "second" in finding
+        assert "default_behaviour" in finding
+
+    def test_a_setting_policy_gate_whose_activation_matches_the_default_is_refused(self) -> None:
+        # The named overlay wants what everyone already gets, so the setting's only job
+        # is to switch the directive's own behaviour off.
+        finding = validate_sketch_structure(valid_envelope(neutral_default=1, activation_value=1))
+        assert finding is not None
+        assert "second" in finding
+        assert "default_behaviour" in finding
+
+    def test_a_setting_policy_gate_naming_a_second_overlay_and_a_different_value_is_untouched(self) -> None:
+        assert validate_sketch_structure(valid_envelope(activation_scope="t3-teatree")) is None
+
+    def test_activation_only_is_exempt_from_the_second_consumer_litmus(self) -> None:
+        # The mechanism already exists; applying its per-overlay row is the whole point.
+        envelope = valid_envelope(kind="activation_only", acceptance_tests=[], neutral_default=1, activation_value=1)
+        assert validate_sketch_structure(envelope) is None
+
+    def test_queued_directive_38_is_refused_and_its_default_behaviour_reshape_is_accepted(self) -> None:
+        # Criterion 4, pinned on a real queued sketch: directive #38 ("communicate tersely")
+        # minted `terse_output_enforced` with no second consumer at all — neutral default
+        # true, activation value true, global scope.
+        finding = validate_sketch_structure(_QUEUED_DIRECTIVE_38_SKETCH)
+        assert finding is not None
+        assert "second" in finding
+        reshaped = dict(_QUEUED_DIRECTIVE_38_SKETCH, kind="default_behaviour", setting_key="", setting_type="")
+        assert validate_sketch_structure(reshaped) is None
 
 
 class TestSketchRoundTrip(TestCase):

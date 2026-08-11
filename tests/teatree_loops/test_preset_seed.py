@@ -18,8 +18,15 @@ from django.core.management import call_command
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
+from teatree.core.models.loop_preset import DEFAULT_LOW_POWER_PRESET
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING, resolve_active_preset
-from teatree.loops.mode_shape import INTAKE_LOOPS, intake_without_delivery
+from teatree.loops.mode_shape import (
+    INTAKE_LOOPS,
+    LOAD_BEARING_LOOPS,
+    backup_without_reclaim,
+    intake_without_delivery,
+    quieted_load_bearing,
+)
 from teatree.loops.preset_seed import (
     PresetSpec,
     ScheduleSpec,
@@ -28,7 +35,7 @@ from teatree.loops.preset_seed import (
     default_schedule_specs,
     seed_default_presets_and_schedules,
 )
-from teatree.loops.seed import DEFAULT_LOOPS
+from teatree.loops.seed import DEFAULT_LOOPS, load_loop_specs
 
 _EXPECTED_PRESETS = {"engaged", "heads-down", "unattended", "maintenance", "low-power", "off", "offline"}
 _EXPECTED_SCHEDULES = {"standard", "always-unattended"}
@@ -49,10 +56,11 @@ class TestSeedDefaultPresets(django.test.TestCase):
         assert set(Mode.objects.values_list("name", flat=True)) == _EXPECTED_PRESETS
         assert set(ModeSchedule.objects.values_list("name", flat=True)) == _EXPECTED_SCHEDULES
 
-    def test_off_forces_every_seeded_loop_off(self) -> None:
+    def test_off_forces_every_work_loop_off_and_the_load_bearing_tier_on(self) -> None:
+        """A halt mode stops the WORK, never the tier that can still recover the box (#4188)."""
         seed_default_presets_and_schedules()
         entries = Mode.objects.get(name="off").entries
-        assert all(value is False for value in entries.values())
+        assert {loop for loop, value in entries.items() if value} == set(LOAD_BEARING_LOOPS)
         assert set(entries) == {spec.name for spec in DEFAULT_LOOPS}
 
     def test_low_power_keeps_only_deterministic_local_loops(self) -> None:
@@ -97,7 +105,7 @@ class TestSeedDefaultPresets(django.test.TestCase):
         assert offline.defers_questions is True
         assert offline.pauses_self_pump is True
         assert offline.presence_sensitive is False
-        assert all(value is False for value in offline.entries.values())
+        assert {loop for loop, value in offline.entries.items() if value} == set(LOAD_BEARING_LOOPS)
 
     def test_destructive_loops_inherit_in_engaged(self) -> None:
         seed_default_presets_and_schedules()
@@ -294,8 +302,14 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset(spec.name for spec in DEFAULT_LOOPS)
         - frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
     ),
-    "off": (frozenset(), frozenset(spec.name for spec in DEFAULT_LOOPS)),
-    "offline": (frozenset(), frozenset(spec.name for spec in DEFAULT_LOOPS)),
+    "off": (
+        frozenset(LOAD_BEARING_LOOPS),
+        frozenset(spec.name for spec in DEFAULT_LOOPS) - frozenset(LOAD_BEARING_LOOPS),
+    ),
+    "offline": (
+        frozenset(LOAD_BEARING_LOOPS),
+        frozenset(spec.name for spec in DEFAULT_LOOPS) - frozenset(LOAD_BEARING_LOOPS),
+    ),
 }
 
 #: ``(defers_questions, pauses_self_pump, presence_sensitive)`` per mode.
@@ -428,3 +442,38 @@ class TestSpecsAreShippedDataNotCode:
     def test_every_shipped_mode_and_schedule_name_matches_the_file(self) -> None:
         assert {spec.name for spec in default_preset_specs()} == set(shipped_seed_table("modes"))
         assert {spec.name for spec in default_schedule_specs()} == set(shipped_seed_table("schedules"))
+
+
+class TestNoShippedModeConsumesWhatItCannotReclaim:
+    """No mask may keep the backup writing once every reclaim loop is quiet (#4188).
+
+    Judged against the shipped ``[loops]`` flags, so an absent entry resolves the way a
+    fresh box resolves it. Asserted over EVERY mode rather than the one that had the bug,
+    because the point is that a future mode cannot reintroduce the shape.
+    """
+
+    def test_no_shipped_mode_admits_the_backup_over_a_quiet_reclaim_pair(self) -> None:
+        base = {spec.name: spec.default_enabled for spec in load_loop_specs()}
+        offenders = {
+            spec.name: found.detail
+            for spec in default_preset_specs()
+            if (found := backup_without_reclaim(spec.entries, base_enabled=base)) is not None
+        }
+
+        assert offenders == {}, offenders
+
+    def test_only_the_low_power_mode_may_quiet_the_load_bearing_tier(self) -> None:
+        offenders = {
+            spec.name: quieted_load_bearing(spec.entries)
+            for spec in default_preset_specs()
+            if spec.name != DEFAULT_LOW_POWER_PRESET and quieted_load_bearing(spec.entries)
+        }
+
+        assert offenders == {}, offenders
+
+    def test_the_halt_modes_force_the_tier_on_rather_than_leaning_on_the_column(self) -> None:
+        """``off`` must ADMIT the tier, not merely decline to mask it — the column may be off."""
+        specs = {spec.name: spec for spec in default_preset_specs()}
+
+        for name in ("off", "offline"):
+            assert all(specs[name].entries.get(loop) is True for loop in LOAD_BEARING_LOOPS), name
