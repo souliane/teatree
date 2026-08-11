@@ -16,7 +16,7 @@ The same "don't cry wolf" doctrine :mod:`teatree.loops.loop_staleness` already a
 suppressed stale loop — an operator's deliberate off is a note, not a fault.
 
 A preset is NOT judged on whether anything references it. Four of the seven shipped presets
-(``heads-down`` / ``maintenance`` / ``off`` / ``offline``) are named by no slot, override or
+(``maintenance`` / ``off``) are named by no slot, override or
 setting on a fresh install — they exist to be selected by hand (``t3 loop preset use``), so
 "unreferenced" is their shipped state, not a fault. Reporting it would make the report noisy
 on every new box, which is how a health surface becomes one people learn to ignore.
@@ -25,7 +25,7 @@ A mask can also kill the BOX (#4188). The live ``off`` row masked every survival
 — including the two that recovered this box from both of one day's out-of-memory
 emergencies — while ``db_backup`` stayed forced ON, so the one mode an operator reaches for
 mid-incident could only ever consume disk. Both shapes are faults wherever they are found:
-a mask that quiets the load-bearing tier (the low-power mode excepted) and a mask that
+a mask that quiets the load-bearing tier (the low-token mode excepted) and a mask that
 admits the backup once every reclaim loop is quiet.
 
 Presence alone was not enough (#4096). A live ``standard`` calendar carrying an extra
@@ -286,7 +286,7 @@ def _live_preset_finding(
             detail=(
                 f"masks load-bearing loop(s) off ({', '.join(quieted)}) — activating this mode leaves "
                 "nothing that can free disk or RAM when the box is under pressure, and no way in to do "
-                "it by hand. Admit them, or move the mask to the low-power mode"
+                "it by hand. Admit them, or move the mask to the low-token mode"
             ),
             is_fault=True,
         )

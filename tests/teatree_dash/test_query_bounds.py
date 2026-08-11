@@ -31,8 +31,10 @@ _BOARD_MAX_QUERIES = 12
 #: neither: ``cached_per_request`` under the dash middleware's request scope collapses the
 #: resolves to one, and its pinned plan is two queries CHEAPER than before #4196. This
 #: builder is called bare, which is the un-memoized worst case the bound exists to cap.
+#: #4202 adds one settings read per resolve — the presence-upgrade target is no longer
+#: decided from a boolean already on the row — so that worst case is +2.
 #: Flatness across row count — the property this file actually asserts — is unaffected.
-_HEALTH_MAX_QUERIES = 34
+_HEALTH_MAX_QUERIES = 36
 _PRESETS_MAX_QUERIES = 14
 
 

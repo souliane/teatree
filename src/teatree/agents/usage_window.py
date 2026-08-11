@@ -156,7 +156,7 @@ def park_task_on_limit(
     # class the all-exhausted path guards. Clamp here too so BOTH writers are covered.
     reset = _future_park_instant(reset, moment)
     UsageWindowState.record_limit(lane=lane, cause=match.cause.value, resets_at=reset, now=moment)
-    # #3159 item 6: auto-engage the low-power preset for the parked window's tenure
+    # #3159 item 6: auto-engage the low-token preset for the parked window's tenure
     # (default-off flag; never overwrites a live user override). Fail-soft — a park
     # must never depend on the preset layer.
     _auto_engage_low_power(reset, moment)
@@ -300,7 +300,7 @@ def _auto_engage_low_power(reset: datetime, moment: datetime) -> None:
     try:
         ModeOverride.objects.auto_engage_low_power(resets_at=reset, now=moment)
     except Exception:
-        logger.warning("low-power auto-engage failed on park — continuing", exc_info=True)
+        logger.warning("low-token auto-engage failed on park — continuing", exc_info=True)
 
 
 def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None = None) -> TaskAttempt | None:

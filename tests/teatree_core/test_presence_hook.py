@@ -54,12 +54,12 @@ class TestRecordPresenceHook:
         # End-to-end: the hook records, the unified resolver upgrades. A default
         # away-class mode (presence-sensitive) is upgraded to the present-class mode
         # by the fresh keystroke the hook just stamped.
-        Mode.objects.create(name="engaged", entries={}, defers_questions=False)
-        Mode.objects.create(name="unattended", entries={}, defers_questions=True, presence_sensitive=True)
-        ConfigSetting.objects.set_value("default_mode", "unattended")
+        Mode.objects.create(name="present", entries={})
+        Mode.objects.create(name="away", entries={})
+        ConfigSetting.objects.set_value("default_mode", "away")
         handle_record_presence({"prompt": "ship it?", "session_id": "s1"})
         resolved = resolve_active_mode()
-        assert resolved.name == "engaged"
+        assert resolved.name == "present"
         assert resolved.source == "live"
         assert presence.last_seen() is not None
 

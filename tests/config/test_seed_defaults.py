@@ -45,7 +45,7 @@ class TestReadsTheShippedSeedTables:
     def test_a_schedule_entry_carries_its_slots_as_an_array_of_tables(self) -> None:
         standard = shipped_seed_table("schedules")["standard"]
         assert standard["timezone"] == "Europe/Vienna"
-        assert [slot["preset_name"] for slot in standard["slots"]] == ["engaged", "unattended", "unattended"]
+        assert [slot["preset_name"] for slot in standard["slots"]] == ["present", "away", "away"]
 
     def test_an_absent_table_reads_as_empty(self) -> None:
         assert shipped_seed_table("__not_a_table__") == {}

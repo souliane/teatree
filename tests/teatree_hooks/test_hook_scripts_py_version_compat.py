@@ -1,9 +1,9 @@
 """Hooks must run under an interpreter new enough for the hook modules.
 
 Regression guard for the bootstrap crash introduced by b7c0d0df89 (#2559/#2571).
-The posture probe ``mode_posture_probe.py`` reached a PEP-604 union evaluated at
-*import* time (return annotations evaluate at def-time — today via its
-``managed_repo`` import), and ``hook_router.py`` imports it at module top. The project baseline
+The shared ``managed_repo.py`` leaf carries a PEP-604 union evaluated at *import*
+time (return annotations evaluate at def-time), and ``hook_router.py`` imports it
+at module top. The project baseline
 is Python >= 3.13 and standardizes on native ``X | Y`` unions (ruff bans
 ``from __future__ import annotations`` via TID251), so the union itself is
 correct. The bug was the *interpreter*: ``hooks.json`` invoked the router with a
@@ -25,7 +25,7 @@ These tests pin that fix end to end:
     to ``python3 …`` turns it RED).
 * :class:`TestRunHookSelectsModernPython` — the selector execs a >= 3.11
     interpreter, under which both ``hook_router`` and the reported
-    ``mode_posture_probe`` module import cleanly.
+    ``managed_repo`` module import cleanly.
 * :class:`TestInterpreterPinIsLoadBearing` — demonstrates WHY the pin is needed:
     the reported module genuinely fails to import under a < 3.11 interpreter (run
     when one is available; skipped on a 3.13-only CI runner).
@@ -154,9 +154,9 @@ class TestRunHookSelectsModernPython:
         assert (major, minor) >= (3, 11), f"selector chose Python {out}, expected >= 3.11"
 
     def test_router_imports_under_selected_interpreter(self) -> None:
-        # End-to-end: the whole router — including the line-49 import of
-        # mode_posture_probe (whose managed_repo import carries native unions) AND 3.11+ tomllib —
-        # imports cleanly under the interpreter the selector picks.
+        # End-to-end: the whole router — including its `managed_repo` import (which
+        # carries native unions) AND 3.11+ tomllib — imports cleanly under the
+        # interpreter the selector picks.
         result = subprocess.run(
             [
                 str(_RUN_HOOK),
@@ -177,7 +177,7 @@ class TestRunHookSelectsModernPython:
             [
                 str(_RUN_HOOK),
                 "-c",
-                "import sys; sys.path.insert(0, sys.argv[1]); import mode_posture_probe",
+                "import sys; sys.path.insert(0, sys.argv[1]); import managed_repo",
                 str(_SCRIPTS_DIR),
             ],
             capture_output=True,
@@ -186,9 +186,7 @@ class TestRunHookSelectsModernPython:
             timeout=60,
             check=False,
         )
-        assert result.returncode == 0, (
-            f"mode_posture_probe failed to import under the selector: {result.stderr.strip()}"
-        )
+        assert result.returncode == 0, f"managed_repo failed to import under the selector: {result.stderr.strip()}"
 
 
 class TestInterpreterPinIsLoadBearing:
@@ -198,19 +196,17 @@ class TestInterpreterPinIsLoadBearing:
         legacy = _legacy_python()
         if legacy is None:
             pytest.skip("no Python 3.9/3.10 interpreter available to demonstrate the crash")
-        result = _import_under(legacy, "mode_posture_probe")
+        result = _import_under(legacy, "managed_repo")
         assert result.returncode != 0, (
-            f"expected mode_posture_probe to fail importing under {legacy} (PEP-604 union "
+            f"expected managed_repo to fail importing under {legacy} (PEP-604 union "
             f"evaluated at module load on < 3.11); it imported cleanly, so the pin would be vacuous"
         )
 
     def test_reported_module_imports_under_a_modern_interpreter(self) -> None:
         # The contrast to the test above: under this (>= 3.13) interpreter — the
         # kind the selector picks — the same module imports without error.
-        result = _import_under(sys.executable, "mode_posture_probe")
-        assert result.returncode == 0, (
-            f"mode_posture_probe should import under {sys.executable}: {result.stderr.strip()}"
-        )
+        result = _import_under(sys.executable, "managed_repo")
+        assert result.returncode == 0, f"managed_repo should import under {sys.executable}: {result.stderr.strip()}"
 
     def test_subagent_no_commit_sibling_cold_imports(self) -> None:
         # The extracted SubagentStop no-commit sibling (#2384 Wave-2 PR1) must

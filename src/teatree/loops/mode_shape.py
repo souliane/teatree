@@ -6,8 +6,8 @@ this box from both of one day's out-of-memory emergencies — while ``db_backup`
 writing. That combination can only ever consume disk, and it is reached exactly when an
 operator grabs a "stop everything" mode mid-incident, with no recovery path left inside the
 box. So there is a LOAD-BEARING tier (:data:`LOAD_BEARING_LOOPS`) no mask may quiet, the
-low-power/token-budget mode excepted, and no mask may admit the backup while the whole
-reclaim pair is quiet.
+low-token mode excepted, and no mask may admit the backup while the whole reclaim pair
+is quiet.
 
 **A mode that stops the pipeline DRAINING must not leave it FILLING.** ``maintenance``
 masked ``ship`` and ``tickets`` off for the overnight window but named no opinion on

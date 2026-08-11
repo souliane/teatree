@@ -111,7 +111,7 @@ _HEADER = """\
 # the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
 # delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
 # The mirror rule is the LOAD-BEARING tier (`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`):
-# no mask may quiet it (the low-power mode excepted), and none may keep `db_backup` writing
+# no mask may quiet it (the low-token mode excepted), and none may keep `db_backup` writing
 # once every reclaim loop is quiet — that shape can only ever consume disk.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in

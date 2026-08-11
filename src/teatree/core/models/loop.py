@@ -23,18 +23,13 @@ set (both ``None``) the loop is due every tick.
 A never-run loop is due immediately (interval / every-tick) or at its first
 scheduled time (daily), so a fresh install fires without waiting a whole window.
 
-``colleague_facing`` (#2904) is the operator-editable AWAY-GATE policy: which
-loops sit out while the owner is unreachable to weigh in. It is narrower than the
-``colleague`` reach tag each ``MiniLoop`` declares in code (#3959) and stays a
-strict subset of it — ``review`` reaches colleagues yet deliberately keeps
-running when away, so self-review does not stall. The unified
-admission verdict in ``teatree.loops.loop_table`` gates a ``colleague_facing``
-row off whenever the resolved :class:`~teatree.core.models.Mode` reports
-``defers_questions`` (an away-class mode, the same
-BLUEPRINT §17.1 invariant 9 axis that defers user-directed questions in that
-mode): colleague-facing work should not fire while the user is unreachable to
-weigh in, even in ``autonomous_away`` where every other loop keeps
-self-pumping.
+``colleague_facing`` (#2904) marks the loops that reach a colleague on the owner's
+behalf. It is narrower than the ``colleague`` reach tag each ``MiniLoop`` declares in
+code (#3959) and stays a strict subset of it — ``review`` reaches colleagues yet
+deliberately keeps running when the owner is away, so self-review does not stall. The
+flag is a REPORTING axis (``t3 doctor``'s stale-override finding names the
+colleague-facing loops a held mode masks off); which loops actually run is decided
+solely by the active :class:`~teatree.core.models.Mode`'s own ``entries`` table.
 """
 
 import datetime as dt
