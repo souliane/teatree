@@ -51,6 +51,7 @@ from pathlib import Path
 import pytest
 from django.db import OperationalError, connections, transaction
 
+from teatree.settings import DATABASES as PROD_DATABASES
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 
@@ -241,16 +242,46 @@ class TestSqliteWriteSerialization:
         backend plus the one-read-write-domain rule, teatree/db/boundary.py)
         and the OPTIONS must contain IMMEDIATE transaction mode, a
         busy_timeout, and a rollback journal mode.
+
+        The assertion messages name the coupling on purpose (#4226): the
+        ~40 ``select_for_update()`` call sites in ``src/teatree`` obtain
+        their mutual exclusion from ``transaction_mode`` and nothing
+        else, and no behavioural test can say so — under ``TestCase``
+        ``atomic()`` is a savepoint and the clause is dropped anyway, so
+        a call-site test exercises the re-read and never the lock.
         """
         from teatree import settings as prod_settings  # noqa: PLC0415
 
         default = prod_settings.DATABASES["default"]
         assert default["ENGINE"] == "teatree.db.sqlite3_boundary"
         opts = default["OPTIONS"]
-        assert opts is SQLITE_WRITE_SERIALIZATION_OPTIONS
-        assert opts["transaction_mode"] == "IMMEDIATE"
-        assert opts["timeout"] == 30
+        assert opts is SQLITE_WRITE_SERIALIZATION_OPTIONS, (
+            "the control DB must use the named constant, so a revert is one visible hunk"
+        )
+        assert opts["transaction_mode"] == "IMMEDIATE", (
+            "write exclusion for every select_for_update() call site depends on this: the clause is "
+            "a documented no-op here (has_select_for_update is False), so BEGIN IMMEDIATE's reserved "
+            "write lock is the only thing serializing two concurrent read-modify-writes"
+        )
+        assert opts["timeout"] == 30, "the blocked writer must wait for the reserved lock, not fail immediately"
         assert "journal_mode=TRUNCATE" in opts["init_command"]
+
+    def test_every_configured_database_carries_the_serialization_options(self) -> None:
+        """No alias reaches the control DB without the write-serialization OPTIONS.
+
+        ``DATABASES`` grows a second alias when teatree runs from a
+        worktree (the pinned ConfigSetting DB, ``CONFIG_DB_ALIAS``) — the
+        same file, reached through a second connection. An alias added
+        without these OPTIONS would ``BEGIN DEFERRED`` against a database
+        every other writer serializes on, reintroducing the lost update
+        for that connection alone.
+        """
+        unserialized = [
+            alias
+            for alias, config in PROD_DATABASES.items()
+            if config["OPTIONS"] is not SQLITE_WRITE_SERIALIZATION_OPTIONS
+        ]
+        assert not unserialized, f"alias(es) reaching the control DB without BEGIN IMMEDIATE: {unserialized}"
 
     def test_production_options_map_no_shared_memory_sidecar(self, tmp_path: Path) -> None:
         """A live connection on the production OPTIONS maps no ``-shm``.

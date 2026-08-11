@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**33 entries** — 4 greppable, 29 judgement.
+**34 entries** — 5 greppable, 29 judgement.
 
 ## Index
 
@@ -24,6 +24,7 @@ holistic (`ac-reviewing-codebase`).
 - [Gate performs the guarded side effect before concluding refusal](#gate-side-effect-before-verdict) — high, judgement
 - [GET request with side effects](#get-with-side-effects) — high, greppable
 - [Strip a qualifier to force an identity match](#identity-strip-to-match) — high, greppable
+- [select_for_update() outside atomic(), or with skip_locked/nowait](#locked-read-the-backend-cannot-honour) — high, greppable
 - [Long I/O inside the control-plane write transaction](#long-io-holds-control-lock) — high, judgement
 - [One item's exception aborts the whole sweep](#loop-scanner-no-fault-isolation) — high, judgement
 - [Same fact in two co-equal stores with no authority](#multi-store-no-arbiter) — high, judgement
@@ -340,6 +341,22 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A post_save/pre_save receiver implementing core business logic, hiding the flow from the call site and skipping it in data migrations and bulk operations.
 
 **Preferred.** Call domain behaviour explicitly from a model method; reserve signals for integrating third-party app events.
+
+## select_for_update() outside atomic(), or with skip_locked/nowait
+
+<a id="locked-read-the-backend-cannot-honour"></a>
+
+- **id:** `locked-read-the-backend-cannot-honour`
+- **severity:** high
+- **detection:** greppable
+- **grep hint:** `select_for_update\([^)]*\b(?:skip_locked|nowait)\b`
+- **linter:** `select-for-update-audit`
+- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **refs:** souliane/teatree#4226, souliane/teatree#804, 786-b1-sqlite-lesson
+
+**Anti-pattern.** A select_for_update() the production SQLite engine cannot honour. The clause is a documented no-op there (has_select_for_update is False), so exclusion comes only from transaction_mode=IMMEDIATE's reserved write lock — which a transaction.atomic() block takes and nothing else does. Outside atomic() the read-modify-write silently loses updates, and Django's own "cannot be used outside of a transaction" guard is itself gated on has_select_for_update, so nothing raises. skip_locked/nowait are worse: IMMEDIATE blocks where they promise to return, and the kwarg is dropped without a word.
+
+**Preferred.** Wrap the whole read-modify-write in transaction.atomic() so BEGIN IMMEDIATE covers it, and gate a claim on a CAS predicate (a filtered UPDATE whose rowcount decides the winner) rather than on skip_locked/nowait. A helper whose caller owns the transaction declares that contract with a same-line `# select-for-update: caller-atomic` pragma.
 
 ## Module past the health threshold
 

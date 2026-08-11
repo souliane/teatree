@@ -18,8 +18,11 @@ from teatree.quality.catalog import AntiPatternEntry, CatalogError, catalog_path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HOOKS_DIR = _REPO_ROOT / "scripts" / "hooks"
 
-# External tools (not scripts/hooks/*.py) that legitimately mechanize an entry.
-_EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness"})
+# Mechanizers that are not a scripts/hooks/*.py — a third-party tool, or a test
+# lane that owns the check. Each names its own binding test, so the entry here
+# cannot outlive the mechanizer: gate-liveness → the gate-liveness corpus,
+# select-for-update-audit → tests/conformance/test_select_for_update_is_backed_by_immediate.py.
+_EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness", "select-for-update-audit"})
 
 _KNOWN_INVARIANT_IDS = frozenset(inv.id for inv in INVARIANT_REGISTRY)
 
