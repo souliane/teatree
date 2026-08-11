@@ -29,9 +29,9 @@ from teatree.core.management.commands._workspace.cleanup import _worktree_clean
 from teatree.core.management.commands._workspace.orphan_worktrees import _is_dirty
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import worktree_tracked_dirty_path
-from teatree.loop.mechanical_resources import _git_dirty
 from teatree.loop.scanners.pull_main_clone import _tracked_dirty_paths as pull_tracked_dirty_paths
 from teatree.loop.scanners.self_update import _tracked_dirty_paths as self_update_tracked_dirty_paths
+from teatree.loop.worktree_gc import git_dirty
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -74,7 +74,7 @@ class TestEveryDirtinessDeciderSeesTheIndex(TestCase):
                 worktree_tracked_dirty_path(self._worktree_row())
             ),
             "handover_orchestration._has_pending_work": lambda: _has_pending_work(self.checkout),
-            "loop.mechanical_resources._git_dirty": lambda: _git_dirty(self.checkout),
+            "loop.worktree_gc.git_dirty": lambda: git_dirty(self.checkout),
             "cli.update._tracked_dirty_paths": lambda: bool(update_tracked_dirty_paths(self.checkout)),
             "scanners.pull_main_clone._tracked_dirty_paths": lambda: bool(pull_tracked_dirty_paths(self.checkout)),
             "scanners.self_update._tracked_dirty_paths": lambda: bool(self_update_tracked_dirty_paths(self.checkout)),

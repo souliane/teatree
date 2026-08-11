@@ -245,105 +245,6 @@ class DryRunFirstTests(TestCase):
         assert "PURGE cache" in marker.last_plan
 
 
-class WorktreeGcSafetyTests(TestCase):
-    """Flag-gated worktree GC removes only clean + pushed + stale + non-session worktrees."""
-
-    def setUp(self) -> None:
-        import tempfile  # noqa: PLC0415
-
-        self.tmp = Path(tempfile.mkdtemp(prefix="rp_wt_"))
-        self.addCleanup(_rmtree_safe, str(self.tmp))
-        self.uv_prune = _patch_uv_cache_prune(self)
-        self.origin = self.tmp / "origin.git"
-        self._seed_origin()
-
-    def _seed_origin(self) -> None:
-        seed = self.tmp / "_seed"
-        seed.mkdir()
-        _run("git", "init", "--initial-branch=main", str(seed), cwd=self.tmp)
-        (seed / "a.txt").write_text("a")
-        _run("git", "add", "a.txt", cwd=seed)
-        _run("git", "commit", "-m", "first", cwd=seed)
-        _run("git", "init", "--bare", "--initial-branch=main", str(self.origin), cwd=self.tmp)
-        _run("git", "remote", "add", "origin", str(self.origin), cwd=seed)
-        _run("git", "push", "-u", "origin", "main", cwd=seed)
-        self.main_clone = self.tmp / "main_clone"
-        _run("git", "clone", str(self.origin), str(self.main_clone), cwd=self.tmp)
-
-    def _add_worktree(self, name: str, branch: str) -> Path:
-        wt = self.tmp / name
-        _run("git", "worktree", "add", "-b", branch, str(wt), "main", cwd=self.main_clone)
-        _run("git", "push", "-u", "origin", branch, cwd=wt)
-        return wt
-
-    def _make_stale(self, wt: Path) -> None:
-        old = 1_600_000_000  # well over 30 days ago
-        os.utime(wt, (old, old))
-
-    def _payload(self) -> dict:
-        return {
-            "resource": "disk",
-            "disk_cache_allowlist": [],
-            "allow_destructive_disk": True,
-            "worktree_stale_days": 30,
-            "max_worktree_gc_per_tick": 5,
-        }
-
-    def test_clean_pushed_stale_worktree_is_removed(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        wt = self._add_worktree("clean", "feat-clean")
-        self._make_stale(wt)
-        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
-            free_resources(self._payload())
-        assert not wt.exists(), "a clean+pushed+stale worktree should be GC'd"
-
-    def test_dirty_worktree_is_skipped(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        wt = self._add_worktree("dirty", "feat-dirty")
-        (wt / "a.txt").write_text("locally modified")  # tracked-dirty
-        self._make_stale(wt)
-        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
-            free_resources(self._payload())
-        assert wt.exists(), "a dirty worktree must never be removed"
-
-    def test_ahead_of_upstream_worktree_is_skipped(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        wt = self._add_worktree("ahead", "feat-ahead")
-        (wt / "b.txt").write_text("new")
-        _run("git", "add", "b.txt", cwd=wt)
-        _run("git", "commit", "-m", "unpushed", cwd=wt)  # ahead of upstream, not pushed
-        self._make_stale(wt)
-        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
-            free_resources(self._payload())
-        assert wt.exists(), "an ahead-of-upstream worktree must never be removed"
-
-    def test_active_session_cwd_worktree_is_never_removed(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        wt = self._add_worktree("active", "feat-active")
-        self._make_stale(wt)
-        with (
-            patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone),
-            patch.object(mechanical_resources, "_safe_cwd", return_value=wt.resolve()),
-        ):
-            free_resources(self._payload())
-        assert wt.exists(), "the active-session worktree must never be GC'd"
-
-    def test_gc_off_removes_nothing(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        wt = self._add_worktree("clean", "feat-clean")
-        self._make_stale(wt)
-        payload = self._payload()
-        payload["allow_destructive_disk"] = False
-        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
-            free_resources(payload)
-        assert wt.exists(), "with the flag off, NO worktree is removed"
-
-
 class RamLadderTests(TestCase):
     """Idle-container stop runs at L2; process kill is flag + consecutive gated."""
 
@@ -526,12 +427,6 @@ class HelperTests(TestCase):
     def test_purge_missing_dir_is_zero(self) -> None:
         assert mechanical_resources._purge_dir(str(self.tmp / "nope")) == pytest.approx(0.0)
 
-    def test_is_within_detects_nesting(self) -> None:
-        child = self.tmp / "x" / "y"
-        child.mkdir(parents=True)
-        assert mechanical_resources._is_within(child.resolve(), self.tmp) is True
-        assert mechanical_resources._is_within(self.tmp.resolve(), child) is False
-
     def test_clean_stale_statusline_removes_old_files(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
@@ -597,12 +492,6 @@ class HelperTests(TestCase):
         with patch.object(mechanical_resources.shutil, "which", return_value=None):
             assert mechanical_resources._docker("ps") is None
 
-    def test_git_returns_none_without_binary(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources.shutil, "which", return_value=None):
-            assert mechanical_resources._git(self.tmp, "status") is None
-
     def test_run_maps_nonzero_exit_to_none(self) -> None:
         from subprocess import CompletedProcess  # noqa: PLC0415
         from unittest.mock import patch  # noqa: PLC0415
@@ -636,12 +525,6 @@ class HelperTests(TestCase):
             return_value=CompletedProcess(args=["x"], returncode=0, stdout="hi", stderr=""),
         ):
             assert mechanical_resources._run(["/bin/x"]) == "hi"
-
-    def test_safe_cwd_none_on_oserror(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources.Path, "cwd", side_effect=OSError):
-            assert mechanical_resources._safe_cwd() is None
 
     def test_persist_plan_failure_is_swallowed(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -700,42 +583,6 @@ class HelperTests(TestCase):
         with patch.object(mechanical_resources, "_STATUSLINE_DIR", self.tmp / "absent"):
             mechanical_resources._clean_stale_statusline()  # must not raise
 
-    def test_worktree_not_dir_is_not_eligible(self) -> None:
-        assert mechanical_resources._worktree_is_gc_eligible(self.tmp / "absent", stale_days=30) is False
-
-    def test_git_dirty_treats_none_as_dirty(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_git", return_value=None):
-            assert mechanical_resources._git_dirty(self.tmp) is True
-
-    def test_git_ahead_treats_none_as_ahead(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_git", return_value=None):
-            assert mechanical_resources._git_ahead_of_upstream(self.tmp) is True
-
-    def test_is_stale_false_when_stat_fails(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources.Path, "stat", side_effect=OSError):
-            assert mechanical_resources._is_stale(self.tmp, stale_days=30) is False
-
-    def test_list_worktrees_empty_when_workspace_missing(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "worktree_root", return_value=self.tmp / "absent"):
-            assert mechanical_resources._list_workspace_worktrees() == []
-
-    def test_list_worktrees_empty_when_git_unavailable(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with (
-            patch.object(mechanical_resources, "worktree_root", return_value=self.tmp),
-            patch.object(mechanical_resources, "_git", return_value=None),
-        ):
-            assert mechanical_resources._list_workspace_worktrees() == []
-
     def test_idle_containers_empty_when_docker_none(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
@@ -752,12 +599,6 @@ class HelperTests(TestCase):
     def test_kill_candidates_empty_with_no_patterns(self) -> None:
         assert mechanical_resources._kill_candidate_pids({"ram_kill_allowlist": []}) == []
 
-    def test_is_within_false_on_resolve_error(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources.Path, "resolve", side_effect=OSError):
-            assert mechanical_resources._is_within(self.tmp, self.tmp) is False
-
     def test_clean_stale_statusline_swallows_unlink_error(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
@@ -771,22 +612,6 @@ class HelperTests(TestCase):
         ):
             mechanical_resources._clean_stale_statusline()  # must not raise
         assert stale.exists(), "unlink failed (swallowed) — file remains"
-
-    def test_gc_candidates_respects_per_tick_cap(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        worktrees = [self.tmp / f"wt{i}" for i in range(5)]
-        for wt in worktrees:
-            wt.mkdir()
-        with (
-            patch.object(mechanical_resources, "_list_workspace_worktrees", return_value=worktrees),
-            patch.object(mechanical_resources, "_safe_cwd", return_value=None),
-            patch.object(mechanical_resources, "_worktree_is_gc_eligible", return_value=True),
-        ):
-            candidates = mechanical_resources._gc_candidate_worktrees(
-                {"worktree_stale_days": 30, "max_worktree_gc_per_tick": 2},
-            )
-        assert len(candidates) == 2
 
     def test_docker_invokes_run_when_binary_present(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -814,17 +639,6 @@ class HelperTests(TestCase):
         ):
             assert mechanical_resources._ps("-axo", "pid=,comm=") == "101 claude\n"
         mock_run.assert_called_once()
-
-    def test_gc_worktrees_skips_size_when_remove_fails(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with (
-            patch.object(mechanical_resources, "_gc_candidate_worktrees", return_value=[str(self.tmp / "wt")]),
-            patch.object(mechanical_resources, "_dir_size_gb", return_value=2.0),
-            patch.object(mechanical_resources, "_remove_worktree", return_value=False),
-        ):
-            reclaimed = mechanical_resources._gc_worktrees({})
-        assert reclaimed == pytest.approx(0.0), "a failed removal must not count toward reclaimed bytes"
 
 
 def _fake_reclaim_report(total_bytes: int = 0) -> object:

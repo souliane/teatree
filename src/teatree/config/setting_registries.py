@@ -165,6 +165,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "intake_ram_per_agent_gb": _parse_strict_float,
     "disk_cache_allowlist": _parse_str_list,
     "allow_destructive_disk": _parse_strict_bool,
+    "venv_idle_days": _parse_strict_float,
     "worktree_stale_days": _parse_strict_int,
     "max_worktree_gc_per_tick": _parse_strict_int,
     "allow_destructive_ram": _parse_strict_bool,

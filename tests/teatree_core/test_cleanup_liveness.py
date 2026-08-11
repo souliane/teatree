@@ -15,6 +15,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 import teatree.core.cleanup.cleanup_liveness as cl
+from teatree.core.cleanup import process_table
 from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
@@ -248,7 +249,7 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         wt = self._tmp_path / "wt"
         wt.mkdir()
         proc = self._fake_proc_with_cwd("1234", wt)
-        with patch.object(cl, "_PROC_ROOT", proc):
+        with patch.object(process_table, "_HOST_PROC_ROOT", proc):
             assert cl._any_process_cwd_within(wt.resolve()) is True
 
     def test_proc_scan_ignores_process_cwd_outside_worktree(self) -> None:
@@ -257,7 +258,7 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         other = self._tmp_path / "other"
         other.mkdir()
         proc = self._fake_proc_with_cwd("1234", other)
-        with patch.object(cl, "_PROC_ROOT", proc):
+        with patch.object(process_table, "_HOST_PROC_ROOT", proc):
             assert cl._any_process_cwd_within(wt.resolve()) is False
 
     def test_worktree_liveness_marks_active_on_foreign_process_cwd(self) -> None:

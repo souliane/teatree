@@ -283,6 +283,7 @@ SETTING_HELP: dict[str, str] = {
     "watchdog_max_cost_usd": "dollars a watched run may spend before the watchdog stops it",
     "watchdog_max_runtime_seconds": "seconds a watched run may take before the watchdog stops it",
     "watchdog_max_turns": "turns a watched run may take before the watchdog stops it",
+    "venv_idle_days": "days a checkout's virtualenv may sit untouched before it is evicted as cache",
     "wip": "how much work may be in progress at once",
     "work_group_generic_scopes": "commit scopes too generic to group merge requests on",
     "work_group_max_members": "members above which a work group is surfaced as a question rather than held",

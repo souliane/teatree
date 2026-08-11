@@ -184,6 +184,31 @@ It reports per-step and total reclaimed bytes. `--dry-run` plans the set without
 
 **When `t3` itself cannot reach docker.** The containerized `t3` entry point (`deploy/t3`) execs into `teatree-worker`, which mounts the docker socket and is granted it via `group_add` — so the prunes normally work there. They fail with `failed to connect to the docker API at unix:///var/run/docker.sock` only when that grant is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container), and the command then exits 1 having freed nothing. Fix the grant — re-deploy so `deploy/deploy.sh` re-resolves the socket gid — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on the host, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
 
+### The checkout pool's retention policy (#4244)
+
+Docker cache is not where the disk goes. The pool of checkouts is: each carries a
+`.venv` and a `.venv-hook` at roughly 1.1 GB together, and they accumulate across every
+ticket ever worked — measured at ~82 GB across two locations on a box that was 92% full,
+about half of it in ad-hoc session checkouts (`wt-*`, `fix<NNNN>`, `cold<NNNN>`) that
+appear in **no** ledger, so `workspace emit` never surfaces them.
+
+The policy is enforced by the `resource_pressure` loop, not by a human running a command:
+
+- **A venv untouched for `venv_idle_days` (default 2) is evicted as the cache it is.** `uv
+  sync` rebuilds it, so the checkout recovers with no manual step and no work is at risk —
+  the tree, the commits and every uncommitted change live outside the venv. Set the
+  retention with `t3 <overlay> config_setting set venv_idle_days <days>`.
+- **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
+  candidate set; a live process decides. The guard reads the HOST's process table
+  (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it
+  cannot — a container's own PID namespace shows none of the host's agents.
+- **Steady state is therefore one venv per checkout worked inside the window** — on this
+  box's cadence, single-digit GB rather than tens. A pool materially above that means the
+  pass is being refused; read `t3 loop status`'s persisted plan, which reports
+  considered/evicting/kept counts and names what it could not see.
+- Worktrees whose ticket is done are swept on the same pass (the `clean-merged` predicate),
+  so a merged ticket's checkout does not wait for someone to remember.
+
 ### Single-repo cleanup
 
 From the overlay or main clone:

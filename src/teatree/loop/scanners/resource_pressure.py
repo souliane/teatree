@@ -32,10 +32,12 @@ readable: measure + upsert marker, emit nothing (silent tick). L1 WARN — disk 
 band: advisory ``resource.pressure_warn`` to the statusline, no freeing. L2
 CRITICAL — disk OR ram below the CRIT threshold AND the freeing rate-limit has
 elapsed: ``resource.cleanup_needed`` to the mechanical handler (allow-list
-cache purge / idle-container stop, both non-destructive). L3 CRITICAL
-DESTRUCTIVE — flag-gated: worktree GC (``allow_destructive_disk``) and renderer
-SIGTERM (``allow_destructive_ram`` after >= 2 consecutive CRITICAL-RAM ticks)
-live in the handler, never run without an explicit opt-in.
+cache purge, docker reclaim, dormant-venv eviction, the proven-done worktree
+sweep, idle-container stop — each losing nothing that is not rebuilt on demand).
+L3 CRITICAL DESTRUCTIVE — flag-gated: the heuristic worktree GC
+(``allow_destructive_disk``) and renderer SIGTERM (``allow_destructive_ram``
+after >= 2 consecutive CRITICAL-RAM ticks) live in the handler, never run
+without an explicit opt-in.
 
 Every action is best-effort: a measurement or freeing failure logs and
 returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
@@ -266,6 +268,7 @@ class ResourcePressureScanner:
     min_free_interval_minutes: int = 30
     disk_cache_allowlist: tuple[str, ...] = ()
     allow_destructive_disk: bool = False
+    venv_idle_days: float = 2.0
     worktree_stale_days: int = 30
     max_worktree_gc_per_tick: int = 3
     allow_destructive_ram: bool = False
@@ -381,6 +384,7 @@ class ResourcePressureScanner:
                 "level": "critical",
                 "disk_cache_allowlist": list(self.disk_cache_allowlist),
                 "allow_destructive_disk": self.allow_destructive_disk,
+                "venv_idle_days": self.venv_idle_days,
                 "worktree_stale_days": self.worktree_stale_days,
                 "max_worktree_gc_per_tick": self.max_worktree_gc_per_tick,
                 "allow_destructive_ram": self.allow_destructive_ram,

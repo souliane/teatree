@@ -15,7 +15,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree import paths
-from teatree.core.management.commands._workspace import checkout_registry, owner_stamps
+from teatree.core.cleanup import checkout_registry
+from teatree.core.management.commands._workspace import owner_stamps
 from teatree.core.management.commands._workspace.owner_stamps import (
     backfill_owner_stamps,
     read_owner_stamp,
@@ -25,7 +26,7 @@ from teatree.core.management.commands._workspace.owner_stamps import (
 from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo
 
-_REGISTRY = "teatree.core.management.commands._workspace.checkout_registry"
+_REGISTRY = "teatree.core.cleanup.checkout_registry"
 
 
 class TestAnAbsentOwningCloneProducesNoGap(TestCase):

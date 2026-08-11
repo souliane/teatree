@@ -235,11 +235,77 @@ def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
     return CheckoutRegistry(frozenset(found), tuple(gaps), scan.scanned_roots)
 
 
+def one_spelling_each(paths: frozenset[str]) -> list[Path]:
+    """*paths* with the spellings of one directory collapsed to a single entry.
+
+    The scan records a checkout under every spelling it was reached by, which is
+    right for a keep-set (a caller comparing strings must match either) and wrong
+    for a work list: a reaper would visit the same directory twice and count it
+    twice. An unresolvable path keeps its own spelling rather than dropping out.
+    """
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in sorted(paths):
+        try:
+            key = str(Path(path).resolve())
+        except OSError:
+            key = path
+        if key not in seen:
+            seen.add(key)
+            unique.append(Path(path))
+    return unique
+
+
+def linked_worktree_paths(workspace: Path) -> CheckoutRegistry:
+    """Every LINKED worktree that exists — the population a worktree GC may act on (#4244).
+
+    The narrower sibling of :func:`live_checkout_paths`: main clones and the
+    ad-hoc checkouts that are nobody's worktree are excluded, so a caller that
+    removes what it is handed can never be handed a clone.
+
+    Asking one directory for its worktrees is what made the pressure loop's GC
+    inert for its whole life. It ran ``git worktree list`` against the worktree
+    ROOT — a directory that CONTAINS worktrees and is not itself a repository —
+    so git answered ``fatal: not a git repository``, the helper mapped that to
+    ``[]``, and an unreadable answer became "nothing needs reaping" on every
+    tick. Both halves were wrong: the enumeration cannot be run from a non-repo,
+    and a worktree is registered by its source CLONE, not by whatever directory
+    it happens to sit under.
+
+    Two sources, unioned. The filesystem scan is primary (#3852): a checkout
+    whose ``.git`` is a FILE is a linked worktree by construction, so it needs no
+    registry to be found. Each scanned CLONE (``.git`` a directory) is then asked
+    for its own registry, which reaches a worktree living outside every scanned
+    root. A registry that will not answer is a gap, never an empty answer.
+    """
+    scan = scan_checkout_paths(checkout_scan_roots(workspace))
+    found: set[str] = set()
+    gaps = list(scan.gaps)
+    for path in one_spelling_each(scan.paths):
+        marker = path / ".git"
+        try:
+            registered_elsewhere = marker.is_file()
+            is_clone = marker.is_dir()
+        except OSError as exc:
+            gaps.append(f"could not classify {path}'s .git entry ({exc})")
+            continue
+        if registered_elsewhere:
+            found.add(str(path))
+        elif is_clone:
+            try:
+                found.update(raw_worktree_paths(str(path)))
+            except (CommandFailedError, OSError) as exc:
+                gaps.append(f"clone {path}: could not list worktrees ({exc})")
+    return CheckoutRegistry(frozenset(found), tuple(gaps), scan.scanned_roots)
+
+
 __all__ = [
     "CheckoutRegistry",
     "candidate_clones",
     "checkout_scan_roots",
+    "linked_worktree_paths",
     "live_checkout_paths",
+    "one_spelling_each",
     "raw_worktree_paths",
     "scan_checkout_paths",
 ]

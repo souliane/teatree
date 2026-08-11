@@ -383,6 +383,25 @@ def ticket_dir(workspace: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def _no_checkout_scan_outside_the_test(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """No pytest run may walk the real home looking for checkouts to reclaim (#4244).
+
+    :func:`teatree.core.cleanup.checkout_registry.checkout_scan_roots` includes
+    ``Path.home()`` unconditionally — correct in production, where the ad-hoc
+    checkouts holding most of the reclaimable cache live there. Reached from a
+    test it is two separate hazards: the walk is the runner's whole home, and the
+    reapers downstream of it DELETE what they find, so a CI runner's own
+    virtualenv is a candidate. Pinned to an empty directory; a test that needs
+    real roots re-patches it inside its own scope, naming a tmp tree.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+
+    empty = tmp_path_factory.mktemp("no-checkouts")
+    with patch("teatree.core.cleanup.checkout_registry.checkout_scan_roots", return_value=(empty,)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clean_registry() -> Iterator[None]:
     """Clear the extension point registry between tests (legacy scripts only)."""
     try:

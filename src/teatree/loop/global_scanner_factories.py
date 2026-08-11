@@ -196,6 +196,7 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
         min_free_interval_minutes=settings.resource_pressure_min_free_interval_minutes,
         disk_cache_allowlist=tuple(settings.disk_cache_allowlist),
         allow_destructive_disk=settings.allow_destructive_disk,
+        venv_idle_days=settings.venv_idle_days,
         worktree_stale_days=settings.worktree_stale_days,
         max_worktree_gc_per_tick=settings.max_worktree_gc_per_tick,
         allow_destructive_ram=settings.allow_destructive_ram,
