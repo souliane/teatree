@@ -12,6 +12,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.eval.discovery import ScenarioCatalog
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -33,9 +34,10 @@ def _green_payload() -> dict[str, object]:
     }
 
 
-def _catalog_of(size: int):
+def _catalog_of(size: int, *, degraded: dict[str, str] | None = None):
     """Pin the expected scenario count the CLI derives from the live catalog."""
-    return patch("teatree.cli.eval.green_proof.discover_specs", return_value=[object()] * size)
+    catalog = ScenarioCatalog(specs=[object()] * size, degraded=degraded or {})
+    return patch("teatree.cli.eval.green_proof.discover_catalog", return_value=catalog)
 
 
 class TestGreenProofCli:
@@ -70,3 +72,21 @@ class TestGreenProofCli:
         result = CliRunner().invoke(app, ["eval", "green-proof", str(tmp_path / "nope.json")])
         assert result.exit_code == 1, result.output
         assert "no merged eval-heal JSON" in result.output
+
+    def test_a_degraded_catalog_refuses_the_proof_it_would_otherwise_satisfy(self, tmp_path: Path) -> None:
+        # The self-defeating shape: the raising overlay shrinks the catalog AND the
+        # expected count with it, so the run "covers" a denominator derived from the
+        # same incomplete read. Coverage must be refused, not recomputed.
+        path = _write(tmp_path, _green_payload())
+        with _catalog_of(2, degraded={"acme": "boom"}):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 1, result.output
+        assert "NOT A GREEN PROOF" in result.output
+        assert "acme: boom" in result.output
+
+    def test_a_whole_registry_failure_refuses_the_proof(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, _green_payload())
+        with _catalog_of(2, degraded={"*": "entry points unreadable"}):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 1, result.output
+        assert "*: entry points unreadable" in result.output

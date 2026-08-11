@@ -93,8 +93,8 @@ class TestShippedSkillCoverageEnforced:
     The gate is declarative — closing the gap is a scenario in
     ``evals/scenarios/<name>.yaml`` (``agent_path: skills/<name>/SKILL.md``) or a
     one-line ``eval_exempt:`` key (see ``evals/README.md`` §
-    "Per-skill coverage gate"). ``t3 eval coverage --fail-on-gap`` is the CLI
-    counterpart of this gate.
+    "Per-skill coverage gate"). ``t3 eval coverage`` is the CLI counterpart of this
+    gate and returns the same verdict.
     """
 
     def test_no_shipped_skill_is_an_uncovered_gap(self) -> None:

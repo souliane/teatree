@@ -69,22 +69,39 @@ class ScenarioPassRate:
 
 @dataclasses.dataclass(frozen=True)
 class ScenarioRegression:
+    """One scenario's baseline-vs-candidate pass-rate drift.
+
+    ``candidate_pass_rate`` is ``None`` when the candidate recorded rows for the
+    scenario but ``graded()`` kept none of them — every trial errored or skipped.
+    That is UNMEASURED, not a drop to zero: reading it as ``0.0`` turned an API 529
+    across the weekly lane into a behavioral regression, which is exactly what
+    recording the aggregate as ``error`` (:func:`teatree.eval.persistence
+    ._pass_at_k_verdict`) exists to prevent. A scenario the candidate carries NO
+    row for is a different case and still defaults to ``0.0``.
+    """
+
     scenario_name: str
     baseline_pass_rate: float
-    candidate_pass_rate: float
+    candidate_pass_rate: float | None
     model: str = ""
 
     @property
-    def delta(self) -> float:
+    def unmeasured(self) -> bool:
+        return self.candidate_pass_rate is None
+
+    @property
+    def delta(self) -> float | None:
+        if self.candidate_pass_rate is None:
+            return None
         return self.candidate_pass_rate - self.baseline_pass_rate
 
     @property
     def regressed(self) -> bool:
-        return self.candidate_pass_rate < self.baseline_pass_rate
+        return self.candidate_pass_rate is not None and self.candidate_pass_rate < self.baseline_pass_rate
 
     @property
     def improved(self) -> bool:
-        return self.candidate_pass_rate > self.baseline_pass_rate
+        return self.candidate_pass_rate is not None and self.candidate_pass_rate > self.baseline_pass_rate
 
 
 @dataclasses.dataclass(frozen=True)
@@ -279,16 +296,22 @@ class EvalRunRecord(models.Model):
         ``model`` restricts both sides to one model's rows — used when gating a
         model-matrix candidate (whose run holds several models' rows) against a
         single-model baseline. Omit it for a normal single-model run.
+
+        A scenario the candidate RECORDED but could not grade (every row ``error``
+        or ``skip``) carries ``candidate_pass_rate=None`` — unmeasured, not zero.
+        One the candidate never recorded at all keeps the zero default, so a
+        genuinely dropped scenario still reads as a regression.
         """
         baseline_rates = _rates_by_scenario(baseline.pass_rates(model=model))
         candidate_rates = _rates_by_scenario(candidate.pass_rates(model=model))
+        candidate_recorded = _recorded_scenarios(candidate, model=model)
         scenarios = sorted(set(baseline_rates) | set(candidate_rates))
         return [
             ScenarioRegression(
                 scenario_name=name,
                 model=model or "",
                 baseline_pass_rate=baseline_rates.get(name, 0.0),
-                candidate_pass_rate=candidate_rates.get(name, 0.0),
+                candidate_pass_rate=_candidate_rate(name, rates=candidate_rates, recorded=candidate_recorded),
             )
             for name in scenarios
         ]
@@ -362,6 +385,20 @@ def _rates_by_scenario(rates: list[ScenarioPassRate]) -> dict[str, float]:
     for rate in rates:
         grouped.setdefault(rate.scenario_name, []).append(rate.pass_rate)
     return {name: sum(values) / len(values) for name, values in grouped.items()}
+
+
+def _recorded_scenarios(run: "EvalRunRecord", *, model: str | None) -> set[str]:
+    """Every scenario *run* holds a row for, graded or not — the ungraded/absent discriminator."""
+    rows = run.results if model is None else run.results.filter(model=model)
+    return set(rows.values_list("scenario_name", flat=True))
+
+
+def _candidate_rate(name: str, *, rates: dict[str, float], recorded: set[str]) -> float | None:
+    """The candidate's rate, or ``None`` when it recorded the scenario and graded none of it."""
+    rate = rates.get(name)
+    if rate is not None:
+        return rate
+    return None if name in recorded else 0.0
 
 
 class EvalScenarioResultQuerySet(models.QuerySet["EvalScenarioResult"]):

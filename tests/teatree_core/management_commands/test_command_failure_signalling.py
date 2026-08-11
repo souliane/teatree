@@ -184,10 +184,12 @@ def _offending_exit_contract_returns(source: str) -> list[tuple[str, int, str]]:
     return offences
 
 
-#: ``(module filename, @command method)`` pairs that signal failure by a non-string
-#: return today. They predate this detector. The set may only ever SHRINK — a new
-#: offender fails ``test_no_new_command_signals_failure_by_a_non_string_return``
-#: immediately, and a fixed one can simply be deleted from here.
+#: ``(src/teatree-relative module path, @command method)`` pairs that signal failure
+#: by a non-string return today. They predate this detector. The path is the
+#: fully-qualified key rather than the basename, which collides across the command
+#: subpackages. The set may only ever SHRINK — a new offender fails
+#: ``test_no_new_command_signals_failure_by_a_non_string_return`` immediately, and a
+#: fixed one fails ``test_no_known_exit_contract_offender_is_stale`` until deleted.
 #:
 #: #4234 drained the 4 ``env.py`` bare-int sites (now ``raise SystemExit(N)``) plus
 #: ``env.py migrate_secrets`` and ``retro.py review_findings`` (neither of which this
@@ -203,26 +205,35 @@ def _offending_exit_contract_returns(source: str) -> list[tuple[str, int, str]]:
 #: end state, not an open TODO.
 _KNOWN_EXIT_CONTRACT_OFFENDERS: frozenset[tuple[str, str]] = frozenset(
     {
-        ("_merge_keystone_commands.py", "merge"),
-        ("_rubric_commands.py", "rubric_set"),
-        ("e2e.py", "trigger_ci"),
-        ("followup.py", "discover_mrs"),
-        ("lifecycle.py", "record_e2e_run"),
-        ("pr.py", "post_test_plan"),
-        ("pr.py", "sweep"),
-        ("repro.py", "record_green"),
-        ("repro.py", "record_red"),
-        ("repro.py", "waive"),
-        ("review.py", "lock_acquire"),
-        ("review.py", "record"),
-        ("review.py", "record_evidence"),
-        ("ticket.py", "clear"),
-        ("ticket.py", "comment"),
-        ("ticket.py", "create_sub"),
-        ("ticket.py", "e2e_bypass"),
-        ("ticket.py", "transition"),
+        ("core/management/commands/_merge_keystone_commands.py", "merge"),
+        ("core/management/commands/_rubric_commands.py", "rubric_set"),
+        ("core/management/commands/e2e.py", "trigger_ci"),
+        ("core/management/commands/followup.py", "discover_mrs"),
+        ("core/management/commands/lifecycle.py", "record_e2e_run"),
+        ("core/management/commands/pr.py", "post_test_plan"),
+        ("core/management/commands/pr.py", "sweep"),
+        ("core/management/commands/repro.py", "record_green"),
+        ("core/management/commands/repro.py", "record_red"),
+        ("core/management/commands/repro.py", "waive"),
+        ("core/management/commands/review.py", "lock_acquire"),
+        ("core/management/commands/review.py", "record"),
+        ("core/management/commands/review.py", "record_evidence"),
+        ("core/management/commands/ticket.py", "clear"),
+        ("core/management/commands/ticket.py", "comment"),
+        ("core/management/commands/ticket.py", "create_sub"),
+        ("core/management/commands/ticket.py", "e2e_bypass"),
+        ("core/management/commands/ticket.py", "transition"),
     },
 )
+
+
+def _flagged_exit_contract_offenders() -> set[tuple[str, str]]:
+    """Every ``(src-relative path, @command method)`` the detector flags right now."""
+    return {
+        (module.relative_to(_SRC_ROOT).as_posix(), func_name)
+        for module in _management_command_modules()
+        for func_name, _lineno, _detail in _offending_exit_contract_returns(module.read_text())
+    }
 
 
 class TestCommandFailureSignalling:
@@ -509,13 +520,22 @@ class TestNonStringFailureReturns:
         ``self.stderr.write(...)`` + ``raise SystemExit(1)``, and never extend
         this set.
         """
-        flagged: set[tuple[str, str]] = {
-            (module.name, func_name)
-            for module in _management_command_modules()
-            for func_name, _lineno, _detail in _offending_exit_contract_returns(module.read_text())
-        }
-        new = flagged - _KNOWN_EXIT_CONTRACT_OFFENDERS
+        new = _flagged_exit_contract_offenders() - _KNOWN_EXIT_CONTRACT_OFFENDERS
         assert new == set(), (
             "Command(s) signalling failure by a non-string return, which django-typer "
             f"serialises while the process exits 0 — raise SystemExit(1) instead: {sorted(new)}"
+        )
+
+    def test_no_known_exit_contract_offender_is_stale(self) -> None:
+        """The other direction: an entry the detector no longer flags must be deleted.
+
+        Without this, a fixed site keeps its grandfathering and the ratchet silently
+        re-widens — the entry would grant a future regression at that exact site a
+        free pass. It also proves every recorded path resolves: a typo, or a module
+        that moved, reds here rather than quietly exempting nothing.
+        """
+        stale = _KNOWN_EXIT_CONTRACT_OFFENDERS - _flagged_exit_contract_offenders()
+        assert stale == set(), (
+            "Grandfathered exit-contract offender(s) the detector no longer flags — "
+            f"delete them from _KNOWN_EXIT_CONTRACT_OFFENDERS so the ratchet stays tight: {sorted(stale)}"
         )
