@@ -19,10 +19,18 @@ stores" shape the pass is supposed to find.
 import re
 from pathlib import Path
 
+from teatree.core.modelkit.phase_tools import tools_for_phase
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
 from teatree.quality.catalog import load_catalog
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SKILL_PATH = _REPO_ROOT / "skills" / "ac-reviewing-codebase" / "SKILL.md"
+
+#: Spellings of the sub-agent capability the dispatched phase's grant does not carry.
+_SUB_AGENT_TOKENS = ("sub-agent", "subagent", "dispatch_subtask")
+
+#: A mention is legitimate only alongside one of these — it then reads as conditional.
+_GRANT_CUES = ("tools_for_phase", "your grant")
 
 #: Catalog ids the skill must carry as the standing, re-checked-every-pass subset.
 _STANDING_SHAPE_IDS = (
@@ -55,6 +63,29 @@ class TestVerificationStep:
     def test_severity_is_downgradable_at_verification(self) -> None:
         body = _body().lower()
         assert "downgrad" in body, "severity must be downgradable at the verification step"
+
+
+class TestNoStepMandatesACapabilityTheGrantLacks:
+    """A step whose only named mechanism is ungranted deadlocks the pass.
+
+    § 6 forbids shipping an unverified finding and § 7 forbids ending on a report,
+    so a verification step reachable only through `dispatch_subtask` leaves a
+    dispatched pass with no legal move at all.
+    """
+
+    def test_the_dispatched_grant_really_lacks_sub_agent_dispatch(self) -> None:
+        # The premise the rule below rests on. If a future change grants it, this
+        # goes red so the skill's prose is re-reconciled rather than silently drifting.
+        assert "dispatch_subtask" not in tools_for_phase(ARCHITECTURAL_REVIEW_PHASE)
+
+    def test_every_sub_agent_mention_is_grant_conditional(self) -> None:
+        offenders = [
+            f"{number}: {line.strip()[:120]}"
+            for number, line in enumerate(_body().splitlines(), start=1)
+            if any(token in line.lower() for token in _SUB_AGENT_TOKENS)
+            and not any(cue in line.lower() for cue in _GRANT_CUES)
+        ]
+        assert offenders == [], f"sub-agent dispatch stated unconditionally: {offenders}"
 
 
 class TestCoverageStatement:
