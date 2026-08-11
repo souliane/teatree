@@ -152,6 +152,26 @@ def resolve_clone_path(workspace: Path, worktree: Worktree) -> Path | None:
     return find_clone_path(workspace, worktree.repo_path)
 
 
+def known_clone_paths(workspace: Path) -> set[Path]:
+    """Every main clone teatree can name: each registered row's, plus the cwd when it is one.
+
+    A row's clone is where its worktree registry and its branch config live, so
+    this is the repo set any clone-wide sweep operates over. The cwd is included
+    because a clone teatree has never provisioned a worktree from is invisible to
+    the rows — ``.git`` being a DIRECTORY is what distinguishes it from a linked
+    worktree, which carries a gitdir-pointer file instead.
+    """
+    clones = {
+        clone.resolve()
+        for worktree in Worktree.objects.all()
+        if (clone := resolve_clone_path(workspace, worktree)) is not None and (clone / ".git").is_dir()
+    }
+    cwd = Path.cwd()
+    if (cwd / ".git").is_dir():
+        clones.add(cwd.resolve())
+    return clones
+
+
 def repair_stale_clone_path(workspace: Path, worktree: Worktree) -> Path | None:
     """Rewrite a stale ``extra['clone_path']`` to the clone that exists; ``None`` when untouched.
 

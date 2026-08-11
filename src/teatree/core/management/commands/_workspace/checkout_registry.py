@@ -36,8 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.config import clone_root
-from teatree.core.models import Worktree
-from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.clone_paths import known_clone_paths
 from teatree.core.worktree.worktree_roots import scanned_worktree_roots
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -112,20 +111,10 @@ def candidate_clones(workspace: Path) -> set[str]:
     """The main clones whose worktree registries may hold orphaned worktrees.
 
     A worktree's registry lives in its source clone, so orphans are found by
-    listing each known main clone's worktrees. The known clones are the
-    ``clone_path`` of every ``Worktree`` row (where sub-agents branch from) plus
-    the current working directory when it is itself a main clone (``.git`` is a
-    directory, not the gitdir-pointer file a linked worktree carries).
+    listing each known main clone's worktrees — the same clone set every other
+    clone-wide sweep operates over (:func:`known_clone_paths`).
     """
-    clones: set[str] = set()
-    for wt in Worktree.objects.all():
-        clone = resolve_clone_path(workspace, wt)
-        if clone is not None and (clone / ".git").is_dir():
-            clones.add(str(clone.resolve()))
-    cwd = Path.cwd()
-    if (cwd / ".git").is_dir():
-        clones.add(str(cwd.resolve()))
-    return clones
+    return {str(clone) for clone in known_clone_paths(workspace)}
 
 
 def checkout_scan_roots(workspace: Path) -> tuple[Path, ...]:

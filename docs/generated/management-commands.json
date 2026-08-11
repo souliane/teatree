@@ -1335,6 +1335,10 @@
         {
           "help": "Release registered rows whose checkout is provably dead \u2014 ROWS ONLY (dry run unless --apply)",
           "name": "release-dead-rows"
+        },
+        {
+          "help": "Point every branch tracking someone else's ref back at its own, or untrack it (#4225)",
+          "name": "repair-branch-upstreams"
         }
       ]
     },
