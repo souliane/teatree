@@ -365,6 +365,53 @@ def _check_aged_sweep_skips() -> bool:
     return False
 
 
+#: How many of the standing backlog to name individually before summarising the tail.
+_CLEAR_BACKLOG_LISTED = 5
+
+
+def _check_unconsumed_merge_clears() -> bool:
+    """Hard-FAIL on a standing merge authorisation nobody executed (#4250).
+
+    A ``MergeClear`` is a durable authorisation to merge exactly one diff. One that is
+    never consumed is a finished, reviewed branch that silently never lands — and until
+    now no surface reported it: the S4 age signal joined ``ticket__overlay`` while
+    ticket-less is the norm, the sweep logged an unrelated reason at INTERNAL audience,
+    and ``MergeAudit`` was correctly empty because nothing ever merged. 87 authorisations
+    stood unconsumed, the oldest 19 days, with every diagnostic reading healthy.
+
+    Deliberately GLOBAL: a CLEAR whose repo no overlay declares is still a stalled merge,
+    and scoping this report per overlay is how such a row would go unreported again.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens on
+    the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.factory.merge_backlog import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        STALE_CLEAR_HOURS,
+        unconsumed_actionable_clears,
+    )
+
+    try:
+        backlog = unconsumed_actionable_clears("", timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Unconsumed-merge-CLEAR check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    stale = [row for row in backlog if row.age_hours > STALE_CLEAR_HOURS]
+    if not stale:
+        return True
+    typer.echo(
+        f"FAIL  {len(stale)} merge authorisation(s) unconsumed past {STALE_CLEAR_HOURS:.0f}h — "
+        f"oldest {stale[0].describe()}. Each is a reviewed diff cleared to merge that never "
+        "landed; re-issue the CLEAR at the live head or close the PR."
+    )
+    for row in stale[1:_CLEAR_BACKLOG_LISTED]:
+        typer.echo(f"      {row.describe()}")
+    if len(stale) > _CLEAR_BACKLOG_LISTED:
+        typer.echo(f"      …and {len(stale) - _CLEAR_BACKLOG_LISTED} more standing authorisation(s).")
+    return False
+
+
 def _check_t3_master_unheld_while_loops_tick() -> bool:
     """Hard-FAIL when ``t3-master`` is unheld while loops are still ticking (#4253).
 

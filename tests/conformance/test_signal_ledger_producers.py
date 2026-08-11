@@ -8,8 +8,10 @@ because the queries have their own fixture-injected rows. SIG-2 populated
 two ledgers had no writer.
 
 This lane is the merge gate that certifies the WHOLE signal layer is alive end to
-end. It enumerates every ledger model :mod:`teatree.core.factory.factory_signal_queries`
-reads and asserts each maps to a LIVE producer in ``SIGNAL_LEDGER_PRODUCERS`` — a
+end. It enumerates every ledger model the signal query surface reads
+(:mod:`teatree.core.factory.factory_signal_queries` +
+:mod:`teatree.core.factory.merge_backlog`) and asserts each maps to a LIVE
+producer in ``SIGNAL_LEDGER_PRODUCERS`` — a
 declared write entry point whose source actually performs the write, plus an
 exercised integration test. Two directions, both fail loud. First: a ledger read
 with no registered producer (a NEW signal reading an unwritten ledger) — the
@@ -18,7 +20,7 @@ registered producer that has been stubbed/gutted (its write removed, e.g. the
 ``claim_red_mr_fix`` fail-open regression #7 that returned ``True`` without ever
 calling ``RedMrFixAttempt.claim``) fails here, NAMING the orphaned ledger.
 
-Enumeration is by namespace introspection of the query module, so a producer
+Enumeration is by namespace introspection of those modules, so a producer
 proof is required for the models it actually imports — the registry cannot silently
 lag a newly-read ledger. It depends on SIG-2's and SIG-3's producers being on main;
 without them the ``RedMrFixAttempt`` / ``Ticket`` lanes would (correctly) be red.
@@ -32,9 +34,13 @@ from typing import ClassVar
 
 from django.db.models import Model
 
-from teatree.core.factory import factory_signal_queries
+from teatree.core.factory import factory_signal_queries, merge_backlog
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: The modules that make up the signal query surface. A new one must be listed here
+#: or the ledgers it reads escape the producer-proof requirement.
+_SIGNAL_QUERY_MODULES = (factory_signal_queries, merge_backlog)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,7 +60,7 @@ class SignalLedgerProducer:
     integration_test: str
 
 
-# Every ledger model `factory_signal_queries` reads -> its live producer proof.
+# Every ledger model the signal query surface reads -> its live producer proof.
 # Keyed by the model class name the enumeration below discovers in the query
 # module's namespace, so a newly-imported ledger with no entry fails the coverage
 # lane rather than shipping a dead read.
@@ -111,15 +117,21 @@ SIGNAL_LEDGER_PRODUCERS: tuple[SignalLedgerProducer, ...] = (
 
 
 def ledger_models_read_by_signal_queries() -> dict[str, type[Model]]:
-    """The concrete Django ledger models imported into the query module's namespace.
+    """The concrete Django ledger models imported into the signal query surface.
 
-    Introspection, not a hand-list: any ``Model`` subclass the queries import is a
+    Introspection, not a hand-list: any ``Model`` subclass those modules import is a
     ledger they read, so the coverage assertion below cannot silently lag a newly
     read ledger. Abstract bases are excluded (they carry no rows to write).
+
+    The surface is every module in :data:`_SIGNAL_QUERY_MODULES`, not one file: the
+    standing-merge-backlog queries moved to their own module (#4250), and enumerating
+    only the original one would have left a ledger read there with NO producer proof —
+    exactly the dead-read drift this capstone exists to catch.
     """
     return {
         name: obj
-        for name, obj in vars(factory_signal_queries).items()
+        for module in _SIGNAL_QUERY_MODULES
+        for name, obj in vars(module).items()
         if isinstance(obj, type) and issubclass(obj, Model) and not obj._meta.abstract
     }
 
