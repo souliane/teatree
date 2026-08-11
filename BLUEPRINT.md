@@ -113,7 +113,7 @@ Five core lifecycle models in `teatree.core.models/`: **Ticket**, **Worktree**, 
 **§4 invariant — worker enqueue pattern (load-bearing).** Transitions that own long I/O follow one rule:
 
 - Transition body stays pure: state change + metadata only, then `transaction.on_commit(lambda: execute_X.enqueue(self.pk))`. The state change and the queued work land atomically.
-- Workers take a row lock (`select_for_update()`), re-check the source state, run the runner, and on success call the next transition.
+- Workers take a row lock (`select_for_update()`), re-check the source state, run the runner, and on success call the next transition. On the production SQLite engine that clause is a **silent no-op** (`has_select_for_update` is `False`, so Django drops it and Django's own outside-a-transaction guard — itself gated on that feature — never fires): the exclusion actually comes from `transaction_mode: "IMMEDIATE"` (§4.3), which only a `transaction.atomic()` block takes. So the locked re-read must sit INSIDE `atomic()`, and `skip_locked`/`nowait` are unavailable — `IMMEDIATE` blocks where they promise to return. `tests/conformance/test_select_for_update_is_backed_by_immediate.py` re-derives the census of every call site on each run and fails on either shape ([#4226](https://github.com/souliane/teatree/issues/4226)).
 - At-least-once delivery is safe because the state guard makes redelivery a no-op.
 - `post_transition` signals are reserved for lossy cross-cutting side effects (audit log, Slack reactions) — never for the main work of the transition.
 
