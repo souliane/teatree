@@ -28,19 +28,32 @@ def _scratch(root: Path, name: str, *, days: float, size: int = 16) -> Path:
     return entry
 
 
-def _readable_net_unix(proc_root: Path) -> None:
-    """Give a synthetic proc root a real system's ``net/unix`` — header, no sockets.
+def _net_unix(namespace_dir: Path, *bind_paths: str) -> None:
+    """Write a synthetic ``net/unix`` table under *namespace_dir*, one socket per bind path.
 
-    Every genuine ``/proc`` has this file; a bare fixture directory does not, and
-    an unreadable ``net/unix`` is a deliberate probe-blinding signal elsewhere in
-    this module (see ``ScratchSweepDegradedReadTests``). Any fixture whose sweep
-    reaches ``plan()``/``apply()`` needs this so it exercises the guards under
-    test rather than the (separately, explicitly tested) unreadable-source path.
+    *namespace_dir* is a NUMERIC pid dir for the tables the sweep actually reads;
+    passing the bare proc root instead builds the ambiguous ``/proc/net`` decoy the
+    pinning tests below prove is never consulted.
     """
-    (proc_root / "net").mkdir(parents=True, exist_ok=True)
-    (proc_root / "net" / "unix").write_text(
-        "Num       RefCount Protocol Flags    Type St Inode Path\n", encoding="utf-8"
+    (namespace_dir / "net").mkdir(parents=True, exist_ok=True)
+    rows = "".join(
+        f"0000000000000000: 00000002 00000000 00000000 0001 01 {12345 + index} {path}\n"
+        for index, path in enumerate(bind_paths)
     )
+    (namespace_dir / "net" / "unix").write_text(
+        "Num       RefCount Protocol Flags    Type St Inode Path\n" + rows, encoding="utf-8"
+    )
+
+
+def _listening_socket(pid_dir: Path, *bind_paths: str) -> None:
+    """A pid holding a bound socket, shaped the way a real ``/proc`` presents one.
+
+    The socket's own fd reads back as ``socket:[inode]`` — never the bind path —
+    which is the whole reason the bind path has to come from ``net/unix``.
+    """
+    (pid_dir / "fd").mkdir(parents=True, exist_ok=True)
+    (pid_dir / "fd" / "4").symlink_to("socket:[12345]")
+    _net_unix(pid_dir, *bind_paths)
 
 
 class ScratchSweepTestCase(TestCase):
@@ -49,7 +62,6 @@ class ScratchSweepTestCase(TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(TemporaryDirectory()))
         self.proc = Path(self.enterContext(TemporaryDirectory()))
-        _readable_net_unix(self.proc)
 
     def sweep(
         self,
@@ -319,7 +331,6 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
         """
         host_tmp = Path(self.enterContext(TemporaryDirectory()))
         host_proc = Path(self.enterContext(TemporaryDirectory()))
-        _readable_net_unix(host_proc)
         held = _scratch(host_tmp, "agentdb.sqlite3", days=9, size=64)
         (host_proc / "999" / "fd").mkdir(parents=True)
         (host_proc / "999" / "fd" / "3").symlink_to("/mnt/scratch/agentdb.sqlite3")
@@ -601,8 +612,8 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
 
     Neither shows up under a per-pid ``fd`` walk: an mmap'd file survives an
     ``fd`` close and is visible only via ``map_files``; a bound AF_UNIX socket's
-    fd reads back as ``socket:[inode]`` and its bind path is only in
-    ``/proc/net/unix``, a process-table-wide source, not a per-pid one.
+    fd reads back as ``socket:[inode]`` and its bind path is only in that pid's
+    own ``net/unix`` table.
     """
 
     def test_an_mmapped_file_with_no_open_fd_is_never_removable(self) -> None:
@@ -629,12 +640,7 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
         sock = self.root / "worker.sock"
         sock.write_bytes(b"")
         _age(sock, days=9)
-        (self.proc / "net").mkdir(parents=True, exist_ok=True)
-        (self.proc / "net" / "unix").write_text(
-            "Num       RefCount Protocol Flags    Type St Inode Path\n"
-            f"0000000000000000: 00000002 00000000 00000000 0001 01 12345 {sock}\n",
-            encoding="utf-8",
-        )
+        _listening_socket(self.proc / "555", str(sock))
 
         entry = self.entry_for(self.sweep().plan(), sock)
 
@@ -643,29 +649,71 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
 
     def test_an_abstract_namespace_socket_name_is_not_treated_as_a_filesystem_path(self) -> None:
         stale = _scratch(self.root, "unrelated.sock", days=9)
-        (self.proc / "net").mkdir(parents=True, exist_ok=True)
-        (self.proc / "net" / "unix").write_text(
-            "Num       RefCount Protocol Flags    Type St Inode Path\n"
-            "0000000000000000: 00000002 00000000 00000000 0001 01 12345 @abstract-name\n",
-            encoding="utf-8",
-        )
+        _listening_socket(self.proc / "555", "@abstract-name")
 
         entry = self.entry_for(self.sweep().plan(), stale)
 
         assert entry.removable is True
 
-    def test_an_unreadable_net_unix_blinds_the_whole_probe(self) -> None:
-        """Process-table-wide source: a read failure here is fail-closed like proc_root itself."""
+    def test_a_socket_bound_only_in_the_pids_own_namespace_is_still_seen(self) -> None:
+        """The namespace-mismatch repro: the bare ``proc_root/net/unix`` answers for the WRONG namespace.
+
+        ``/proc/net`` is a magic symlink to ``self/net``, resolved against the
+        READING process, so a container reading a bind-mounted host ``/proc``
+        gets its own empty socket table back — successfully, with no exception
+        for a fail-closed path to catch. Only the pid-scoped table sees the
+        socket that is actually holding this entry alive.
+        """
+        sock = self.root / "worker.sock"
+        sock.write_bytes(b"")
+        _age(sock, days=9)
+        _net_unix(self.proc)  # the ambiguous global path: readable, and reports nothing
+        (self.proc / "111" / "fd").mkdir(parents=True)  # a pid that answers, holding nothing
+        _net_unix(self.proc / "555", str(sock))
+
+        entry = self.entry_for(self.sweep().plan(), sock)
+
+        assert entry.removable is False
+        assert entry.reason == "open by a live process"
+
+    def test_the_ambiguous_global_net_unix_is_never_consulted(self) -> None:
+        """A decoy bind under ``proc_root/net/unix`` must not save an entry no pid holds."""
+        stale = _scratch(self.root, "decoy.sock", days=9)
+        _net_unix(self.proc, str(stale))
+        (self.proc / "111" / "fd").mkdir(parents=True)  # a pid that answers, holding nothing
+
+        entry = self.entry_for(self.sweep().plan(), stale)
+
+        assert entry.removable is True
+
+    def test_an_unreadable_net_unix_leaves_the_probe_blind_via_the_gated_sources(self) -> None:
+        """The sole visible pid answers through nothing at all — the C2 fail-closed path."""
         _scratch(self.root, "t3after", days=9, size=2048)
-        # setUp already gave this fixture a readable net/unix FILE; replace it with a
-        # directory at the same path, so read_text() raises IsADirectoryError.
-        (self.proc / "net" / "unix").unlink()
-        (self.proc / "net" / "unix").mkdir()
+        # A directory where the table should be, so read_text() raises IsADirectoryError.
+        (self.proc / "777" / "net" / "unix").mkdir(parents=True)
 
         plan = self.sweep().plan()
 
         assert plan.candidates == ()
         assert "open-file probe unreadable" in plan.probe_gap
+
+    def test_a_readable_socket_table_alone_never_vouches_for_a_blind_probe(self) -> None:
+        """``<pid>/net/unix`` is 0444 where ``fd``/``map_files`` are 0500 behind ptrace.
+
+        So the socket table answers for every pid whatever this uid can actually
+        reach — including the measured container shape where no fd, cwd or
+        map_files resolves at all. Counting it as a witness would retire the C2
+        blindness guard on any real ``/proc`` and let the sweep delete files it
+        cannot see the holders of.
+        """
+        stale = _scratch(self.root, "t3after", days=9, size=64)
+        _net_unix(self.proc / "777", str(self.root / "some-other.sock"))
+
+        plan = self.sweep().plan()
+
+        assert plan.candidates == ()
+        assert "open-file probe unreadable" in plan.probe_gap
+        assert stale.exists()
 
 
 class AdHocGitRepoTests(ScratchSweepTestCase):
