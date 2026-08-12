@@ -175,6 +175,23 @@ def _reset_declaration_caches() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _inert_ambient_process_table() -> Iterator[None]:
+    """Point the scratch sweep's VENUE process table at nothing, so an UNPINNED test is inert.
+
+    ``resolve_scratch_sweep`` otherwise hands the sweep the machine's live
+    ``/proc``, which makes a sweep test's verdict a property of whatever else is
+    running: green in a container with no ``systemd --user``, red on a systemd
+    host. A non-existent root fails the probe closed everywhere, so a test that
+    forgot to pin fails deterministically instead of drifting by venue. Tests that
+    MEAN to sweep pin their own table with ``tests._procfs.pinned_venue_proc``.
+    """
+    from teatree.core.retention import scratch  # noqa: PLC0415 — deferred: ORM import at fixture time
+
+    with patch.object(scratch, "_VENUE_PROC", Path("/nonexistent-process-table-pin-your-own")):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_webhook_rate_limiter() -> Iterator[None]:
     """Drop the process-singleton webhook limiter so buckets don't leak across tests."""
     from teatree.core.views._rate_limit import reset_webhook_rate_limiter  # noqa: PLC0415

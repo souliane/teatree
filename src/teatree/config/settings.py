@@ -1011,6 +1011,18 @@ class _RetentionSettings:
     # matches the cadence the maintenance chain already ran at. ``0`` disables the
     # lane (the library's own floor is 1 day; sub-day retention is not expressible).
     task_result_retention_days: int = 1
+    # #4165 agent-scratch retention under the temp root. On this box ``/tmp`` is a
+    # RAM-backed tmpfs, so week-old sqlite/venv scratch is not idle disk — it is
+    # 28% of the working memory pool, permanently. Ships OFF (``0``) because the
+    # lane is a recursive delete and every destructive lever defaults OFF; 3 days
+    # is the window the manual reclaim used, and arming it needs a venue whose
+    # liveness probe can actually resolve host fds. The root is blank by default
+    # and auto-resolves to the host view (``/host-tmp``, paired with
+    # ``/host-proc``) when the deployment mounts it, else this venue's own
+    # ``/tmp`` — a containerised sweep of the container's own temp root reclaims
+    # nothing of what actually fills the box. Per-overlay overridable.
+    scratch_retention_days: int = 0
+    scratch_sweep_root: str = ""
     # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
     # consults (``Ticket.has_active_work``). An agent that crashed without closing
     # its Session would otherwise pin its ticket — and so its worktree, its

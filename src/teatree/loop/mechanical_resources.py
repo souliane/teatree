@@ -44,6 +44,7 @@ from pathlib import Path
 from django.utils import timezone
 
 from teatree.config import worktree_root
+from teatree.core.retention.scratch import resolve_scratch_sweep, sweep_scratch
 from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
@@ -145,6 +146,7 @@ def _plan_disk(payload: ActionPayload) -> FreePlan:
         plan.estimated_reclaim_gb += size_gb
     plan.steps.append("RUN uv cache prune")
     plan.steps.append(f"CLEAN /tmp/claude-statusline entries older than {_STALE_STATUSLINE_DAYS}d")
+    plan.steps.append(_scratch_plan_step(payload))
     plan.steps.append("RECLAIM docker build cache + dangling images + unreferenced volumes (safe, never -a)")
     if payload.get("allow_destructive_disk"):
         worktrees = _gc_candidate_worktrees(payload)
@@ -178,6 +180,7 @@ def _execute_disk(plan: FreePlan, payload: ActionPayload) -> None:
         plan.reclaimed_gb += _purge_dir(path)
     _run_uv_cache_prune()
     _clean_stale_statusline()
+    plan.reclaimed_gb += _sweep_scratch(plan, payload)
     plan.reclaimed_gb += _reclaim_docker_disk(plan)
     if payload.get("allow_destructive_disk"):
         plan.reclaimed_gb += _gc_worktrees(payload)
@@ -249,6 +252,51 @@ def _clean_stale_statusline() -> None:
                 entry.unlink()
         except OSError:
             continue
+
+
+def _scratch_retention_days(payload: ActionPayload) -> int:
+    return int(payload.get("scratch_retention_days", 0))
+
+
+def _scratch_armed(payload: ActionPayload) -> bool:
+    """A recursive unattended delete needs BOTH the window AND the destructive opt-in.
+
+    The window alone armed it, which put an autonomous ``rmtree`` outside the very
+    flag the worktree-GC lane beside it is gated on. An explicit human
+    ``retention scratch --apply`` is its own authorization and is NOT gated here.
+    """
+    return _scratch_retention_days(payload) > 0 and bool(payload.get("allow_destructive_disk"))
+
+
+def _scratch_plan_step(payload: ActionPayload) -> str:
+    """The scratch lane's line in BOTH ladders — on a tmpfs /tmp this reclaims RAM, not disk."""
+    days = _scratch_retention_days(payload)
+    if days <= 0:
+        return "SKIP agent-scratch sweep (scratch_retention_days=0)"
+    if not payload.get("allow_destructive_disk"):
+        return "SKIP agent-scratch sweep (allow_destructive_disk=false)"
+    root = resolve_scratch_sweep(str(payload.get("scratch_sweep_root", ""))).root
+    return f"SWEEP agent scratch under {root} older than {days}d"
+
+
+def _sweep_scratch(plan: FreePlan, payload: ActionPayload) -> float:
+    """Reclaim stale agent scratch; return GB freed. Best-effort, never raises."""
+    if not _scratch_armed(payload):
+        return 0.0
+    try:
+        swept = sweep_scratch(
+            configured_root=str(payload.get("scratch_sweep_root", "")),
+            retention_days=_scratch_retention_days(payload),
+            apply=True,
+        )
+    except Exception:
+        logger.exception("free_resources: agent-scratch sweep failed — swallowed")
+        return 0.0
+    if swept.refused:
+        plan.steps.append(f"  → REFUSED agent-scratch sweep ({swept.probe_gap})")
+        return 0.0
+    plan.steps.append(f"  → {swept.summary}")
+    return swept.reclaimed_bytes / _GIB
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +400,7 @@ def _plan_ram(payload: ActionPayload) -> FreePlan:
     for cid in idle:
         plan.steps.append(f"STOP/prune idle container {cid}")
     plan.steps.append("RUN docker container prune -f (exited only)")
+    plan.steps.append(_scratch_plan_step(payload))
     if _ram_kill_enabled(payload):
         targets = _kill_candidate_pids(payload)
         for pid, name in targets:
@@ -362,10 +411,11 @@ def _plan_ram(payload: ActionPayload) -> FreePlan:
     return plan
 
 
-def _execute_ram(payload: ActionPayload) -> None:
+def _execute_ram(plan: FreePlan, payload: ActionPayload) -> None:
     for cid in _idle_containers():
         _stop_container(cid)
     _docker_container_prune()
+    plan.reclaimed_gb += _sweep_scratch(plan, payload)
     if _ram_kill_enabled(payload):
         for pid, _name in _kill_candidate_pids(payload):
             _sigterm(pid)
@@ -500,7 +550,7 @@ def _execute_plan(plan: FreePlan, payload: ActionPayload) -> None:
     if plan.resource == "disk":
         _execute_disk(plan, payload)
     else:
-        _execute_ram(payload)
+        _execute_ram(plan, payload)
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, timeout: float = 60) -> str | None:

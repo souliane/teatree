@@ -62,6 +62,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     handlers = {
         "teatree queue status": queue.Command.status,
         "teatree retention prune": retention.Command.prune,
+        "teatree retention scratch": retention.Command.scratch,
         "teatree tasks list": tasks.Command.list_tasks,
         "teatree followup sync": followup.Command.sync,
         "teatree worktree status": worktree.Command.status,

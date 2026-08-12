@@ -22,9 +22,9 @@ from unittest.mock import patch
 import django.test
 from django.utils import timezone
 
-import teatree.cli.doctor.app as doctor_app
-from teatree.cli.doctor.app import _run_loop_intent_gates
+import teatree.cli.doctor.run_checks as doctor_runner
 from teatree.cli.doctor.checks_loop import _check_unconsumed_merge_clears
+from teatree.cli.doctor.run_checks import _run_loop_intent_gates
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.clear_liveness_report import LISTED
 from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS
@@ -185,10 +185,10 @@ class TestDoctorWiring(UnconsumedClearCheckBase):
         # sibling gates are pinned GREEN so the aggregate can only flip on this one.
         with (
             patch(_READER, _reads(PrOpenState.OPEN)),
-            patch.object(doctor_app, "_check_intent_freshness", return_value=True),
-            patch.object(doctor_app, "_check_intake_budget_deadlock", return_value=True),
-            patch.object(doctor_app, "_check_loop_schedule_liveness", return_value=True),
-            patch.object(doctor_app, "_check_t3_master_unheld_while_loops_tick", return_value=True),
+            patch.object(doctor_runner, "_check_intent_freshness", return_value=True),
+            patch.object(doctor_runner, "_check_intake_budget_deadlock", return_value=True),
+            patch.object(doctor_runner, "_check_loop_schedule_liveness", return_value=True),
+            patch.object(doctor_runner, "_check_t3_master_unheld_while_loops_tick", return_value=True),
         ):
             assert _run_loop_intent_gates() is True
             self._stranded(pr_id=4250, hours=STALE_CLEAR_HOURS + 1)
