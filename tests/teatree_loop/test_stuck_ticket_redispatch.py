@@ -457,6 +457,24 @@ class TestFailingCandidates(TestCase):
         assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
         assert DeferredQuestion.objects.count() == 0
 
+    def test_repeated_runtime_ceilings_are_redispatched_though_their_fingerprints_differ(self) -> None:
+        # #4276: the sibling causeless kind, and the one the KIND-level drop actually
+        # carries — the reason interpolates the breach, so the two fingerprint
+        # differently and the fingerprint filter has nothing to drop. Only
+        # ``_deterministic_kinds`` keeps this out of the two-strikes stall.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for seconds in (3601, 3722):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
     def test_repeated_environmental_failures_are_redispatched_within_the_cap(self) -> None:
         # A transient/environmental failure is the environment's fault, not the work's,
         # so it stays retryable — bounded by the iteration cap, never by the kind stall.

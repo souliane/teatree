@@ -46,7 +46,7 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_causeless, is_environmental, stall_fingerprints
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
@@ -311,31 +311,14 @@ def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
     return None
 
 
-#: Kinds that are the ABSENCE of a name rather than a cause, so two of them are not
-#: evidence of one repeating defect — two unrelated failures both land here. They keep
-#: the text-based fingerprint stall, which compares what actually differs between them.
-_UNNAMED_KINDS = frozenset({FailureKind.UNCLASSIFIED, FailureKind.UNRECORDED})
-
-
 def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
     """The last two attempts' failure kinds, keeping only the NAMED deterministic ones (#3957).
 
-    An environmental kind is dropped rather than compared: a lost lease or an API outage
-    is the environment's fault, so repeating it says nothing about the work and must stay
-    retryable up to the iteration cap. A CAUSELESS kind is dropped for the sibling reason
-    (#4075) — it reports the absence of a cause, so two of them are one silence repeated,
-    not one defect. Dropping (rather than substituting a placeholder) also means one such
-    failure between two identical deterministic ones breaks the run — only two CONSECUTIVE
-    named deterministic failures halt.
+    Which kinds survive is the taxonomy's call, not this sweep's: :func:`stall_kinds` is
+    the one place an environmental, unnamed or CAUSELESS kind is withheld, so it cannot be
+    dropped on one repair path and compared on another.
     """
-    return [
-        a.failure_kind
-        for a in attempts[-2:]
-        if a.failure_kind
-        and a.failure_kind not in _UNNAMED_KINDS
-        and not is_causeless(a.failure_kind)
-        and not is_environmental(a.failure_kind)
-    ]
+    return stall_kinds(a.failure_kind for a in attempts[-2:])
 
 
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:

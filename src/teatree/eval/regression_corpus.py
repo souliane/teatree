@@ -42,6 +42,7 @@ from teatree.eval.regression_corpus_predicates import (
     _check_banned_terms_scanner_fails_closed_on_crash,
     _check_branch_currency_conflict_only,
     _check_causeless_failure_does_not_trip_the_stall,
+    _check_causeless_kind_is_dropped_from_the_kind_stall,
     _check_forge_resolves_by_host_not_token,
     _check_loop_owner_lease_pid_anchored,
     _check_merge_precondition_maker_is_not_checker,
@@ -104,6 +105,15 @@ _CHECKS: tuple[RegressionCheck, ...] = (
             "and keeps two identical named-defect ones (still stalls)"
         ),
         predicate=_check_causeless_failure_does_not_trip_the_stall,
+    ),
+    RegressionCheck(
+        failure_class="causeless KIND survives the two-strikes stall (#4276)",
+        origin="https://github.com/souliane/teatree/issues/4276",
+        invariant=(
+            "stall_kinds drops two runtime_ceiling kinds (no kind stall) and keeps two named-deterministic "
+            "ones (still stalls); the two ceiling reasons fingerprint differently, so only the kind drop carries it"
+        ),
+        predicate=_check_causeless_kind_is_dropped_from_the_kind_stall,
     ),
     RegressionCheck(
         failure_class="substrate-merge human-authorize floor",
