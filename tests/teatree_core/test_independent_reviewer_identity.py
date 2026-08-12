@@ -17,7 +17,7 @@ from teatree.config.reviewer_identities import effective_independent_reviewer_id
 from teatree.config.settings import UserSettings
 from teatree.core.merge.authorization import assert_review_verdict_gate
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.models import MergeClear, ReviewVerdict
+from teatree.core.models import MergeClear, ReproWaiver, ReviewVerdict, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, diff_paths_are_substrate
 from teatree.core.models.review_verdict import ReviewVerdictError
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, is_non_reviewer_role
@@ -30,6 +30,17 @@ _RESOLVER = "teatree.core.models.reviewer_identity._configured_reviewer_identiti
 
 #: The identities a review pass that implements its own findings actually carries.
 REVIEW_AUTHORING_IDENTITIES = ("ac-reviewing-codebase", "architectural_review", "architectural-review")
+
+#: Spellings reaching the same tokens as their refused twin through a delimiter the
+#: component split did not honour, so the spaced form bought admission (#4378).
+RESPELT_PAIRS = (
+    ("cold architectural review", "cold-architectural-review"),
+    ("ac reviewing codebase", "ac-reviewing-codebase"),
+    ("merge loop", "merge-loop"),
+)
+
+#: A cold reviewer that also names the phase it is IN — a reviewer role noun, not a maker.
+REVIEWER_NAMING_ITS_PHASE = "cold-reviewer-4152-reviewing"
 
 
 class TestReviewAuthoringIdentitiesRefused(TestCase):
@@ -85,6 +96,71 @@ class TestReviewAuthoringIdentitiesRefused(TestCase):
                     )
                 )
         assert MergeClear.objects.count() == 0
+
+
+class TestSpellingCannotBuyAdmission(TestCase):
+    """Re-spelling a refused identity with a different delimiter must not admit it (#4378)."""
+
+    def test_each_respelling_is_refused_exactly_like_its_twin(self) -> None:
+        for respelt, punctuated in RESPELT_PAIRS:
+            assert is_non_reviewer_role(respelt) is True, respelt
+            assert is_non_reviewer_role(punctuated) is True, punctuated
+
+    def test_a_bare_maker_word_in_non_leading_position_is_refused(self) -> None:
+        # The leading-prefix rule already catches "coding agent" / "loop worker"; the hole
+        # was a maker word arriving later in the identity under an unsplit delimiter.
+        for identity in ("maker reviewer", "cold maker", "merge loop reviewer"):
+            assert is_non_reviewer_role(identity) is True, identity
+            assert is_independent_reviewer_identity(identity) is False, identity
+
+    def test_any_non_alphanumeric_run_delimits(self) -> None:
+        assert is_non_reviewer_role("team.maker/x") is True
+
+    def test_the_respelt_review_authoring_identity_is_not_admitted(self) -> None:
+        assert is_independent_reviewer_identity("cold architectural review") is False
+
+    def test_verdict_record_refuses_the_respelt_identity(self) -> None:
+        with pytest.raises(ReviewVerdictError, match="independent"):
+            ReviewVerdict.record(
+                pr_id=4378,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict=ReviewVerdict.Verdict.MERGE_SAFE.value,
+                reviewer_identity="cold architectural review",
+            )
+        assert ReviewVerdict.objects.count() == 0
+
+
+class TestPhaseWordDoesNotRefuseARealReviewer(TestCase):
+    """A review PHASE word refuses only an identity that names no reviewer role noun (#4378)."""
+
+    def test_a_role_noun_survives_the_phase_word(self) -> None:
+        assert is_non_reviewer_role(REVIEWER_NAMING_ITS_PHASE) is False
+        assert is_independent_reviewer_identity(REVIEWER_NAMING_ITS_PHASE) is True
+
+    def test_a_weak_modifier_alone_does_not_survive_it(self) -> None:
+        # "cold" qualifies a reviewer, it does not name one, so #4367's refusal stands.
+        assert is_non_reviewer_role("cold-architectural-review") is True
+
+    def test_verdict_record_and_merge_gate_admit_it(self) -> None:
+        recorded = ReviewVerdict.record(
+            pr_id=4379,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE.value,
+            reviewer_identity=REVIEWER_NAMING_ITS_PHASE,
+        )
+        assert recorded.pk is not None
+        assert_review_verdict_gate(slug="souliane/teatree", pr_id=4379, head_sha=_SHA)
+
+    def test_the_denylist_only_surface_admits_it(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        waiver = ReproWaiver.record(
+            ticket=ticket,
+            approver_id=REVIEWER_NAMING_ITS_PHASE,
+            reason="a scheduler race with no deterministic repro",
+        )
+        assert waiver.pk is not None
 
 
 class TestUnrecognisedIdentityFailsClosed(TestCase):
