@@ -862,6 +862,10 @@
         {
           "help": "Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply)",
           "name": "prune"
+        },
+        {
+          "help": "Reclaim stale agent scratch under the temp root (dry-run unless --apply)",
+          "name": "scratch"
         }
       ]
     },
@@ -1141,6 +1145,10 @@
         {
           "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",
           "name": "backfill-clears"
+        },
+        {
+          "help": "Consume every standing merge authorisation whose PR already merged or closed",
+          "name": "reconcile-clears"
         },
         {
           "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",

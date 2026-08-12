@@ -273,6 +273,8 @@ class ResourcePressureScanner:
     max_worktree_gc_per_tick: int = 3
     allow_destructive_ram: bool = False
     ram_kill_allowlist: tuple[str, ...] = field(default_factory=tuple)
+    scratch_retention_days: int = 0
+    scratch_sweep_root: str = ""
     name: str = "resource_pressure"
 
     def scan(self) -> list[ScanSignal]:
@@ -389,6 +391,8 @@ class ResourcePressureScanner:
                 "max_worktree_gc_per_tick": self.max_worktree_gc_per_tick,
                 "allow_destructive_ram": self.allow_destructive_ram,
                 "ram_kill_allowlist": list(self.ram_kill_allowlist),
+                "scratch_retention_days": self.scratch_retention_days,
+                "scratch_sweep_root": self.scratch_sweep_root,
                 "consecutive_critical": getattr(marker, "consecutive_critical", 0) or 0,
             },
         )

@@ -25,16 +25,22 @@ import os
 import signal
 import subprocess
 from pathlib import Path
+from tempfile import TemporaryDirectory, mkdtemp
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.cleanup import process_table
+from teatree.core.cleanup.venv_eviction import VenvEvictionPlan
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
+from teatree.loop.worktree_gc import GcSurvey
 from tests._process_table_venue import usable_process_table
+from tests._procfs import pinned_venue_proc
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -656,6 +662,125 @@ def _fake_reclaim_report(total_bytes: int = 0) -> object:
         outcome=PruneOutcome(reclaimed="x", bytes_reclaimed=total_bytes),
     )
     return ReclaimReport(steps=(step,), planned=(step,), dry_run=False)
+
+
+class ScratchSweepLadderTests(TestCase):
+    """The scratch lane runs in BOTH ladders — on a tmpfs /tmp its scratch IS RAM (#4165)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(mkdtemp(prefix="rp_scratch_"))
+        self.addCleanup(_rmtree_safe, str(self.tmp))
+        self.stale = self.tmp / "t3db.sqlite3"
+        _write_file(self.stale, 2048)
+        old = timezone.now().timestamp() - 9 * 86400
+        os.utime(self.stale, (old, old))
+        self.uv_prune = _patch_uv_cache_prune(self)
+        # `_payload` arms allow_destructive_disk for the scratch lane; the worktree-GC,
+        # venv-eviction and done-worktree lanes sharing the disk ladder would otherwise
+        # reach the real workspace. An empty survey leaves each of them nothing to remove.
+        inert = mechanical_resources.DiskSurvey(gc=GcSurvey(), venvs=VenvEvictionPlan())
+        for name, value in (("_reclaim_docker_disk", 0.0), ("_survey_disk", inert), ("_reap_done_worktrees", None)):
+            patcher = patch.object(mechanical_resources, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self._pin_process_table()
+
+    def _pin_process_table(self) -> None:
+        """Both tables: the sweep's own VENUE proc, and the host-aware one the GC guards read."""
+        self.enterContext(pinned_venue_proc(holding=self.tmp / "held-elsewhere"))
+        host_proc = usable_process_table(Path(self.enterContext(TemporaryDirectory())), working_in=self.tmp / "away")
+        self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", host_proc))
+
+    def _payload(self, resource: str, **extra: object) -> dict[str, object]:
+        return {
+            "resource": resource,
+            "scratch_retention_days": 3,
+            "scratch_sweep_root": str(self.tmp),
+            "allow_destructive_disk": True,
+            **extra,
+        }
+
+    def test_disk_ladder_reclaims_the_stale_scratch(self) -> None:
+        free_resources(self._payload("disk"))
+
+        assert not self.stale.exists()
+        assert "SWEEP agent scratch under" in ResourcePressureMarker.load().last_plan
+
+    def test_ram_ladder_reclaims_the_stale_scratch_because_tmpfs_scratch_is_ram(self) -> None:
+        with (
+            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
+            patch.object(mechanical_resources, "_docker_container_prune", return_value=None),
+        ):
+            free_resources(self._payload("ram"))
+
+        assert not self.stale.exists()
+
+    def test_a_zero_window_disables_the_lane_without_even_walking_the_root(self) -> None:
+        with patch.object(mechanical_resources, "sweep_scratch") as swept:
+            free_resources(self._payload("disk", scratch_retention_days=0))
+
+        swept.assert_not_called()
+        assert self.stale.exists()
+        assert "SKIP agent-scratch sweep" in ResourcePressureMarker.load().last_plan
+
+    def test_the_autonomous_sweep_needs_the_destructive_flag_and_says_why(self) -> None:
+        # An unattended recursive rmtree belongs behind the same flag the
+        # worktree-GC lane beside it is gated on; the window alone armed it.
+        with patch.object(mechanical_resources, "sweep_scratch") as swept:
+            free_resources(self._payload("disk", allow_destructive_disk=False))
+
+        swept.assert_not_called()
+        assert self.stale.exists()
+        assert "SKIP agent-scratch sweep (allow_destructive_disk=false)" in ResourcePressureMarker.load().last_plan
+
+    def test_the_ram_ladder_is_gated_on_the_same_flag(self) -> None:
+        with (
+            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
+            patch.object(mechanical_resources, "_docker_container_prune", return_value=None),
+            patch.object(mechanical_resources, "sweep_scratch") as swept,
+        ):
+            free_resources(self._payload("ram", allow_destructive_disk=False))
+
+        swept.assert_not_called()
+        assert self.stale.exists()
+
+    def test_a_refused_sweep_is_its_own_step_never_a_zero_gb_success_line(self) -> None:
+        refused = ScratchSweepPlan(
+            root=str(self.tmp),
+            retention_days=3,
+            entries=(),
+            probe_gap="open-file probe unsighted at /proc: 3 of 4 pid(s) unknowable",
+            refused=True,
+        )
+
+        with patch.object(mechanical_resources, "sweep_scratch", return_value=refused):
+            free_resources(self._payload("disk"))
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "REFUSED agent-scratch sweep" in plan
+        assert "reclaimed 0.00 GB" not in plan
+
+    def test_a_sweep_failure_is_swallowed_so_the_tick_survives(self) -> None:
+        with patch.object(mechanical_resources, "sweep_scratch", side_effect=RuntimeError("proc gone")):
+            free_resources(self._payload("disk"))
+
+        assert self.stale.exists()
+        assert ResourcePressureMarker.load().last_freed_at is not None
+
+    def test_the_reclaimed_bytes_land_in_the_plan_report(self) -> None:
+        lib = self.tmp / "wt4081venv" / "lib.so"
+        _write_file(lib, _GIB // 2)
+        old = timezone.now().timestamp() - 9 * 86400
+        # Age the nested file too, not just the top-level dir — the sweep's
+        # staleness check is tree-wide (#4165 review finding #1), so a fresh
+        # nested file would otherwise keep the whole tree off the candidate list.
+        os.utime(lib, (old, old))
+        os.utime(self.tmp / "wt4081venv", (old, old))
+
+        free_resources(self._payload("disk"))
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "reclaimed 0.50 GB" in plan
 
 
 def _patch_uv_cache_prune(case: TestCase) -> MagicMock:

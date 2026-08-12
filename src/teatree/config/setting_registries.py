@@ -179,6 +179,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "park_attempt_retention_days": _parse_strict_int,
     "ticket_transition_prune_disabled": _parse_strict_bool,
     "task_result_retention_days": _parse_strict_int,
+    "scratch_retention_days": _parse_strict_int,
+    "scratch_sweep_root": _parse_strict_str,
     "session_stale_after_hours": _parse_strict_int,
     "provision_step_timeout_seconds": _parse_strict_int,
     "idle_stack_reaper_disabled": _parse_strict_bool,

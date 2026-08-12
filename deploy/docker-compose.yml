@@ -199,6 +199,30 @@ x-teatree-common: &teatree-common
     # a reader can check. Read-write on purpose: the docker API is a socket, and
     # a read-only bind would refuse the write half of every request.
     - /var/run/docker.sock:/var/run/docker.sock
+    # The HOST temp root + the HOST process table, so the agent-scratch retention
+    # sweep (#4165) reaches what actually fills the box. A container has its own
+    # /tmp, so a container-scoped sweep reclaims none of the host scratch that
+    # made 28% of the RAM pool week-old garbage on a tmpfs-backed /tmp.
+    #
+    # The PAIR is the point, and neither half works alone: the sweep refuses to
+    # remove a path any live process holds open, and that guard is read from a
+    # process table — reading THIS container's while sweeping the HOST's files
+    # would answer confidently about the wrong namespace. /host-proc is read-only
+    # (the sweep only reads /proc/<pid>/{cwd,fd}); /host-tmp is read-write because
+    # reclaiming is the whole point. Distinct targets, so the container's own /tmp
+    # and /proc are untouched.
+    #
+    # Strictly narrower than what the worker already holds: the docker socket
+    # above IS root-equivalent on the host (see deploy/README.md § security
+    # posture). What bounds this mount is the sweep's own guards — age, uid
+    # ownership, open-file, registered-worktree, protected-name — not the mount.
+    - type: bind
+      source: ${TEATREE_HOST_TMP:-/tmp}
+      target: /host-tmp
+    - type: bind
+      source: /proc
+      target: /host-proc
+      read_only: true
   init: true
 
 # Memory sizing (#3651). Every `mem_limit` below is a ceiling, not a reservation:
@@ -234,6 +258,11 @@ services:
       # install that registers the overlay entry point. Interpolated from the
       # host env because that is the only channel deploy/t3 can reach compose on.
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
       # Init owns the shared clone root, so it is where the discovery link is
       # retargeted at the host-visible checkout — before the worker that reads
       # it starts (#4120).
@@ -250,6 +279,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
       # Same value as the checkout bind in the shared anchor: the entrypoint
       # points clone discovery at it so the worktrees this role cuts carry a
       # `gitdir:` the host resolves too (#4120).
@@ -326,6 +360,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully
@@ -361,6 +400,11 @@ services:
       T3_DEBUG: "0"
       TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
       TEATREE_CLONE_DIR: ${TEATREE_CLONE_DIR:-/home/teatree/teatree}
+      # Same default expression as the /host-tmp bind source above, so the sweep's
+      # probe_root always names the SAME host path the mount actually points at
+      # (#4165) — a value read here that disagreed with the mount source would
+      # blind the open-file guard exactly as a hard-coded /tmp did.
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
     depends_on:
       teatree-init:
         condition: service_completed_successfully

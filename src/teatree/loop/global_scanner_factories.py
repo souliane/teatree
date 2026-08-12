@@ -201,6 +201,8 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
         max_worktree_gc_per_tick=settings.max_worktree_gc_per_tick,
         allow_destructive_ram=settings.allow_destructive_ram,
         ram_kill_allowlist=tuple(settings.ram_kill_allowlist),
+        scratch_retention_days=settings.scratch_retention_days,
+        scratch_sweep_root=settings.scratch_sweep_root,
     )
 
 

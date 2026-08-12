@@ -339,6 +339,8 @@ class TeatreeSettingsSchema(BaseSettings):
     scanning_news_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     sdk_monthly_credit_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     schema_readiness_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    scratch_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    scratch_sweep_root: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     self_update_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     self_update_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     send_proxy_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]

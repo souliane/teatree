@@ -445,6 +445,7 @@ Group root — forces sub-commands to be addressed by name.
 | Subcommand | Description |
 | --- | --- |
 | `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
+| `scratch` | Reclaim stale agent scratch under the temp root (dry-run unless --apply) |
 
 ## `retro`
 
@@ -583,6 +584,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
+| `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |
 | `record-spec-coverage` | Record the spec-coverage manifest the delivery DoD gate reads (#2232) |
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
