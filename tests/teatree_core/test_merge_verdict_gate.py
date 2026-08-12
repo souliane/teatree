@@ -279,7 +279,10 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
         scanner, api, _keystone = _solo_scanner([_solo_pr()])
         signals = scanner.scan()
         assert api.merge_pr_calls == []  # the newest non-stale verdict is a HOLD
-        assert signals[0].kind == "pr_sweep.flag_no_review"
+        # #4380: a held head is flagged as HELD, not as "no independent review" —
+        # a reviewer looked and said no. The refusal above is what this case pins;
+        # the label is the corrected one.
+        assert signals[0].kind == "pr_sweep.flag_held"
 
     def test_hold_then_later_merge_safe_merges(self) -> None:
         _record("hold", at=_T0)

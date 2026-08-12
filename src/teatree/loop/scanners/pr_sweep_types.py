@@ -40,6 +40,14 @@ MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 # ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
 CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
 
+# The reason a PR carries when a HOLD stands at its live head that nobody took back
+# — including the case where a later ``merge_safe`` from a DIFFERENT reviewer
+# superseded it under newest-wins. Two reviewers disagreeing at one unchanged tree is
+# not a verdict the loop may resolve by timestamp, so the autonomous no-CLEAR merge
+# refuses and reports instead (#4380). Owner-audience — see
+# ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
+CONTESTED_HOLD_REASON = "contested_hold_at_head"
+
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:

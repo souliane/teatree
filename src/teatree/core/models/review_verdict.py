@@ -234,6 +234,34 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
             return HeadVerdictState.HOLD
         return HeadVerdictState.MERGE_SAFE
 
+    def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+        """Every non-stale HOLD standing at *head_sha*, IGNORING newest-wins supersession (#4380).
+
+        Deliberately not :meth:`effective_state_at`. That method answers "what is
+        the verdict" and resolves a disagreement by timestamp; this one answers
+        "did anyone say no and never take it back", which a later PASS from a
+        DIFFERENT reviewer does not settle. Two reviewers ran concurrently on one
+        unchanged tree, disagreed, and the autonomous no-CLEAR merge took the
+        newer row — so a hold nobody reconciled read as consent.
+
+        A same-identity re-record is NOT a leftover hold: :meth:`ReviewVerdict.record`
+        is an ``update_or_create`` on
+        ``(slug, pr_id, reviewed_sha, reviewer_identity_normalized)``, so a reviewer
+        correcting their own judgment at the same head overwrites their own row and
+        leaves nothing here. That is the escape hatch, and it costs no new machinery.
+
+        Matched through :meth:`for_pr` (``slug__iexact``) on purpose — a hand-rolled
+        exact-match filter is what once made a verdict invisible to the merge gate,
+        and re-introducing it here would hide a hold from the guard that exists to
+        honour it.
+        """
+        head = head_sha.strip().lower()
+        return [
+            verdict
+            for verdict in self.for_pr(slug, pr_id)
+            if not verdict.is_merge_safe() and not verdict.is_stale_at(head)
+        ]
+
 
 class ReviewVerdict(models.Model):
     """One recorded cold-review judgment for a PR at an exact reviewed tree.

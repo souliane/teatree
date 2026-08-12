@@ -167,6 +167,27 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
     return state is HeadVerdictState.MERGE_SAFE
 
 
+def unreconciled_hold_at_head(*, slug: str, pr_id: int, head_sha: str) -> bool:
+    """True iff a HOLD stands at *head_sha* that no one has taken back (#4380).
+
+    The extra precondition on the autonomous, no-CLEAR solo-overlay merge. It is
+    NOT the effective verdict: a later ``merge_safe`` from a DIFFERENT reviewer
+    wins under newest-wins and still leaves the hold standing, which is exactly
+    the contested head that merged itself. Only the holding reviewer lifting
+    their own hold, a human CLEAR, or a new push clears this.
+
+    No ``try/except`` on purpose — unlike :func:`record_mergeable_notified`,
+    where degrading to ``False`` means "stay quiet", here it would mean "no hold,
+    go ahead and merge", so a DB hiccup would merge over a hold. The caller's
+    existing handler logs and skips the PR for the tick, and the next tick
+    retries — the safe direction. :func:`has_independent_cold_review` above
+    behaves the same way.
+    """
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — lazy ORM import
+
+    return bool(ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha))
+
+
 def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:
     """True iff the PR's AUTHOR ticket carries a live external-delivery lease (#2104).
 

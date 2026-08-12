@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
+from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON as _CONTESTED_HOLD_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
@@ -297,12 +298,17 @@ class AutoReviewTaskDispatcher:
 #: Flag reasons the owner is DM'd about instead of only logged — a condition no
 #: further tick can clear on its own. The BotPing ledger still caps each at one DM
 #: per ``(repo, PR, reason)``, so escalating cannot reintroduce per-tick spam.
-OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset({_CLEAR_PRESENT_UNUSABLE_REASON})
+OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset({_CLEAR_PRESENT_UNUSABLE_REASON, _CONTESTED_HOLD_REASON})
 
 _FLAG_TEXTS: dict[str, str] = {
     _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
     _CLEAR_PRESENT_UNUSABLE_REASON: (
         "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
+    ),
+    _CONTESTED_HOLD_REASON: (
+        "two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, "
+        "so the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at "
+        "that SHA, or a new commit moves the head"
     ),
 }
 
