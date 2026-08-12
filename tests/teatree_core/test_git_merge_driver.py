@@ -45,8 +45,8 @@ _BASE_LINES = ["- t3 alpha", "- t3 bravo", "- t3 charlie", "- t3 delta", "- t3 e
 # A generator that rebuilds the doc from the checkout's own source, exactly as the real
 # `generate_cli_reference.py` rebuilds it from the live command tree. Run inside a merge
 # it reads the pre-merge (ours) tree, which is the whole defect.
-_STUB_GENERATOR = """import pathlib, sys
-pathlib.Path(".generator-ran").touch()
+_STUB_GENERATOR = f"""import pathlib, sys
+pathlib.Path({_GENERATOR_RAN_MARKER!r}).touch()
 pathlib.Path(sys.argv[1]).write_text(pathlib.Path("src/commands.txt").read_text())
 """
 
