@@ -1498,17 +1498,24 @@ quoted payloads elided, so a matcher scopes to what the shell would actually run
 It is selected per matcher by naming it where the arg goes
 (`no_tool_call_matching: { Bash.command_span: ~ "…" }`); the registry is
 `_ARG_VIEWS` in `teatree.eval.matchers` and the scanner is
-`teatree.eval.command_span.executed_span`.
+`teatree.eval.command_span.executed_span`. A name in `DERIVED_VIEW_NAMES` with no
+`_ARG_VIEWS` transform raises `UnknownArgViewError` — a view whose code is dropped
+can never degrade to a missing arg, which reads as a silent green.
 
-What the span keeps and drops:
+A quoted region is elided only where the scanner can NAME it a payload; anything it
+cannot decide is kept, because eliding an act costs the matcher its teeth silently
+while keeping a payload only ever reds loudly:
 
 | construct | in the span |
 |---|---|
-| single-quoted region | elided (POSIX literal — no expansion) |
-| double-quoted region | elided, **except** `$( … )` / backtick bodies, kept verbatim (a substitution IS executed) |
-| the quoted operand of `-c` (`bash -c '…'`) and of `eval` | kept verbatim — a script, not payload |
-| `<<'EOF'` heredoc body (quoted delimiter) | elided |
+| a quoted region attached to an unquoted word fragment (`-m'…'`, `--body='…'`) | elided — an option's own value |
+| a standalone quoted operand of 4+ words | elided as prose (`'I have not marked the task complete'`) |
+| a shorter standalone quoted operand | kept, quotes removed as the shell removes them — `t3 widget 'ticket clear' 42` is an act, not a report |
+| `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
+| the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload |
+| `<<'EOF'` heredoc body (quoted delimiter) | elided, **unless** its line runs an interpreter (`bash <<'EOF'`, `cat <<'EOF' \| bash`) — a quoted delimiter suppresses expansion, not execution |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
+| `<<<'…'` herestring | the operator is consumed whole, so the following command line is scanned rather than swallowed as a heredoc body |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,

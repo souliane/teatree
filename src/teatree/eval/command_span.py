@@ -1,9 +1,13 @@
 """The EXECUTED span of a shell command — the program, with literal payloads elided.
 
-A negative eval matcher grades an ACT. A quoted argument is prose the model authored,
+A negative eval matcher grades an ACT. A quoted payload is prose the model authored,
 so a forbidden phrase inside it is a REPORT of the act, not the act — the same bytes
 are correct evidence in one span and a violation in the other. Eliding the literal
 payloads leaves what the shell would actually run.
+
+The elision is asymmetric on purpose: dropping text the shell executes strips a
+matcher's teeth SILENTLY, while keeping a payload only ever reds loudly. So a region
+the scanner cannot name a payload is kept.
 
 Elision is opt-in per matcher (``Bash.command_span``); plain ``Bash.command`` still
 grades the whole string, because for a large class the payload IS the graded artifact.
@@ -12,8 +16,18 @@ grades the whole string, because for a large class the payload IS the graded art
 import re
 
 #: The token before a quoted operand that makes that operand a SCRIPT rather than
-#: payload — ``bash -c '…'``, ``eval "…"``. A script is executed, so it stays whole.
-_SCRIPT_OPERAND_TOKENS = frozenset({"-c", "eval"})
+#: payload — ``bash -c '…'``, ``eval "…"``, and the clustered short-option runs
+#: (``-lc``, ``-ec``) carrying the same operand. A script is executed, so it stays whole.
+_SCRIPT_OPERAND_TOKEN = re.compile(r"eval|-[A-Za-z]*c")
+
+#: A heredoc redirected into one of these is a script on stdin — a quoted delimiter
+#: suppresses expansion, it does not stop the body being executed.
+_SCRIPT_INTERPRETERS = frozenset({"bash", "sh", "dash", "ksh", "zsh", "python", "python3", "node", "perl", "ruby"})
+
+#: Words at or above which a standalone quoted operand reads as prose rather than as a
+#: fragment of the command's own word chain (``t3 widget 'ticket clear' 42``). Below it
+#: the two are indistinguishable, and eliding an act is the failure that costs teeth.
+_PROSE_WORD_FLOOR = 4
 
 _TOKEN_BOUNDARY = re.compile(r"[\s;|&()]")
 
@@ -29,12 +43,16 @@ _HEREDOC_OP = re.compile(
 def executed_span(command: str) -> str:
     """*command* with its literal quoted payloads elided.
 
-    Single-quoted regions and double-quoted regions are dropped; ``$( … )`` and
-    backtick bodies inside double quotes survive (a substitution is executed), as
-    does the quoted operand of ``-c``/``eval``. A quoted-delimiter heredoc body is
-    dropped; an unquoted-delimiter one is kept. Anything unparsable — an unbalanced
-    quote, a heredoc with no terminator — keeps the remainder RAW, so a stray
-    apostrophe can never silently strip a matcher's teeth.
+    A quoted region is dropped only where the scanner can NAME it a payload: attached
+    to an unquoted word fragment (``-m'…'``, ``--body='…'``), or a standalone operand
+    of :data:`_PROSE_WORD_FLOOR` words or more. ``$( … )`` and backtick bodies inside a
+    dropped double-quoted region survive (a substitution is executed), as does the
+    quoted operand of ``-c``/``eval``. A quoted-delimiter heredoc body is dropped
+    unless its line runs an interpreter, which executes it; an unquoted-delimiter one
+    is kept. A kept region has its quotes removed, as the shell removes them. Anything
+    unparsable — an unbalanced quote, a heredoc with no terminator — keeps the
+    remainder verbatim, so neither a stray apostrophe nor a quoted fragment of the act
+    can silently strip a matcher's teeth.
     """
     return _SpanScanner(command).run()
 
@@ -60,7 +78,10 @@ class _SpanScanner:
                 self._emit(char)
                 self._pos += 1
                 self._drain_heredoc_bodies()
-            elif self._src.startswith("<<", self._pos) and not self._src.startswith("<<<", self._pos):
+            elif self._src.startswith("<<<", self._pos):
+                self._emit("<<<")
+                self._pos += 3
+            elif self._src.startswith("<<", self._pos):
                 self._scan_heredoc_operator()
             else:
                 self._emit(char)
@@ -78,13 +99,22 @@ class _SpanScanner:
         head = self._src[: self._pos].rstrip()
         return _TOKEN_BOUNDARY.split(head)[-1] if head else ""
 
+    def _keeps(self, body: str) -> bool:
+        """Whether the quoted region at the cursor survives into the span."""
+        if _SCRIPT_OPERAND_TOKEN.fullmatch(self._preceding_token()) is not None:
+            return True
+        if self._pos > 0 and _TOKEN_BOUNDARY.match(self._src[self._pos - 1]) is None:
+            return False
+        return len(body.split()) < _PROSE_WORD_FLOOR
+
     def _scan_single_quoted(self) -> None:
         close = self._src.find("'", self._pos + 1)
         if close == -1:
             self._keep_raw_remainder()
             return
-        if self._preceding_token() in _SCRIPT_OPERAND_TOKENS:
-            self._emit(self._src[self._pos : close + 1])
+        body = self._src[self._pos + 1 : close]
+        if self._keeps(body):
+            self._emit(body)
         self._pos = close + 1
 
     def _scan_double_quoted(self) -> None:
@@ -92,10 +122,8 @@ class _SpanScanner:
         if close is None:
             self._keep_raw_remainder()
             return
-        if self._preceding_token() in _SCRIPT_OPERAND_TOKENS:
-            self._emit(self._src[self._pos : close + 1])
-        else:
-            self._emit(_substitutions(self._src[self._pos + 1 : close]))
+        body = self._src[self._pos + 1 : close]
+        self._emit(body if self._keeps(body) else _substitutions(body))
         self._pos = close + 1
 
     def _scan_heredoc_operator(self) -> None:
@@ -106,8 +134,16 @@ class _SpanScanner:
             return
         quoted = match["quoted_delim"]
         self._emit(match.group(0))
-        self._pending_heredocs.append((quoted or match["delim"], quoted is not None))
+        elide = quoted is not None and not self._feeds_an_interpreter()
+        self._pending_heredocs.append((quoted or match["delim"], elide))
         self._pos = match.end()
+
+    def _feeds_an_interpreter(self) -> bool:
+        """Whether the line carrying this heredoc operator runs the body as a script."""
+        line_start = self._src.rfind("\n", 0, self._pos) + 1
+        line_end = self._src.find("\n", self._pos)
+        line = self._src[line_start:] if line_end == -1 else self._src[line_start:line_end]
+        return any(word.rsplit("/", 1)[-1] in _SCRIPT_INTERPRETERS for word in _TOKEN_BOUNDARY.split(line))
 
     def _drain_heredoc_bodies(self) -> None:
         while self._pending_heredocs:
@@ -157,14 +193,37 @@ def _closing_double_quote(text: str, start: int) -> int | None:
 
 
 def _matching_paren(text: str, open_index: int) -> int | None:
+    """Index of the ``)`` closing the ``(`` at *open_index*, or ``None``.
+
+    Quoted regions are skipped whole — a ``)`` inside one closes nothing, so a
+    substitution is never truncated mid-way.
+    """
     depth = 0
-    for index in range(open_index, len(text)):
-        if text[index] == "(":
+    index = open_index
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+        elif char == "'":
+            close = text.find("'", index + 1)
+            if close == -1:
+                return None
+            index = close + 1
+        elif char == '"':
+            close = _closing_double_quote(text, index)
+            if close is None:
+                return None
+            index = close + 1
+        elif char == "(":
             depth += 1
-        elif text[index] == ")":
+            index += 1
+        elif char == ")":
             depth -= 1
             if depth == 0:
                 return index
+            index += 1
+        else:
+            index += 1
     return None
 
 
