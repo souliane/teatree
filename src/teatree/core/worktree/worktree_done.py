@@ -40,6 +40,7 @@ from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _r
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
+from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons, working_tree_dirt
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
@@ -395,7 +396,20 @@ def reap_done_worktree(
     data-loss gate (:func:`analyze_worktree_changes`) is unchanged — a dirty or
     genuinely-ahead worktree is still KEPT on the FSM path. The ad-hoc ``clean-all``
     sweep leaves ``fsm_terminal`` off, preserving the full live-work protection.
+
+    The capture runs before the FIRST return, so it covers every disposition —
+    including the KEPT ones, which is where work accumulated unobserved (#4272).
+    Capturing only inside teardown meant the one disposition that tears nothing
+    down, a row whose ticket is still open, wrote no record at all: 75 of 77
+    registered rows on the reporting host, the worst holding 25 modified files
+    with no commit and no remote branch. It reads the checkout and writes
+    elsewhere and never raises, so no verdict below depends on it; it is skipped
+    under ``dry_run`` to keep a preview free of side effects.
     """
+    if not dry_run:
+        capture_unshipped_work(
+            Path(_resolve_worktree_path(workspace, worktree)), branch=worktree.branch, overlay=worktree.overlay
+        )
     pre_gate = reap_pre_gate(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
     if pre_gate is not None:
         return _pre_gate_outcome(worktree, workspace=workspace, verdict=pre_gate)
