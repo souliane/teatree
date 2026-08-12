@@ -81,8 +81,12 @@ SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 
-def discover_catalog() -> ScenarioCatalog:
-    """The full catalog plus the overlay surfaces that failed to contribute to it."""
+def discover_core_specs() -> list[EvalSpec]:
+    """The shipped core catalog alone — the surface teatree's own structural guards may pin.
+
+    An overlay's scenarios are the overlay's to pin, so a guard asserting a property
+    of every shipped scenario reads this rather than the whole catalog.
+    """
     if not SCENARIOS_DIR.is_dir():
         msg = (
             f"scenario catalog directory is missing: {SCENARIOS_DIR}. A missing dir would yield an "
@@ -92,6 +96,12 @@ def discover_catalog() -> ScenarioCatalog:
     specs: list[EvalSpec] = []
     for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
         specs.extend(load_eval_yaml(path))
+    return specs
+
+
+def discover_catalog() -> ScenarioCatalog:
+    """The full catalog plus the overlay surfaces that failed to contribute to it."""
+    specs = discover_core_specs()
     degraded: dict[str, str] = {}
     specs.extend(_discover_overlay_specs(degraded))
     _reject_duplicate_names(specs)
