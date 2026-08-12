@@ -419,6 +419,10 @@ READS_ONLY = [
     ("reader-with-adjacent-operand", "cat <<<'t3 widget task '\"complete 42\""),
     ("reader-in-subshell", f"( cat <<<'{ACT}' )"),
     ("reader-after-continuation", f"cat \\\n<<<'{ACT}'"),
+    ("reader-after-a-pipeline-head", f"true | cat <<<'{ACT}'"),
+    ("reader-after-a-separator", f"true; cat <<<'{ACT}'"),
+    ("reader-after-an-interpreter-segment", f"bash -c true; cat <<<'{ACT}'"),
+    ("reader-then-a-separate-piped-interpreter", f"cat <<<'{ACT}' && true | bash"),
 ]
 
 #: Payload spellings with no redirection at all — prose and option values a real bash
@@ -427,6 +431,7 @@ NEVER_REDIRECTED = [
     ("attached-option-payload", "t3 notify send -m'the task complete note goes here'"),
     ("body-flag", "t3 notify send --body='I did not mark the task complete'"),
     ("prose-operand", "t3 notify send 'I have not marked the task complete yet'"),
+    ("prose-after-a-continuation", "t3 notify send \\\n'I have not marked the task complete yet'"),
 ]
 
 #: Shapes a real bash DOES execute that this view still elides. ``origin/main`` elides
