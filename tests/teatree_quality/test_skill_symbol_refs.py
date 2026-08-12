@@ -15,6 +15,10 @@ Their currently-unresolved references are pinned in
 directions: the listed ones are visible instead of invisible, a NEW stale citation
 reds, and a listed one that got FIXED reds until its entry is deleted.
 
+:class:`TestCharterRatchetControls` plants a violation in each of those directions.
+A ratchet is green on a healthy tree whether or not its assertion still fires, so
+neither direction's green counts as evidence until the planted one has been seen RED.
+
 :class:`TestGoldenCorpus` proves the scanner is neither vacuous nor
 over-blocking against a committed ``*.md.txt`` corpus — a must-FLAG set (absent
 path, absent module, absent attribute, absent imported name, an absent bare
@@ -29,6 +33,7 @@ widening must never sweep in).
 """
 
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -105,22 +110,46 @@ _KNOWN_UNRESOLVED_CHARTER_REFS: frozenset[tuple[str, str]] = frozenset(
 )
 
 
-def _unresolved_charter_refs() -> set[tuple[str, str]]:
-    """Every ``(charter doc, unresolved reference)`` pair the scanner reports right now."""
-    return {
+@lru_cache(maxsize=1)
+def _unresolved_charter_refs() -> frozenset[tuple[str, str]]:
+    """Every ``(charter doc, unresolved reference)`` pair the scanner reports right now.
+
+    Cached: each call re-walks every charter document, and four callers want the answer.
+    """
+    return frozenset(
         (str(doc.relative_to(_REPO_ROOT)), finding.ref)
         for doc in _CHARTER_DOCS
         if doc.is_file()
         for finding in _unresolved(scan_file(doc, _REPO_ROOT))
-    }
+    )
+
+
+# Both directions take the same two sets, so they are keyword-only: a positional
+# swap would silently assert each direction against the other's operands.
+def _assert_no_new_unresolved_charter_ref(
+    *, known: frozenset[tuple[str, str]], unresolved: frozenset[tuple[str, str]]
+) -> None:
+    new = unresolved - known
+    assert new == set(), (
+        "charter document(s) naming a symbol the tree does not have — an agent reads "
+        f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
+    )
+
+
+def _assert_no_stale_charter_allowance(
+    *, known: frozenset[tuple[str, str]], unresolved: frozenset[tuple[str, str]]
+) -> None:
+    stale = known - unresolved
+    assert stale == set(), (
+        "Pinned charter reference(s) the scanner no longer reports as unresolved — "
+        f"delete them from _KNOWN_UNRESOLVED_CHARTER_REFS so the ratchet stays tight: {sorted(stale)}"
+    )
 
 
 class TestCharterDocs:
     def test_no_new_charter_document_reference_is_unresolved(self) -> None:
-        new = _unresolved_charter_refs() - _KNOWN_UNRESOLVED_CHARTER_REFS
-        assert new == set(), (
-            "charter document(s) naming a symbol the tree does not have — an agent reads "
-            f"these before any skill, so a stale citation reads as a work item: {sorted(new)}"
+        _assert_no_new_unresolved_charter_ref(
+            known=_KNOWN_UNRESOLVED_CHARTER_REFS, unresolved=_unresolved_charter_refs()
         )
 
     def test_no_known_charter_reference_is_stale(self) -> None:
@@ -130,17 +159,58 @@ class TestCharterDocs:
         citation of the same symbol in the same doc. It also proves each recorded pair
         still resolves to a real scan result rather than exempting nothing.
         """
-        stale = _KNOWN_UNRESOLVED_CHARTER_REFS - _unresolved_charter_refs()
-        assert stale == set(), (
-            "Pinned charter reference(s) the scanner no longer reports as unresolved — "
-            f"delete them from _KNOWN_UNRESOLVED_CHARTER_REFS so the ratchet stays tight: {sorted(stale)}"
-        )
+        _assert_no_stale_charter_allowance(known=_KNOWN_UNRESOLVED_CHARTER_REFS, unresolved=_unresolved_charter_refs())
 
     def test_the_charter_documents_are_actually_walked(self) -> None:
         # The ratchet above is satisfied by scanning nothing, so pin that the walk
         # reaches real content: BLUEPRINT.md alone cites dozens of live symbols.
         resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT) if f.reason is None]
         assert len(resolved) > 10, "BLUEPRINT.md yielded almost no teatree-shaped references — the walk is broken"
+
+
+#: Names a module the tree does not have, in a document that does not cite it — so the
+#: live scan can never report it, and planting it is a violation in either direction.
+_PLANTED_CHARTER_REF = ("BLUEPRINT.md", "teatree.this_entry_is_bogus_and_stale")
+
+
+class TestCharterRatchetControls:
+    """Each direction of the shrink-only ratchet, observed RED against a planted violation.
+
+    A flattened assertion and a healthy tree produce the same green, so neither
+    direction above is evidence of anything until its planted violation has failed.
+    """
+
+    @staticmethod
+    def _authored_message(exc_info: pytest.ExceptionInfo[AssertionError]) -> str:
+        # Only the first line: pytest's rewriting appends the compared sets below it,
+        # so asserting over the whole string would pass on a message naming nothing.
+        return str(exc_info.value).split("\n", 1)[0]
+
+    def test_control_a_stale_known_entry_reds_and_names_itself(self) -> None:
+        with pytest.raises(AssertionError) as exc_info:
+            _assert_no_stale_charter_allowance(
+                known=_KNOWN_UNRESOLVED_CHARTER_REFS | {_PLANTED_CHARTER_REF},
+                unresolved=_unresolved_charter_refs(),
+            )
+        message = self._authored_message(exc_info)
+        assert _PLANTED_CHARTER_REF[1] in message, "the failure reports a count instead of naming the stale entry"
+        assert "delete them from _KNOWN_UNRESOLVED_CHARTER_REFS" in message, (
+            "the failure names the stale entry but not the remedy — a maintainer cannot act on it"
+        )
+
+    def test_control_a_new_unresolved_reference_reds_and_names_itself(self) -> None:
+        with pytest.raises(AssertionError) as exc_info:
+            _assert_no_new_unresolved_charter_ref(
+                known=_KNOWN_UNRESOLVED_CHARTER_REFS,
+                unresolved=_unresolved_charter_refs() | {_PLANTED_CHARTER_REF},
+            )
+        message = self._authored_message(exc_info)
+        assert _PLANTED_CHARTER_REF[1] in message, "the failure reports a count instead of naming the new reference"
+
+    def test_control_the_planted_reference_is_absent_from_the_live_scan(self) -> None:
+        # Without this, a planted pair the scanner DOES report would make the stale
+        # control vacuous — it would assert against an entry that is not stale at all.
+        assert _PLANTED_CHARTER_REF not in _unresolved_charter_refs()
 
 
 class TestResolver:
