@@ -548,6 +548,16 @@ class _ReviewGateSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Review")
 
+    # Identities this deployment additionally trusts as INDEPENDENT checkers (#4241),
+    # on top of the harness's recognised reviewer-role tokens. maker≠checker is a
+    # fail-CLOSED allowlist, so a reviewer whose handle carries no role word — every
+    # human, an external review service, a novel agent role — is refused until it is
+    # named here (the owner's own `user_identity_aliases` are unioned in for free, so
+    # the common case needs no configuration). Widening a fail-closed trust boundary is
+    # itself an authorization, so the key is a `SAFETY_POSTURE_KEYS` member the MCP
+    # write surface refuses. DB-home (#1775), per-overlay overridable.
+    independent_reviewer_identities: list[str] = field(default_factory=list)
+
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
     # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is
     # a NO-OP, so projects that do not configure a review skill keep

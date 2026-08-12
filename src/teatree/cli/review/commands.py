@@ -335,6 +335,7 @@ def unapprove(
 # Loaded here, alongside the other typer command bindings, so the review.py
 # LOC ceiling (`scripts/hooks/check_module_health.py`) stays satisfied.
 from teatree.cli.review import checkout as _review_checkout  # noqa: E402, F401 — registration side-effect
+from teatree.cli.review import merge_tree as _review_merge_tree  # noqa: E402, F401 — registration side-effect
 from teatree.cli.review import run as _review_run  # noqa: E402, F401 — registration side-effect
 
 __all__ = ["approve", "post_comment", "post_draft_note", "reply_to_discussion", "unapprove"]

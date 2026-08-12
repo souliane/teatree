@@ -4,6 +4,11 @@ Doc-invariant guards that keep the catalog from going stale: they derive the liv
 token set from the circuit breaker's `_SIGNATURE_STRIP_RE` and the live gate names
 from the `t3 <overlay> gate` CLI registration, and assert each is documented in
 that section. An undocumented new escape token or gate CLI turns CI red.
+
+These check MENTION ONLY — that the token/gate NAME appears. A row whose stated
+gate or scan surface has since gone stale is invisible here (#4216: an
+`[admission-ok:]` row kept naming a retired arm through three passes). The row's
+CONTENT is pegged by `tests/quality/anchor_prose_pegs.toml`.
 """
 
 import re

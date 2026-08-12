@@ -248,6 +248,7 @@ class TeatreeSettingsSchema(BaseSettings):
     idle_stack_reaper_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     incoming_event_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     incremental_push_gate: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    independent_reviewer_identities: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     intake_ram_per_agent_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     intake_ram_reserve_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     issue_implementer_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

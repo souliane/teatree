@@ -41,14 +41,16 @@ class TestRecordValidation:
 
     def test_unknown_kind_rejected(self, ticket: Ticket) -> None:
         with pytest.raises(ReviewEvidenceError, match="Unknown kind"):
-            ReviewEvidence.record(ticket=ticket, kind="bogus", reviewer_identity="r", verdict="ok", head_sha=_SHA)
+            ReviewEvidence.record(
+                ticket=ticket, kind="bogus", reviewer_identity="cold-reviewer", verdict="ok", head_sha=_SHA
+            )
 
     def test_blank_verdict_rejected(self, ticket: Ticket) -> None:
         with pytest.raises(ReviewEvidenceError, match="verdict is required"):
             ReviewEvidence.record(
                 ticket=ticket,
                 kind=ReviewEvidence.Kind.COLD_REVIEW,
-                reviewer_identity="r",
+                reviewer_identity="cold-reviewer",
                 verdict="   ",
                 head_sha=_SHA,
             )
@@ -68,7 +70,7 @@ class TestRecordValidation:
             ReviewEvidence.record(
                 ticket=ticket,
                 kind=ReviewEvidence.Kind.COLD_REVIEW,
-                reviewer_identity="r",
+                reviewer_identity="cold-reviewer",
                 verdict="ok",
                 head_sha="abc123",
             )
@@ -78,7 +80,7 @@ class TestRecordValidation:
             ReviewEvidence.record(
                 ticket=ticket,
                 kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
-                reviewer_identity="r",
+                reviewer_identity="cold-reviewer",
                 verdict="ok",
                 head_sha=_SHA,
                 repos=["org/a"],
@@ -86,7 +88,9 @@ class TestRecordValidation:
 
     def test_no_row_written_on_rejection(self, ticket: Ticket) -> None:
         with pytest.raises(ReviewEvidenceError):
-            ReviewEvidence.record(ticket=ticket, kind="bogus", reviewer_identity="r", verdict="ok", head_sha=_SHA)
+            ReviewEvidence.record(
+                ticket=ticket, kind="bogus", reviewer_identity="cold-reviewer", verdict="ok", head_sha=_SHA
+            )
         assert ReviewEvidence.objects.for_ticket(ticket).count() == 0
 
 
@@ -96,7 +100,7 @@ class TestManagerLookups:
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.COLD_REVIEW,
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
             verdict="ok",
             head_sha=_SHA,
         )
@@ -106,7 +110,7 @@ class TestManagerLookups:
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
             verdict="ok",
             head_sha=_SHA,
             repos=["org/a", "org/b"],
@@ -119,7 +123,7 @@ class TestManagerLookups:
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
             verdict="ok",
             head_sha=_SHA2,
             repos=["org/a", "org/b"],

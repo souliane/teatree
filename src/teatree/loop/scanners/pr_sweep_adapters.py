@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
+from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
@@ -293,16 +294,33 @@ class AutoReviewTaskDispatcher:
         return row is not None
 
 
+#: Flag reasons the owner is DM'd about instead of only logged — a condition no
+#: further tick can clear on its own. The BotPing ledger still caps each at one DM
+#: per ``(repo, PR, reason)``, so escalating cannot reintroduce per-tick spam.
+OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset({_CLEAR_PRESENT_UNUSABLE_REASON})
+
+_FLAG_TEXTS: dict[str, str] = {
+    _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
+    _CLEAR_PRESENT_UNUSABLE_REASON: (
+        "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
+    ),
+}
+
+
 @dataclass(slots=True)
 class SlackMergeNotifier:
     """Route merge announcements + flag signals through the notify-relevance policy.
 
     :meth:`announce` is an OWNER_DELIVERY (a PR merged) — DM'd exactly once per
     merge via the :class:`~teatree.core.models.BotPing` idempotency ledger keyed
-    on the merged SHA. :meth:`flag` is INTERNAL (the loop re-flags every
+    on the merged SHA. :meth:`flag` is INTERNAL by default (the loop re-flags every
     un-reviewed PR each ~5-minute tick) — logged only, never DM'd, so re-flagging
     the same stuck PR forever can never spam the owner. This replaces the former
     raw ``backend.post_message`` bypass that DM'd on every tick per open PR (F1).
+
+    :data:`OWNER_ESCALATION_FLAG_REASONS` names the flags that must not stay
+    log-only: a condition nothing in the loop can clear on its own needs the owner,
+    and the ledger still caps it at one DM per ``(repo, PR, reason)``.
     """
 
     backend: object
@@ -328,15 +346,14 @@ class SlackMergeNotifier:
         from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
 
         target = url or f"{slug}#{pr_id}"
-        if reason == _MERGEABLE_AWAITING_REVIEW_REASON:
-            text = f"mergeable, ready to request review {target}"
-        else:
-            text = f"flag ({reason}) {target}"
+        text = _FLAG_TEXTS.get(reason, f"flag ({reason})") + f" {target}"
         notify_user(
             text,
             kind=NotifyKind.INFO,
             idempotency_key=f"pr-sweep-flag:{slug}#{pr_id}:{reason}",
-            audience=NotifyAudience.INTERNAL,
+            audience=(
+                NotifyAudience.OWNER_ESCALATION if reason in OWNER_ESCALATION_FLAG_REASONS else NotifyAudience.INTERNAL
+            ),
         )
 
 

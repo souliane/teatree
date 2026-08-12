@@ -25,11 +25,11 @@ PreToolUse and a registered ``Agent`` matcher delivers it). The
 orchestrator-boundary foreground-Agent guard is additionally default-ON (#1733),
 with its never-lockout off-ramps intact (sub-agent context,
 ``run_in_background: true``, ``[fg-ok: <reason>]`` token, kill-switch,
-deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). Distinguish the
-PreToolUse ``Agent`` path from the ``Task``/``Workflow`` fan-out vehicle, which
-genuinely DOES bypass PreToolUse and fires ``TaskCreated`` instead (no
-``run_in_background`` in its schema) — that is why the dispatch-quote concern
-also carries a reachable ``TaskCreated`` counterpart.
+deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). The ``Agent`` matcher is the
+ONLY interception point a sub-agent dispatch has (#4216); the task-LIST tools are
+a separate family that bypasses PreToolUse, and ``TaskCreated`` is THEIR event —
+which is why the quote concern also carries a reachable ``TaskCreated`` arm over
+task-list entries.
 The phantom roster is now asserted EMPTY (also visible via ``-rsx``); a row
 silently gaining phantom status without a deliberate update FAILS the build.
 """
@@ -243,21 +243,6 @@ def _arrange_skill_loading(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
     ctx.write_state("pending", "code\n")
     ctx.write_state("skills", "")
-
-
-def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
-    ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", "code\n")
-    ctx.write_state("skills", "")
-
-
-def _task_created(description: str, *, skip: bool) -> dict:
-    token = "[skip-skill-gate: false-trigger] " if skip else ""
-    return {
-        "session_id": "sess-liveness",
-        "task_subject": "do the thing",
-        "task_description": f"{token}{description}",
-    }
 
 
 # block-edit-before-planned (PreToolUse Edit/Write): deny Edit/Write when the
@@ -594,8 +579,8 @@ def _mcp_slack_write_allow(ctx: GateContext) -> dict:
 
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
-# the `Agent` PreToolUse matcher in hooks.json. The clean-prompt fan-out concern
-# is also covered by the reachable TaskCreated counterpart below.
+# the `Agent` PreToolUse matcher in hooks.json, the only interception point a
+# dispatch has. The task-list arm below covers a quote pasted into a todo.
 
 
 def _dispatch_quote_deny(ctx: GateContext) -> dict:
@@ -610,11 +595,12 @@ def _dispatch_quote_allow(ctx: GateContext) -> dict:
     }
 
 
-# dispatch-prompt quote-scanner ON TaskCreated (the fan-out arm, #171): the
-# fan-out path bypasses PreToolUse, so this TaskCreated handler scans the
-# task subject/description. Ships default-OFF (opt-in pending #1640-class
-# fan-out validation), so the corpus enables it explicitly to prove it CAN
-# fire when on: reachable + denies a HIGH-quote fan-out + allows a clean one.
+# quote-scanner ON TaskCreated (the task-list arm, #171): the task-LIST tools
+# bypass PreToolUse, so this TaskCreated handler scans the task
+# subject/description. Ships default-OFF pending validation of its live
+# enforcement, so the corpus enables it explicitly to prove it CAN fire when on:
+# reachable + denies a HIGH-quote entry + allows a clean one. The payload carries
+# no teammate field — a top-level session's own todo is the shape it must handle.
 
 
 def _arrange_dispatch_quote_on_task(ctx: GateContext) -> None:
@@ -667,14 +653,6 @@ def _dispatch_admission_deny(ctx: GateContext) -> dict:
 
 def _dispatch_admission_allow(ctx: GateContext) -> dict:
     return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": f"{_ADMISSION_OK} review"}}
-
-
-def _dispatch_admission_task_deny(ctx: GateContext) -> dict:
-    return {"session_id": ctx.session_id, "task_subject": "do work", "task_description": "implement the fix"}
-
-
-def _dispatch_admission_task_allow(ctx: GateContext) -> dict:
-    return {"session_id": ctx.session_id, "task_subject": "do work", "task_description": _ADMISSION_OK}
 
 
 # banned-terms (PreToolUse Bash arm): a publish body carrying a configured
@@ -990,11 +968,10 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 # `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
 # are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
 # `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
-# additionally default-ON (#1733). The SEPARATE `Task`/`Workflow` fan-out vehicle
-# still bypasses PreToolUse and fires TaskCreated (no `run_in_background` in its
-# schema; verified against the Claude Code binary, docs/claude-code-internals.md
-# §9) — that is why the dispatch-quote concern ALSO carries a reachable
-# TaskCreated counterpart. Do not conflate the two.
+# additionally default-ON (#1733). The SEPARATE task-LIST tools bypass
+# PreToolUse and carry TaskCreated, whose ONE producer is the TaskCreate tool
+# body (verified against the Claude Code binary, docs/claude-code-internals.md
+# §9) — that arm governs task-list entries and never a dispatch (#4216).
 
 
 GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
@@ -1010,15 +987,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
             "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
         },
         arrange=_arrange_skill_loading,
-    ),
-    GateRow(
-        gate_id="enforce-skill-loading-on-task-create",
-        handler=router.handle_enforce_skill_loading_on_task_create,
-        event="TaskCreated",
-        matched="Task",
-        deny_input=lambda _c: _task_created("review the acme MR", skip=False),
-        allow_input=lambda _c: _task_created("review the acme MR", skip=True),
-        arrange=_arrange_skill_loading_on_task,
     ),
     GateRow(
         gate_id="block-edit-before-planned",
@@ -1160,15 +1128,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Agent",
         deny_input=_dispatch_admission_deny,
         allow_input=_dispatch_admission_allow,
-        arrange=_arrange_dispatch_admission,
-    ),
-    GateRow(
-        gate_id="dispatch-admission-governor-on-task-create",
-        handler=router.handle_dispatch_admission_on_task_create,
-        event="TaskCreated",
-        matched="Task",
-        deny_input=_dispatch_admission_task_deny,
-        allow_input=_dispatch_admission_task_allow,
         arrange=_arrange_dispatch_admission,
     ),
     GateRow(

@@ -89,6 +89,27 @@ Run this **before** the cleanup checklist. Resolve any conflicts the same way yo
 
 **Cold-review checkout — fetch the exact pushed head, never `git worktree add <branch>` (Non-Negotiable).** A cold-review sub-agent reviewing a PR on a fresh checkout must NOT run `git worktree add <dir> origin/<branch>` (or the local-branch form). When that branch is already checked out in another worktree on the same machine, `worktree add` fails and the agent silently falls back to a pre-existing (stale) checkout — reviewing a tree one commit behind the pushed head and producing a spurious CHANGES_NEEDED (souliane/teatree#2132). Use the verify-or-fail helper `teatree.utils.review_checkout.add_review_worktree_at_head(repo, ref=<branch>, expected_sha=<pr-head-sha>)`: it fetches the ref into a guaranteed-unique temp dir, checks it out with `git worktree add --detach FETCH_HEAD` (cannot collide with a branch worktree), and asserts the materialised HEAD equals the PR head SHA — hard-failing with `StaleReviewCheckoutError` rather than ever falling back to a stale tree. Remove the returned worktree with `teatree.utils.git.worktree_remove` when the review is done.
 
+#### Two Axes: Read the Diff Three-Dot, MEASURE on the Merge Result (Non-Negotiable)
+
+The three-dot guidance above covers the **diff axis** — what the branch introduced. It says nothing about the **runtime axis** — which tree you import, run, and measure on. A reviewer can diff three-dot correctly and still take every runtime measurement against the branch checkout, which reports what `main` did to a file since the branch was cut. That is how a docs-only PR (zero `src/` files changed) was blocked by a confident, high-severity `src/` finding about code it does not touch, whose every prescription was already on `main` — applying them would have turned an `rc=0` merge into a conflict. A stale finding is not inert.
+
+**Probe the merge result, in one step:**
+
+```bash
+t3 review merge-tree --repo <clone> --base origin/main --head <pr-head-sha>
+# → {"path": "/tmp/t3-merge-tree-XXXX", "tree_oid": ..., "base_sha": ..., "head_sha": ...}
+```
+
+It extracts the merge result to a **plain directory** and git-inits it with the source clone's real `origin` URL. Do not hand-roll it; each of the obvious hand-rolled shortcuts has produced a confident, reproducible, wrong answer on this repo:
+
+1. **Never a git worktree.** `resolve_data_dir` (`src/teatree/paths.py`) auto-isolates a worktree onto a per-worktree DB, so the probe measures a different database than the one under discussion.
+2. **Never a bare `git archive` extract.** A tree with no `.git` breaks every test that shells out to git.
+3. **Never a clone whose `origin` is a local path.** `resolved_repo_slug` (`src/teatree/core/merge/pr_slug_resolution.py`) returns `""` for an unresolvable origin, silently defeating every repo-scoped match downstream — a test then fails on the branch and passes on `main` for reasons that have nothing to do with the diff.
+
+**Before filing a finding whose evidence is a difference between two trees, enumerate what differs between them besides the diff.** Origin URL, presence of `.git`, working directory, data dir, installed venv, and ambient credentials have each produced a false result here. "Fails on the branch, passes on main" is a claim about a *difference*; the diff is only one candidate for it.
+
+**Mechanically enforced (#4251):** a blocking finding (`blocker`/`major`/`high`/`critical`) citing a file outside the PR's own changed-file set is REFUSED at record time — by `t3 <overlay> review record` and by the headless orchestrator that records a returned `review_verdict` alike. Re-measure on the merge result, then re-record with `--merge-result-retake` (CLI) or `"merge_result_retake": true` (envelope) if the finding survives. The gate declines to judge when the changed-file set cannot be read: an unread diff proves nothing. The check is also the cheapest one available to you by hand — a finding that asserts the PR changes no `src/` file *and* reports a `src/` regression refutes itself, and `git log origin/main -- <cited-file>` names the PR actually responsible.
+
 Cleanup checklist:
 
 - [ ] No code duplication introduced
