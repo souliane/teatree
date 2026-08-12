@@ -87,7 +87,7 @@ class _SpanScanner:
         self._pending_heredocs: list[tuple[str, bool]] = []
         self._segment_start = 0
         self._herestring_pending = False
-        self._herestring_word = ""
+        self._herestring_operand = ""
 
     def run(self) -> str:
         while self._pos < len(self._src):
@@ -129,9 +129,9 @@ class _SpanScanner:
         if self._herestring_pending:
             if not char.isspace():
                 self._herestring_pending = False
-                self._herestring_word = self._src[self._pos : _word_end(self._src, self._pos)]
-        elif self._herestring_word and (char.isspace() or char in ";|&()<>"):
-            self._herestring_word = ""
+                self._herestring_operand = self._src[self._pos : _word_end(self._src, self._pos)]
+        elif self._herestring_operand and (char.isspace() or char in ";|&()<>"):
+            self._herestring_operand = ""
 
     def _emit(self, text: str) -> None:
         self._out.append(text)
@@ -144,7 +144,7 @@ class _SpanScanner:
         r"""The word before the cursor as bash resolves it, or ``None`` if only bash can.
 
         Spliced, then unquoted and unescaped, so ``bash -c \``+newline+``'…'``,
-        ``'eval' '…'`` and ``\\eval '…'`` reach the script-operand rule that the raw
+        ``'eval' '…'`` and ``\eval '…'`` reach the script-operand rule that the raw
         spelling misses. ``$x`` resolves at runtime, so it is undecidable here.
         """
         word = _TOKEN_BOUNDARY.split(_splice(self._src[: self._pos]).rstrip())[-1]
@@ -152,12 +152,12 @@ class _SpanScanner:
 
     def _keeps(self, body: str) -> bool:
         """Whether the quoted region at the cursor survives into the span."""
-        if self._herestring_word:
+        if self._herestring_operand:
             # The operand of ``<<<`` is redirected text, decided by the same rule as a
             # heredoc body. Reaching the attached-payload rule below instead would read
             # the operator's own ``<`` as the unquoted word fragment of ``-m'…'`` and
             # drop the act — the silent failure this module exists to prevent.
-            return not self._is_data_only() or len(self._herestring_word.split()) < _PROSE_WORD_FLOOR
+            return not self._is_data_only() or len(self._herestring_operand.split()) < _PROSE_WORD_FLOOR
         token = self._preceding_token()
         if token is None or _SCRIPT_OPERAND_TOKEN.fullmatch(token) is not None:
             return True
