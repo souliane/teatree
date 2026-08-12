@@ -443,6 +443,7 @@ READS_ONLY = [
     ("reader-group-piped-to-a-reader", f"{{ cat <<<'{ACT}'; }} | grep -q x"),
     ("reader-fd-dup-piped-to-a-reader", f"cat <<<'{ACT}' 2>&1 | wc -l"),
     ("reader-redirected-to-a-file", f"cat <<<'{ACT}' > /dev/null"),
+    ("reader-with-both-streams-redirected", f"cat &>/dev/null <<<'{ACT}'"),
 ]
 
 #: Payload spellings with no redirection at all — prose and option values a real bash
