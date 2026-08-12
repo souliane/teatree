@@ -38,6 +38,7 @@ from hooks.scripts.hook_router import (
     handle_loop_self_pump,
     handle_session_end_self_pump,
 )
+from teatree.utils.singleton import current_context
 
 
 @pytest.fixture(autouse=True)
@@ -660,3 +661,44 @@ class TestSelfPumpHonorsPause:
 
         assert _decision(capsys) == {}  # suppressed, stop allowed
         assert result is None
+
+
+class TestOwnerRecordNamespaceAttribution:
+    """A registry pid resolves only in the namespace it was recorded in (#4270).
+
+    The hook writes ``pid``; every reader — the driver-detection self-pump probe and
+    the prune below — then treats that integer as a fact about the owner. It is one
+    only inside the owner's own pid namespace, so the record carries that namespace
+    and the prune keeps an entry it cannot attribute rather than dropping the loop's
+    live owner from a sibling container.
+    """
+
+    #: Above the kernel's maximum pid, so no process can ever hold it here.
+    DEAD_PID = 2**22 + 7
+    SIBLING_CONTAINER = "pid:[4026532000]"
+
+    def test_the_owner_record_carries_the_namespace_its_pid_resolves_in(self) -> None:
+        record = router._tick_owner_record("sess-a", "agent-a")[_OWNER_LOOP]
+
+        assert record["pid_namespace"] == current_context().pid_namespace
+
+    def test_a_foreign_namespace_entry_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.loop_lease_liveness.reader_pid_namespace", lambda: "pid:[4026531000]")
+        entry = {"session_id": "s", "pid": self.DEAD_PID, "pid_namespace": self.SIBLING_CONTAINER}
+
+        assert router._prune_dead_owner({_OWNER_LOOP: entry}) == {_OWNER_LOOP: entry}
+
+    def test_a_same_namespace_dead_entry_is_still_pruned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.loop_lease_liveness.reader_pid_namespace", lambda: "pid:[4026531000]")
+        entry = {"session_id": "s", "pid": self.DEAD_PID, "pid_namespace": "pid:[4026531000]"}
+
+        assert router._prune_dead_owner({_OWNER_LOOP: entry}) == {}
+
+    def test_a_legacy_entry_without_a_namespace_is_still_pruned_when_dead(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Blank-tolerant: the pid is the only evidence there is, and the entry regains
+        # a namespace on the owner's next SessionStart.
+        monkeypatch.setattr("teatree.core.loop_lease_liveness.reader_pid_namespace", lambda: "pid:[4026531000]")
+
+        assert router._prune_dead_owner({_OWNER_LOOP: {"session_id": "s", "pid": self.DEAD_PID}}) == {}

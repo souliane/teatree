@@ -12,7 +12,7 @@ routinely reused / cross-namespace, so once its TTL lapses the lease is reclaima
 regardless of pid liveness.
 
 A pid means something only in the pid NAMESPACE it was recorded in (#4253), so every
-predicate here first asks :func:`pid_is_attributable` whether the reader shares that
+predicate here first asks :func:`_pid_is_attributable` whether the reader shares that
 namespace. Each service in the deployment runs in its own, so the same integer names
 a different process — or none at all — depending on who reads it, and both
 misreadings were measured on one box: an absent number reported the live worker's own
@@ -118,7 +118,7 @@ def reader_pid_namespace() -> str:
     return current_context().pid_namespace
 
 
-def pid_is_attributable(owner_pid_namespace: str, reader_namespace: str) -> bool:
+def _pid_is_attributable(owner_pid_namespace: str, reader_namespace: str) -> bool:
     """Whether a pid recorded in ``owner_pid_namespace`` resolves in ``reader_namespace`` (#4253).
 
     A recorded namespace that DIFFERS from the reader's makes the pid no evidence: the
@@ -133,7 +133,7 @@ def pid_is_attributable(owner_pid_namespace: str, reader_namespace: str) -> bool
 
 
 def namespace_is_attributable(owner_pid_namespace: str) -> bool:
-    """:func:`pid_is_attributable` against THIS reader's namespace — the one call sites use.
+    """:func:`_pid_is_attributable` against THIS reader's namespace — the one call sites use.
 
     Every consumer resolves the reader namespace through this module rather than importing
     :func:`reader_pid_namespace` itself, so a test that pins one reader's namespace pins it
@@ -141,7 +141,22 @@ def namespace_is_attributable(owner_pid_namespace: str) -> bool:
     :class:`LeaseClaim` so a caller holding a
     :class:`~teatree.core.models.loop_lease.LoopLease` row asks the same question.
     """
-    return pid_is_attributable(owner_pid_namespace, reader_pid_namespace())
+    return _pid_is_attributable(owner_pid_namespace, reader_pid_namespace())
+
+
+def namespace_is_proven(owner_pid_namespace: str) -> bool:
+    """Whether ``owner_pid_namespace`` is PROVED to be this reader's own (#4270).
+
+    The strict sibling of :func:`namespace_is_attributable`, for a call site whose act on
+    a "dead" verdict is DESTRUCTIVE rather than diagnostic. Blank tolerance is right where
+    a wrong read costs a delayed reclaim under a TTL backstop; it is wrong where the read
+    releases a live holder's lease and starts a second concurrent pass, because there is
+    no backstop behind that release. An unrecorded namespace on either side is therefore
+    missing evidence here, not a licence to fall back to the bare pid — which is why this
+    is plain equality of two recorded namespaces rather than the blank-tolerant predicate.
+    """
+    reader = reader_pid_namespace()
+    return bool(owner_pid_namespace) and bool(reader) and owner_pid_namespace == reader
 
 
 def anchorable_owner_pid(owner_pid: int | None) -> int | None:
@@ -177,7 +192,7 @@ def lease_is_live(claim: LeaseClaim, now: datetime, *, trust_pid_past_ttl: bool)
     An empty ``session_id`` is never live.
 
     An INDETERMINATE pid (null, ``pid_alive`` unavailable, or one
-    :func:`pid_is_attributable` says this reader cannot resolve) is the degraded case
+    :func:`_pid_is_attributable` says this reader cannot resolve) is the degraded case
     and gets the SHORTEST leash, not the longest. On a ``loop:<name>`` slot it is
     live only while BOTH the TTL holds AND the claim is inside
     :data:`UNVERIFIABLE_OWNER_GRACE`, because nothing else can distinguish a
@@ -218,7 +233,7 @@ def reclaim_reason(owner_pid: int | None, *, owner_pid_namespace: str = "") -> s
     """
     if owner_pid is None:
         return "the TTL lapsed without a re-claim and no owner pid was recorded"
-    if not pid_is_attributable(owner_pid_namespace, reader_pid_namespace()):
+    if not namespace_is_attributable(owner_pid_namespace):
         return (
             f"the TTL lapsed without a re-claim; owner pid {owner_pid} belongs to "
             f"{owner_pid_namespace}, which this process cannot resolve"

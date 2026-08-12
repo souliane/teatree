@@ -19,8 +19,8 @@ from teatree.core.loop_lease_liveness import (
     lease_is_live,
     live_foreign_owner_session,
     namespace_is_attributable,
+    namespace_is_proven,
     pid_alive_probe,
-    pid_is_attributable,
     pid_is_foreign,
     reader_pid_namespace,
     reclaim_reason,
@@ -190,23 +190,55 @@ class TestReaderPidNamespace:
 
 
 class TestPidIsAttributable:
-    def test_a_matching_namespace_is_attributable(self) -> None:
-        assert pid_is_attributable(WORKER_NS, WORKER_NS) is True
+    """Blank-tolerant attribution: an unrecorded namespace leaves the pid as the evidence."""
 
-    def test_a_differing_namespace_is_not(self) -> None:
-        assert pid_is_attributable(WORKER_NS, READER_NS) is False
+    def _reading_from(self, monkeypatch: pytest.MonkeyPatch, namespace: str) -> None:
+        monkeypatch.setattr(liveness_mod, "reader_pid_namespace", lambda: namespace)
 
-    def test_an_unrecorded_stored_namespace_leaves_the_pid_as_the_only_evidence(self) -> None:
-        assert pid_is_attributable("", READER_NS) is True
+    def test_a_matching_namespace_is_attributable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._reading_from(monkeypatch, WORKER_NS)
+        assert namespace_is_attributable(WORKER_NS) is True
 
-    def test_an_unreadable_reader_namespace_leaves_the_pid_as_the_only_evidence(self) -> None:
-        assert pid_is_attributable(WORKER_NS, "") is True
-
-    def test_the_one_argument_form_reads_this_processs_own_namespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(liveness_mod, "reader_pid_namespace", lambda: READER_NS)
-
+    def test_a_differing_namespace_is_not(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._reading_from(monkeypatch, READER_NS)
         assert namespace_is_attributable(WORKER_NS) is False
-        assert namespace_is_attributable(READER_NS) is True
+
+    def test_an_unrecorded_stored_namespace_leaves_the_pid_as_the_only_evidence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._reading_from(monkeypatch, READER_NS)
+        assert namespace_is_attributable("") is True
+
+    def test_an_unreadable_reader_namespace_leaves_the_pid_as_the_only_evidence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._reading_from(monkeypatch, "")
+        assert namespace_is_attributable(WORKER_NS) is True
+
+
+class TestNamespaceIsProven:
+    """Positive proof, for the destructive path where nothing backstops a wrong release (#4270)."""
+
+    def _reading_from(self, monkeypatch: pytest.MonkeyPatch, namespace: str) -> None:
+        monkeypatch.setattr(liveness_mod, "reader_pid_namespace", lambda: namespace)
+
+    def test_a_matching_namespace_is_proven(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._reading_from(monkeypatch, WORKER_NS)
+        assert namespace_is_proven(WORKER_NS) is True
+
+    def test_a_differing_namespace_is_not_proven(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._reading_from(monkeypatch, READER_NS)
+        assert namespace_is_proven(WORKER_NS) is False
+
+    def test_an_unrecorded_stored_namespace_is_not_proven(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Where the blank-tolerant sibling falls back to the bare pid, proof has nothing.
+        self._reading_from(monkeypatch, READER_NS)
+        assert namespace_is_attributable("") is True
+        assert namespace_is_proven("") is False
+
+    def test_an_unreadable_reader_namespace_is_not_proven(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._reading_from(monkeypatch, "")
+        assert namespace_is_proven(WORKER_NS) is False
 
 
 class TestPidAcrossPidNamespaces:
