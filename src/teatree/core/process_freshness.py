@@ -155,7 +155,9 @@ class PublishedReading:
     def age_seconds(self, now: datetime) -> float | None:
         try:
             return (now - datetime.fromisoformat(self.at)).total_seconds()
-        except ValueError:
+        except (TypeError, ValueError):
+            # Unparsable, or naive against an aware ``now``. ``None`` is the honest answer
+            # and the doctor treats it as "too old to trust" rather than tracebacking.
             return None
 
     def describe(self) -> str:
@@ -366,7 +368,11 @@ def publish_freshness_reading(reading: FreshnessReading) -> None:
 def published_readings() -> list[PublishedReading]:
     """Every record on disk, newest first — what the doctor reads INSTEAD of measuring itself."""
     readings: list[PublishedReading] = []
-    for record in sorted(data_dir_root().glob(f"{RECORD_PREFIX}*{RECORD_SUFFIX}")):
+    try:
+        records = sorted(data_dir_root().glob(f"{RECORD_PREFIX}*{RECORD_SUFFIX}"))
+    except OSError:
+        return []
+    for record in records:
         try:
             payload = json.loads(record.read_text(encoding="utf-8"))
         except (OSError, ValueError):
