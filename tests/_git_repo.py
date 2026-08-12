@@ -58,6 +58,17 @@ def run_git(repo: Path, *args: str, check: bool = True) -> str:
     return out.stdout.strip()
 
 
+def run_git_captured(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Like :func:`run_git`, but hands back the whole result — for a test reading stderr."""
+    return subprocess.run(
+        [_GIT, "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=git_identity_env(),
+    )
+
+
 def make_git_repo(
     path: Path,
     *,
