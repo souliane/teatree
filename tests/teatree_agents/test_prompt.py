@@ -427,6 +427,58 @@ class TestSystemContextByteBudget(TestCase):
         assert "…truncated" not in ctx
 
 
+class TestNonPlanningPhaseWithPersistedSurvey(TestCase):
+    """A persisted survey must not spend the budget on a phase that never embeds it.
+
+    Only the ``planning`` block embeds the intake landscape survey, so on every
+    other phase the survey string is not a substring of the assembled context.
+    Crediting its bytes against the overage anyway drove ``overage`` to 0 before
+    the pass reached the skill bundle — the one block that is really over budget
+    — and shipped a 141-144 KB ``--append-system-prompt`` that the kernel refuses
+    (``MAX_ARG_STRLEN`` = 131,072), killing every coding/testing/reviewing
+    dispatch at spawn with ``[Errno 7] Argument list too long`` (#4386).
+    """
+
+    #: Sized so the survey alone exceeds the overage, which is the live shape:
+    #: the phantom absorbs the whole overage in one step and the pass exits
+    #: having reclaimed nothing at all.
+    _SURVEY_BLOB_BYTES = 60_000
+    _SKILL_BUNDLE_BYTES = MAX_APPEND_BYTES + 30_000
+    _AFFECTED_PHASES = ("coding", "testing", "reviewing")
+
+    def _context_with_survey(self, phase: str) -> str:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+        survey = {"blob": "x" * self._SURVEY_BLOB_BYTES, "warnings": [], "recommendations": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * self._SKILL_BUNDLE_BYTES):
+            return build_system_context(task, skills=["huge-skill"])
+
+    def test_append_stays_within_the_argv_element_budget(self) -> None:
+        for phase in self._AFFECTED_PHASES:
+            with self.subTest(phase=phase):
+                assert len(self._context_with_survey(phase).encode()) <= MAX_APPEND_BYTES
+
+    def test_the_real_skill_bundle_is_what_absorbs_the_overage(self) -> None:
+        for phase in self._AFFECTED_PHASES:
+            with self.subTest(phase=phase):
+                ctx = self._context_with_survey(phase)
+                # The skills pointer is the marker the truncation left behind; the
+                # survey pointer must be absent because nothing of it was in the text.
+                assert "skills/<skill>/SKILL.md" in ctx
+                assert "workspace landscape" not in ctx
+
+    def test_planning_still_truncates_its_own_embedded_survey(self) -> None:
+        # The companion change must stay behaviour-preserving for the one phase
+        # that really does embed the survey.
+        ctx = self._context_with_survey("planning")
+
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "workspace landscape" in ctx
+
+
 # --- _parent_result_summary ---
 
 
