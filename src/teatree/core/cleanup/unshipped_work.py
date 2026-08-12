@@ -21,6 +21,7 @@ from pathlib import Path
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models import UnshippedWorkRecord
+from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.paths import get_data_dir, isolated_slug
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -92,9 +93,19 @@ def probe_unshipped_work(checkout: Path) -> UnshippedWork:
     (which rules out the ``git add -N`` trick that would fold untracked files into
     the patch — they are named in ``dirty_paths`` instead). A path that is not
     there holds nothing; only a PRESENT checkout git cannot read is ``unreadable``.
+
+    The venue is asked BEFORE git, because git cannot distinguish the two things
+    that stop it reading a checkout: a repository that is broken, and one whose
+    admin dir belongs to another execution context (#4272). ``t3`` runs in Docker,
+    so every container-created checkout reads as the first from the host — and a
+    repository verdict sends the operator hunting for corruption instead of
+    re-probing from the context that owns it.
     """
     if not checkout.is_dir():
         return UnshippedWork()
+    venue = wrong_venue_reason(checkout)
+    if venue:
+        return UnshippedWork(unreadable=venue)
     if not git.check(repo=str(checkout), args=["rev-parse", "--verify", "--quiet", _INDEX_AWARE_BASE]):
         return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against")
     try:

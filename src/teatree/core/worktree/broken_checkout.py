@@ -41,7 +41,7 @@ from pathlib import Path
 from teatree.core.cleanup.cleanup import _resolve_worktree_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import content_equivalence_blockers, effective_default_target
-from teatree.core.worktree.checkout_liveness import context_scoped_pointer
+from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
@@ -120,13 +120,9 @@ def unresolved_checkout_reason(wt_path: Path) -> str:
     generic refusal is git declining to speak about a dir it can see. Neither is
     proof of death, so neither authorises anything.
     """
-    pointer = context_scoped_pointer(wt_path)
-    if pointer is not None:
-        return (
-            f"{wt_path} records its git dir at {pointer.target}, which does not exist in this execution "
-            "context — a checkout created elsewhere reads exactly like a dead one from here, so nothing "
-            "may reap it"
-        )
+    venue = wrong_venue_reason(wt_path)
+    if venue:
+        return f"{venue}, so nothing may reap it"
     return f"git could not say whether {wt_path} is a checkout — keeping until it can"
 
 
