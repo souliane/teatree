@@ -180,9 +180,10 @@ def doctor_check_process_code_freshness() -> bool:
     finished runs — the actively-misleading probe #4390 measured. The stale process is
     the only witness there is, so the check reads its record instead.
 
-    Fail-open in every direction but the proven one: no records at all (the normal state
-    until each role has been restarted once after this lands) and a record too old to
-    trust both ``WARN`` and pass, so deploying this cannot page on every box.
+    Fail-open in every direction but the proven one: no records at all and a record too
+    old to trust both ``WARN`` and pass. A role writes its first record on its first claim
+    after start, so an empty data dir means "nobody has reported yet", which is a question
+    mark rather than a finding.
     """
     readings = published_readings()
     if not readings:
