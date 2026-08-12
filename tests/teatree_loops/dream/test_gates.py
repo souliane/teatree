@@ -457,6 +457,14 @@ class TestGateD(SimpleTestCase):
         assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
         assert gates.INDEX_LINE_BUDGET <= 200
 
+    def test_drain_targets_sit_strictly_below_the_budgets(self) -> None:
+        # #4385 AV-5: the BUDGET is what this gate grades; the TARGET is where decay stops.
+        # Draining to the ceiling leaves zero headroom, so the first memory written after
+        # the pass truncates the tail — the defect. Setting the target equal to the budget
+        # is that bug re-introduced as a constant, so make it impossible to land.
+        assert gates.INDEX_LINE_DRAIN_TARGET < gates.INDEX_LINE_BUDGET
+        assert gates.INDEX_BYTE_DRAIN_TARGET < gates.INDEX_BYTE_BUDGET
+
 
 class TestGateDLoadability(SimpleTestCase):
     """#2723 anti-vacuous: a real over-budget corpus index FAILS, a small one passes.
