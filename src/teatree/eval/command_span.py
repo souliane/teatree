@@ -20,8 +20,8 @@ import re
 #: (``-lc``, ``-ec``) carrying the same operand. A script is executed, so it stays whole.
 _SCRIPT_OPERAND_TOKEN = re.compile(r"eval|-[A-Za-z]*c")
 
-#: A heredoc redirected into one of these is a script on stdin — a quoted delimiter
-#: suppresses expansion, it does not stop the body being executed.
+#: A heredoc or here-string redirected into one of these is a script on stdin — a
+#: quoted delimiter suppresses expansion, it does not stop the body being executed.
 _SCRIPT_INTERPRETERS = frozenset({"bash", "sh", "dash", "ksh", "zsh", "python", "python3", "node", "perl", "ruby"})
 
 #: Words at or above which a standalone quoted operand reads as prose rather than as a
@@ -30,6 +30,11 @@ _SCRIPT_INTERPRETERS = frozenset({"bash", "sh", "dash", "ksh", "zsh", "python", 
 _PROSE_WORD_FLOOR = 4
 
 _TOKEN_BOUNDARY = re.compile(r"[\s;|&()]")
+
+#: The here-string operator. Its operand is a whole word the shell hands to the command
+#: on stdin, so the ``<`` in front of it is an OPERATOR, never the unquoted word fragment
+#: that marks attached payload (``-m'…'``).
+_HERESTRING_OP = "<<<"
 
 _HEREDOC_OP = re.compile(
     r"""<<-?[ \t]*(?:
@@ -49,7 +54,9 @@ def executed_span(command: str) -> str:
     dropped double-quoted region survive (a substitution is executed), as does the
     quoted operand of ``-c``/``eval``. A quoted-delimiter heredoc body is dropped
     unless its line runs an interpreter, which executes it; an unquoted-delimiter one
-    is kept. A kept region has its quotes removed, as the shell removes them. Anything
+    is kept. A ``<<<`` here-string operand is read the same way — an interpreter runs
+    it as a script on stdin, so it is kept whole however long it is, quoted or not.
+    A kept region has its quotes removed, as the shell removes them. Anything
     unparsable — an unbalanced quote, a heredoc with no terminator — keeps the
     remainder verbatim, so neither a stray apostrophe nor a quoted fragment of the act
     can silently strip a matcher's teeth.
@@ -78,9 +85,9 @@ class _SpanScanner:
                 self._emit(char)
                 self._pos += 1
                 self._drain_heredoc_bodies()
-            elif self._src.startswith("<<<", self._pos):
-                self._emit("<<<")
-                self._pos += 3
+            elif self._src.startswith(_HERESTRING_OP, self._pos):
+                self._emit(_HERESTRING_OP)
+                self._pos += len(_HERESTRING_OP)
             elif self._src.startswith("<<", self._pos):
                 self._scan_heredoc_operator()
             else:
@@ -101,8 +108,16 @@ class _SpanScanner:
 
     def _keeps(self, body: str) -> bool:
         """Whether the quoted region at the cursor survives into the span."""
-        if _SCRIPT_OPERAND_TOKEN.fullmatch(self._preceding_token()) is not None:
+        token = self._preceding_token()
+        if _SCRIPT_OPERAND_TOKEN.fullmatch(token) is not None:
             return True
+        if token.endswith(_HERESTRING_OP):
+            # An interpreter RUNS its here-string operand, exactly as it runs a
+            # quoted-delimiter heredoc body, so the operand is a script and stays
+            # whole. Reaching the attached-payload rule below instead would read
+            # the operator's own ``<`` as the unquoted word fragment of ``-m'…'``
+            # and drop the act — the silent failure this module exists to prevent.
+            return self._feeds_an_interpreter() or len(body.split()) < _PROSE_WORD_FLOOR
         if self._pos > 0 and _TOKEN_BOUNDARY.match(self._src[self._pos - 1]) is None:
             return False
         return len(body.split()) < _PROSE_WORD_FLOOR
@@ -139,7 +154,10 @@ class _SpanScanner:
         self._pos = match.end()
 
     def _feeds_an_interpreter(self) -> bool:
-        """Whether the line carrying this heredoc operator runs the body as a script."""
+        """Whether the line at the cursor runs its redirected body as a script.
+
+        Serves both the ``<<`` heredoc operator and the ``<<<`` here-string operand.
+        """
         line_start = self._src.rfind("\n", 0, self._pos) + 1
         line_end = self._src.find("\n", self._pos)
         line = self._src[line_start:] if line_end == -1 else self._src[line_start:line_end]

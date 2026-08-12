@@ -214,6 +214,36 @@ class TestHerestrings:
         assert "t3 widget task complete 42" in span
         assert "echo after" in span
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash <<<'t3 widget task complete 42'",
+            "bash <<< 't3 widget task complete 42'",
+            'bash <<<"t3 widget task complete 42"',
+            "sh <<<'t3 widget task complete 42'",
+            "python3 <<<'t3 widget task complete 42'",
+        ],
+        ids=["attached-single", "spaced-single", "attached-double", "sh", "python"],
+    )
+    def test_an_operand_an_interpreter_runs_stays_matchable(self, command: str) -> None:
+        # Ground truth: each of these, run under a real bash with a stub ``t3`` on
+        # PATH, executes the act. The operand must land IN the span — asserting only
+        # that the FOLLOWING line survives leaves the operand itself unpinned, which
+        # is how the operator's ``<`` came to read as the unquoted word fragment that
+        # marks attached payload (``-m'…'``) and elide an executed act.
+        assert "t3 widget task complete 42" in executed_span(command)
+
+    @pytest.mark.parametrize("body", ["ls -l", "ls -l -a -h"])
+    def test_an_interpreted_operand_is_kept_whatever_its_length(self, body: str) -> None:
+        # The prose floor counts the words of a PAYLOAD. A script the interpreter
+        # runs is not one, so the short and long forms must not disagree.
+        assert body in executed_span(f"bash <<< '{body}'")
+
+    def test_an_operand_a_plain_command_consumes_is_still_elided(self) -> None:
+        # ``grep`` reads the here-string as data on stdin and never executes it, so
+        # it stays a payload — keeping the whole class would hollow out the view.
+        assert "task complete" not in executed_span("grep -q x <<<'t3 widget task complete 42'")
+
 
 class TestSubstitutionBoundsAreQuoteAware:
     def test_a_paren_inside_a_quoted_region_does_not_close_the_substitution(self) -> None:
