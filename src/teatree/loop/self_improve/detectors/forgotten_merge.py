@@ -29,9 +29,8 @@ from typing import ClassVar
 
 from django.utils import timezone
 
-from teatree.core.factory.merge_backlog import unconsumed_actionable_clear_rows
-from teatree.core.merge.clear_liveness import PROBE_CAP, ClearLiveness, PrStateReader, probe, unverified_reader
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.clear_stall_lookup import PROBE_CAP, PrStateReader, stalled_clears, unverified_reader
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 
@@ -54,8 +53,7 @@ class ForgottenMergeDetector:
 
     def detect(self) -> list[DetectorReport]:
         cutoff = timezone.now() - self.age_threshold
-        aged = [clear for clear in unconsumed_actionable_clear_rows("") if clear.issued_at <= cutoff]
-        stalled = probe(aged, read=self.read_state, cap=self.probe_cap).of(ClearLiveness.STALLED)
+        stalled = stalled_clears(issued_before=cutoff, read_state=self.read_state, cap=self.probe_cap)
         reports: list[DetectorReport] = []
         for clear in stalled:
             pr_identity = f"{clear.slug}#{clear.pr_id}"

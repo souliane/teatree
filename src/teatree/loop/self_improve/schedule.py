@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from teatree.loop.scanners.clear_stall_lookup import live_pr_state_reader
 from teatree.loop.self_improve.actions import ActionResult, run_action_ladder
 from teatree.loop.self_improve.budget import BudgetVerdict, precheck_budget
 from teatree.loop.self_improve.detectors import (
@@ -44,11 +45,9 @@ UNBUILT_TIERS: tuple[str, ...] = (Tier.MEDIUM, Tier.EXPENSIVE)
 def _cheap_detectors() -> list[SelfImproveDetector]:
     # The forge reader is injected here rather than defaulted inside the detector:
     # its fail-safe default reports nothing, so this is the one place that arms it.
-    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: loaded at tick time
-
     return [
         DispatchGapDetector(),
-        ForgottenMergeDetector(read_state=pr_open_state),
+        ForgottenMergeDetector(read_state=live_pr_state_reader()),
         StaleStatuslineEntryDetector(),
     ]
 

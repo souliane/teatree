@@ -110,6 +110,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0",),
         note="--json emits the per-CLEAR recovery rows; dry run unless --no-dry-run",
     ),
+    Capability(
+        "teatree ticket reconcile-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the CLEARs consumed because their PR already settled; --dry-run to preview",
+    ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),
     Capability(

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.checking import build_pr_url
+from teatree.core.merge.pr_slug_resolution import resolved_repo_slug
 from teatree.core.models.merge_clear import MergeClear
 
 #: PR/MR web URL → live forge state, the contract
@@ -59,9 +61,6 @@ def clear_pr_url(clear: MergeClear) -> str:
     no-evidence short-circuit: :func:`~teatree.core.checking.build_pr_url` refuses a
     workstream or branch-shaped slug, so an unresolvable CLEAR costs no forge call.
     """
-    from teatree.core.checking import build_pr_url  # noqa: PLC0415 — deferred: core.merge ↔ core.checking cycle
-    from teatree.core.merge.pr_slug_resolution import resolved_repo_slug  # noqa: PLC0415 — deferred: same cycle
-
     return build_pr_url(slug=resolved_repo_slug(clear), pr_id=clear.pr_id, code_host=clear.host_kind)
 
 

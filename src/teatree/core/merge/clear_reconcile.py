@@ -20,6 +20,7 @@ nothing, so an unreadable forge leaves the ledger exactly as it found it.
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from teatree.core.factory.merge_backlog import unconsumed_actionable_clear_rows
 from teatree.core.merge.clear_liveness import ClearLiveness, PrStateReader, classify, unverified_reader
 from teatree.core.models.merge_clear import MergeClear
 
@@ -55,10 +56,6 @@ def reconcile_settled_clears(
     so each run shrinks the set the next one probes. Per-row isolated — one
     unreadable PR is UNVERIFIED for itself alone.
     """
-    from teatree.core.factory.merge_backlog import (  # noqa: PLC0415 — deferred: mirrors core/waiting.py's intra-core edge
-        unconsumed_actionable_clear_rows,
-    )
-
     report = ClearReconcileReport(dry_run=dry_run)
     for clear in unconsumed_actionable_clear_rows(overlay):
         ref = f"{clear.slug}#{clear.pr_id}"

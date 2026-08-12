@@ -769,9 +769,7 @@ depends_on = [
 path = "teatree.loop.self_improve"
 layer = "domain"
 depends_on = [
-  "teatree.core",
   "teatree.core.models",
-  "teatree.backends",
   "teatree.utils",
   "teatree.loop.scanners",
   "teatree.loop.statusline_render"

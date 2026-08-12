@@ -322,9 +322,7 @@ graph TD
     teatree.loop.dispatch --> teatree.loop.dispatch_tables
     teatree.loop.dispatch --> teatree.loop.dispatch_reducer
     teatree.loop.dispatch --> teatree.loop.dispatch_gates
-    teatree.loop.self_improve --> teatree.core
     teatree.loop.self_improve --> teatree.core.models
-    teatree.loop.self_improve --> teatree.backends
     teatree.loop.self_improve --> teatree.utils
     teatree.loop.self_improve --> teatree.loop.scanners
     teatree.loop.self_improve --> teatree.loop.statusline_render
