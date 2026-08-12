@@ -52,9 +52,10 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "teatree retention scratch",
         json_output=True,
-        exit_codes=("0",),
+        exit_codes=("0", "1"),
         note="--json emits the size-ranked agent-scratch sweep with a per-entry "
-        "verdict; dry-run unless --apply (#4165)",
+        "verdict, plus `refused` when the open-file probe could not see the "
+        "process table; dry-run unless --apply, and --apply on a refusal exits 1 (#4165)",
     ),
     Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
     Capability(

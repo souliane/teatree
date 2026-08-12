@@ -21,6 +21,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
@@ -28,6 +29,7 @@ from django.utils import timezone
 from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.utils.django_db.vacuum import VacuumOutcome
+from tests._procfs import pinned_venue_proc
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _COMMAND = "teatree.core.management.commands.retention"
@@ -190,6 +192,9 @@ class ScratchSweepCommandTests(TestCase):
 
     def setUp(self) -> None:
         self.root = Path(self.enterContext(TemporaryDirectory()))
+        # Without this the sweep reads the machine's live /proc, so the verdict is a
+        # property of whatever else runs: green in a container, red on a systemd host.
+        self.enterContext(pinned_venue_proc())
         stale = self.root / "t3db.sqlite3"
         stale.write_bytes(b"x" * 2048)
         old = timezone.now().timestamp() - 9 * 86400
@@ -239,3 +244,55 @@ class ScratchSweepCommandTests(TestCase):
         assert "dry run" in rendered
         assert "protected path" in rendered
         assert "2.0KiB" in rendered
+
+    def test_a_dry_run_on_a_sighted_probe_reports_no_refusal(self) -> None:
+        payload = self._scratch_json()
+
+        assert payload["refused"] is False
+
+
+class ScratchSweepRefusalCommandTests(TestCase):
+    """An unsighted probe exits NON-ZERO on --apply rather than reporting a clean no-op."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        stale = self.root / "t3db.sqlite3"
+        stale.write_bytes(b"x" * 2048)
+        old = timezone.now().timestamp() - 9 * 86400
+        os.utime(stale, (old, old))
+        self.stale = stale
+        # No pinned table: the autouse conftest fixture points the venue probe at a
+        # path that is not a process table, which is exactly the unsighted case.
+
+    def _run(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_a_dry_run_reports_the_refusal_without_failing(self) -> None:
+        payload = self._run()
+
+        assert payload["refused"] is True
+        assert payload["candidate_bytes"] == 0
+        assert "unsighted" in payload["probe_gap"]
+
+    def test_apply_exits_non_zero_and_still_writes_the_payload(self) -> None:
+        out = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command(
+                "retention", "scratch", "--root", str(self.root), "--days", "3", "--apply", "--json", stdout=out
+            )
+
+        assert exit_info.value.code == 1
+        assert json.loads(out.getvalue())["refused"] is True
+        assert self.stale.exists()
+
+    def test_the_human_view_names_the_refusal_and_the_arming_precondition(self) -> None:
+        err = StringIO()
+
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", stderr=err)
+
+        rendered = err.getvalue()
+        assert "REFUSED" in rendered
+        assert "ptrace" in rendered

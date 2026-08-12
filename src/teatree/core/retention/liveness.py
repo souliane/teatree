@@ -12,6 +12,8 @@ an unreadable world as an empty one — measured at uid 1001 against a bind-moun
 LIST while every ``readlink()`` inside it raises.
 """
 
+import os
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -19,14 +21,16 @@ from pathlib import Path
 class _SourceRead(Enum):
     """What one per-pid liveness source actually yielded, judged on RESOLUTION.
 
-    ``SKIP`` is the ordinary multi-user case — another uid's pid this one may not
-    read at all. ``BLIND`` is the dangerous one a boolean witness cannot express:
-    entries are there and NOT ONE resolves, so the source describes a world this
-    process cannot see rather than an empty one.
+    ``UNREADABLE`` (the listing itself refused) and ``BLIND`` (entries are there
+    and NOT ONE resolves) are ONE knowledge state — this process cannot see what
+    that pid holds — so they share a consequence and differ only in the reason
+    reported. ``GONE`` is the benign absence: an ``ENOENT`` means the pid exited
+    mid-walk, which is a table that moved rather than one this uid may not read.
     """
 
     ANSWERED = "answered"
-    SKIP = "skip"
+    GONE = "gone"
+    UNREADABLE = "unreadable"
     BLIND = "blind"
 
 
@@ -34,9 +38,51 @@ class _SourceRead(Enum):
 # proves this process can actually see into the table it was asked to read.
 _GATED_SOURCES = ("fd", "map_files")
 
+_UNKNOWABLE_CAUSE: dict[_SourceRead, str] = {
+    _SourceRead.BLIND: "listable but nothing resolves",
+    _SourceRead.UNREADABLE: "not readable by this uid",
+}
+_REASON_PID_SAMPLE = 5
 
-def held_paths(proc_root: Path) -> frozenset[str] | None:
-    """Every path a live process holds open under *proc_root*; ``None`` when blind.
+
+@dataclass(frozen=True, slots=True)
+class ProcessTableView:
+    """What one read of a process table saw, and how much of it it could NOT see.
+
+    The consumer never has to tell empty-because-nothing-is-held from
+    empty-because-we-could-not-look: ``held`` is only usable when ``sighted``,
+    and ``unknowable_reason`` names why it is not.
+    """
+
+    held: frozenset[str]
+    answered_pids: int
+    unknowable_pids: int
+    unknowable_reason: str = ""
+
+    @property
+    def sighted(self) -> bool:
+        """True only when EVERY pid answered — an unknowable one may hold ANY candidate."""
+        return self.answered_pids > 0 and self.unknowable_pids == 0
+
+
+def normalized_spelling(path: str) -> str:
+    """*path* with its PARENT resolved and its leaf left alone — one spelling to compare by.
+
+    A held path and a sweep candidate that name the same file through different
+    symlinked components compare unequal, so the guard misses and a live-held
+    entry is marked reclaimable. The leaf is deliberately NOT resolved: a
+    top-level entry that is itself a symlink must stay itself, because the sweep
+    unlinks it without following. A non-absolute string is a kernel pseudo-target
+    (``socket:[…]``, ``pipe:[…]``) rather than a path, and is left verbatim.
+    """
+    if not path.startswith(os.sep):
+        return path
+    candidate = Path(path)
+    return str(Path(os.path.realpath(candidate.parent)) / candidate.name)
+
+
+def held_paths(proc_root: Path) -> ProcessTableView:
+    """Every path a live process holds open under *proc_root*, plus the read's own coverage.
 
     Four distinct liveness forms, every one of them read PER PID and folded into
     one set: a plain open ``fd`` or ``cwd``; a memory-mapped file (``map_files``)
@@ -46,11 +92,13 @@ def held_paths(proc_root: Path) -> frozenset[str] | None:
     through any fd walk (a socket fd reads back as ``socket:[inode]``, never the
     bind path) and is instead read from that pid's own ``net/unix`` table.
 
-    A pid whose sources are unreadable belongs to another uid and is skipped
-    rather than failing the whole probe — that is the normal state of any
-    multi-user process table, and the caller's ownership guard already refuses to
-    consider an entry this uid does not own. But when pids exist and NOT ONE of
-    them answers through ANY ACCESS-GATED source, that is not "a quiet,
+    A pid whose sources are UNREADABLE is counted, never dropped. The old
+    contract skipped it on the strength of the caller's ownership guard, but that
+    guard stats the swept ENTRY's uid and never the HOLDER's — a root pid holding
+    a file inside this uid's scratch dir is exactly the uncovered case, and 214 of
+    304 pids on the measured box are root-owned. So an unreadable pid is the same
+    sentence as a blind one: we cannot see what it holds. When pids exist and NOT
+    ONE of them answers through ANY ACCESS-GATED source, that is not "a quiet,
     single-user box" — it is the probe itself structurally blind (a container
     without ptrace/LSM access into the host process table it was bind-mounted to
     read). The socket table is deliberately NOT one of those witnesses:
@@ -66,33 +114,78 @@ def held_paths(proc_root: Path) -> frozenset[str] | None:
     carries at least pid 1, so an empty one is a mount that is not a process
     table rather than a box with no processes.
 
-    Blindness is PROBE-WIDE, never per-pid: an unknowable pid may hold ANY
-    candidate path, so a sibling that answers buys no partial knowledge of what
-    the blind one holds.
+    Blindness stays PROBE-WIDE for the delete decision, never per-pid: an
+    unknowable pid may hold ANY candidate path, so a sibling that answers buys no
+    partial knowledge of what the blind one holds. The per-pid detail is carried
+    only as the reported REASON.
     """
     try:
         pids = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
-    except OSError:
-        return None
+    except OSError as error:
+        return _unsighted(f"process table at {proc_root} is not listable ({error.strerror or error})")
+    if not pids:
+        return _unsighted(f"process table at {proc_root} carries no numeric pid — not a process table")
     held: set[str] = set()
-    any_pid_answered = False
+    answered = 0
+    unknowable: list[tuple[str, str]] = []
     for base in pids:
+        reads: list[_SourceRead] = []
         for source in _GATED_SOURCES:
             resolved, read = _resolved_links(base / source)
-            if read is _SourceRead.BLIND:
-                return None
-            if read is _SourceRead.ANSWERED:
-                any_pid_answered = True
-                held.update(resolved)
+            reads.append(read)
+            held.update(resolved)
         held.update(_bound_socket_paths(base))
-        try:
-            held.add(str((base / "cwd").readlink()))
-            any_pid_answered = True
-        except OSError:
-            continue
-    if not any_pid_answered:
-        return None
-    return frozenset(held)
+        reads.append(_read_cwd(base, held))
+        if _SourceRead.ANSWERED in reads:
+            answered += 1
+        blocked = next((read for read in (_SourceRead.BLIND, _SourceRead.UNREADABLE) if read in reads), None)
+        if blocked is not None:
+            unknowable.append((base.name, _UNKNOWABLE_CAUSE[blocked]))
+    return ProcessTableView(
+        held=frozenset(held),
+        answered_pids=answered,
+        unknowable_pids=len(unknowable),
+        unknowable_reason=_coverage_reason(unknowable, pid_count=len(pids), answered=answered, proc_root=proc_root),
+    )
+
+
+def _unsighted(reason: str) -> ProcessTableView:
+    return ProcessTableView(held=frozenset(), answered_pids=0, unknowable_pids=0, unknowable_reason=reason)
+
+
+def _read_cwd(pid_dir: Path, held: set[str]) -> _SourceRead:
+    """Resolve *pid_dir*'s ``cwd``, folding its target into *held*.
+
+    Also ``ptrace``-gated, so a refusal here is the same blindness the ``fd``
+    walk reports rather than the silent ``continue`` it used to be.
+    """
+    try:
+        held.add(str((pid_dir / "cwd").readlink()))
+    except FileNotFoundError:
+        return _SourceRead.GONE
+    except OSError:
+        return _SourceRead.UNREADABLE
+    return _SourceRead.ANSWERED
+
+
+def _coverage_reason(
+    unknowable: list[tuple[str, str]],
+    *,
+    pid_count: int,
+    answered: int,
+    proc_root: Path,
+) -> str:
+    """Counts by cause plus the first few offending pids, or ``""`` when the read was complete."""
+    if not unknowable:
+        if answered:
+            return ""
+        return f"no pid under {proc_root} answered through an access-gated source"
+    tally: dict[str, int] = {}
+    for _pid, cause in unknowable:
+        tally[cause] = tally.get(cause, 0) + 1
+    causes = ", ".join(f"{count} {cause}" for cause, count in sorted(tally.items()))
+    sample = ", ".join(pid for pid, _cause in unknowable[:_REASON_PID_SAMPLE])
+    return f"{len(unknowable)} of {pid_count} pid(s) unknowable ({causes}); first: {sample}"
 
 
 def _resolved_links(path: Path) -> tuple[frozenset[str], _SourceRead]:
@@ -104,8 +197,10 @@ def _resolved_links(path: Path) -> tuple[frozenset[str], _SourceRead]:
     """
     try:
         entries = list(path.iterdir())
+    except FileNotFoundError:
+        return frozenset(), _SourceRead.GONE
     except OSError:
-        return frozenset(), _SourceRead.SKIP
+        return frozenset(), _SourceRead.UNREADABLE
     resolved: set[str] = set()
     for link in entries:
         try:
@@ -153,4 +248,4 @@ def _bound_socket_paths(pid_dir: Path) -> frozenset[str]:
     return frozenset(paths)
 
 
-__all__ = ["held_paths"]
+__all__ = ["ProcessTableView", "held_paths", "normalized_spelling"]

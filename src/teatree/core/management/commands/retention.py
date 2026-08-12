@@ -107,6 +107,7 @@ class _ScratchRow(TypedDict):
 
 class ScratchReport(TypedDict):
     applied: bool
+    refused: bool
     root: str
     retention_days: int
     probe_gap: str
@@ -217,6 +218,7 @@ class Command(TyperCommand):
         )
         payload: ScratchReport = {
             "applied": plan.applied,
+            "refused": plan.refused,
             "root": plan.root,
             "retention_days": plan.retention_days,
             "probe_gap": plan.probe_gap,
@@ -244,6 +246,10 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=lambda stream: _render_scratch(plan, stream, applied=apply),
         )
+        if apply and plan.refused:
+            # The payload is written first: an unattended caller that only sees a
+            # non-zero exit with empty streams learns less than the exit 0 it replaces.
+            raise SystemExit(1)
 
 
 def _scratch_row(entry: ScratchEntry) -> list[str]:
@@ -257,7 +263,9 @@ def _scratch_row(entry: ScratchEntry) -> list[str]:
 
 def _render_scratch(plan: ScratchSweepPlan, stream: IO[str], *, applied: bool) -> None:
     title = f"Scratch retention — {plan.summary}"
-    if not applied:
+    if plan.refused:
+        title += " — REFUSED, nothing was removed"
+    elif not applied:
         title += " (dry run — pass --apply to reclaim)"
     print_table(
         ["Path", "Size", "Age", "Verdict"],

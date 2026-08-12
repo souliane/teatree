@@ -25,7 +25,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
+from tempfile import mkdtemp
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -33,10 +33,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
-from teatree.core.retention import scratch
+from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
-from tests._procfs import answering_pid
+from tests._procfs import pinned_venue_proc
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -854,31 +854,23 @@ class ScratchSweepLadderTests(TestCase):
         old = timezone.now().timestamp() - 9 * 86400
         os.utime(self.stale, (old, old))
         self.uv_prune = _patch_uv_cache_prune(self)
-        patcher = patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=0.0)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # `_payload` arms allow_destructive_disk for the scratch lane; the worktree-GC
+        # lane behind the same flag would otherwise reach the real workspace.
+        for name, value in (("_reclaim_docker_disk", 0.0), ("_gc_worktrees", 0.0), ("_gc_candidate_worktrees", [])):
+            patcher = patch.object(mechanical_resources, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self._pin_process_table()
 
     def _pin_process_table(self) -> None:
-        """Pin the sweep's open-file probe to a synthetic table, not the machine's ``/proc``.
-
-        ``_payload`` passes ``scratch_sweep_root``, so ``resolve_scratch_sweep`` returns
-        ``proc_root=_VENUE_PROC`` — the real ``/proc`` — and "the stale file is gone"
-        becomes a property of whatever else is running (#4165). ``_VENUE_PROC`` is read
-        as a module global at call time, so patching it reaches ``sweep_scratch`` through
-        ``mechanical_resources``' by-name import.
-        """
-        proc = Path(self.enterContext(TemporaryDirectory()))
-        answering_pid(proc, self.tmp / "held-elsewhere")
-        patcher = patch.object(scratch, "_VENUE_PROC", proc)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.enterContext(pinned_venue_proc(holding=self.tmp / "held-elsewhere"))
 
     def _payload(self, resource: str, **extra: object) -> dict[str, object]:
         return {
             "resource": resource,
             "scratch_retention_days": 3,
             "scratch_sweep_root": str(self.tmp),
+            "allow_destructive_disk": True,
             **extra,
         }
 
@@ -904,6 +896,43 @@ class ScratchSweepLadderTests(TestCase):
         swept.assert_not_called()
         assert self.stale.exists()
         assert "SKIP agent-scratch sweep" in ResourcePressureMarker.load().last_plan
+
+    def test_the_autonomous_sweep_needs_the_destructive_flag_and_says_why(self) -> None:
+        # An unattended recursive rmtree belongs behind the same flag the
+        # worktree-GC lane beside it is gated on; the window alone armed it.
+        with patch.object(mechanical_resources, "sweep_scratch") as swept:
+            free_resources(self._payload("disk", allow_destructive_disk=False))
+
+        swept.assert_not_called()
+        assert self.stale.exists()
+        assert "SKIP agent-scratch sweep (allow_destructive_disk=false)" in ResourcePressureMarker.load().last_plan
+
+    def test_the_ram_ladder_is_gated_on_the_same_flag(self) -> None:
+        with (
+            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
+            patch.object(mechanical_resources, "_docker_container_prune", return_value=None),
+            patch.object(mechanical_resources, "sweep_scratch") as swept,
+        ):
+            free_resources(self._payload("ram", allow_destructive_disk=False))
+
+        swept.assert_not_called()
+        assert self.stale.exists()
+
+    def test_a_refused_sweep_is_its_own_step_never_a_zero_gb_success_line(self) -> None:
+        refused = ScratchSweepPlan(
+            root=str(self.tmp),
+            retention_days=3,
+            entries=(),
+            probe_gap="open-file probe unsighted at /proc: 3 of 4 pid(s) unknowable",
+            refused=True,
+        )
+
+        with patch.object(mechanical_resources, "sweep_scratch", return_value=refused):
+            free_resources(self._payload("disk"))
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "REFUSED agent-scratch sweep" in plan
+        assert "reclaimed 0.00 GB" not in plan
 
     def test_a_sweep_failure_is_swallowed_so_the_tick_survives(self) -> None:
         with patch.object(mechanical_resources, "sweep_scratch", side_effect=RuntimeError("proc gone")):

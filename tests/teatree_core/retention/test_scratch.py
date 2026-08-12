@@ -12,6 +12,7 @@ from django.utils import timezone
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.worktree import Worktree
 from teatree.core.retention import scratch
+from teatree.core.retention.liveness import ProcessTableView
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweep, ScratchSweepPlan
 from tests._procfs import answering_pid as _answering_pid
 from tests._procfs import listening_socket as _listening_socket
@@ -184,7 +185,7 @@ class ScratchSweepPlanTests(ScratchSweepTestCase):
         plan = self.sweep(proc_root=self.root / "no-such-proc").plan()
 
         assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
         assert plan.entries[0].size_bytes == 2048
 
     def test_retention_days_zero_disables_the_sweep(self) -> None:
@@ -336,7 +337,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
             fallback = scratch.resolve_scratch_sweep()
 
         assert fallback.root == Path("/tmp")
-        assert fallback.proc_root == Path("/proc")
+        assert fallback.proc_root == scratch._VENUE_PROC
         assert fallback.probe_root is None
 
     def test_an_explicit_root_is_swept_against_this_venues_own_process_table(self) -> None:
@@ -347,7 +348,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
             explicit = scratch.resolve_scratch_sweep(str(self.root))
 
         assert explicit.root == self.root
-        assert explicit.proc_root == Path("/proc")
+        assert explicit.proc_root == scratch._VENUE_PROC
         assert explicit.probe_root is None
 
     def test_sweep_scratch_applies_only_when_asked(self) -> None:
@@ -438,7 +439,7 @@ class ScratchSweepDegradedReadTests(ScratchSweepTestCase):
         _age(nested_dir, days=9)
         _age(tree, days=9)
         real_lstat = scratch.Path.lstat
-        vanished = OSError("vanished mid-walk")
+        vanished = FileNotFoundError("vanished mid-walk")
 
         def flaky(self_path: Path) -> object:
             if self_path.name == "subdir":
@@ -709,7 +710,7 @@ class MmapAndUnixSocketLivenessTests(ScratchSweepTestCase):
         plan = self.sweep(proc_root=self.blind_proc).plan()
 
         assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
         assert stale.exists()
 
 
@@ -1009,7 +1010,7 @@ class OpenFileProbeStructuralBlindnessTests(ScratchSweepTestCase):
         plan = self.sweep(proc_root=self.blind_proc).plan()
 
         assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
 
     def test_apply_removes_nothing_when_the_probe_is_structurally_blind(self) -> None:
         stale = _scratch(self.root, "t3after", days=9, size=64)
@@ -1047,7 +1048,7 @@ class OpenFileProbeStructuralBlindnessTests(ScratchSweepTestCase):
         # Not blind (222's cwd answered) — the entry is decided on its own
         # merits (staleness), not forced KEEP by a blind probe.
         entry = self.entry_for(plan, stale)
-        assert "open-file probe unreadable" not in plan.probe_gap
+        assert "open-file probe unsighted" not in plan.probe_gap
         assert entry.removable is True
 
 
@@ -1073,7 +1074,7 @@ class ResolutionWitnessTests(ScratchSweepTestCase):
         plan = self.sweep(proc_root=self.blind_proc).plan()
 
         assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
         assert self.entry_for(plan, held).removable is False
 
     def test_the_same_entry_as_a_resolvable_symlink_is_the_control_that_keeps_it(self) -> None:
@@ -1108,7 +1109,7 @@ class ResolutionWitnessTests(ScratchSweepTestCase):
         plan = self.sweep().plan()
 
         assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
         assert stale.exists()
 
     def test_an_empty_but_readable_fd_dir_is_an_answer_not_a_blind(self) -> None:
@@ -1135,7 +1136,7 @@ class ResolutionWitnessTests(ScratchSweepTestCase):
 
         plan = self.sweep(proc_root=self.blind_proc).plan()
 
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
         assert stale.exists()
 
     def test_a_process_table_with_no_numeric_pid_is_not_a_procfs_and_blinds(self) -> None:
@@ -1150,7 +1151,7 @@ class ResolutionWitnessTests(ScratchSweepTestCase):
         plan = self.sweep(proc_root=self.blind_proc).plan()
 
         assert plan.candidates == ()
-        assert "open-file probe unreadable" in plan.probe_gap
+        assert "open-file probe unsighted" in plan.probe_gap
         assert stale.exists()
 
     def test_one_numeric_answering_pid_is_the_control_for_the_empty_table(self) -> None:
@@ -1173,3 +1174,142 @@ class ResolutionWitnessTests(ScratchSweepTestCase):
 
         assert plan.reclaimed_bytes == 0
         assert stale.exists()
+
+
+class UnsightedProbeRefusesTests(ScratchSweepTestCase):
+    """A probe that could not look REFUSES; it never reports a clean 0.00 GB no-op.
+
+    ``reclaimed 0.00 GB`` from a blinded probe is byte-identical to the same line
+    on an already-clean box, so an armed-but-inoperative lane ships unnoticed.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.victim = _scratch(self.root, "t3db.sqlite3", days=9, size=2048)
+        holder_fd = self.blind_proc / "202" / "fd"
+        holder_fd.mkdir(parents=True)
+        (holder_fd / "3").symlink_to(self.victim)
+        _answering_pid(self.blind_proc, self.elsewhere / "held-elsewhere")
+        holder_fd.chmod(0o000)
+        self.addCleanup(holder_fd.chmod, 0o700)
+
+    def test_apply_leaves_a_file_the_unreadable_pid_holds_open(self) -> None:
+        plan = self.sweep(proc_root=self.blind_proc).apply()
+
+        assert self.victim.exists()
+        assert plan.refused is True
+        assert plan.reclaimed_bytes == 0
+
+    def test_the_summary_says_refused_rather_than_reclaimed(self) -> None:
+        plan = self.sweep(proc_root=self.blind_proc).apply()
+
+        assert "REFUSED" in plan.summary
+        assert "reclaimed 0.00 GB" not in plan.summary
+
+    def test_the_gap_names_the_coverage_counts_and_the_arming_precondition(self) -> None:
+        plan = self.sweep(proc_root=self.blind_proc).plan()
+
+        assert "1 of 2 pid(s) unknowable" in plan.probe_gap
+        assert "ptrace" in plan.probe_gap
+
+    def test_the_deliberate_off_switch_is_not_a_refusal(self) -> None:
+        plan = self.sweep(retention_days=0, proc_root=self.blind_proc).plan()
+
+        assert plan.refused is False
+        assert "retention disabled" in plan.probe_gap
+
+    def test_a_failed_worktree_read_refuses_too(self) -> None:
+        with patch.object(scratch, "_worktree_paths", return_value=None):
+            plan = self.sweep().apply()
+
+        assert plan.refused is True
+        assert self.victim.exists()
+
+    def test_a_sighted_probe_still_reclaims_the_positive_control(self) -> None:
+        plan = self.sweep().apply()
+
+        assert plan.refused is False
+        assert not self.victim.exists()
+
+
+class SymlinkedRootSpellingTests(ScratchSweepTestCase):
+    """A symlinked component above the entry must not make a held path compare unequal."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.entry = self.root / "wt4081venv"
+        self.entry.mkdir()
+        self.held = self.entry / "python"
+        self.held.write_bytes(b"x" * 64)
+        _age(self.held, days=9)
+        _age(self.entry, days=9)
+        self.linked_root = Path(self.enterContext(TemporaryDirectory())) / "via-link"
+        self.linked_root.symlink_to(self.root)
+        view = ProcessTableView(held=frozenset({str(self.held)}), answered_pids=1, unknowable_pids=0)
+        self.enterContext(patch.object(scratch, "held_paths", return_value=view))
+
+    def _plan_through(self, root: Path) -> ScratchSweepPlan:
+        return ScratchSweep(root=root, retention_days=3, proc_root=self.proc).plan()
+
+    def test_a_root_spelled_through_a_symlink_still_sees_the_holder(self) -> None:
+        plan = self._plan_through(self.linked_root)
+
+        assert self.entry_for(plan, self.linked_root / "wt4081venv").removable is False
+
+    def test_the_realpath_spelling_is_the_control_and_is_kept_either_way(self) -> None:
+        plan = self._plan_through(self.root)
+
+        assert self.entry_for(plan, self.entry).removable is False
+
+
+class NonAbsenceReadFailureTests(ScratchSweepTestCase):
+    """Only ENOENT is an absence; every other errno is a blind spot that keeps the entry."""
+
+    def test_a_child_lstat_raising_a_non_enoent_error_keeps_the_tree(self) -> None:
+        tree = self.root / "wt4081venv"
+        tree.mkdir()
+        (tree / "lib.so").write_bytes(b"y" * 512)
+        _age(tree, days=9)
+        real_lstat = scratch.Path.lstat
+        eloop = OSError("too many levels of symbolic links")
+
+        def flaky(self_path: Path) -> object:
+            if self_path.name == "lib.so":
+                raise eloop
+            return real_lstat(self_path)
+
+        with patch.object(scratch.Path, "lstat", flaky):
+            entry = self.entry_for(self.sweep().plan(), tree)
+
+        assert entry.removable is False
+        assert "cannot prove it is stale" in entry.reason
+
+
+class HostMountSubPathPairingTests(ScratchSweepTestCase):
+    """A configured root UNDER the host mount is the host view, not this venue's."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.host_tmp = Path(self.enterContext(TemporaryDirectory()))
+        self.host_proc = Path(self.enterContext(TemporaryDirectory()))
+
+    def _resolved(self, configured: str) -> ScratchSweep:
+        with (
+            patch.object(scratch, "_HOST_TMP", self.host_tmp),
+            patch.object(scratch, "_HOST_PROC", self.host_proc),
+            patch.dict(os.environ, {scratch._HOST_TMP_ENV: "/real/host/tmp"}),
+        ):
+            return scratch.resolve_scratch_sweep(configured)
+
+    def test_a_sub_path_of_the_host_mount_reads_the_host_process_table(self) -> None:
+        resolved = self._resolved(str(self.host_tmp / "agent-scratch"))
+
+        assert resolved.proc_root == self.host_proc
+        assert resolved.probe_root == Path("/real/host/tmp/agent-scratch")
+
+    def test_the_mount_point_itself_is_unchanged(self) -> None:
+        resolved = self._resolved("")
+
+        assert resolved.root == self.host_tmp
+        assert resolved.proc_root == self.host_proc
+        assert resolved.probe_root == Path("/real/host/tmp")

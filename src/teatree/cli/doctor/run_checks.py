@@ -69,6 +69,7 @@ from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledge
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
     _check_root_disk_headroom,
+    _check_scratch_sweep_probe,
     _check_tmp_tmpfs_headroom,
     _check_tmp_tmpfs_sizing,
     _check_worker_memory_cap,
@@ -132,6 +133,7 @@ def _optional_tooling_advisories() -> None:
     _check_docker_workflow_wired()
     _check_tmp_tmpfs_headroom()
     _check_tmp_tmpfs_sizing()
+    _check_scratch_sweep_probe()
     _check_recommended_skills()
     # The other half of the drift gate in `_run_provisioning_gates`: that one asks
     # whether the INSTALL left the pin, this one whether the PIN left its source.

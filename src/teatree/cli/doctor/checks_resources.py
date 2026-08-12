@@ -26,6 +26,7 @@ from typing import cast
 
 import typer
 
+from teatree.core.retention.liveness import held_paths
 from teatree.utils.ram_probe import host_total_ram_mib
 from teatree.utils.ram_scope import agent_workload_floor_gib
 
@@ -158,7 +159,7 @@ def _tmp_mount_fstype(mounts_text: str, mount_point: str) -> str | None:
 def _check_tmp_tmpfs_headroom(
     *,
     mounts_path: Path = Path("/proc/mounts"),
-    tmp_dir: str = "/tmp",  # noqa: S108 — auditing the /tmp mount, not creating a temp file
+    tmp_dir: str | None = None,
 ) -> bool:
     """WARN when a RAM-backed (tmpfs) ``/tmp`` is filling toward ENOSPC.
 
@@ -173,23 +174,28 @@ def _check_tmp_tmpfs_headroom(
     advisory checks. Threshold overridable via ``TEATREE_TMPFS_WARN_PERCENT`` (1..100,
     default 80). Crash-proof — any probe error degrades to a silent pass so this
     diagnostic never aborts the doctor run.
+
+    Probes the SAME target as its sizing sibling (:func:`_tmpfs_probe_target`) —
+    a hard-coded ``/tmp`` is silently inert inside the container this check runs
+    in, where the host's tmpfs is reachable only through the ``/host-tmp`` bind.
     """
     try:
+        target = _tmpfs_probe_target(tmp_dir)
         if not mounts_path.is_file():
             return True
-        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), tmp_dir) != "tmpfs":
+        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), target) != "tmpfs":
             return True
         threshold = _tmpfs_warn_percent(os.environ.get("TEATREE_TMPFS_WARN_PERCENT"))
-        stats = os.statvfs(tmp_dir)
+        stats = os.statvfs(target)
         total = stats.f_blocks * stats.f_frsize
         if total <= 0:
             return True
         used_pct = round((total - stats.f_bavail * stats.f_frsize) / total * 100)
         if used_pct >= threshold:
             typer.echo(
-                f"WARN  {tmp_dir} is a RAM-backed tmpfs at {used_pct}% used (>= {threshold}% threshold) — "
+                f"WARN  {target} is a RAM-backed tmpfs at {used_pct}% used (>= {threshold}% threshold) — "
                 f"agent/pytest/uv scratch can fill it to ENOSPC and wedge the box. Trim it: "
-                f"`find {tmp_dir} -maxdepth 1 -name 'pytest-*' -mmin +120 -exec rm -rf {{}} +`. Runtime "
+                f"`find {target} -maxdepth 1 -name 'pytest-*' -mmin +120 -exec rm -rf {{}} +`. Runtime "
                 "temp is routed to disk via TMPDIR; tune this with TEATREE_TMPFS_WARN_PERCENT."
             )
     except OSError:
@@ -200,8 +206,8 @@ def _check_tmp_tmpfs_headroom(
 _HOST_TMP_MOUNT = Path("/host-tmp")
 
 
-def _tmpfs_sizing_target(tmp_dir: str | None) -> str:
-    """Which path to inspect: the caller's choice, else the host bind if mounted, else ``/tmp``.
+def _tmpfs_probe_target(tmp_dir: str | None) -> str:
+    """Which path BOTH tmpfs checks inspect: the caller's choice, else the host bind, else ``/tmp``.
 
     ``t3 doctor check`` runs INSIDE the container (#4165), where the container's
     own ``/tmp`` is the image's overlay layer, not the host's tmpfs — so a check
@@ -240,7 +246,7 @@ def _check_tmp_tmpfs_sizing(
     to a silent pass so this diagnostic never aborts the doctor run.
     """
     try:
-        target = _tmpfs_sizing_target(tmp_dir)
+        target = _tmpfs_probe_target(tmp_dir)
         if not mounts_path.is_file():
             return True
         if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), target) != "tmpfs":
@@ -266,6 +272,40 @@ def _check_tmp_tmpfs_sizing(
                 f"tune this with TEATREE_TMPFS_MAX_RAM_PERCENT."
             )
     except OSError:
+        return True
+    return True
+
+
+def _check_scratch_sweep_probe(*, retention_days: int | None = None, proc_root: Path | None = None) -> bool:
+    """WARN when the scratch sweep is ARMED but its open-file probe cannot see the process table.
+
+    ``scratch_retention_days > 0`` with an unsighted probe is the worst of both
+    states: the lane looks configured, refuses on every tick, and reclaims
+    nothing. Silent otherwise — a disabled lane has nothing to report. Surfacing-
+    only, like its tmpfs siblings, and crash-proof: any probe error degrades to a
+    silent pass rather than aborting the doctor run.
+    """
+    try:
+        if retention_days is None or proc_root is None:
+            from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: DB read at call time
+            from teatree.core.retention.scratch import resolve_scratch_sweep  # noqa: PLC0415 — deferred: ORM import
+
+            settings = get_effective_settings()
+            retention_days = settings.scratch_retention_days if retention_days is None else retention_days
+            if proc_root is None:
+                proc_root = resolve_scratch_sweep(settings.scratch_sweep_root).proc_root
+        if retention_days <= 0:
+            return True
+        view = held_paths(proc_root)
+        if not view.sighted:
+            typer.echo(
+                f"WARN  scratch sweep is armed (scratch_retention_days={retention_days}) but its open-file "
+                f"probe is unsighted at {proc_root}: {view.unknowable_reason} — every sweep REFUSES and "
+                "reclaims nothing. Either arm the probe (a venue that can resolve that table's fds — the "
+                "container reading the host process table with ptrace access, or a host-side run) or set "
+                "`t3 <overlay> config_setting set scratch_retention_days 0`."
+            )
+    except Exception:  # noqa: BLE001 — a doctor check must never crash the run
         return True
     return True
 

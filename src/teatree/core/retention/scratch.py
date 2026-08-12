@@ -20,10 +20,14 @@ not a git repository anywhere in its tree (a registered ``Worktree`` row OR an
 ad-hoc clone the DB never learned about), and not protected by name. A guard
 that cannot be answered keeps the entry with its reason recorded, so a read
 failure is never laundered into a deletion — including when the open-file probe
-(:mod:`~teatree.core.retention.liveness`) can see a pid's ``fd`` directory but
-resolve nothing inside it: that is not an empty process table, it is the probe
-itself unable to see the namespace it was asked to watch, and it blinds the
-whole sweep rather than reporting nothing held.
+(:mod:`~teatree.core.retention.liveness`) cannot see what some pid holds, whether
+because its ``fd`` directory refuses the listing or because nothing inside it
+resolves: those are one knowledge state, not an empty process table, and either
+blinds the whole sweep rather than reporting nothing held.
+
+A blinded sweep REFUSES rather than reporting a clean no-op. ``reclaimed 0.00
+GB`` from a probe that could not look is indistinguishable from the same line on
+an already-clean box, which is how a lane ships armed but inoperative.
 
 The process table and the temp root must describe the SAME namespace or the
 open-file guard is blind: ``root`` is what this venue writes through, and
@@ -45,7 +49,7 @@ from pathlib import Path
 from django.utils import timezone
 
 from teatree.core.models.worktree import Worktree
-from teatree.core.retention.liveness import held_paths
+from teatree.core.retention.liveness import ProcessTableView, held_paths, normalized_spelling
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +119,13 @@ class ScratchSweepPlan:
     probe_gap: str = ""
     applied: bool = False
     reclaimed_bytes: int = 0
+    refused: bool = False
+    """A read the sweep depends on FAILED, so it deleted nothing and says so.
+
+    Distinct from the ``retention_days <= 0`` off switch, which is a deliberate
+    no-op: a refusal is a read failure that must never degrade to a consumable
+    ``reclaimed 0.00 GB`` line indistinguishable from a clean box.
+    """
 
     @property
     def candidates(self) -> tuple[ScratchEntry, ...]:
@@ -130,13 +141,20 @@ class ScratchSweepPlan:
 
     @property
     def summary(self) -> str:
-        verb = "reclaimed" if self.applied else "would reclaim"
-        freed = self.reclaimed_bytes if self.applied else self.candidate_bytes
-        head = (
-            f"{self.root}: {verb} {freed / _BYTES_PER_GIB:.2f} GB of "
-            f"{self.resident_bytes / _BYTES_PER_GIB:.2f} GB resident "
-            f"across {len(self.candidates)}/{len(self.entries)} entry(ies)"
-        )
+        if self.refused:
+            head = (
+                f"{self.root}: REFUSED — reclaimed nothing of "
+                f"{self.resident_bytes / _BYTES_PER_GIB:.2f} GB resident "
+                f"across {len(self.entries)} entry(ies)"
+            )
+        else:
+            verb = "reclaimed" if self.applied else "would reclaim"
+            freed = self.reclaimed_bytes if self.applied else self.candidate_bytes
+            head = (
+                f"{self.root}: {verb} {freed / _BYTES_PER_GIB:.2f} GB of "
+                f"{self.resident_bytes / _BYTES_PER_GIB:.2f} GB resident "
+                f"across {len(self.candidates)}/{len(self.entries)} entry(ies)"
+            )
         return f"{head} — {self.probe_gap}" if self.probe_gap else head
 
 
@@ -221,16 +239,21 @@ def _lstat_all(root: str, names: list[str]) -> tuple[list[os.stat_result], bool]
     EACCES. Swallowing that alongside the vanished-entry case reports the tree's
     newest mtime as the parent's, so content written seconds ago classifies as
     stale; a denial is a blind spot, not an absence.
+
+    ONLY ``ENOENT`` is an absence. Every other errno — ELOOP, ENAMETOOLONG, EIO,
+    a stale NFS handle — is a read this walk could not complete, and scoring it as
+    "the entry was not there" is the same absence/blindness conflation one branch
+    lower.
     """
     stats = []
     denied = False
     for name in names:
         try:
             stats.append((Path(root) / name).lstat())
-        except PermissionError:
-            denied = True
-        except OSError:
+        except FileNotFoundError:
             continue
+        except OSError:
+            denied = True
     return stats, denied
 
 
@@ -257,8 +280,15 @@ class ScratchSweep:
 
     root: Path
     retention_days: int
+    proc_root: Path
+    """REQUIRED — a default here is a seam that silently reads the live ``/proc``.
+
+    Every caller already pairs the root with the table that can see its holders
+    (:func:`resolve_scratch_sweep`); a defaulted one let a test construct a sweep
+    whose verdict was a property of whatever else happened to be running.
+    """
+
     probe_root: Path | None = None
-    proc_root: Path = Path("/proc")
     uid: int | None = None
     now: datetime | None = None
 
@@ -266,18 +296,30 @@ class ScratchSweep:
         """Classify every top-level entry under the root, size-ranked, touching nothing."""
         if self.retention_days <= 0:
             return self._inert_plan(f"retention disabled (scratch_retention_days={self.retention_days})")
-        held = held_paths(self.proc_root)  # the only liveness probe; apply() never re-runs it (#4356)
-        if held is None:
-            return self._inert_plan(f"open-file probe unreadable at {self.proc_root} — nothing is removable")
+        view = held_paths(self.proc_root)  # the only liveness probe; apply() never re-runs it (#4356)
+        if not view.sighted:
+            return self._inert_plan(self._unsighted_gap(view), refused=True)
         reserved = _worktree_paths()
         if reserved is None:
-            return self._inert_plan("registered-worktree read failed — nothing is removable")
+            return self._inert_plan("registered-worktree read failed — nothing is removable", refused=True)
         cutoff = self._cutoff()
-        entries = [self._classify(child, cutoff=cutoff, held=held, reserved=reserved) for child in self._children()]
+        held = frozenset(normalized_spelling(path) for path in view.held)
+        normalized_reserved = frozenset(normalized_spelling(path) for path in reserved)
+        entries = [
+            self._classify(child, cutoff=cutoff, held=held, reserved=normalized_reserved) for child in self._children()
+        ]
         return ScratchSweepPlan(
             root=str(self.root),
             retention_days=self.retention_days,
             entries=_ranked(entries),
+        )
+
+    def _unsighted_gap(self, view: ProcessTableView) -> str:
+        """Why the probe could not see the namespace, and what arming it would take."""
+        return (
+            f"open-file probe unsighted at {self.proc_root}: {view.unknowable_reason} — nothing is removable. "
+            "Arming it needs a venue whose probe can resolve this table's fds (the container reading the host "
+            "process table with ptrace access, or a host-side run)."
         )
 
     def apply(self) -> ScratchSweepPlan:
@@ -291,6 +333,12 @@ class ScratchSweep:
         openat+flock — are a design decision. Unreachable while the lane ships off.
         """
         plan = self.plan()
+        if plan.refused:
+            # Never the reclaimed-0.00-GB INFO line: a read failure reported as a
+            # clean no-op is indistinguishable from an empty box, which is how an
+            # inoperative-but-armed lane ships unnoticed.
+            logger.warning("scratch sweep: refused under %s — %s", self.root, plan.probe_gap)
+            return plan
         cutoff = self._cutoff()
         reclaimed = 0
         for entry in plan.candidates:
@@ -314,7 +362,7 @@ class ScratchSweep:
             reclaimed_bytes=reclaimed,
         )
 
-    def _inert_plan(self, gap: str) -> ScratchSweepPlan:
+    def _inert_plan(self, gap: str, *, refused: bool = False) -> ScratchSweepPlan:
         """A plan that removes nothing but still reports what is resident and why."""
         entries = []
         for child in self._children():
@@ -333,6 +381,7 @@ class ScratchSweep:
             retention_days=self.retention_days,
             entries=_ranked(entries),
             probe_gap=gap,
+            refused=refused,
         )
 
     def _children(self) -> list[Path]:
@@ -383,7 +432,7 @@ class ScratchSweep:
             return stale
         if _covers(held, self._probe_path(child), nested_only=True):
             return "open by a live process"
-        if _covers(reserved, str(child), nested_only=False):
+        if _covers(reserved, normalized_spelling(str(child)), nested_only=False):
             return "holds a tracked worktree"
         if stats.holds_git_repo:
             return "holds a git repository"
@@ -405,8 +454,13 @@ class ScratchSweep:
         return ""
 
     def _probe_path(self, child: Path) -> str:
-        """*child*'s path as the process table being read spells it."""
-        return str((self.probe_root or self.root) / child.name)
+        """*child*'s path as the process table being read spells it, one normalized spelling.
+
+        Both sides of the comparison go through ``normalized_spelling``, so a
+        symlinked component anywhere above the entry cannot make a held path and
+        its candidate compare unequal.
+        """
+        return normalized_spelling(str((self.probe_root or self.root) / child.name))
 
     def _age_days_from_mtime(self, mtime: float | None) -> float | None:
         """Age in days of *mtime* against the sweep's clock; ``None`` when unreadable."""
@@ -460,14 +514,20 @@ def resolve_scratch_sweep(configured: str = "") -> ScratchSweep:
     ``TEATREE_HOST_TMP`` — the SAME variable the mount source is built from — so an
     operator override that moves the host mount source moves the guard's namespace
     with it; a stale ``/tmp`` here would blind the guard the moment the two diverge.
+    A configured root UNDER the host mount is the host view too. Treating only the
+    mount point itself as one sweeps host files against the CONTAINER's process
+    table with no ``probe_root`` at all — the wrong table AND the wrong spelling,
+    a double fail-open.
+
     ``retention_days`` is left at 0 for the caller to set from config — an unset
     window is the off switch, never a default deletion.
     """
     host_view = _HOST_TMP.is_dir() and _HOST_PROC.is_dir()
     root = Path(configured) if configured else (_HOST_TMP if host_view else _VENUE_TMP)
-    if host_view and root == _HOST_TMP:
-        probe_root = Path(os.environ.get(_HOST_TMP_ENV) or _VENUE_TMP)
-        return ScratchSweep(root=_HOST_TMP, retention_days=0, probe_root=probe_root, proc_root=_HOST_PROC)
+    if host_view and (root == _HOST_TMP or _HOST_TMP in root.parents):
+        host_tmp = Path(os.environ.get(_HOST_TMP_ENV) or _VENUE_TMP)
+        probe_root = host_tmp / root.relative_to(_HOST_TMP) if root != _HOST_TMP else host_tmp
+        return ScratchSweep(root=root, retention_days=0, probe_root=probe_root, proc_root=_HOST_PROC)
     return ScratchSweep(root=root, retention_days=0, proc_root=_VENUE_PROC)
 
 

@@ -12,7 +12,32 @@ Build the table here instead of hand-rolling one per test file — the invariant
 probe's fail-closed contract, and two private copies of it drift.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+
+@contextmanager
+def pinned_venue_proc(*, holding: Path | None = None) -> Iterator[Path]:
+    """Point the sweep's VENUE process table at a synthetic one carrying an answering pid.
+
+    ``resolve_scratch_sweep`` reads ``scratch._VENUE_PROC`` as a module global at
+    call time, so every caller that goes through it — the management command, the
+    resource ladder, ``sweep_scratch`` — is reached by patching that one name.
+    Without it the sweep's verdict is a property of the machine's live ``/proc``:
+    one same-uid pid presenting an unresolvable ``fd`` blinds the probe, the sweep
+    correctly refuses, and "the stale file is gone" fails on a systemd host while
+    passing in a container that has no such pid.
+    """
+    from teatree.core.retention import scratch  # noqa: PLC0415 — deferred: ORM import at call time
+
+    with TemporaryDirectory() as raw:
+        proc = Path(raw)
+        answering_pid(proc, holding if holding is not None else proc / "answered")
+        with patch.object(scratch, "_VENUE_PROC", proc):
+            yield proc
 
 
 def net_unix(namespace_dir: Path, *bind_paths: str) -> None:

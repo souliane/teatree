@@ -13,15 +13,18 @@ exercised deterministically, independent of the host's real ``/tmp``.
 """
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from teatree.cli.doctor import checks_resources
 from teatree.cli.doctor.checks_resources import (
     _check_tmp_tmpfs_headroom,
     _check_tmp_tmpfs_sizing,
     _tmp_mount_fstype,
-    _tmpfs_sizing_target,
+    _tmpfs_probe_target,
     _tmpfs_warn_percent,
 )
 
@@ -73,6 +76,12 @@ class TestTmpfsWarnPercent:
 
 
 class TestTmpfsHeadroomCheck:
+    @pytest.fixture(autouse=True)
+    def _no_host_bind(self, tmp_path: Path) -> Iterator[None]:
+        """These cases mean the LOCAL /tmp, so the host bind must not win the resolution."""
+        with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path / "absent-host-bind"):
+            yield
+
     def test_warns_when_tmpfs_over_threshold(self, tmp_path: Path, capsys) -> None:
         mounts = _mounts(tmp_path, "tmpfs")
         with patch.object(os, "statvfs", return_value=_FakeStatvfs(total=1000, used_pct=95)):
@@ -169,6 +178,36 @@ class TestTmpfsSizingCheck:
         assert capsys.readouterr().out == ""
 
 
+class TestHeadroomCheckFollowsTheSameProbeTarget:
+    """The FULLNESS alarm was hard-coded to ``/tmp`` while its sibling routed through the resolver.
+
+    Inside the container ``/proc/mounts`` carries no ``/tmp`` line at all, so the
+    alarm was silently inert in the only venue ``t3 doctor check`` runs in.
+    """
+
+    def test_it_reports_the_host_tmpfs_by_its_bind_path(self, tmp_path: Path, capsys) -> None:
+        mounts = _mounts(tmp_path, "tmpfs", mount_point="/host-tmp")
+        with (
+            patch.object(checks_resources, "_HOST_TMP_MOUNT", Path("/host-tmp")),
+            patch.object(Path, "is_dir", return_value=True),
+            patch.object(os, "statvfs", return_value=_FakeStatvfs(total=1000, used_pct=95)),
+        ):
+            assert _check_tmp_tmpfs_headroom(mounts_path=mounts) is True
+
+        out = capsys.readouterr().out
+        assert "/host-tmp is a RAM-backed tmpfs at 95% used" in out
+
+    def test_an_explicit_target_still_wins(self, tmp_path: Path, capsys) -> None:
+        mounts = _mounts(tmp_path, "tmpfs")
+        with (
+            patch.object(checks_resources, "_HOST_TMP_MOUNT", Path("/host-tmp")),
+            patch.object(os, "statvfs", return_value=_FakeStatvfs(total=1000, used_pct=95)),
+        ):
+            assert _check_tmp_tmpfs_headroom(mounts_path=mounts, tmp_dir="/tmp") is True
+
+        assert "/tmp is a RAM-backed tmpfs" in capsys.readouterr().out
+
+
 class TestTmpfsSizingTarget:
     """Which path the sizing check inspects (#4165 review finding).
 
@@ -180,15 +219,15 @@ class TestTmpfsSizingTarget:
 
     def test_an_explicit_tmp_dir_always_wins(self, tmp_path: Path) -> None:
         with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path):
-            assert _tmpfs_sizing_target("/custom") == "/custom"
+            assert _tmpfs_probe_target("/custom") == "/custom"
 
     def test_prefers_the_host_bind_when_it_is_mounted(self, tmp_path: Path) -> None:
         with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path):
-            assert _tmpfs_sizing_target(None) == str(tmp_path)
+            assert _tmpfs_probe_target(None) == str(tmp_path)
 
     def test_falls_back_to_tmp_when_the_host_bind_is_absent(self, tmp_path: Path) -> None:
         with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path / "absent"):
-            assert _tmpfs_sizing_target(None) == "/tmp"
+            assert _tmpfs_probe_target(None) == "/tmp"
 
 
 class TestTmpfsSizingCheckPrefersTheHostBind:

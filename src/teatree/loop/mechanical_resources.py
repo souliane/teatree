@@ -258,28 +258,42 @@ def _scratch_retention_days(payload: ActionPayload) -> int:
     return int(payload.get("scratch_retention_days", 0))
 
 
+def _scratch_armed(payload: ActionPayload) -> bool:
+    """A recursive unattended delete needs BOTH the window AND the destructive opt-in.
+
+    The window alone armed it, which put an autonomous ``rmtree`` outside the very
+    flag the worktree-GC lane beside it is gated on. An explicit human
+    ``retention scratch --apply`` is its own authorization and is NOT gated here.
+    """
+    return _scratch_retention_days(payload) > 0 and bool(payload.get("allow_destructive_disk"))
+
+
 def _scratch_plan_step(payload: ActionPayload) -> str:
     """The scratch lane's line in BOTH ladders — on a tmpfs /tmp this reclaims RAM, not disk."""
     days = _scratch_retention_days(payload)
     if days <= 0:
         return "SKIP agent-scratch sweep (scratch_retention_days=0)"
+    if not payload.get("allow_destructive_disk"):
+        return "SKIP agent-scratch sweep (allow_destructive_disk=false)"
     root = resolve_scratch_sweep(str(payload.get("scratch_sweep_root", ""))).root
     return f"SWEEP agent scratch under {root} older than {days}d"
 
 
 def _sweep_scratch(plan: FreePlan, payload: ActionPayload) -> float:
     """Reclaim stale agent scratch; return GB freed. Best-effort, never raises."""
-    days = _scratch_retention_days(payload)
-    if days <= 0:
+    if not _scratch_armed(payload):
         return 0.0
     try:
         swept = sweep_scratch(
             configured_root=str(payload.get("scratch_sweep_root", "")),
-            retention_days=days,
+            retention_days=_scratch_retention_days(payload),
             apply=True,
         )
     except Exception:
         logger.exception("free_resources: agent-scratch sweep failed — swallowed")
+        return 0.0
+    if swept.refused:
+        plan.steps.append(f"  → REFUSED agent-scratch sweep ({swept.probe_gap})")
         return 0.0
     plan.steps.append(f"  → {swept.summary}")
     return swept.reclaimed_bytes / _GIB
