@@ -18,6 +18,7 @@ from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
 from teatree.utils.pr_ref import PrRef
+from teatree.utils.run import SUBPROCESS_UNREACHABLE
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -455,6 +456,44 @@ def _reconcile_slug_against_reviewed_sha(
         f"(§17.4.3 step 2 / #1335)."
     )
     raise MergePreconditionError(msg)
+
+
+def reconcile_issuance_slug(*, initial_slug: str, pr_id: int, reviewed_sha: str, host_kind: str) -> str:
+    """:func:`_reconcile_slug_against_reviewed_sha` under CLEAR issuance's fail-open (#4249).
+
+    Issuance must never be STRICTER than the merge gate it feeds, so a reconcile that
+    refuses keeps *initial_slug* and lets the merge's own SHA bind refuse a moved head.
+    A forge that cannot be reached at all refuses the same way: an absent transport is
+    a NON-answer, so it is no more evidence for re-keying the verdict than a moved head
+    is. GitLab's transport already degrades to an empty read
+    (``backends.gitlab.merge_rpc._READ_FAILURES``); GitHub's spawns ``gh``, so a venue
+    without that binary raises out of the transport instead. Before #4249 this was
+    latent — an ``owner/repo``-shaped slug skipped the reconcile outright — but the
+    registry-backed predicate now routes a genuine repo the local registry happens not
+    to name through it, putting the hole on the common path.
+
+    The MERGE keystone deliberately does NOT use this wrapper: it calls the reconcile
+    directly, where the raise is load-bearing and failing open would merge unverified
+    work.
+    """
+    try:
+        return _reconcile_slug_against_reviewed_sha(
+            initial_slug=initial_slug,
+            pr_id=pr_id,
+            reviewed_sha=reviewed_sha,
+            host_kind=host_kind,
+        )
+    except MergePreconditionError:
+        return initial_slug
+    except SUBPROCESS_UNREACHABLE:
+        warn_throttled(
+            logger,
+            f"issuance-reconcile-transport-{host_kind}",
+            f"{host_kind} merge transport unreachable during CLEAR issuance for PR "
+            f"#{pr_id}; keeping slug {initial_slug!r}",
+            exc_info=True,
+        )
+        return initial_slug
 
 
 def _probe_candidate_heads(

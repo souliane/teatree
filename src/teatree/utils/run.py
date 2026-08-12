@@ -23,8 +23,14 @@ import sys
 from collections import deque
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from subprocess import DEVNULL, PIPE, STDOUT, CompletedProcess, Popen, TimeoutExpired
+from subprocess import DEVNULL, PIPE, STDOUT, CompletedProcess, Popen, SubprocessError, TimeoutExpired
 from typing import IO, cast
+
+# The command could not be REACHED, as opposed to having run and failed: absent from
+# ``PATH`` (``FileNotFoundError``), not executable (``PermissionError``), or stalled past
+# its bound (``TimeoutExpired``). A caller whose read is best-effort catches this to
+# degrade; one whose read is load-bearing lets it raise.
+SUBPROCESS_UNREACHABLE: tuple[type[BaseException], ...] = (OSError, SubprocessError)
 
 # A long-lived ``check=False`` caller (uvicorn / runserver via service_launch)
 # emits stderr for the whole process lifetime; retaining every line leaks memory
@@ -38,6 +44,7 @@ __all__ = [
     "PIPE",
     "STDOUT",
     "STREAMED_STDERR_RETAINED_LINES",
+    "SUBPROCESS_UNREACHABLE",
     "CommandFailedError",
     "CompletedProcess",
     "Popen",

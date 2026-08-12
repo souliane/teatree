@@ -27,11 +27,11 @@ from teatree.core.merge import (
     MergePreconditionError,
     known_repo_slugs,
     normalize_repo_slug,
+    reconcile_issuance_slug,
     resolve_host_kind,
     resolve_pr_repo_slug,
     slug_is_registered_repo,
 )
-from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
@@ -97,21 +97,19 @@ def _verdict_slug(request: ClearRequest, resolved_slug: str) -> str:
     ``review-fixes/docs`` as ``owner/repo``, and skipping on that keyed the verdict
     into a namespace no repo-scoped gate ever reads. An empty registry names
     nothing, so it contradicts nothing and the shape test still stands. A reconcile
-    that refuses (a genuinely moved head, an offline forge) keeps the initial slug:
-    issuance must not become STRICTER than the merge gate it feeds, and the merge's
-    own SHA bind still refuses a moved head.
+    that refuses — a genuinely moved head, an offline forge — keeps the initial slug
+    via ``reconcile_issuance_slug``, which owns that fail-open: issuance must not
+    become STRICTER than the merge gate it feeds, and the merge's own SHA bind still
+    refuses a moved head.
     """
     if normalize_repo_slug(request.slug) and (slug_is_registered_repo(request.slug) or not known_repo_slugs()):
         return resolved_slug
-    try:
-        return _reconcile_slug_against_reviewed_sha(
-            initial_slug=resolved_slug,
-            pr_id=request.pr_id,
-            reviewed_sha=request.reviewed_sha.strip().lower(),
-            host_kind=request.host_kind,
-        )
-    except MergePreconditionError:
-        return resolved_slug
+    return reconcile_issuance_slug(
+        initial_slug=resolved_slug,
+        pr_id=request.pr_id,
+        reviewed_sha=request.reviewed_sha.strip().lower(),
+        host_kind=request.host_kind,
+    )
 
 
 # The 10-mixin base list is a django-typer requirement, not a composition-bar
