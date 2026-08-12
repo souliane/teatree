@@ -42,9 +42,22 @@ _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 #: Words a compound command opens with that precede its command word without being it.
 _NOT_A_COMMAND = frozenset({"(", "{", "!", "if", "then", "elif", "else", "while", "until", "do", "time"})
 
-#: Characters that end the command segment the cursor sits in. A single ``|`` is absent
-#: on purpose: a pipeline is ONE segment, because ``cat <<'EOF' | bash`` executes its body.
-_SEGMENT_END = ";&\n)}"
+#: Characters bash reads as a control operator ENDING a command list. A single ``|`` is
+#: absent on purpose: a pipeline is ONE segment, because ``cat <<'EOF' | bash`` executes
+#: its body. ``&`` is here conditionally — see :func:`_ends_a_list`.
+_LIST_TERMINATOR = ";&\n"
+
+#: Openers and closers of a command GROUP. A terminator inside one ends nothing at the
+#: outer level, and a group's stdout is its contents' stdout, so the window has to widen
+#: through both — ``{ cat <<<'…'; } | bash`` feeds the here-string to ``bash``.
+_GROUP_OPEN = "({"
+_GROUP_CLOSE = ")}"
+
+#: A process substitution names a program that RECEIVES the redirected text without being
+#: a pipeline stage (``cat <<<'…' > >(bash)`` runs it under bash). Its command word is
+#: reachable, but a redirection TARGET that is itself a command list is a second grammar
+#: to model — so a segment holding one is simply never proved data-only.
+_PROCESS_SUBSTITUTION = ("<(", ">(")
 
 #: The here-string operator. Its operand is a whole word the shell hands to the command
 #: on stdin, so the ``<`` in front of it is an OPERATOR, never the unquoted word fragment
@@ -114,7 +127,7 @@ class _SpanScanner:
             else:
                 self._emit(char)
                 self._pos += 1
-                if char in _SEGMENT_END or char == "|":
+                if char == "|" or char in _GROUP_CLOSE or _ends_a_list(self._src, self._pos - 1):
                     self._segment_start = self._pos
         return "".join(self._out)
 
@@ -201,12 +214,16 @@ class _SpanScanner:
 
         Serves both the ``<<`` heredoc operator and the ``<<<`` here-string operand, and
         answers on POSITIVE proof only: an unknown, expanded, globbed or compound command
-        word leaves the segment unproven, and unproven keeps. The window is the command
-        segment the scanner is inside — not the physical line — so a ``\``+newline
-        continuation, a newline inside a quoted argument and an intervening heredoc body
-        all stop bounding the words bash resolves into one command.
+        word leaves the segment unproven, and unproven keeps. The window is every program
+        the redirected text can reach — bounded by bash's own control operators, not by a
+        physical line and not by a raw character — so a ``\``+newline continuation, a
+        newline inside a quoted argument, an intervening heredoc body, an enclosing group
+        and a redirection operator spelling ``&`` all stop bounding it.
         """
-        segment = self._src[self._segment_start : _segment_end(self._src, self._segment_start)]
+        start = self._segment_start
+        segment = self._src[start : _segment_end(self._src, start, _open_groups(self._src, start))]
+        if any(segment.startswith(_PROCESS_SUBSTITUTION, index) for index, _ in _unquoted_scan(segment)):
+            return False
         return all(_stage_command_word(stage) in _STDIN_READERS for stage in _pipeline_stages(segment))
 
     def _drain_heredoc_bodies(self) -> None:
@@ -311,10 +328,52 @@ def _word_end(text: str, start: int) -> int:
     return len(text)
 
 
-def _segment_end(text: str, start: int) -> int:
-    """Index just past the command segment starting at *start* — its whole pipeline."""
+def _ends_a_list(text: str, index: int) -> bool:
+    r"""Whether *text*\ [*index*] is a control operator that ends a command list.
+
+    A raw ``&`` is one only OUTSIDE a redirection operator: ``2>&1``, ``2>&-``, ``&>``
+    and ``|&`` all spell it inside one, where bash reads no list boundary at all. Taking
+    the character at face value cuts the window short of a later ``| bash``, which then
+    reads as a segment every stage of which is a reader — the silent elision.
+    """
+    char = text[index]
+    if char not in _LIST_TERMINATOR:
+        return False
+    if char != "&":
+        return True
+    if text[index + 1 : index + 2] == ">":
+        return False
+    before = index - 1
+    while before >= 0 and text[before] in " \t":
+        before -= 1
+    return before < 0 or text[before] not in "><|"
+
+
+def _open_groups(text: str, end: int) -> int:
+    """How many command groups are still open just before *end*."""
+    depth = 0
+    for _, char in _unquoted_scan(text[:end]):
+        if char in _GROUP_OPEN:
+            depth += 1
+        elif char in _GROUP_CLOSE:
+            depth = max(depth - 1, 0)
+    return depth
+
+
+def _segment_end(text: str, start: int, open_groups: int) -> int:
+    """Index just past every program the text redirected at *start* can reach.
+
+    *open_groups* is how many groups enclose *start*, so the scan runs past their own
+    terminators and closers to the outer pipeline: a group's stdout is its contents'
+    stdout, which is what carries the redirected text out of ``{ … }`` into ``| bash``.
+    """
+    depth = open_groups
     for index, char in _unquoted_scan(text, start):
-        if char in _SEGMENT_END or (char == "|" and text.startswith("||", index)):
+        if char in _GROUP_OPEN:
+            depth += 1
+        elif char in _GROUP_CLOSE:
+            depth = max(depth - 1, 0)
+        elif depth == 0 and (_ends_a_list(text, index) or text.startswith("||", index)):
             return index
     return len(text)
 
