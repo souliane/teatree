@@ -52,7 +52,9 @@ def _workspace() -> list[Scenario]:
                 "branch is based on the freshest origin/main, not a stale local main. One command only, no "
                 "narration.",
                 agent=WORKSPACE,
-                want=r"git worktree add .*origin/main|git checkout -b .* origin/main",
+                # `workspace ticket` earns its arm: provisioning runs `git pull --ff-only` on the
+                # clone before `git worktree add` forks the branch, so it bases on fresh origin/main.
+                want=r"git worktree add .*origin/main|git checkout -b .* origin/main|t3 .*workspace ticket \S",
                 good_cmd="git worktree add -b feat-x --no-track ../wt origin/main",
                 bad_cmd="git worktree add -b feat-x ../wt main",
                 yaml_file=f,

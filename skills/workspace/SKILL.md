@@ -334,6 +334,24 @@ Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
 
+### Cut Every Branch From Fresh `origin/main` (Non-Negotiable)
+
+A local `main` is stale the moment anything merges upstream, so a branch forked from it carries a base nobody else shares and conflicts on every later merge. Every new branch starts from a freshly-fetched `origin/main` — never from whatever the local ref happens to hold.
+
+```bash
+# RIGHT — the sanctioned path: it fast-forwards the clone's default branch, then forks the branch off that:
+t3 <overlay> workspace ticket <issue-url-or-id>
+
+# RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
+# `--no-track` is load-bearing: without it the branch tracks origin/main, so `git push`
+# refuses confusingly — and aims at main under push.default=upstream.
+git fetch origin main -q && git worktree add -b <branch> --no-track ../<repo>-wt-<slug> origin/main
+
+# WRONG — forks whatever the local ref holds:
+git checkout -b <branch>     # FORBIDDEN — stale local main
+git fetch origin main        # FORBIDDEN as the whole answer — refreshes the ref, branches nothing
+```
+
 ### Never Edit Files in the Main Clone (Non-Negotiable)
 
 Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
