@@ -33,6 +33,7 @@ _FINALISERS = "_run_advisory_finalisers"
 #: function binds them (they are not attributes of the doctor app module).
 _DEFERRED_CALLS = (
     "teatree.core.gates.schema_guard.doctor_check_self_db_migrations",
+    "teatree.core.gates.schema_guard.doctor_check_process_code_freshness",
     "teatree.cli.doctor.self_heal.run_self_heal_checks",
     "teatree.cli.update._collect_repos",
     "teatree.core.gates.clone_guard.doctor_check_clone_currency",

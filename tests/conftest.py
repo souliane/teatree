@@ -363,6 +363,23 @@ def _schema_readiness_current_by_default(request: pytest.FixtureRequest) -> Iter
     invalidate_schema_readiness()
 
 
+@pytest.fixture(autouse=True)
+def _process_freshness_memo_isolated() -> Iterator[None]:
+    """Drop the #4387 process-freshness memo around every test.
+
+    The verdict is memoised per alias for 60 s and is read on the claim hot path, so a
+    case that records an applied migration would otherwise leak its BEHIND verdict into
+    the next test in the same xdist worker.
+    """
+    from teatree.core.process_freshness import (  # noqa: PLC0415 — deferred: importing it at collection pulls Django in
+        invalidate_process_freshness,
+    )
+
+    invalidate_process_freshness()
+    yield
+    invalidate_process_freshness()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     """Create a minimal workspace structure with a main repo."""
