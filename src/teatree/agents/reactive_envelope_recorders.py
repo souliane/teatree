@@ -199,7 +199,7 @@ def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: st
     the owner is never a post *on the owner's behalf*, so it must never route
     through the away/approval defer gate that parks the box's self-initiated
     questions. Deferring the owner's own reply is exactly the bug where an owner
-    DM in ``autonomous_away`` got a "Approve this drafted reply?" pending
+    DM while the owner was away got a "Approve this drafted reply?" pending
     question parked instead of an answer.
 
     Any other answering task (a colleague/channel thread the agent answers on

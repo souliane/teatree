@@ -26,7 +26,8 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha, is_non_reviewer_role
+from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
+from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 from teatree.core.models.ticket import Ticket
 
 _MIN_INTEGRATION_REPOS = 2
@@ -147,12 +148,10 @@ class ReviewEvidence(models.Model):
         if not reviewer:
             msg = "reviewer_identity is required and must be non-empty"
             raise ReviewEvidenceError(msg)
-        if is_non_reviewer_role(reviewer):
-            msg = (
-                f"reviewer_identity {reviewer!r} is a maker/coding-agent/loop role — a review-evidence "
-                f"artifact records an independent review, never a self-attestation (§17.8 clause 3)"
+        if not is_independent_reviewer_identity(reviewer):
+            raise ReviewEvidenceError(
+                unrecognised_reviewer_message(reviewer, subject="a review-evidence artifact", verb="recorded")
             )
-            raise ReviewEvidenceError(msg)
 
         if not is_commit_sha(head_sha):
             candidate = head_sha.strip()

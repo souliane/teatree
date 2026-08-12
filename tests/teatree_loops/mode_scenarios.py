@@ -8,9 +8,8 @@ that disagreed with the tick every weeknight.
 
 These build the two configurations that actually separate the resolvers:
 
-*   a SCHEDULE slot naming a presence-sensitive away-class mode, plus a fresh keystroke —
-    the mode resolver upgrades to the present-class mode, the preset resolver stops at the
-    slot's mode;
+*   a SCHEDULE slot naming an away mode, plus a fresh keystroke — the mode resolver
+    upgrades to the presence-upgrade mode, the preset resolver stops at the slot's mode;
 *   NO schedule and no override at all — the mode resolver falls through to the L0
     ``default_mode`` row, the preset resolver returns ``None`` and collapses to
     ``Loop.enabled``.
@@ -57,8 +56,8 @@ class ModeWithoutOverrideMixin(django.test.TestCase):
         self.loop = Loop.objects.create(
             name=LOOP, script=f"src/teatree/loops/{LOOP}/loop.py", delay_seconds=60, enabled=False
         )
-        Mode.objects.create(name=AWAY_MODE, entries={LOOP: False}, defers_questions=True, presence_sensitive=True)
-        Mode.objects.create(name=PRESENT_MODE, entries={LOOP: True}, defers_questions=False)
+        Mode.objects.create(name=AWAY_MODE, entries={LOOP: False})
+        Mode.objects.create(name=PRESENT_MODE, entries={LOOP: True})
 
     def activate_away_schedule_slot(self) -> None:
         """Point ``active_loop_schedule`` at an all-hours slot naming the away mode."""

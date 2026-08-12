@@ -10,12 +10,8 @@ time; only the notification / drain lags (fail-soft). One self-rescheduling
 
 1. reaps a manual override whose ``until`` has passed (it is already inert at read
     time; this deletes the stale row);
-2. detects "the resolved mode changed since the last stamp" and, on a change that
-    RETURNS the box to reachable (the resolved ``defers_questions`` flips T→F, e.g.
-    a scheduled ``offline``→``engaged`` boundary), fires the deferred-question drain.
-    The availability-pin push is GONE (#61): the mode IS availability, so there is no
-    separate pin to write — the intrinsic booleans already carry the posture;
-3. posts ONE Slack line per switch.
+2. posts ONE Slack line per switch when the resolved mode changed since the last
+    stamp.
 
 The transition stamp is internal runtime state kept in a ``ConfigSetting`` row
 (no extra migration): the last-applied mode name. Fail-soft throughout — any error
@@ -33,9 +29,8 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import ConfigSetting, Mode, ModeOverride
+from teatree.core.models import ConfigSetting, ModeOverride
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.loop.preset_resolution import ActivePreset, resolve_active_preset
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
@@ -84,7 +79,6 @@ def apply_preset_transition(now: dt.datetime) -> dict[str, Any]:
         outcome.setdefault("unchanged", 1)
         return outcome
 
-    _drain_on_scheduled_return(prior_name)
     _post_switch_line(active, now)
     _write_stamp(_STAMP_KEY, current_name)
     outcome["switched"] = current_name
@@ -111,26 +105,6 @@ def _reconcile_timer_chains() -> None:
 def _reap_expired_overrides(now: dt.datetime) -> int:
     deleted, _ = ModeOverride.objects.filter(until__isnull=False, until__lte=now).delete()
     return deleted
-
-
-def _drain_on_scheduled_return(prior_name: str) -> None:
-    """Fire the deferred-question drain when a scheduled switch returns to reachable.
-
-    The merge folds availability into the mode, so a scheduled boundary crossing (an
-    ``offline`` / ``unattended`` window ending) is the equivalent of the old
-    away→present transition: when the PRIOR mode deferred questions and the newly
-    resolved mode does not, the durable backlog drains to the user's Slack DM. The
-    manual-override path drains in its own chokepoint; this covers schedule / default
-    flips. Fail-open — a drain failure never blocks the transition.
-    """
-    prior = Mode.objects.by_name(prior_name) if prior_name else None
-    prior_defers = bool(prior.defers_questions) if prior is not None else False
-    if not prior_defers or resolve_active_mode().defers_questions:
-        return
-    try:
-        drain_deferred_questions()
-    except Exception as exc:  # noqa: BLE001 — drain is best-effort; never block the transition
-        logger.warning("scheduled return→reachable auto-drain failed: %s", exc)
 
 
 def _post_switch_line(active: ActivePreset | None, now: dt.datetime) -> None:

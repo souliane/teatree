@@ -95,9 +95,8 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     ),
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     # Routing conversion, not a content/enforcement deny.
-    "handle_route_away_mode_question": "converts AskUserQuestion to DeferredQuestion (away-mode); not a Bash deny",
     "handle_mirror_question_to_slack": (
-        "converts loop-driven AskUserQuestion to DeferredQuestion (present-mode deny arm, #1174); "
+        "converts a loop-driven AskUserQuestion to a DeferredQuestion (#1174); "
         "denies only AskUserQuestion, never arbitrary Bash"
     ),
     # NB: the orchestrator-boundary gate (#1692) plus the plan-edit gate

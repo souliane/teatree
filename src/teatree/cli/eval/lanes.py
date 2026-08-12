@@ -23,11 +23,6 @@ from teatree.utils.django_bootstrap import ensure_django
 
 def coverage(
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-    fail_on_gap: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--fail-on-gap",
-        help="Exit non-zero on any coverage gap (Phase B enforcement); default is warn-first (exit 0).",
-    ),
 ) -> None:
     """Report per-skill behavioral-eval coverage: every skill is covered or eval_exempt.
 
@@ -36,14 +31,15 @@ def coverage(
     own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
     reason. A skill that is
     neither is a GAP. Deterministic and model-free — no ``claude -p`` invocation.
-    Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
-    Phase-B enforcement that exits non-zero on any gap.
+    A gap exits non-zero, the same verdict the ``skill-coverage`` lane under bare
+    ``t3 eval`` and the ``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate
+    return for the same corpus — one predicate, one verdict, on every surface.
     """
     ensure_django()
     require_valid_format(output_format)
     report = skill_eval_coverage()
     typer.echo(render_coverage_json(report) if output_format == "json" else render_coverage_text(report))
-    if fail_on_gap and report.gaps:
+    if report.gaps:
         sys.exit(1)
 
 

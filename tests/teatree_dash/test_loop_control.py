@@ -66,7 +66,7 @@ class LoopRowsPresetMaskTestCase(TestCase):
 
     def test_preset_masked_off_loop_is_not_effective(self) -> None:
         _make_loop()
-        self._activate("heads-down", {"dashloop": False})
+        self._activate("dash-away", {"dashloop": False})
         row = next(r for r in loop_control.build_loop_rows() if r.name == "dashloop")
         assert row.effective is False
         assert "override" in row.deciding_layer
@@ -74,7 +74,7 @@ class LoopRowsPresetMaskTestCase(TestCase):
     def test_preset_forced_on_masks_a_base_disabled_loop_on(self) -> None:
         _make_loop()
         Loop.objects.filter(name="dashloop").update(enabled=False)
-        self._activate("engaged", {"dashloop": True})
+        self._activate("dash-present", {"dashloop": True})
         row = next(r for r in loop_control.build_loop_rows() if r.name == "dashloop")
         assert row.effective is True
         assert "override" in row.deciding_layer
@@ -82,7 +82,7 @@ class LoopRowsPresetMaskTestCase(TestCase):
     def test_hold_still_wins_over_a_force_on_preset(self) -> None:
         _make_loop()
         LoopState.objects.pause("dashloop")
-        self._activate("engaged", {"dashloop": True})
+        self._activate("dash-present", {"dashloop": True})
         row = next(r for r in loop_control.build_loop_rows() if r.name == "dashloop")
         assert row.effective is False
         assert "paused" in row.deciding_layer
@@ -97,11 +97,11 @@ class LoopRowsPresetMaskTestCase(TestCase):
     @override_settings(USE_TZ=True, TIME_ZONE="UTC")
     def test_active_schedule_slot_decides_at_l2(self) -> None:
         _make_loop()
-        Mode.objects.create(name="heads-down", entries={"dashloop": False})
+        Mode.objects.create(name="dash-away", entries={"dashloop": False})
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         # An all-day, every-weekday slot always governs "now".
         ModeScheduleSlot.objects.create(
-            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="heads-down"
+            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="dash-away"
         )
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
         row = next(r for r in loop_control.build_loop_rows() if r.name == "dashloop")
@@ -114,12 +114,12 @@ class LoopRowsRaceSafetyTestCase(TestCase):
     """A verdict whose ``Loop`` row vanished between the two reads is skipped, not a KeyError."""
 
     def test_verdict_without_a_loop_row_is_skipped(self) -> None:
-        _make_loop("present")
+        _make_loop("dash-present")
         phantom = LoopVerdict(name="ghost-loop", admitted=True, layer="base", detail="Loop.enabled")
-        real = LoopVerdict(name="present", admitted=True, layer="base", detail="Loop.enabled")
+        real = LoopVerdict(name="dash-present", admitted=True, layer="base", detail="Loop.enabled")
         with patch("teatree.dash.loop_control.effective_verdicts", return_value=[phantom, real]):
             names = {row.name for row in loop_control.build_loop_rows()}
-        assert names == {"present"}
+        assert names == {"dash-present"}
 
 
 class ApplyLoopActionTestCase(TestCase):
@@ -143,10 +143,12 @@ class ApplyLoopActionTestCase(TestCase):
 class BuildLoopControlTestCase(TestCase):
     def test_view_carries_rows_and_header_state(self) -> None:
         _make_loop()
+        # The switcher renders one button per Mode row, so the header needs real rows.
+        Mode.objects.create(name="present", entries={})
         view = loop_control.build_loop_control()
         assert any(r.name == "dashloop" for r in view.loops)
         assert view.mode_name
-        assert view.mode_posture
+        assert view.mode_names == ("present",)
         assert view.gate_fail_open is False
 
     def test_view_survives_broken_gate_read(self) -> None:

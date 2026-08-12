@@ -16,7 +16,7 @@ an operator's ``t3 loop override <name> on`` is wiped by the next deploy.
 ``directive_loop`` (interprets the owner's captured directives), ``dispatch`` (the
 scanner that POSTS deferred owner questions), and ``inbox`` (ingests the owner's
 inbound DMs) are OWNER-INTAKE loops: they read and interpret the owner's own
-intent, they do not reach a colleague. ``autonomous_away`` means the human is
+intent, they do not reach a colleague. An away mode means the human is
 unreachable *right now* — a directive or question must QUEUE for later, not be
 dropped unread. Masking the intake loops means the owner's captured intent is
 never even ingested (20 owner directives sat uninterpreted for ~8 days that way).
@@ -38,7 +38,7 @@ FLEET_ENABLED_VARIABLE = "TEATREE_ENABLED_LOOPS"
 
 #: Owner-intent loops that INGEST / INTERPRET the owner's captured intent. Never
 #: fleet-masked off, so owner intent is always at least ingested even under an
-#: ``autonomous_away`` (unattended) posture.
+#: away (owner-unreachable) posture.
 OWNER_INTAKE_LOOPS: frozenset[str] = frozenset({"directive_loop", "dispatch", "inbox"})
 
 #: The fleet-role defaults the deploy entrypoint applies (mirrored verbatim in

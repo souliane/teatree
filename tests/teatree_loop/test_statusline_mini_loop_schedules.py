@@ -106,7 +106,7 @@ class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
         Loop.objects.all().delete()
         _make_loop("dispatch", 300, last_run_at=timezone.now())
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("heads-down", {"review": False})
+        self._activate("maintenance", {"review": False})
         names = [row.name for row in mini_loop_schedules()]
         assert "review" not in names
         assert "dispatch" in names
@@ -114,7 +114,7 @@ class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
     def test_preset_forced_on_base_disabled_loop_is_included(self) -> None:
         Loop.objects.all().delete()
         _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        self._activate("engaged", {"audit": True})
+        self._activate("present", {"audit": True})
         names = [row.name for row in mini_loop_schedules()]
         assert "audit" in names
 

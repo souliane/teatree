@@ -45,6 +45,11 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: shed the duplicate preset read they used to pay. ``live`` resolved no mode at all, so
 #: it now pays the L0 default lookup its membership read needs. Still flat, still one
 #: bounded read per datum.
+#: #4202 collapsed the mode to a pure loop table. The presence upgrade no longer keys on a
+#: posture boolean already on the resolved row, so it reads the ``presence_upgrade_mode``
+#: setting once per resolve — +1 on every page that resolves a mode. The loops header also
+#: offers the LIVE set of mode names instead of three hard-coded posture tokens, which is
+#: one bounded ``Mode`` name read. Both are O(1) in the population.
 #: #4085 put "Review now" / "Ship now" on every card. Their enabled state is ONE bounded
 #: read of the whole board's unstarted tasks, not one per card — which is precisely what
 #: the two-population assertion below proves, on the page where an N+1 would be
@@ -53,12 +58,12 @@ PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 12,
     "dash:board_columns": 10,
     "dash:cycle_time": 10,
-    "dash:health": 19,
-    "dash:health_bands": 19,
-    "dash:live": 18,
-    "dash:live_body": 16,
-    "dash:loops": 15,
-    "dash:loops_table": 15,
+    "dash:health": 20,
+    "dash:health_bands": 20,
+    "dash:live": 20,
+    "dash:live_body": 18,
+    "dash:loops": 17,
+    "dash:loops_table": 17,
     "dash:presets": 15,
     "dash:sessions": 3,
     "dash:settings": 7,

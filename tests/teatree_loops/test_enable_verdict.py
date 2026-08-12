@@ -35,16 +35,16 @@ class TestEffectiveVerdicts(django.test.TestCase):
     def test_hold_layer_wins_over_the_mask(self) -> None:
         _loop("ev-review")
         LoopState.objects.pause("ev-review")
-        Mode.objects.create(name="engaged", entries={"ev-review": True})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.create(name="present", entries={"ev-review": True})
+        ModeOverride.objects.set_override("present")
         verdicts = {v.name: v for v in effective_verdicts()}
         assert verdicts["ev-review"].layer == "hold"
         assert verdicts["ev-review"].admitted is False
 
     def test_override_masks_a_loop_off(self) -> None:
         _loop("ev-review2")
-        Mode.objects.create(name="heads-down", entries={"ev-review2": False})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={"ev-review2": False})
+        ModeOverride.objects.set_override("maintenance")
         verdicts = {v.name: v for v in effective_verdicts()}
         assert verdicts["ev-review2"].layer == "override"
         assert verdicts["ev-review2"].admitted is False
@@ -211,21 +211,21 @@ class TestLoopEnabledCombinedVerdict(django.test.TestCase):
 
     def test_active_preset_force_off_masks_an_enabled_loop(self) -> None:
         self._loop("le-masked")
-        Mode.objects.create(name="heads-down", entries={"le-masked": False})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="maintenance", entries={"le-masked": False})
+        ModeOverride.objects.set_override("maintenance")
         assert loop_admits("le-masked") is False
 
     def test_active_preset_force_on_admits_a_disabled_loop(self) -> None:
         self._loop("le-forced", enabled=False)
-        Mode.objects.create(name="engaged", entries={"le-forced": True})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.create(name="present", entries={"le-forced": True})
+        ModeOverride.objects.set_override("present")
         assert loop_admits("le-forced") is True
 
     def test_hold_beats_a_force_on_preset(self) -> None:
         self._loop("le-held-forced", enabled=False)
         LoopState.objects.disable("le-held-forced")
-        Mode.objects.create(name="engaged", entries={"le-held-forced": True})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.create(name="present", entries={"le-held-forced": True})
+        ModeOverride.objects.set_override("present")
         assert loop_admits("le-held-forced") is False
 
 

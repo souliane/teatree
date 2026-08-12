@@ -12,6 +12,7 @@ from pathlib import Path
 
 from django.test import TestCase
 
+from teatree.core.models import EvalRunRecord
 from teatree.eval.models import EvalRun, EvalSpec, Matcher, TokenUsage
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.persistence import persist_pass_at_k, persist_run
@@ -110,3 +111,33 @@ class TestPersistSingleTrialErroredResult(TestCase):
         persisted = {row.scenario_name: row.verdict for row in record.scenario_results.all()}
         assert persisted["beta"] == "error"
         assert {rate.scenario_name for rate in record.pass_rates()} == {"alpha"}
+
+
+class TestErroredAggregateInTheRegressionDiff(TestCase):
+    """The claim above is only true if the DIFF honours it — ``pass_rates()`` alone never did.
+
+    ``regression_diff`` unions baseline and candidate scenario names, so an errored
+    candidate scenario dropping out of ``pass_rates()`` is precisely what used to
+    default it to ``0.0`` and print ``REGRESSED alpha: 1.00 -> 0.00``.
+    """
+
+    def test_an_all_errored_candidate_is_unmeasured_in_the_diff(self) -> None:
+        baseline = persist_pass_at_k([_pass_at_k("alpha", [_trial("alpha", is_error=False)], passes=1)], model="m")
+        candidate = persist_pass_at_k(
+            [_pass_at_k("alpha", [_trial("alpha", is_error=True) for _ in range(3)])], model="m"
+        )
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["alpha"].regressed is False
+        assert diff["alpha"].unmeasured is True
+
+    def test_a_graded_candidate_drop_is_still_a_regression(self) -> None:
+        # Anti-vacuity: the diff must still catch a real behavioral drop.
+        baseline = persist_pass_at_k([_pass_at_k("alpha", [_trial("alpha", is_error=False)], passes=1)], model="m")
+        candidate = persist_pass_at_k([_pass_at_k("alpha", [_trial("alpha", is_error=False)], passes=0)], model="m")
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["alpha"].unmeasured is False
+        assert diff["alpha"].regressed is True

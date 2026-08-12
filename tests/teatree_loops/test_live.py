@@ -461,14 +461,14 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
 
     def test_preset_masked_off_loop_is_not_admitted(self) -> None:
         self._loop("demo-admit-masked")
-        self._activate("heads-down", {"demo-admit-masked": False})
+        self._activate("maintenance", {"demo-admit-masked": False})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-masked")
         assert entry.admitted is False
         assert entry.enabled is True
 
     def test_preset_forced_on_base_disabled_loop_is_admitted(self) -> None:
         self._loop("demo-admit-forced", enabled=False)
-        self._activate("engaged", {"demo-admit-forced": True})
+        self._activate("present", {"demo-admit-forced": True})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-forced")
         assert entry.admitted is True
         assert entry.enabled is False
@@ -476,7 +476,7 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
     def test_hold_wins_over_a_force_on_preset(self) -> None:
         self._loop("demo-admit-held", enabled=False)
         LoopState.objects.disable("demo-admit-held")
-        self._activate("engaged", {"demo-admit-held": True})
+        self._activate("present", {"demo-admit-held": True})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-held")
         assert entry.admitted is False
         assert entry.held is True

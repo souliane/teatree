@@ -42,22 +42,22 @@ class TestModeEntryDrift:
 
 class TestScheduleSlotDrift:
     def test_an_identical_calendar_has_no_drift(self) -> None:
-        slots = [((0, 1, 2, 3, 4), dt.time(9, 0), "engaged")]
+        slots = [((0, 1, 2, 3, 4), dt.time(9, 0), "present")]
         assert schedule_slot_drift(slots, slots) == ()
 
     def test_the_slot_that_stalled_the_factory_is_named_as_added(self) -> None:
-        shipped = [((0, 1, 2, 3, 4), dt.time(16, 0), "unattended")]
+        shipped = [((0, 1, 2, 3, 4), dt.time(16, 0), "away")]
         live = [*shipped, ((0, 1, 2, 3, 4), dt.time(19, 0), "maintenance")]
 
         assert schedule_slot_drift(shipped, live) == ("adds Mon,Tue,Wed,Thu,Fri 19:00 -> maintenance",)
 
     def test_a_removed_shipped_slot_is_named_as_dropped(self) -> None:
-        shipped = [((5, 6), dt.time(0, 0), "unattended")]
+        shipped = [((5, 6), dt.time(0, 0), "away")]
 
-        assert schedule_slot_drift(shipped, []) == ("drops Sat,Sun 00:00 -> unattended",)
+        assert schedule_slot_drift(shipped, []) == ("drops Sat,Sun 00:00 -> away",)
 
     def test_a_retimed_slot_reads_as_one_add_and_one_drop(self) -> None:
-        assert schedule_slot_drift([((0,), dt.time(9, 0), "engaged")], [((0,), dt.time(10, 0), "engaged")]) == (
-            "adds Mon 10:00 -> engaged",
-            "drops Mon 09:00 -> engaged",
+        assert schedule_slot_drift([((0,), dt.time(9, 0), "present")], [((0,), dt.time(10, 0), "present")]) == (
+            "adds Mon 10:00 -> present",
+            "drops Mon 09:00 -> present",
         )
