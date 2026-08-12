@@ -218,6 +218,18 @@ def intake_survey_json(task: Task) -> str:
     return json.dumps(latest.survey, sort_keys=True)
 
 
+def embedded_intake_survey_json(task: Task) -> str:
+    """The survey block as it appears in *task*'s assembled context, or ``""``.
+
+    Only :func:`_planning_phase_lines` embeds the survey, so on every other phase
+    the string is not a substring of the context — offering it to the byte-budget
+    pass makes it a phantom block, which can reclaim nothing. Kept here rather
+    than at the budget call site so the phase that embeds the survey and the
+    phase that declares it budgetable cannot drift apart.
+    """
+    return intake_survey_json(task) if normalize_phase(task.phase) == "planning" else ""
+
+
 def _planning_phase_lines(task: Task) -> tuple[str, ...]:
     """The ``PHASE: planning`` block — intake survey (#2541), envelope directive (#3584), opted-in fan-out."""
     lines = list(_intake_landscape_lines(task))

@@ -6,7 +6,7 @@ from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_di
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
-from teatree.agents.phase_blocks import intake_survey_json, phase_specific_lines
+from teatree.agents.phase_blocks import embedded_intake_survey_json, phase_specific_lines
 from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents, _read_skill_contents_scoped
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.phases import normalize_phase
@@ -253,11 +253,15 @@ def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill
     normal-sized context is one build with no extra query and byte-identical
     output. The skill bundle always overruns, so it is always section-truncated —
     see :mod:`teatree.agents.context_budget`.
+
+    Only the phase that EMBEDS the survey offers it as a block: truncation is by
+    substring replace, so a survey the phase does not embed is a phantom the pass
+    cannot find and cannot reclaim a byte from.
     """
     if len(text.encode()) <= MAX_APPEND_BYTES:
         return text
     blocks = (
-        (intake_survey_json(task), _SURVEY_POINTER),
+        (embedded_intake_survey_json(task), _SURVEY_POINTER),
         (skill_content, _SKILLS_POINTER),
         (parent_summary, _PARENT_POINTER),
     )
