@@ -76,12 +76,21 @@ class _ClearGateBase(TestCase):
             "teatree.core.management.commands._clear_preflight.check_clear_migration_fork", return_value=None
         )
         patcher_schema = patch("teatree.core.management.commands.ticket.require_current_schema", return_value=None)
+        # ``org/repo`` is not a repo this machine's registry names, so issuance runs the
+        # #1335 cross-repo reconcile — a LIVE forge read (nine ``gh`` calls) from a gate
+        # unit test. Pin it to the identity the fixture's own slug already asserts.
+        patcher_reconcile = patch(
+            "teatree.core.merge.pr_slug_resolution._reconcile_slug_against_reviewed_sha",
+            side_effect=lambda **kwargs: str(kwargs["initial_slug"]),
+        )
         patcher_currency.start()
         patcher_fork.start()
         patcher_schema.start()
+        patcher_reconcile.start()
         self.addCleanup(patcher_currency.stop)
         self.addCleanup(patcher_fork.stop)
         self.addCleanup(patcher_schema.stop)
+        self.addCleanup(patcher_reconcile.stop)
 
 
 class TestClearBlocks(_ClearGateBase):
