@@ -121,8 +121,16 @@ class UnshippedWorkCheckTest(TestCase):
 
         _ok, out = _echoes(check_unshipped_work)
 
-        assert "state git could not read" in out
+        assert "unreadable here" in out
         assert "fatal: bad object" in out
+
+    def test_an_unreadable_record_does_not_blame_git_for_a_venue_miss(self) -> None:
+        _capture("/w/scratch/elsewhere", unreadable="/w/scratch/elsewhere records its git dir at /other/venue")
+
+        _ok, out = _echoes(check_unshipped_work)
+
+        assert "records its git dir at /other/venue" in out
+        assert "git could not read" not in out
 
     def test_a_record_with_no_branch_is_still_reported(self) -> None:
         _capture("/w/scratch/detached", dirty=["src/a.py"])
