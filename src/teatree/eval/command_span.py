@@ -25,7 +25,7 @@ _SCRIPT_OPERAND_TOKEN = re.compile(r"eval|-[A-Za-z]*c")
 _SCRIPT_INTERPRETERS = frozenset({"bash", "sh", "dash", "ksh", "zsh", "python", "python3", "node", "perl", "ruby"})
 
 #: Words at or above which a standalone quoted operand reads as prose rather than as a
-#: fragment of the command's own word chain (``t3 widget 'ticket clear' 42``). Below it
+#: fragment of the command's own word chain (``t3 example 'ticket clear' 42``). Below it
 #: the two are indistinguishable, and eliding an act is the failure that costs teeth.
 _PROSE_WORD_FLOOR = 4
 
