@@ -100,7 +100,7 @@ SETTING_HELP: dict[str, str] = {
     "disk_cache_allowlist": "cache directories disk reclamation may empty",
     "disk_crit_free_gb": "free disk below this many GB is critical",
     "disk_warn_free_gb": "free disk below this many GB warns",
-    "dispatch_quote_gate_on_task_create_enabled": "check quoting of a dispatch brief when the task is created",
+    "dispatch_quote_gate_on_task_create_enabled": "check quoting of a task-list entry when it is created",
     "dogfood_smoke_cadence_hours": "hours between dogfood smoke runs",
     "dogfood_smoke_disabled": "stop scheduling dogfood smoke runs",
     "dogfood_smoke_overlay": "overlay the dogfood smoke run exercises",
