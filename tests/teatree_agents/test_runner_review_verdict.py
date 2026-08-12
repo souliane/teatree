@@ -11,11 +11,14 @@ orchestrator path directly with a returned envelope and assert the verdict lands
 and the lock releases.
 """
 
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
+from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task
 from teatree.core.models.phase_landing import phase_landing_evidence
 
@@ -254,3 +257,62 @@ class TestReviewingEvidenceAcceptsVerdict(TestCase):
     def test_verdict_outside_the_recorder_vocabulary_fails_evidence(self) -> None:
         envelope = {"review_verdict": {"verdict": "PASS", "reviewer_identity": "cold-reviewer-agent"}}
         assert "missing required evidence" in check_evidence(envelope, "reviewing")
+
+
+class TestBranchOnlyProbeIsRefused(TestCase):
+    """A blocking finding about code the PR does not touch never records (#4251)."""
+
+    def _record_src_finding(self, changed: ChangedFileSet, **verdict_extra: object) -> tuple[Task, str]:
+        task, _ = _reviewing_task_via_dispatch()
+        verdict: dict[str, object] = {
+            "verdict": "hold",
+            "reviewed_sha": _HEAD,
+            "reviewer_identity": "cold-reviewer-agent",
+            "gh_verify_result": "green",
+            "findings": [
+                {
+                    "severity": "high",
+                    "summary": "tools_for_phase grants no write/edit, so every dispatch parks",
+                    "file": "src/teatree/core/modelkit/phase_tools.py",
+                    "line": 41,
+                }
+            ],
+            **verdict_extra,
+        }
+        envelope: dict[str, object] = {"summary": "Cold review of the pull request.", "review_verdict": verdict}
+        with patch(
+            "teatree.agents.attempt_recorder.changed_file_set_for_findings",
+            return_value=changed,
+        ):
+            attempt = record_result_envelope(task, envelope, phase="reviewing")
+        return task, attempt.error
+
+    def test_a_docs_only_pr_cannot_be_held_on_a_src_finding(self) -> None:
+        task, error = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        assert "t3 review merge-tree" in error
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
+
+    def test_an_attested_merge_result_retake_records_the_same_finding(self) -> None:
+        _, error = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]), merge_result_retake=True)
+
+        assert error == ""
+        recorded = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID)
+        assert recorded.structured_findings[0].file == "src/teatree/core/modelkit/phase_tools.py"
+
+    def test_a_finding_on_a_changed_file_still_records(self) -> None:
+        _, error = self._record_src_finding(ChangedFileSet.known(["src/teatree/core/modelkit/phase_tools.py"]))
+
+        assert error == ""
+        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+    def test_a_clean_verdict_never_pays_for_the_changed_file_fetch(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+        with patch("teatree.core.review.diff_scope_probe.changed_file_set_for") as fetch:
+            record_result_envelope(task, _verdict_envelope(), phase="reviewing")
+
+        fetch.assert_not_called()
+        assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
