@@ -37,6 +37,7 @@ from teatree.core.models import ConsolidatedMemory
 from teatree.loops.dream import acceptance, decay, decay_corpus, decay_signal, gates, reindex
 from teatree.loops.dream.decay import BudgetTier, DecayPolicy, decay_memories, ledger_durable_home_resolver
 from teatree.loops.dream.decay_corpus import MemoryFile
+from teatree.loops.dream.decay_signal import is_settled_ticket_record, under_drain_target
 
 _NOW = datetime(2026, 6, 16, 12, tzinfo=UTC)
 
@@ -1028,6 +1029,30 @@ class SignalScoreTestCase(SimpleTestCase):
         assert decay_signal.over_budget(1, gates.INDEX_LINE_BUDGET + 1)  # over by lines alone
         assert not decay_signal.over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # exactly at both is fine
         assert not decay_signal.over_budget(1, 1)  # under
+
+    def test_under_drain_target_needs_both_axes_and_is_stricter_than_the_budget(self) -> None:
+        # #4385: the drain target is where the tier STOPS, strictly below the ceiling
+        # over_budget grades. Sitting exactly ON the budget is emphatically NOT drained —
+        # that is the zero-headroom landing the issue reported.
+        assert under_drain_target(gates.INDEX_BYTE_DRAIN_TARGET, gates.INDEX_LINE_DRAIN_TARGET)  # exactly at both
+        assert not under_drain_target(gates.INDEX_BYTE_DRAIN_TARGET + 1, 1)  # bytes alone hold it back
+        assert not under_drain_target(1, gates.INDEX_LINE_DRAIN_TARGET + 1)  # lines alone hold it back
+        assert not under_drain_target(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # on the ceiling is not drained
+        assert not decay_signal.over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # ... yet not over it
+
+    def test_settled_ticket_record_requires_a_ticket_number(self) -> None:
+        # #4385: the predicate that puts settled history at the front of the archive queue.
+        # The NUMBER is what makes it a record of a ticket rather than a rule about tickets.
+        assert is_settled_ticket_record(self._mem("ticket-4242-reviewed-merge-safe", "x"))
+        assert is_settled_ticket_record(self._mem("ticket-3320-done", "x"))
+        assert is_settled_ticket_record(self._mem("ticket-991.notes", "x"))  # a dot separator counts too
+        # Fails CLOSED toward retention: a standing rule ABOUT ticket plans is NOT settled
+        # history, and neither is anything else the pattern cannot positively classify.
+        assert not is_settled_ticket_record(self._mem("ticket-plan-precedes-implementation", "x"))
+        assert not is_settled_ticket_record(self._mem("ticket-plans-are-not-re-derived", "x"))
+        assert not is_settled_ticket_record(self._mem("tickets-are-not-the-unit-of-memory", "x"))
+        assert not is_settled_ticket_record(self._mem("a-durable-operational-lesson", "x"))
+        assert not is_settled_ticket_record(self._mem("user_editor_preference", "x"))
 
     def test_strip_provenance_with_without_and_malformed(self) -> None:
         prov = "<!-- archived by dream decay 2026-06-16: x; original mtime 2026-01-01 -->\nthe body\n"
