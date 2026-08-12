@@ -138,12 +138,11 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     A review sub-agent dispatched through the Agent tool, a dynamic workflow,
     or a reviewer does not auto-load the active overlay's review
     conventions. ``build_system_context`` embeds them for the agent path,
-    but an orchestrator-built dispatch prompt previously relied on the
+    but an orchestrator-built dispatch prompt otherwise relies on the
     orchestrator remembering to list the skills. This shared builder prepends a
     REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
     review skill plus the active overlay's review skills (deduped, order
-    preserved) — so the overlay conventions reach every reviewer structurally,
-    which the ``subagent_skill_gate`` TaskCreated gate enforces on a fan-out.
+    preserved) — so the overlay conventions reach every reviewer structurally.
 
     *review_skills* overrides the overlay resolution when supplied (e.g. a
     caller that already resolved the bundle); otherwise the active overlay's

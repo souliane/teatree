@@ -18,6 +18,7 @@ from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
 from teatree.utils.pr_ref import PrRef
+from teatree.utils.run import SUBPROCESS_UNREACHABLE
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -117,6 +118,16 @@ def _ticket_repo_slug(clear: object) -> str:
     return slug_from_issue_or_pr_url(urlparse(issue_url).path)
 
 
+def fallback_repo_slug(clear: object) -> str:
+    """The repo *clear*'s TICKET — then the running clone — binds it to, or ``""``.
+
+    Steps (2) and (3) of :func:`resolve_pr_repo_slug`, exposed as a seam so a caller
+    that has already judged the CLEAR's own slug unusable as a repo claim resolves
+    the remainder in the same order instead of re-deriving it (#4249).
+    """
+    return _ticket_repo_slug(clear) or _project_repo_slug()
+
+
 def resolve_pr_repo_slug(clear: object) -> str:
     """The GitHub ``owner/repo`` to target ``gh`` at for *clear*'s PR.
 
@@ -139,10 +150,7 @@ def resolve_pr_repo_slug(clear: object) -> str:
     pr_id = getattr(clear, "pr_id", "?")
     if _looks_like_owner_repo(slug):
         return slug
-    from_ticket = _ticket_repo_slug(clear)
-    if from_ticket:
-        return from_ticket
-    resolved = _project_repo_slug()
+    resolved = fallback_repo_slug(clear)
     if resolved:
         return resolved
     msg = (
@@ -296,6 +304,28 @@ def _iter_candidate_repo_slugs() -> list[str]:
     return candidates
 
 
+def known_repo_slugs() -> frozenset[str]:
+    """Every ``owner/repo`` this machine's overlay registry can name — forge-free (#4249).
+
+    The set form of :func:`_iter_candidate_repo_slugs`, promoted as the shared
+    evidence for "does this slug name a repo that EXISTS here?" — the question
+    :func:`_looks_like_owner_repo` can only answer from string shape.
+    """
+    return frozenset(_iter_candidate_repo_slugs())
+
+
+def slug_is_registered_repo(slug: str) -> bool:
+    """True iff *slug* canonicalizes to a repo :func:`known_repo_slugs` names (#4249).
+
+    Positive evidence only: ``False`` covers BOTH "the registry names other repos
+    and not this one" AND "the registry names nothing at all", so a caller that
+    must fail open on an empty registry tests :func:`known_repo_slugs` itself
+    rather than reading a bare ``False`` as a denial.
+    """
+    canonical = normalize_repo_slug(slug)
+    return bool(canonical) and canonical in known_repo_slugs()
+
+
 def _reconcile_slug_against_reviewed_sha(
     *,
     initial_slug: str,
@@ -426,6 +456,44 @@ def _reconcile_slug_against_reviewed_sha(
         f"(§17.4.3 step 2 / #1335)."
     )
     raise MergePreconditionError(msg)
+
+
+def reconcile_issuance_slug(*, initial_slug: str, pr_id: int, reviewed_sha: str, host_kind: str) -> str:
+    """:func:`_reconcile_slug_against_reviewed_sha` under CLEAR issuance's fail-open (#4249).
+
+    Issuance must never be STRICTER than the merge gate it feeds, so a reconcile that
+    refuses keeps *initial_slug* and lets the merge's own SHA bind refuse a moved head.
+    A forge that cannot be reached at all refuses the same way: an absent transport is
+    a NON-answer, so it is no more evidence for re-keying the verdict than a moved head
+    is. GitLab's transport already degrades to an empty read
+    (``backends.gitlab.merge_rpc._READ_FAILURES``); GitHub's spawns ``gh``, so a venue
+    without that binary raises out of the transport instead. Before #4249 this was
+    latent — an ``owner/repo``-shaped slug skipped the reconcile outright — but the
+    registry-backed predicate now routes a genuine repo the local registry happens not
+    to name through it, putting the hole on the common path.
+
+    The MERGE keystone deliberately does NOT use this wrapper: it calls the reconcile
+    directly, where the raise is load-bearing and failing open would merge unverified
+    work.
+    """
+    try:
+        return _reconcile_slug_against_reviewed_sha(
+            initial_slug=initial_slug,
+            pr_id=pr_id,
+            reviewed_sha=reviewed_sha,
+            host_kind=host_kind,
+        )
+    except MergePreconditionError:
+        return initial_slug
+    except SUBPROCESS_UNREACHABLE:
+        warn_throttled(
+            logger,
+            f"issuance-reconcile-transport-{host_kind}",
+            f"{host_kind} merge transport unreachable during CLEAR issuance for PR "
+            f"#{pr_id}; keeping slug {initial_slug!r}",
+            exc_info=True,
+        )
+        return initial_slug
 
 
 def _probe_candidate_heads(

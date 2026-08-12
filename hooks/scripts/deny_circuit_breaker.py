@@ -80,7 +80,7 @@ _FP_CONFIRMED_RE = re.compile(r"\[fp-confirmed:\s*\S[^\]]*?\s*\]")
 # Canonical catalog of every escape marker + kill-switch: hooks/CLAUDE.md
 # § "Escape markers & kill-switches".
 _SIGNATURE_STRIP_RE = re.compile(
-    r"\[(?:fp-confirmed|fg-ok|skip-skill-gate|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok):[^\]]*\]"
+    r"\[(?:fp-confirmed|fg-ok|skill-load-ok|skip-plan-gate|quote-ok|reviewer-ok|config-overwrite-ok):[^\]]*\]"
     r"|\b(?:ALLOW_BANNED_TERM|QUOTE_OK|T3_MR_VALIDATE_ALLOW_BROKEN_ENV)=\S+"
 )
 

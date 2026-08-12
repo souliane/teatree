@@ -6933,7 +6933,7 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ status             Show whether the orchestrator heavy-Bash gate is enabled. │
 │ disable            Disable the gate (self-rescue from a Bash lockout).       │
 │ enable             Re-enable the gate.                                       │
-│ skill-loading      Skill-loading-on-task gate kill-switch (self-rescue).     │
+│ skill-loading      Skill-loading gate kill-switch (self-rescue).             │
 │ plan               Plan-before-code edit-block gate kill-switch              │
 │                    (self-rescue).                                            │
 │ config-overwrite   Read-before-overwrite config/dotfile gate kill-switch     │
@@ -7005,7 +7005,7 @@ Usage: t3 teatree gate enable [OPTIONS]
 ```
 Usage: t3 teatree gate skill-loading [OPTIONS] COMMAND [ARGS]...
 
- Skill-loading-on-task gate kill-switch (self-rescue).
+ Skill-loading gate kill-switch (self-rescue).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
