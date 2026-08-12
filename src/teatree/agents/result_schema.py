@@ -78,6 +78,7 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     gh_verify_result: str
     blast_class: str
     findings: list[ReviewFinding]
+    merge_result_retake: bool
 
 
 class CriticItemVerdictDict(TypedDict, total=False):
@@ -256,6 +257,15 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                             "line": {"type": "integer"},
                         },
                     },
+                },
+                "merge_result_retake": {
+                    "type": "boolean",
+                    "description": (
+                        "Attests that every finding citing a file outside the PR's changed-file set was "
+                        "re-measured on the materialised MERGE RESULT (`t3 review merge-tree`), not the "
+                        "branch checkout alone. Without it such a finding cannot carry blocking severity "
+                        "and the whole verdict is refused (#4251)."
+                    ),
                 },
             },
             "required": ["verdict", "reviewed_sha"],

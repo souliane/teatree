@@ -31,6 +31,7 @@ from teatree.core.gates.directive_interpret_gate import record_returned_directiv
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Task, TaskAttempt, Worktree
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
+from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -372,6 +373,8 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             blast_class=str(envelope.get("blast_class") or "logic"),
             ticket=target.ticket,
             lock_holder=target.lock_holder,
+            changed_files=changed_file_set_for_findings(findings, slug=target.slug, pr_id=target.pr_id),
+            merge_result_retake=bool(envelope.get("merge_result_retake")),
         )
     except ReviewVerdictError as exc:
         return f"review verdict recording refused: {exc}"

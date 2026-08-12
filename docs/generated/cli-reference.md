@@ -765,6 +765,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ unapprove            Revoke your approval on a GitLab MR.                    │
 │ checkout             Materialise a detached review worktree at the exact     │
 │                      reviewed head.                                          │
+│ merge-tree           Extract the merge result of --base and --head into a    │
+│                      plain directory.                                        │
 │ run                  Run the review-shape audit for a GitLab MR or GitHub PR │
 │                      and print a JSON summary.                               │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
@@ -1102,6 +1104,30 @@ Usage: t3 review checkout [OPTIONS] URL
 │                            [default: origin]                                 │
 │    --base-dir        TEXT  Parent directory for the temp worktree.           │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review merge-tree`
+
+```
+Usage: t3 review merge-tree [OPTIONS]
+
+ Extract the merge result of --base and --head into a plain directory.
+
+ Never a git worktree — resolve_data_dir auto-isolates one onto a per-worktree
+ DB, which is its own wrong-answer generator. The extract is a primary checkout
+ whose origin is the source clone's real remote URL, so code reading repository
+ identity resolves it; --no-git opts out.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --base          TEXT  Target-branch ref the PR would merge into.             │
+│                       [default: origin/main]                                 │
+│ --head          TEXT  PR head ref to merge into --base. [default: HEAD]      │
+│ --repo          TEXT  Local clone holding both refs. [default: .]            │
+│ --into          TEXT  Destination directory (default: a fresh temp dir).     │
+│ --no-git              Leave a bare directory instead of a primary checkout   │
+│                       carrying the real origin.                              │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6907,7 +6933,7 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ status             Show whether the orchestrator heavy-Bash gate is enabled. │
 │ disable            Disable the gate (self-rescue from a Bash lockout).       │
 │ enable             Re-enable the gate.                                       │
-│ skill-loading      Skill-loading-on-task gate kill-switch (self-rescue).     │
+│ skill-loading      Skill-loading gate kill-switch (self-rescue).             │
 │ plan               Plan-before-code edit-block gate kill-switch              │
 │                    (self-rescue).                                            │
 │ config-overwrite   Read-before-overwrite config/dotfile gate kill-switch     │
@@ -6979,7 +7005,7 @@ Usage: t3 teatree gate enable [OPTIONS]
 ```
 Usage: t3 teatree gate skill-loading [OPTIONS] COMMAND [ARGS]...
 
- Skill-loading-on-task gate kill-switch (self-rescue).
+ Skill-loading gate kill-switch (self-rescue).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -11543,7 +11569,10 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
  merge, this records the *judgment* so ``review status`` can answer
  "safe to approve at the current head?" without a fresh cold review.
  Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
- verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
+ verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks),
+ plus the #4251 diff-scope refusal: the PR's changed-file set is read from
+ the forge here, and a blocking finding citing a file outside it needs
+ ``--merge-result-retake``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    pr_id      INTEGER  [required]                                          │
@@ -11553,31 +11582,39 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --reviewed-sha             TEXT     Full 40-char hex commit id of the        │
-│                                     reviewed tree.                           │
-│ --verdict                  TEXT     merge_safe / hold. [default: merge_safe] │
-│ --reviewer-identity        TEXT     Identity of the reviewer who reached     │
-│                                     this verdict.                            │
-│ --gh-verify-result         TEXT     Checks snapshot at review time: green /  │
-│                                     pending / failed.                        │
-│                                     [default: green]                         │
-│ --blast-class              TEXT     Reviewer judgment: substrate / logic /   │
-│                                     docs.                                    │
-│                                     [default: logic]                         │
-│ --findings-json            TEXT     JSON array of                            │
-│                                     {"severity","summary","file","line"}     │
-│                                     findings.                                │
-│ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
-│                                     is for.                                  │
-│                                     [default: 0]                             │
-│ --lock-holder              TEXT     Lock identity the MRReviewLock is held   │
-│                                     under (the --holder passed to `review    │
-│                                     lock-acquire`), when you know it. Omit   │
-│                                     when you do not: the verdict releases    │
-│                                     the lock either way, since a concluded   │
-│                                     review must never strand one. Naming a   │
-│                                     DIFFERENT identity releases nothing.     │
-│ --help                              Show this message and exit.              │
+│ --reviewed-sha               TEXT     Full 40-char hex commit id of the      │
+│                                       reviewed tree.                         │
+│ --verdict                    TEXT     merge_safe / hold.                     │
+│                                       [default: merge_safe]                  │
+│ --reviewer-identity          TEXT     Identity of the reviewer who reached   │
+│                                       this verdict.                          │
+│ --gh-verify-result           TEXT     Checks snapshot at review time: green  │
+│                                       / pending / failed.                    │
+│                                       [default: green]                       │
+│ --blast-class                TEXT     Reviewer judgment: substrate / logic / │
+│                                       docs.                                  │
+│                                       [default: logic]                       │
+│ --findings-json              TEXT     JSON array of                          │
+│                                       {"severity","summary","file","line"}   │
+│                                       findings.                              │
+│ --ticket-id                  INTEGER  Optional teatree Ticket id this        │
+│                                       verdict is for.                        │
+│                                       [default: 0]                           │
+│ --lock-holder                TEXT     Lock identity the MRReviewLock is held │
+│                                       under (the --holder passed to `review  │
+│                                       lock-acquire`), when you know it. Omit │
+│                                       when you do not: the verdict releases  │
+│                                       the lock either way, since a concluded │
+│                                       review must never strand one. Naming a │
+│                                       DIFFERENT identity releases nothing.   │
+│ --merge-result-retake                 Attest that every finding citing a     │
+│                                       file outside the PR's changed-file set │
+│                                       was re-measured on the materialised    │
+│                                       MERGE RESULT (`t3 review merge-tree`), │
+│                                       not the branch checkout alone. Without │
+│                                       it such a finding cannot carry         │
+│                                       blocking severity (#4251).             │
+│ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

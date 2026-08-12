@@ -56,6 +56,10 @@ _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "one or return needs_user_input; never hand back a verdict for a tree you were not dispatched for.",
     "OMITTING `reviewed_sha` is REFUSED too: an undisclosed head is not read as agreement with the",
     "dispatched one, so a verdict that names no head records nothing at all.",
+    "A blocking finding (blocker/major/high/critical) citing a file OUTSIDE the PR's changed-file set is",
+    "REFUSED and records nothing: a branch-only probe reports what main did to that file since the branch",
+    "was cut, not what this PR did. Re-measure it on the MERGE RESULT — `t3 review merge-tree` extracts one",
+    'to a plain directory (never a git worktree) — then add "merge_result_retake": true if it survives.',
     "A result with no `review_verdict` FAILS the phase — a review that records no verdict never happened.",
 )
 
@@ -134,12 +138,11 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     A review sub-agent dispatched through the Agent tool, a dynamic workflow,
     or a reviewer does not auto-load the active overlay's review
     conventions. ``build_system_context`` embeds them for the agent path,
-    but an orchestrator-built dispatch prompt previously relied on the
+    but an orchestrator-built dispatch prompt otherwise relies on the
     orchestrator remembering to list the skills. This shared builder prepends a
     REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
     review skill plus the active overlay's review skills (deduped, order
-    preserved) — so the overlay conventions reach every reviewer structurally,
-    which the ``subagent_skill_gate`` TaskCreated gate enforces on a fan-out.
+    preserved) — so the overlay conventions reach every reviewer structurally.
 
     *review_skills* overrides the overlay resolution when supplied (e.g. a
     caller that already resolved the bundle); otherwise the active overlay's
