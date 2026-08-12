@@ -377,6 +377,7 @@ class TeatreeSettingsSchema(BaseSettings):
     trusted_issue_authors: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     umbrella_issue_labels: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     user_identity_aliases: Annotated[list[str], BeforeValidator(_parse_user_identity_aliases), _PERSONAL_OVERLAY] = []
+    venv_idle_days: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     watchdog_max_cost_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     watchdog_max_runtime_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     watchdog_max_turns: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

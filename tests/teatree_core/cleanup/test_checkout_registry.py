@@ -18,9 +18,10 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace.checkout_registry import (
+from teatree.core.cleanup.checkout_registry import (
     candidate_clones,
     checkout_scan_roots,
+    linked_worktree_paths,
     live_checkout_paths,
     raw_worktree_paths,
     scan_checkout_paths,
@@ -29,7 +30,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
-_REGISTRY = "teatree.core.management.commands._workspace.checkout_registry"
+_REGISTRY = "teatree.core.cleanup.checkout_registry"
 
 
 def _break_the_repo(clone: Path) -> None:
@@ -298,6 +299,65 @@ class TestScanDepthBudget(TestCase):
             found = scan_checkout_paths((self.root,))
 
         assert found.complete
+
+
+class TestLinkedWorktreePaths(TestCase):
+    """The population a worktree GC may act on (#4244).
+
+    The GC asked the worktree ROOT — a directory that CONTAINS worktrees — for
+    its worktrees, which is not a question a directory can answer, so it read
+    ``[]`` on every tick of its life. These pin both halves: the enumeration must
+    work from a root that is not itself a repository, and it must hand back a
+    clone as a candidate for removal under no circumstances.
+    """
+
+    def setUp(self) -> None:
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.clone = make_git_repo(self.workspace / "org" / "repo")
+        self.outside = self.workspace / "not-a-clone"
+        self.outside.mkdir()
+        self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=self.outside))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
+
+    def _add_checkout(self, branch: str) -> Path:
+        checkout = self.workspace / branch
+        run_git(self.clone, "worktree", "add", "-q", "-b", branch, str(checkout))
+        return checkout
+
+    def test_worktrees_under_a_non_repo_root_are_enumerated(self) -> None:
+        """The whole defect: the root holding the worktrees is not itself a repo."""
+        checkout = self._add_checkout("feat-a")
+        assert not (self.workspace / ".git").exists(), "the root must not be a repo, or this proves nothing"
+
+        enumeration = linked_worktree_paths(self.workspace)
+
+        assert str(checkout) in enumeration.paths
+        assert enumeration.complete
+
+    def test_a_clone_is_never_offered_as_a_worktree(self) -> None:
+        """Anti-vacuous: the caller REMOVES what it is handed, so a clone here is data loss."""
+        self._add_checkout("feat-b")
+
+        enumeration = linked_worktree_paths(self.workspace)
+
+        assert str(self.clone) not in enumeration.paths
+        assert str(self.clone.resolve()) not in enumeration.paths
+
+    def test_an_unreadable_registry_is_a_gap_not_an_empty_answer(self) -> None:
+        self._add_checkout("feat-c")
+        _break_the_repo(self.clone)
+
+        enumeration = linked_worktree_paths(self.workspace)
+
+        assert not enumeration.complete, "an enumeration that could not run must never read as complete"
+        assert any(str(self.clone) in gap for gap in enumeration.gaps)
+
+    def test_a_removed_worktree_drops_out(self) -> None:
+        """Control proving the enumeration tracks git rather than only ever growing."""
+        checkout = self._add_checkout("feat-gone")
+        run_git(self.clone, "worktree", "remove", "--force", str(checkout))
+
+        assert str(checkout) not in linked_worktree_paths(self.workspace).paths
 
 
 class TestCheckoutScanRoots(TestCase):

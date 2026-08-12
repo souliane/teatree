@@ -911,6 +911,12 @@ class _ResourcePressureSettings:
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
     disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
+    # #4244 The retention policy for the checkout pool: a ``.venv`` untouched for
+    # this long is evicted as the pure cache it is (``uv sync`` rebuilds it), so
+    # the pool's steady state is roughly one venv per checkout worked inside the
+    # window rather than one per checkout ever created. Not a destructive lever —
+    # a venv holds no work — but a live process inside a checkout always wins.
+    venv_idle_days: float = 2.0
 
 
 @dataclass

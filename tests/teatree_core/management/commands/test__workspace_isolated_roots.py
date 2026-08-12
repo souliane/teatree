@@ -25,7 +25,7 @@ from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
 _REAP = "teatree.core.management.commands._workspace.isolated_roots"
-_REGISTRY = "teatree.core.management.commands._workspace.checkout_registry"
+_REGISTRY = "teatree.core.cleanup.checkout_registry"
 
 
 def _make_env_dir(root: Path, slug: str) -> Path:

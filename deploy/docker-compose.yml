@@ -86,6 +86,16 @@ x-teatree-common: &teatree-common
     # tries to open the canonical DB gets a directory it cannot create, and fails
     # loudly instead of quietly opening a second database.
     - teatree_control_db:/var/lib/teatree/control-db
+    # The HOST's process table, read-only. The reapers that reclaim a checkout's
+    # rebuildable cache decide by asking whether anything is working inside it,
+    # and every service here has its own PID namespace: `/proc` in the container
+    # lists a handful of container processes and none of the host agents whose
+    # working directory IS the checkout under consideration. Without this mount
+    # that guard answers "nobody is inside" for every directory on the box —
+    # fail-OPEN, the shape recorded on #4306 — so
+    # `teatree.core.cleanup.process_table` refuses to reclaim rather than trust
+    # this namespace's `/proc` when the mount is absent.
+    - /proc:/host-proc:ro
     # The container's own CLONE root (`config.clone_root()`). Mounted BENEATH the
     # `t3-workspaces` bind below: docker orders mounts by target depth, so this
     # lands first and the worktree bind lands on top of it. The root itself is
