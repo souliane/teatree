@@ -15,7 +15,8 @@ migrate runs in a process that has not yet imported the about-to-change
 code (no mixed-code window). It is a no-op when nothing is pending, and
 DEFERS (leaves the row pending, returns ``deferred``) whenever a loop
 unit is in flight — a live CLAIMED task lease — so the code is never
-mutated out from under an active sub-agent.
+mutated out from under an active sub-agent, and equally when the box has no
+free-space headroom for the destructive reinstall (#4338).
 """
 
 import logging
@@ -75,6 +76,12 @@ def _apply(row: "PendingReinstall") -> DrainResult:
 
     label = row.repo_label
     result = reinstall_running_editable()
+    if result.deferred:
+        # A refusal, not a failure: nothing was destroyed and nothing was attempted, so the
+        # row stays PENDING and retries once disk frees. ``mark_failed`` here would let one
+        # transient low-disk moment disarm self-update permanently (#4338).
+        logger.warning("self_update_reinstall deferred for %s: %s", label, result.error)
+        return DrainResult(outcome=DrainOutcome.DEFERRED, repo_label=label, detail=result.error)
     if not result.ok:
         row.mark_failed(result.error)
         logger.warning("self_update_reinstall failed for %s: %s", label, result.error)

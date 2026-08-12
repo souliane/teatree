@@ -23,6 +23,7 @@ _NOT_A_PROBE = frozenset(
         "teatree.cli.doctor.self_heal",
         "teatree.cli.update",
         "doctor_check_self_db_migrations",
+        "doctor_check_process_code_freshness",
         "doctor_check_clone_currency",
         "run_self_heal_checks",
         "_collect_repos",
