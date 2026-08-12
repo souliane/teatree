@@ -201,7 +201,13 @@ The policy is enforced by the `resource_pressure` loop, not by a human running a
 - **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
   candidate set; a live process decides. The guard reads the HOST's process table
   (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it
-  cannot — a container's own PID namespace shows none of the host's agents.
+  cannot — a container's own PID namespace shows none of the host's agents. The same
+  refusal now governs the heuristic worktree GC, which until [#4244](https://github.com/souliane/teatree/issues/4244)
+  read an unusable table's empty answer as "nobody is inside".
+- **The guard is re-established immediately before each deletion, not at plan time.** Minutes
+  of walks and prunes separate the two, and a checkout is matched under both its written and
+  its resolved spelling — a symlinked one never matched the kernel's canonical `/proc/<pid>/cwd`.
+  What the delete-time guard stopped is named in the persisted plan.
 - **Steady state is therefore one venv per checkout worked inside the window** — on this
   box's cadence, single-digit GB rather than tens. A pool materially above that means the
   pass is being refused; read `t3 loop status`'s persisted plan, which reports
