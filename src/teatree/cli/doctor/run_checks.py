@@ -267,9 +267,8 @@ def _run_config_posture_advisories() -> None:
 
     Two readings of the same question, "is the box configured the way anyone thinks it is":
 
-    *   #3274 — a no-expiry away / autonomous_away mode override that has sat past the
-        staleness threshold, silently suppressing the colleague-facing loops (and pausing
-        the self-pump under holiday-away) the whole time.
+    *   #3274 — a no-expiry mode override that has sat past the staleness threshold,
+        silently masking whichever loops it forces off the whole time.
     *   #4074 — every stored ``ConfigSetting`` row whose value differs from the shipped
         default, i.e. a row still shadowing a default that has since moved underneath it.
     *   #4189 — every gated feature that is off in every scope and whose declared evidence
