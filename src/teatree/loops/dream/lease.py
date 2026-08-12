@@ -18,8 +18,9 @@ the bare ``pid-<n>`` token a sibling container read a live pass's holder as dead
 its lease, running a second pass against the same control DB — and the bare token was
 ALSO byte-identical across containers, so the acquire CAS's own-owner renew arm handed the
 lease over without the reclaim path being reached at all. Both close on the same
-qualification. The cost is a holder this reader cannot attribute waiting out its own TTL:
-a delayed pass, never two concurrent ones.
+qualification — the second only while procfs is readable, since a blank namespace mints a
+colliding token again. The cost is a holder this reader cannot attribute waiting out its
+own TTL: a delayed pass, never two concurrent ones.
 """
 
 from dataclasses import dataclass
@@ -43,8 +44,11 @@ class LeaseVerdict:
 def lease_owner(pid: int) -> str:
     """The dream lease's owner token for *pid*, qualified by the namespace it resolves in.
 
-    The fully-qualified form is the canonical key: it is what makes the token unique
-    per container as well as attributable, so two passes can never mint the same one.
+    The fully-qualified form is the canonical key: it is what makes the token attributable
+    as well as unique per container, so two passes stop minting the same one — except
+    where procfs is unreadable and the namespace degrades to ``""``, which leaves the
+    bare ``pid-<n>@`` collision the acquire CAS's own-owner renew arm can still hand the
+    lease over on. Closing that needs a discriminator procfs is not the source of.
     """
     from teatree.core.loop_lease_liveness import reader_pid_namespace  # noqa: PLC0415 — deferred: call-time import
 

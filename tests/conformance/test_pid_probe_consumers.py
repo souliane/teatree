@@ -12,10 +12,11 @@ consumers are derived by an AST walk for probe references across ``src/teatree``
 new one turns it red. Adding a probe is then a deliberate edit here plus an answer to
 "whose namespace is that integer in?".
 
-What the walk CANNOT see: a second, unattributed probe added inside a module already on
-the list, since attribution is asserted per module rather than per call site. It is a
-strong low-false-positive backstop against a NEW probing module, not a proof that every
-call site inside an existing one is attributed.
+What the walk CANNOT see: a second, unattributed probe inside a module already on the
+list, since attribution is asserted per module rather than per call site; a probe outside
+``src/teatree``, the only scanned root, so nothing under ``hooks/``; and a raw
+``os.kill(pid, 0)``, which is not one of the named helpers. It is a strong
+low-false-positive backstop against a NEW probing module, not a proof of total coverage.
 """
 
 import ast
@@ -55,12 +56,26 @@ EXPECTED_CONSUMERS = frozenset(
 SELF_NAMESPACE_PROBES = frozenset({"eval/regression_corpus_fixtures.py"})
 
 
+def _referenced_names(tree: ast.Module, api: frozenset[str]) -> frozenset[str]:
+    """The names in *api* that *tree* references, by bare name or by attribute access.
+
+    Both forms, because a bare-name-only walk is blind to the ``singleton.pid_alive(pid)``
+    spelling — the same probe reached through the module rather than imported off it.
+    """
+    referenced = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name | ast.Attribute)
+    }
+    return frozenset(referenced & api)
+
+
 def _modules_referencing(api: frozenset[str]) -> dict[str, frozenset[str]]:
     """Every ``src/teatree`` module referencing a name in *api*, mapped to the names it uses."""
     found: dict[str, frozenset[str]] = {}
     for path, tree in src_modules():
         relative = path.relative_to(SRC_DIR).as_posix()
-        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} & api
+        names = _referenced_names(tree, api)
         if names:
             found[relative] = frozenset(names)
     return found
@@ -69,6 +84,25 @@ def _modules_referencing(api: frozenset[str]) -> dict[str, frozenset[str]]:
 def _probe_consumers() -> frozenset[str]:
     """Every module that probes a pid, excluding the modules that DEFINE the probes."""
     return frozenset(_modules_referencing(_PROBE_API)) - _DEFINITION_MODULES
+
+
+class TestTheWalkSeesEveryReferenceForm:
+    """The derivation is only as wide as the reference shapes it collects."""
+
+    def test_a_bare_name_probe_is_seen(self) -> None:
+        tree = ast.parse("from teatree.utils.singleton import pid_alive\npid_alive(7)\n")
+
+        assert _referenced_names(tree, _PROBE_API) == {"pid_alive"}
+
+    def test_an_attribute_style_probe_is_seen(self) -> None:
+        tree = ast.parse("from teatree.utils import singleton\nsingleton.pid_alive(7)\n")
+
+        assert _referenced_names(tree, _PROBE_API) == {"pid_alive"}
+
+    def test_a_module_referencing_nothing_in_the_api_is_not_seen(self) -> None:
+        # The control: the collector answers NO to something, so a green above is a
+        # match rather than a matcher that accepts everything.
+        assert _referenced_names(ast.parse("value = 7\n"), _PROBE_API) == frozenset()
 
 
 class TestPidProbeConsumers:
