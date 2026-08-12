@@ -133,6 +133,9 @@ SETTING_HELP: dict[str, str] = {
     "idle_stack_reaper_disabled": "stop reaping idle local stacks",
     "incoming_event_retention_days": "days an incoming event row is kept",
     "incremental_push_gate": "scope the push gate to the diff instead of running it whole-tree",
+    "independent_reviewer_identities": (
+        "extra identities trusted to record an independent review, beside the operator's own handles"
+    ),
     "intake_ram_per_agent_gb": "RAM one admitted ticket is sized at when deriving intake concurrency",
     "intake_ram_reserve_gb": "RAM held back from intake sizing so a burst is absorbed instead of OOMing",
     "internal_publish_namespaces": "repo namespaces treated as internal, where internal identifiers may appear",
