@@ -26,7 +26,7 @@ class TestLoopScheduleCommand(django.test.TestCase):
     def _schedule(self, name: str) -> ModeSchedule:
         schedule = ModeSchedule.objects.create(name=name, timezone="UTC")
         ModeScheduleSlot.objects.create(
-            schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="engaged"
+            schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="present"
         )
         return schedule
 
@@ -55,7 +55,7 @@ class TestLoopScheduleCommand(django.test.TestCase):
     def test_show_renders_slots(self) -> None:
         self._schedule("standard")
         payload = json.loads(_run("show", "standard", json_output=True))
-        assert payload["slots"][0]["preset"] == "engaged"
+        assert payload["slots"][0]["preset"] == "present"
         assert payload["slots"][0]["start_time"] == "08:00"
 
 

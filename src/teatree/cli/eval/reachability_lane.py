@@ -14,8 +14,8 @@ lane never reaches UP into ``teatree.cli`` (the backwards edge tach forbids).
 **Advisory by default.** The shipped corpus still carries known false-positive
 references dominated by two precision gaps (overlay-slot fixture names, prose
 fragments), so the DEFAULT lane REPORTS and exits 0 — it never reds a PR.
-``--fail-on-unreachable`` opts into gating once those gaps close, mirroring
-``t3 eval coverage --fail-on-gap``.
+``--fail-on-unreachable`` opts into gating once those gaps close, the stage
+``t3 eval coverage`` has already left behind (a gap there exits non-zero).
 """
 
 import sys

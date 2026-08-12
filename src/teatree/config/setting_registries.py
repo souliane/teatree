@@ -211,6 +211,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_label": _parse_strict_str,
     "issue_implementer_max_concurrent": _parse_strict_int,
     "trusted_issue_authors": _parse_str_list,
+    "independent_reviewer_identities": _parse_str_list,
     "umbrella_issue_labels": _parse_str_list,
     "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
@@ -396,8 +397,9 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
 # config write IS the human authorization"), delegates a keystone sign-off
 # (``substrate_self_signoff``), disarms an egress/on-behalf pre-gate
 # (``on_behalf_post_mode = IMMEDIATE``, ``on_behalf_auto_actions``), or WIDENS a
-# fail-closed intake / egress / regulated allowlist (``trusted_issue_authors``,
-# ``send_proxy_allowlist``, ``regulated_path_model_allowlist``), raises the global
+# fail-closed intake / egress / regulated / maker≠checker allowlist
+# (``trusted_issue_authors``, ``send_proxy_allowlist``, ``regulated_path_model_allowlist``,
+# ``independent_reviewer_identities``), raises the global
 # autonomy posture (``autonomy``, ``enforce_regulated_path``), or relaxes an
 # autonomous-close boundary (``bulk_close_threshold``). The MCP ``config_setting_set``
 # surface REFUSES every key here by declared EFFECT (``teatree.mcp.write_tools`` reads
@@ -419,6 +421,7 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "on_behalf_auto_actions",
         "send_proxy_allowlist",
         "trusted_issue_authors",
+        "independent_reviewer_identities",
         "bulk_close_threshold",
     }
 )

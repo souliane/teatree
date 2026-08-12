@@ -88,13 +88,13 @@ class TestShippedRemovalIsDetected(django.test.TestCase):
         assert found[0].is_fault
 
     def test_a_deleted_preset_row_is_named_missing(self) -> None:
-        assert KIND_MISSING not in _kinds(shipped_inertness(), "preset", "engaged"), (
+        assert KIND_MISSING not in _kinds(shipped_inertness(), "preset", "present"), (
             "control: present row is not missing"
         )
 
-        Mode.objects.filter(name="engaged").delete()
+        Mode.objects.filter(name="present").delete()
 
-        found = _named(shipped_inertness(), "preset", "engaged")
+        found = _named(shipped_inertness(), "preset", "present")
         assert [f.kind for f in found] == [KIND_MISSING]
         assert found[0].is_fault
 
@@ -160,7 +160,7 @@ class TestStaleLoopsSplitOnWhetherAnythingExplainsThem(django.test.TestCase):
         Loop.objects.filter(name="inbox").update(enabled=True, last_run_at=self.now - dt.timedelta(days=2))
 
     def test_an_unexplained_stale_loop_is_a_fault(self) -> None:
-        set_mode_override("engaged")
+        set_mode_override("present")
 
         found = _named(shipped_inertness(now=self.now), "loop", "inbox")
 
@@ -182,13 +182,13 @@ class TestPresetInertness(django.test.TestCase):
         seed_default_presets_and_schedules()
 
     def test_a_hand_selectable_preset_nothing_references_is_not_reported(self) -> None:
-        """4 of 7 shipped presets are unreferenced on a fresh box — by design, not inertness."""
-        assert _named(shipped_inertness(), "preset", "heads-down") == []
+        """3 of the 5 shipped presets are unreferenced on a fresh box — by design, not inertness."""
+        assert _named(shipped_inertness(), "preset", "maintenance") == []
 
     def test_a_preset_whose_mask_was_emptied_is_a_fault(self) -> None:
-        Mode.objects.filter(name="engaged").update(entries={})
+        Mode.objects.filter(name="present").update(entries={})
 
-        found = _named(shipped_inertness(), "preset", "engaged")
+        found = _named(shipped_inertness(), "preset", "present")
 
         assert [f.kind for f in found] == [KIND_EMPTY_MASK]
         assert found[0].is_fault
@@ -217,7 +217,7 @@ class TestScheduleInertness(django.test.TestCase):
         assert "deleted-preset" in found[0].detail
 
     def test_a_schedule_that_is_not_the_active_one_is_only_a_note(self) -> None:
-        found = _named(shipped_inertness(), "schedule", "always-unattended")
+        found = _named(shipped_inertness(), "schedule", "always-away")
 
         assert [f.kind for f in found] == [KIND_INACTIVE]
         assert not found[0].is_fault
@@ -231,11 +231,11 @@ class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
 
     def test_an_edited_mask_is_reported_with_both_values(self) -> None:
-        assert _named(shipped_inertness(), "preset", "engaged") == [], "control: a seeded mask has not diverged"
+        assert _named(shipped_inertness(), "preset", "present") == [], "control: a seeded mask has not diverged"
 
-        Mode.objects.filter(name="engaged").update(entries={**Mode.objects.get(name="engaged").entries, "dream": False})
+        Mode.objects.filter(name="present").update(entries={**Mode.objects.get(name="present").entries, "dream": False})
 
-        found = _named(shipped_inertness(), "preset", "engaged")
+        found = _named(shipped_inertness(), "preset", "present")
         assert [f.kind for f in found] == [KIND_ENTRIES_OVERRIDDEN]
         assert "dream shipped=true live=false" in found[0].detail
 
@@ -249,9 +249,9 @@ class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
 
     def test_an_operator_override_is_a_note_not_a_fault(self) -> None:
         """Reporting is the deliverable — the audit must never rewrite an operator's mask."""
-        Mode.objects.filter(name="engaged").update(entries={**Mode.objects.get(name="engaged").entries, "news": False})
+        Mode.objects.filter(name="present").update(entries={**Mode.objects.get(name="present").entries, "news": False})
 
-        found = _named(shipped_inertness(), "preset", "engaged")
+        found = _named(shipped_inertness(), "preset", "present")
 
         assert not found[0].is_fault
         assert "never rewritten" in found[0].detail
@@ -278,7 +278,7 @@ class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
         found = _named(shipped_inertness(), "schedule", "standard")
 
         assert [f.kind for f in found] == [KIND_SLOTS_OVERRIDDEN]
-        assert "drops Mon,Tue,Wed,Thu,Fri 09:00 -> engaged" in found[0].detail
+        assert "drops Mon,Tue,Wed,Thu,Fri 09:00 -> present" in found[0].detail
 
     def test_a_retimed_zone_is_reported(self) -> None:
         ModeSchedule.objects.filter(name="standard").update(timezone="UTC")
@@ -289,9 +289,9 @@ class TestLiveValuesAreComparedAgainstTheShippedTable(django.test.TestCase):
 
     def test_a_diverged_calendar_that_is_not_active_reports_both_facts_on_one_line(self) -> None:
         """One line per name, so the divergence must not cost the inactive note it replaces."""
-        ModeSchedule.objects.filter(name="always-unattended").update(timezone="UTC")
+        ModeSchedule.objects.filter(name="always-away").update(timezone="UTC")
 
-        found = _named(shipped_inertness(), "schedule", "always-unattended")
+        found = _named(shipped_inertness(), "schedule", "always-away")
 
         assert [f.kind for f in found] == [KIND_SLOTS_OVERRIDDEN]
         assert "timezone shipped=unset live=UTC" in found[0].detail
@@ -358,7 +358,7 @@ class TestAFreshlySeededBoxIsClean(django.test.TestCase):
     def test_no_faults_after_the_shipped_seed_runs(self) -> None:
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
-        set_mode_override("engaged")
+        set_mode_override("present")
         # `stale_loops` measures a never-run loop from `created_at`, so the migration-seeded
         # rows age past 3x their cadence as the suite runs; stamp the anchor rather than
         # inherit "the DB is young" from how long the suite has been going.
@@ -402,10 +402,10 @@ class TestAMaskThatKeepsWritingMustNotStopReclaiming(django.test.TestCase):
         assert found[0].is_fault
         assert "resource_pressure" in found[0].detail
 
-    def test_the_low_power_mode_may_quiet_the_tier(self) -> None:
-        self._quiet_the_tier("low-power", backup=False)
+    def test_the_low_token_mode_may_quiet_the_tier(self) -> None:
+        self._quiet_the_tier("low-token", backup=False)
 
-        assert _kinds(shipped_inertness(), "preset", "low-power") != [KIND_QUIETED_LOAD_BEARING]
+        assert _kinds(shipped_inertness(), "preset", "low-token") != [KIND_QUIETED_LOAD_BEARING]
 
     def test_an_operator_written_mode_is_judged_by_the_same_rule(self) -> None:
         Mode.objects.create(name="nights", description="hand-written", entries={"resource_pressure": False})

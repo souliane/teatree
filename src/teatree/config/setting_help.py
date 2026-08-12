@@ -133,6 +133,9 @@ SETTING_HELP: dict[str, str] = {
     "idle_stack_reaper_disabled": "stop reaping idle local stacks",
     "incoming_event_retention_days": "days an incoming event row is kept",
     "incremental_push_gate": "scope the push gate to the diff instead of running it whole-tree",
+    "independent_reviewer_identities": (
+        "extra identities trusted to record an independent review, beside the operator's own handles"
+    ),
     "intake_ram_per_agent_gb": "RAM one admitted ticket is sized at when deriving intake concurrency",
     "intake_ram_reserve_gb": "RAM held back from intake sizing so a burst is absorbed instead of OOMing",
     "internal_publish_namespaces": "repo namespaces treated as internal, where internal identifiers may appear",
@@ -145,7 +148,7 @@ SETTING_HELP: dict[str, str] = {
     "loop_cadence_seconds": "default seconds between ticks of a loop that declares none",
     "loop_runner_enabled": "run the worker that drives the loop ticks",
     "loops": "per-loop overrides, keyed by loop name",
-    "low_power_auto_engage": "switch to the low-power preset by itself when the box is under pressure",
+    "low_power_auto_engage": "switch to the low-token preset by itself when the box is under pressure",
     "low_power_preset_name": "preset engaged when low power is on",
     "main_clone_guard_gate_enabled": "refuse an edit to the main clone's working tree",
     "max_concurrent_local_stacks": "how many tickets may hold a running local stack at once",

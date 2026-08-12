@@ -167,7 +167,7 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
 
     A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
     durable record of a cold review; ``ReviewVerdict.record`` refuses a
-    self-attested verdict (``is_non_reviewer_role``), so any row that
+    self-attested verdict (``is_independent_reviewer_identity``), so any row that
     exists was issued by an identity that is not the maker/coding-agent/
     loop. The bypass requires a ``merge_safe`` verdict bound to the live
     head SHA — a stale verdict reviewed a tree the PR no longer points at

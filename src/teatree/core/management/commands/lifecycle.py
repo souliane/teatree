@@ -14,7 +14,7 @@ from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.modelkit.phases import normalize_phase, phase_transition
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.merge_clear import is_non_reviewer_role
+from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 from teatree.core.models.ticket_ledger import retire_phase_ledger
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 
@@ -322,12 +322,12 @@ class Command(RefusalExitTyperCommand):
 
 
 def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:
-    """Refuse a ``reviewing`` visit without an explicit, non-maker reviewer id.
+    """Refuse a ``reviewing`` visit without an explicit, positively-identified reviewer id.
 
     §17.6 enforcement candidate (13): the reviewing attestation is the
     independent cold-review signal. An empty ``--agent-id`` (it would fall
-    back to the session's own maker identity) or a maker/coding-agent/loop
-    role recording it is the author attesting their own review — refused.
+    back to the session's own maker identity) or an id that does not identify
+    an independent reviewer is the author attesting their own review — refused.
     """
     explicit = agent_id.strip()
     if not explicit:
@@ -337,13 +337,10 @@ def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:
             f"an empty id would fall back to the maker session identity"
         )
         raise ReviewerAttestationError(msg)
-    if is_non_reviewer_role(explicit):
-        msg = (
-            f"--agent-id {explicit!r} is a maker/coding-agent/loop role — a `reviewing` "
-            f"attestation must be recorded by an independent reviewer, not the author "
-            f"(§17.6 candidate 13 / §17.8 clause 3)"
+    if not is_independent_reviewer_identity(explicit):
+        raise ReviewerAttestationError(
+            unrecognised_reviewer_message(explicit, subject="a `reviewing` attestation", verb="recorded")
         )
-        raise ReviewerAttestationError(msg)
 
 
 def _try_advance(ticket: Ticket, transition_name: str) -> None:

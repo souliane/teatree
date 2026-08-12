@@ -101,6 +101,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "idle_stack_reaper_cadence_minutes",
         "idle_stack_reaper_disabled",
         "incremental_push_gate",
+        "independent_reviewer_identities",
         "intake_ram_per_agent_gb",
         "intake_ram_reserve_gb",
         "issue_implementer_enabled",

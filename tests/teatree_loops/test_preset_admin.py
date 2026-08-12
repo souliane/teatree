@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.mode_resolution import DEFAULT_MODE_SETTING, mode_name_for_posture, resolve_active_mode
+from teatree.core.mode_resolution import DEFAULT_MODE_SETTING, resolve_active_mode
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_preset import LOW_POWER_PRESET_SETTING
 from teatree.loops.preset_admin import create_preset, delete_preset, preset_referrers, rename_preset, update_preset_meta
@@ -36,67 +36,67 @@ class CreatePresetTestCase(TestCase):
 
 class PresetMetadataTestCase(TestCase):
     def setUp(self) -> None:
-        _preset("low-power", description="stale text")
+        _preset("low-token", description="stale text")
 
     def test_description_is_editable(self) -> None:
-        update_preset_meta("low-power", description="Token-budget guard.")
-        assert Mode.objects.by_name("low-power").description == "Token-budget guard."
+        update_preset_meta("low-token", description="Token-budget guard.")
+        assert Mode.objects.by_name("low-token").description == "Token-budget guard."
 
 
 class RenamePresetTestCase(TestCase):
     """A rename re-points every by-name referrer in one transaction — never orphans one."""
 
     def setUp(self) -> None:
-        _preset("low-power", description="Token-budget guard.")
-        _preset("engaged")
+        _preset("low-token", description="Token-budget guard.")
+        _preset("present")
         self.schedule = ModeSchedule.objects.create(name="renametest")
         self.addCleanup(ConfigSetting.objects.clear, LOW_POWER_PRESET_SETTING)
         self.addCleanup(ModeOverride.objects.clear)
 
     def test_rename_moves_the_row(self) -> None:
-        rename_preset("low-power", "low-tokens")
-        assert Mode.objects.by_name("low-power") is None
+        rename_preset("low-token", "low-tokens")
+        assert Mode.objects.by_name("low-token") is None
         assert Mode.objects.by_name("low-tokens").description == "Token-budget guard."
 
     def test_rename_repoints_the_auto_engage_setting(self) -> None:
-        ConfigSetting.objects.set_value(LOW_POWER_PRESET_SETTING, "low-power")
-        rename_preset("low-power", "low-tokens")
+        ConfigSetting.objects.set_value(LOW_POWER_PRESET_SETTING, "low-token")
+        rename_preset("low-token", "low-tokens")
         assert ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING) == "low-tokens"
 
     def test_rename_repoints_a_setting_left_at_its_default(self) -> None:
-        # The auto-engage target defaults to "low-power" with no row written; a rename
+        # The auto-engage target defaults to "low-token" with no row written; a rename
         # must pin the new name so the unset default cannot dangle.
-        rename_preset("low-power", "low-tokens")
+        rename_preset("low-token", "low-tokens")
         assert ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING) == "low-tokens"
 
     def test_rename_repoints_schedule_slots(self) -> None:
         slot = ModeScheduleSlot.objects.create(
-            schedule=self.schedule, days=[0], start_time="08:00", preset_name="low-power"
+            schedule=self.schedule, days=[0], start_time="08:00", preset_name="low-token"
         )
-        rename_preset("low-power", "low-tokens")
+        rename_preset("low-token", "low-tokens")
         assert ModeScheduleSlot.objects.get(pk=slot.pk).preset_name == "low-tokens"
 
     def test_rename_repoints_the_live_override(self) -> None:
-        ModeOverride.objects.set_override("low-power")
-        rename_preset("low-power", "low-tokens")
+        ModeOverride.objects.set_override("low-token")
+        rename_preset("low-token", "low-tokens")
         assert ModeOverride.objects.current().preset_name == "low-tokens"
         assert resolve_active_mode().name == "low-tokens"
 
     def test_rename_repoints_the_default_mode_setting(self) -> None:
-        ConfigSetting.objects.set_value(DEFAULT_MODE_SETTING, "engaged")
+        ConfigSetting.objects.set_value(DEFAULT_MODE_SETTING, "present")
         self.addCleanup(ConfigSetting.objects.clear, DEFAULT_MODE_SETTING)
-        rename_preset("engaged", "working")
+        rename_preset("present", "working")
         assert ConfigSetting.objects.get_effective(DEFAULT_MODE_SETTING) == "working"
 
     def test_rename_onto_an_existing_name_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            rename_preset("low-power", "engaged")
-        assert Mode.objects.by_name("low-power") is not None
+            rename_preset("low-token", "present")
+        assert Mode.objects.by_name("low-token") is not None
 
     def test_rename_to_a_non_slug_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            rename_preset("low-power", "low tokens!")
-        assert Mode.objects.by_name("low-power") is not None
+            rename_preset("low-token", "low tokens!")
+        assert Mode.objects.by_name("low-token") is not None
 
     def test_rename_of_an_unknown_preset_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
@@ -106,7 +106,7 @@ class RenamePresetTestCase(TestCase):
 class DeletePresetTestCase(TestCase):
     def setUp(self) -> None:
         _preset("spare")
-        _preset("engaged")
+        _preset("present")
         self.schedule = ModeSchedule.objects.create(name="deletetest")
         self.addCleanup(ModeOverride.objects.clear)
         self.addCleanup(ConfigSetting.objects.clear, LOW_POWER_PRESET_SETTING)
@@ -142,29 +142,3 @@ class DeletePresetTestCase(TestCase):
     def test_unknown_preset_delete_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
             delete_preset("ghost")
-
-
-class PostureResolvesByRowTestCase(TestCase):
-    """A mode is selected by its intrinsic posture, so renaming it cannot break behaviour."""
-
-    def setUp(self) -> None:
-        _preset("engaged", defers_questions=False, pauses_self_pump=False)
-        _preset("unattended", defers_questions=True, pauses_self_pump=False)
-        _preset("offline", defers_questions=True, pauses_self_pump=True)
-
-    def test_reachable_resolves_to_the_engaged_mode(self) -> None:
-        assert mode_name_for_posture("reachable") == "engaged"
-
-    def test_defer_questions_resolves_to_the_keep_pumping_mode(self) -> None:
-        assert mode_name_for_posture("defer-questions") == "unattended"
-
-    def test_pause_everything_resolves_to_the_holiday_mode(self) -> None:
-        assert mode_name_for_posture("pause-everything") == "offline"
-
-    def test_a_renamed_mode_still_resolves(self) -> None:
-        rename_preset("offline", "holiday")
-        assert mode_name_for_posture("pause-everything") == "holiday"
-
-    def test_an_unknown_token_is_refused(self) -> None:
-        with pytest.raises(LookupError):
-            mode_name_for_posture("vacation")

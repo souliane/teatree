@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
 
-def _resolved(*, defers: bool, source: str = "override") -> ResolvedMode:
+def _resolved(*, entries: dict[str, bool] | None = None, source: str = "override") -> ResolvedMode:
     """A ResolvedMode carrying only the availability posture (no loop-mask opinion)."""
-    return ResolvedMode(mode=Mode(name="m", entries={}, defers_questions=defers), source=source, until=None)
+    return ResolvedMode(mode=Mode(name="m", entries=entries or {}), source=source, until=None)
 
 
 def _mini(name: str) -> MiniLoop:
@@ -456,78 +456,64 @@ class TestLoopStateBulkLoadedOncePerTick(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
-class TestColleagueFacingAvailabilityGate(django.test.TestCase):
-    """A ``colleague_facing`` loop is gated off whenever availability defers questions (#2904).
+class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
+    """A mode holds colleague-facing work off through its own ``entries`` (#2904, #4202).
 
-    BLUEPRINT §17.1 invariant 9: colleague-facing work needs the user reachable.
-    ``away`` and ``autonomous_away`` both defer questions
-    (``Resolution.defers_questions``), so a ``colleague_facing`` row must not fire
-    in either — even in ``autonomous_away``, where every OTHER loop keeps
-    self-pumping (the #2544 split). A non-colleague-facing loop is unaffected by
-    availability entirely.
+    BLUEPRINT §17.1 invariant 9: colleague-facing work needs the user reachable. A mode
+    that means "the owner cannot weigh in" says so by forcing ``followup`` OFF, so the
+    mask the tick already applies is the whole mechanism — there is no second posture
+    axis that could admit the row while the mask refuses it.
     """
 
-    def test_colleague_facing_loop_skipped_when_away(self) -> None:
+    def test_colleague_facing_loop_skipped_when_the_mode_masks_it_off(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="cf-review", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
         with (
-            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
+            patch(_MODE_SEAM, return_value=_resolved(entries={"cf-review": False})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-review"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
 
-    def test_colleague_facing_loop_skipped_when_autonomous_away(self) -> None:
-        # An autonomous-away mode keeps every OTHER loop self-pumping, but a
-        # colleague_facing loop must still not fire (defers_questions gates it).
-        now = timezone.now()
-        Loop.objects.create(name="cf-followup", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
-        with (
-            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
-            patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-followup"),)),
-        ):
-            jobs = build_loop_table_jobs({}, now=now)
-        assert jobs == []
-
-    def test_colleague_facing_loop_runs_when_present(self) -> None:
+    def test_colleague_facing_loop_runs_when_the_mode_admits_it(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="cf-present", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
         with (
-            patch(_MODE_SEAM, return_value=_resolved(defers=False, source="default")),
+            patch(_MODE_SEAM, return_value=_resolved(source="default")),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-present"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-cf-present" in jobs
 
-    def test_non_colleague_facing_loop_is_unaffected_by_away(self) -> None:
+    def test_a_sibling_loop_the_same_mask_admits_is_unaffected(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="cf-internal", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
         with (
-            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
+            patch(_MODE_SEAM, return_value=_resolved(entries={"cf-review": False})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-internal"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-cf-internal" in jobs
 
-    def test_gated_colleague_facing_loop_cadence_anchor_is_not_consumed(self) -> None:
-        # Mirrors the LoopState-held pattern: gated-off means NOT admitted, so
-        # the cadence anchor must be preserved (the gate runs before the CAS claim).
+    def test_masked_colleague_facing_loop_cadence_anchor_is_not_consumed(self) -> None:
+        # Mirrors the LoopState-held pattern: masked off means NOT admitted, so
+        # the cadence anchor must be preserved (the mask runs before the CAS claim).
         now = timezone.now()
         Loop.objects.create(name="cf-anchor", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
         with (
-            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
+            patch(_MODE_SEAM, return_value=_resolved(entries={"cf-anchor": False})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-anchor"),)),
         ):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="cf-anchor").last_run_at is None
 
-    def test_admitted_loop_names_also_honours_the_gate(self) -> None:
-        # The beat's pre-filter shares the SAME unified verdict — the gate can
+    def test_admitted_loop_names_also_honours_the_mask(self) -> None:
+        # The beat's pre-filter shares the SAME unified verdict — the mask can
         # never drift between build_loop_table_jobs and admitted_loop_names.
         now = timezone.now()
         Loop.objects.create(name="cf-beat", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
         with (
-            patch(_MODE_SEAM, return_value=_resolved(defers=True)),
+            patch(_MODE_SEAM, return_value=_resolved(entries={"cf-beat": False})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-beat"),)),
         ):
             names = admitted_loop_names(now)
@@ -535,25 +521,20 @@ class TestColleagueFacingAvailabilityGate(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
-class TestAutoMergePathAdmittedUnderAutonomousAway(django.test.TestCase):
-    """#3274/#61/#3569: `ship` AND `review` are admitted under an away-class mode.
+class TestAutoMergePathAdmittedUnderAway(django.test.TestCase):
+    """#3274/#61/#3569: `ship` AND `review` are admitted under the `away` mode.
 
     End-to-end over the REAL seed + registry + resolver (no stub): a green own-PR
     still gets its review verdict and auto-merges while the owner is away, because
-    the merge sweep lives on the non-colleague-facing `ship` loop (#3244). #3569
-    unmasked `review` too (it is no longer colleague_facing) so self-review keeps
-    running when away — only `followup` (still colleague_facing) is deferred. Both
-    are loop-membership, NOT an availability read. The away-class posture comes from
-    a real `unattended` mode override (defers=True).
+    the merge sweep lives on the `ship` loop (#3244). #3569 unmasked `review` too so
+    self-review keeps going when away — only `followup` is masked off. Both are loop
+    membership, which since #4202 is the only axis there is.
     """
 
-    def test_ship_and_review_admitted_followup_deferred_under_autonomous_away(self) -> None:
+    def test_ship_and_review_admitted_followup_masked_under_away(self) -> None:
         seed_default_loops_and_prompts()
-        # A real away-class mode: defers questions but keeps the factory pumping.
-        Mode.objects.update_or_create(
-            name="unattended", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": False}
-        )
-        ModeOverride.objects.set_override("unattended")
+        Mode.objects.update_or_create(name="away", defaults={"entries": {"followup": False}})
+        ModeOverride.objects.set_override("away")
         Loop.objects.filter(name__in=["ship", "review", "followup"]).update(enabled=True, last_run_at=None)
         admitted = admitted_loop_names(timezone.now())
         assert "ship" in admitted

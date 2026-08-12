@@ -34,14 +34,13 @@ from django.utils import timezone
 
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.merge_clear import (
-    SHA_FULL_LEN,
-    MergeClear,
-    is_commit_sha,
-    is_non_reviewer_role,
-    normalize_reviewer_identity,
-)
+from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.reviewer_identity import (
+    is_independent_reviewer_identity,
+    normalize_reviewer_identity,
+    unrecognised_reviewer_message,
+)
 from teatree.core.models.ticket import Ticket
 
 
@@ -316,13 +315,8 @@ class ReviewVerdict(models.Model):
         if not reviewer:
             msg = "reviewer_identity is required and must be non-empty"
             raise ReviewVerdictError(msg)
-        if is_non_reviewer_role(reviewer):
-            msg = (
-                f"reviewer_identity {reviewer!r} is a maker/coding-agent/loop role — a verdict "
-                f"records an independent cold review, never a self-attestation (§17.8 clause 3; "
-                f"mirrors MergeClear.issue rejecting a non-reviewer CLEAR author)"
-            )
-            raise ReviewVerdictError(msg)
+        if not is_independent_reviewer_identity(reviewer):
+            raise ReviewVerdictError(unrecognised_reviewer_message(reviewer, subject="a verdict", verb="recorded"))
 
         if not is_commit_sha(reviewed_sha):
             candidate = reviewed_sha.strip()

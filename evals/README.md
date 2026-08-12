@@ -192,8 +192,7 @@ t3 eval history --model opus --format json    # filter + JSON
 t3 eval run --backend transcript              # explicit transcript (the default; host-default, $0 extra)
 t3 eval prepare-transcript                    # emit prompts/paths for a transcript run
 t3 eval transcript-replay                     # replay a real session against invariants
-t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); warn-first, no claude run
-t3 eval coverage --fail-on-gap                # Phase-B enforcement: exit non-zero on any uncovered, non-exempt skill
+t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); a gap exits 1, no claude run
 t3 eval pinned-regressions                    # deterministic real-code-path regression corpus (no claude run)
 t3 eval pinned-regressions --format json      # JSON: per-class ok/skipped/origin/detail
 t3 eval negative-control                      # harness self-test: plant a violation, assert it is caught (no claude run)
@@ -249,7 +248,7 @@ The deterministic regression lane is wired into prek under its explicit name:
 `eval-pinned-regressions` runs at the **pre-push** stage (real git/FSM work) —
 token-free, no model, no spec discovery. It fails the push on a real
 deterministic violation. The full model-free-lane summary (`t3 eval --model-free`) —
-which also folds in the warn-first skill-coverage lane, negative-control, and the
+which also folds in the skill-coverage lane, catalog-discovery, negative-control, and the
 SKIP-when-out-of-scope transcript-replay lane — stays runnable on demand. Run the
 prek lane on demand with:
 
@@ -487,10 +486,11 @@ accepts `--model-free`, `--backend`, `--transcript-dir`, `--docker`, `--strict`,
 `--parallel`. The process exits non-zero if ANY lane fails (fail-loud); a SKIP
 never counts as a green pass.
 
-It runs every lane in one summary table: the six model-free deterministic lanes
-(`skill-coverage`, `pinned-regressions`, `negative-control`,
+It runs every lane in one summary table: the seven model-free deterministic lanes
+(`catalog-discovery`, `skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`, `corpus-grade`, `skill-command-validity`) plus the AI lane.
-`skill-coverage` is warn-first (reports a gap, exit 0). The AI lane never runs a
+`skill-coverage` FAILs on a gap, the same verdict `t3 eval coverage` and the
+`test_no_shipped_skill_is_an_uncovered_gap` pytest gate return. The AI lane never runs a
 model silently — `--backend api` opts into a fresh run. The ADVISORY
 `skill-prose-judge` lane fires the LIVE judge, so it runs ONLY under the fresh-run
 opt-in (`--backend api`) — never on the default `transcript` path. A missing real
@@ -1049,7 +1049,8 @@ This table is the single source of truth for which lanes exist, how they run, an
 | Lane | Kind | Cost | Host / Docker | Local invocation | CI | Cadence |
 |---|---|---|---|---|---|---|
 | pinned-regressions | **test** | model-free | host | `t3 eval pinned-regressions` | pytest (`test_regression_corpus.py`) | push (prek `eval-pinned-regressions`) + every PR |
-| skill-coverage | **test** | model-free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
+| skill-coverage | **test** | model-free | host | `t3 eval coverage` | pytest (`test_no_shipped_skill_is_an_uncovered_gap`) | every bare-`t3 eval` run + on demand |
+| catalog-discovery | **test** | model-free | host | bare `t3 eval` | — (folded into the bare-suite table) | every bare-`t3 eval` run |
 | negative-control | **test** | model-free | host | `t3 eval negative-control` | — | on demand |
 | transcript-replay | **test** | model-free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
 | corpus-grade | **test** | model-free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
@@ -1143,11 +1144,11 @@ one-line frontmatter key. The dedicated pytest gate
 (`tests/eval_replay/test_skill_eval_coverage.py`) is now **Phase-B
 ENFORCING** — it asserts `report.gaps == ()`, so a skill landing with neither an
 eval nor an `eval_exempt` reason is a hard RED on every PR (the corpus is gap-free
-today, so the flip is safe). The softer `t3 eval coverage` lane inside `t3 eval
-all` stays **warn-first** (reports a gap, exit 0) so it never red-blocks an
-unrelated bare-`t3 eval` run; `t3 eval coverage --fail-on-gap` is its explicit
-enforcing form. The shipped corpus is gap-free today (the per-skill scenario
-files under `evals/scenarios/` plus the pure-doc exemptions).
+today, so the flip is safe). The `skill-coverage` lane inside bare `t3 eval` and the
+`t3 eval coverage` subcommand return that same verdict — a gap exits non-zero on all
+three surfaces, so no surface can report a green the others would refuse. The shipped
+corpus is gap-free today (the per-skill scenario files under `evals/scenarios/` plus
+the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 

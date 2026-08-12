@@ -338,7 +338,7 @@
               a known violation and asserts the harness catches it, so a harness that
               silently stopped grading would itself go red. Distinct from a scenario.
     12:32:20  $ uv run t3 eval coverage
-              35 skills, 0 uncovered (warn-first): all covered or eval_exempt.
+              35 skills, 0 uncovered: all covered or eval_exempt.
     12:34:05  orchestrator: a carried note on the skill auto-loading invariant — the
               user never manually calls a skill; Django projects auto-load the django
               skill, overlay projects auto-load their overlay skill, lifecycle skills

@@ -1,15 +1,16 @@
-"""Idempotent seed of the default presets + schedules (#3159).
+"""Idempotent seed of the default presets + schedules (#3159, #4202).
 
-``t3 setup`` seeds the 7 curated presets and the ``standard`` /
-``always-unattended`` schedules as owner-editable DB data. ``standard`` ships as
-the active schedule (owner working hours, Europe/Vienna), pinned through the
-provenance-aware ``ConfigSetting.seed`` so an operator switch is never clobbered.
-Integration-first against the real DB.
+``t3 setup`` seeds the 5 curated presets and the ``standard`` / ``always-away``
+schedules as owner-editable DB data. ``standard`` ships as the active schedule (owner
+working hours, Europe/Vienna), pinned through the provenance-aware
+``ConfigSetting.seed`` so an operator switch is never clobbered. Integration-first
+against the real DB.
 """
 
 import datetime as dt
 import io
 import zoneinfo
+from importlib import import_module
 from pathlib import Path
 
 import django.test
@@ -37,8 +38,10 @@ from teatree.loops.preset_seed import (
 )
 from teatree.loops.seed import DEFAULT_LOOPS, load_loop_specs
 
-_EXPECTED_PRESETS = {"engaged", "heads-down", "unattended", "maintenance", "low-power", "off", "offline"}
-_EXPECTED_SCHEDULES = {"standard", "always-unattended"}
+_EXPECTED_PRESETS = {"present", "away", "maintenance", "low-token", "off"}
+_EXPECTED_SCHEDULES = {"standard", "always-away"}
+#: The pre-#4202 names. Seeding one again would resurrect a preset the collapse retired.
+_RETIRED_PRESETS = {"engaged", "heads-down", "low-power", "unattended", "offline"}
 _VIENNA = zoneinfo.ZoneInfo("Europe/Vienna")
 
 
@@ -49,12 +52,16 @@ class TestSeedDefaultPresets(django.test.TestCase):
         Mode.objects.all().delete()
         ModeSchedule.objects.all().delete()
 
-    def test_seeds_the_seven_presets_and_two_schedules(self) -> None:
+    def test_seeds_the_five_presets_and_two_schedules(self) -> None:
         result = seed_default_presets_and_schedules()
         assert result.presets_created == len(_EXPECTED_PRESETS)
         assert result.schedules_created == len(_EXPECTED_SCHEDULES)
         assert set(Mode.objects.values_list("name", flat=True)) == _EXPECTED_PRESETS
         assert set(ModeSchedule.objects.values_list("name", flat=True)) == _EXPECTED_SCHEDULES
+
+    def test_no_retired_preset_name_is_seeded(self) -> None:
+        seed_default_presets_and_schedules()
+        assert not Mode.objects.filter(name__in=_RETIRED_PRESETS).exists()
 
     def test_off_forces_every_work_loop_off_and_the_load_bearing_tier_on(self) -> None:
         """A halt mode stops the WORK, never the tier that can still recover the box (#4188)."""
@@ -63,53 +70,53 @@ class TestSeedDefaultPresets(django.test.TestCase):
         assert {loop for loop, value in entries.items() if value} == set(LOAD_BEARING_LOOPS)
         assert set(entries) == {spec.name for spec in DEFAULT_LOOPS}
 
-    def test_low_power_keeps_only_deterministic_local_loops(self) -> None:
+    def test_low_token_keeps_only_deterministic_local_loops(self) -> None:
         seed_default_presets_and_schedules()
-        entries = Mode.objects.get(name="low-power").entries
+        entries = Mode.objects.get(name="low-token").entries
         assert entries["inbox"] is True
         assert entries["housekeeping"] is True
         assert entries["review"] is False
         assert entries["dispatch"] is False
 
-    def test_a_freshly_seeded_unattended_resolves_to_its_autonomous_away_posture(self) -> None:
-        """The seed → override → resolve chain still yields ``unattended``'s posture.
+    def test_maintenance_drains_in_flight_work_and_takes_no_new_intake(self) -> None:
+        """The #4202 redefinition: finish and merge what is in flight, claim nothing new."""
+        seed_default_presets_and_schedules()
+        entries = Mode.objects.get(name="maintenance").entries
+        assert entries["ship"] is True
+        assert entries["review"] is True
+        assert entries["tickets"] is False
+        assert entries["issue_implementer"] is False
 
-        The end-to-end pin the availability string used to stand in for: a fresh box
-        seeds the row, an override selects it, and the resolver reads the booleans.
+    def test_away_is_not_present_under_another_name(self) -> None:
+        """#4202's open question: the two intake-taking presets are genuinely different.
+
+        ``away`` masks the sole colleague-facing loop OFF and leaves the two self-QA
+        loops inheriting their own flag rather than forcing them on.
         """
         seed_default_presets_and_schedules()
-        ModeOverride.objects.set_override("unattended")
+        present = Mode.objects.get(name="present").entries
+        away = Mode.objects.get(name="away").entries
+        assert {loop for loop in present if present[loop] != away.get(loop)} == {
+            "followup",
+            "eval_local",
+            "dogfood",
+        }
+        assert away["followup"] is False
+        assert "eval_local" not in away
+
+    def test_a_freshly_seeded_away_resolves_through_an_override(self) -> None:
+        """The seed → override → resolve chain lands on the row the operator named."""
+        seed_default_presets_and_schedules()
+        ModeOverride.objects.set_override("away")
 
         resolved = resolve_active_mode()
 
-        assert resolved.name == "unattended"
-        assert resolved.defers_questions is True
-        assert resolved.pauses_self_pump is False
+        assert resolved.name == "away"
+        assert resolved.state_for("followup") is False
 
-    def test_mode_booleans_seeded_per_recommended_table(self) -> None:
+    def test_destructive_loops_inherit_in_present(self) -> None:
         seed_default_presets_and_schedules()
-        # present-class: never defers.
-        for name in ("engaged", "heads-down", "off"):
-            preset = Mode.objects.get(name=name)
-            assert preset.defers_questions is False
-            assert preset.pauses_self_pump is False
-        # away-class autonomous: defers, keeps pumping.
-        for name in ("unattended", "maintenance", "low-power"):
-            preset = Mode.objects.get(name=name)
-            assert preset.defers_questions is True
-            assert preset.pauses_self_pump is False
-
-    def test_offline_is_the_holiday_away_mode(self) -> None:
-        seed_default_presets_and_schedules()
-        offline = Mode.objects.get(name="offline")
-        assert offline.defers_questions is True
-        assert offline.pauses_self_pump is True
-        assert offline.presence_sensitive is False
-        assert {loop for loop, value in offline.entries.items() if value} == set(LOAD_BEARING_LOOPS)
-
-    def test_destructive_loops_inherit_in_engaged(self) -> None:
-        seed_default_presets_and_schedules()
-        entries = Mode.objects.get(name="engaged").entries
+        entries = Mode.objects.get(name="present").entries
         for name in ("issue_implementer", "backlog_sweep", "outer_loop", "directive_loop"):
             assert name not in entries
 
@@ -118,9 +125,9 @@ class TestSeedDefaultPresets(django.test.TestCase):
         standard = ModeSchedule.objects.get(name="standard")
         slots = {(tuple(sorted(slot.weekdays)), slot.start_time, slot.preset_name) for slot in standard.slots.all()}
         assert slots == {
-            ((0, 1, 2, 3, 4), dt.time(9, 0), "engaged"),
-            ((0, 1, 2, 3, 4), dt.time(16, 0), "unattended"),
-            ((5, 6), dt.time(0, 0), "unattended"),
+            ((0, 1, 2, 3, 4), dt.time(9, 0), "present"),
+            ((0, 1, 2, 3, 4), dt.time(16, 0), "away"),
+            ((5, 6), dt.time(0, 0), "away"),
         }
 
     def test_standard_schedule_uses_the_vienna_timezone(self) -> None:
@@ -147,9 +154,9 @@ class TestSeedDefaultPresets(django.test.TestCase):
 
     def test_reseed_never_clobbers_an_operator_switched_active_schedule(self) -> None:
         seed_default_presets_and_schedules()
-        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "always-unattended")
+        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "always-away")
         seed_default_presets_and_schedules()
-        assert ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING) == "always-unattended"
+        assert ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING) == "always-away"
 
     def test_seed_never_clobbers_an_edited_preset(self) -> None:
         seed_default_presets_and_schedules()
@@ -170,10 +177,9 @@ class TestSeedDefaultPresets(django.test.TestCase):
 class TestSeededStandardScheduleResolvesViennaHours(django.test.TestCase):
     """The seeded ``standard`` calendar resolves the owner's Europe/Vienna working hours.
 
-    Attended (``engaged``) Mon-Fri 09:00-16:00; every other hour is ``unattended``.
-    Slots are wall-clock in Europe/Vienna, so the same Sat 12:00 resolves ``unattended``
-    across the DST boundary (summer CEST UTC+2 and winter CET UTC+1) with no hardcoded
-    offset.
+    Attended (``present``) Mon-Fri 09:00-16:00; every other hour is ``away``. Slots are
+    wall-clock in Europe/Vienna, so the same Sat 12:00 resolves ``away`` across the DST
+    boundary (summer CEST UTC+2 and winter CET UTC+1) with no hardcoded offset.
     """
 
     def setUp(self) -> None:
@@ -185,23 +191,23 @@ class TestSeededStandardScheduleResolvesViennaHours(django.test.TestCase):
         active = resolve_active_preset(now=moment)
         return active.preset.name if active is not None else None
 
-    def test_weekday_working_hours_resolve_engaged(self) -> None:
+    def test_weekday_working_hours_resolve_present(self) -> None:
         # 2026-07-14 is a Tuesday (summer, CEST UTC+2).
-        assert self._active_at(dt.datetime(2026, 7, 14, 10, 0, tzinfo=_VIENNA)) == "engaged"
+        assert self._active_at(dt.datetime(2026, 7, 14, 10, 0, tzinfo=_VIENNA)) == "present"
 
-    def test_weekday_evening_resolves_unattended(self) -> None:
-        assert self._active_at(dt.datetime(2026, 7, 14, 22, 0, tzinfo=_VIENNA)) == "unattended"
+    def test_weekday_evening_resolves_away(self) -> None:
+        assert self._active_at(dt.datetime(2026, 7, 14, 22, 0, tzinfo=_VIENNA)) == "away"
 
-    def test_weekday_early_morning_resolves_unattended(self) -> None:
-        assert self._active_at(dt.datetime(2026, 7, 14, 7, 0, tzinfo=_VIENNA)) == "unattended"
+    def test_weekday_early_morning_resolves_away(self) -> None:
+        assert self._active_at(dt.datetime(2026, 7, 14, 7, 0, tzinfo=_VIENNA)) == "away"
 
-    def test_summer_saturday_resolves_unattended(self) -> None:
+    def test_summer_saturday_resolves_away(self) -> None:
         # 2026-07-18 is a Saturday under CEST (UTC+2).
-        assert self._active_at(dt.datetime(2026, 7, 18, 12, 0, tzinfo=_VIENNA)) == "unattended"
+        assert self._active_at(dt.datetime(2026, 7, 18, 12, 0, tzinfo=_VIENNA)) == "away"
 
-    def test_winter_saturday_resolves_unattended_across_the_dst_boundary(self) -> None:
+    def test_winter_saturday_resolves_away_across_the_dst_boundary(self) -> None:
         # 2026-01-17 is a Saturday under CET (UTC+1) — the DST counterpart of the summer case.
-        assert self._active_at(dt.datetime(2026, 1, 17, 12, 0, tzinfo=_VIENNA)) == "unattended"
+        assert self._active_at(dt.datetime(2026, 1, 17, 12, 0, tzinfo=_VIENNA)) == "away"
 
     def test_management_command_reports_creates(self) -> None:
         Mode.objects.all().delete()
@@ -216,7 +222,7 @@ class TestSeededStandardScheduleResolvesViennaHours(django.test.TestCase):
 #: the pre-move in-code constants and pinned here so relocating the data into
 #: ``defaults.toml`` cannot retune a single loop.
 _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "engaged": (
+    "present": (
         frozenset(
             {
                 "inbox",
@@ -240,24 +246,7 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         ),
         frozenset(),
     ),
-    "heads-down": (
-        frozenset(
-            {
-                "inbox",
-                "dispatch",
-                "tickets",
-                "ship",
-                "dream",
-                "snapshot_warmer",
-                "housekeeping",
-                "idle_stack_reaper",
-                "local_stack_queue",
-                "resource_pressure",
-            }
-        ),
-        frozenset({"review", "followup", "audit", "news", "arch_review", "eval_local", "dogfood"}),
-    ),
-    "unattended": (
+    "away": (
         frozenset(
             {
                 "inbox",
@@ -283,6 +272,8 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
             {
                 "inbox",
                 "dispatch",
+                "ship",
+                "review",
                 "dream",
                 "eval_local",
                 "dogfood",
@@ -295,9 +286,9 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
                 "resource_pressure",
             }
         ),
-        frozenset({"tickets", "ship", "review", "followup", "audit", "issue_implementer"}),
+        frozenset({"tickets", "issue_implementer", "followup", "audit"}),
     ),
-    "low-power": (
+    "low-token": (
         frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
         frozenset(spec.name for spec in DEFAULT_LOOPS)
         - frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
@@ -306,26 +297,11 @@ _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset(LOAD_BEARING_LOOPS),
         frozenset(spec.name for spec in DEFAULT_LOOPS) - frozenset(LOAD_BEARING_LOOPS),
     ),
-    "offline": (
-        frozenset(LOAD_BEARING_LOOPS),
-        frozenset(spec.name for spec in DEFAULT_LOOPS) - frozenset(LOAD_BEARING_LOOPS),
-    ),
-}
-
-#: ``(defers_questions, pauses_self_pump, presence_sensitive)`` per mode.
-_SHIPPED_POSTURES: dict[str, tuple[bool, bool, bool]] = {
-    "engaged": (False, False, True),
-    "heads-down": (False, False, True),
-    "unattended": (True, False, True),
-    "maintenance": (True, False, True),
-    "low-power": (True, False, True),
-    "off": (False, False, True),
-    "offline": (True, True, False),
 }
 
 
 class TestShippedSpecsAreUnchangedByTheMoveIntoTheFile:
-    """The relocation into ``defaults.toml`` retunes nothing — every mask and posture holds."""
+    """The relocation into ``defaults.toml`` retunes nothing — every mask holds."""
 
     def test_every_mode_ships_its_recorded_mask(self) -> None:
         by_name = {spec.name: spec.entries for spec in default_preset_specs()}
@@ -335,25 +311,20 @@ class TestShippedSpecsAreUnchangedByTheMoveIntoTheFile:
             assert {loop for loop, value in entries.items() if value} == on, name
             assert {loop for loop, value in entries.items() if not value} == off, name
 
-    def test_every_mode_ships_its_recorded_boolean_posture(self) -> None:
-        for spec in default_preset_specs():
-            posture = (spec.defers_questions, spec.pauses_self_pump, spec.presence_sensitive)
-            assert posture == _SHIPPED_POSTURES[spec.name], spec.name
-
     def test_the_exhaustive_modes_name_every_shipped_loop(self) -> None:
-        # `low-power` / `off` / `offline` used to be built programmatically over every seed
-        # spec, so a new loop was covered automatically. As shipped DATA they must name each
-        # loop explicitly — an omitted one would silently INHERIT instead of being masked off.
+        # `low-token` / `off` used to be built programmatically over every seed spec, so a
+        # new loop was covered automatically. As shipped DATA they must name each loop
+        # explicitly — an omitted one would silently INHERIT instead of being masked off.
         shipped = {spec.name for spec in DEFAULT_LOOPS}
-        for name in ("low-power", "off", "offline"):
+        for name in ("low-token", "off"):
             entries = next(spec.entries for spec in default_preset_specs() if spec.name == name)
             assert set(entries) == shipped, name
 
-    def test_always_unattended_is_one_all_week_slot(self) -> None:
-        holiday = next(spec for spec in default_schedule_specs() if spec.name == "always-unattended")
+    def test_always_away_is_one_all_week_slot(self) -> None:
+        holiday = next(spec for spec in default_schedule_specs() if spec.name == "always-away")
         assert holiday.timezone == ""
         assert [(slot.days, slot.start_time, slot.preset_name) for slot in holiday.slots] == [
-            ([0, 1, 2, 3, 4, 5, 6], dt.time(0, 0), "unattended")
+            ([0, 1, 2, 3, 4, 5, 6], dt.time(0, 0), "away")
         ]
 
 
@@ -362,8 +333,8 @@ class TestNoShippedModeFillsWhatItCannotDrain:
 
     ``maintenance`` masked ``tickets`` / ``ship`` off but named no opinion on
     ``issue_implementer``, so it inherited ``Loop.enabled`` and kept claiming issues
-    overnight that nothing could merge — while its own description says "no
-    ticket/colleague/delivery work". ``off`` / ``offline`` / ``low-power`` all name it.
+    overnight that nothing could merge. It now names both, and ``off`` / ``low-token``
+    name every loop.
     """
 
     def test_no_shipped_mode_masks_delivery_while_admitting_intake(self) -> None:
@@ -390,9 +361,6 @@ class TestSpecsAreShippedDataNotCode:
         fixture.write_text(
             "[modes.sentinel]\n"
             'description = "a synthetic mode"\n'
-            "defers_questions = true\n"
-            "pauses_self_pump = true\n"
-            "presence_sensitive = false\n"
             "[modes.sentinel.entries]\n"
             "inbox = true\n"
             "dispatch = false\n",
@@ -400,12 +368,7 @@ class TestSpecsAreShippedDataNotCode:
         )
         (spec,) = default_preset_specs(fixture)
         assert spec == PresetSpec(
-            name="sentinel",
-            description="a synthetic mode",
-            entries={"inbox": True, "dispatch": False},
-            defers_questions=True,
-            pauses_self_pump=True,
-            presence_sensitive=False,
+            name="sentinel", description="a synthetic mode", entries={"inbox": True, "dispatch": False}
         )
 
     def test_schedule_specs_are_loaded_from_the_file_they_are_pointed_at(self, tmp_path: Path) -> None:
@@ -417,14 +380,14 @@ class TestSpecsAreShippedDataNotCode:
             "[[schedules.sentinel.slots]]\n"
             "days = [2, 3]\n"
             "start_time = 07:15:00\n"
-            'preset_name = "engaged"\n',
+            'preset_name = "present"\n',
             encoding="utf-8",
         )
         (spec,) = default_schedule_specs(fixture)
         assert spec == ScheduleSpec(
             name="sentinel",
             description="a synthetic calendar",
-            slots=(SlotSpec(days=[2, 3], start_time=dt.time(7, 15), preset_name="engaged"),),
+            slots=(SlotSpec(days=[2, 3], start_time=dt.time(7, 15), preset_name="present"),),
             timezone="UTC",
         )
 
@@ -435,8 +398,7 @@ class TestSpecsAreShippedDataNotCode:
         )
         (mode,) = default_preset_specs(fixture)
         (schedule,) = default_schedule_specs(fixture)
-        assert (mode.entries, mode.defers_questions) == ({}, False)
-        assert (mode.pauses_self_pump, mode.presence_sensitive) == (False, True)
+        assert mode.entries == {}
         assert (schedule.slots, schedule.timezone) == ((), "")
 
     def test_every_shipped_mode_and_schedule_name_matches_the_file(self) -> None:
@@ -462,7 +424,7 @@ class TestNoShippedModeConsumesWhatItCannotReclaim:
 
         assert offenders == {}, offenders
 
-    def test_only_the_low_power_mode_may_quiet_the_load_bearing_tier(self) -> None:
+    def test_only_the_low_token_mode_may_quiet_the_load_bearing_tier(self) -> None:
         offenders = {
             spec.name: quieted_load_bearing(spec.entries)
             for spec in default_preset_specs()
@@ -471,9 +433,39 @@ class TestNoShippedModeConsumesWhatItCannotReclaim:
 
         assert offenders == {}, offenders
 
-    def test_the_halt_modes_force_the_tier_on_rather_than_leaning_on_the_column(self) -> None:
+    def test_the_halt_mode_forces_the_tier_on_rather_than_leaning_on_the_column(self) -> None:
         """``off`` must ADMIT the tier, not merely decline to mask it — the column may be off."""
         specs = {spec.name: spec for spec in default_preset_specs()}
 
-        for name in ("off", "offline"):
-            assert all(specs[name].entries.get(loop) is True for loop in LOAD_BEARING_LOOPS), name
+        assert all(specs["off"].entries.get(loop) is True for loop in LOAD_BEARING_LOOPS)
+
+
+class TestTheCollapseMigrationsReplacementTextMatchesWhatShips:
+    """The collapse's REPLACEMENT text is what a refreshed row ends up carrying.
+
+    ``0071`` rewrites a description only while the row still holds the SHIPPED text, so
+    drift between its replacement and ``defaults.toml`` leaves a live box's wording
+    permanently behind the shipped table with nothing failing — the two files had no
+    link at all until this test.
+    """
+
+    @staticmethod
+    def _collapse():
+        return import_module("teatree.core.migrations.0071_collapse_modes_to_five_presets")
+
+    def test_every_replacement_description_equals_the_shipped_mode_description(self) -> None:
+        shipped = {name: entry["description"] for name, entry in shipped_seed_table("modes").items()}
+
+        drift = {
+            name: (replacement, shipped.get(name))
+            for name, (_, replacement) in self._collapse()._DESCRIPTIONS.items()
+            if shipped.get(name) != replacement
+        }
+
+        assert drift == {}, drift
+
+    def test_the_replacement_schedule_description_equals_the_shipped_one(self) -> None:
+        _, replacement = self._collapse()._SCHEDULE_DESCRIPTIONS
+        _, new_name = self._collapse()._SCHEDULE_RENAME
+
+        assert shipped_seed_table("schedules")[new_name]["description"] == replacement

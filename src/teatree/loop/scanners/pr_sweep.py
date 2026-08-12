@@ -110,7 +110,7 @@ class PrSweepScanner:
     in via ``mode = "auto"`` + ``require_human_approval_to_merge = false``.
     On such an overlay the maker / reviewer is the same human identity, and
     :meth:`MergeClear.issue` mechanically refuses a self-attested CLEAR
-    (``is_non_reviewer_role`` guard) — no orchestrator can ever issue a
+    (``is_independent_reviewer_identity`` guard) — no orchestrator can ever issue a
     CLEAR for that PR. Without this bypass the sweep silently no-ops every
     green+mergeable+clean PR on the dogfood overlay with reason
     ``no_clear_for_head``, which is exactly the failure mode #1309
@@ -129,7 +129,7 @@ class PrSweepScanner:
     cold-review: a :class:`teatree.core.models.review_verdict.ReviewVerdict`
     that is ``merge_safe``, bound to the live head SHA, and whose reviewer
     is not the maker/coding-agent/loop (the ``ReviewVerdict.record`` factory
-    refuses a self-attested verdict via ``is_non_reviewer_role``). With no
+    refuses a self-attested verdict via ``is_independent_reviewer_identity``). With no
     such record the scanner does NOT auto-merge — it emits a flag-level
     signal (``decision=flag_no_review``) so a maker can never self-merge by
     being the only identity on the repo.

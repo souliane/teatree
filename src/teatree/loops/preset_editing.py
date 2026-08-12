@@ -23,7 +23,7 @@ written before this guard cannot be extended by an unrelated edit:
 - Admitting :data:`teatree.loops.mode_shape.BACKUP_LOOP` while every
     :data:`teatree.loops.mode_shape.DISK_RECLAIM_LOOPS` loop is quiet — the box then keeps
     writing backups with nothing left that can free the space. No preset is exempt from
-    this one, the low-power mode included, because keeping the reclaim pair up is exactly
+    this one, the low-token mode included, because keeping the reclaim pair up is exactly
     what that mode already does.
 
 Because both surfaces fold their edits here, neither can write either shape.
@@ -73,7 +73,7 @@ def refuse_quieted_load_bearing(preset_name: str, entries: Mapping[str, object])
     """Refuse a mask that quiets the load-bearing tier or keeps the backup writing unrelieved.
 
     The whole RESULTING mask is judged rather than the edit alone, so a row written before
-    this guard cannot be carried forward by an unrelated edit. The low-power escape exempts
+    this guard cannot be carried forward by an unrelated edit. The low-token escape exempts
     only the first shape — it never masks the reclaim pair off, so the second never applies
     to it anyway.
     """
@@ -146,7 +146,6 @@ def activate_preset(
     until: dt.datetime | None = None,
     hold: bool = False,
     reason: str = "",
-    user_id: str = "",
 ) -> None:
     """Activate *name* as the L3 manual override through the mode-override chokepoint.
 
@@ -155,12 +154,12 @@ def activate_preset(
     """
     require_preset(name)
     expiry = None if hold else (until or next_boundary())
-    set_mode_override(name, until=expiry, reason=reason, user_id=user_id)
+    set_mode_override(name, until=expiry, reason=reason)
 
 
-def clear_preset_override(*, user_id: str = "") -> bool:
+def clear_preset_override() -> bool:
     """Clear the manual override so the active schedule decides again."""
-    return clear_mode_override(user_id=user_id)
+    return clear_mode_override()
 
 
 __all__ = [

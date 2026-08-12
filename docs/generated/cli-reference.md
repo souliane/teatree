@@ -1832,14 +1832,13 @@ Usage: t3 eval coverage [OPTIONS]
  own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
  reason. A skill that is
  neither is a GAP. Deterministic and model-free — no ``claude -p`` invocation.
- Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
- Phase-B enforcement that exits non-zero on any gap.
+ A gap exits non-zero, the same verdict the ``skill-coverage`` lane under bare
+ ``t3 eval`` and the ``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate
+ return for the same corpus — one predicate, one verdict, on every surface.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format             TEXT  Report format: text or json. [default: text]      │
-│ --fail-on-gap              Exit non-zero on any coverage gap (Phase B        │
-│                            enforcement); default is warn-first (exit 0).     │
-│ --help                     Show this message and exit.                       │
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
