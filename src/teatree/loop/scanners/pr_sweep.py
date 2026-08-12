@@ -409,10 +409,7 @@ class PrSweepScanner:
         review and never merges. Every other case (colleague author, behind
         main, red/pending CI) falls through to the existing skip.
 
-        Unreachable under ``solo_overlay=True`` by design (#4250) — that branch
-        takes :meth:`_evaluate_solo_overlay`, whose ``no_independent_review``
-        flag is the solo counterpart of this DM. Do not read a quiet
-        :class:`MergeableNotified` ledger as solo coverage.
+        Unreachable under ``solo_overlay=True``; a quiet :class:`MergeableNotified` row is not solo coverage (#4250).
         """
         ci_skip, _fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:

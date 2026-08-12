@@ -25,6 +25,7 @@ Questions and manual items carry no overlay and are always included.
 import enum
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from django.db.models import Q
 from django.utils import timezone
@@ -34,6 +35,9 @@ from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment
 from teatree.core.models.waiting_item import WaitingItem
+
+if TYPE_CHECKING:
+    from teatree.core.factory.merge_backlog import SupersedeContext
 
 _QUESTION_REF_LEN = 60
 _MINUTES_PER_HOUR = 60
@@ -114,10 +118,10 @@ def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEnt
     # ticket-less CLEAR's siblings are seen regardless of overlay (#21).
     from teatree.core.factory.merge_backlog import superseding_context  # noqa: PLC0415 — deferred intra-core
 
-    latest_issued, merged_keys = superseding_context("")
+    context = superseding_context("")
     entries: list[WaitingEntry] = []
     for pr in prs:
-        if _has_covering_clear(pr, latest_issued, merged_keys):
+        if _has_covering_clear(pr, context):
             continue
         waited_from = pr.review_requested_at or pr.create_verified_at or now
         entries.append(
@@ -131,11 +135,7 @@ def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEnt
     return entries
 
 
-def _has_covering_clear(
-    pr: PullRequest,
-    latest_issued: dict[tuple[str, int], datetime],
-    merged_keys: set[tuple[str, int]],
-) -> bool:
+def _has_covering_clear(pr: PullRequest, context: "SupersedeContext") -> bool:
     """True iff an unconsumed, actionable, non-superseded, repo-matching CLEAR authorises *pr*.
 
     Matches coverage the way the merge gate does (#21): a ticket-less
@@ -161,7 +161,7 @@ def _has_covering_clear(
         .select_related("ticket")
     )
     for clear in clears:
-        if not clear.is_actionable() or clear_is_superseded(clear, latest_issued, merged_keys):
+        if not clear.is_actionable() or clear_is_superseded(clear, context):
             continue
         if pr_repo and normalize_repo_slug(resolved_repo_slug(clear)) == pr_repo:
             return True

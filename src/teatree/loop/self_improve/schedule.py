@@ -42,7 +42,15 @@ UNBUILT_TIERS: tuple[str, ...] = (Tier.MEDIUM, Tier.EXPENSIVE)
 
 
 def _cheap_detectors() -> list[SelfImproveDetector]:
-    return [DispatchGapDetector(), ForgottenMergeDetector(), StaleStatuslineEntryDetector()]
+    # The forge reader is injected here rather than defaulted inside the detector:
+    # its fail-safe default reports nothing, so this is the one place that arms it.
+    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: loaded at tick time
+
+    return [
+        DispatchGapDetector(),
+        ForgottenMergeDetector(read_state=pr_open_state),
+        StaleStatuslineEntryDetector(),
+    ]
 
 
 def _refusal_message(tier: str) -> str:
