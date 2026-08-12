@@ -24,6 +24,7 @@ transfer-before-prune rail (the DB-backed default resolver) has its own
 
 import hashlib
 import os
+import re
 import tempfile
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -676,6 +677,87 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert user.name not in archived
         assert binding.name not in archived
         assert hub.name not in archived
+
+    def _projected_header_lines(self) -> int:
+        return len(reindex.render_index_lines([], reindex.read_priority_preamble(self.dir)).splitlines())
+
+    def test_budget_drain_leaves_headroom_below_the_line_ceiling(self) -> None:
+        # #4385: the tier drained to the CEILING and stopped there, so the index came back
+        # sitting exactly on 200 lines with zero headroom and the very next memory written
+        # truncated the tail — and stayed truncated until the next nightly pass. The drain
+        # must land on a target strictly BELOW the gate-(d) budget so a day of writes fits.
+        #
+        # RED before the fix: the walk breaks at `not over_budget(...)`, satisfied the
+        # instant the projection hits exactly INDEX_LINE_BUDGET -> 200 <= 140 is False.
+        self._seed_short_named(306)  # the #4057 shape: line pressure, byte headroom
+        self._seed_index()
+        assert gates.INDEX_LINE_DRAIN_TARGET < gates.INDEX_LINE_BUDGET  # AV-5: a target, not the ceiling
+
+        result = self._decay(budget_tier=True)
+
+        after = reindex.render_index(self.dir)
+        assert len(after.splitlines()) <= gates.INDEX_LINE_DRAIN_TARGET  # headroom, not the ceiling
+        assert len(after.encode("utf-8")) <= gates.INDEX_BYTE_DRAIN_TARGET
+        # AV-1: the tier still archives, and archives EXACTLY the count the target implies —
+        # a "fix" that raises the target to a no-op breaches the bound above, one that empties
+        # the corpus breaches this equality. Both directions pinned.
+        expected_survivors = gates.INDEX_LINE_DRAIN_TARGET - self._projected_header_lines()
+        assert result.archived_count == 306 - expected_survivors
+        assert len([line for line in after.splitlines() if line.startswith("- ")]) == expected_survivors
+
+    def _seed_settled_and_standing(self, *, settled: int, standing: int) -> tuple[list[str], list[str]]:
+        """Seed the measured live inversion: a citing CLIQUE of settled per-ticket records + uncited standing rules.
+
+        Every file is EQUALLY fresh (inside the retention window) so freshness cannot be the
+        discriminator. Each settled record carries the ``Related:`` block phase 4 writes,
+        citing 30 siblings — the cross-link phase has no fan-out cap, so the near-identical
+        per-ticket prose becomes a mutually-citing clique and every member collects +40 x 30
+        of inbound-link signal. The standing rules are cited by nobody. Two
+        ``ticket-plan-*`` decoys are standing rules whose names START with ``ticket-`` but
+        carry no ticket NUMBER; they must survive, which is what forces the settled-record
+        predicate to require digits rather than matching the bare prefix.
+        """
+        settled_names = [f"ticket-{4000 + i}-reviewed-merge-safe" for i in range(settled)]
+        for i, name in enumerate(settled_names):
+            related = " ".join(f"[[{settled_names[(i + k) % settled]}]]" for k in range(1, 31))
+            self._write(
+                name, f"the resolved verdict for this ticket\n\nRelated: {related}", age_days=5, mtype="project"
+            )
+        standing_names = [f"standing-rule-{i:03d}-the-durable-operational-lesson" for i in range(standing)]
+        standing_names += ["ticket-plan-precedes-implementation", "ticket-plans-are-not-re-derived-by-the-maker"]
+        for name in standing_names:
+            self._write(name, f"the durable standing rule {name} nothing else cites", age_days=5)
+        self._seed_index()
+        return settled_names, standing_names
+
+    def test_settled_ticket_records_are_archived_before_standing_rules(self) -> None:
+        # #4385: the +40-per-inbound-link signal INVERTS the ranking on the real corpus. The
+        # settled per-ticket records cite each other in a clique (~1200 link points each)
+        # while a durable standing rule nobody cites sits ~1200 below — so the lowest-first
+        # walk archived the standing rules and left the settled history hot. Settled records
+        # must be archived FIRST, ordered among themselves by signal.
+        #
+        # RED before the fix: the archive set is the standing rules, not the ticket records.
+        settled_names, standing_names = self._seed_settled_and_standing(settled=200, standing=30)
+        result = self._decay(budget_tier=True)
+
+        archived = self._archived_sources(result)
+        assert archived, "the tier must fire"
+        assert all(re.match(r"^ticket-\d+[-.]", name) for name in archived), sorted(archived)[:5]
+        # AV-2: the positive control — only satisfiable by cutting into the settled records.
+        # Force is_settled_ticket_record to True and the standing rules come back into the
+        # cut; force it to False and the live inversion re-reproduces. Teeth both ways.
+        for name in standing_names:
+            assert f"{name}.md" not in archived
+            assert (self.dir / f"{name}.md").exists()
+        assert len(archived) < len(settled_names), "only the excess is archived, not the whole settled tier"
+        # AV-4: nothing is stranded in NEITHER index — the body is restorable from archive/
+        # and the signature is recall-able from the cold MEMORY_ARCHIVE.md, which is the only
+        # automatic path a memory dropped from the hot index has left.
+        cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8").splitlines()
+        for name in archived:
+            assert (self.dir / "archive" / name).is_file()
+            assert any(line.startswith(f"- {name} — ") for line in cold), name
 
 
 class BudgetProjectionWithAPreambleTestCase(SimpleTestCase):
