@@ -1512,11 +1512,18 @@ while keeping a payload only ever reds loudly:
 | a standalone quoted operand of 4+ words | elided as prose (`'I have not marked the task complete'`) |
 | a shorter standalone quoted operand | kept, quotes removed as the shell removes them — `t3 widget 'ticket clear' 42` is an act, not a report |
 | `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
-| the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload |
-| `<<'EOF'` heredoc body (quoted delimiter) | elided, **unless** its line runs an interpreter (`bash <<'EOF'`, `cat <<'EOF' \| bash`) — a quoted delimiter suppresses expansion, not execution |
+| the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
-| `<<<'…'` here-string operand | kept whole when its line runs an interpreter (`bash <<<'…'`) — a script on stdin, exactly like a quoted-delimiter heredoc body; otherwise falls to the same attached/standalone rule as any other quoted region. The operator is consumed whole either way, so the following command line is scanned rather than swallowed as a heredoc body |
+| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is the command SEGMENT, not the physical line, so a `\`+newline continuation does not hide the command word; the whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
+
+The redirection rule is stated as a READER proof, not an interpreter list, because the
+complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l; do eval
+"$l"; done` all execute the redirected text while naming no interpreter. Widen
+`_STDIN_READERS` only by name, with the case that forced it. It still leaves a residue
+`origin/main` also drops, so merging costs no teeth: a payload reaching an interpreter
+through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
+class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
 `ticket clear` are things that must not HAPPEN, and a model that escalates

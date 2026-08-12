@@ -1,6 +1,9 @@
 """The executed span of a shell command — what the shell runs, payloads elided."""
 
+import os
+import pathlib
 import re
+import subprocess
 
 import pytest
 
@@ -363,6 +366,148 @@ class TestBackslashEscapes:
 
     def test_an_escaped_dollar_is_not_a_substitution(self) -> None:
         assert executed_span('echo "a \\$(not a substitution) long payload here"') == "echo "
+
+
+ACT = "t3 widget task complete 42"
+
+#: Spellings a real bash resolves to a program that EXECUTES the redirected text. Each
+#: survives at least one of line splicing, quote/escape removal, expansion or globbing
+#: that a raw string compare against an interpreter allowlist cannot see — and the last
+#: three execute it while naming no interpreter at all, which is why the decision is
+#: stated as a reader proof rather than an interpreter list.
+EXECUTES = [
+    ("continuation", f"bash \\\n<<<'{ACT}'"),
+    ("single-quoted-name", f"'bash' <<<'{ACT}'"),
+    ("double-quoted-name", f"\"bash\" <<<'{ACT}'"),
+    ("part-quoted-name", f"ba'sh' <<<'{ACT}'"),
+    ("part-double-quoted-name", f"b\"as\"h <<<'{ACT}'"),
+    ("escaped-name", f"\\bash <<<'{ACT}'"),
+    ("inner-escaped-name", f"ba\\sh <<<'{ACT}'"),
+    ("env-var-name", f"$SHELL <<<'{ACT}'"),
+    ("braced-env-var-name", f"${{SHELL}} <<<'{ACT}'"),
+    ("substituted-name", f"$(command -v bash) <<<'{ACT}'"),
+    ("backtick-name", f"`command -v bash` <<<'{ACT}'"),
+    ("globbed-name", f"/bin/b?sh <<<'{ACT}'"),
+    ("bracket-globbed-name", f"/bin/[b]ash <<<'{ACT}'"),
+    ("assignment-prefix", f"SPAN_UNUSED=1 bash <<<'{ACT}'"),
+    ("group", f"{{ bash <<<'{ACT}'; }}"),
+    ("subshell", f"( bash <<<'{ACT}' )"),
+    ("compound-if", f"if true; then bash <<<'{ACT}'; fi"),
+    ("pipeline-tail", f"true | bash <<<'{ACT}'"),
+    ("adjacent-quoted-operand", "bash <<<'t3 widget task '\"complete 42\""),
+    ("operand-after-continuation", f"bash <<< \\\n'{ACT}'"),
+    ("heredoc-piped-to-interpreter", f"cat <<'EOF' | bash\n{ACT}\nEOF\n"),
+    ("dot-dev-stdin", f". /dev/stdin <<<'{ACT}'"),
+    ("source-dev-stdin", f"source /dev/stdin <<<'{ACT}'"),
+    ("read-eval-loop", f"while read -r l; do eval \"$l\"; done <<<'{ACT}'"),
+    ("script-operand-after-continuation", f"bash -c \\\n'{ACT}'"),
+    ("quoted-script-flag", f"bash \"-c\" '{ACT}'"),
+    ("quoted-eval", f"'eval' '{ACT}'"),
+    ("escaped-eval", f"\\eval '{ACT}'"),
+    ("expanded-script-flag", f"x=-c; bash $x '{ACT}'"),
+]
+
+#: The negative controls. A real bash hands the redirected text to a program that only
+#: READS it, so it stays a payload — the fix must not buy its teeth by keeping everything.
+READS_ONLY = [
+    ("cat", f"cat <<<'{ACT}'"),
+    ("grep", f"grep -q x <<<'{ACT}'"),
+    ("wc", f"wc -l <<<'{ACT}'"),
+    ("tee", f"tee /dev/null <<<'{ACT}'"),
+    ("sort", f"sort <<<'{ACT}'"),
+    ("heredoc-to-reader", f"cat <<'EOF' | grep -q x\n{ACT}\nEOF\n"),
+    ("reader-with-adjacent-operand", "cat <<<'t3 widget task '\"complete 42\""),
+    ("reader-in-subshell", f"( cat <<<'{ACT}' )"),
+    ("reader-after-continuation", f"cat \\\n<<<'{ACT}'"),
+]
+
+#: Payload spellings with no redirection at all — prose and option values a real bash
+#: never runs. They pin that the inversion is scoped to the redirection decision.
+NEVER_REDIRECTED = [
+    ("attached-option-payload", "t3 notify send -m'the task complete note goes here'"),
+    ("body-flag", "t3 notify send --body='I did not mark the task complete'"),
+    ("prose-operand", "t3 notify send 'I have not marked the task complete yet'"),
+]
+
+#: Shapes a real bash DOES execute that this view still elides. ``origin/main`` elides
+#: every one of them too, so merging costs no teeth — they are a separate class (a
+#: payload reaching an interpreter through a PIPE or a variable, not through a
+#: redirection), recorded here so the next pass finds them measured rather than assumed.
+EXECUTED_RESIDUE = [
+    ("echo-piped-to-interpreter", "bash", f"echo '{ACT}' | bash"),
+    ("printf-piped-to-interpreter", "bash", f"printf '%s' '{ACT}' | bash"),
+    ("variable-then-eval", "eval", f"x='{ACT}'; eval \"$x\""),
+]
+
+
+@pytest.fixture(scope="module")
+def stub_bin(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
+    """A directory holding a ``t3`` that records its argv, to shadow the real one on PATH."""
+    path = tmp_path_factory.mktemp("stub-bin")
+    stub = path / "t3"
+    stub.write_text('#!/bin/sh\nprintf \'t3 %s\\n\' "$*" >> "$SPAN_LOG"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    return path
+
+
+def _bash_runs_the_act(command: str, stub_bin: pathlib.Path, log: pathlib.Path) -> bool:
+    """Whether a real ``/bin/bash`` executes the act — the stub ``t3`` records that it did."""
+    log.write_text("", encoding="utf-8")
+    env = {
+        **os.environ,
+        "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}",
+        "SHELL": "/bin/bash",
+        "SPAN_LOG": str(log),
+    }
+    subprocess.run(
+        ["/bin/bash", "-c", command],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    return ACT in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not pathlib.Path("/bin/bash").exists(), reason="ground truth needs a real /bin/bash")
+class TestBashGroundTruth:
+    """Every verdict is measured against a real bash, never asserted from the grammar.
+
+    Asserting only that a FOLLOWING line survives leaves the operand itself unpinned —
+    which is how three earlier passes each closed one reported spelling and shipped the
+    sibling one character away.
+    """
+
+    @pytest.mark.parametrize(("name", "command"), EXECUTES, ids=[name for name, _ in EXECUTES])
+    def test_text_bash_executes_lands_in_the_span(
+        self, name: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        assert _bash_runs_the_act(command, stub_bin, tmp_path / "log"), f"{name}: bash no longer runs the act"
+        assert ACT in executed_span(command)
+
+    @pytest.mark.parametrize(("name", "command"), READS_ONLY, ids=[name for name, _ in READS_ONLY])
+    def test_text_only_read_as_data_stays_elided(
+        self, name: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        assert not _bash_runs_the_act(command, stub_bin, tmp_path / "log"), f"{name}: bash now runs the act"
+        assert "task complete" not in executed_span(command)
+
+    @pytest.mark.parametrize(("name", "command"), NEVER_REDIRECTED, ids=[name for name, _ in NEVER_REDIRECTED])
+    def test_an_unredirected_payload_is_untouched_by_the_reader_rule(
+        self, name: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        assert not _bash_runs_the_act(command, stub_bin, tmp_path / "log"), f"{name}: bash now runs the act"
+        assert "task complete" not in executed_span(command)
+
+    @pytest.mark.parametrize(
+        ("name", "program", "command"), EXECUTED_RESIDUE, ids=[name for name, _, _ in EXECUTED_RESIDUE]
+    )
+    def test_the_known_residue_still_executes_and_still_shows_its_program(
+        self, name: str, program: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        assert _bash_runs_the_act(command, stub_bin, tmp_path / "log"), f"{name}: bash no longer runs the act"
+        assert program in executed_span(command)
 
 
 class TestTeethAreKept:
