@@ -87,7 +87,7 @@ from hooks.scripts.direct_command_guard import (
 )
 from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa: F401 re-export for test access
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
-from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission, handle_dispatch_admission_on_task_create
+from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission
 from hooks.scripts.dispatch_ledger import handle_track_agents
 from hooks.scripts.dispatch_seat_release import handle_subagent_stop_release
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
@@ -183,6 +183,7 @@ from hooks.scripts.session_nudges import handle_todo_freshness_nudge
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
 from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
+from hooks.scripts.skill_path_probe import is_file_safe
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
 from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
@@ -194,7 +195,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from hooks.scripts.task_created_deny import emit_task_create_deny
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
@@ -1055,9 +1056,8 @@ def normalize_skill_name(name: str) -> str:
     return _canonical_skill_token(name, owned, namespace) or name
 
 
-# Per-call escape mirroring the ``[skip-skill-gate: <reason>]`` token of
-# the sibling TaskCreated gate and the ``[fg-ok: <reason>]`` precedent of
-# the orchestrator-boundary gate: ``[skill-load-ok: <non-empty-reason>]``
+# Per-call escape mirroring the ``[fg-ok: <reason>]`` precedent of the
+# orchestrator-boundary gate: ``[skill-load-ok: <non-empty-reason>]``
 # in the CURRENT tool call's command/args unblocks this single Bash/Edit/
 # Write, an empty reason rejects. A false skill-trigger can therefore
 # never wedge the loop — but a genuine intent match still hard-blocks
@@ -1072,9 +1072,9 @@ def _skill_load_ok_token(data: dict) -> str | None:
     Scans the current tool call's command/args — for ``Bash`` the
     ``command`` string, for ``Edit``/``Write`` the written text
     (``new_string`` / ``content``) and the ``file_path`` — within the
-    first 512 characters of each field (matching
-    :func:`_task_text_skip_token`) so a buried token in a long body does
-    not silently authorise the call. An empty reason returns None.
+    first 512 characters of each field (matching :data:`_FG_OK_RE`'s cap)
+    so a buried token in a long body does not silently authorise the
+    call. An empty reason returns None.
     """
     tool_input = data.get("tool_input", {})
     if not isinstance(tool_input, dict):
@@ -1162,6 +1162,17 @@ def _skill_loading_exempt(session_id: str) -> bool:
     return _state_file(session_id, "loop-pending").is_file()
 
 
+def _skill_loading_gate_enabled() -> bool:
+    """Whether the skill-loading gate is enabled (default True).
+
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; an explicit ``false`` is the one-line kill-switch (never
+    a code edit). See :func:`_teatree_bool_setting` for the shared bare-boolean
+    semantics.
+    """
+    return _teatree_bool_setting("skill_loading_gate_enabled", default=True)
+
+
 def handle_enforce_skill_loading(data: dict) -> bool:
     """Block Python/Django code work when *loadable* suggested skills aren't loaded.
 
@@ -1175,10 +1186,18 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     per-call ``[skill-load-ok: <reason>]`` token in the tool's command/
     args is an explicit escape (#1567) so a false trigger can never wedge
     the loop; a genuine intent match still hard-blocks every code-work call
-    lacking that token.
+    lacking that token. The ``skill_loading_gate_enabled`` kill-switch
+    (``t3 <overlay> gate skill-loading disable``) is the global off-ramp the
+    docs have always named for THIS gate (#4216).
     """
     session_id = data.get("session_id", "")
-    if not session_id or not _skill_gate_targets_code_work(data) or _skill_loading_exempt(session_id):
+    if (
+        not session_id
+        or not _skill_gate_targets_code_work(data)
+        or _skill_loading_exempt(session_id)
+        # Last, because it is the only clause that reads the config store.
+        or not _skill_loading_gate_enabled()
+    ):
         return False
 
     pending_lines = _read_lines(_state_file(session_id, "pending"))
@@ -1218,123 +1237,6 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         "If this is a false trigger, add `[skill-load-ok: <reason>]` to the command/args to proceed."
     )
     return _fail_open_or_deny(data, reason)
-
-
-# ── TaskCreated: enforce-skill-loading-on-task-create (#1488) ─────────
-#
-# ``ultracode`` (and any harness Workflow/Task fan-out) spawns sub-agents
-# through the Task/Workflow vehicle, which BYPASSES ``PreToolUse`` hooks
-# (a known regression from TodoWrite — see ``docs/claude-code-internals.md``
-# §9). The ``PreToolUse`` skill-loading gate above
-# (:func:`handle_enforce_skill_loading`, matcher ``Bash|Edit|Write``) is
-# therefore never consulted on the fan-out, so sub-agents skip
-# auto-loading the matching teatree lifecycle skill. That is the loophole
-# that let a bespoke review workflow run instead of ``/t3:review``.
-#
-# The teatree skill injection reaches the MAIN agent only. The fanned-out
-# sub-agent starts BLANK: it holds only its task prompt and lacks the
-# ``Skill`` tool, so what the PARENT session loaded does NOT transfer to it.
-# The gate is therefore satisfied by the DISPATCH PROMPT instructing the
-# sub-agent to load the skill — not by the parent's loaded set. The demand is
-# the parent's ``<session>.pending`` set (the explicit cwd/overlay-context
-# skills the UserPromptSubmit hook recorded); the demand computation +
-# never-lockout fail-open lives in the ``subagent_skill_gate`` sibling behind
-# ``unreferenced_demand_reason`` (over ``filter_unreferenced`` /
-# ``build_load_first_reason``); the router only calls that one entry point.
-#
-# The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
-# against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``
-# with ``task_id``/``task_subject``/``task_description``; a hook output of
-# ``{"continue": false, ...}`` sets ``preventContinuation``).
-#
-# It enforces SKILL-LOADING ONLY — it never inspects agent count, token
-# budget, ``run_in_background``, or any workflow-size field, so ultracode
-# keeps maximal fan-out room. The deny schema is the teammate-stop
-# envelope (``{"continue": false, "stopReason": ...}``), NOT the
-# ``PreToolUse`` ``hookSpecificOutput`` deny; ``main`` translates the
-# handler's ``True`` return into ``sys.exit(2)`` the same as the
-# ``PreToolUse`` gates.
-
-# ``[skip-skill-gate: <non-empty-reason>]`` anywhere in the subject/description
-# head unblocks the dispatch; an empty reason rejects.
-_SKIP_SKILL_GATE_RE = re.compile(r"\[skip-skill-gate:\s*(\S[^\]]*?)\s*\]")
-
-
-def _skill_loading_gate_enabled() -> bool:
-    """Whether the skill-loading-on-task-create gate is enabled (default True).
-
-    Fails OPEN to enabled on a missing/broken config so the gate keeps its
-    protective default; an explicit ``false`` is the one-line kill-switch
-    (never a code edit). See :func:`_teatree_bool_setting` for the shared
-    bare-boolean semantics.
-    """
-    return _teatree_bool_setting("skill_loading_gate_enabled", default=True)
-
-
-def _task_text_skip_token(text: str) -> str | None:
-    """Return the reason from a ``[skip-skill-gate: <reason>]`` token, else None.
-
-    Scans only the first 512 characters (matching
-    :func:`_agent_prompt_skip_token`) so a buried token in a long task body
-    does not silently authorise dispatch.
-    """
-    match = _SKIP_SKILL_GATE_RE.search(text[:512])
-    if not match:
-        return None
-    return match.group(1).strip() or None
-
-
-def emit_task_create_deny(reason: str) -> bool:
-    """Emit the ``TaskCreated`` deny envelope and return ``True``.
-
-    The harness blocks task creation when a hook emits ``continue: false``
-    (it sets ``preventContinuation``) — a DIFFERENT schema from the
-    ``PreToolUse`` ``hookSpecificOutput`` deny. ``main`` translates the
-    ``True`` return into ``sys.exit(2)``, the documented block signal for
-    the ``TaskCreated``/``TaskCompleted`` events.
-    """
-    json.dump({"continue": False, "stopReason": reason}, sys.stdout)
-    return True
-
-
-def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
-    """Demand the fanned-out task's DISPATCH PROMPT instruct skill-loading.
-
-    A sub-agent spawned via the Workflow/Task fan-out starts BLANK — it holds
-    only its task prompt and lacks the ``Skill`` tool, so what the PARENT
-    session loaded does NOT transfer to it. The gate is therefore satisfied by
-    the dispatch PROMPT referencing the skill (a ``/t3:<name>`` token, a
-    ``<name>/SKILL.md`` path, or a ``Skill tool`` / ``load the <name> skill``
-    instruction), NOT by the parent's loaded set.
-
-    The deny reason (un-derivable ROOTS + ``<session>.pending``, minus
-    resolvable-and-already-referenced) and its never-lockout fail-open are owned
-    by :func:`unreferenced_demand_reason`. Skill-loading ONLY: no agent-count /
-    budget / size field is read, so ultracode keeps maximal fan-out room. Fails
-    open on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, or a
-    missing session id.
-    """
-    session_id = data.get("session_id", "")
-    if not session_id or not _skill_loading_gate_enabled():
-        return False
-
-    subject = data.get("task_subject", "") or ""
-    description = data.get("task_description", "") or ""
-    prompt = f"{subject}\n{description}"
-    if _task_text_skip_token(prompt):
-        return False
-
-    search_dirs = _skill_search_dirs()
-    reason = unreferenced_demand_reason(
-        prompt=prompt,
-        pending=_read_lines(_state_file(session_id, "pending")),
-        search_dirs=search_dirs,
-        resolves=lambda s: _skill_resolves(s, search_dirs),
-    )
-    if not reason:
-        return False
-
-    return emit_task_create_deny(reason)
 
 
 def _resolve_worktree_state(toplevel: str) -> str | None:
@@ -2105,7 +2007,7 @@ def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
     shapes pass silently, because the fleet dispatches constantly and a
     false-deny on an ordinary brief is costlier here than a warn. The
     opt-out is an in-prompt ``[quote-ok: <reason>]`` token (reason
-    mandatory), mirroring the ``[skip-skill-gate: <reason>]`` convention —
+    mandatory), mirroring the ``[skill-load-ok: <reason>]`` convention —
     the publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env have no
     analogue inside a prompt body.
 
@@ -2188,57 +2090,57 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
     return False
 
 
-# ── TaskCreated: pre-dispatch quote-scanner gate (#171, fan-out arm) ─
+# ── TaskCreated: quote-scanner gate (#171, task-list arm) ─────────
 
 
 def _dispatch_quote_gate_on_task_create_enabled() -> bool:
-    """Whether the TaskCreated dispatch-quote gate is enabled (default OFF, opt-in).
+    """Whether the task-list quote gate is enabled (default OFF, opt-in).
 
     The PreToolUse dispatch-quote gate (:func:`handle_dispatch_prompt_quote_scanner`)
-    keys on ``Agent``/``Task``, but the harness Workflow/Task fan-out — where
-    dispatch prompts are actually created — BYPASSES ``PreToolUse``, so that
-    gate never fires on the real dispatch path. This ``TaskCreated`` counterpart
-    closes that bypass. It ships default-OFF because it is a #1640-class fan-out
-    gate whose live behavior is unvalidated: an unvalidated gate stays inert
-    (never wedges the loop) until the operator deliberately enables it with
-    ``[teatree] dispatch_quote_gate_on_task_create_enabled = true``.
+    keys on ``Agent``/``Task`` and is the ONLY interception point a sub-agent
+    dispatch has (#4216). The task-LIST tools are a different family: they bypass
+    ``PreToolUse`` entirely, so a quote pasted into a task-list ENTRY is reachable
+    only on ``TaskCreated`` — the concern this arm covers. It ships default-OFF
+    because its live enforcement behaviour is unvalidated: an unvalidated gate
+    stays inert (never wedges the loop) until the operator deliberately enables it
+    with ``[teatree] dispatch_quote_gate_on_task_create_enabled = true``.
 
     Fails CLOSED to disabled (missing config → False, broken → False) and returns
     True only on an explicit ``true``. This deliberately DIFFERS from
     :func:`_mcp_privacy_gate_enabled` (which fails OPEN to enabled): the Slack-MCP
-    arm is the same risk class as an already-live gate, whereas this fan-out
-    gate's enforcement semantics are not yet validated. See
+    arm is the same risk class as an already-live gate, whereas this one's
+    enforcement semantics are not yet validated. See
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
     return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False)
 
 
 def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
-    """Deny a fanned-out ``Task`` whose subject/description carries a HIGH verbatim quote.
+    """Deny a new ``Task`` whose subject/description carries a HIGH verbatim quote.
 
-    Closes the fan-out loophole in :func:`handle_dispatch_prompt_quote_scanner`:
-    the ``PreToolUse`` Agent/Task dispatch-quote gate is skipped on the
-    Workflow/Task fan-out path (only ``TaskCreated`` reaches it), so a verbatim
-    user-voice/PII fragment pasted into a fan-out brief as "context" would reach
-    the sub-agent and could later be echoed into a published output — defeating
-    the #1213 publish gate. This handler scans the ``task_subject`` +
-    ``task_description`` through the SAME ``quote_scanner.scan_text`` detector
-    (HIGH-severity deny only, mirroring the PreToolUse handler) before the
-    sub-agent is spawned.
+    The task-list arm of :func:`handle_dispatch_prompt_quote_scanner`: the
+    ``PreToolUse`` gate is skipped on the task-LIST tools (only ``TaskCreated``
+    reaches them), so a verbatim user-voice/PII fragment pasted into a task as
+    "context" would sit in the list and could later be echoed into a published
+    output — defeating the #1213 publish gate. This handler scans the
+    ``task_subject`` + ``task_description`` through the SAME
+    ``quote_scanner.scan_text`` detector (HIGH-severity deny only, mirroring the
+    PreToolUse handler) before the entry is created. It never sees a sub-agent
+    dispatch: that event has one producer, the ``TaskCreate`` tool (#4216).
 
     NEVER-LOCKOUT:
     this does NOT route through ``_fail_open_or_deny`` / ``_is_self_rescue``
     (those are PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
     command). The gate ships default-OFF (opt-in via ``[teatree]
-    dispatch_quote_gate_on_task_create_enabled = true``) — a #1640-class fan-out
-    gate whose live behavior is unvalidated stays inert by default. When enabled,
+    dispatch_quote_gate_on_task_create_enabled = true``) — a gate whose live
+    enforcement behaviour is unvalidated stays inert by default. When enabled,
     the off-ramps that keep the operator from being locked out are: the opt-in
     flag itself (unset/``false`` to disable), the ``[quote-ok: <reason>]`` token
     in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
     a missing ``session_id`` (fail-open), an unreadable config store
     (fail-disabled), and ``main``'s per-handler exception swallow. The master
     ``danger_gate_fail_open`` switch still protects the operator because rescue
-    commands run as ``Bash``, never as fanned-out ``Task``s.
+    commands run as ``Bash``, never as task-list entries.
     """
     session_id = data.get("session_id", "")
     if not session_id or not _dispatch_quote_gate_on_task_create_enabled():
@@ -2260,7 +2162,7 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
 
 
 def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
-    """TaskCreated dispatch-quote inner body — assumes ``teatree`` is importable.
+    """Task-list quote-scan inner body — assumes ``teatree`` is importable.
 
     Split out of :func:`handle_dispatch_prompt_quote_scanner_on_task_create` so
     the outer wrapper owns the ``sys.path`` bootstrap + fail-open handler
@@ -2275,7 +2177,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
 
     if quote_scanner.dispatch_quote_ok_reason(payload):
         quote_scanner.log_decision(
-            tool_name="TaskCreated:dispatch",
+            tool_name="TaskCreated:quote",
             decision="allow-override",
             result=quote_scanner.scan_text(payload),
             override=True,
@@ -2285,7 +2187,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
     result = quote_scanner.scan_text(payload)
     if result.has_high:
         quote_scanner.log_decision(
-            tool_name="TaskCreated:dispatch",
+            tool_name="TaskCreated:quote",
             decision="deny",
             result=result,
             override=False,
@@ -2293,7 +2195,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
         return emit_task_create_deny(quote_scanner.format_dispatch_block_message(result))
 
     quote_scanner.log_decision(
-        tool_name="TaskCreated:dispatch",
+        tool_name="TaskCreated:quote",
         decision="allow",
         result=result,
         override=False,
@@ -2475,7 +2377,7 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
 
 # ``[fg-ok: <non-empty-reason>]`` anywhere in the command is the per-call
 # opt-out for the rare case the loop owner truly needs heavy output inline,
-# mirroring the ``[skip-skill-gate: <reason>]`` token. An empty reason does not
+# mirroring the ``[skill-load-ok: <reason>]`` token. An empty reason does not
 # unblock.
 _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 
@@ -2545,10 +2447,10 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     (#1692) — the self-rescue allowlist and the master ``danger_gate_fail_open``
     switch.
 
-    (Distinct from the SEPARATE ``Task``/``Workflow`` fan-out vehicle, which
-    genuinely bypasses ``PreToolUse`` and fires ``TaskCreated`` — no
-    ``run_in_background`` in that schema, so this gate's foreground/background
-    signal exists only on the Agent-matcher path, not the TaskCreated one.)
+    (The ``Agent`` matcher is the ONLY interception point a sub-agent dispatch
+    has (#4216): the task-LIST tools are what bypass ``PreToolUse``, and
+    ``TaskCreated`` is THEIR event, not a second dispatch seam — its single
+    producer is the ``TaskCreate`` tool body.)
 
     Fails OPEN to enabled on a missing/broken config so the gate keeps its
     protective default; only an explicit bare ``false`` is the kill-switch. See
@@ -5518,11 +5420,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_agents,
         handle_resolve_answered_question,
     ],
-    "TaskCreated": [
-        handle_enforce_skill_loading_on_task_create,
-        handle_dispatch_prompt_quote_scanner_on_task_create,
-        handle_dispatch_admission_on_task_create,
-    ],
+    "TaskCreated": [handle_dispatch_prompt_quote_scanner_on_task_create],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],

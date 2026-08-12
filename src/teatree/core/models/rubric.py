@@ -12,7 +12,7 @@ self-critique.
 The record follows the durable, compaction-surviving pattern of
 :class:`teatree.core.models.review_verdict.ReviewVerdict` / ``MergeClear``: the DB
 row is the truth, and the guarded :meth:`RubricCriterion.record_grade` factory shares
-``MergeClear``'s validation primitives (``is_commit_sha``, ``is_non_reviewer_role``) so
+``MergeClear``'s validation primitives (``is_commit_sha``, ``is_independent_reviewer_identity``) so
 the rubric grade contract and the CLEAR/verdict contract cannot drift apart.
 
 Population (``ticket rubric-set``) accepts EXPLICIT criteria only — auto-derivation
@@ -28,7 +28,8 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha, is_non_reviewer_role
+from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
+from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 from teatree.core.models.ticket import Ticket
 from teatree.quality.falsifiable_criteria import falsifiability_violation
 
@@ -158,11 +159,11 @@ class Rubric(models.Model):
         failed = [c for c in criteria if c.status == RubricCriterion.Status.FAIL]
         if failed:
             return f"{len(failed)} of {len(criteria)} criteria are graded FAIL — every criterion must PASS"
-        maker_graded = [c for c in criteria if is_non_reviewer_role(c.grader_identity) or not c.grader_identity.strip()]
+        maker_graded = [c for c in criteria if not is_independent_reviewer_identity(c.grader_identity)]
         if maker_graded:
             return (
-                f"{len(maker_graded)} of {len(criteria)} criteria were graded by a maker/coding-agent/loop role or "
-                f"by no one — a rubric is graded by an INDEPENDENT verifier, never the maker"
+                f"{len(maker_graded)} of {len(criteria)} criteria were graded by an identity that is not a "
+                f"recognised independent verifier — a rubric is graded by an INDEPENDENT verifier, never the maker"
             )
         stale = [c for c in criteria if c.reviewed_sha != target]
         if stale:
@@ -182,7 +183,7 @@ class RubricCriterion(models.Model):
     which enforces (mirroring ``ReviewVerdict.record``): a full 40-char hex
     ``reviewed_sha`` (so the head-bind compare cannot silently fail), a non-empty
     ``grader_identity`` that is NOT a maker/coding-agent/loop role (the maker can
-    never self-attest a criterion — ``is_non_reviewer_role``), and a terminal
+    never self-attest a criterion — ``is_independent_reviewer_identity``), and a terminal
     ``pass``/``fail`` status. An ungraded criterion stays PENDING and fails the
     done-gate closed.
     """
@@ -217,7 +218,7 @@ class RubricCriterion(models.Model):
         Raises :class:`RubricError` with a precise reason on the first violation: a
         terminal ``pass``/``fail`` ``status`` (PENDING is not a grade); a non-empty
         ``grader_identity`` that is not a maker/coding-agent/loop role (the same
-        ``is_non_reviewer_role`` guard ``MergeClear.issue`` / ``ReviewVerdict.record``
+        ``is_independent_reviewer_identity`` guard ``MergeClear.issue`` / ``ReviewVerdict.record``
         use — the grader is an INDEPENDENT verifier); a full 40-char hex
         ``reviewed_sha`` (the same bind-to-the-exact-tree rule, so the done-gate's
         head-equality check cannot silently fail on a truncated SHA).
@@ -233,13 +234,8 @@ class RubricCriterion(models.Model):
         if not grader:
             msg = "grader_identity is required and must be non-empty"
             raise RubricError(msg)
-        if is_non_reviewer_role(grader):
-            msg = (
-                f"grader_identity {grader!r} is a maker/coding-agent/loop role — a rubric is graded by an "
-                f"INDEPENDENT verifier, never self-attested by the maker (§17.8 clause 3; mirrors "
-                f"ReviewVerdict.record / MergeClear.issue rejecting a non-reviewer author)"
-            )
-            raise RubricError(msg)
+        if not is_independent_reviewer_identity(grader):
+            raise RubricError(unrecognised_reviewer_message(grader, subject="a rubric criterion", verb="graded"))
 
         if not is_commit_sha(reviewed_sha):
             candidate = reviewed_sha.strip()
@@ -262,7 +258,7 @@ class RubricCriterion(models.Model):
         """True iff this criterion is a PASS by an independent grader bound to ``head_sha``.
 
         All four conditions are required: ``status == pass``; a non-empty
-        ``grader_identity`` that is not a maker/coding-agent/loop role; and the
+        ``grader_identity`` that positively identifies an independent verifier; and the
         recorded ``reviewed_sha`` equals ``head_sha`` (both lower-cased). Any other
         state — PENDING, FAIL, a maker grader, or a stale SHA — is False so the
         rubric fails the done-gate closed.
@@ -270,8 +266,5 @@ class RubricCriterion(models.Model):
         target = head_sha.strip().lower()
         grader = self.grader_identity.strip()
         return (
-            self.status == self.Status.PASS
-            and bool(grader)
-            and not is_non_reviewer_role(grader)
-            and self.reviewed_sha == target
+            self.status == self.Status.PASS and is_independent_reviewer_identity(grader) and self.reviewed_sha == target
         )

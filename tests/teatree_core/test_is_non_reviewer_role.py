@@ -15,7 +15,8 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
-from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
+from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest
+from teatree.core.models.reviewer_identity import is_non_reviewer_role
 from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 

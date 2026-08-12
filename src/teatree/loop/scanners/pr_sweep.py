@@ -19,7 +19,8 @@ Decision ladder per open PR:
     merge via the SHA-bound ``merge_pr_squash_bound`` (#1985) ONLY when a
     recorded independent cold-review (``merge_safe`` ``ReviewVerdict`` at the
     head, ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
-    #68)
+    #68). A CLEAR that EXISTS but cannot authorise the live head is named
+    (``clear_present_unusable``) and DM'd, never folded into that verdict (#4249)
 5. CI ``test(3.13)`` not green AND red checks include something
     other than ``uv-audit`` → skip, EXCEPT when the branch is BEHIND main:
     that red judged a base the branch has fallen behind, so the verdict is
@@ -54,9 +55,9 @@ from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners import pr_sweep_branch_update as branch_update
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
+from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
     classify_sweep_ci,
-    find_actionable_clear,
     has_independent_cold_review,
     own_or_same_repo,
     pr_ticket_under_external_delivery,
@@ -67,6 +68,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_types import (
+    CLEAR_PRESENT_UNUSABLE_REASON,
     GH_CONFLICT_MERGE_STATE,
     GH_CONFLICT_MERGEABLE,
     GREEN_TERMINAL_CONCLUSIONS,
@@ -79,6 +81,7 @@ from teatree.loop.scanners.pr_sweep_types import (
 from teatree.utils.pr_ref import PrRef
 
 __all__ = [
+    "CLEAR_PRESENT_UNUSABLE_REASON",
     "GH_CONFLICT_MERGEABLE",
     "GH_CONFLICT_MERGE_STATE",
     "GREEN_TERMINAL_CONCLUSIONS",
@@ -110,7 +113,7 @@ class PrSweepScanner:
     in via ``mode = "auto"`` + ``require_human_approval_to_merge = false``.
     On such an overlay the maker / reviewer is the same human identity, and
     :meth:`MergeClear.issue` mechanically refuses a self-attested CLEAR
-    (``is_non_reviewer_role`` guard) — no orchestrator can ever issue a
+    (``is_independent_reviewer_identity`` guard) — no orchestrator can ever issue a
     CLEAR for that PR. Without this bypass the sweep silently no-ops every
     green+mergeable+clean PR on the dogfood overlay with reason
     ``no_clear_for_head``, which is exactly the failure mode #1309
@@ -129,7 +132,7 @@ class PrSweepScanner:
     cold-review: a :class:`teatree.core.models.review_verdict.ReviewVerdict`
     that is ``merge_safe``, bound to the live head SHA, and whose reviewer
     is not the maker/coding-agent/loop (the ``ReviewVerdict.record`` factory
-    refuses a self-attested verdict via ``is_non_reviewer_role``). With no
+    refuses a self-attested verdict via ``is_independent_reviewer_identity``). With no
     such record the scanner does NOT auto-merge — it emits a flag-level
     signal (``decision=flag_no_review``) so a maker can never self-merge by
     being the only identity on the repo.
@@ -269,12 +272,15 @@ class PrSweepScanner:
         skip_reason = _precondition_skip_reason(pr)
         if skip_reason is not None:
             return _skip(pr, reason=skip_reason)
-        clear = find_actionable_clear(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
-        if clear is None:
+        lookup = look_up_clear_for_head(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        if lookup.clear is None:
+            unusable = lookup.unusable is not None
+            if unusable:
+                self._flag(slug=pr.slug, pr_id=pr.number, reason=CLEAR_PRESENT_UNUSABLE_REASON, url=pr.url)
             if self.solo_overlay:
-                return self._evaluate_solo_overlay(pr)
+                return self._evaluate_solo_overlay(pr, unusable_clear=unusable)
             return self._evaluate_no_clear_collaborative(pr)
-        return self._evaluate_with_clear(pr, clear)
+        return self._evaluate_with_clear(pr, lookup.clear)
 
     def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
         ci_skip, fallback, failing = self._ci_gate(pr)
@@ -323,7 +329,7 @@ class PrSweepScanner:
             main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug),
         )
 
-    def _evaluate_solo_overlay(self, pr: PrSummary) -> MergeAttempt:
+    def _evaluate_solo_overlay(self, pr: PrSummary, *, unusable_clear: bool = False) -> MergeAttempt:
         """Merge a green+clean+cold-reviewed PR on a solo overlay without a CLEAR (#1309).
 
         Runs the same CI verdict gate as the CLEAR path so a red or pending
@@ -349,13 +355,14 @@ class PrSweepScanner:
         :func:`~teatree.core.merge.authorization.substrate_standing_authorization`,
         so this path and the CLEAR path reach one policy decision for the same
         PR. The cold-review gate above is unaffected: substrate is a
-        blast-radius sign-off, never a quality gate.
+        blast-radius sign-off, never a quality gate. *unusable_clear* only re-labels
+        the no-review refusal (#4249) — a recorded cold review still merges.
         """
         ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
-            return self._flag_no_review(pr)
+            return self._flag_no_review(pr, unusable_clear=unusable_clear)
         if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
             pr=pr,
             overlay=self.overlay,
@@ -428,7 +435,7 @@ class PrSweepScanner:
         self._flag(slug=pr.slug, pr_id=pr.number, reason="conflict", url=pr.url)
         return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="flag_conflict", reason="conflict", url=pr.url)
 
-    def _flag_no_review(self, pr: PrSummary) -> MergeAttempt:
+    def _flag_no_review(self, pr: PrSummary, *, unusable_clear: bool = False) -> MergeAttempt:
         """Refuse a solo-overlay auto-merge with no recorded cold-review, then arm the review (#68).
 
         The maker≠checker boundary still forbids a self-merge — that part is
@@ -437,6 +444,11 @@ class PrSweepScanner:
         (deduped per head) whose recorded ``merge_safe`` verdict the NEXT sweep
         merges on. Draft / red-CI / conflict never reach here (the sweep skips
         them upstream), so an armed task only ever covers a green+clean own PR.
+
+        The reason names the CLEAR when an unusable one covers this PR (#4249):
+        ``solo_overlay_no_review`` is a definite verdict about review, and emitting it
+        for a PR whose CLEAR merely missed the live head pointed readers at the wrong
+        cause. The review is armed either way — a fresh verdict unblocks both.
         """
         self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
         dispatched = self._enqueue_review(pr)
@@ -444,7 +456,7 @@ class PrSweepScanner:
             slug=pr.slug,
             pr_id=pr.number,
             decision="flag_no_review",
-            reason="solo_overlay_no_review",
+            reason=CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review",
             url=pr.url,
             review_dispatched=dispatched,
         )

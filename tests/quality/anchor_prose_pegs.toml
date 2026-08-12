@@ -1,0 +1,73 @@
+# Content digests of the doc prose describing a named anchor -- the ledger (#4216).
+# Each table is one anchor. `radius` pins how many chars either side of an occurrence count
+# as describing it; changing it invalidates every digest in the table, deliberately and loudly.
+# Every other key is a repo-relative doc surface; the value is one digest per MERGED window,
+# in file order. An ADDED digest blocks (the failure prints the new window, so a human reads
+# the sentence rather than pattern-matching a hash); a DROPPED digest blocks (remove the peg).
+# Two disjoint PRs never collide: git unions independent file keys; same-file contention
+# surfaces as a textual conflict. Scope is a LIMIT, not coverage -- tracked files outside
+# tests/ only, and a digest proves a sentence UNCHANGED, never TRUE.
+
+[TaskCreated]
+# 400, not 300: at 300 the `ONE gate rides this event: handle_...` sentence in hooks/CLAUDE.md
+# sat 327 chars from its nearest anchor, so the load-bearing bullet's own handler name was
+# outside every window -- measured, not assumed.
+radius = 400
+# The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
+"BLUEPRINT.md" = ["b7bf92da3aa32c32"]
+# 1: the skill-loading kill-switch has no TaskCreated counterpart.
+# 2: the quote gate is opt-in, and its setting name predates the correction.
+"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "bd7e933c6fe7119c"]
+# ultracode's gate enforces skill-loading only and has no task-list arm.
+"docs/blueprint/factory-architecture.md" = ["273cc5934f99908a"]
+# 1: the harness's 27-event constant list.
+# 2: the task-event table, the optional fields, the ONE-producer fact, and that stopReason
+# sets preventContinuation the task-creation consumer never reads.
+# 3: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
+"docs/claude-code-internals.md" = ["9abffb84c4d06aef", "592e023064725ca1", "53f5b8c576a81b57"]
+# 1: the router's registered event list.
+# 2: do not conflate the sub-agent dispatch tool with the task-LIST tools.
+# 3: TaskCreated is the only non-PreToolUse deny path, with its own schema.
+# 4: the deny reason rides decision:block, and the event has ONE producer.
+# 5: the one surviving arm is the quote scanner; a handler must fail open in-handler.
+# 6: the admission governor is consulted on the PreToolUse dispatch; the second arm is retired.
+# 7: the escape-marker table rows for the quote and admission tokens.
+"hooks/CLAUDE.md" = [
+  "ee50c7da40c5b2a7",
+  "da70d24c3deb479f",
+  "358a6b9e1bd009e3",
+  "00ce882c37c6c8e7",
+  "f807cf99027303d9",
+  "53403ec58ab78f9b",
+  "dba38395e2483f7f"
+]
+# The TaskCreated event's own hooks.json wiring (no matcher).
+"hooks/hooks.json" = ["9e08240bd68c3563"]
+# There is exactly ONE dispatch interception point, and TaskCreated is not it.
+"hooks/scripts/dispatch_admission_gate.py" = ["a4846901d1d0b751"]
+# 1: the task-list quote gate's default-OFF resolver.
+# 2: the surviving handler's docstring and its never-lockout paragraph.
+# 3: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
+# 4: the Agent matcher is the ONLY interception point a dispatch has.
+# 5: the _HANDLERS registration -- one handler on the event.
+# 6: PreToolUse/TaskCreated denies are honoured only at exit 2.
+# 7: the same exit-code contract, stated at the emit site.
+"hooks/scripts/hook_router.py" = [
+  "0237b938b83d6d46",
+  "743caac207b453c5",
+  "4be8b0761b5fc68a",
+  "df0584b2e1507beb",
+  "31f41634023b3999",
+  "379359cbc3bdb8c3",
+  "bc70f9e3ebe9732c"
+]
+# The no-interpreter warning is suppressed on TaskCreated, whose stderr aborts the event.
+"hooks/scripts/run-hook.sh" = ["23aba44d6ec78e7e"]
+# 1: the deny surface exists because the consumer reads one field.
+# 2: decision:block is that field; the deny never writes stderr.
+# 3: the envelope TypedDict, the exit-code contract, and the fail-OPEN emitter.
+"hooks/scripts/task_created_deny.py" = ["9a8f7011ed5657ba", "dbfc220c35ae6007", "411476f07beba95e"]
+# TaskCreated fires on creation only, so it is not the read/write surface /checking needs.
+"skills/checking/SKILL.md" = ["876e9c70a73e280c"]
+# The transcript attachment schema listing hookEvent values.
+"src/teatree/eval/session_transcript.py" = ["707f3e9b837e7517"]

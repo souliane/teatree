@@ -63,6 +63,7 @@ from teatree.config.resolution import (
     get_effective_settings,
     worker_is_quiescing,
 )
+from teatree.config.reviewer_identities import effective_independent_reviewer_identities
 from teatree.config.setting_parsers import (
     _default_handover_mirror_path,
     _parse_disk_cache_allowlist,
@@ -139,6 +140,7 @@ __all__ = [
     "discover_active_overlay",
     "discover_overlays",
     "effective_default",
+    "effective_independent_reviewer_identities",
     "effective_trusted_issue_authors",
     "get_data_dir",
     "get_effective_settings",

@@ -16,7 +16,6 @@ Both rows are written through the same ``transaction.atomic()`` path that gets
 ``BEGIN IMMEDIATE`` write-serialization on the production SQLite engine (§4.3).
 """
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -25,25 +24,16 @@ from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.reviewer_identity import (
+    is_independent_reviewer_identity,
+    normalize_reviewer_identity,
+    unrecognised_reviewer_message,
+)
 from teatree.core.models.ticket import Ticket
 from teatree.utils.forge import FORGES, normalize_forge
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-# §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation
-# cannot be recorded by the maker/coding-agent/loop side — the author would be
-# rubber-stamping their own work. The CLEAR-issuer guard (this module) and the
-# `reviewing`-attestation guard (lifecycle command) share this single list so
-# they cannot drift apart. It lives on the model because the model owns the
-# CLEAR contract (§17.4.2); the command layer imports it from here.
-#
-# Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched as
-# leading prefixes. Bare role words ("maker", "coding", "loop") are matched
-# when they appear as a delimited component (split on "-", ":", "_"), so the
-# executor's canonical identity "merge-loop" is caught even though it does not
-# *start* with "loop".
-NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
 
 _SHA_ALPHABET = frozenset("0123456789abcdef")
 # A CLEAR binds to the exact reviewed tree (§17.4.2). An abbreviated SHA is
@@ -54,14 +44,13 @@ _SHA_ALPHABET = frozenset("0123456789abcdef")
 SHA_FULL_LEN = 40
 
 
-_COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
-
 # A diff is substrate — independent of the reviewer's ``blast_class`` label —
 # when it touches the merge keystone, the architecture spec, a governance doc,
 # or the factory's OWN self-governance seams. Those seams are: the merge/CLEAR
 # classifier and the cold-review record that DEFINE the trust boundary itself
-# (``merge_clear.py`` — this module — and ``review_verdict.py``, the maker≠checker
-# guard), every merge/safety gate (``core/gates/``), the trust classifier
+# (``merge_clear.py`` — this module — ``review_verdict.py`` and
+# ``reviewer_identity.py``, the maker≠checker guard and the predicate it rests
+# on), every merge/safety gate (``core/gates/``), the trust classifier
 # (``author_trust.py``), the intake/admission trust boundary — the ONE decision
 # function (``factory_admission.py``), the scanner that consumes it
 # (``issue_intake.py``), the PR-side stranger-admission gate
@@ -84,6 +73,7 @@ _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/merge/",
     "src/teatree/core/models/merge_clear.py",
     "src/teatree/core/models/review_verdict.py",
+    "src/teatree/core/models/reviewer_identity.py",
     "src/teatree/core/gates/",
     "src/teatree/core/migrations/",
     "src/teatree/core/review/author_trust.py",
@@ -107,7 +97,8 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth), the
     factory's self-governance seams (#3244) — the merge/CLEAR classifier and
     cold-review record that DEFINE the trust boundary (``merge_clear.py`` /
-    ``review_verdict.py``), every merge/safety gate (``core/gates/``), the trust
+    ``review_verdict.py`` / ``reviewer_identity.py``), every merge/safety gate
+    (``core/gates/``), the trust
     classifier (``author_trust.py``), the intake/admission trust boundary
     (``factory_admission.py`` / ``issue_intake.py`` / ``stranger_pr.py`` /
     ``scanner_factories.py``), the autonomy/trust config (``config/``), the
@@ -128,44 +119,6 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
         if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
             return True
     return False
-
-
-def is_non_reviewer_role(identity: str) -> bool:
-    """True iff ``identity`` is a maker/coding-agent/loop role (§17.8 clause 3).
-
-    Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched
-    as leading prefixes. Bare role words ("maker", "coding", "loop") are also
-    matched when they appear as any delimited component of the identity, so the
-    executor's canonical identity "merge-loop" is blocked even though it does
-    not start with "loop". Incidental substrings (e.g. "decoding") are not
-    matched because the split honours delimiters only.
-    """
-    lowered = identity.strip().lower()
-    if any(lowered == prefix or lowered.startswith(prefix) for prefix in NON_REVIEWER_AGENT_PREFIXES):
-        return True
-    parts = frozenset(re.split(r"[-:_]", lowered))
-    return bool(parts & _COMPONENT_ROLE_WORDS)
-
-
-def normalize_reviewer_identity(identity: str) -> str:
-    """The canonical, idempotency-keyed form of a free-text reviewer identity (F8).
-
-    The recorded ``reviewer_identity`` is free text — 187 distinct values on the
-    live box, with the SAME logical reviewer spelled many ways ("Codex", "codex ",
-    "codex"). That made "has this sha been reviewed by this identity?" unanswerable
-    by query and let the dispatcher re-review one sha 17 times. The normalized form
-    collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
-    runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
-    genuinely distinct identities stay distinct (no role-prefix stripping, which
-    would over-merge two real reviewers). It is the canonical key at every boundary:
-    the ``ReviewVerdict`` write, its uniqueness constraint, and the maker≠checker
-    comparison at CLEAR issuance and at merge time.
-
-    It sits beside :func:`is_non_reviewer_role` rather than next to ``ReviewVerdict``
-    because CLEAR issuance validates through it and ``review_verdict`` imports this
-    module — the reviewer-identity primitives are the shared lower layer.
-    """
-    return " ".join(identity.split()).casefold()
 
 
 def is_commit_sha(value: str) -> bool:
@@ -360,12 +313,8 @@ class MergeClear(models.Model):
                 f"cold reviewer, never self-issued by the loop that will execute it (§17.8 clause 3)"
             )
             raise ClearIssuanceError(msg)
-        if is_non_reviewer_role(reviewer):
-            msg = (
-                f"reviewer_identity {reviewer!r} is a maker/coding-agent/loop role — a CLEAR "
-                f"must be issued by an independent cold reviewer, not self-attested (§17.8 clause 3)"
-            )
-            raise ClearIssuanceError(msg)
+        if not is_independent_reviewer_identity(reviewer):
+            raise ClearIssuanceError(unrecognised_reviewer_message(reviewer, subject="a CLEAR", verb="issued"))
 
         if not is_commit_sha(request.reviewed_sha):
             candidate = request.reviewed_sha.strip()

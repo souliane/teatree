@@ -37,7 +37,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.live_post_approval import canonical_mr_scope
-from teatree.core.models.merge_clear import is_non_reviewer_role
+from teatree.core.models.reviewer_identity import is_non_reviewer_role
 
 
 def canonical_on_behalf_target(target: str) -> str:
