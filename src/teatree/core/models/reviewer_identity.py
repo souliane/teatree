@@ -1,9 +1,10 @@
 """Who counts as the INDEPENDENT checker — the maker≠checker identity primitives.
 
 ``ReviewVerdict`` / ``MergeClear`` / ``Rubric`` / ``CriticVerdict`` / ``ReviewEvidence``
-and the ``reviewing`` attestation all ask the same question of a free-text identity:
-is this an independent checker, or the maker attesting its own work (§17.8 clause 3)?
-They share this ONE answer so they cannot drift apart.
+and the waiver surfaces (``DbApproval`` / ``E2EBypassApproval`` / ``ReproWaiver`` /
+``OnBehalfApproval``) all ask the same question of a free-text identity: is this an
+independent checker, or the maker attesting its own work (§17.8 clause 3)? They share
+this ONE answer so they cannot drift apart.
 
 The answer is POSITIVE identification with a fail-CLOSED default (#4241). The previous
 denylist-only shape admitted every identity it did not enumerate, so a maker had only to
@@ -21,15 +22,11 @@ import re
 
 # §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation
 # cannot be recorded by the maker/coding-agent/loop side — the author would be
-# rubber-stamping their own work. The CLEAR-issuer guard (this module) and the
-# `reviewing`-attestation guard (lifecycle command) share this single list so
-# they cannot drift apart.
+# rubber-stamping their own work. Every guard that asks the question shares this
+# single list so they cannot drift apart.
 #
 # Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched as
-# leading prefixes. Bare role words ("maker", "coding", "loop") are matched
-# when they appear as a delimited component (split on "-", ":", "_"), so the
-# executor's canonical identity "merge-loop" is caught even though it does not
-# *start* with "loop".
+# leading prefixes; bare role words are matched anywhere by :data:`_MAKER_ROLE_WORDS`.
 NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
 
 # The independent checker is identified POSITIVELY, not by absence from the maker list
@@ -46,31 +43,38 @@ REVIEWER_ROLE_COMPONENTS = frozenset({"reviewer", "cold", "cr", "critic", "adjud
 
 _IDENTITY_DELIMITERS = re.compile(r"[^a-z0-9]+")
 
-# "reviewing" / "architectural" name the periodic holistic review pass, which since
-# #4230 implements its own findings and opens its own PR — a MAKER wearing a review
-# word. Naming them here refuses them positively, so a rename that bolts a reviewer
-# token on ("cold-architectural-review") does not buy admission either.
-_COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop", "reviewing", "architectural"})
+# A maker ROLE word names who the identity is, so it refuses unconditionally.
+_MAKER_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
+
+# A review PHASE word names what the identity is doing, and the periodic holistic pass
+# does it while implementing its own findings and opening its own PR (#4230) — a MAKER
+# wearing a review word. It refuses only when nothing else in the identity names a
+# reviewer, so "cold-reviewer-4152-reviewing" stays a reviewer while
+# "cold-architectural-review" does not: "cold" qualifies a reviewer, it never names one.
+_REVIEW_PHASE_WORDS = frozenset({"reviewing", "architectural"})
+_WEAK_REVIEWER_MODIFIERS = frozenset({"cold"})
 
 
 def is_non_reviewer_role(identity: str) -> bool:
     """True iff ``identity`` is a maker/coding-agent/loop/review-authoring role (§17.8 clause 3).
 
-    Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched
-    as leading prefixes. Bare role words (:data:`_COMPONENT_ROLE_WORDS`) are also
-    matched when they appear as any delimited component of the identity, so the
-    executor's canonical identity "merge-loop" is blocked even though it does
-    not start with "loop". Incidental substrings (e.g. "decoding") are not
-    matched because the split honours delimiters only.
+    Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched as leading
+    prefixes. Bare role words are matched as any delimited component, splitting on every
+    run of non-alphanumerics, so neither the executor's canonical "merge-loop" nor a
+    re-spelling under an exotic delimiter ("merge loop", "team.maker/x") escapes — a
+    narrower split let a space buy admission (#4378). Incidental substrings ("decoding")
+    are not matched because the split honours delimiters only.
 
     This is the OVERRIDING refusal, no longer the whole test: admission is decided
     positively by :func:`is_independent_reviewer_identity` (#4241).
     """
-    lowered = identity.strip().lower()
+    lowered = normalize_reviewer_identity(identity)
     if any(lowered == prefix or lowered.startswith(prefix) for prefix in NON_REVIEWER_AGENT_PREFIXES):
         return True
-    parts = frozenset(re.split(r"[-:_]", lowered))
-    return bool(parts & _COMPONENT_ROLE_WORDS)
+    parts: frozenset[str] = frozenset(str(part) for part in _IDENTITY_DELIMITERS.split(lowered) if part)
+    if parts & _MAKER_ROLE_WORDS:
+        return True
+    return bool(parts & _REVIEW_PHASE_WORDS) and not (parts & (REVIEWER_ROLE_COMPONENTS - _WEAK_REVIEWER_MODIFIERS))
 
 
 def _configured_reviewer_identities() -> frozenset[str]:

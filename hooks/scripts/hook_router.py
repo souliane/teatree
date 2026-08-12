@@ -123,6 +123,8 @@ from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner
 from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa: F401 re-export for sibling + tests
 from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt as _is_bare_loop_prompt
 from hooks.scripts.loop_registrations import emit_loop_registrations, emit_standing_directives_once
+from hooks.scripts.loop_registry_liveness import pid_namespace as _pid_namespace
+from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead_owner
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
@@ -3609,38 +3611,6 @@ def _release_agent_consolidation_slot(session_id: str) -> None:
             _write_consolidation_registry_locked(survivors)
 
 
-def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
-    """Drop registry entries whose recorded owner pid is no longer alive.
-
-    Reuses the existing ``teatree.utils.singleton.pid_alive`` primitive
-    rather than re-implementing pid liveness — the locked design calls
-    for preferring the existing singleton/pid mechanism. Imported lazily
-    to keep this Django-free hook fast on the common path (mirrors the
-    lazy ``teatree.skill_support.deps`` import elsewhere in this module).
-
-    Fail-safe (#810): hooks run under whatever interpreter the agent
-    harness invokes; ``teatree`` importability is NOT guaranteed there.
-    When the import fails we cannot confirm any owner pid is alive, so
-    we treat loop ownership as unknown (empty registry) and let the
-    caller skip the self-pump rather than crash the session. A ``Stop``
-    hook must be crash-proof by contract.
-    """
-    try:
-        from teatree.utils.singleton import pid_alive  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-    except ImportError as exc:
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] loop self-pump skipped: teatree unavailable ({exc})",
-            file=sys.stderr,
-        )
-        return {}
-
-    return {
-        name: entry
-        for name, entry in registry.items()
-        if isinstance(entry, dict) and pid_alive(int(entry.get("pid", 0) or 0))
-    }
-
-
 def _emit_osc_title() -> None:
     """Best-effort set the terminal tab title for the t3-master session.
 
@@ -3742,13 +3712,16 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     Stop-hook self-pump (#758/#810) can gate on it Django-free. The
     immortal-roster fields (per-loop ``spawn_brief``) are retired — there
     is nothing to re-spawn. The owner pid is ``os.getppid()`` (the
-    long-lived session process, not this ephemeral hook subprocess).
+    long-lived session process, not this ephemeral hook subprocess), and it
+    is recorded beside the namespace it resolves in (#4270) — the
+    driver-detection probe attributes the integer by it before probing.
     """
     return {
         _OWNER_LOOP: {
             "session_id": session_id,
             "agent_id": agent_id,
             "pid": os.getppid(),
+            "pid_namespace": _pid_namespace(),
             "heartbeat_ts": _now_ts(),
         }
     }

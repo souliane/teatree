@@ -69,8 +69,9 @@ def _describe(record: "UnshippedWorkRecord", *, age: str) -> str:
     held = [f"{len(record.dirty_paths)} dirty path(s)", f"{len(record.unpushed_commits)} unpushed commit(s)"]
     if record.unreadable:
         # An unreadable probe counts as work: a checkout whose state could not be
-        # read has not been proven empty.
-        held.append(f"state git could not read ({record.unreadable})")
+        # read has not been proven empty. Cause-neutral, because half of these are
+        # a venue miss rather than anything git is entitled to be blamed for.
+        held.append(f"unreadable here ({record.unreadable})")
     where = f", bundle {record.artifact_prefix}" if record.artifact_prefix else ""
     branch = record.branch or "(no branch)"
     return f"{age} old — {record.checkout_path} on '{branch}': {', '.join(held)}{where}"
