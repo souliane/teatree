@@ -17,9 +17,11 @@ from typing import NotRequired, TypedDict
 
 from django.db.models import Min
 
+from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable_clear_age_hours
+from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
-from teatree.core.models.merge_clear import MergeAudit, MergeClear
+from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.review_verdict import ReviewVerdict, Severity
@@ -30,10 +32,8 @@ from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
 from teatree.utils.url_slug import pr_ref_from_url
 
-# A five-observation floor keeps the thresholds stable at solo-factory volume;
-# a stale actionable CLEAR older than STALE_CLEAR_HOURS is a stalled merge loop.
+# A five-observation floor keeps the thresholds stable at solo-factory volume.
 MIN_SAMPLE = 5
-STALE_CLEAR_HOURS = 48.0
 # S5 companion volume detector (#3690): a window where most work attempts crash or
 # refuse is broken regardless of how few successes remain to measure — the
 # mean-terminal-iteration scalar reads low (or insufficient) precisely when the loop
@@ -174,17 +174,18 @@ def baseline_window(now: datetime, days: int) -> Window:
 def _merge_audits_in(window: Window, overlay: str) -> list[MergeAudit]:
     """Executed merges whose ``merged_at`` falls in *window*, with their CLEAR.
 
-    Overlay scoping rides ``clear.ticket.overlay`` (the audit row carries no
-    overlay of its own); a CLEAR with no ticket is out of an overlay-scoped
-    view by construction.
+    The audit row carries no overlay of its own, so scoping rides its CLEAR through
+    the shared :func:`clear_scope_predicate` (#4250). It used to ride
+    ``clear__ticket__overlay`` alone, which put every ticket-less CLEAR out of an
+    overlay-scoped view *by construction* — and ticket-less is the norm, so this saw
+    23 of 260 real merges and every signal reading off it under-sampled ~10x.
     """
     qs = MergeAudit.objects.filter(merged_at__gte=window.start, merged_at__lt=window.end).select_related(
         "clear",
         "clear__ticket",
     )
-    if overlay:
-        qs = qs.filter(clear__ticket__overlay=overlay)
-    return list(qs)
+    in_scope = clear_scope_predicate(overlay)
+    return [audit for audit in qs if in_scope(audit.clear)]
 
 
 def resolved_repo_key(audit: MergeAudit) -> tuple[str, int] | None:
@@ -382,94 +383,13 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
     return Computation(SignalReading(caught / denom, denom, window.days, SignalStatus.OK), evidence)
 
 
-def superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime], set[tuple[str, int]]]:
-    """The two supersede signals S4's staleness trip consults, each one grouped read (#15).
-
-    ``(latest_issued, merged_keys)`` keyed on the raw ``MergeClear.slug`` (a
-    re-CLEAR of the same workstream PR shares its older sibling's ``(slug,
-    pr_id)``): the newest ``issued_at`` across ALL CLEARs for a key, and every
-    ``(slug, pr_id)`` that already has a ``MergeAudit`` (the PR merged). Together
-    they identify an unconsumed CLEAR the merge loop has moved past — a
-    strictly-newer sibling re-reviewed it forward, or a merge already covers it.
-
-    Public because the waiting-lane covering-CLEAR match (:func:`~teatree.core.waiting._has_covering_clear`,
-    #21) reads the SAME context and applies the SAME :func:`clear_is_superseded`
-    predicate — a superseded orphan must not authorise a merge there while S4
-    excludes it here, or the two lanes diverge on the SIG-1 supersede semantics.
-    An empty ``overlay`` scopes globally, which is what the per-PR waiting match
-    wants so a ticket-less CLEAR's siblings are seen regardless of overlay.
-    """
-    clears = MergeClear.objects.all()
-    audits = MergeAudit.objects.all()
-    if overlay:
-        clears = clears.filter(ticket__overlay=overlay)
-        audits = audits.filter(clear__ticket__overlay=overlay)
-    # Both scans are deliberately whole-ledger — a re-CLEAR shares its sibling's
-    # ``(slug, pr_id)`` across time, so the newest issue and every covering merge
-    # for a key must be seen regardless of window. ``.iterator()`` streams each so
-    # the unbounded ledgers cap peak memory rather than materialising in full.
-    latest_issued: dict[tuple[str, int], datetime] = {}
-    for slug, pr_id, issued_at in clears.values_list("slug", "pr_id", "issued_at").iterator():
-        key = (slug, pr_id)
-        if key not in latest_issued or issued_at > latest_issued[key]:
-            latest_issued[key] = issued_at
-    merged_keys = {(slug, pr_id) for slug, pr_id in audits.values_list("clear__slug", "clear__pr_id").iterator()}
-    return latest_issued, merged_keys
-
-
-def clear_is_superseded(
-    clear: MergeClear,
-    latest_issued: dict[tuple[str, int], datetime],
-    merged_keys: set[tuple[str, int]],
-) -> bool:
-    """True iff *clear* has been moved past — the shared SIG-1 supersede predicate (#15/#21).
-
-    A CLEAR is superseded when a ``MergeAudit`` already covers its ``(slug,
-    pr_id)`` (the PR merged) or a strictly-newer sibling CLEAR exists for the
-    same key (a head-move re-review issued forward). The single predicate S4's
-    staleness trip and the waiting-lane covering match both apply against a
-    :func:`superseding_context`, so an orphaned old CLEAR is treated identically
-    on both lanes instead of one counting it live and the other excluding it.
-    """
-    key = (clear.slug, clear.pr_id)
-    if key in merged_keys:
-        return True
-    return latest_issued.get(key, clear.issued_at) > clear.issued_at
-
-
-def _max_actionable_clear_age_hours(overlay: str, now: datetime) -> float | None:
-    """Age in hours of the oldest actionable, non-superseded, unconsumed CLEAR, or ``None``.
-
-    A CLEAR the merge loop has moved past is NOT a stalled merge and is excluded
-    from the staleness trip (#15): a strictly-newer sibling CLEAR exists for the
-    same ``(slug, pr_id)``, or a ``MergeAudit`` already covers that PR (the
-    orphaned-row backstop to the merge-time sibling supersede in
-    ``record_merge_and_advance``, catching a legacy or cross-tick sibling the
-    supersede never reached). Without this, one head-move re-review left the older
-    CLEAR unconsumed forever and ratcheted S4 hard-red permanently after 48h. A
-    genuinely-stale CLEAR — no newer sibling, no covering merge — still trips.
-    """
-    qs = MergeClear.objects.filter(consumed_at__isnull=True).select_related("ticket")
-    if overlay:
-        qs = qs.filter(ticket__overlay=overlay)
-    actionable = [clear for clear in qs if clear.is_actionable()]
-    if not actionable:
-        return None
-    latest_issued, merged_keys = superseding_context(overlay)
-    ages = [
-        (now - clear.issued_at).total_seconds() / 3600.0
-        for clear in actionable
-        if not clear_is_superseded(clear, latest_issued, merged_keys)
-    ]
-    return max(ages) if ages else None
-
-
 def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
     """S4 merge_latency: median CLEAR→merge hours + stale-actionable-CLEAR age.
 
     The exact FK join ``MergeClear.issued_at`` → ``MergeAudit.merged_at``. The
     staleness companion is independent of the merge sample: an actionable CLEAR
-    older than :data:`STALE_CLEAR_HOURS` trips RED even in a zero-merge window.
+    older than :data:`~teatree.core.factory.merge_backlog.STALE_CLEAR_HOURS` trips
+    RED even in a zero-merge window.
     """
     audits = _merge_audits_in(window, overlay)
     latencies = [
@@ -478,7 +398,7 @@ def compute_s4(window: Window, overlay: str, now: datetime) -> Computation:
         if audit.merged_at >= audit.clear.issued_at
     ]
     denom = len(latencies)
-    stale_hours = _max_actionable_clear_age_hours(overlay, now)
+    stale_hours = max_actionable_clear_age_hours(overlay, now)
     hard_red = stale_hours is not None and stale_hours > STALE_CLEAR_HOURS
     evidence: S4Evidence = {
         "merges": denom,

@@ -51,6 +51,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_shipped_seed_inertness,
     _check_starved_intake_candidates,
     _check_t3_master_unheld_while_loops_tick,
+    _check_unconsumed_merge_clears,
 )
 from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
@@ -186,6 +187,7 @@ __all__ = (
     "_check_tmp_tmpfs_headroom",
     "_check_tmp_tmpfs_sizing",
     "_check_ttyd_for_dashboard",
+    "_check_unconsumed_merge_clears",
     "_check_worker_memory_cap",
     "_check_worker_running",
     "_check_worker_singleton_holder",

@@ -78,6 +78,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree signals": signals.Command.typer_app.registered_commands[0].callback,
         "teatree pr discharge-pending": pr.Command.discharge_pending,
         "teatree ticket backfill-clears": ticket.Command.backfill_clears,
+        "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree checking show": checking.Command.show,
         "teatree e2e lanes": e2e.Command.lanes,
         "teatree env show": env.Command.show,

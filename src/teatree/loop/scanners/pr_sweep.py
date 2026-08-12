@@ -408,6 +408,8 @@ class PrSweepScanner:
         re-firing only on a new commit. Notify-only: the sweep never requests
         review and never merges. Every other case (colleague author, behind
         main, red/pending CI) falls through to the existing skip.
+
+        Unreachable under ``solo_overlay=True``; a quiet :class:`MergeableNotified` row is not solo coverage (#4250).
         """
         ci_skip, _fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:

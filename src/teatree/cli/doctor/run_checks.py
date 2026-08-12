@@ -53,6 +53,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_shipped_seed_inertness,
     _check_starved_intake_candidates,
     _check_t3_master_unheld_while_loops_tick,
+    _check_unconsumed_merge_clears,
 )
 from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
@@ -175,20 +176,18 @@ def _run_loop_intent_gates() -> bool:
     ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
     never claimed) joins them: a slow queue is not a fault, an invisible one is.
 
-    Three verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
-    silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
-    its consumer is not live — masked/disabled/held, or refused by the consumer's own
-    guard chain (the directive-loop silent-freeze incident — directives stuck at
-    CAPTURED behind an idle loop, zero signal). ``_check_intake_budget_deadlock`` (#3978)
-    is its issue-intake twin: a full in-flight budget held entirely by claims that are
-    going nowhere admits no work at all while every other signal reads healthy.
-    ``_check_loop_schedule_liveness`` (#4140) is the scheduledness reading no cadence
-    surface carries: a loop whose chain was dropped keeps a recent anchor, so it reports
-    as healthy while nothing will ever fire it again.
-    ``_check_t3_master_unheld_while_loops_tick`` (#4253) is its inverse — the chains fire
-    fine, but the ``t3-master`` owner lease no reactive cycle can run without is unheld,
-    and no other surface reads that lease at all. All four are evaluated before the
-    ``and`` so none can mask another.
+    FIVE verdicts ARE returned, each a queue or authority that rots while every other
+    surface reads healthy; all five are evaluated before the ``and`` so none can mask
+    another. ``_check_intent_freshness``: a consumable intent queue is non-empty while
+    its consumer is not live (the directive-loop silent-freeze, zero signal).
+    ``_check_intake_budget_deadlock`` (#3978): a full in-flight budget held entirely by
+    claims going nowhere admits no work. ``_check_loop_schedule_liveness`` (#4140): a
+    loop whose chain was dropped keeps a recent anchor, so it reads healthy while nothing
+    will ever fire it again. ``_check_t3_master_unheld_while_loops_tick`` (#4253) inverts
+    that — the chains fire, but the ``t3-master`` lease no reactive cycle runs without is
+    unheld, and nothing else reads it. ``_check_unconsumed_merge_clears`` (#4250) is the
+    merge-side twin: an authorisation to merge a reviewed diff that nothing executed,
+    standing while the age signal, the sweep log and ``MergeAudit`` all read healthy.
     """
     _check_loop_presets()
     _check_loop_classification_drift()
@@ -199,7 +198,8 @@ def _run_loop_intent_gates() -> bool:
     intake_ok = _check_intake_budget_deadlock()
     scheduled_ok = _check_loop_schedule_liveness()
     master_ok = _check_t3_master_unheld_while_loops_tick()
-    return _check_intent_freshness() and intake_ok and scheduled_ok and master_ok
+    clears_ok = _check_unconsumed_merge_clears()
+    return _check_intent_freshness() and intake_ok and scheduled_ok and master_ok and clears_ok
 
 
 def _check_claude_session_posture() -> bool:
