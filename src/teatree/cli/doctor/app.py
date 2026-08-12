@@ -66,6 +66,7 @@ from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledge
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
     _check_root_disk_headroom,
+    _check_scratch_sweep_probe,
     _check_tmp_tmpfs_headroom,
     _check_tmp_tmpfs_sizing,
     _check_worker_memory_cap,
@@ -167,6 +168,7 @@ __all__ = (
     "_check_recommended_skills",
     "_check_reconciliation_ledger",
     "_check_root_disk_headroom",
+    "_check_scratch_sweep_probe",
     "_check_shipped_seed_inertness",
     "_check_single_db",
     "_check_singletons",
