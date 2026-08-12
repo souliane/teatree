@@ -28,7 +28,7 @@ _SCRIPT_OPERAND_TOKEN = re.compile(r"eval|-[A-Za-z]*c")
 #: text while naming no interpreter, so enumerating interpreters cannot terminate.
 #: Widen this set only by name, with the case that forced it. Its WIDTH — and that a
 #: prefixed spelling (``env cat``) resolves to the prefix rather than to what it execs —
-#: is a separate defect class tracked in ``evals/README.md``; both only ever over-keep.
+#: is a separate defect class (#4433); both only ever over-keep, which reds loudly.
 _STDIN_READERS = frozenset({"cat", "egrep", "fgrep", "grep", "head", "sort", "t3", "tail", "tee", "tr", "uniq", "wc"})
 
 #: Words at or above which a standalone quoted operand reads as prose rather than as a

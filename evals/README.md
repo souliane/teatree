@@ -1514,7 +1514,7 @@ while keeping a payload only ever reds loudly:
 | `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
 | the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
-| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so a `\`+newline continuation, an `&` inside `2>&1`, and a `;`/`}`/`)` inside an enclosing group all stop hiding a later `\| bash`, and a process substitution (`> >(bash)`) blocks the proof outright; the whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count |
+| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1` and a `;`/`}`/`)` inside an enclosing group stop hiding a later `\| bash`, and a process substitution (`> >(bash)`) blocks the proof outright; the whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
 
 The redirection rule is stated as a READER proof, not an interpreter list, because the
@@ -1524,6 +1524,22 @@ complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l;
 `origin/main` also drops, so merging costs no teeth: a payload reaching an interpreter
 through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
 class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
+
+Three measured residues, all in the OVER-keeping direction — they cost a loud red, never
+a silent one, and none is a regression against `origin/main`:
+
+- `_STDIN_READERS` is narrow (12 names) and `_stage_command_word` resolves a PREFIXED
+  spelling to the prefix rather than to what it execs, so `md5sum <<<'…'`, `base64 <<<'…'`
+  and `env cat <<<'…'` keep text nothing executes. Measured over 204 provably data-only
+  cases, `origin/main` keeps the same ones. Reader-set completeness is its own defect
+  class needing its own generator and its own negative controls —
+  [#4433](https://github.com/souliane/teatree/issues/4433).
+- A continuation INSIDE a here-string payload an interpreter runs: bash keeps the pair
+  literal and the interpreter splices it only when it runs the text, so the act reaches
+  the span in bash's own pre-splice spelling and a matcher regexing the raw span misses
+  it. `origin/main` elides the whole class.
+- A quoted-delimiter heredoc BODY is literal to bash, and the view splices it anyway — a
+  body line ending in a backslash loses its terminator, so the remainder is kept raw.
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
 `ticket clear` are things that must not HAPPEN, and a model that escalates
