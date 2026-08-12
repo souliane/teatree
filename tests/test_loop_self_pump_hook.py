@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/hook_router.py; no single src/teatree/ mirror.
 """Tests for the loop self-pump Stop hook (#758 / board #50 / #786 WS4).
 
 The self-pump replaces the manual coordinator pump: when an agent
