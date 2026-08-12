@@ -36,7 +36,9 @@ def _scan(scanner: IntakeConcurrencyScanner, *, available_mib: int | None, cores
     with (
         patch(
             f"{_MODULE}.read_ram_headroom",
-            return_value=RamHeadroom(available_mib=available_mib, cgroup_limit_mib=None),
+            return_value=RamHeadroom(
+                available_mib=available_mib, cgroup_limit_mib=None, host_available_mib=available_mib
+            ),
         ),
         patch(f"{_MODULE}.available_cpu_count", return_value=cores),
     ):

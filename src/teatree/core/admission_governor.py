@@ -511,9 +511,11 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
     :data:`RAM_BRAKE_FLOOR_GB` and :data:`RAM_RESUME_FLOOR_GB` are absolute box-wide numbers,
     so a reading taken in a cgroup too small to host an agent workload is not theirs to judge
     — the admin sidecar read 1.65 GB at the same instant the worker read 15.88 GB, and its
-    fixed 2 GiB cap put every dispatch under a floor it could never rise above. Out of scope
-    reads ``None``, and ``None`` (unreadable, or unjudgeable) is a different answer from ``0``
-    (readable, nothing left), carried through rather than collapsed to a number nobody measured.
+    fixed 2 GiB cap put every dispatch under a floor it could never rise above. Such a scope
+    falls back to the host component, which is box-wide at any cap, so a genuinely starved box
+    still brakes from inside a sidecar (#4252). ``None`` (nothing box-scoped readable) is a
+    different answer from ``0`` (readable, nothing left), carried through rather than collapsed
+    to a number nobody measured.
 
     An explicit *ram_available_gb* wins, so a caller holding a reading of its own is never
     made to pay for a second probe.
