@@ -193,8 +193,9 @@ class TestHeredocScriptBodies:
             "python3 - <<'PY'\nt3 widget task complete 42\nPY\n",
             "cat <<'EOF' | bash\nt3 widget task complete 42\nEOF\n",
             "/usr/bin/env bash <<'EOF'\nt3 widget task complete 42\nEOF\n",
+            "/usr/bin/bash <<'EOF'\nt3 widget task complete 42\nEOF\n",
         ],
-        ids=["bash-stdin", "python-stdin", "piped-to-bash", "absolute-interpreter-path"],
+        ids=["bash-stdin", "python-stdin", "piped-to-bash", "env-form", "true-absolute-path"],
     )
     def test_a_body_an_interpreter_runs_stays_matchable(self, command: str) -> None:
         assert "t3 widget task complete 42" in executed_span(command)

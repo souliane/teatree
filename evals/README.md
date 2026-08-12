@@ -1515,7 +1515,7 @@ while keeping a payload only ever reds loudly:
 | the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload |
 | `<<'EOF'` heredoc body (quoted delimiter) | elided, **unless** its line runs an interpreter (`bash <<'EOF'`, `cat <<'EOF' \| bash`) — a quoted delimiter suppresses expansion, not execution |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
-| `<<<'…'` herestring | the operator is consumed whole, so the following command line is scanned rather than swallowed as a heredoc body |
+| `<<<'…'` here-string operand | kept whole when its line runs an interpreter (`bash <<<'…'`) — a script on stdin, exactly like a quoted-delimiter heredoc body; otherwise falls to the same attached/standalone rule as any other quoted region. The operator is consumed whole either way, so the following command line is scanned rather than swallowed as a heredoc body |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
