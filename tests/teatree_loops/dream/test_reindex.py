@@ -161,6 +161,35 @@ class ReindexTestCase(SimpleTestCase):
         assert len(pointer_lines) == count  # one pointer line per memory
         assert all(index.count(name) == 1 for name in names)  # every file linked exactly once
 
+    def test_generated_header_carries_the_load_budget_guidance(self) -> None:
+        # #4385: the header regenerates wholesale, so the curated line documenting the load
+        # limit — and the rule that settled per-ticket records leave this index — was
+        # destroyed on every pass and the next reader had no way to know a limit existed.
+        # With no MEMORY_PRIORITY.md present, the GENERATED header must carry both.
+        self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
+        index = render_index(self.dir)
+        assert f"~{gates.INDEX_LINE_DRAIN_TARGET} lines" in index
+        assert f"past {gates.INDEX_LINE_BUDGET} on load" in index
+        assert "Resolved per-ticket records are archived out of this index by decay" in index
+        assert "`archive/` holds the body" in index
+
+    def test_render_index_never_truncates_over_budget(self) -> None:
+        # #4385 AV-3: the renderer stays TOTAL — one pointer per memory, no cap — and lets
+        # an over-budget corpus trip gate (d) RED. A self-truncating renderer would make
+        # Gate.index_budget structurally incapable of ever failing (it grades the rendered
+        # text), converting a loud, dated, actionable alarm into permanent green over an
+        # index silently losing its tail — #4057's failure re-created on both axes. It would
+        # also strand each dropped pointer in NEITHER index: only archival has a durable
+        # destination. Enforcement belongs in the budget tier, never here.
+        count = 400
+        for i in range(count):
+            self._write(f"mem_bulk_{i:04d}", f"---\nname: mem_bulk_{i:04d}\nsummary: lesson {i}\n---\nbody {i}\n")
+        index = render_index(self.dir)
+        pointer_lines = [line for line in index.splitlines() if line.startswith("- ")]
+        assert len(pointer_lines) == count  # nothing dropped
+        snapshot = gates.MemorySnapshot.build(memories={}, index_text=index)
+        assert gates.Gate.index_budget(snapshot).passed is False  # ... and gate (d) can still say so
+
 
 class SignatureTextTestCase(SimpleTestCase):
     """The shared frontmatter-aware signature extractor (#2746 nit-4).
