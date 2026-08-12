@@ -31,6 +31,14 @@ _PROSE_WORD_FLOOR = 4
 
 _TOKEN_BOUNDARY = re.compile(r"[\s;|&()]")
 
+#: The boundary the INTERPRETER lookup splits on. A redirection operator needs no space
+#: in front of it, so ``bash<<<'…'`` and ``bash<<'EOF'`` are one ``_TOKEN_BOUNDARY``
+#: token and the interpreter never matches — the branch falls through to the prose floor
+#: and drops an act the shell genuinely runs. Redirection characters therefore bound a
+#: word HERE, though not in :meth:`_SpanScanner._preceding_token`, where the operator's
+#: own ``<`` must stay attached for the here-string branch to recognise it.
+_INTERPRETER_BOUNDARY = re.compile(r"[\s;|&()<>]")
+
 #: The here-string operator. Its operand is a whole word the shell hands to the command
 #: on stdin, so the ``<`` in front of it is an OPERATOR, never the unquoted word fragment
 #: that marks attached payload (``-m'…'``).
@@ -157,11 +165,14 @@ class _SpanScanner:
         """Whether the line at the cursor runs its redirected body as a script.
 
         Serves both the ``<<`` heredoc operator and the ``<<<`` here-string operand.
+        Splitting on :data:`_INTERPRETER_BOUNDARY` sees an interpreter abutting its own
+        redirection operator (``bash<<<'…'``), which a whitespace-only split reads as
+        one token and misses.
         """
         line_start = self._src.rfind("\n", 0, self._pos) + 1
         line_end = self._src.find("\n", self._pos)
         line = self._src[line_start:] if line_end == -1 else self._src[line_start:line_end]
-        return any(word.rsplit("/", 1)[-1] in _SCRIPT_INTERPRETERS for word in _TOKEN_BOUNDARY.split(line))
+        return any(word.rsplit("/", 1)[-1] in _SCRIPT_INTERPRETERS for word in _INTERPRETER_BOUNDARY.split(line))
 
     def _drain_heredoc_bodies(self) -> None:
         while self._pending_heredocs:

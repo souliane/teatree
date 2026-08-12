@@ -200,11 +200,34 @@ class TestHeredocScriptBodies:
     def test_a_body_an_interpreter_runs_stays_matchable(self, command: str) -> None:
         assert "t3 widget task complete 42" in executed_span(command)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash<<'EOF'\nt3 widget task complete 42\nEOF\n",
+            "sh<<'EOF'\nt3 widget task complete 42\nEOF\n",
+            "/usr/bin/bash<<'EOF'\nt3 widget task complete 42\nEOF\n",
+            "bash<<'EOF' && echo after\nt3 widget task complete 42\nEOF\n",
+        ],
+        ids=["glued-bash", "glued-sh", "glued-absolute-path", "glued-with-tail"],
+    )
+    def test_an_interpreter_glued_to_its_operator_still_runs_the_body(self, command: str) -> None:
+        # Ground truth: each executes the act under a real bash with a stub ``t3`` on
+        # PATH. A redirection operator needs no space in front of it, so the
+        # interpreter lookup must not read ``bash<<'EOF'`` as a single opaque token —
+        # that misses the interpreter and drops a body the shell genuinely runs.
+        assert "t3 widget task complete 42" in executed_span(command)
+
     def test_an_operator_ending_the_command_has_no_body_to_drain(self) -> None:
         assert executed_span("bash <<'EOF'") == "bash <<'EOF'"
 
     def test_a_body_a_plain_command_consumes_is_still_elided(self) -> None:
         command = "t3 notify send --stdin <<'EOF'\nI have not marked the task complete.\nEOF\n"
+        assert "task complete" not in executed_span(command)
+
+    def test_a_glued_plain_command_still_elides_the_body_it_only_reads(self) -> None:
+        # The widened lookup must not turn every glued operator into an interpreter:
+        # ``t3`` reads its stdin, so the body stays a payload.
+        command = "t3 notify send --stdin<<'EOF'\nI have not marked the task complete.\nEOF\n"
         assert "task complete" not in executed_span(command)
 
 
@@ -234,6 +257,39 @@ class TestHerestrings:
         # marks attached payload (``-m'…'``) and elide an executed act.
         assert "t3 widget task complete 42" in executed_span(command)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash<<<'t3 widget task complete 42'",
+            "bash<<< 't3 widget task complete 42'",
+            'bash<<<"t3 widget task complete 42"',
+            "sh<<<'t3 widget task complete 42'",
+            "dash<<<'t3 widget task complete 42'",
+            "/usr/bin/bash<<<'t3 widget task complete 42'",
+            "bash<<<'t3 widget task complete 42' && echo after",
+            "bash<<<'t3 widget task complete 42' | tee out",
+            "bash<<<'t3 widget task complete 42'\necho after",
+        ],
+        ids=[
+            "glued-single",
+            "glued-then-spaced-operand",
+            "glued-double",
+            "glued-sh",
+            "glued-dash",
+            "glued-absolute-path",
+            "glued-with-and-tail",
+            "glued-with-pipe-tail",
+            "glued-with-newline-tail",
+        ],
+    )
+    def test_an_interpreter_glued_to_the_operator_still_runs_its_operand(self, command: str) -> None:
+        # Ground truth: each executes the act under a real bash with a stub ``t3`` on
+        # PATH. The spaced cases above pin the QUOTE abutting ``<<<``; this pins the
+        # INTERPRETER abutting it, which a whitespace-only token split reads as one
+        # word (``bash<<<'t3``) so the interpreter never matches and the operand falls
+        # through to the prose floor — an executed act dropped with no error.
+        assert "t3 widget task complete 42" in executed_span(command)
+
     @pytest.mark.parametrize("body", ["ls -l", "ls -l -a -h"])
     def test_an_interpreted_operand_is_kept_whatever_its_length(self, body: str) -> None:
         # The prose floor counts the words of a PAYLOAD. A script the interpreter
@@ -244,6 +300,21 @@ class TestHerestrings:
         # ``grep`` reads the here-string as data on stdin and never executes it, so
         # it stays a payload — keeping the whole class would hollow out the view.
         assert "task complete" not in executed_span("grep -q x <<<'t3 widget task complete 42'")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -q x<<<'t3 widget task complete 42'",
+            "cat<<<'t3 widget task complete 42'",
+            "wc -l<<<'t3 widget task complete 42'",
+        ],
+        ids=["grep", "cat", "wc"],
+    )
+    def test_a_plain_command_glued_to_the_operator_still_elides_its_operand(self, command: str) -> None:
+        # Ground truth: none of these executes the act under a real bash. Reading the
+        # operator as a word boundary must widen the INTERPRETER lookup only — it must
+        # not promote every glued command to one.
+        assert "task complete" not in executed_span(command)
 
 
 class TestSubstitutionBoundsAreQuoteAware:
