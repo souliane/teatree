@@ -1,10 +1,9 @@
 """Is a loop-registry entry's recorded owner still alive (#4270)?
 
-One concern, lifted out of the shrink-only router: the registry stores a pid, and
-every decision that reads it — the Stop self-pump's prune, the driver-detection
-self-pump probe — must first know whose pid namespace that integer names. The
-writer's side of that question lives here too, so the recorded namespace and the
-predicate that reads it cannot drift apart across a file boundary.
+One concern, lifted out of the shrink-only router: the registry stores a pid, and the
+Stop self-pump's prune probes it. The writer's side of the question lives here too — the
+record carries the pid namespace its pid was minted in, which the driver-detection probe
+reads before treating that integer as a fact about the owner.
 
 Cold-import safe: stdlib only at module top, ``teatree`` imported lazily inside each
 function, since hooks run under whatever interpreter the agent harness invokes.
@@ -40,16 +39,16 @@ def prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
     caller skip the self-pump rather than crash the session. A ``Stop``
     hook must be crash-proof by contract.
 
-    An entry recorded in ANOTHER pid namespace is kept (#4270): its pid names
-    whatever occupies that integer here, so probing it would drop the loop's
-    live owner on a collision. An entry carrying no namespace is probed as
-    before — the pid is the only evidence there is, and the record regains a
-    namespace on the owner's next SessionStart.
+    The recorded ``pid_namespace`` is deliberately NOT consulted here (#4270).
+    Keeping an entry this reader cannot attribute would be permanent: nothing
+    behind this file expires a record — no TTL, no reaper, and only the owning
+    session's own SessionEnd deletes one — and a restarted container never
+    returns to its old namespace, so ``_session_owns_loop`` and
+    ``_session_drives_loop`` would read a dead foreign owner forever, retiring
+    the Stop gates for every session on the box. An unknown-owner keep is
+    conservative only where something else can eventually say NO.
     """
     try:
-        from teatree.core.loop_lease_liveness import (  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-            namespace_is_attributable,
-        )
         from teatree.utils.singleton import pid_alive  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
     except ImportError as exc:
         print(  # noqa: T201 — hook stderr is the module's logging channel
@@ -58,9 +57,8 @@ def prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
         )
         return {}
 
-    def _owner_is_live(entry: dict) -> bool:
-        if not namespace_is_attributable(str(entry.get("pid_namespace") or "")):
-            return True
-        return pid_alive(int(entry.get("pid", 0) or 0))
-
-    return {name: entry for name, entry in registry.items() if isinstance(entry, dict) and _owner_is_live(entry)}
+    return {
+        name: entry
+        for name, entry in registry.items()
+        if isinstance(entry, dict) and pid_alive(int(entry.get("pid", 0) or 0))
+    }

@@ -3713,8 +3713,8 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     immortal-roster fields (per-loop ``spawn_brief``) are retired — there
     is nothing to re-spawn. The owner pid is ``os.getppid()`` (the
     long-lived session process, not this ephemeral hook subprocess), and it
-    is recorded beside the namespace it resolves in (#4270) — every reader
-    of that integer needs to know whose namespace it names before probing it.
+    is recorded beside the namespace it resolves in (#4270) — the
+    driver-detection probe attributes the integer by it before probing.
     """
     return {
         _OWNER_LOOP: {
