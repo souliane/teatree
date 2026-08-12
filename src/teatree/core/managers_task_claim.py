@@ -15,6 +15,8 @@ from datetime import datetime
 from django.db.models import Q
 from django.db.models.expressions import BaseExpression
 
+from teatree.config import worker_is_quiescing
+from teatree.core.process_freshness import code_behind_schema as _process_code_behind_schema
 from teatree.core.schema_readiness import schema_admission_block_reason
 from teatree.utils.throttled_log import warn_throttled
 
@@ -63,3 +65,35 @@ def schema_behind_code() -> bool:
         # stays visible at a bounded cadence instead of drowning the log.
         warn_throttled(logger, "task-claim:schema-behind", "task claim deferred: %s", reason)
     return bool(reason)
+
+
+def code_behind_schema() -> bool:
+    """The MIRROR of :func:`schema_behind_code` (#4387) — refuse while THIS process lags the DB.
+
+    The asymmetry is the whole point, and it is why both names sit adjacent here: the
+    checked direction (schema behind code) mostly fails on READ and self-heals one tick
+    after ``init`` migrates, while the unchecked one fails DESTRUCTIVELY — the task is
+    claimed, an agent runs to completion, and the result is discarded at the record step
+    because the in-memory model class predates a ``NOT NULL`` column. Never re-add only
+    one of the two.
+    """
+    reason = _process_code_behind_schema()
+    if reason:
+        warn_throttled(logger, "task-claim:code-behind", "task claim deferred: %s", reason)
+    return bool(reason)
+
+
+def claim_admission_block_reason() -> str:
+    """Why NO task may be claimed right now, or ``""`` to admit — the ONE admission composition.
+
+    Both claim paths (``claimable`` and ``claim_next_pending``) call this rather than
+    restating the boolean, so a third admission direction can never be added to one site
+    and forgotten at the other — which is exactly how #4387's skew went unguarded.
+    """
+    if worker_is_quiescing():
+        return "this worker is quiescing for a rolling deploy"
+    if schema_behind_code():
+        return "the control DB is behind this code"
+    if code_behind_schema():
+        return "this process is behind the applied schema"
+    return ""

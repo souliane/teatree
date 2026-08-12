@@ -191,6 +191,9 @@ depends_on = [
   "teatree.core.models.errors",
   "teatree.core.models",
   "teatree.core.schema_readiness",
+  # the mirror gate (#4387): CoreConfig.ready() freezes its snapshot and
+  # gates/schema_guard renders the records it publishes.
+  "teatree.core.process_freshness",
   # selectors reuse the single-source overlay Q-builder that lives in its own
   # managers_overlay leaf (F1.6) — a downward edge, mirroring teatree.core.models
   # → managers.
@@ -259,7 +262,7 @@ depends_on = []
 [[modules]]
 path = "teatree.core.managers_task_claim"
 layer = "domain"
-depends_on = ["teatree.core.schema_readiness"]
+depends_on = ["teatree.config", "teatree.core.process_freshness", "teatree.core.schema_readiness"]
 
 [[modules]]
 path = "teatree.core.managers_task_sweeps"
@@ -290,6 +293,15 @@ depends_on = ["teatree.config", "teatree.core.managers_overlay"]
 path = "teatree.core.schema_readiness"
 layer = "domain"
 depends_on = ["teatree.config"]
+
+[[modules]]
+# The mirror of schema_readiness (#4387): "is the code THIS process loaded as new as the
+# schema the DB has applied?". Its own node for the same reason — the claim chokepoint
+# reads it through managers_task_claim, and CoreConfig.ready() freezes its snapshot, so it
+# must stay below both with no cycle.
+path = "teatree.core.process_freshness"
+layer = "domain"
+depends_on = ["teatree.paths", "teatree.utils", "teatree.core.loop_lease_liveness"]
 
 [[modules]]
 path = "teatree.core.managers"

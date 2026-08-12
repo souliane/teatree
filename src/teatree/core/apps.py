@@ -1,5 +1,7 @@
 from django.apps import AppConfig
 
+from teatree.core.process_freshness import record_loaded_snapshot
+
 
 class CoreConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
@@ -14,3 +16,7 @@ class CoreConfig(AppConfig):
         populate_model_registries()
         register_signals()
         register_projection_signals()
+        # Freeze the migration heads this interpreter loaded, BEFORE any DB access (#4387).
+        # It is the only moment the answer is knowable: from here on the files on disk can be
+        # fast-forwarded under a running process while its imported model classes stay old.
+        record_loaded_snapshot()

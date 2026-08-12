@@ -219,7 +219,14 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # exactly: an ORM-free predicate layer that must be importable by core/models/ (task_claim),
 # core/managers*, core/tasks AND teatree.loops with no cycle, so it can live under none of
 # them; modelkit/ is a zero-dependency tach node and cannot take the loop_lease_liveness edge.
-PINNED_FLAT_CORE_MODULES = 110
+# 111: +process_freshness.py (#4387) — "is the code THIS process loaded as new as the schema
+# the DB has applied?", the mirror of schema_readiness.py's deploy-order gate and its flat
+# sibling by construction: the same shape (a frozen snapshot plus a memoised verdict), read
+# by the same claim chokepoint through managers_task_claim, and importable by core/managers*,
+# core/apps AND core/gates with no cycle. It must also stay ORM-light enough to run in
+# ``AppConfig.ready()``, which rules out models/; no cleanup/factory/intake/... subpackage
+# owns "what did this interpreter load".
+PINNED_FLAT_CORE_MODULES = 111
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
