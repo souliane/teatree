@@ -30,6 +30,19 @@ delete.
 An enumeration gap does NOT refuse the pass, which is the opposite of the
 env-dir reaper's rule and worth being explicit about: a checkout the scan missed
 is simply never a candidate, so a gap costs reclaim rather than safety.
+
+**The guard is re-established at the moment of deletion.** Planning and deleting
+are separated by the enumeration walk, the venv sizing walks, the uv cache prune
+and the docker reclaim — 34-68 s for the walk alone on the box that produced this
+issue — and an agent that starts work inside a checkout in that window was, until
+#4244, deleted out from under. So :func:`evict_venvs` re-reads the table and
+re-runs :func:`_in_use_reason` per candidate.
+
+It re-runs that half and NOT :func:`_dormancy_reason`, which is the same split
+the guard doctrine above draws: liveness is the authority, idleness only narrows.
+Re-judging idleness at deletion would also be self-defeating — removing one venv
+rewrites its checkout's mtime, so a sibling venv in that checkout reads as
+freshly touched and no pass ever reclaims it.
 """
 
 import os
@@ -75,11 +88,20 @@ class VenvEvictionPlan:
         return sum(candidate.size_bytes for candidate in self.candidates)
 
 
+@dataclass(frozen=True, slots=True)
+class EvictionOutcome:
+    """What an eviction actually did — what it freed, what the guard stopped, why it refused."""
+
+    freed_bytes: int = 0
+    skipped: tuple[str, ...] = ()
+    refusal: str = ""
+
+
 def plan_venv_eviction(workspace: Path, *, idle_days: float) -> VenvEvictionPlan:
     """Which dormant venvs this pass may evict — empty with a ``refusal`` when it may not."""
     table = read_process_table()
-    if not table.usable:
-        return VenvEvictionPlan(refusal="; ".join(table.gaps) or "the process table could not be read")
+    if refusal := table.refuse_reason():
+        return VenvEvictionPlan(refusal=refusal)
     registry = live_checkout_paths(workspace)
     cutoff = timezone.now().timestamp() - idle_days * 86400
     candidates: list[VenvCandidate] = []
@@ -98,16 +120,24 @@ def plan_venv_eviction(workspace: Path, *, idle_days: float) -> VenvEvictionPlan
     return VenvEvictionPlan(tuple(candidates), tuple(kept), registry.gaps, considered)
 
 
-def evict_venvs(plan: VenvEvictionPlan) -> int:
-    """Remove every planned venv; return the bytes the removals that succeeded returned."""
+def evict_venvs(plan: VenvEvictionPlan) -> EvictionOutcome:
+    """Remove every planned venv the guard still allows, re-judged at the moment of deletion."""
+    table = read_process_table()
+    if refusal := table.refuse_reason():
+        return EvictionOutcome(refusal=f"the process table stopped answering after planning — {refusal}")
     freed = 0
+    skipped: list[str] = []
     for candidate in plan.candidates:
+        reason = _in_use_reason(candidate.venv, checkout=candidate.checkout, table=table)
+        if reason:
+            skipped.append(f"{candidate.venv}: {reason} since it was planned")
+            continue
         try:
             shutil.rmtree(candidate.venv)
         except OSError:
             continue
         freed += candidate.size_bytes
-    return freed
+    return EvictionOutcome(freed, tuple(skipped))
 
 
 def _venvs_in(checkout: Path) -> list[Path]:
@@ -116,10 +146,27 @@ def _venvs_in(checkout: Path) -> list[Path]:
 
 def _keep_reason(venv: Path, *, checkout: Path, table: ProcessTable, cutoff: float) -> str:
     """Why *venv* survives this pass, or ``""`` when nothing keeps it."""
+    return _in_use_reason(venv, checkout=checkout, table=table) or _dormancy_reason(
+        venv, checkout=checkout, cutoff=cutoff
+    )
+
+
+def _in_use_reason(venv: Path, *, checkout: Path, table: ProcessTable) -> str:
+    """Somebody is using it — the half that AUTHORISES the delete, so the half re-run at deletion."""
     if _is_this_interpreters_venv(venv):
         return "this process is running from it"
     if table.holds(checkout):
         return "a live process is working inside the checkout"
+    return ""
+
+
+def _dormancy_reason(venv: Path, *, checkout: Path, cutoff: float) -> str:
+    """It was touched too recently — a plan-time NARROWING, never the authority.
+
+    Deliberately not re-run at deletion: removing one venv rewrites its
+    checkout's mtime, so a second venv in the same checkout would read as
+    freshly touched and never be reclaimed by any pass.
+    """
     touched = _last_touched(venv, checkout)
     if touched is None:
         return "its age could not be read"
@@ -158,4 +205,4 @@ def _dir_size_bytes(directory: Path) -> int:
     return total
 
 
-__all__ = ["VenvCandidate", "VenvEvictionPlan", "evict_venvs", "plan_venv_eviction"]
+__all__ = ["EvictionOutcome", "VenvCandidate", "VenvEvictionPlan", "evict_venvs", "plan_venv_eviction"]

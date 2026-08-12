@@ -30,9 +30,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup import process_table
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
+from tests._process_table_venue import usable_process_table
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -230,7 +232,10 @@ class DryRunFirstTests(TestCase):
         self.uv_prune = _patch_uv_cache_prune(self)
 
     def test_worktree_gc_off_records_skip_in_plan(self) -> None:
-        free_resources({"resource": "disk", "disk_cache_allowlist": [], "allow_destructive_disk": False})
+        """The table is pinned usable so the FLAG is what skips — a blind table skips for its own reason."""
+        host_proc = usable_process_table(self.tmp / "host-proc", working_in=self.tmp / "elsewhere")
+        with patch.object(process_table, "_HOST_PROC_ROOT", host_proc):
+            free_resources({"resource": "disk", "disk_cache_allowlist": [], "allow_destructive_disk": False})
         marker = ResourcePressureMarker.load()
         assert "SKIP worktree GC (allow_destructive_disk=false)" in marker.last_plan
 

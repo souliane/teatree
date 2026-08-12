@@ -6,6 +6,11 @@ process is inside, and one with the flag off — none may be removed. The others
 pin what the GC exists for at all: enumeration from a root that is NOT itself a
 repository, and a plan that says what it considered rather than falling silent
 when it could not read anything.
+
+Every case names the process table it judges against, because the GC now refuses
+a pass it cannot see the processes for. Without that fixture the safety cases
+would go green in a container for the wrong reason — the pass refusing rather
+than the guard holding — and the removal control would go red.
 """
 
 import os
@@ -24,6 +29,7 @@ from teatree.core.cleanup.process_table import ProcessTable
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop import mechanical_resources, worktree_gc
 from teatree.loop.mechanical_resources import free_resources
+from tests._process_table_venue import blinded_process_table, usable_process_table
 
 _GIT = shutil.which("git") or "/usr/bin/git"
 
@@ -56,8 +62,16 @@ class _GcFixture(TestCase):
         # The enumeration walks real directories, so it is pinned to this test's
         # own tree — the conftest guard's empty default would find no worktrees.
         self.enterContext(patch("teatree.core.cleanup.checkout_registry.checkout_scan_roots", return_value=(self.tmp,)))
+        self.elsewhere = self.tmp / "elsewhere"
+        self.elsewhere.mkdir()
+        self.host_proc = usable_process_table(self.tmp / "host-proc", working_in=self.elsewhere)
+        self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", self.host_proc))
         self.origin = self.tmp / "origin.git"
         self._seed_origin()
+
+    def _process_working_in(self, directory: Path, *, pid: str) -> None:
+        (self.host_proc / pid).mkdir(parents=True)
+        (self.host_proc / pid / "cwd").symlink_to(directory)
 
     def _seed_origin(self) -> None:
         seed = self.tmp / "_seed"
@@ -104,11 +118,19 @@ class WorktreeGcSafetyTests(_GcFixture):
         assert not wt.exists(), "a clean+pushed+stale worktree should be GC'd"
 
     def test_dirty_worktree_is_skipped(self) -> None:
+        """The assertion is the recorded REASON: ``git worktree remove`` refuses a dirty tree anyway.
+
+        An "it still exists" check alone is satisfied by git's own refusal, so it
+        holds whether or not this module's guard is there at all — it cannot fail,
+        and a criterion that cannot fail certifies nothing.
+        """
         wt = self._add_worktree("dirty", "feat-dirty")
         (wt / "a.txt").write_text("locally modified")  # tracked-dirty
         self._make_stale(wt)
         with patch.object(worktree_gc, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
+        plan = ResourcePressureMarker.load().last_plan
+        assert f"keep {wt}: it has uncommitted changes, or git would not say" in plan
         assert wt.exists(), "a dirty worktree must never be removed"
 
     def test_ahead_of_upstream_worktree_is_skipped(self) -> None:
@@ -135,15 +157,37 @@ class WorktreeGcSafetyTests(_GcFixture):
         """The guard the heuristic lacked: clean+pushed+stale describes a busy worktree too."""
         wt = self._add_worktree("busy", "feat-busy")
         self._make_stale(wt)
-        host_proc = self.tmp / "host-proc"
-        (host_proc / "4242").mkdir(parents=True)
-        (host_proc / "4242" / "cwd").symlink_to(wt / "src")
-        with (
-            patch.object(worktree_gc, "worktree_root", return_value=self.main_clone),
-            patch.object(process_table, "_HOST_PROC_ROOT", host_proc),
-        ):
+        self._process_working_in(wt / "src", pid="4242")
+        with patch.object(worktree_gc, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
         assert wt.exists(), "a worktree with a live process inside must never be GC'd"
+
+    def test_an_unreadable_process_table_refuses_the_whole_gc_pass(self) -> None:
+        """Fail CLOSED. Until now this module read the table's empty paths as "nobody is inside"."""
+        wt = self._add_worktree("clean", "feat-clean")
+        self._make_stale(wt)
+        with (
+            patch.object(worktree_gc, "worktree_root", return_value=self.main_clone),
+            blinded_process_table(self.tmp / "gone"),
+        ):
+            free_resources(self._payload())
+        assert wt.exists(), "a GC that cannot see the processes may remove nothing"
+        assert "SKIP worktree GC — no readable process table" in ResourcePressureMarker.load().last_plan
+
+    def test_a_worktree_that_gained_a_process_after_the_survey_is_not_removed(self) -> None:
+        """The survey and the removal are separated by every step of the ladder between them."""
+        wt = self._add_worktree("gained", "feat-gained")
+        self._make_stale(wt)
+        with patch.object(worktree_gc, "worktree_root", return_value=self.main_clone):
+            survey = worktree_gc.survey_worktrees(self._payload())
+        assert [Path(c).resolve() for c in survey.candidates] == [wt.resolve()], "the control: it was planned"
+
+        self._process_working_in(wt / "src", pid="4242")
+        outcome = worktree_gc.collect(survey)
+
+        assert wt.exists(), "an agent that arrived after the survey must not have the floor pulled out"
+        assert outcome.reclaimed_gb == pytest.approx(0.0)
+        assert any("a live process is working inside it" in line for line in outcome.skipped)
 
     def test_gc_off_removes_nothing(self) -> None:
         wt = self._add_worktree("clean", "feat-clean")
@@ -173,6 +217,28 @@ class WorktreeGcReportingTests(_GcFixture):
         with patch.object(worktree_gc, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
         assert "ERROR worktree enumeration incomplete" in ResourcePressureMarker.load().last_plan
+
+    def test_the_plan_reports_a_deletion_the_delete_time_guard_stopped(self) -> None:
+        """A silent skip IS the defect class — the pass reclaiming nothing invisibly.
+
+        The process arrives during ``uv cache prune``, a real step of the ladder
+        that runs between the survey and the removal.
+        """
+        wt = self._add_worktree("gained", "feat-gained")
+        self._make_stale(wt)
+        with (
+            patch.object(worktree_gc, "worktree_root", return_value=self.main_clone),
+            patch.object(
+                mechanical_resources,
+                "_run_uv_cache_prune",
+                lambda: self._process_working_in(wt / "src", pid="4242"),
+            ),
+        ):
+            free_resources(self._payload())
+        assert wt.exists(), "the agent that arrived mid-pass keeps its worktree"
+        assert f"SKIP {wt}: a live process is working inside it since the survey" in (
+            ResourcePressureMarker.load().last_plan
+        )
 
     def test_the_done_worktree_sweep_runs_without_the_destructive_flag(self) -> None:
         """The one reclaim that demonstrably worked was reachable only by a human typing it."""
@@ -236,6 +302,7 @@ class GcJudgementTests(TestCase):
             wt.mkdir()
         enumeration = CheckoutRegistry(frozenset(str(wt) for wt in worktrees), ())
         with (
+            patch.object(worktree_gc, "read_process_table", return_value=ProcessTable(frozenset(), "/proc")),
             patch.object(worktree_gc, "linked_worktree_paths", return_value=enumeration),
             patch.object(worktree_gc, "safe_cwd", return_value=None),
             patch.object(worktree_gc, "keep_reason", return_value=""),
@@ -248,8 +315,20 @@ class GcJudgementTests(TestCase):
     def test_a_failed_removal_returns_no_bytes(self) -> None:
         survey = worktree_gc.GcSurvey(candidates=(str(self.tmp / "wt"),))
         with (
+            patch.object(worktree_gc, "read_process_table", return_value=ProcessTable(frozenset(), "/proc")),
+            patch.object(worktree_gc, "keep_reason", return_value=""),
             patch.object(worktree_gc, "dir_size_gb", return_value=2.0),
             patch.object(worktree_gc, "remove_worktree", return_value=False),
         ):
-            reclaimed = worktree_gc.collect(survey)
-        assert reclaimed == pytest.approx(0.0), "a failed removal must not count toward reclaimed bytes"
+            outcome = worktree_gc.collect(survey)
+        assert outcome.reclaimed_gb == pytest.approx(0.0), "a failed removal must not count toward reclaimed bytes"
+
+    def test_a_collection_whose_table_went_blind_refuses_rather_than_removes(self) -> None:
+        survey = worktree_gc.GcSurvey(candidates=(str(self.tmp / "wt"),))
+        with (
+            blinded_process_table(self.tmp / "gone"),
+            patch.object(worktree_gc, "remove_worktree") as removal,
+        ):
+            outcome = worktree_gc.collect(survey)
+        removal.assert_not_called()
+        assert outcome.refusal

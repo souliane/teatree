@@ -20,6 +20,13 @@ that a worktree is finished with, and the same description fits one an agent is
 about to come back to. So every judgement is fail-safe to keep, the reason is
 recorded rather than swallowed, and a live process inside the directory outranks
 every timestamp.
+
+That last guard is only as good as the table behind it, and this module read one
+it never checked: an unusable table's empty paths said "nobody is inside" for
+every worktree on the box — the #4306 fail-open, live here in any venue without
+the host mount. It now refuses the pass instead, and re-establishes the guard
+immediately before each removal rather than trusting a survey the intervening
+walks have had 34-68 s to invalidate.
 """
 
 import logging
@@ -38,6 +45,9 @@ from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
+#: How long a worktree must sit untouched before the heuristic will consider it.
+_DEFAULT_STALE_DAYS = 30
+
 
 @dataclass(frozen=True, slots=True)
 class GcSurvey:
@@ -47,14 +57,29 @@ class GcSurvey:
     kept: tuple[str, ...] = ()
     gaps: tuple[str, ...] = ()
     considered: int = 0
+    refusal: str = ""
+    #: The staleness threshold this survey judged with, frozen so the delete-time
+    #: re-judgement applies the identical one.
+    stale_days: int = _DEFAULT_STALE_DAYS
+
+
+@dataclass(frozen=True, slots=True)
+class GcOutcome:
+    """What a collection actually did — what it reclaimed, what the guard stopped, why it refused."""
+
+    reclaimed_gb: float = 0.0
+    skipped: tuple[str, ...] = ()
+    refusal: str = ""
 
 
 def survey_worktrees(payload: ActionPayload) -> GcSurvey:
     """Which worktrees are eligible for GC, and the reason each of the rest is kept."""
-    stale_days = int(payload.get("worktree_stale_days", 30))
+    stale_days = int(payload.get("worktree_stale_days", _DEFAULT_STALE_DAYS))
     cap = int(payload.get("max_worktree_gc_per_tick", 3))
     cwd = safe_cwd()
     table = read_process_table()
+    if refusal := table.refuse_reason():
+        return GcSurvey(refusal=refusal, stale_days=stale_days)
     enumeration = linked_worktree_paths(worktree_root())
     candidates: list[str] = []
     kept: list[str] = []
@@ -66,17 +91,26 @@ def survey_worktrees(payload: ActionPayload) -> GcSurvey:
             candidates.append(str(wt))
         else:
             kept.append(f"{wt}: over the {cap}-per-tick cap, deferred to the next pass")
-    return GcSurvey(tuple(candidates), tuple(kept), enumeration.gaps, len(enumeration.paths))
+    return GcSurvey(tuple(candidates), tuple(kept), enumeration.gaps, len(enumeration.paths), stale_days=stale_days)
 
 
-def collect(survey: GcSurvey) -> float:
-    """Remove every candidate; return the GB the removals that succeeded returned."""
+def collect(survey: GcSurvey) -> GcOutcome:
+    """Remove every candidate the guard still allows, re-judged at the moment of removal."""
+    table = read_process_table()
+    if refusal := table.refuse_reason():
+        return GcOutcome(refusal=f"the process table stopped answering after the survey — {refusal}")
+    cwd = safe_cwd()
     reclaimed = 0.0
+    skipped: list[str] = []
     for wt in survey.candidates:
+        reason = keep_reason(Path(wt), stale_days=survey.stale_days, cwd=cwd, table=table)
+        if reason:
+            skipped.append(f"{wt}: {reason} since the survey")
+            continue
         size_gb = dir_size_gb(Path(wt))
         if remove_worktree(Path(wt)):
             reclaimed += size_gb
-    return reclaimed
+    return GcOutcome(reclaimed, tuple(skipped))
 
 
 def keep_reason(wt: Path, *, stale_days: int, cwd: Path | None, table: ProcessTable) -> str:
@@ -167,4 +201,4 @@ def _git(cwd: Path, *args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-__all__ = ["GcSurvey", "collect", "keep_reason", "survey_worktrees"]
+__all__ = ["GcOutcome", "GcSurvey", "collect", "keep_reason", "survey_worktrees"]

@@ -22,6 +22,7 @@ from teatree.core.cleanup import process_table
 from teatree.core.cleanup.checkout_registry import CheckoutRegistry
 from teatree.core.cleanup.venv_eviction import evict_venvs, plan_venv_eviction
 from tests._git_repo import make_git_repo
+from tests._process_table_venue import blinded_process_table
 
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
 _LONG_AGO = 1_600_000_000  # comfortably beyond any idle threshold under test
@@ -63,11 +64,11 @@ class TestEviction(_EvictionFixture):
         self._some_process_exists()
 
         plan = plan_venv_eviction(self.workspace, idle_days=1)
-        freed = evict_venvs(plan)
+        outcome = evict_venvs(plan)
 
         assert not venv.exists()
         assert (checkout / ".git").exists(), "the checkout holds the work; only the cache goes"
-        assert freed > 0
+        assert outcome.freed_bytes > 0
         assert plan.considered == 1
 
     def test_an_untracked_checkout_is_covered(self) -> None:
@@ -151,6 +152,34 @@ class TestGuards(_EvictionFixture):
         assert plan.gaps, "what went unread is reported"
         assert not plan.refusal, "a gap narrows the population; it does not refuse the pass"
         assert plan.candidates, "the checkouts that WERE seen are still reclaimable"
+
+    def test_a_venv_whose_checkout_gained_a_process_after_planning_is_not_deleted(self) -> None:
+        """Plan and delete are separated by the walks and prunes above — 34-68s on the box that produced this."""
+        checkout = make_git_repo(self.workspace / "gained")
+        venv = _venv_in(checkout)
+        self._some_process_exists()
+
+        plan = plan_venv_eviction(self.workspace, idle_days=1)
+        assert [candidate.venv for candidate in plan.candidates] == [venv], "the control: it was planned for eviction"
+        self._process_working_in(checkout / "src", pid="4243")
+        outcome = evict_venvs(plan)
+
+        assert venv.exists(), "an agent that arrived after planning must not have the floor pulled out"
+        assert outcome.freed_bytes == 0
+        assert any("a live process is working inside the checkout" in line for line in outcome.skipped)
+
+    def test_a_process_table_that_stops_answering_after_planning_refuses_the_eviction(self) -> None:
+        checkout = make_git_repo(self.workspace / "clone")
+        venv = _venv_in(checkout)
+        self._some_process_exists()
+
+        plan = plan_venv_eviction(self.workspace, idle_days=1)
+        assert plan.candidates, "the control: it was planned for eviction"
+        with blinded_process_table(self.workspace / "gone"):
+            outcome = evict_venvs(plan)
+
+        assert venv.exists(), "a table that went blind between planning and deleting authorises nothing"
+        assert outcome.refusal
 
     def test_the_per_pass_cap_reports_what_it_deferred(self) -> None:
         for index in range(3):

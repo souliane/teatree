@@ -101,11 +101,11 @@ def _is_cwd(wt_path: Path) -> bool:
     resolved = wt_path.resolve()
     if own is not None and _within(own, resolved):
         return True
-    return _any_process_cwd_within(resolved)
+    return _any_process_cwd_within(wt_path)
 
 
-def _any_process_cwd_within(resolved_wt: Path) -> bool:
-    """True iff any live process is placed inside ``resolved_wt``.
+def _any_process_cwd_within(wt_path: Path) -> bool:
+    """True iff any live process is placed inside ``wt_path``.
 
     Reads the shared host-aware table (:mod:`teatree.core.cleanup.process_table`)
     rather than this venue's own ``/proc``, which inside the worker container
@@ -113,8 +113,11 @@ def _any_process_cwd_within(resolved_wt: Path) -> bool:
     An unreadable table contributes no signal here — unlike the venv reaper, this
     reaper proves every change redundant before wiping anything, so the CWD check
     widens its guards rather than being the one that authorises the wipe.
+
+    The path goes in AS WRITTEN: the table matches both spellings itself, and
+    pre-resolving here would throw away the raw one.
     """
-    return read_process_table().holds(resolved_wt)
+    return read_process_table().holds(wt_path)
 
 
 def _git_lock_present(wt_path: Path) -> bool:

@@ -8,13 +8,31 @@ every case here asks whether an unanswerable table is reported as unanswerable,
 not merely whether the happy path resolves.
 """
 
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from teatree.core.cleanup import process_table
+from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
+
+
+@contextmanager
+def _child_working_in(directory: Path) -> Iterator[int]:
+    """A real child placed in *directory*, so the kernel canonicalises its cwd for us."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(300)"], cwd=directory, stdin=subprocess.DEVNULL
+    )
+    try:
+        yield child.pid
+    finally:
+        child.kill()
+        child.wait()
 
 
 def _proc_with(root: Path, placements: dict[str, Path]) -> Path:
@@ -49,6 +67,32 @@ class TestHolds:
         table = ProcessTable(frozenset({tmp_path / "elsewhere"}), "/proc")
 
         assert table.holds(tmp_path / "checkout") is False
+
+    def test_a_symlinked_spelling_of_a_held_directory_still_reads_as_held(self, tmp_path: Path) -> None:
+        """The reapers ask under whichever spelling sorts first, and the kernel only ever answers canonically."""
+        real = tmp_path / "real"
+        (real / "src").mkdir(parents=True)
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        with _child_working_in(real / "src") as pid:
+            table = ProcessTable(frozenset({Path(f"/proc/{pid}/cwd").readlink()}), "/proc")
+
+        assert table.holds(real.resolve()) is True, "the control: the probe can detect what it looks for"
+        assert table.holds(link) is True, "a live agent inside was queued for deletion under this spelling"
+        assert one_spelling_each(frozenset({str(real), str(link)})) == [link], (
+            "and the failing spelling is the one the reapers are handed"
+        )
+
+
+class TestRefuseReason:
+    def test_a_usable_table_refuses_nothing(self) -> None:
+        assert ProcessTable(frozenset(), "/proc", ("2 of 9 process(es) did not say",)).refuse_reason() == ""
+
+    def test_an_unusable_table_refuses_with_its_gaps(self) -> None:
+        assert ProcessTable(frozenset(), "", ("no readable table",)).refuse_reason() == "no readable table"
+
+    def test_an_unusable_table_with_no_gap_still_refuses(self) -> None:
+        assert ProcessTable(frozenset(), "").refuse_reason() == "the process table could not be read"
 
 
 class TestSourceSelection:

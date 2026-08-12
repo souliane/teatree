@@ -23,6 +23,17 @@ container's root answers about a path that need not exist here — measurably "0
 resolved" for a guard that is working fine. Every path below is the raw
 ``readlink`` string, compared as a path and never resolved.
 
+**The QUERY is the opposite, and the asymmetry is the point.** A kernel
+``readlink`` is already canonical in the namespace that produced it, so a caller
+asking about a SYMLINKED spelling of that same directory never matches it — and
+:func:`~teatree.core.cleanup.checkout_registry.one_spelling_each` hands the
+reapers whichever spelling sorts first, which is routinely the link. Measured
+with a live process inside: the real spelling read as held, the symlinked
+spelling read as free, so a checkout with an agent working in it was queued for
+deletion. :meth:`ProcessTable.holds` therefore matches the query under both its
+raw and its resolved spelling. That can only ever WIDEN the keep-set, so it can
+never itself authorise a deletion.
+
 An individual pid declining to answer is NOT what makes the table unusable:
 ``/proc/<pid>/cwd`` is readable only to the pid's own uid, so on a shared box the
 root daemons never answer and a table that demanded every answer would refuse
@@ -61,9 +72,32 @@ class ProcessTable:
         """True iff the table was read from a source covering the host's processes."""
         return bool(self.source)
 
+    def refuse_reason(self) -> str:
+        """Why this table may not authorise a deletion, or ``""`` when it may.
+
+        The one phrasing both destructive consumers refuse with, so a refusal
+        reads the same wherever it surfaces.
+        """
+        if self.usable:
+            return ""
+        return "; ".join(self.gaps) or "the process table could not be read"
+
     def holds(self, directory: Path) -> bool:
         """True iff a live process is working in *directory* or running from inside it."""
-        return any(path == directory or directory in path.parents for path in self.paths)
+        return any(
+            path == spelling or spelling in path.parents
+            for spelling in _query_spellings(directory)
+            for path in self.paths
+        )
+
+
+def _query_spellings(directory: Path) -> tuple[Path, ...]:
+    """*directory* as written and as resolved — an unresolvable path stays as written."""
+    try:
+        resolved = directory.resolve()
+    except OSError:
+        return (directory,)
+    return (directory,) if resolved == directory else (directory, resolved)
 
 
 def running_in_a_container() -> bool:

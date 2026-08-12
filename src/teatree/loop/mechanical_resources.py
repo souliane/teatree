@@ -190,6 +190,9 @@ def _append_venv_steps(plan: FreePlan, eviction: VenvEvictionPlan) -> None:
 
 
 def _append_gc_steps(plan: FreePlan, survey: "GcSurvey", *, allowed: bool) -> None:
+    if survey.refusal:
+        plan.steps.append(f"SKIP worktree GC — {survey.refusal}")
+        return
     plan.steps.append(
         f"GC worktrees: considered={survey.considered} eligible={len(survey.candidates)} kept={len(survey.kept)}"
     )
@@ -235,10 +238,22 @@ def _execute_disk(plan: FreePlan, payload: ActionPayload, survey: "DiskSurvey") 
     _run_uv_cache_prune()
     _clean_stale_statusline()
     plan.reclaimed_gb += _reclaim_docker_disk(plan)
-    plan.reclaimed_gb += evict_venvs(survey.venvs) / _GIB
+    eviction = evict_venvs(survey.venvs)
+    plan.reclaimed_gb += eviction.freed_bytes / _GIB
+    _append_stopped_deletions(plan, "venv eviction", eviction.refusal, eviction.skipped)
     _reap_done_worktrees(plan)
     if payload.get("allow_destructive_disk"):
-        plan.reclaimed_gb += collect(survey.gc)
+        collection = collect(survey.gc)
+        plan.reclaimed_gb += collection.reclaimed_gb
+        _append_stopped_deletions(plan, "worktree GC", collection.refusal, collection.skipped)
+
+
+def _append_stopped_deletions(plan: FreePlan, what: str, refusal: str, skipped: tuple[str, ...]) -> None:
+    """Record what the delete-time guard stopped — a silent skip is the defect class itself."""
+    if refusal:
+        plan.steps.append(f"ABORT {what} at deletion time — {refusal}")
+    for line in _sampled(skipped):
+        plan.steps.append(f"  SKIP {line}")
 
 
 def _reap_done_worktrees(plan: FreePlan) -> None:

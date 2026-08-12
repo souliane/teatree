@@ -261,6 +261,20 @@ class TestCwdScanSeesOtherProcesses(TestCase):
         with patch.object(process_table, "_HOST_PROC_ROOT", proc):
             assert cl._any_process_cwd_within(wt.resolve()) is False
 
+    def test_the_worktrees_raw_spelling_is_matched_when_resolving_would_miss(self) -> None:
+        """Under the host bind mount the table holds HOST paths, which need not resolve in this namespace.
+
+        Same harness as :meth:`test_scans_proc_for_foreign_process_cwd_inside_worktree`
+        above, so a green there is the proof this one can detect what it looks for.
+        """
+        real = self._tmp_path / "real"
+        real.mkdir()
+        link = self._tmp_path / "link"
+        link.symlink_to(real)
+        proc = self._fake_proc_with_cwd("1234", link)
+        with patch.object(process_table, "_HOST_PROC_ROOT", proc):
+            assert cl._is_cwd(link) is True
+
     def test_worktree_liveness_marks_active_on_foreign_process_cwd(self) -> None:
         wt = self._tmp_path / "wt"
         wt.mkdir()
