@@ -120,9 +120,9 @@ def _install_checkout_git_config(repo: Path) -> None:
 
     A checkout whose hooks were never installed pushes with the whole local gate
     layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors;
-    a checkout without the ``generated`` merge driver leaves textual conflict
-    markers on generated docs (the CLI reference, antipattern catalog) on every
-    CLI-touching PR (souliane/teatree#3582). Both are per-``.git/config``
+    a checkout without the ``generated`` merge driver merges a generated doc with
+    no warning that it is now stale against the merged command tree
+    (souliane/teatree#3582, souliane/teatree#4259). Both are per-``.git/config``
     properties, so both walk the same checkout set.
 
     Ordering: ``prek_hook.install`` routes through ``run_step``'s optional
