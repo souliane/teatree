@@ -26,7 +26,9 @@ _SCRIPT_OPERAND_TOKEN = re.compile(r"eval|-[A-Za-z]*c")
 #: allowlist of INTERPRETER names — has an unbounded tail: ``. /dev/stdin``, ``source
 #: /dev/stdin`` and ``while read -r l; do eval "$l"; done`` all execute the redirected
 #: text while naming no interpreter, so enumerating interpreters cannot terminate.
-#: Widen this set only by name, with the case that forced it.
+#: Widen this set only by name, with the case that forced it. Its WIDTH — and that a
+#: prefixed spelling (``env cat``) resolves to the prefix rather than to what it execs —
+#: is a separate defect class tracked in ``evals/README.md``; both only ever over-keep.
 _STDIN_READERS = frozenset({"cat", "egrep", "fgrep", "grep", "head", "sort", "t3", "tail", "tee", "tr", "uniq", "wc"})
 
 #: Words at or above which a standalone quoted operand reads as prose rather than as a
@@ -85,16 +87,77 @@ def executed_span(command: str) -> str:
     command segment provably just READS its stdin (:data:`_STDIN_READERS`); an unknown,
     expanded, globbed or compound command word leaves it kept, however long it is.
     An unquoted-delimiter heredoc body is always kept. A kept region has its quotes
-    removed, as the shell removes them. Anything unparsable — an unbalanced quote, a
-    heredoc with no terminator — keeps the remainder verbatim, so neither a stray
-    apostrophe nor a quoted fragment of the act can silently strip a matcher's teeth.
+    removed, as the shell removes them, and otherwise carries its ORIGINAL bytes —
+    line continuations included, since the matcher regexes the emitted span. Anything
+    unparsable — an unbalanced quote, a heredoc with no terminator — keeps the remainder
+    verbatim, so neither a stray apostrophe nor a quoted fragment of the act can silently
+    strip a matcher's teeth.
     """
     return _SpanScanner(command).run()
 
 
+class _Splice:
+    r"""*command* with its line continuations removed, plus the map back to its bytes.
+
+    bash strips ``\``+newline while READING, before any token is recognised, so every
+    decision this module makes belongs on the spliced text — measured against a real
+    bash, ``2>\``+newline+``&1``, ``&\``+newline+``>``, ``>\``+newline+``(`` and
+    ``<<\``+newline+``<`` each form the single operator their joined spelling names.
+    Splicing ONCE here is what stops the next raw-byte read from re-opening that hole.
+
+    Emission maps spans back through :meth:`bytes_of`, so a kept region carries the
+    ORIGINAL bytes: the eval gate matches on the span's output, and rewriting it would
+    move the very text a negative matcher regexes against.
+
+    Known limits, each measured and each fail-CLOSED (the region is kept, never dropped):
+    a quoted-delimiter heredoc BODY is literal to bash and is spliced here anyway, so a
+    body line ending in a backslash loses its terminator and keeps the remainder; and a
+    single-quoted region nested inside a substitution is read with the enclosing double
+    quotes' rules. ANSI-C ``$'…'`` quoting is not modelled.
+    """
+
+    def __init__(self, command: str) -> None:
+        text: list[str] = []
+        origin: list[int] = []
+        index = 0
+        quote = ""
+        while index < len(command):
+            char = command[index]
+            if quote == "'":
+                # bash removes NO continuation between a single quote and its closer
+                # (measured: ``ab\``+newline+``cd`` prints the pair literally).
+                quote = "" if char == "'" else quote
+                width = 1
+            elif command.startswith("\\\n", index):
+                index += 2
+                continue
+            elif char == "\\" and index + 1 < len(command):
+                # ``\\`` is an escaped backslash, so a newline AFTER it is a real one; consuming
+                # the pair keeps a left-to-right scan from reading that newline as a continuation.
+                width = 2
+            elif char in "'\"":
+                quote = "" if char == quote else quote or char
+                width = 1
+            else:
+                width = 1
+            text += command[index : index + width]
+            origin += range(index, index + width)
+            index += width
+        self.text = "".join(text)
+        # A removed pair belongs to the region of the character it PRECEDED at the ends and
+        # the one it FOLLOWED elsewhere, so concatenated spans reproduce *command* exactly.
+        self._origin = [0, *origin[1:], len(command)]
+        self._command = command
+
+    def bytes_of(self, start: int, end: int) -> str:
+        """The original bytes of ``text[start:end]``, the continuations inside it included."""
+        return self._command[self._origin[start] : self._origin[end]]
+
+
 class _SpanScanner:
     def __init__(self, command: str) -> None:
-        self._src = command
+        self._splice = _Splice(command)
+        self._src = self._splice.text
         self._out: list[str] = []
         self._pos = 0
         self._pending_heredocs: list[tuple[str, bool]] = []
@@ -107,25 +170,25 @@ class _SpanScanner:
             char = self._src[self._pos]
             self._track_herestring_operand(char)
             if char == "\\" and self._pos + 1 < len(self._src):
-                self._emit(self._src[self._pos : self._pos + 2])
+                self._emit(self._pos, self._pos + 2)
                 self._pos += 2
             elif char == "'":
                 self._scan_single_quoted()
             elif char == '"':
                 self._scan_double_quoted()
             elif char == "\n":
-                self._emit(char)
+                self._emit(self._pos, self._pos + 1)
                 self._pos += 1
                 self._drain_heredoc_bodies()
                 self._segment_start = self._pos
             elif self._src.startswith(_HERESTRING_OP, self._pos):
-                self._emit(_HERESTRING_OP)
+                self._emit(self._pos, self._pos + len(_HERESTRING_OP))
                 self._pos += len(_HERESTRING_OP)
                 self._herestring_pending = True
             elif self._src.startswith("<<", self._pos):
                 self._scan_heredoc_operator()
             else:
-                self._emit(char)
+                self._emit(self._pos, self._pos + 1)
                 self._pos += 1
                 if char == "|" or char in _GROUP_CLOSE or _ends_a_list(self._src, self._pos - 1):
                     self._segment_start = self._pos
@@ -146,21 +209,21 @@ class _SpanScanner:
         elif self._herestring_operand and (char.isspace() or char in ";|&()<>"):
             self._herestring_operand = ""
 
-    def _emit(self, text: str) -> None:
-        self._out.append(text)
+    def _emit(self, start: int, end: int) -> None:
+        self._out.append(self._splice.bytes_of(start, end))
 
     def _keep_raw_remainder(self) -> None:
-        self._emit(self._src[self._pos :])
+        self._emit(self._pos, len(self._src))
         self._pos = len(self._src)
 
     def _preceding_token(self) -> str | None:
         r"""The word before the cursor as bash resolves it, or ``None`` if only bash can.
 
-        Spliced, then unquoted and unescaped, so ``bash -c \``+newline+``'…'``,
-        ``'eval' '…'`` and ``\eval '…'`` reach the script-operand rule that the raw
-        spelling misses. ``$x`` resolves at runtime, so it is undecidable here.
+        Unquoted and unescaped, so ``bash -c \``+newline+``'…'``, ``'eval' '…'`` and
+        ``\eval '…'`` reach the script-operand rule that the raw spelling misses. ``$x``
+        resolves at runtime, so it is undecidable here.
         """
-        word = _TOKEN_BOUNDARY.split(_splice(self._src[: self._pos]).rstrip())[-1]
+        word = _TOKEN_BOUNDARY.split(self._src[: self._pos].rstrip())[-1]
         return _resolve_word(word) if word else ""
 
     def _keeps(self, body: str) -> bool:
@@ -185,7 +248,7 @@ class _SpanScanner:
             return
         body = self._src[self._pos + 1 : close]
         if self._keeps(body):
-            self._emit(body)
+            self._emit(self._pos + 1, close)
         self._pos = close + 1
 
     def _scan_double_quoted(self) -> None:
@@ -194,17 +257,26 @@ class _SpanScanner:
             self._keep_raw_remainder()
             return
         body = self._src[self._pos + 1 : close]
-        self._emit(body if self._keeps(body) else _substitutions(body))
+        if self._keeps(body):
+            self._emit(self._pos + 1, close)
+        else:
+            self._emit_substitutions(self._pos + 1, body)
         self._pos = close + 1
+
+    def _emit_substitutions(self, body_start: int, body: str) -> None:
+        """The ``$( … )`` and backtick spans of an elided double-quoted *body*, joined."""
+        self._out.append(
+            " ".join(self._splice.bytes_of(body_start + a, body_start + b) for a, b in _substitution_spans(body))
+        )
 
     def _scan_heredoc_operator(self) -> None:
         match = _HEREDOC_OP.match(self._src, self._pos)
         if match is None:
-            self._emit(self._src[self._pos : self._pos + 2])
+            self._emit(self._pos, self._pos + 2)
             self._pos += 2
             return
         quoted = match["quoted_delim"]
-        self._emit(match.group(0))
+        self._emit(match.start(), match.end())
         elide = quoted is not None and self._is_data_only()
         self._pending_heredocs.append((quoted or match["delim"], elide))
         self._pos = match.end()
@@ -216,9 +288,10 @@ class _SpanScanner:
         answers on POSITIVE proof only: an unknown, expanded, globbed or compound command
         word leaves the segment unproven, and unproven keeps. The window is every program
         the redirected text can reach — bounded by bash's own control operators, not by a
-        physical line and not by a raw character — so a ``\``+newline continuation, a
-        newline inside a quoted argument, an intervening heredoc body, an enclosing group
-        and a redirection operator spelling ``&`` all stop bounding it.
+        physical line — so a newline inside a quoted argument, an intervening heredoc body,
+        an enclosing group and a redirection operator spelling ``&`` all stop bounding it.
+        A ``\``+newline continuation is already gone: the text scanned here is
+        :class:`_Splice`'s, so no bound is derived from bytes bash removed before parsing.
         """
         start = self._segment_start
         segment = self._src[start : _segment_end(self._src, start, _open_groups(self._src, start))]
@@ -234,7 +307,7 @@ class _SpanScanner:
                 self._keep_raw_remainder()
                 return
             if not elide:
-                self._emit(self._src[self._pos : body_end])
+                self._emit(self._pos, body_end)
             self._pos = body_end
 
     def _body_end(self, delimiter: str) -> int | None:
@@ -247,11 +320,6 @@ class _SpanScanner:
                 return line_end
             cursor = line_end
         return None
-
-
-def _splice(text: str) -> str:
-    """*text* with its line continuations joined, as bash joins them before parsing."""
-    return text.replace("\\\n", "")
 
 
 def _resolve_word(raw: str) -> str | None:
@@ -399,7 +467,7 @@ def _quoted_region_end(text: str, start: int) -> int | None:
 
 
 def _stage_tokens(stage: str) -> Iterator[str]:
-    """*stage* cut into words and bare redirection characters, continuations spliced away.
+    """*stage* cut into words and bare redirection characters.
 
     A redirection operator needs no space in front of it, so ``bash<<<'…'`` is one
     whitespace-delimited token whose command word a whitespace-only split never sees.
@@ -409,7 +477,7 @@ def _stage_tokens(stage: str) -> Iterator[str]:
     while index < len(stage):
         char = stage[index]
         if char == "\\" and index + 1 < len(stage):
-            word += [stage[index : index + 2]] if stage[index + 1] != "\n" else []
+            word.append(stage[index : index + 2])
             index += 2
         elif char in "'\"":
             close = _quoted_region_end(stage, index)
@@ -513,9 +581,8 @@ def _matching_paren(text: str, open_index: int) -> int | None:
     return None
 
 
-def _substitutions(body: str) -> str:
-    """The ``$( … )`` and backtick spans of a double-quoted *body*, joined."""
-    spans: list[str] = []
+def _substitution_spans(body: str) -> Iterator[tuple[int, int]]:
+    """``(start, end)`` for each ``$( … )`` and backtick span of a double-quoted *body*."""
     index = 0
     while index < len(body):
         if body[index] == "\\":
@@ -523,15 +590,14 @@ def _substitutions(body: str) -> str:
         elif body.startswith("$(", index):
             end = _matching_paren(body, index + 1)
             if end is None:
-                break
-            spans.append(body[index : end + 1])
+                return
+            yield index, end + 1
             index = end + 1
         elif body[index] == "`":
             backtick = body.find("`", index + 1)
             if backtick == -1:
-                break
-            spans.append(body[index : backtick + 1])
+                return
+            yield index, backtick + 1
             index = backtick + 1
         else:
             index += 1
-    return " ".join(spans)

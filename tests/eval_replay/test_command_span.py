@@ -1,5 +1,12 @@
-"""The executed span of a shell command — what the shell runs, payloads elided."""
+"""The executed span of a shell command — what the shell runs, payloads elided.
 
+Every verdict below is measured against a real ``/bin/bash``. The enumerated tables are
+ground-truth-anchored breadth over the class, not the proof of any one fix — 31 of the 70
+parametrised cases are green at every revision this module has had. The proof that the
+continuation class is closed is the GENERATIVE sweep, which mutates those same tables.
+"""
+
+import ast
 import os
 import pathlib
 import re
@@ -7,8 +14,8 @@ import subprocess
 
 import pytest
 
-from teatree.eval import matchers
-from teatree.eval.command_span import executed_span
+from teatree.eval import command_span, matchers
+from teatree.eval.command_span import _Splice, executed_span
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matchers import DERIVED_VIEW_NAMES
 from teatree.eval.models import AnyOf, Matcher
@@ -496,6 +503,21 @@ def _bash_runs_the_act(command: str, stub_bin: pathlib.Path, log: pathlib.Path) 
     return ACT in log.read_text(encoding="utf-8")
 
 
+def _continuation_mutants(command: str) -> list[str]:
+    r"""*command* with a ``\``+newline inserted at each of its ``len + 1`` positions."""
+    return [f"{command[:index]}\\\n{command[index:]}" for index in range(len(command) + 1)]
+
+
+def _joined(text: str) -> str:
+    r"""*text* with its continuations removed — what a program handed the text reads.
+
+    A mutant landing inside a PAYLOAD is kept literal by bash and spliced only by the
+    interpreter that runs the text, so the act reaches the span in bash's own pre-splice
+    spelling; asserting on the raw span reports 25 phantom failures.
+    """
+    return text.replace("\\\n", "")
+
+
 @pytest.mark.skipif(not pathlib.Path("/bin/bash").exists(), reason="ground truth needs a real /bin/bash")
 class TestBashGroundTruth:
     """Every verdict is measured against a real bash, never asserted from the grammar.
@@ -534,6 +556,100 @@ class TestBashGroundTruth:
     ) -> None:
         assert _bash_runs_the_act(command, stub_bin, tmp_path / "log"), f"{name}: bash no longer runs the act"
         assert program in executed_span(command)
+
+    @pytest.mark.parametrize(("name", "command"), EXECUTES, ids=[name for name, _ in EXECUTES])
+    def test_a_continuation_at_any_position_still_keeps_what_bash_executes(
+        self, name: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        r"""The generative half: mutate each entry at every position, keep what bash still runs.
+
+        Enumerating spellings is what shipped four siblings one character apart — each pass
+        closed the reported one while the generator that produced it kept producing others.
+        """
+        log = tmp_path / "log"
+        executed = [mutant for mutant in _continuation_mutants(command) if _bash_runs_the_act(mutant, stub_bin, log)]
+        dropped = [mutant for mutant in executed if ACT not in _joined(executed_span(mutant))]
+        assert executed, f"{name}: no mutant runs the act, so this entry pins nothing"
+        assert not dropped, f"{name}: {len(dropped)} of {len(executed)} silently elided, first {dropped[0]!r}"
+
+    @pytest.mark.parametrize(
+        ("name", "command"),
+        READS_ONLY + NEVER_REDIRECTED,
+        ids=[name for name, _ in READS_ONLY + NEVER_REDIRECTED],
+    )
+    def test_a_continuation_never_makes_bash_run_a_payload(
+        self, name: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        """The negative control's premise: mutating a reader leaves it a reader.
+
+        Without it the sweep above is satisfiable by keeping everything, and the elision
+        these entries pin would be free to disappear.
+        """
+        log = tmp_path / "log"
+        runs = [mutant for mutant in _continuation_mutants(command) if _bash_runs_the_act(mutant, stub_bin, log)]
+        assert not runs, f"{name}: a continuation made bash execute the payload, first {runs[0]!r}"
+
+
+class TestAContinuationBashRemovesMovesNoVerdict:
+    r"""A mutant bash reads IDENTICALLY must span identically — the property, not its instances.
+
+    The residue was never four bugs: it was one property — decisions taken on raw bytes —
+    instantiated at every site that read them, so patching a site left the next one to be
+    found. This pins the property over the same corpus the sweep above mutates, and needs no
+    bash: the entries' own bash verdicts are ground truth in :class:`TestBashGroundTruth`.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "command"),
+        EXECUTES + READS_ONLY + NEVER_REDIRECTED,
+        ids=[name for name, _ in EXECUTES + READS_ONLY + NEVER_REDIRECTED],
+    )
+    def test_a_mutant_that_splices_back_to_the_command_spans_the_same(self, name: str, command: str) -> None:
+        view = _Splice(command).text
+        expected = _joined(executed_span(command))
+        same = [mutant for mutant in _continuation_mutants(command) if _Splice(mutant).text == view]
+        assert same, f"{name}: no mutant splices back to the command, so this entry pins nothing"
+        for mutant in same:
+            assert _joined(executed_span(mutant)) == expected, f"{name}: {mutant!r} moved the verdict"
+
+
+class TestOnlyEmissionReachesTheOriginalBytes:
+    """Structural: a SIXTH decision site cannot be written against the raw bytes.
+
+    The generative sweep is empirical evidence over today's corpus; this is what stops the
+    property being re-introduced by code the corpus does not reach.
+    """
+
+    @staticmethod
+    def _module() -> ast.Module:
+        return ast.parse(pathlib.Path(command_span.__file__).read_text(encoding="utf-8"))
+
+    def test_the_byte_map_is_read_only_by_the_emitters(self) -> None:
+        callers = {
+            function.name
+            for function in ast.walk(self._module())
+            if isinstance(function, ast.FunctionDef)
+            and any(
+                isinstance(call.func, ast.Attribute) and call.func.attr == "bytes_of"
+                for call in ast.walk(function)
+                if isinstance(call, ast.Call)
+            )
+        }
+        assert callers == {"_emit", "_emit_substitutions"}
+
+    def test_the_scanner_hands_the_raw_command_to_the_splice_and_nothing_else(self) -> None:
+        scanner = next(
+            node for node in ast.walk(self._module()) if isinstance(node, ast.ClassDef) and node.name == "_SpanScanner"
+        )
+        init = next(node for node in scanner.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+        raw = [node for node in ast.walk(init) if isinstance(node, ast.Name) and node.id == "command"]
+        spliced = [
+            call
+            for call in ast.walk(init)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "_Splice"
+        ]
+        assert len(raw) == 1
+        assert len(spliced) == 1
 
 
 class TestTeethAreKept:
