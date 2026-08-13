@@ -46,6 +46,7 @@ from teatree.config.setting_groups import group_outline
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.factory.feature_inertness import feature_inertness, render_inertness_report
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 
@@ -247,6 +248,17 @@ class Command(TyperCommand):
         code-level registry only — it writes nothing to the ``ConfigSetting`` store.
         """
         self.stdout.write(render_flags_audit(FEATURE_FLAGS))
+
+    @command()
+    def inert(self) -> None:
+        """Which gated features shipped and then never ran (#4189).
+
+        One line per gate that is off in every scope and whose declared observable is
+        empty — the feature twin of ``t3 loops audit``'s shipped-seed report. A gate
+        nobody ever decided to leave off is surfaced LOUD; one the owner deliberately
+        staged is listed quietly, so the report stays worth reading.
+        """
+        self.stdout.write(render_inertness_report(feature_inertness()))
 
     @command()
     def get(

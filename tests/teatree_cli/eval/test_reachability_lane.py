@@ -7,7 +7,7 @@ shipped scenario + fixture ``t3 …`` invocation against the LIVE CLI registry.
 It is ADVISORY by default (report + exit 0) because the shipped corpus still
 carries known-false-positive references (overlay-slot fixture names, prose
 fragments); ``--fail-on-unreachable`` flips it to a gate for when those precision
-gaps close, mirroring ``t3 eval coverage --fail-on-gap``.
+gaps close — the stage ``t3 eval coverage`` has already left behind.
 """
 
 import contextlib

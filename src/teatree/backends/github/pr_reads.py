@@ -211,8 +211,10 @@ def _review_threads_page(
 ) -> tuple[Sequence[object], str | None] | None:
     """One page of review threads as ``(nodes, next_cursor)``, or ``None`` when unreadable.
 
-    ``next_cursor`` is ``None`` on the last page; a ``hasNextPage`` with no usable
-    ``endCursor`` also ends the walk, since there is no way to advance it.
+    ``next_cursor`` is ``None`` on the last page. A ``hasNextPage`` with no usable
+    ``endCursor`` is UNREADABLE, not a last page: threads exist past this read and
+    nothing can advance to them, so returning what was seen is the same partial
+    count the walk replaced.
     """
     query = _REVIEW_THREADS_QUERY.format(owner=owner, repo=name, number=pr_iid, after=after)
     try:
@@ -238,7 +240,9 @@ def _review_threads_page(
     if dig(threads, "pageInfo", "hasNextPage") is not True:
         return nodes, None
     end_cursor = dig(threads, "pageInfo", "endCursor")
-    return nodes, end_cursor if isinstance(end_cursor, str) and end_cursor else None
+    if not isinstance(end_cursor, str) or not end_cursor:
+        return None
+    return nodes, end_cursor
 
 
 def pr_open_state(*, pr_url: str, token: str) -> PrOpenState:

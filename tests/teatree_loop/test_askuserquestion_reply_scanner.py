@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.agents._headless_options import _get_resume_session_id
-from teatree.core.models import ConfigSetting, PendingChatInjection, Session, Task, TaskAttempt, Ticket
+from teatree.agents._runner_options import _get_resume_session_id
+from teatree.core.models import PendingChatInjection, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
@@ -217,14 +217,12 @@ class TestParkedTaskHeadlessResume:
     """
 
     def _parked_task(self) -> Task:
-        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
         parked = Task.objects.create(
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(task=parked, agent_session_id=_RESUME_UUID)
         return parked
@@ -245,7 +243,6 @@ class TestParkedTaskHeadlessResume:
         question.refresh_from_db()
         assert question.answer_text == "use postgres-1"
         resume = parked.child_tasks.get()
-        assert resume.execution_target == Task.ExecutionTarget.HEADLESS
         assert resume.parent_task_id == parked.pk
         assert "use postgres-1" in resume.execution_reason
         assert _get_resume_session_id(resume) == _RESUME_UUID

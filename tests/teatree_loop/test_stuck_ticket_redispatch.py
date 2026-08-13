@@ -58,7 +58,6 @@ def _finished_task(
     task = Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1 if error else 0,
         error=error,
@@ -182,7 +181,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=f"planning failed run {'x' * (i + 1)}",
@@ -211,7 +209,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=err,
@@ -230,7 +227,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=f"planning failed run {'x' * (i + 1)}",
@@ -456,6 +452,24 @@ class TestFailingCandidates(TestCase):
         ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
         for _ in range(2):
             _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=NO_ENVELOPE_ERROR)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_repeated_runtime_ceilings_are_redispatched_though_their_fingerprints_differ(self) -> None:
+        # #4276: the sibling causeless kind, and the one the KIND-level drop actually
+        # carries — the reason interpolates the breach, so the two fingerprint
+        # differently and the fingerprint filter has nothing to drop. Only
+        # ``_deterministic_kinds`` keeps this out of the two-strikes stall.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for seconds in (3601, 3722):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting",
+            )
 
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1

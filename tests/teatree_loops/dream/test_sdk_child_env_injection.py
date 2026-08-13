@@ -22,7 +22,7 @@ import pytest
 from django.test import SimpleTestCase
 from django.test.testcases import DatabaseOperationForbidden  # ty: ignore[unresolved-import]
 
-from teatree.agents._headless_env import system_child_env
+from teatree.agents._runner_env import system_child_env
 from teatree.loops.dream import sdk_distiller, sdk_eval_synthesizer
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text

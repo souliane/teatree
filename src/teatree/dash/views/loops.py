@@ -1,4 +1,4 @@
-"""The loop-control surface: per-loop verbs, posture switch, gate toggle (#3162).
+"""The loop-control surface: per-loop verbs, mode switch, gate toggle (#3162).
 
 Every mutation POSTs through here CSRF-protected (Django's ``CsrfViewMiddleware``
 guards these unexempted views), drives the SAME manager/override chokepoints the
@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, TypedDict
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from teatree.core.mode_resolution import clear_mode_override, mode_name_for_posture, set_mode_override
+from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.loop_control import (
     GATE_CONFIRM_PHRASE,
-    POSTURE_ACTIONS,
+    MODE_SWITCH_AUTO,
     RUNNER_CONFIRM_PHRASE,
     LoopActionError,
     LoopControlView,
@@ -92,25 +92,23 @@ def loop_action(request: "HttpRequest") -> "HttpResponse":
 
 @require_loopback_or_staff
 @require_POST
-def posture(request: "HttpRequest") -> "HttpResponse":
-    """POST a posture switch through the merged mode-override chokepoint (#61, #3826).
+def mode_switch(request: "HttpRequest") -> "HttpResponse":
+    """POST a mode switch through the mode-override chokepoint (#61, #3826).
 
-    Each switch resolves the mode carrying that posture BY ROW and sets (or clears) a
-    ``ModeOverride`` via :func:`teatree.core.mode_resolution.set_mode_override` /
-    :func:`clear_mode_override`, keeping the return-to-reachable deferred-question
-    drain firing exactly like the ``t3 loop preset`` CLI.
+    The switch names a ``Mode`` row (or ``auto`` to clear the override) and sets it via
+    :func:`teatree.core.mode_resolution.set_mode_override` / :func:`clear_mode_override`,
+    the same chokepoint the ``t3 loop preset`` CLI uses. An unknown name is refused
+    there rather than written as an override that falls open to base config.
     """
-    switch = request.POST.get("posture", "").strip()
-    if switch not in POSTURE_ACTIONS:
-        return _answer(request, error=f"unknown posture {switch!r}")
-    if switch == "auto":
-        clear_mode_override(user_id=actor(request))
+    switch = request.POST.get("mode", "").strip()
+    if switch == MODE_SWITCH_AUTO:
+        clear_mode_override()
     else:
         try:
-            set_mode_override(mode_name_for_posture(switch), user_id=actor(request))
+            set_mode_override(switch)
         except LookupError as exc:
             return _answer(request, error=str(exc))
-    audit.record(actor=actor(request), action="posture", after=switch)
+    audit.record(actor=actor(request), action="mode", after=switch)
     return _answer(request)
 
 

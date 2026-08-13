@@ -8,7 +8,7 @@ never be added on the producing side without the consuming side learning it.
 Two seams produce an envelope refusal, and they used to name it in two
 hand-maintained vocabularies that drifted:
 
-* the RUNNER (:func:`teatree.agents.headless._record_success`) refuses a run whose
+* the RUNNER (:func:`teatree.agents.runner._record_success`) refuses a run whose
     output carried no JSON object at all — :data:`NO_ENVELOPE_ERROR`;
 * the RECORDER (:mod:`teatree.agents.attempt_recorder`, :func:`…result_schema.check_evidence`)
     refuses an envelope that parsed but is unusable — wrong keys, not an object, or
@@ -27,7 +27,7 @@ What this module makes possible is a BOUNDED, satisfiable correction of it.
 
 from teatree.agents.result_schema import required_evidence_for_phase
 
-#: Prefix the headless runner stamps on a run that emitted no JSON object at all.
+#: Prefix the agent runner stamps on a run that emitted no JSON object at all.
 NO_ENVELOPE_PREFIX = "no_result_envelope: "
 
 #: The runner's full refusal reason. Deliberately a CONSTANT with no run-specific detail,

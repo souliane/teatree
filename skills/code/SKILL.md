@@ -74,7 +74,9 @@ For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), c
 
 ```bash
 git fetch origin main -q
-git worktree add -b <short-branch> ../<repo>-wt-<slug> origin/main
+# `--no-track` is load-bearing: without it the new branch tracks origin/main, so
+# `git push` on it refuses confusingly — and aims at main under push.default=upstream.
+git worktree add -b <short-branch> --no-track ../<repo>-wt-<slug> origin/main
 cd ../<repo>-wt-<slug>
 # only now: Edit / Write the file
 ```

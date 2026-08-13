@@ -577,12 +577,12 @@ class TestPublishPrivacyGatesDoNotOverBlock:
     """The newly-reachable privacy gates (#171) must not lock out clean traffic.
 
     PR A made the Slack-MCP arm of the #1213 quote-scanner gate reachable (the
-    ``mcp__.*[Ss]lack.*`` matcher) and added a TaskCreated dispatch-quote arm.
-    Symmetric to the bypass corpus: a regression that DENIES a clean Slack send
-    or a clean fan-out task is an OVER-BLOCK lockout. The loop's own user-DMs go
-    through the ``t3 ... notify`` CLI / webhook, NOT a ``mcp__*slack*`` write
-    tool, so the loop is unaffected; this guards that an ordinary clean
-    Slack-MCP send and a clean fan-out brief still pass.
+    ``mcp__.*[Ss]lack.*`` matcher) and added a task-list quote arm on
+    ``TaskCreated``. Symmetric to the bypass corpus: a regression that DENIES a
+    clean Slack send or a clean task-list entry is an OVER-BLOCK lockout. The
+    loop's own user-DMs go through the ``t3 ... notify`` CLI / webhook, NOT a
+    ``mcp__*slack*`` write tool, so the loop is unaffected; this guards that an
+    ordinary clean Slack-MCP send and a clean todo still pass.
     """
 
     @pytest.fixture(autouse=True)
@@ -609,7 +609,7 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         assert verdict is not True, "LOCKOUT regression — clean Slack-MCP send was blocked by the publish-privacy gate."
         assert capsys.readouterr().out.strip() == ""
 
-    def test_clean_fanout_task_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_clean_task_list_entry_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._enable("dispatch_quote_gate_on_task_create_enabled")
         data = {
             "session_id": "sess-corpus",
@@ -617,7 +617,7 @@ class TestPublishPrivacyGatesDoNotOverBlock:
             "task_description": "Wire the export endpoint to the dashboard per the spec.",
         }
         verdict = handle_dispatch_prompt_quote_scanner_on_task_create(data)
-        assert verdict is not True, "LOCKOUT regression — clean fan-out task was blocked by the dispatch-quote gate."
+        assert verdict is not True, "LOCKOUT regression — a clean task-list entry was blocked by the quote gate."
         assert capsys.readouterr().out.strip() == ""
 
 

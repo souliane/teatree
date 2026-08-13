@@ -144,7 +144,7 @@ def _model_settings(model: Model, effort: EffortLevel | None, max_tokens: int) -
 
     Reuses the harness's effort-vocabulary guard (:func:`~teatree.agents.harness.resolve_effort`)
     so the ``pydantic_ai`` lane drops an out-of-vocabulary rung (``max``) exactly as
-    a headless dispatch does, rather than handing the provider a level it rejects.
+    a agent dispatch does, rather than handing the provider a level it rejects.
 
     Deliberately NOT routed through the harness lane's
     :func:`~teatree.agents.pydantic_ai_config.build_model_settings`: that builder branches

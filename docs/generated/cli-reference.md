@@ -22,8 +22,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 credit.                                                      │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Read text aloud through the local speakers per  (no-op       │
-│                 unless local = all).                                         │
+│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
@@ -235,7 +234,7 @@ Usage: t3 tokens [OPTIONS]
 ```
 Usage: t3 speak [OPTIONS] TEXT
 
- Read text aloud through the local speakers per  (no-op unless local = all).
+ Refuse to speak — local audio cannot reach the user.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
@@ -766,6 +765,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ unapprove            Revoke your approval on a GitLab MR.                    │
 │ checkout             Materialise a detached review worktree at the exact     │
 │                      reviewed head.                                          │
+│ merge-tree           Extract the merge result of --base and --head into a    │
+│                      plain directory.                                        │
 │ run                  Run the review-shape audit for a GitLab MR or GitHub PR │
 │                      and print a JSON summary.                               │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
@@ -1103,6 +1104,30 @@ Usage: t3 review checkout [OPTIONS] URL
 │                            [default: origin]                                 │
 │    --base-dir        TEXT  Parent directory for the temp worktree.           │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review merge-tree`
+
+```
+Usage: t3 review merge-tree [OPTIONS]
+
+ Extract the merge result of --base and --head into a plain directory.
+
+ Never a git worktree — resolve_data_dir auto-isolates one onto a per-worktree
+ DB, which is its own wrong-answer generator. The extract is a primary checkout
+ whose origin is the source clone's real remote URL, so code reading repository
+ identity resolves it; --no-git opts out.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --base          TEXT  Target-branch ref the PR would merge into.             │
+│                       [default: origin/main]                                 │
+│ --head          TEXT  PR head ref to merge into --base. [default: HEAD]      │
+│ --repo          TEXT  Local clone holding both refs. [default: .]            │
+│ --into          TEXT  Destination directory (default: a fresh temp dir).     │
+│ --no-git              Leave a bare directory instead of a primary checkout   │
+│                       carrying the real origin.                              │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1663,6 +1688,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           grade captured sessions.                           │
 │ label                     Corpus-label curation: list nominations, scaffold  │
 │                           a label, review the corpus.                        │
+│ quarantine                The known-red quarantine: scenarios the bounded PR │
+│                           lane does not select.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1831,14 +1858,13 @@ Usage: t3 eval coverage [OPTIONS]
  own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
  reason. A skill that is
  neither is a GAP. Deterministic and model-free — no ``claude -p`` invocation.
- Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
- Phase-B enforcement that exits non-zero on any gap.
+ A gap exits non-zero, the same verdict the ``skill-coverage`` lane under bare
+ ``t3 eval`` and the ``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate
+ return for the same corpus — one predicate, one verdict, on every surface.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format             TEXT  Report format: text or json. [default: text]      │
-│ --fail-on-gap              Exit non-zero on any coverage gap (Phase B        │
-│                            enforcement); default is warn-first (exit 0).     │
-│ --help                     Show this message and exit.                       │
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3065,6 +3091,74 @@ Usage: t3 eval label review [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval quarantine`
+
+```
+Usage: t3 eval quarantine [OPTIONS] COMMAND [ARGS]...
+
+ The known-red quarantine: scenarios the bounded PR lane does not select.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list   Print every quarantined scenario with its tracking issue and expiry.  │
+│ check  Validate the registry: no expired entry, no entry naming a scenario   │
+│        that does not exist.                                                  │
+│ audit  Report each quarantined scenario's outcome in a run; red on one that  │
+│        has escaped.                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine list`
+
+```
+Usage: t3 eval quarantine list [OPTIONS]
+
+ Print every quarantined scenario with its tracking issue and expiry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine check`
+
+```
+Usage: t3 eval quarantine check [OPTIONS]
+
+ Validate the registry: no expired entry, no entry naming a scenario that does
+ not exist.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file            PATH  The registry to read (default:                       │
+│                         evals/quarantine.yaml).                              │
+│ --scenario        TEXT  Catalog scenario name to validate entries against    │
+│                         (default: the discovered catalog).                   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval quarantine audit`
+
+```
+Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
+
+ Report each quarantined scenario's outcome in a run; red on one that has
+ escaped.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    summary_json      PATH  A merged eval-heal §2.4 summary JSON to audit   │
+│                              against.                                        │
+│                              [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file        PATH  The registry to read (default: evals/quarantine.yaml).   │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ### `t3 doctor`
 
 ```
@@ -3160,6 +3254,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      §17.6 gate 12, #836).                                   │
 │ gate-relaxation      Anti-relaxation + tach-soundness gate (BLUEPRINT        │
 │                      §17.6.1/§17.6.2, #850).                                 │
+│ open-pr              Report the OPEN PR/MR backing a branch as an explicit   │
+│                      tri-state, as JSON.                                     │
 │ figma-screenshot     Fetch a Figma node/frame as a PNG — bypasses the MCP    │
 │                      integration's size limits.                              │
 │ figma-frames         List a node's child frames (name + ID) for navigation.  │
@@ -3556,6 +3652,31 @@ Usage: t3 tool gate-relaxation [OPTIONS]
 │                     staged diff.                                             │
 │ --json              Emit machine-readable JSON.                              │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool open-pr`
+
+```
+Usage: t3 tool open-pr [OPTIONS]
+
+ Report the OPEN PR/MR backing a branch as an explicit tri-state, as JSON.
+
+ The shell-facing face of ``core.forge_pr_probe.find_open_pr_for_branch``, so a
+ cold hook can ask "does the artifact this refusal is about already exist?"
+ without hand-rolling a fourth ``gh pr list`` — the drift that probe exists to
+ prevent. ``outcome`` is ``found`` / ``none`` / ``unknown``; a caller must not
+ read ``unknown`` (missing CLI, auth failure, unparsable JSON) as "no PR".
+
+ Always exits 0: this is a probe, not a gate. The tri-state IS the answer.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --branch        TEXT  Branch to probe (default: the repo's checked-out       │
+│                       branch)                                                │
+│ --repo          PATH  Repo root (default: cwd)                               │
+│                       [default: <bound method PathBase.cwd of <class         │
+│                       'pathlib._local.Path'>>]                               │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6812,7 +6933,7 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ status             Show whether the orchestrator heavy-Bash gate is enabled. │
 │ disable            Disable the gate (self-rescue from a Bash lockout).       │
 │ enable             Re-enable the gate.                                       │
-│ skill-loading      Skill-loading-on-task gate kill-switch (self-rescue).     │
+│ skill-loading      Skill-loading gate kill-switch (self-rescue).             │
 │ plan               Plan-before-code edit-block gate kill-switch              │
 │                    (self-rescue).                                            │
 │ config-overwrite   Read-before-overwrite config/dotfile gate kill-switch     │
@@ -6837,6 +6958,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ glab-base-remote   Stale `glab-base` remote gate (glab's silent MR-create    │
 │                    no-op) kill-switch (self-rescue).                         │
 │ add-all            Whole-tree `git add -A` / `git add .` gate kill-switch    │
+│                    (self-rescue).                                            │
+│ verbatim-paste     Verbatim operator-paste publish gate kill-switch          │
 │                    (self-rescue).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6882,7 +7005,7 @@ Usage: t3 teatree gate enable [OPTIONS]
 ```
 Usage: t3 teatree gate skill-loading [OPTIONS] COMMAND [ARGS]...
 
- Skill-loading-on-task gate kill-switch (self-rescue).
+ Skill-loading gate kill-switch (self-rescue).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7623,6 +7746,59 @@ Usage: t3 teatree gate add-all enable [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree gate verbatim-paste`
+
+```
+Usage: t3 teatree gate verbatim-paste [OPTIONS] COMMAND [ARGS]...
+
+ Verbatim operator-paste publish gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste status`
+
+```
+Usage: t3 teatree gate verbatim-paste status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste disable`
+
+```
+Usage: t3 teatree gate verbatim-paste disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate verbatim-paste enable`
+
+```
+Usage: t3 teatree gate verbatim-paste enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree wip`
 
 ```
@@ -7982,38 +8158,46 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ ticket             Create or update a ticket and trigger worktree            │
-│                    provisioning.                                             │
-│ provision          Provision every worktree in the current ticket workspace. │
-│ start              Start docker for every worktree in the current ticket     │
-│                    workspace.                                                │
-│ ready              Run readiness probes for every worktree in the ticket     │
-│                    workspace.                                                │
-│ teardown           Tear down every worktree in the current ticket workspace. │
-│ finalize           Squash worktree commits and rebase on the default branch. │
-│ doctor             Detect state drift across every store; optionally fix it. │
-│ clean-merged       Tear down every worktree whose ticket is already MERGED.  │
-│ clean-all          Prune merged worktrees, stale branches, orphaned stashes, │
-│                    orphan DBs, old DSLR snapshots.                           │
-│ relocate           Move this overlay's existing worktrees under the          │
-│                    per-overlay workspace dir (git worktree move).            │
-│ list-orphans       List orphan branches (commits not on main, no open PR).   │
-│ landscape          Survey in-flight PRs/MRs and local unsynced work before   │
-│                    planning (read-only).                                     │
-│ reap-stale         Tear down ABANDONED docker stacks no live worktree owns   │
-│                    (age-guarded).                                            │
-│ reclaim-disk       Reclaim disk via zero-data-loss docker prunes (builder +  │
-│                    dangling images + unreferenced volumes).                  │
-│ stamp-identity     Stamp the repo's local git identity to the GitHub noreply │
-│                    form (public-push safety).                                │
-│ stamp-owners       Record which checkout owns each auto-isolated env dir     │
-│                    this venue can see (deletes nothing).                     │
-│ release-dead-rows  Delete Worktree rows whose checkout is provably gone —    │
-│                    the row alone, nothing else touched.                      │
-│ emit               Print the JSON handoff for every NOT-auto-deleted         │
-│                    worktree (the judgment skill's input).                    │
-│ salvage            Capture a branch's unique content to a PR, verify it      │
-│                    landed, then delete the branch.                           │
+│ ticket                   Create or update a ticket and trigger worktree      │
+│                          provisioning.                                       │
+│ provision                Provision every worktree in the current ticket      │
+│                          workspace.                                          │
+│ start                    Start docker for every worktree in the current      │
+│                          ticket workspace.                                   │
+│ ready                    Run readiness probes for every worktree in the      │
+│                          ticket workspace.                                   │
+│ teardown                 Tear down every worktree in the current ticket      │
+│                          workspace.                                          │
+│ finalize                 Squash worktree commits and rebase on the default   │
+│                          branch.                                             │
+│ doctor                   Detect state drift across every store; optionally   │
+│                          fix it.                                             │
+│ clean-merged             Tear down every worktree whose ticket is already    │
+│                          MERGED.                                             │
+│ clean-all                Prune merged worktrees, stale branches, orphaned    │
+│                          stashes, orphan DBs, old DSLR snapshots.            │
+│ relocate                 Move this overlay's existing worktrees under the    │
+│                          per-overlay workspace dir (git worktree move).      │
+│ list-orphans             List orphan branches (commits not on main, no open  │
+│                          PR).                                                │
+│ landscape                Survey in-flight PRs/MRs and local unsynced work    │
+│                          before planning (read-only).                        │
+│ reap-stale               Tear down ABANDONED docker stacks no live worktree  │
+│                          owns (age-guarded).                                 │
+│ reclaim-disk             Reclaim disk via zero-data-loss docker prunes       │
+│                          (builder + dangling images + unreferenced volumes). │
+│ stamp-identity           Stamp the repo's local git identity to the GitHub   │
+│                          noreply form (public-push safety).                  │
+│ stamp-owners             Record which checkout owns each auto-isolated env   │
+│                          dir this venue can see (deletes nothing).           │
+│ release-dead-rows        Delete Worktree rows whose checkout is provably     │
+│                          gone — the row alone, nothing else touched.         │
+│ repair-branch-upstreams  Point every branch tracking someone else's ref back │
+│                          at its own, or untrack it.                          │
+│ emit                     Print the JSON handoff for every NOT-auto-deleted   │
+│                          worktree (the judgment skill's input).              │
+│ salvage                  Capture a branch's unique content to a PR, verify   │
+│                          it landed, then delete the branch.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8314,6 +8498,23 @@ Usage: t3 teatree workspace release-dead-rows [OPTIONS]
 │                            [default: no-apply]                               │
 │ --json                     Per-row dispositions as JSON.                     │
 │ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace repair-branch-upstreams`
+
+```
+Usage: t3 teatree workspace repair-branch-upstreams [OPTIONS]
+
+ Point every branch tracking someone else's ref back at its own, or untrack it
+ (#4225).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run    --no-dry-run      List the repairs without writing any git      │
+│                                config.                                       │
+│                                [default: no-dry-run]                         │
+│ --json                         Per-branch outcomes as JSON.                  │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9390,10 +9591,7 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │                      checklist (read-only).                                  │
 │ record-attempt       Record an in-session sub-agent's result back onto a     │
 │                      Task.                                                   │
-│ start                Claim and run the next interactive task in the current  │
-│                      terminal.                                               │
-│ work-next-headless   Claim and execute a headless task; refuses              │
-│                      loop-dispatched phases while agent_runtime=interactive. │
+│ work-next            Claim and execute the next pending task.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9429,9 +9627,8 @@ Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
 Usage: t3 teatree tasks claim [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --execution-target        TEXT  [default: headless]                          │
-│ --claimed-by              TEXT  [default: worker]                            │
-│ --help                          Show this message and exit.                  │
+│ --claimed-by        TEXT  [default: worker]                                  │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9478,11 +9675,10 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 
  Enqueue the next-phase task for a ticket.
 
- Used by `/t3:next` to hand off from one phase to the next. Headless by default
- so a worker
- claims it immediately; pass `--interactive` for tasks that require human
- input. A machine
- handoff: the created-task record is JSON on stdout, the human confirmation on
+ Used by `/t3:next` to hand off from one phase to the next; a worker claims it
+ immediately.
+ A machine handoff: the created-task record is JSON on stdout, the human
+ confirmation on
  stderr.
 
  ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the
@@ -9494,20 +9690,14 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 │                           [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --phase                              TEXT  Phase: scoping, coding, testing,  │
-│                                            reviewing, shipping.              │
-│ --reason                             TEXT  Prompt body for the worker. Use   │
-│                                            '-' to read from stdin. Overrides │
-│                                            --reason-file.                    │
-│ --reason-file                        PATH  Read the prompt body from a file. │
-│ --interactive    --no-interactive          Create an interactive task        │
-│                                            instead of the default headless   │
-│                                            one.                              │
-│                                            [default: no-interactive]         │
-│ --kind                               TEXT  Classify the ticket as 'fix' or   │
-│                                            'feature' (records Ticket.kind,   │
-│                                            #17).                             │
-│ --help                                     Show this message and exit.       │
+│ --phase              TEXT  Phase: scoping, coding, testing, reviewing,       │
+│                            shipping.                                         │
+│ --reason             TEXT  Prompt body for the worker. Use '-' to read from  │
+│                            stdin. Overrides --reason-file.                   │
+│ --reason-file        PATH  Read the prompt body from a file.                 │
+│ --kind               TEXT  Classify the ticket as 'fix' or 'feature'         │
+│                            (records Ticket.kind, #17).                       │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9525,16 +9715,13 @@ Usage: t3 teatree tasks list [OPTIONS]
  rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --status                              TEXT  Filter by status                 │
-│ --execution-target                    TEXT  Filter by execution target       │
-│ --session             --no-session          Scope to the current harness     │
-│                                             session and group pending /      │
-│                                             claimed / done.                  │
-│                                             [default: no-session]            │
-│ --json                                      Emit the task rows as JSON on    │
-│                                             stdout instead of the human      │
-│                                             table.                           │
-│ --help                                      Show this message and exit.      │
+│ --status                     TEXT  Filter by status                          │
+│ --session    --no-session          Scope to the current harness session and  │
+│                                    group pending / claimed / done.           │
+│                                    [default: no-session]                     │
+│ --json                             Emit the task rows as JSON on stdout      │
+│                                    instead of the human table.               │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9578,7 +9765,7 @@ Usage: t3 teatree tasks record-attempt [OPTIONS] TASK_ID RESULT_JSON
  path).
 
  The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
- hands the same structured result envelope ``run_headless`` would have
+ hands the same structured result envelope ``run_agent`` would have
  parsed out of the detached headless-SDK run, and this drives the Task to its
  terminal state through the SHARED recorder — schema-key check, the
  #1284 phase-evidence gate, then ``complete`` (auto-advancing the
@@ -9601,29 +9788,10 @@ Usage: t3 teatree tasks record-attempt [OPTIONS] TASK_ID RESULT_JSON
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree tasks start`
+##### `t3 teatree tasks work-next`
 
 ```
-Usage: t3 teatree tasks start [OPTIONS] [TASK_ID]
-
- Claim an interactive task and exec ``claude`` in the current terminal.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   task_id      [TASK_ID]  Task ID; omit to start the next pending            │
-│                           interactive task.                                  │
-│                           [default: 0]                                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claimed-by        TEXT  Worker identifier stored on the claim.             │
-│                           [default: cli]                                     │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree tasks work-next-headless`
-
-```
-Usage: t3 teatree tasks work-next-headless [OPTIONS]
+Usage: t3 teatree tasks work-next [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --claimed-by        TEXT  [default: worker]                                  │
@@ -9697,8 +9865,10 @@ Usage: t3 teatree retention [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ prune  Prune terminal-owned rows past the retention window (dry-run unless   │
-│        --apply).                                                             │
+│ prune    Prune terminal-owned rows past the retention window (dry-run unless │
+│          --apply).                                                           │
+│ scratch  Reclaim stale agent scratch under the temp root (dry-run unless     │
+│          --apply, #4165).                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9725,6 +9895,36 @@ Usage: t3 teatree retention prune [OPTIONS]
 │ --json           Emit the retention report as JSON on stdout instead of the  │
 │                  human view.                                                 │
 │ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree retention scratch`
+
+```
+Usage: t3 teatree retention scratch [OPTIONS]
+
+ Reclaim stale agent scratch under the temp root (dry-run unless --apply).
+
+ On a RAM-backed ``/tmp`` this is memory, not disk: the measured box held
+ 8.8 GB of week-old sqlite/venv scratch, 28% of the working pool. An entry
+ is reclaimed only when NO file anywhere in its tree was touched inside the
+ window (not just the top-level entry's own mtime), it is owned by this
+ uid, held open by no live process (fd, cwd, mmap, or a bound AF_UNIX
+ socket), and holds no git repository anywhere in its tree — registered or
+ ad-hoc — anything the sweep cannot prove stale is kept with the reason
+ printed beside it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --root         TEXT     Temp root to sweep. Default: the configured          │
+│                         scratch_sweep_root.                                  │
+│ --days         INTEGER  Retention window. Default: the configured            │
+│                         scratch_retention_days.                              │
+│                         [default: -1]                                        │
+│ --apply                 Actually reclaim the stale scratch. Without it, this │
+│                         is a dry run.                                        │
+│ --json                  Emit the sweep report as JSON on stdout instead of   │
+│                         the human view.                                      │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11369,7 +11569,10 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
  merge, this records the *judgment* so ``review status`` can answer
  "safe to approve at the current head?" without a fresh cold review.
  Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
- verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
+ verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks),
+ plus the #4251 diff-scope refusal: the PR's changed-file set is read from
+ the forge here, and a blocking finding citing a file outside it needs
+ ``--merge-result-retake``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    pr_id      INTEGER  [required]                                          │
@@ -11379,31 +11582,39 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --reviewed-sha             TEXT     Full 40-char hex commit id of the        │
-│                                     reviewed tree.                           │
-│ --verdict                  TEXT     merge_safe / hold. [default: merge_safe] │
-│ --reviewer-identity        TEXT     Identity of the reviewer who reached     │
-│                                     this verdict.                            │
-│ --gh-verify-result         TEXT     Checks snapshot at review time: green /  │
-│                                     pending / failed.                        │
-│                                     [default: green]                         │
-│ --blast-class              TEXT     Reviewer judgment: substrate / logic /   │
-│                                     docs.                                    │
-│                                     [default: logic]                         │
-│ --findings-json            TEXT     JSON array of                            │
-│                                     {"severity","summary","file","line"}     │
-│                                     findings.                                │
-│ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
-│                                     is for.                                  │
-│                                     [default: 0]                             │
-│ --lock-holder              TEXT     Lock identity the MRReviewLock is held   │
-│                                     under (the --holder passed to `review    │
-│                                     lock-acquire`), when you know it. Omit   │
-│                                     when you do not: the verdict releases    │
-│                                     the lock either way, since a concluded   │
-│                                     review must never strand one. Naming a   │
-│                                     DIFFERENT identity releases nothing.     │
-│ --help                              Show this message and exit.              │
+│ --reviewed-sha               TEXT     Full 40-char hex commit id of the      │
+│                                       reviewed tree.                         │
+│ --verdict                    TEXT     merge_safe / hold.                     │
+│                                       [default: merge_safe]                  │
+│ --reviewer-identity          TEXT     Identity of the reviewer who reached   │
+│                                       this verdict.                          │
+│ --gh-verify-result           TEXT     Checks snapshot at review time: green  │
+│                                       / pending / failed.                    │
+│                                       [default: green]                       │
+│ --blast-class                TEXT     Reviewer judgment: substrate / logic / │
+│                                       docs.                                  │
+│                                       [default: logic]                       │
+│ --findings-json              TEXT     JSON array of                          │
+│                                       {"severity","summary","file","line"}   │
+│                                       findings.                              │
+│ --ticket-id                  INTEGER  Optional teatree Ticket id this        │
+│                                       verdict is for.                        │
+│                                       [default: 0]                           │
+│ --lock-holder                TEXT     Lock identity the MRReviewLock is held │
+│                                       under (the --holder passed to `review  │
+│                                       lock-acquire`), when you know it. Omit │
+│                                       when you do not: the verdict releases  │
+│                                       the lock either way, since a concluded │
+│                                       review must never strand one. Naming a │
+│                                       DIFFERENT identity releases nothing.   │
+│ --merge-result-retake                 Attest that every finding citing a     │
+│                                       file outside the PR's changed-file set │
+│                                       was re-measured on the materialised    │
+│                                       MERGE RESULT (`t3 review merge-tree`), │
+│                                       not the branch checkout alone. Without │
+│                                       it such a finding cannot carry         │
+│                                       blocking severity (#4251).             │
+│ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11699,6 +11910,7 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 │ import  Seed the DB store from operational  toml keys (one-time).            │
 │ export  Dump the ConfigSetting store to TOML — the inverse of import.        │
 │ flags   Read-only dead-toggle audit report over the FEATURE_FLAGS registry.  │
+│ inert   Which gated features shipped and then never ran (#4189).             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -11972,6 +12184,23 @@ Usage: t3 teatree config_setting flags [OPTIONS]
  tracking issue; a ``REMOVE``-stage flag (a toggle whose gated code is now
  permanent) is surfaced LOUD so a dead toggle cannot rot unnoticed. Reads the
  code-level registry only — it writes nothing to the ``ConfigSetting`` store.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting inert`
+
+```
+Usage: t3 teatree config_setting inert [OPTIONS]
+
+ Which gated features shipped and then never ran (#4189).
+
+ One line per gate that is off in every scope and whose declared observable is
+ empty — the feature twin of ``t3 loops audit``'s shipped-seed report. A gate
+ nobody ever decided to leave off is surfaced LOUD; one the owner deliberately
+ staged is listed quietly, so the report stays worth reading.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

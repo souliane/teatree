@@ -18,6 +18,6 @@ class TestRequestLimitDefault:
 
     def test_positive_caller_max_turns_still_wins_over_the_lane_default(self) -> None:
         # The harness prefers a positive OneShotSpec/eval max_turns over the lane cap;
-        # 0 (a headless dispatch coercing SDK-None) keeps the lane default.
+        # 0 (a agent dispatch coercing SDK-None) keeps the lane default.
         assert HarnessOptions(max_turns=3).max_turns == 3
         assert HarnessOptions(max_turns=0).max_turns == 0

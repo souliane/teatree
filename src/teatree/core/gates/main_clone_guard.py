@@ -131,7 +131,7 @@ def deny_reason(finding: MainCloneFinding) -> str:
         "clone makes the editable `t3` run stale code, #2836). Branch a worktree "
         "off origin/main instead:\n"
         "  t3 <overlay> workspace ticket <issue-url-or-id>\n"
-        "or: git worktree add -b <branch> ../<repo>-wt origin/main\n"
+        "or: git worktree add -b <branch> --no-track ../<repo>-wt origin/main\n"
         "Read-only git, `git fetch`, `git pull --ff-only`, `git checkout <default>`, "
         "and `git worktree add/remove/prune/list` are always allowed. Vetted "
         f"one-off: put `[main-clone-ok: <reason>]` in {where} (first 512 chars)."

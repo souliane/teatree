@@ -115,11 +115,11 @@ class TestPhaseVisitsRemainsAuditTrail(TestCase):
         ticket = _ticket(state=Ticket.State.STARTED)
         Session.objects.create(ticket=ticket)
 
-        call_command("lifecycle", "visit-phase", str(ticket.pk), "review", "--agent-id", "alice@cli")
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "review", "--agent-id", "cold-reviewer@cli")
 
         session = ticket.sessions.order_by("-pk").first()
         assert session is not None
-        assert session.phase_visits["reviewing"]["agent_id"] == "alice@cli"
+        assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer@cli"
 
     def test_blank_session_still_attributes_non_empty(self) -> None:
         ticket = _ticket(state=Ticket.State.STARTED)

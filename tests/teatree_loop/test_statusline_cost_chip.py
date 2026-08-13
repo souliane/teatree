@@ -30,7 +30,6 @@ pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("pinned_clock")]
 def _headless_attempt(task: Task, *, cost: float) -> TaskAttempt:
     return TaskAttempt.objects.create(
         task=task,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         cost_usd=cost,
         started_at=timezone.now(),
     )
@@ -53,15 +52,6 @@ class TestCostChipLines:
     def test_chip_stays_tiny_at_high_spend(self) -> None:
         _headless_attempt(self.task, cost=1234.0)
         assert cost_chip_lines() == ["SDK mtd ≈$1234/$200"]
-
-    def test_excludes_interactive_attempts(self) -> None:
-        TaskAttempt.objects.create(
-            task=self.task,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            cost_usd=500.0,
-            started_at=timezone.now(),
-        )
-        assert cost_chip_lines() == []
 
 
 class TestCostChipInTickMeta:

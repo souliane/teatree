@@ -1,4 +1,4 @@
-"""Consult the admission governor on an interactive ``Agent``/``Task`` dispatch (#4107).
+"""Consult the admission governor on an interactive ``Agent``/``Task`` dispatch (#4107, #4129).
 
 ``decide_admission`` is described as "one chokepoint every dispatcher asks" and
 had exactly two callers, both factory lanes. Nothing on the INTERACTIVE path
@@ -9,8 +9,11 @@ population on the box is the SUM of both. Measured at load 58 on 8 cores with
 1 GB free while the factory's own ``issue_implementer_max_concurrent = 3`` held.
 
 The dispatch interception point already existed — this module supplies the
-admission DECISION on it, in both arms, because the ``Task``/``Workflow`` fan-out
-bypasses ``PreToolUse`` and only ``TaskCreated`` reaches it.
+admission DECISION on it. There is exactly ONE such point, the ``Agent``/``Task``
+``PreToolUse`` matcher (#4216): the task-LIST tools bypass ``PreToolUse``, but
+their ``TaskCreated`` event has ONE producer — the ``TaskCreate`` tool body — so
+no dispatch reaches it, a todo puts no agent on the box, and the governor has
+nothing to admit or brake there.
 
 The verdict itself lives in :mod:`teatree.core.dispatch_admission`, so all three
 lanes route through the one pure decision function and can never diverge. The
@@ -18,26 +21,24 @@ kill-switch and rollback lever is the EXISTING ``admission_governor_enabled``
 setting (``t3 <overlay> config_setting set admission_governor_enabled false``) —
 deliberately no second flag, which would let the two drift.
 
-NEVER-LOCKOUT: the ``PreToolUse`` deny routes through the router's shared
+An ADMITTED dispatch also takes a durable seat (#4129), because it creates no
+``Task`` row and so was invisible to the very ceiling it had just cleared — a
+burst of them each read the same live count and every one passed.
+The seat's ordinary end is the ``dispatch_seat_release`` sibling, on ``SubagentStop``.
+
+NEVER-LOCKOUT: the deny routes through the router's shared
 ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the always-allowed
 self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
-a per-call ``[admission-ok: <reason>]`` token in the dispatch prompt / task
-fields allows one call (an empty reason does not); and ANY internal error,
-an unbootstrappable Django and an unimportable ``teatree`` all fail OPEN. The
-``TaskCreated`` arm additionally swallows its own exceptions and emits no
-stderr — the harness ABORTS ``TaskCreated`` on any handler stderr, so
-``main()``'s traceback-writing swallow is a lockout there, not a backstop.
+a per-call ``[admission-ok: <reason>]`` token in the dispatch prompt allows one
+call (an empty reason does not); and ANY internal error, an unbootstrappable
+Django and an unimportable ``teatree`` all fail OPEN.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
 ``orchestration_boundary_signals`` sibling — never Django / ``teatree.core``.
 """
 
-import contextlib
-import io
-import logging
 import re
 import sys
-from collections.abc import Iterator
 
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
 
@@ -71,7 +72,7 @@ def _block_message(reason: str) -> str:
     )
 
 
-def _denied_reason(*, apply_ceiling: bool) -> str | None:
+def _denied_reason(*, apply_ceiling: bool, session_id: str = "") -> str | None:
     """The governor's DENY reason for one more dispatch, or ``None`` to admit.
 
     Fails OPEN (``None``) when ``teatree`` / Django cannot be bootstrapped — the
@@ -83,7 +84,11 @@ def _denied_reason(*, apply_ceiling: bool) -> str | None:
         return None
     from teatree.core.dispatch_admission import dispatch_admission_denied_reason  # noqa: PLC0415 — deferred: post-setup
 
-    return dispatch_admission_denied_reason(apply_ceiling=apply_ceiling)
+    return dispatch_admission_denied_reason(apply_ceiling=apply_ceiling, session_id=session_id)
+
+
+def _session_of(data: dict) -> str:
+    return str(data.get("session_id") or "").strip()
 
 
 def handle_dispatch_admission(data: dict) -> bool:
@@ -93,6 +98,10 @@ def handle_dispatch_admission(data: dict) -> bool:
     admitted it, and its own claim is counted in that ceiling, so re-clamping it
     would deadlock it against itself. The BRAKES still apply there: box
     saturation is real whoever dispatched.
+
+    An ADMITTED dispatch takes a durable seat under its session (#4129) — the
+    dispatch creates no ``Task`` row, so without one the next dispatch in the
+    same burst reads a live count that cannot see it.
     """
     try:
         if data.get("tool_name") not in DISPATCH_TOOLS:
@@ -101,7 +110,7 @@ def handle_dispatch_admission(data: dict) -> bool:
         prompt = tool_input.get("prompt", "") if isinstance(tool_input, dict) else ""
         if isinstance(prompt, str) and _ADMISSION_OK_RE.search(prompt[:_TOKEN_SCAN_CHARS]):
             return False
-        reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data))
+        reason = _denied_reason(apply_ceiling=not call_is_from_subagent(data), session_id=_session_of(data))
     except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
         return False
     if reason is None:
@@ -109,45 +118,3 @@ def handle_dispatch_admission(data: dict) -> bool:
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 — deferred back-import: avoids a cycle
 
     return _fail_open_or_deny(data, _block_message(reason), gate_id="dispatch_admission")
-
-
-@contextlib.contextmanager
-def _muzzled() -> Iterator[None]:
-    """Suppress every stderr channel for the block — ``TaskCreated`` aborts on any.
-
-    Both channels are stopped because a probe failure inside the governor logs
-    through ``logging``, whose handlers captured the ORIGINAL ``sys.stderr`` at
-    construction time and so survive ``redirect_stderr`` alone.
-    """
-    logging.disable(logging.CRITICAL)
-    try:
-        with contextlib.redirect_stderr(io.StringIO()):
-            yield
-    finally:
-        logging.disable(logging.NOTSET)
-
-
-def handle_dispatch_admission_on_task_create(data: dict) -> bool:
-    """Deny a fanned-out ``Task`` the admission governor refuses — the ``TaskCreated`` arm.
-
-    The ``Task``/``Workflow`` fan-out bypasses ``PreToolUse``, so the arm above
-    never fires on it. The ``TaskCreated`` schema carries no ``agent_id``, so the
-    dispatch's origin is unknowable and the CEILING is never applied here —
-    unknown must not brake on a count it cannot attribute. The quota and load
-    brakes are origin-independent and do apply.
-    """
-    try:
-        with _muzzled():
-            if not data.get("session_id"):
-                return False
-            payload = f"{data.get('task_subject', '') or ''}\n{data.get('task_description', '') or ''}"
-            if _ADMISSION_OK_RE.search(payload[:_TOKEN_SCAN_CHARS]):
-                return False
-            reason = _denied_reason(apply_ceiling=False)
-            if reason is None:
-                return False
-            from hooks.scripts.hook_router import emit_task_create_deny  # noqa: PLC0415 — deferred back-import
-
-            return emit_task_create_deny(_block_message(reason))
-    except Exception:  # noqa: BLE001 — crash-proof hook: a TaskCreated traceback on stderr is a LOCKOUT
-        return False

@@ -85,7 +85,7 @@ def recover_windows(now: dt.datetime) -> RecoveryOutcome:
 
 
 def _clear_auto_engaged_low_power() -> None:
-    """Clear a low-power override this system auto-engaged on the park (#3159 item 6).
+    """Clear a low-token override this system auto-engaged on the park (#3159 item 6).
 
     Best-effort — a user override is never touched, and a failure here must never
     break usage-window recovery (a lingering override also expires at its ``until``).
@@ -95,7 +95,7 @@ def _clear_auto_engaged_low_power() -> None:
     try:
         ModeOverride.objects.clear_auto_engaged_low_power()
     except Exception:
-        logger.debug("low-power auto-engage clear failed during recovery", exc_info=True)
+        logger.debug("low-token auto-engage clear failed during recovery", exc_info=True)
 
 
 def _release_parked_tasks(now: dt.datetime) -> int:

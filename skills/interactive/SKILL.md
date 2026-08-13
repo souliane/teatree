@@ -13,6 +13,69 @@ metadata:
 
 The Claude Code side of teatree: what engages a session, how skills reach an agent, how hooks are registered — and the one rule an attended session must not break. Loading this skill is itself the engagement act.
 
+## This session does not implement — it files and enqueues (Non-Negotiable)
+
+When the operator asks for something that would change the code, do NOT implement it.
+File a ticket for it, get it prioritized, and let the factory pick it up. Report the
+ticket back to the operator.
+
+All three parts are the order; dropping any one recreates the failure:
+
+1. **Do not implement.** Not the edit, not the commit, not the push.
+2. **File the ticket.** A request that produces no durable row is a dropped request — the
+   operator must never have to repeat themselves.
+3. **Get it prioritized and enqueued**, so the factory actually reaches it. A
+   filed-but-unadmitted issue looks identical to a delivered one from the operator's side
+   and is not the same thing at all.
+
+File it through the MCP forge tool, and carry the admit label — the label is what
+makes intake reach it, and a filed issue without one is not enqueued (it resolves
+from `issue_implementer_label`, falling back to `t3-auto`):
+
+```text
+mcp__teatree__github_issue_create(
+  title="<what the operator asked for>", body="<detail>", labels=["t3-auto"])
+```
+
+**Reviewing, merging, diagnosing and answering are NOT implementation.** They are this
+session's actual job, and they are unaffected: read, search, probe, run tests, reproduce a
+failure, review a PR, merge through the keystone, answer a question, file what you find.
+
+**Two exemptions, and only these two.** They are narrow, and naming them is what stops the
+order being read as wider than it is:
+
+- **Work already in flight** — an edit, a commit or a push inside a live t3 worktree for a
+  ticket the factory already started.
+- **The recorded per-action emergency escape** — `[headless-authoring-ok: <reason>]`, for a
+  genuine emergency (the factory itself is down). Single-use, recorded, per action.
+
+The deterministic backstop is the PreToolUse authoring gate
+(`hooks/scripts/headless_authoring_gate.py`), which refuses an interactive session's edit,
+commit or push against a teatree-managed repo. It applies unconditionally — there is no
+setting to flip — and carries both exemptions above.
+
+## If it does code, it plans first (Non-Negotiable)
+
+Whenever this session legitimately writes code under either exemption — the factory is
+down, or it is finishing work already in flight — **a plan artifact exists before the first
+edit.** This is an order, not a preference.
+
+It is written hard because it is the rule that fails under pressure: an emergency is exactly
+when "there is no time to plan" feels true, and that is when hand-editing does its damage.
+The emergency path is unreviewed by construction, so the plan is the only checkpoint it has
+left. An emergency is not an exception to this.
+
+```bash
+t3 <overlay> ticket plan <ticket-id> "<the plan>"   # PlanArtifact; STARTED → PLANNED
+```
+
+Scope: this governs CODE CHANGES, not diagnosis. Reading, grepping, probing, running tests
+and reproducing a failure need no plan — they are how the plan gets written.
+
+Beyond the plan, reach for the factory's remaining habits by imitation when you are on the
+emergency path: route the work to a sub-agent rather than editing inline, let a reviewer who
+is not the maker check it, and verify by executing rather than by reading.
+
 ## No work-bearing state is terminal
 
 A session does not end with work it authored sitting unmerged and untracked.
@@ -37,7 +100,7 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 **Durable deferral + drain.** `ensure-pr` runs pre-push, and a branch's FIRST push legitimately has no remote ref to open a PR against. That deferral persists a row carrying the repo, the branch and the PR spec rather than exiting quietly; the `dispatch` loop drains it on a later tick, and a row that ages without draining becomes a `t3 doctor check` failure. Verify: `t3 doctor check`.
 
-**Teardown capture.** A checkout is snapshotted before it can be reaped — tracked modifications, staged changes and unpushed commits, recorded in the DB rather than only on disk. Dirtiness is read with `git status --porcelain` / `git diff HEAD` everywhere it is decided; a bare `git diff` reports zero bytes against a worktree holding only staged work. Verify: `t3 teatree workspace emit`, and `/t3:sweeping-worktrees` for what to do with each emitted item.
+**Sweep capture.** A checkout is snapshotted whenever a sweep OBSERVES it — tracked modifications, staged changes and unpushed commits, recorded in the DB rather than only on disk, then aged into a `t3 doctor check` line. Every disposition is covered, KEPT ones included: capturing only before a teardown missed the one disposition that tears nothing down, a row whose ticket is still open, so 75 of 77 registered worktrees held work no surface named. Dirtiness is read with `git status --porcelain` / `git diff HEAD` everywhere it is decided; a bare `git diff` reports zero bytes against a worktree holding only staged work. A checkout this venue cannot resolve is reported as a WRONG VENUE, never as a broken repository — `t3` runs in Docker, so a container-created checkout reads as corrupt from the host. Verify: `t3 doctor check`, `t3 teatree workspace emit`, and `/t3:sweeping-worktrees` for what to do with each emitted item.
 
 **Session-end check.** Every session end sweeps all five states and names each item with the exact command that advances it. It runs unconditionally — which skills a session loaded says nothing about whether it stranded work — and it fails open, so a probe that cannot answer contributes nothing rather than breaking the session. It lives in `hooks/scripts/session_end_work_check.py`.
 

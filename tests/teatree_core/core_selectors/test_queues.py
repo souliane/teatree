@@ -9,7 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.selectors import build_automation_summary, build_headless_queue, build_interactive_queue
+from teatree.core.selectors import build_automation_summary, build_task_queue
 
 
 class TestBuildInteractiveQueue(TestCase):
@@ -22,30 +22,27 @@ class TestBuildInteractiveQueue(TestCase):
         first = Task.objects.create(
             ticket=first_ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason="Need reviewer decision",
         )
         second = Task.objects.create(
             ticket=second_ticket,
             session=other_session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.CLAIMED,
             claimed_by="codex-terminal",
         )
         Task.objects.create(
             ticket=second_ticket,
             session=other_session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.COMPLETED,
         )
 
-        queue = build_interactive_queue()
-        pending = build_interactive_queue(pending_only=True)
+        queue = build_task_queue()
+        pending = build_task_queue(pending_only=True)
 
         assert [row.task_id for row in queue] == [first.pk, second.pk]
         assert queue[0].last_error == ""
         assert queue[1].claimed_by == "codex-terminal"
-        assert pending == build_interactive_queue(pending_only=True)
+        assert pending == build_task_queue(pending_only=True)
 
     def test_includes_last_error_from_attempts(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
@@ -53,13 +50,12 @@ class TestBuildInteractiveQueue(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.CLAIMED,
         )
-        TaskAttempt.objects.create(task=task, execution_target="interactive", exit_code=1, error="first error")
-        TaskAttempt.objects.create(task=task, execution_target="interactive", exit_code=1, error="ttyd not found")
+        TaskAttempt.objects.create(task=task, exit_code=1, error="first error")
+        TaskAttempt.objects.create(task=task, exit_code=1, error="ttyd not found")
 
-        queue = build_interactive_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         assert queue[0].last_error == "ttyd not found"
@@ -70,16 +66,14 @@ class TestBuildInteractiveQueue(TestCase):
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.FAILED,
         )
 
-        queue = build_interactive_queue()
+        queue = build_task_queue()
 
         assert [row.task_id for row in queue] == [pending.pk]
 
@@ -91,16 +85,14 @@ class TestBuildHeadlessQueue(TestCase):
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.FAILED,
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert [row.task_id for row in queue] == [pending.pk]
 
@@ -110,17 +102,15 @@ class TestBuildHeadlessQueue(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             exit_code=0,
             result={"summary": "Fixed 3 files"},
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         assert queue[0].result_summary == "Fixed 3 files"
@@ -134,11 +124,10 @@ class TestBuildHeadlessQueue(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             phase="architectural_review",
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         assert queue[0].task_id == task.pk
@@ -154,10 +143,9 @@ class TestBuildHeadlessQueue(TestCase):
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         assert queue[0].issue_url == "https://example.com/issues/555"
@@ -169,22 +157,19 @@ class TestBuildHeadlessQueue(TestCase):
         failed = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.FAILED,
         )
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.COMPLETED,
         )
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
-        queue = build_headless_queue(include_dismissed=True)
+        queue = build_task_queue(include_dismissed=True)
 
         task_ids = [row.task_id for row in queue]
         assert failed.pk in task_ids
@@ -199,7 +184,6 @@ class TestReapStaleClaims(TestCase):
         stale = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
             claimed_by="dead-worker",
             lease_expires_at=now - timedelta(minutes=5),
@@ -207,7 +191,6 @@ class TestReapStaleClaims(TestCase):
         active = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
             claimed_by="live-worker",
             lease_expires_at=now + timedelta(minutes=5),
@@ -236,13 +219,12 @@ class TestReapStaleClaims(TestCase):
         stale = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
             claimed_by="dead-worker",
             lease_expires_at=now - timedelta(minutes=5),
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         stale.refresh_from_db()
@@ -257,7 +239,6 @@ class TestHeadlessQueueElapsedTime(TestCase):
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
             claimed_by="worker-1",
             claimed_at=now - timedelta(minutes=5),
@@ -265,7 +246,7 @@ class TestHeadlessQueueElapsedTime(TestCase):
             lease_expires_at=now + timedelta(minutes=5),
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         assert queue[0].elapsed_time  # non-empty
@@ -279,10 +260,9 @@ class TestHeadlessQueueElapsedTime(TestCase):
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
-        queue = build_headless_queue()
+        queue = build_task_queue()
 
         assert len(queue) == 1
         assert queue[0].elapsed_time == ""
@@ -297,20 +277,20 @@ class TestOverlayFiltering(TestCase):
         t2 = Ticket.objects.create(overlay="beta")
         s1 = Session.objects.create(ticket=t1, overlay="alpha")
         s2 = Session.objects.create(ticket=t2, overlay="beta")
-        Task.objects.create(ticket=t1, session=s1, execution_target="headless")
-        Task.objects.create(ticket=t2, session=s2, execution_target="headless")
+        Task.objects.create(ticket=t1, session=s1)
+        Task.objects.create(ticket=t2, session=s2)
 
-        assert len(build_headless_queue()) == 2
-        assert len(build_headless_queue(overlay="alpha")) == 1
+        assert len(build_task_queue()) == 2
+        assert len(build_task_queue(overlay="alpha")) == 1
 
     def test_automation_summary_filters_by_overlay(self) -> None:
         t1 = Ticket.objects.create(overlay="alpha")
         t2 = Ticket.objects.create(overlay="beta")
         s1 = Session.objects.create(ticket=t1, overlay="alpha")
         s2 = Session.objects.create(ticket=t2, overlay="beta")
-        task1 = Task.objects.create(ticket=t1, session=s1, execution_target="headless", status=Task.Status.CLAIMED)
-        Task.objects.create(ticket=t2, session=s2, execution_target="headless", status=Task.Status.CLAIMED)
-        TaskAttempt.objects.create(task=task1, execution_target="headless", exit_code=0, ended_at=timezone.now())
+        task1 = Task.objects.create(ticket=t1, session=s1, status=Task.Status.CLAIMED)
+        Task.objects.create(ticket=t2, session=s2, status=Task.Status.CLAIMED)
+        TaskAttempt.objects.create(task=task1, exit_code=0, ended_at=timezone.now())
 
         all_summary = build_automation_summary()
         alpha_summary = build_automation_summary(overlay="alpha")

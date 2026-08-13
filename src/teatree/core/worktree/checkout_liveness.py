@@ -95,6 +95,23 @@ def context_scoped_pointer(checkout: Path) -> GitdirPointer | None:
     return None if pointer is None or pointer.resolves_here else pointer
 
 
+def wrong_venue_reason(checkout: Path) -> str:
+    """Why *checkout* is unreadable HERE because of the VENUE; ``""`` when its pointer resolves.
+
+    The one phrasing of the venue miss, so every surface that reports an
+    unreadable checkout — the reaper's keep-reason, ``t3 doctor``, the
+    unshipped-work capture — says the same thing. Each appends its own
+    consequence; none of them re-derives the cause.
+    """
+    pointer = context_scoped_pointer(checkout)
+    if pointer is None:
+        return ""
+    return (
+        f"{checkout} records its git dir at {pointer.target}, which does not exist in this execution "
+        "context — a checkout created elsewhere reads exactly like a dead one from here"
+    )
+
+
 def admin_entry_for(checkout: Path, clone: Path) -> Path | None:
     """*clone*'s admin entry for *checkout*, when this context can see one.
 
@@ -131,4 +148,5 @@ __all__ = [
     "claims_to_be_a_checkout",
     "context_scoped_pointer",
     "read_gitdir_pointer",
+    "wrong_venue_reason",
 ]

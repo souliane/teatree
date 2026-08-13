@@ -318,6 +318,19 @@ jobs:
           SHA: ${{ needs.prepare.outputs.sha }}
           OUT_DIR: ${{ runner.temp }}/combined
         run: uv run t3 eval green-proof "$OUT_DIR/eval-heal-$SHA.json"
+      # KNOWN-RED QUARANTINE AUDIT (souliane/teatree#4173). A quarantined scenario is
+      # suppressed from the bounded selective-PR lane only — it is still run, still
+      # graded, and still reds the proof above. This step is where that stays visible:
+      # it NAMES each quarantined scenario's outcome in the merged run. `if: always()`
+      # because the interesting case is exactly the one where the proof just reddened.
+      # It reds on its own only when an entry has become a lie — the scenario PASSED
+      # (delete the entry) or the entry is past its expiry (fix it or re-date it).
+      - name: Audit the known-red quarantine against the merged run
+        if: always() && inputs.scenarios == ''
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+          OUT_DIR: ${{ runner.temp }}/combined
+        run: uv run t3 eval quarantine audit "$OUT_DIR/eval-heal-$SHA.json"
       # Upload the ONE merged JSON under the `eval-heal-<sha>` name the
       # `t3 eval ci-status` download path resolves — the combine seam that keeps the
       # sharded run indistinguishable from a single-invocation run to every consumer.

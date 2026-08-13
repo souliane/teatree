@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree import paths
-from teatree.core.management.commands._workspace import checkout_registry
+from teatree.core.cleanup import checkout_registry
 from teatree.core.worktree.venue import venue_can_observe
 
 

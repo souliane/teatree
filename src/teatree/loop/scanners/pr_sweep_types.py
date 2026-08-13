@@ -32,6 +32,14 @@ GH_CONFLICT_MERGE_STATE = "DIRTY"
 # can never drift.
 MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 
+# The reason a PR carries when a CLEAR for it EXISTS but cannot authorise the live
+# head (issued against a since-superseded tree, or missing a load-bearing field).
+# Distinct from the no-CLEAR reasons on purpose: reporting an absent authorisation
+# as a verdict about review named the wrong cause and hid a re-issuable CLEAR
+# behind a log line for as long as it existed (#4249). Owner-audience — see
+# ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
+CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
+
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:

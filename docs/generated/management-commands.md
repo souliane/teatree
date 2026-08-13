@@ -27,6 +27,7 @@ Edit the source command, not this file.
 | `seed` | Provenance-aware DEPLOY seed of *key* → *value* (#3435) |
 | `clear` | Delete the DB override row for *key* in *overlay*'s scope (or global) |
 | `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
+| `inert` | Which gated features shipped and then never ran (#4189) |
 | `get` | Print the resolved value for *key* and name its source (DB vs env/default) |
 | `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
 | `list` | List every DB config override row under its group, naming each row's scope |
@@ -444,6 +445,7 @@ Group root — forces sub-commands to be addressed by name.
 | Subcommand | Description |
 | --- | --- |
 | `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
+| `scratch` | Reclaim stale agent scratch under the temp root (dry-run unless --apply) |
 
 ## `retro`
 
@@ -561,11 +563,10 @@ Register, clear, or list standing verified-green goals (PR-25).
 | `cancel` | Cancel a pending or (with --confirm) claimed task, driving it to FAILED |
 | `complete` | Mark a claimed or failed task COMPLETED for work finished out-of-band |
 | `claim` |  |
-| `start` | Claim an interactive task and exec ``claude`` in the current terminal |
 | `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
 | `list` | List the teatree tasks queue (not your harness TODO list) |
 | `reconcile-checklist` | Emit the in-session harness-TODO reconciliation checklist (read-only) |
-| `work-next-headless` |  |
+| `work-next` |  |
 
 ## `ticket`
 
@@ -583,6 +584,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
+| `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |
 | `record-spec-coverage` | Record the spec-coverage manifest the delivery DoD gate reads (#2232) |
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
@@ -655,6 +657,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |
 | `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
 | `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
+| `repair-branch-upstreams` | Point every branch tracking someone else's ref back at its own, or untrack it (#4225) |
 
 ## `worktree`
 

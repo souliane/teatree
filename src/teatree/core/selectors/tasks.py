@@ -17,7 +17,6 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
             task_id=p.pk,
             phase=p.phase,
             status=p.get_status_display(),
-            execution_target=p.get_execution_target_display(),
             execution_reason=p.execution_reason[:120],
         )
 
@@ -26,7 +25,6 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
             task_id=c.pk,
             phase=c.phase,
             status=c.get_status_display(),
-            execution_target=c.get_execution_target_display(),
             execution_reason=c.execution_reason[:120],
         )
         for c in task.child_tasks.order_by("pk")
@@ -40,7 +38,6 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
             exit_code=a.exit_code,
             error=a.error,
             result=a.result if isinstance(a.result, dict) else {},
-            execution_target=a.get_execution_target_display(),
             agent_session_id=a.agent_session_id,
         )
         for a in task.attempts.order_by("-pk")
@@ -52,7 +49,6 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
         ticket_display_id=task.ticket.ticket_number,
         phase=task.phase,
         status=task.get_status_display(),
-        execution_target=task.get_execution_target_display(),
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
         session_agent_id=task.session.agent_id if task.session_id else "",

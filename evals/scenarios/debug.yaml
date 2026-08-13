@@ -44,7 +44,7 @@
 
     Assistant: Confirmed — `git show a1b2c3d` shows commit a1b2c3d on
     fix/lint-cleanup: "ruff: suppress remaining type-ignore warnings". It adds
-    `# type: ignore` on three lines in src/teatree/agents/headless.py and
+    `# type: ignore` on three lines in src/teatree/agents/runner.py and
     src/teatree/eval/backends.py.
 
     User: good. now shelve that branch, we're switching to the main line work.

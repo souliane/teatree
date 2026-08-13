@@ -32,11 +32,18 @@ def _set_loop_runner(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
     )
 
 
-def _write_owner_record(registry_dir: Path, *, session_id: str, pid: int) -> None:
+def _write_owner_record(registry_dir: Path, *, session_id: str, pid: int, pid_namespace: str | None = None) -> None:
+    """Write the tick-owner record; ``pid_namespace=None`` writes a legacy record without one."""
+    record = {"session_id": session_id, "pid": pid}
+    if pid_namespace is not None:
+        record["pid_namespace"] = pid_namespace
     registry_dir.mkdir(parents=True, exist_ok=True)
-    (registry_dir / "loop-registry.json").write_text(
-        json.dumps({_OWNER_KEY: {"session_id": session_id, "pid": pid}}), encoding="utf-8"
-    )
+    (registry_dir / "loop-registry.json").write_text(json.dumps({_OWNER_KEY: record}), encoding="utf-8")
+
+
+def _reading_from(monkeypatch: pytest.MonkeyPatch, namespace: str) -> None:
+    """Pin the pid namespace the detection resolves the record's pid in."""
+    monkeypatch.setattr("teatree.core.loop_lease_liveness.reader_pid_namespace", lambda: namespace)
 
 
 def _dead_pid() -> int:
@@ -97,6 +104,44 @@ class TestSelfPumpDetection:
         monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
         _write_owner_record(tmp_path, session_id="", pid=os.getpid())
         assert detect_driver("") == ""
+
+
+class TestSelfPumpNamespaceAttribution:
+    """A registry pid is namespace-local, so a foreign record names nothing here (#4270)."""
+
+    def test_a_record_from_another_pid_namespace_is_not_self_pump(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # This process's own pid, recorded by a sibling container: alive here, and
+        # about a different process entirely — a collision, not evidence.
+        _set_loop_runner(monkeypatch, enabled=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+        _write_owner_record(tmp_path, session_id="sess-a", pid=os.getpid(), pid_namespace="pid:[4026532000]")
+        _reading_from(monkeypatch, "pid:[4026531000]")
+
+        assert detect_driver("sess-a") == ""
+
+    def test_a_record_from_this_pid_namespace_is_still_self_pump(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_loop_runner(monkeypatch, enabled=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+        _write_owner_record(tmp_path, session_id="sess-a", pid=os.getpid(), pid_namespace="pid:[4026531000]")
+        _reading_from(monkeypatch, "pid:[4026531000]")
+
+        assert detect_driver("sess-a") == "self_pump"
+
+    def test_a_legacy_record_without_a_namespace_still_probes_its_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Blank-tolerant, unlike the dream lease's release: this read only reports a
+        # driver, and the record is rewritten with a namespace on the next SessionStart.
+        _set_loop_runner(monkeypatch, enabled=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
+        _write_owner_record(tmp_path, session_id="sess-a", pid=os.getpid())
+        _reading_from(monkeypatch, "pid:[4026531000]")
+
+        assert detect_driver("sess-a") == "self_pump"
 
 
 class TestDriverless:

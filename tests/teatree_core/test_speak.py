@@ -55,19 +55,7 @@ class TestBinaryGate:
 
 
 class TestResolveSpeak:
-    """``resolve_speak()`` returns the user's config unchanged — availability is not consulted."""
-
-    def test_away_does_not_mutate_local(self) -> None:
-        # resolve_speak returns the user's config unchanged — it never consults the
-        # operating mode at all (the away gate lives at the playback call site).
-        configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
-        with (
-            patch.object(speak_mod, "binary_available", return_value=True),
-            patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-        ):
-            resolved = speak_mod.resolve_speak()
-        assert resolved.local is LocalPlayback.ALL, "away must not mutate the configured local value"
-        assert resolved.slack is True
+    """``resolve_speak()`` returns the user's config unchanged — presence is not consulted."""
 
     def test_present_returns_configured(self) -> None:
         configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
@@ -80,47 +68,10 @@ class TestResolveSpeak:
         assert resolved.slack is True
 
 
-class TestAwayGateAtPlayback:
-    """The away gate lives in ``_speak_local`` (playback call site), not in ``resolve_speak``.
+class TestSlackArmIsIndependentOfLocalPlayback:
+    """The Slack arm reaches the user's phone whatever the local playback gate says."""
 
-    Anti-vacuous: revert the ``_is_away()`` check in ``_speak_local`` and the
-    ``test_away_skips_say_call`` test goes RED (``run_allowed_to_fail`` IS called
-    when away, violating the gate).
-    """
-
-    def test_away_skips_say_call(self, tmp_path: Path) -> None:
-        with (
-            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
-            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=True),
-            patch.object(speak_mod, "run_allowed_to_fail") as run,
-        ):
-            speak_mod._speak_local("hello while away")
-        run.assert_not_called()
-
-    def test_present_calls_say(self, tmp_path: Path) -> None:
-        with (
-            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
-            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
-            patch.object(speak_mod, "_in_meeting", return_value=False),
-            patch.object(speak_mod, "run_allowed_to_fail") as run,
-        ):
-            speak_mod._speak_local("hello while present")
-        run.assert_called_once()
-
-    def test_availability_raising_treats_as_present_and_calls_say(self, tmp_path: Path) -> None:
-        with (
-            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
-            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch("teatree.core.mode_resolution.resolve_active_mode", side_effect=RuntimeError("boom")),
-            patch.object(speak_mod, "_in_meeting", return_value=False),
-            patch.object(speak_mod, "run_allowed_to_fail") as run,
-        ):
-            speak_mod._speak_local("hello when resolution failed")
-        run.assert_called_once()
-
-    def test_away_dm_still_attaches_slack_audio(self, tmp_path: Path) -> None:
+    def test_dm_still_attaches_slack_audio(self, tmp_path: Path) -> None:
         audio = tmp_path / "speech.m4a"
         audio.write_bytes(b"x")
         backend = _backend()
@@ -135,7 +86,7 @@ class TestAwayGateAtPlayback:
 
 
 class TestMeetingGateAtPlayback:
-    """Meeting-aware mute lives in ``_speak_local`` (#2171), beside the away gate.
+    """Meeting-aware mute lives in ``_speak_local`` (#2171) — the one local-playback gate.
 
     Anti-vacuous: revert the ``_in_meeting()`` check in ``_speak_local`` and
     ``test_in_meeting_skips_say_call`` goes RED (``run_allowed_to_fail`` IS
@@ -146,7 +97,6 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -157,7 +107,6 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.FREE),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -168,7 +117,6 @@ class TestMeetingGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(presence, "current_presence", return_value=presence.Presence.UNKNOWN),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -462,6 +410,9 @@ class TestDeliverUserDmAttachAudio:
         with (
             patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=False)),
             patch.object(speak_mod, "synthesise") as synth,
+            # ``local = dm`` makes this spawn a REAL playback thread, which nothing here
+            # joins — it then lands in the next test and calls ITS mocks (#4277).
+            patch.object(speak_mod.threading, "Thread"),
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
         synth.assert_not_called()
@@ -582,7 +533,6 @@ class TestSpeakLocal:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -595,7 +545,6 @@ class TestSpeakLocal:
         with (
             patch.object(speak_mod.shutil, "which", return_value=None),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
@@ -606,7 +555,6 @@ class TestSpeakLocal:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(speak_mod, "_is_away", return_value=False),
             patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail", side_effect=OSError("nope")),
         ):

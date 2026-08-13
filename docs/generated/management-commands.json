@@ -49,6 +49,10 @@
           "name": "flags"
         },
         {
+          "help": "Which gated features shipped and then never ran (#4189)",
+          "name": "inert"
+        },
+        {
           "help": "Print the resolved value for *key* and name its source (DB vs env/default)",
           "name": "get"
         },
@@ -858,6 +862,10 @@
         {
           "help": "Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply)",
           "name": "prune"
+        },
+        {
+          "help": "Reclaim stale agent scratch under the temp root (dry-run unless --apply)",
+          "name": "scratch"
         }
       ]
     },
@@ -1077,10 +1085,6 @@
           "name": "claim"
         },
         {
-          "help": "Claim an interactive task and exec ``claude`` in the current terminal",
-          "name": "start"
-        },
-        {
           "help": "Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path)",
           "name": "record-attempt"
         },
@@ -1094,7 +1098,7 @@
         },
         {
           "help": "",
-          "name": "work-next-headless"
+          "name": "work-next"
         }
       ]
     },
@@ -1141,6 +1145,10 @@
         {
           "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",
           "name": "backfill-clears"
+        },
+        {
+          "help": "Consume every standing merge authorisation whose PR already merged or closed",
+          "name": "reconcile-clears"
         },
         {
           "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",
@@ -1335,6 +1343,10 @@
         {
           "help": "Release registered rows whose checkout is provably dead \u2014 ROWS ONLY (dry run unless --apply)",
           "name": "release-dead-rows"
+        },
+        {
+          "help": "Point every branch tracking someone else's ref back at its own, or untrack it (#4225)",
+          "name": "repair-branch-upstreams"
         }
       ]
     },

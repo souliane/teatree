@@ -7,12 +7,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
-from teatree.agents.prompt import (
-    _parent_result_summary,
-    build_interactive_context,
-    build_system_context,
-    build_task_prompt,
-)
+from teatree.agents.prompt import _parent_result_summary, build_system_context, build_task_prompt
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 
 # --- build_task_prompt ---
@@ -359,7 +354,6 @@ class TestBuildSystemContext(TestCase):
         parent = Task.objects.create(ticket=ticket, session=session)
         TaskAttempt.objects.create(
             task=parent,
-            execution_target="headless",
             result={"summary": "Prior work done"},
         )
         child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
@@ -433,124 +427,56 @@ class TestSystemContextByteBudget(TestCase):
         assert "…truncated" not in ctx
 
 
-# --- build_interactive_context ---
+class TestNonPlanningPhaseWithPersistedSurvey(TestCase):
+    """A persisted survey must not spend the budget on a phase that never embeds it.
 
+    Only the ``planning`` block embeds the intake landscape survey, so on every
+    other phase the survey string is not a substring of the assembled context.
+    Crediting its bytes against the overage anyway drove ``overage`` to 0 before
+    the pass reached the skill bundle — the one block that is really over budget
+    — and shipped a 141-144 KB ``--append-system-prompt`` that the kernel refuses
+    (``MAX_ARG_STRLEN`` = 131,072), killing every coding/testing/reviewing
+    dispatch at spawn with ``[Errno 7] Argument list too long`` (#4386).
+    """
 
-class TestBuildInteractiveContext(TestCase):
-    def test_basic(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/99")
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
+    #: Sized so the survey alone exceeds the overage, which is the live shape:
+    #: the phantom absorbs the whole overage in one step and the pass exits
+    #: having reclaimed nothing at all.
+    _SURVEY_BLOB_BYTES = 60_000
+    _SKILL_BUNDLE_BYTES = MAX_APPEND_BYTES + 30_000
+    _AFFECTED_PHASES = ("coding", "testing", "reviewing")
 
-        ctx = build_interactive_context(task, skills=[])
-        assert "interactive TeaTree session" in ctx
-        assert "https://example.com/issues/99" in ctx
-        assert "99" in ctx
-
-    def test_with_title_and_phase(self) -> None:
-        ticket = Ticket.objects.create(extra={"issue_title": "Implement feature X"})
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "Implement feature X" in ctx
-        assert "Phase: coding" in ctx
-
-    def test_with_reason_shows_diagnosis_prompt(self) -> None:
+    def _context_with_survey(self, phase: str) -> str:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_reason="Agent needs guidance on API design",
-        )
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+        survey = {"blob": "x" * self._SURVEY_BLOB_BYTES, "warnings": [], "recommendations": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
 
-        ctx = build_interactive_context(task, skills=[])
-        assert "Agent needs guidance on API design" in ctx
-        assert "diagnosis" in ctx
-        assert "Do NOT ask the user what happened" in ctx
-        # Should NOT contain the generic acknowledgment prompt
-        assert "acknowledge the project" not in ctx
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * self._SKILL_BUNDLE_BYTES):
+            return build_system_context(task, skills=["huge-skill"])
 
-    def test_without_reason_shows_acknowledgment_prompt(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
+    def test_append_stays_within_the_argv_element_budget(self) -> None:
+        for phase in self._AFFECTED_PHASES:
+            with self.subTest(phase=phase):
+                assert len(self._context_with_survey(phase).encode()) <= MAX_APPEND_BYTES
 
-        ctx = build_interactive_context(task, skills=[])
-        assert "acknowledge the project" in ctx
-        # Should NOT contain the diagnosis prompt
-        assert "diagnosis" not in ctx
+    def test_the_real_skill_bundle_is_what_absorbs_the_overage(self) -> None:
+        for phase in self._AFFECTED_PHASES:
+            with self.subTest(phase=phase):
+                ctx = self._context_with_survey(phase)
+                # The skills pointer is the marker the truncation left behind; the
+                # survey pointer must be absent because nothing of it was in the text.
+                assert "skills/<skill>/SKILL.md" in ctx
+                assert "workspace landscape" not in ctx
 
-    def test_with_skills(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
+    def test_planning_still_truncates_its_own_embedded_survey(self) -> None:
+        # The companion change must stay behaviour-preserving for the one phase
+        # that really does embed the survey.
+        ctx = self._context_with_survey("planning")
 
-        ctx = build_interactive_context(task, skills=["code", "test"])
-        assert "/code" in ctx
-        assert "/test" in ctx
-        assert "REQUIRED" in ctx
-
-    def test_with_prs(self) -> None:
-        ticket = Ticket.objects.create(
-            extra={
-                "prs": {
-                    "repo": {
-                        "url": "https://gitlab.com/mr/5",
-                        "title": "MR Title",
-                        "draft": True,
-                        "pipeline_status": "failed",
-                    },
-                },
-            },
-        )
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "https://gitlab.com/mr/5" in ctx
-        assert "(draft)" in ctx
-        assert "pipeline: failed" in ctx
-        assert "MR Title" in ctx
-
-    def test_skips_non_dict_pr(self) -> None:
-        ticket = Ticket.objects.create(
-            extra={"prs": {"bad": 42, "ok": {"url": "https://x.com/mr/7"}}},
-        )
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "https://x.com/mr/7" in ctx
-
-    def test_non_dict_prs(self) -> None:
-        ticket = Ticket.objects.create(extra={"prs": "not-a-dict"})
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "pull requests" not in ctx.lower()
-
-    def test_pr_no_title_no_pipeline(self) -> None:
-        ticket = Ticket.objects.create(
-            extra={"prs": {"repo": {"url": "https://x.com/mr/8"}}},
-        )
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "https://x.com/mr/8" in ctx
-        assert "(draft)" not in ctx
-        assert "pipeline:" not in ctx
-
-    def test_non_dict_extra(self) -> None:
-        ticket = Ticket.objects.create(extra="not-a-dict")
-        session = Session.objects.create(ticket=ticket)
-        task = Task.objects.create(ticket=ticket, session=session)
-
-        ctx = build_interactive_context(task, skills=[])
-        assert "interactive TeaTree session" in ctx
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "workspace landscape" in ctx
 
 
 # --- _parent_result_summary ---
@@ -566,7 +492,6 @@ class TestParentResultSummary(TestCase):
         parent = Task.objects.create(ticket=self.ticket, session=self.session)
         TaskAttempt.objects.create(
             task=parent,
-            execution_target="headless",
             result={
                 "summary": "Implemented feature X",
                 "files_modified": ["src/a.py", "src/b.py"],
@@ -594,7 +519,7 @@ class TestParentResultSummary(TestCase):
 
     def test_handles_non_dict_result(self) -> None:
         parent = Task.objects.create(ticket=self.ticket, session=self.session)
-        TaskAttempt.objects.create(task=parent, execution_target="headless", result="not-a-dict")
+        TaskAttempt.objects.create(task=parent, result="not-a-dict")
         child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
 
         assert _parent_result_summary(child) == ""
@@ -831,9 +756,9 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
 class TestCacheablePrefixStability(TestCase):
     """The stable framing leads the append; per-task content trails it.
 
-    Prompt caching on the headless lane is CLI-internal and exposes no
+    Prompt caching on the agent lane is CLI-internal and exposes no
     ``cache_control`` surface, so prefix STABILITY is the only lever teatree has
-    over the hit rate (``_headless_options._build_options``). Task ID / Ticket /
+    over the hit rate (``_runner_options._build_options``). Task ID / Ticket /
     the prior-task result diverge on every dispatch, so leading with them
     invalidates the cached prefix at line 2 and re-processes the whole ~96 KB
     skill block uncached. The eval lane already leads with the stable framing
@@ -846,7 +771,7 @@ class TestCacheablePrefixStability(TestCase):
         parent = None
         if parent_summary:
             parent = Task.objects.create(ticket=ticket, session=session, phase=phase)
-            TaskAttempt.objects.create(task=parent, execution_target="headless", result={"summary": parent_summary})
+            TaskAttempt.objects.create(task=parent, result={"summary": parent_summary})
         return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
 
     @staticmethod

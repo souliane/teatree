@@ -32,16 +32,16 @@ from typing import ClassVar, TypedDict
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.diff_scope import ChangedFileSet, out_of_scope_refusal
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.core.models.merge_clear import (
-    SHA_FULL_LEN,
-    MergeClear,
-    is_commit_sha,
-    is_non_reviewer_role,
-    normalize_reviewer_identity,
-)
+from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
 from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.reviewer_identity import (
+    is_independent_reviewer_identity,
+    normalize_reviewer_identity,
+    unrecognised_reviewer_message,
+)
 from teatree.core.models.ticket import Ticket
 
 
@@ -121,6 +121,61 @@ class Severity(models.TextChoices):
     MAJOR = "major", "Major"
     MINOR = "minor", "Minor"
     NIT = "nit", "Nit"
+
+
+def _known_choice(value: str, choices: type[models.TextChoices], *, field: str) -> str:
+    """The normalised *value*, or a refusal naming the valid set for *field*."""
+    normalized = value.strip().lower()
+    valid = {choice.value for choice in choices}
+    if normalized not in valid:
+        msg = f"Unknown {field} {value!r}; valid: {sorted(valid)}"
+        raise ReviewVerdictError(msg)
+    return normalized
+
+
+def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) -> None:
+    """The §17.8 clause-3 invariant a merge_safe verdict's checks snapshot must satisfy."""
+    if normalized_verify == MergeClear.VerifyResult.FAILED:
+        msg = (
+            f"a merge_safe verdict can never carry gh_verify_result=failed (got "
+            f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
+            f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
+            f"a failed CLEAR)"
+        )
+        raise ReviewVerdictError(msg)
+    if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
+        msg = (
+            f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
+            f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
+            f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
+            f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
+        )
+        raise ReviewVerdictError(msg)
+
+
+def _validated_reviewer(reviewer_identity: str) -> str:
+    """The stripped reviewer identity, refused when empty or not an independent one."""
+    reviewer = reviewer_identity.strip()
+    if not reviewer:
+        msg = "reviewer_identity is required and must be non-empty"
+        raise ReviewVerdictError(msg)
+    if not is_independent_reviewer_identity(reviewer):
+        raise ReviewVerdictError(unrecognised_reviewer_message(reviewer, subject="a verdict", verb="recorded"))
+    return reviewer
+
+
+def _assert_full_sha(reviewed_sha: str) -> None:
+    """A verdict binds to the exact reviewed tree, so an abbreviated SHA is refused."""
+    if is_commit_sha(reviewed_sha):
+        return
+    candidate = reviewed_sha.strip()
+    msg = (
+        f"reviewed_sha {reviewed_sha!r} (length={len(candidate)}) is not a full "
+        f"{SHA_FULL_LEN}-char hex commit SHA — a verdict binds to the exact reviewed tree so "
+        f"the live-head equality check can compare it against the forge's headRefOid. Pass the "
+        f"full 40-char SHA (e.g. `git rev-parse HEAD`)"
+    )
+    raise ReviewVerdictError(msg)
 
 
 class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
@@ -261,6 +316,8 @@ class ReviewVerdict(models.Model):
         ticket: Ticket | None = None,
         expedited: bool = False,
         lock_holder: str = "",
+        changed_files: ChangedFileSet | None = None,
+        merge_result_retake: bool = False,
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -276,63 +333,30 @@ class ReviewVerdict(models.Model):
         later live re-check. A PENDING snapshot is accepted on a ``merge_safe``
         verdict ONLY when ``expedited`` is set (the sibling record of the
         human-authorized, SHA-bound expedite waiver ``MergeClear.issue`` records).
+
+        Supplying ``changed_files`` arms the #4251 diff-scope gate: a blocking
+        finding citing a path the PR provably does not touch is refused, because
+        a branch-only probe reports what ``main`` did to that file since the
+        branch was cut. ``merge_result_retake`` is the reviewer's attestation
+        that the finding was re-measured on the materialised merge result, which
+        is what makes such a claim admissible. An omitted or UNAVAILABLE set
+        never fires the gate — see :mod:`teatree.core.review.diff_scope_gate`.
         """
-        normalized_verdict = verdict.strip().lower()
-        valid_verdict = {choice.value for choice in cls.Verdict}
-        if normalized_verdict not in valid_verdict:
-            msg = f"Unknown verdict {verdict!r}; valid: {sorted(valid_verdict)}"
-            raise ReviewVerdictError(msg)
-
-        normalized_blast = blast_class.strip().lower()
-        valid_blast = {choice.value for choice in MergeClear.BlastClass}
-        if normalized_blast not in valid_blast:
-            msg = f"Unknown blast_class {blast_class!r}; valid: {sorted(valid_blast)}"
-            raise ReviewVerdictError(msg)
-
-        normalized_verify = gh_verify_result.strip().lower()
-        valid_verify = {choice.value for choice in MergeClear.VerifyResult}
-        if normalized_verify not in valid_verify:
-            msg = f"Unknown gh_verify_result {gh_verify_result!r}; valid: {sorted(valid_verify)}"
-            raise ReviewVerdictError(msg)
+        normalized_verdict = _known_choice(verdict, cls.Verdict, field="verdict")
+        normalized_blast = _known_choice(blast_class, MergeClear.BlastClass, field="blast_class")
+        normalized_verify = _known_choice(gh_verify_result, MergeClear.VerifyResult, field="gh_verify_result")
         if normalized_verdict == cls.Verdict.MERGE_SAFE:
-            if normalized_verify == MergeClear.VerifyResult.FAILED:
-                msg = (
-                    f"a merge_safe verdict can never carry gh_verify_result=failed (got "
-                    f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
-                    f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
-                    f"a failed CLEAR)"
-                )
-                raise ReviewVerdictError(msg)
-            if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
-                msg = (
-                    f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
-                    f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
-                    f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
-                    f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
-                )
-                raise ReviewVerdictError(msg)
+            _assert_checks_admit_merge_safe(normalized_verify, expedited=expedited)
 
-        reviewer = reviewer_identity.strip()
-        if not reviewer:
-            msg = "reviewer_identity is required and must be non-empty"
-            raise ReviewVerdictError(msg)
-        if is_non_reviewer_role(reviewer):
-            msg = (
-                f"reviewer_identity {reviewer!r} is a maker/coding-agent/loop role — a verdict "
-                f"records an independent cold review, never a self-attestation (§17.8 clause 3; "
-                f"mirrors MergeClear.issue rejecting a non-reviewer CLEAR author)"
-            )
-            raise ReviewVerdictError(msg)
-
-        if not is_commit_sha(reviewed_sha):
-            candidate = reviewed_sha.strip()
-            msg = (
-                f"reviewed_sha {reviewed_sha!r} (length={len(candidate)}) is not a full "
-                f"{SHA_FULL_LEN}-char hex commit SHA — a verdict binds to the exact reviewed tree so "
-                f"the live-head equality check can compare it against the forge's headRefOid. Pass the "
-                f"full 40-char SHA (e.g. `git rev-parse HEAD`)"
-            )
-            raise ReviewVerdictError(msg)
+        reviewer = _validated_reviewer(reviewer_identity)
+        _assert_full_sha(reviewed_sha)
+        scope_refusal = out_of_scope_refusal(
+            findings or [],
+            changed_files or ChangedFileSet.unavailable(),
+            merge_result_retake=merge_result_retake,
+        )
+        if scope_refusal:
+            raise ReviewVerdictError(scope_refusal)
 
         with transaction.atomic():
             # Idempotent on the normalized-identity key (F8): a re-review of the

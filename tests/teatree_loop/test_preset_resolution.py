@@ -43,7 +43,7 @@ class TestEmptyTableNoOp(django.test.TestCase):
             assert resolve_preset_state(name) is None
 
     def test_a_preset_that_is_not_activated_has_no_effect(self) -> None:
-        _preset("heads-down", {"review": False})
+        _preset("away", {"review": False})
         assert resolve_active_preset() is None
         assert resolve_preset_state("review") is None
 
@@ -56,8 +56,8 @@ class TestManualOverride(django.test.TestCase):
     """L3: a live override selects the preset; a deleted/expired override fails open."""
 
     def test_override_selects_the_preset(self) -> None:
-        _preset("heads-down", {"review": False, "dispatch": True})
-        ModeOverride.objects.set_override("heads-down")
+        _preset("away", {"review": False, "dispatch": True})
+        ModeOverride.objects.set_override("away")
         active = resolve_active_preset()
         assert active is not None
         assert active.layer == "override"
@@ -65,8 +65,8 @@ class TestManualOverride(django.test.TestCase):
         assert resolve_preset_state("dispatch") is True
 
     def test_absent_entry_is_inherit_not_off(self) -> None:
-        _preset("heads-down", {"review": False})
-        ModeOverride.objects.set_override("heads-down")
+        _preset("away", {"review": False})
+        ModeOverride.objects.set_override("away")
         assert resolve_preset_state("issue_implementer") is None
 
     def test_expired_override_is_inert(self) -> None:
@@ -81,11 +81,11 @@ class TestManualOverride(django.test.TestCase):
         assert resolve_preset_state("review") is None
 
     def test_override_outranks_the_schedule(self) -> None:
-        _preset("engaged", {"review": True})
+        _preset("present", {"review": True})
         _preset("off", {"review": False})
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         ModeScheduleSlot.objects.create(
-            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="engaged"
+            schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="present"
         )
         _activate_schedule("standard")
         ModeOverride.objects.set_override("off")
@@ -97,12 +97,12 @@ class TestScheduleSlots(django.test.TestCase):
     """L2: the governing slot is the latest start ≤ now, searching back across week wrap."""
 
     def setUp(self) -> None:
-        _preset("engaged", {"review": True})
+        _preset("present", {"review": True})
         _preset("maintenance", {"review": False, "dream": True})
         self.schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
-        # Weekday day → engaged at 08:00, evening → maintenance at 19:00.
+        # Weekday day → present at 08:00, evening → maintenance at 19:00.
         ModeScheduleSlot.objects.create(
-            schedule=self.schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="engaged"
+            schedule=self.schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="present"
         )
         ModeScheduleSlot.objects.create(
             schedule=self.schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(19, 0), preset_name="maintenance"
@@ -113,7 +113,7 @@ class TestScheduleSlots(django.test.TestCase):
         # 2026-07-13 is a Monday.
         return dt.datetime(2026, 7, 13, hour, minute, tzinfo=dt.UTC)
 
-    def test_daytime_resolves_to_engaged(self) -> None:
+    def test_daytime_resolves_to_present(self) -> None:
         assert resolve_preset_state("review", now=self._monday(10)) is True
 
     def test_evening_resolves_to_maintenance(self) -> None:
@@ -204,17 +204,17 @@ class TestScheduleTimezone(django.test.TestCase):
     """Slot starts are local wall-clock in the schedule's own zoneinfo, not project UTC."""
 
     def test_wall_clock_is_the_schedule_zone(self) -> None:
-        _preset("engaged", {"review": True})
+        _preset("present", {"review": True})
         _preset("maintenance", {"review": False})
         schedule = ModeSchedule.objects.create(name="tz", timezone="Europe/Zurich")
         ModeScheduleSlot.objects.create(
-            schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="engaged"
+            schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(8, 0), preset_name="present"
         )
         ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4], start_time=dt.time(19, 0), preset_name="maintenance"
         )
         _activate_schedule("tz")
         zurich = zoneinfo.ZoneInfo("Europe/Zurich")
-        # 09:00 Zurich local Monday = engaged; the same instant is 07:00 UTC.
+        # 09:00 Zurich local Monday = present; the same instant is 07:00 UTC.
         nine_zurich = dt.datetime(2026, 7, 13, 9, 0, tzinfo=zurich)
         assert resolve_preset_state("review", now=nine_zurich) is True

@@ -92,7 +92,6 @@
         <span class="chip mono">TODO-{{ task.task_id }}</span>
         <span class="chip">{{ task.phase }}</span>
         <span class="chip">{{ task.status }}</span>
-        <span class="chip" title="execution target — headless vs interactive">{{ task.execution_target }}</span>
         {% if task.claimed_by %}<span class="chip">{{ task.claimed_by }}</span>{% endif %}
         <span class="muted small">{% if task.attempts_total > task.attempts|length %}attempts: newest {{ task.attempts|length }} of {{ task.attempts_total }}{% else %}attempts: {{ task.attempts_total }}{% endif %}</span>
       </div>
@@ -100,7 +99,7 @@
         <table class="dash provenance">
           <thead>
             <tr>
-              <th>model</th><th>effort</th><th>lane / target</th><th>duration</th><th>cost</th>
+              <th>model</th><th>effort</th><th>lane</th><th>duration</th><th>cost</th>
               <th class="num">turns</th><th>tokens (in/out · cache r/w)</th><th>outcome</th>
             </tr>
           </thead>
@@ -109,7 +108,7 @@
               <tr>
                 <td class="mono">{{ a.model|default:"—" }}</td>
                 <td class="mono small">{{ a.reasoning_effort|default:"—" }}</td>
-                <td>{{ a.lane|default:"—" }} · {{ a.execution_target }}</td>
+                <td>{{ a.lane|default:"—" }}</td>
                 <td>{{ a.duration|default:"—" }}</td>
                 <td>
                   {% if a.cost_usd is not None %}

@@ -1,6 +1,6 @@
 """The provider-agnostic harness seam for the headless agent runtime.
 
-The headless runner (:mod:`teatree.agents.headless`) drives an in-process agent
+The agent runner (:mod:`teatree.agents.runner`) drives an in-process agent
 session behind a narrow protocol pair — :class:`Harness` opens a session for a
 built set of options, :class:`HarnessSession` is the in-flight session surface the
 driver talks to. :func:`resolve_harness` reads the DB-home ``agent_harness``
@@ -14,7 +14,7 @@ provider-agnostic backend, :class:`PydanticAiHarness`: a Pydantic AI
 :class:`~pydantic_ai.Agent` targeting the configured OpenAI-compatible,
 metered endpoint. Both backends yield the SAME ``claude_agent_sdk`` message
 vocabulary (``AssistantMessage`` / ``ResultMessage``) from :meth:`HarnessSession.receive_response`
-so the driver (:func:`teatree.agents.headless._collect`) never special-cases the
+so the driver (:func:`teatree.agents.runner._collect`) never special-cases the
 transport — that vocabulary IS the seam's provider-agnostic contract, proved by
 the ``FakeHarnessSession`` test double yielding the identical shape.
 
@@ -155,7 +155,7 @@ def resolve_effort(options: HarnessOptions) -> ReasoningEffort | None:
     the vendor ``ClaudeAgentOptions`` — the effort axis is provider-agnostic, so the vendor type
     does not reach here. Public seam: the eval ``pydantic_ai`` runner
     (:mod:`teatree.eval.pydantic_ai_runner`) reuses this single effort-vocabulary guard so a
-    headless dispatch and an eval run drop the same out-of-vocabulary rungs.
+    agent dispatch and an eval run drop the same out-of-vocabulary rungs.
 
     ``options.effort`` is already scoped to the ACTIVE harness by
     :func:`teatree.agents.model_tiering.resolve_spawn_effort` (called while the SDK options were
@@ -319,7 +319,7 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
-        # lane's own ``request_limit``; ``0`` (a headless dispatch, an SDK-``None`` coercion)
+        # lane's own ``request_limit``; ``0`` (a agent dispatch, an SDK-``None`` coercion)
         # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
         request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._backend.request_limit
         async with agent:
@@ -455,7 +455,7 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     Settings are resolved at the TASK's OVERLAY scope (``task.ticket.overlay``), not
     global/active-only: whether an overlay runs Lane B (``agent_harness=pydantic_ai``)
     and its endpoint / credential / request cap are all per-overlay overridable, and a
-    headless dispatch runs per-task, so a per-overlay override for a NON-active overlay
+    agent dispatch runs per-task, so a per-overlay override for a NON-active overlay
     must apply. A task-less ``resolve_harness()`` (the interactive/default path) keeps
     the active-overlay resolution (env layer included).
 
@@ -488,13 +488,13 @@ def resolve_dispatch_provider(task: "Task | None" = None, *, phase: str | None =
     the pin was never made for the pinned harness. Reading the configured provider straight
     off the settings would hand the dispatch a credential selector invalid under the harness
     it is actually running, which the claude_sdk child-env resolver
-    (:func:`~teatree.agents._headless_env._provider_child_env`) then refuses, failing every
+    (:func:`~teatree.agents._runner_env._provider_child_env`) then refuses, failing every
     verification dispatch of an otherwise-VALID deployment.
 
     So a pin the phase flip invalidated is DROPPED (to the ambient-credential default,
     ``None``) with a WARNING — never silently, and never by inventing a substitute
     credential the operator did not choose. This mirrors
-    :func:`~teatree.agents._headless_env.system_child_env`, which already warns-and-falls-back
+    :func:`~teatree.agents._runner_env.system_child_env`, which already warns-and-falls-back
     for the same shape.
 
     Nothing else is weakened. A pair no phase pin explains is untouched here and still fails

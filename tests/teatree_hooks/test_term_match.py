@@ -338,7 +338,7 @@ class TestBareSlugInCliShapedTextIsCaught:
     the file's synthetic stand-in for an org slug.
     """
 
-    _CLI_TEXT = "t3 op tasks work-next-headless"
+    _CLI_TEXT = "t3 op tasks work-next"
 
     def test_empty_allowlist_catches_the_bare_slug(self) -> None:
         assert term_match.matched_term(self._CLI_TEXT, ("op",)) == "op"

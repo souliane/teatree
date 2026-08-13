@@ -61,7 +61,7 @@ class LoopSeedSpec:
     (and the prompt-backed loop's ``Prompt.description``) and rendered by
     ``t3 loops list``. ``colleague_facing`` (#2904) is the AWAY-GATE policy —
     the #2904 admission gate skips the loop whenever availability defers questions
-    (away / autonomous_away). It is operator-editable and narrower than the
+    (the owner is unreachable). It is operator-editable and narrower than the
     ``colleague`` reach tag every loop declares in code (#3959): ``review`` reaches
     colleagues and deliberately keeps running while the owner is away. ``default_enabled``
     ships the local/read-only operational core ON out of the box (the sound

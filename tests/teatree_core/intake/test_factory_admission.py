@@ -1,9 +1,12 @@
 """The single top-down intake decision function (#3634)."""
 
+from typing import TYPE_CHECKING
+
 from django.test import TestCase
 
 from teatree.core.intake.factory_admission import (
     IntakeFacts,
+    IntakeLabelPolicy,
     IntakeVerdict,
     decide_intake,
     decide_issue_intake,
@@ -14,7 +17,12 @@ from teatree.core.intake.factory_admission import (
 )
 from teatree.core.models import ConfigSetting
 
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
+
 EPIC_BODY = "## Members\n\n- [x] #3848\n- [x] #3892\n- [x] #4035\n"
+
+LEDGER_BODY = "## DO NOT CLOSE — standing ledger\n\n- [ ] **A gap** — with prose, so no child list.\n"
 
 
 def _facts(
@@ -33,7 +41,7 @@ def _facts(
 
 
 class TestDecisionTableOrder:
-    """Rules 1-5 of the issue's table, evaluated top-down, first match wins."""
+    """Every rule of the issue's table, evaluated top-down, first match wins."""
 
     def test_needs_triage_ignores_even_a_trusted_author(self) -> None:
         verdict = decide_intake(
@@ -102,6 +110,65 @@ class TestDecisionTableOrder:
         assert verdict is IntakeVerdict.IGNORE_NOT_ADMITTED
 
 
+class TestExcludeTier:
+    """The overlay's ``exclude_labels`` is a hold like ``needs-triage`` (#4134)."""
+
+    def test_an_excluded_label_ignores_even_a_trusted_author(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"interactive-implementation"}), author_trusted=True),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"interactive-implementation"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+        assert not verdict.acts
+
+    def test_an_excluded_label_outranks_the_admit_label(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"t3-auto", "on-hold"})),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+
+    def test_needs_triage_outranks_the_exclude_tier(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"needs-triage", "on-hold"})),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_NEEDS_TRIAGE
+
+    def test_the_exclude_tier_outranks_umbrella(self) -> None:
+        """A row that is BOTH logs the operator's deliberate hold, not the inferred shape."""
+        verdict = decide_intake(
+            _facts(labels=frozenset({"on-hold"}), umbrella_reason="carries the 'epic' label"),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+
+    def test_the_exclude_tier_outranks_existing_work(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"on-hold"}), work_exists=True),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+
+    def test_an_unmatched_exclude_list_leaves_the_verdict_alone(self) -> None:
+        verdict = decide_intake(
+            _facts(labels=frozenset({"bug"}), author_trusted=True),
+            admit_label="t3-auto",
+            exclude_labels=frozenset({"on-hold"}),
+        )
+        assert verdict is IntakeVerdict.ACT_TRUSTED_AUTHOR
+
+    def test_the_default_empty_policy_excludes_nothing(self) -> None:
+        """An overlay that never set ``exclude_labels`` keeps its pre-#4134 verdicts."""
+        verdict = decide_intake(_facts(labels=frozenset({"on-hold"}), author_trusted=True), admit_label="t3-auto")
+        assert verdict is IntakeVerdict.ACT_TRUSTED_AUTHOR
+
+
 class TestPayloadLabels:
     def test_reads_both_forge_label_shapes(self) -> None:
         assert payload_labels({"labels": ["a", {"name": "b"}]}) == frozenset({"a", "b"})
@@ -131,6 +198,33 @@ class TestPayloadFacade:
             is IntakeVerdict.ACT_TRUSTED_AUTHOR
         )
 
+    def test_the_exclude_policy_reaches_the_table_through_the_facade(self) -> None:
+        both_forge_shapes: list[RawAPIDict] = [{"labels": [{"name": "on-hold"}]}, {"labels": ["on-hold"]}]
+        for payload in both_forge_shapes:
+            assert (
+                decide_issue_intake(
+                    payload,
+                    author_trusted=True,
+                    work_exists=False,
+                    admit_label="t3-auto",
+                    label_policy=IntakeLabelPolicy(exclude=frozenset({"on-hold"})),
+                )
+                is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+            )
+
+    def test_an_excluded_epic_reports_the_exclusion_not_the_umbrella_shape(self) -> None:
+        """Both rules reach the facade, and the operator's denylist is the one that fires."""
+        assert (
+            decide_issue_intake(
+                {"labels": [{"name": "epic"}, {"name": "on-hold"}], "body": EPIC_BODY},
+                author_trusted=True,
+                work_exists=False,
+                admit_label="t3-auto",
+                label_policy=IntakeLabelPolicy(exclude=frozenset({"on-hold"}), umbrella=frozenset({"epic"})),
+            )
+            is IntakeVerdict.IGNORE_EXCLUDED_LABEL
+        )
+
     def test_an_epic_labelled_payload_is_declined(self) -> None:
         assert (
             decide_issue_intake(
@@ -138,7 +232,7 @@ class TestPayloadFacade:
                 author_trusted=True,
                 work_exists=False,
                 admit_label="t3-auto",
-                umbrella_labels=frozenset({"epic"}),
+                label_policy=IntakeLabelPolicy(umbrella=frozenset({"epic"})),
             )
             is IntakeVerdict.IGNORE_UMBRELLA
         )
@@ -166,6 +260,18 @@ class TestPayloadFacade:
             is IntakeVerdict.IGNORE_UMBRELLA
         )
 
+    def test_an_unlabelled_standing_ledger_from_a_trusted_author_is_declined(self) -> None:
+        """The souliane/teatree#2663 shape: no label and prose items, so only the declaration decides."""
+        assert (
+            decide_issue_intake(
+                {"body": LEDGER_BODY},
+                author_trusted=True,
+                work_exists=False,
+                admit_label="t3-auto",
+            )
+            is IntakeVerdict.IGNORE_UMBRELLA
+        )
+
     def test_the_umbrella_label_set_is_supplied_by_the_caller(self) -> None:
         """An overlay that renames the marker decides through its OWN set, not a constant."""
         assert (
@@ -174,7 +280,7 @@ class TestPayloadFacade:
                 author_trusted=True,
                 work_exists=False,
                 admit_label="t3-auto",
-                umbrella_labels=frozenset({"parent"}),
+                label_policy=IntakeLabelPolicy(umbrella=frozenset({"parent"})),
             )
             is IntakeVerdict.IGNORE_UMBRELLA
         )

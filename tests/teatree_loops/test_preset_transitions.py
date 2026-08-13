@@ -1,10 +1,7 @@
 """teatree.loops.preset_transitions — the side-effect-only transition chain (#3159, #61).
 
-The chain never affects resolution (that is read-time); it reaps an expired
-override, fires the deferred-question drain when a scheduled switch RETURNS the box
-to reachable (the merged mode's ``defers_questions`` flips T->F), and posts one
-Slack line per switch. The availability-pin push is GONE post-merge — the mode IS
-availability. Notify + drain are patched at the boundary.
+The chain never affects resolution (that is read-time); it reaps an expired override
+and posts one Slack line per switch. Notify is patched at the boundary.
 """
 
 import datetime as dt
@@ -18,7 +15,6 @@ from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.loops.preset_transitions import apply_preset_transition
 
 _STAMP_KEY = "loop_preset_transition_stamp"
-_DRAIN = "teatree.loops.preset_transitions.drain_deferred_questions"
 _ENSURE_TIMERS = "teatree.loops.timer_reconciler.ensure_loop_timers"
 
 
@@ -35,50 +31,18 @@ class TestApplyPresetTransition(django.test.TestCase):
         assert ConfigSetting.objects.get_effective(_STAMP_KEY) is None
 
     def test_switch_stamps_the_new_mode(self) -> None:
-        self._activate("heads-down")
+        self._activate("away")
         with patch("teatree.loops.preset_transitions.notify_user"):
             outcome = apply_preset_transition(timezone.now())
-        assert outcome["switched"] == "heads-down"
-        assert ConfigSetting.objects.get_effective(_STAMP_KEY) == "heads-down"
+        assert outcome["switched"] == "away"
+        assert ConfigSetting.objects.get_effective(_STAMP_KEY) == "away"
 
     def test_second_pass_same_mode_is_unchanged(self) -> None:
-        self._activate("heads-down")
+        self._activate("away")
         with patch("teatree.loops.preset_transitions.notify_user"):
             apply_preset_transition(timezone.now())
             outcome = apply_preset_transition(timezone.now())
         assert outcome["unchanged"] == 1
-
-    def test_scheduled_return_to_reachable_drains(self) -> None:
-        # Prior mode deferred (offline); the new active mode does not (engaged) —
-        # the backlog drains, exactly as the old away->present transition did.
-        Mode.objects.update_or_create(
-            name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
-        )
-        Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
-        ConfigSetting.objects.set_value(_STAMP_KEY, "offline")
-        ModeOverride.objects.set_override("engaged")
-        with patch("teatree.loops.preset_transitions.notify_user"), patch(_DRAIN) as drain:
-            apply_preset_transition(timezone.now())
-        drain.assert_called_once()
-
-    def test_no_drain_when_switching_between_deferring_modes(self) -> None:
-        Mode.objects.update_or_create(
-            name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
-        )
-        Mode.objects.create(name="unattended", entries={}, defers_questions=True)
-        ConfigSetting.objects.set_value(_STAMP_KEY, "offline")
-        ModeOverride.objects.set_override("unattended")
-        with patch("teatree.loops.preset_transitions.notify_user"), patch(_DRAIN) as drain:
-            apply_preset_transition(timezone.now())
-        drain.assert_not_called()
-
-    def test_no_drain_when_entering_a_deferring_mode(self) -> None:
-        Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
-        self._activate("unattended", defers_questions=True)
-        ConfigSetting.objects.set_value(_STAMP_KEY, "engaged")
-        with patch("teatree.loops.preset_transitions.notify_user"), patch(_DRAIN) as drain:
-            apply_preset_transition(timezone.now())
-        drain.assert_not_called()
 
     def test_expired_override_is_reaped(self) -> None:
         Mode.objects.create(name="off", entries={})
@@ -90,7 +54,7 @@ class TestApplyPresetTransition(django.test.TestCase):
         assert ModeOverride.objects.count() == 0
 
     def test_switch_posts_one_slack_line(self) -> None:
-        self._activate("heads-down")
+        self._activate("away")
         with patch("teatree.loops.preset_transitions.notify_user") as notify:
             apply_preset_transition(timezone.now())
         notify.assert_called_once()
@@ -107,8 +71,8 @@ class TestTransitionReconcilesTheChains(django.test.TestCase):
     """
 
     def test_a_switch_reconciles_the_timer_chains(self) -> None:
-        Mode.objects.create(name="heads-down", entries={})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="away", entries={})
+        ModeOverride.objects.set_override("away")
         with (
             patch("teatree.loops.preset_transitions.notify_user"),
             patch(_ENSURE_TIMERS) as ensure,
@@ -140,8 +104,8 @@ class TestTransitionReconcilesTheChains(django.test.TestCase):
         assert outcome["reconciled"] == "l0-target"
 
     def test_an_l0_change_does_not_post_a_switch_line(self) -> None:
-        # The two stamps are separate on purpose: the drain and the Slack line are about
-        # the OWNER's reachability, so a mode change the owner never made must not post.
+        # The two stamps are separate on purpose: the Slack line is about the OWNER's
+        # own switch, so a mode change the owner never made must not post.
         Mode.objects.create(name="l0-quiet", entries={})
         with patch("teatree.loops.preset_transitions.notify_user") as notify:
             apply_preset_transition(timezone.now())
@@ -151,11 +115,11 @@ class TestTransitionReconcilesTheChains(django.test.TestCase):
         notify.assert_not_called()
 
     def test_a_reconcile_failure_never_breaks_the_transition(self) -> None:
-        Mode.objects.create(name="heads-down", entries={})
-        ModeOverride.objects.set_override("heads-down")
+        Mode.objects.create(name="away", entries={})
+        ModeOverride.objects.set_override("away")
         with (
             patch("teatree.loops.preset_transitions.notify_user"),
             patch(_ENSURE_TIMERS, side_effect=RuntimeError("db down")),
         ):
             outcome = apply_preset_transition(timezone.now())
-        assert outcome["switched"] == "heads-down"
+        assert outcome["switched"] == "away"

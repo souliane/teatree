@@ -1,7 +1,7 @@
 """``_check_*`` probes for loop / scheduling staleness invoked by `t3 doctor check`.
 
 Each helper is narrow (single concern, single ``typer.echo`` path) and returns
-``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.app.run_doctor_checks`.
+``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
 import typer
@@ -363,6 +363,42 @@ def _check_aged_sweep_skips() -> bool:
             f"({row.age_label()}) — reason `{row.reason}`. {row.url}",
         )
     return False
+
+
+def _check_unconsumed_merge_clears() -> bool:
+    """Hard-FAIL on a standing merge authorisation whose PR the forge still reports OPEN (#4250).
+
+    A ``MergeClear`` is a durable authorisation to merge exactly one diff. One that is
+    never consumed while its PR is still open is a finished, reviewed branch that
+    silently never lands — and no surface reported it: the S4 age signal joined
+    ``ticket__overlay`` while ticket-less is the norm, the sweep logged an unrelated
+    reason at INTERNAL audience, and ``MergeAudit`` was correctly empty.
+
+    A missing local ``MergeAudit`` is NOT evidence that no merge happened, and reading
+    it as one made this check 6/6 false on live data. The forge decides: only a PR it
+    reports OPEN is a stall; one that merged or closed outside the keystone is a spent
+    authorisation reported as a self-clearing WARN, and a PR whose state cannot be read
+    produces no finding at all.
+
+    Deliberately GLOBAL: a CLEAR whose repo no overlay declares is still a stalled merge,
+    and scoping this report per overlay is how such a row would go unreported again.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens on
+    the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.factory.clear_liveness_report import stale_clear_report  # noqa: PLC0415 — deferred: same
+
+    try:
+        report = stale_clear_report("", timezone.now(), read=pr_open_state)
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Unconsumed-merge-CLEAR check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for line in report.lines():
+        typer.echo(line)
+    return not report.stalled
 
 
 def _check_t3_master_unheld_while_loops_tick() -> bool:

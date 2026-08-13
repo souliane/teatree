@@ -19,6 +19,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.models import MergeClear, ReviewVerdict
 from tests.factories import TicketFactory
 
@@ -170,3 +171,39 @@ class TestTicketClearRecordsVerdict(TestCase):
         )
         result = _status(head=_REVIEWED, checks="green")
         assert result["state"] == "safe_to_approve"
+
+
+class TestRecordDiffScopeGate(TestCase):
+    """``review record`` reads the PR's changed-file set and refuses a branch-only probe (#4251)."""
+
+    _SRC_FINDING = (
+        '[{"severity": "high", "summary": "grant is too narrow", '
+        '"file": "src/teatree/core/modelkit/phase_tools.py", "line": 41}]'
+    )
+
+    def _record_src_finding(self, changed: ChangedFileSet, **overrides: object) -> dict[str, object]:
+        with patch(
+            "teatree.core.management.commands.review.changed_file_set_for_findings",
+            return_value=changed,
+        ):
+            return _record(verdict="hold", findings_json=self._SRC_FINDING, **overrides)
+
+    def test_a_blocking_finding_outside_the_changed_set_is_refused(self) -> None:
+        result = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]))
+
+        assert not result["recorded"]
+        assert "t3 review merge-tree" in cast("str", result["error"])
+        assert ReviewVerdict.objects.count() == 0
+
+    def test_the_merge_result_retake_flag_records_the_same_finding(self) -> None:
+        result = self._record_src_finding(ChangedFileSet.known(["skills/review/SKILL.md"]), merge_result_retake=True)
+
+        assert result["recorded"]
+        assert ReviewVerdict.objects.count() == 1
+
+    def test_a_verdict_with_no_blocking_citation_never_reads_the_diff(self) -> None:
+        with patch("teatree.core.review.diff_scope_probe.changed_file_set_for") as fetch:
+            result = _record(findings_json='[{"severity": "nit", "summary": "rename x", "file": "a.py"}]')
+
+        fetch.assert_not_called()
+        assert result["recorded"]

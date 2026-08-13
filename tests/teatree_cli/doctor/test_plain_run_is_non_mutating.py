@@ -20,8 +20,8 @@ from unittest import mock
 
 import pytest
 
-import teatree.cli.doctor.app as doctor_app_mod
-from teatree.cli.doctor.app import run_doctor_checks
+import teatree.cli.doctor.run_checks as doctor_runner_mod
+from teatree.cli.doctor.run_checks import run_doctor_checks
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -33,6 +33,7 @@ _FINALISERS = "_run_advisory_finalisers"
 #: function binds them (they are not attributes of the doctor app module).
 _DEFERRED_CALLS = (
     "teatree.core.gates.schema_guard.doctor_check_self_db_migrations",
+    "teatree.core.gates.schema_guard.doctor_check_process_code_freshness",
     "teatree.cli.doctor.self_heal.run_self_heal_checks",
     "teatree.cli.update._collect_repos",
     "teatree.core.gates.clone_guard.doctor_check_clone_currency",
@@ -54,8 +55,8 @@ def _aggregate_reduced_to_its_finalisers() -> Iterator[None]:
     """
     with contextlib.ExitStack() as stack:
         for name in run_doctor_checks.__code__.co_names:
-            if name != _FINALISERS and callable(getattr(doctor_app_mod, name, None)):
-                stack.enter_context(mock.patch.object(doctor_app_mod, name, return_value=True))
+            if name != _FINALISERS and callable(getattr(doctor_runner_mod, name, None)):
+                stack.enter_context(mock.patch.object(doctor_runner_mod, name, return_value=True))
         for target in _DEFERRED_CALLS:
             stack.enter_context(mock.patch(target, return_value=True))
         yield
@@ -104,7 +105,11 @@ class TestPlainRunNeverWritesTheOperatorsSettings:
         deferred = {target.rsplit(".", 1)[-1] for target in _DEFERRED_CALLS}
         deferred |= {target.rsplit(".", 1)[0] for target in _DEFERRED_CALLS}
         unaccounted = (
-            {name for name in run_doctor_checks.__code__.co_names if not callable(getattr(doctor_app_mod, name, None))}
+            {
+                name
+                for name in run_doctor_checks.__code__.co_names
+                if not callable(getattr(doctor_runner_mod, name, None))
+            }
             - _NOT_A_CHECK
             - deferred
         )

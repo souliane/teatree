@@ -41,6 +41,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.hooks import banned_terms_scanner
+from teatree.loops.dream.pass_config import PromotionBudget
 
 logger = logging.getLogger(__name__)
 
@@ -82,13 +83,18 @@ class PromoteGapOutcome:
     ``checkbox_added`` is True only when a NEW checkbox was appended to the
     umbrella; ``scheduled`` is True only when a NEW coding task was scheduled;
     ``withheld`` is True when the rendered title would leak a banned term / bare
-    reference and nothing was written or scheduled.
+    reference and nothing was written or scheduled; ``deferred`` is True when the
+    pass's promotion cap was already spent, so the gap waits for the next pass;
+    ``already_present`` is True when a short-circuiting pass DISCOVERED the gap
+    riding the umbrella, so it turned away no work and nothing waits (#4176).
     """
 
     gap_key: str
     checkbox_added: bool
     scheduled: bool
     withheld: bool = False
+    deferred: bool = False
+    already_present: bool = False
     reason: str = ""
 
 
@@ -148,6 +154,19 @@ def _read_body(host: CodeHostBackend, umbrella_url: str) -> str | None:
         return None
     body = raw.get("body") or raw.get("description")
     return body if isinstance(body, str) else None
+
+
+def gap_present(host: CodeHostBackend, *, umbrella_url: str, gap_key: str) -> bool | None:
+    """Whether *gap_key* already rides the umbrella — read-only discovery, no write.
+
+    Tri-state on purpose: ``None`` is UNKNOWN (an unreadable body), never "absent" and
+    never "present", so a caller that short-circuits before the upsert cannot claim a
+    gap rides an umbrella nobody could read.
+    """
+    body = _read_body(host, umbrella_url)
+    if body is None:
+        return None
+    return _line_index(body.splitlines(), gap_key) != -1
 
 
 def upsert_gap_checkbox(
@@ -225,7 +244,25 @@ def schedule_gap_fix(*, umbrella_url: str, gap_key: str, title: str, cluster_key
     return ticket.schedule_coding()
 
 
-def promote_gap(host: CodeHostBackend, *, umbrella_url: str, gap: GapSpec, dry_run: bool = False) -> PromoteGapOutcome:
+def _withholding_reason(safe_title: str) -> str:
+    """Why *safe_title* must never be written to the umbrella, or ``""`` when it may be."""
+    banned = banned_terms_scanner.scan_text(safe_title)
+    if banned is not None:
+        return f"contains banned term '{banned}'"
+    leaked = find_bare_references(safe_title)
+    if leaked:
+        return f"contains bare reference(s): {', '.join(leaked)}"
+    return ""
+
+
+def promote_gap(
+    host: CodeHostBackend,
+    *,
+    umbrella_url: str,
+    gap: GapSpec,
+    dry_run: bool = False,
+    budget: PromotionBudget | None = None,
+) -> PromoteGapOutcome:
     """Drive one grounded gap to a fix-and-merge: upsert checkbox + schedule the fix.
 
     The rendered title is neutralised and re-scanned; a surviving banned term / bare
@@ -233,34 +270,58 @@ def promote_gap(host: CodeHostBackend, *, umbrella_url: str, gap: GapSpec, dry_r
     checkbox is upserted under the umbrella (deduped by *gap.gap_key*) and a coding
     task is scheduled for a NEW gap (reusing ``schedule_coding``). Under *dry_run*
     nothing is written or scheduled — the gap is reported as it would be promoted.
+
+    This is the ONE place a gap becomes a scheduled fix, so it is where the pass's
+    *budget* is spent (``None`` ⇒ unbounded, #4176). An exhausted budget DEFERS the gap
+    — nothing written, nothing scheduled, and the gap stays in its phase's drain queue
+    for the next pass. Budget is charged only when this call did NEW work, so an
+    already-promoted gap costs nothing and cannot starve fresh gaps.
+
+    Every branch that short-circuits before the upsert — a withheld title, a spent cap —
+    first DISCOVERS whether the gap already rides the umbrella (:func:`gap_present`) and
+    reports ``already_present``, so a caller stamping durable state off this outcome
+    describes the world rather than what this pass happened to do. An already-present gap
+    is turned away by nothing: no ``defer()``, no write, no schedule (#4176).
     """
     safe_title = neutralize_bare_references(gap.title.strip())
-    banned = banned_terms_scanner.scan_text(safe_title)
-    if banned is not None:
+    withheld_reason = _withholding_reason(safe_title)
+    if withheld_reason:
         return PromoteGapOutcome(
             gap_key=gap.gap_key,
             checkbox_added=False,
             scheduled=False,
             withheld=True,
-            reason=f"contains banned term '{banned}'",
-        )
-    leaked = find_bare_references(safe_title)
-    if leaked:
-        return PromoteGapOutcome(
-            gap_key=gap.gap_key,
-            checkbox_added=False,
-            scheduled=False,
-            withheld=True,
-            reason=f"contains bare reference(s): {', '.join(leaked)}",
+            already_present=gap_present(host, umbrella_url=umbrella_url, gap_key=gap.gap_key) is True,
+            reason=withheld_reason,
         )
 
     if dry_run:
         return PromoteGapOutcome(gap_key=gap.gap_key, checkbox_added=False, scheduled=False, reason="DRY (no writes)")
 
+    if budget is not None and budget.exhausted:
+        if gap_present(host, umbrella_url=umbrella_url, gap_key=gap.gap_key) is True:
+            return PromoteGapOutcome(
+                gap_key=gap.gap_key,
+                checkbox_added=False,
+                scheduled=False,
+                already_present=True,
+                reason="already promoted — rides the umbrella",
+            )
+        budget.defer()
+        return PromoteGapOutcome(
+            gap_key=gap.gap_key,
+            checkbox_added=False,
+            scheduled=False,
+            deferred=True,
+            reason="deferred — per-pass promotion cap reached",
+        )
+
     added = upsert_gap_checkbox(host, umbrella_url=umbrella_url, gap_key=gap.gap_key, title=safe_title)
     task = schedule_gap_fix(
         umbrella_url=umbrella_url, gap_key=gap.gap_key, title=safe_title, cluster_key=gap.cluster_key
     )
+    if budget is not None and (added or task is not None):
+        budget.spend()
     return PromoteGapOutcome(gap_key=gap.gap_key, checkbox_added=added, scheduled=task is not None, reason="promoted")
 
 
@@ -364,6 +425,7 @@ __all__ = [
     "GapSpec",
     "PromoteGapOutcome",
     "check_gap_checkbox",
+    "gap_present",
     "promote_gap",
     "reconcile_merged_gaps",
     "render_checkbox_line",

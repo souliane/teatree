@@ -222,7 +222,7 @@ def on_behalf_block_message(target: str, action: str, *, taint: str | None = Non
 
 
 #: The approver id an on-behalf post graduated by the #119 dial is recorded under —
-#: a non-agent authority (``is_non_reviewer_role`` passes it), so the audit names the
+#: a non-agent authority (``is_independent_reviewer_identity`` admits it), so the audit names the
 #: standing operator dial config, not the executing agent self-authorizing.
 _POLICY_APPROVER = "policy"
 

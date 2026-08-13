@@ -9,7 +9,7 @@ from teatree.dash.views.loops import (
     loop_cadence,
     loops,
     loops_table_partial,
-    posture,
+    mode_switch,
     runner_toggle,
 )
 from teatree.dash.views.presets import (
@@ -52,7 +52,7 @@ __all__ = [
     "loop_cadence",
     "loops",
     "loops_table_partial",
-    "posture",
+    "mode_switch",
     "preset_create",
     "preset_delete",
     "preset_entry",

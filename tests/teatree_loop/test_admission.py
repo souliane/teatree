@@ -171,7 +171,9 @@ class TestMachineSignal:
         # #4163: the field was declared and populated by nothing, and every live caller
         # here passes no argument — so the default path is the only one that ever ran.
         monkeypatch.setattr(
-            ram_scope, "read_ram_headroom", lambda: RamHeadroom(available_mib=9 * 1024, cgroup_limit_mib=None)
+            ram_scope,
+            "read_ram_headroom",
+            lambda: RamHeadroom(available_mib=9 * 1024, cgroup_limit_mib=None, host_available_mib=9 * 1024),
         )
         assert read_machine_signal().ram_available_gb == pytest.approx(9.0)
 

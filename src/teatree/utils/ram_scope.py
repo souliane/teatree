@@ -98,26 +98,31 @@ def _cgroup_cap_and_headroom_mib() -> tuple[int | None, int | None]:
 
 @dataclass(frozen=True, slots=True)
 class RamHeadroom:
-    """Available RAM, carrying the cgroup cap it was measured against.
+    """Available RAM, carrying both the cgroup cap it was measured against and its box-scoped half.
 
-    The number alone is unjudgeable: identical arithmetic in a 2 GiB sidecar and on the
-    uncapped host produce readings an absolute watermark cannot tell apart.
+    The combined number alone is unjudgeable: identical arithmetic in a 2 GiB sidecar and on
+    the uncapped host produce readings an absolute watermark cannot tell apart. The host
+    component is kept beside it because that one IS box-scoped at any cap — ``/proc/meminfo``
+    inside a container reports the host — so an out-of-scope reading has an answer to fall
+    back on rather than nothing at all (#4252).
     """
 
     available_mib: int | None
     cgroup_limit_mib: int | None
+    host_available_mib: int | None
 
     @property
     def box_watermark_mib(self) -> int | None:
         """The reading box-wide watermarks may judge; ``None`` is UNKNOWN, which never brakes.
 
-        Only an uncapped scope, or one large enough to host an agent workload, describes
-        the box. Judging a smaller cgroup's reading against a box-wide floor is a brake
-        no amount of freed memory can release.
+        A cgroup too small to host an agent workload describes that container and never the
+        box, so its arithmetic is dropped and the host component answers alone. ``None``
+        survives only when nothing box-scoped was readable — never as the verdict on a scope,
+        which is the permanent brake a fixed cap could never release (#4217).
         """
         floor_mib = agent_workload_floor_gib(os.environ.get(AGENT_WORKLOAD_FLOOR_ENV)) * _MIB_PER_GIB
         if self.cgroup_limit_mib is not None and self.cgroup_limit_mib < floor_mib:
-            return None
+            return self.host_available_mib
         return self.available_mib
 
 
@@ -125,18 +130,22 @@ def read_ram_headroom() -> RamHeadroom:
     """RAM available to THIS process — the minimum of every scope that can answer (#3992).
 
     ``/proc/meminfo`` inside a container reports the HOST's memory, so a capped worker
-    would otherwise size work against headroom it may not touch. ``available_mib`` of
+    would otherwise size work against headroom it may not touch. Both components survive
+    onto the struct: ``min()`` is what THIS process may allocate, and collapsing to it
+    before the scope test threw away the only figure a sidecar could still be judged on.
+
     ``None`` (nothing readable) stays a different answer from ``0`` (readable, nothing
     left): a caller falls back on the first and tightens on the second.
     """
     limit_mib, headroom_mib = _cgroup_cap_and_headroom_mib()
-    candidates: list[int] = []
     host = host_available_ram_mib()
-    if host > 0:
-        candidates.append(host)
-    if headroom_mib is not None:
-        candidates.append(headroom_mib)
-    return RamHeadroom(available_mib=min(candidates) if candidates else None, cgroup_limit_mib=limit_mib)
+    host_mib = host if host > 0 else None
+    candidates = [mib for mib in (host_mib, headroom_mib) if mib is not None]
+    return RamHeadroom(
+        available_mib=min(candidates) if candidates else None,
+        cgroup_limit_mib=limit_mib,
+        host_available_mib=host_mib,
+    )
 
 
 __all__ = [

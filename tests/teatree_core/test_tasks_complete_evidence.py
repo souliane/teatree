@@ -27,7 +27,6 @@ class TestTasksCompleteEvidenceGate(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         task.claim(claimed_by="worker-1")
         return task
@@ -39,7 +38,6 @@ class TestTasksCompleteEvidenceGate(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.FAILED,
         )
 

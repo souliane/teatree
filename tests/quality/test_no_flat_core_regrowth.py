@@ -95,7 +95,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # flat loop_lease_manager.py queryset hub to hold it under the 500-LOC module-health cap.
 # A pure-predicate leaf helper of that flat root hub, owned by no existing subpackage,
 # mirroring managers_overlay.py beside managers.py.
-# 93: +headless_admission.py — the F9 headless-lane admission chokepoint (governor consult)
+# 93: +agent_admission.py — the F9 headless-lane admission chokepoint (governor consult)
 # 94: +managers_task_claim.py — the claim-admission/ordering concern carved from managers.py (module health)
 # 96: +notify_types.py / notify_ledger.py — carved out of notify.py to hold it under the 500-LOC
 # module-health cap. notify_types (the NotifyKind/NotifyReason/NotifyOutcome/NotifyOptions value
@@ -185,7 +185,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 109: +dispatch_admission.py (#4107) — the governor's third admission lane: the harness
 # Agent/Task dispatch, which asked nothing while both factory lanes did. It lands at the
 # root beside the two flat admission leaves it belongs with (admission_governor.py, the
-# pure decision; headless_admission.py, the headless consult); filing it under a
+# pure decision; agent_admission.py, the headless consult); filing it under a
 # subpackage would separate it from its siblings to satisfy a counter. Its callers are
 # the PreToolUse/TaskCreated gates in hooks/scripts, which tach forbids the platform-layer
 # teatree.hooks node from reaching, so it cannot live there either.
@@ -213,7 +213,20 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # by the #75 decision above, mirroring forge_push_refs.py beside forge_push.py and
 # speak_cleaning.py beside speak.py; no existing subpackage owns the hand-off (merge/ is the
 # keystone transition, not the hand-off seam).
-PINNED_FLAT_CORE_MODULES = 109
+# 110: +claim_liveness.py (#4164) — "is this process still executing that task claim?", the
+# registry the three lease sweeps consult before reaping. A flat sibling of
+# loop_lease_liveness.py, whose pid-attribution seam it reuses and whose shape it mirrors
+# exactly: an ORM-free predicate layer that must be importable by core/models/ (task_claim),
+# core/managers*, core/tasks AND teatree.loops with no cycle, so it can live under none of
+# them; modelkit/ is a zero-dependency tach node and cannot take the loop_lease_liveness edge.
+# 111: +process_freshness.py (#4387) — "is the code THIS process loaded as new as the schema
+# the DB has applied?", the mirror of schema_readiness.py's deploy-order gate and its flat
+# sibling by construction: the same shape (a frozen snapshot plus a memoised verdict), read
+# by the same claim chokepoint through managers_task_claim, and importable by core/managers*,
+# core/apps AND core/gates with no cycle. It must also stay ORM-light enough to run in
+# ``AppConfig.ready()``, which rules out models/; no cleanup/factory/intake/... subpackage
+# owns "what did this interpreter load".
+PINNED_FLAT_CORE_MODULES = 111
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

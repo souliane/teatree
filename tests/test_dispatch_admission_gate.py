@@ -3,9 +3,9 @@
 
 The governor governed the headless population only: an ``Agent``/``Task``
 dispatch from an orchestrator session was admitted unconditionally, so the two
-agent populations summed unchecked. These cover the hook arms that close it —
-the ``PreToolUse`` ``Agent``/``Task`` gate and its ``TaskCreated`` fan-out
-counterpart — plus the never-lockout escapes each ships with.
+agent populations summed unchecked. These cover the one hook arm that
+closes it — the ``PreToolUse`` ``Agent``/``Task`` gate, the only interception
+point a dispatch has (#4216) — plus the never-lockout escapes it ships with.
 """
 
 import subprocess
@@ -28,14 +28,14 @@ _REAL_DENIED_REASON = gate._denied_reason
 @pytest.fixture(autouse=True)
 def _governor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: the governor is silent, so only a test that brakes sees a deny."""
-    monkeypatch.setattr(gate, "_denied_reason", lambda *, apply_ceiling: None)
+    monkeypatch.setattr(gate, "_denied_reason", lambda *, apply_ceiling, session_id="": None)
 
 
 def _braking(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     """Make the governor brake, recording each call's ``apply_ceiling``."""
     seen: list[bool] = []
 
-    def _reason(*, apply_ceiling: bool) -> str:
+    def _reason(*, apply_ceiling: bool, session_id: str = "") -> str:
         seen.append(apply_ceiling)
         return _BRAKE
 
@@ -46,7 +46,7 @@ def _braking(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
 _PROBE_EXPLODED = "probe exploded"
 
 
-def _exploding_probe(*, apply_ceiling: bool) -> str:
+def _exploding_probe(*, apply_ceiling: bool, session_id: str = "") -> str:
     raise RuntimeError(_PROBE_EXPLODED)
 
 
@@ -102,6 +102,17 @@ class TestPreToolUseArm:
         gate.handle_dispatch_admission(_agent_dispatch())
         assert seen == [True]
 
+    def test_the_dispatchs_session_reaches_the_seat_ledger(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #4129: the seat is booked under the dispatching session, so a release can find it.
+        seen: list[str] = []
+        monkeypatch.setattr(
+            gate,
+            "_denied_reason",
+            lambda *, apply_ceiling, session_id="": seen.append(session_id) or None,
+        )
+        gate.handle_dispatch_admission(_agent_dispatch(session_id="sess-4129"))
+        assert seen == ["sess-4129"]
+
     def test_an_internal_error_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gate, "_denied_reason", _exploding_probe)
         assert gate.handle_dispatch_admission(_agent_dispatch()) is False
@@ -114,56 +125,17 @@ class TestPreToolUseArm:
         assert gate.handle_dispatch_admission(_agent_dispatch()) is False
 
 
-class TestTaskCreatedArm:
-    def _task(self, subject: str = "implement the fix", description: str = "") -> dict:
-        return {
-            "session_id": "sess-4107",
-            "task_id": "t-1",
-            "task_subject": subject,
-            "task_description": description,
-        }
-
-    def test_a_brake_denies_the_fanned_out_task(self, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-        _braking(monkeypatch)
-        assert gate.handle_dispatch_admission_on_task_create(self._task()) is True
-        assert _BRAKE in capsys.readouterr().out
-
-    def test_a_healthy_governor_allows(self) -> None:
-        assert gate.handle_dispatch_admission_on_task_create(self._task()) is False
-
-    def test_a_missing_session_id_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        seen = _braking(monkeypatch)
-        assert gate.handle_dispatch_admission_on_task_create({"task_subject": "x"}) is False
-        assert seen == []
-
-    def test_the_escape_token_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _braking(monkeypatch)
-        data = self._task(description="[admission-ok: the merge keystone is blocked on this]")
-        assert gate.handle_dispatch_admission_on_task_create(data) is False
-
-    def test_the_fan_out_never_applies_the_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The TaskCreated schema carries no agent_id, so origin is unknowable —
-        # and unknown never brakes on a count it cannot attribute.
-        seen = _braking(monkeypatch)
-        gate.handle_dispatch_admission_on_task_create(self._task())
-        assert seen == [False]
-
-    def test_an_internal_error_fails_open_without_stderr(self, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-        # The harness ABORTS TaskCreated on any handler stderr, so a crash must be
-        # swallowed in-handler rather than left to main()'s traceback-writing swallow.
-        monkeypatch.setattr(gate, "_denied_reason", _exploding_probe)
-        assert gate.handle_dispatch_admission_on_task_create(self._task()) is False
-        assert capsys.readouterr().err == ""
-
-
 class TestRegistration:
-    def test_both_arms_are_registered(self) -> None:
+    def test_the_dispatch_arm_is_registered(self) -> None:
         assert gate.handle_dispatch_admission in router._HANDLERS["PreToolUse"]
-        assert gate.handle_dispatch_admission_on_task_create in router._HANDLERS["TaskCreated"]
 
-    def test_the_router_reexports_the_same_objects(self) -> None:
+    def test_the_router_reexports_the_same_object(self) -> None:
         assert router.handle_dispatch_admission is gate.handle_dispatch_admission
-        assert router.handle_dispatch_admission_on_task_create is gate.handle_dispatch_admission_on_task_create
+
+    def test_the_module_owns_no_task_list_arm(self) -> None:
+        # The retired arm booked a seat per todo and braked one on box load
+        # (#4216); a todo puts no agent on the box, so no such handler exists.
+        assert [name for name in dir(gate) if name.endswith("_on_task_create")] == []
 
 
 class TestKillSwitchParity:
@@ -188,7 +160,7 @@ class TestDeniedReasonSeam:
         monkeypatch.setattr(
             core,
             "dispatch_admission_denied_reason",
-            lambda *, apply_ceiling: seen.append(apply_ceiling) or None,
+            lambda *, apply_ceiling, session_id="": seen.append(apply_ceiling) or None,
         )
         assert _REAL_DENIED_REASON(apply_ceiling=False) is None
         assert seen == [False]

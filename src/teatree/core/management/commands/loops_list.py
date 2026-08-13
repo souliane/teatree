@@ -119,7 +119,7 @@ def _next_label(verdict: LoopVerdict | None, loop: Loop, status: LoopStatus, now
 def _preset_note(verdict: LoopVerdict | None) -> str:
     """The masked/forced note when a preset (not base/hold) decides the loop, else ``""``.
 
-    A masked-off loop reads ``masked (preset heads-down)`` instead of silently
+    A masked-off loop reads ``masked (preset maintenance)`` instead of silently
     vanishing; a preset that forces a base-disabled loop on reads ``forced-on``.
     """
     if verdict is None or verdict.layer in {"base", "hold"}:

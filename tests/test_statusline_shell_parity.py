@@ -421,11 +421,20 @@ class TestAnUnreadableStoreRendersUnknownNotOff:
         return _strip_ansi(result.stdout)
 
     def _unreadable_db(self, sandbox: Path) -> Path:
-        # Present and non-empty, yet no sqlite reader can open it — the same observable
-        # state as the 0-byte stub and the volume the host cannot reach.
+        # Present and non-empty, yet no sqlite reader can open it. NOT the same observable
+        # state as the 0-byte stub: non-empty takes the sqlite branch and fails inside it,
+        # while the stub is routed straight past it. Both are a store this host cannot see;
+        # `_zero_byte_stub` carries the second shape, which no test covered before #4205.
         db = sandbox / "unreadable.sqlite3"
         db.write_text("this is not a sqlite database")
         return db
+
+    def _zero_byte_stub(self, sandbox: Path) -> Path:
+        # The defect's literal shape: the control-DB migration left a 0-byte stub at the old
+        # host path. A stub holds nothing, so it is a store this host cannot see.
+        stub = sandbox / "stub.sqlite3"
+        stub.touch()
+        return stub
 
     def _publish(self, sandbox: Path, body: str) -> None:
         data_dir = sandbox / "xdg" / "teatree"
@@ -444,8 +453,41 @@ class TestAnUnreadableStoreRendersUnknownNotOff:
         assert self._UNKNOWN in out, out
         assert self._OFF not in out
 
+    def test_a_zero_byte_stub_with_no_projection_is_unknown(self, sandbox: Path) -> None:
+        # #4205: the stub skips the sqlite branch, so the ONLY tier left is the projection —
+        # and when that cannot answer either, nothing read the store. Rendering the shipped
+        # default as the owner's stored choice here is the original defect's exact shape.
+        out = self._render(sandbox, self._zero_byte_stub(sandbox))
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out, "a stub no tier could read was rendered as a stored 'off'"
+
+    def test_a_zero_byte_stub_still_defers_to_a_readable_projection(self, sandbox: Path) -> None:
+        # Foil: the stub is not itself a verdict. A projection that answers still decides.
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": True}}}))
+        out = self._render(sandbox, self._zero_byte_stub(sandbox))
+        assert "degraded chip" in out, out
+        assert self._UNKNOWN not in out
+
+    def test_a_projection_that_answers_false_over_a_stub_still_says_off(self, sandbox: Path) -> None:
+        # Second foil: an answered `false` is determinate, so it must NOT degrade to unknown.
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": False}}}))
+        out = self._render(sandbox, self._zero_byte_stub(sandbox))
+        assert self._OFF in out, out
+        assert self._UNKNOWN not in out
+
+    def test_a_projection_present_but_unreadable_is_unknown(self, sandbox: Path) -> None:
+        # #4205: `_projection_setting` answered "no projection on this host" for a file that
+        # IS here and denied the read, collapsing the 1/2 split its own contract documents.
+        # With no DB either that verdict is the last word, and it renders a stored "off".
+        self._publish(sandbox, json.dumps({"settings": {"": {"autoload": True}}}))
+        (sandbox / "xdg" / "teatree" / "host-projection.json").chmod(0o000)
+        out = self._render(sandbox, sandbox / "absent.sqlite3")
+        assert self._UNKNOWN in out, out
+        assert self._OFF not in out, "a projection that denied the read was rendered as a stored 'off'"
+
     def test_a_host_with_no_store_at_all_still_says_off(self, sandbox: Path) -> None:
         # Foil for #256: a plain clone stored nothing, so "off" is determinate, not a guess.
+        # Paired with the case above: absent and unreadable must not render alike either.
         out = self._render(sandbox, sandbox / "absent.sqlite3")
         assert self._OFF in out, out
         assert self._UNKNOWN not in out

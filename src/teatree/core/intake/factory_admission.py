@@ -3,15 +3,23 @@
 Every issue-intake path answers to this table, first match wins:
 
 1. ``needs-triage`` present -> IGNORE (maintainer hold).
-2. The row is an umbrella/epic tracking parent -> IGNORE (#4105).
-3. An active ticket / claim / forge read-back already exists -> IGNORE (work exists).
-4. Author trusted -> ACT immediately: no admit label, no assignment, no grace window.
-5. Author untrusted AND the owner-applied admit label present -> ACT.
-6. Author untrusted, no label -> IGNORE (fail-closed).
+2. One of the overlay's ``exclude_labels`` present -> IGNORE (operator hold, #4134).
+3. The row is an umbrella/epic tracking parent -> IGNORE (#4105).
+4. An active ticket / claim / forge read-back already exists -> IGNORE (work exists).
+5. Author trusted -> ACT immediately: no admit label, no assignment, no grace window.
+6. Author untrusted AND the owner-applied admit label present -> ACT.
+7. Author untrusted, no label -> IGNORE (fail-closed).
 
-Rule 2 sits above "work exists" because umbrella-ness is a property of the ROW, not of
-what has happened to it — an epic is not an implementable unit whatever else is true, and
-the verdict that says so is the one an operator needs in the log.
+Rules 1 and 2 are the same kind of thing — a label the human applied to withhold an
+issue — so they sit together, above every reason to act. They keep separate verdicts
+because ``needs-triage`` is a shipped convention and the denylist is per-overlay data,
+and the log line has to say which one held the issue. The denylist outranks the umbrella
+rule too: an explicit per-issue operator act beats a structural classification, so a row
+that is both an epic and excluded logs the exclusion its operator wrote.
+
+The umbrella rule sits above "work exists" because umbrella-ness is a property of the ROW,
+not of what has happened to it — an epic is not an implementable unit whatever else is
+true, and the verdict that says so is the one an operator needs in the log.
 
 The two facts the caller must supply are the ones this module cannot compute
 cheaply: *author_trusted* (the fail-closed
@@ -28,6 +36,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
+from teatree.core.intake.label_admission import excluded
 from teatree.core.intake.umbrella import normalize_labels, umbrella_reason
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.types import RawAPIDict
@@ -41,6 +50,7 @@ class IntakeVerdict(StrEnum):
     """Which rule of the decision table matched, and hence what the factory does."""
 
     IGNORE_NEEDS_TRIAGE = "ignore_needs_triage"
+    IGNORE_EXCLUDED_LABEL = "ignore_excluded_label"
     IGNORE_UMBRELLA = "ignore_umbrella"
     IGNORE_WORK_EXISTS = "ignore_work_exists"
     ACT_TRUSTED_AUTHOR = "act_trusted_author"
@@ -62,18 +72,51 @@ class IntakeFacts:
     umbrella_reason: str = ""
 
 
-def decide_intake(facts: IntakeFacts, *, admit_label: str) -> IntakeVerdict:
-    """Apply the decision table to *facts*, top-down, first match wins."""
-    if NEEDS_TRIAGE_LABEL in facts.labels:
-        return IntakeVerdict.IGNORE_NEEDS_TRIAGE
-    if facts.umbrella_reason:
-        return IntakeVerdict.IGNORE_UMBRELLA
-    if facts.work_exists:
-        return IntakeVerdict.IGNORE_WORK_EXISTS
-    if facts.author_trusted:
-        return IntakeVerdict.ACT_TRUSTED_AUTHOR
-    if admit_label and admit_label in facts.labels:
-        return IntakeVerdict.ACT_ADMITTED
+@dataclass(frozen=True, slots=True)
+class IntakeLabelPolicy:
+    """The overlay's two configured label SETS — the operator half of the label rules.
+
+    One value rather than two parallel arguments, because they are read off one overlay
+    config together and a caller that passes one and forgets the other silently loses a
+    whole rule. Distinct from :class:`~teatree.core.intake.label_admission.LabelPolicy`,
+    which is the GitLab sync path's allowlist/denylist pair.
+    """
+
+    exclude: frozenset[str] = frozenset()
+    umbrella: frozenset[str] = frozenset()
+
+
+#: The "nothing configured" policy: excludes nobody, and leaves the umbrella LABEL signal
+#: off while the structural one still decides. A caller that omits the policy gets this.
+NO_LABEL_POLICY = IntakeLabelPolicy()
+
+
+def decide_intake(
+    facts: IntakeFacts,
+    *,
+    admit_label: str,
+    exclude_labels: frozenset[str] = frozenset(),
+) -> IntakeVerdict:
+    """Apply the decision table to *facts*, top-down, first match wins.
+
+    The table is a literal ordered sequence rather than a chain of early returns, so the
+    ORDER — the thing every rule's precedence argument is about — is one readable list.
+    Every predicate is a pure set/flag read, so evaluating them all costs nothing.
+
+    ``exclude_labels`` is the overlay's denylist. It defaults to EMPTY, which excludes
+    nothing — an overlay that never configured one keeps its pre-#4134 verdicts.
+    """
+    table = (
+        (NEEDS_TRIAGE_LABEL in facts.labels, IntakeVerdict.IGNORE_NEEDS_TRIAGE),
+        (excluded(facts.labels, exclude_labels), IntakeVerdict.IGNORE_EXCLUDED_LABEL),
+        (bool(facts.umbrella_reason), IntakeVerdict.IGNORE_UMBRELLA),
+        (facts.work_exists, IntakeVerdict.IGNORE_WORK_EXISTS),
+        (facts.author_trusted, IntakeVerdict.ACT_TRUSTED_AUTHOR),
+        (bool(admit_label) and admit_label in facts.labels, IntakeVerdict.ACT_ADMITTED),
+    )
+    for matched, verdict in table:
+        if matched:
+            return verdict
     return IntakeVerdict.IGNORE_NOT_ADMITTED
 
 
@@ -108,12 +151,12 @@ def decide_issue_intake(
     author_trusted: bool,
     work_exists: bool,
     admit_label: str,
-    umbrella_labels: frozenset[str] = frozenset(),
+    label_policy: IntakeLabelPolicy = NO_LABEL_POLICY,
 ) -> IntakeVerdict:
     """:func:`decide_intake` against a raw forge issue payload.
 
-    An empty *umbrella_labels* means no marker labels are configured, not "use the
-    shipped set" — the structural signal still decides on the body alone.
+    An empty ``label_policy.umbrella`` means no marker labels are configured, not "use
+    the shipped set" — the structural signal still decides on the body alone.
     """
     labels = payload_labels(issue)
     return decide_intake(
@@ -124,10 +167,11 @@ def decide_issue_intake(
             umbrella_reason=umbrella_reason(
                 body=payload_body(issue),
                 labels=labels,
-                umbrella_labels=umbrella_labels,
+                umbrella_labels=label_policy.umbrella,
             ),
         ),
         admit_label=admit_label,
+        exclude_labels=label_policy.exclude,
     )
 
 

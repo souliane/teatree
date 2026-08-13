@@ -649,7 +649,6 @@ class TestTickReapsStaleClaims(django.test.TestCase):
         stale = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
             claimed_by="dead-worker",
             lease_expires_at=timezone.now() - timedelta(minutes=5),
@@ -700,7 +699,6 @@ class TestTickReapsOrphanedReviewingTask(django.test.TransactionTestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="Review needed",
         )
 

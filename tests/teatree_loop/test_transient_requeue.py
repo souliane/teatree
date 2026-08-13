@@ -36,7 +36,6 @@ def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) ->
 def _add_failed_attempt(task: Task, *, error: str, ended_at: datetime | None = None) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=ended_at or timezone.now(),
         exit_code=1,
         error=error,
@@ -859,3 +858,107 @@ class TestSelfRepairInsteadOfPaging(TestCase):
         requeue_transient_failed()
 
         assert DeferredQuestion.objects.count() == 1
+
+
+class TestDisposalReleasesTheWholeClaim(TestCase):
+    """Every reopen/retire releases EVERY claim column, not the five it happens to name (#4164).
+
+    A dead owner's ``owner_pid`` + ``owner_driving_since`` left on a row it no longer holds is
+    read by ``owner_is_executing`` as "still executing" the moment the OS reuses that pid — so
+    the next sweep withholds the reap of a row whose worker is long gone.
+    """
+
+    _NS = "pid:[4026531836]"
+    _PR_ID = 4242
+    _HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
+
+    @classmethod
+    def _review_task(cls, *, failed_with: str) -> Task:
+        """A FAILED reviewer task — failed through ``fail()`` so its ``failure_kind`` is classified."""
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url=f"https://github.com/souliane/teatree/pull/{cls._PR_ID}",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.fail(reason=failed_with)
+        return task
+
+    @staticmethod
+    def _stamp_owner(task: Task) -> None:
+        Task.objects.filter(pk=task.pk).update(
+            owner_pid=999999,
+            owner_pid_namespace=TestDisposalReleasesTheWholeClaim._NS,
+            owner_driving_since=timezone.now(),
+        )
+
+    def _assert_claim_released(self, task: Task) -> None:
+        task.refresh_from_db()
+        assert task.owner_pid is None
+        assert task.owner_pid_namespace == ""
+        assert task.owner_driving_since is None
+
+    def test_a_transient_reopen_releases_the_owner_columns(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error="outage_death: connection refused")
+        self._stamp_owner(task)
+
+        assert requeue_transient_failed() == 1
+
+        self._assert_claim_released(task)
+
+    def test_a_corrective_reopen_releases_the_owner_columns(self) -> None:
+        task = _failed_task(phase="debugging")
+        _add_failed_attempt(task, error=NO_ENVELOPE_ERROR)
+        self._stamp_owner(task)
+
+        assert requeue_transient_failed() == 1
+
+        self._assert_claim_released(task)
+
+    def test_a_self_repair_reopen_releases_the_owner_columns(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(
+            task,
+            error=(
+                "agent_harness_provider='openai_compatible' is not valid under "
+                "agent_harness='claude_sdk'; valid: api_key, subscription_oauth"
+            ),
+        )
+        self._stamp_owner(task)
+
+        assert requeue_transient_failed() == 1
+
+        self._assert_claim_released(task)
+
+    def test_a_dead_review_retire_releases_the_owner_columns(self) -> None:
+        dead_pr = "outage_death: agent stopped after confirming PR closed"
+        task = self._review_task(failed_with=dead_pr)
+        _add_failed_attempt(task, error=dead_pr)
+        self._stamp_owner(task)
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=True):
+            requeue_transient_failed()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+        self._assert_claim_released(task)
+
+    def test_a_superseded_retire_releases_the_owner_columns(self) -> None:
+        lease_lost = "stuck_loop: lease lost for task 1: re-claimed in-process"
+        task = self._review_task(failed_with=lease_lost)
+        AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=self._PR_ID, head_sha=self._HEAD, task=task)
+        _add_failed_attempt(task, error=lease_lost)
+        ReviewVerdict.record(
+            pr_id=self._PR_ID,
+            slug="souliane/teatree",
+            reviewed_sha=self._HEAD,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer-agent",
+        )
+        self._stamp_owner(task)
+
+        requeue_transient_failed()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+        self._assert_claim_released(task)

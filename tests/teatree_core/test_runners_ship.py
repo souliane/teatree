@@ -76,8 +76,9 @@ class TestShipExecutor(TestCase):
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the
         # budget gate must live at the ShipExecutor chokepoint. With the cap at 1
         # and one open PR already recorded for this (repo, ticket), the ship is
-        # refused and NO PR is created. RED before the _open_pr_and_record guard:
-        # host.create_pr is called on the pre-fix code.
+        # refused and NO PR is created. #4151: nor is the branch PUSHED — the push
+        # fires the pre-push `ensure-pr` hook, which opens a PR, so a refusal
+        # concluded after it reports "refused" for a ship whose PR now exists.
         slug = "souliane/teatree"
         ticket = self._ticket_with_worktree()
         PullRequest.objects.create(
@@ -94,7 +95,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
             patch.object(
@@ -108,6 +109,7 @@ class TestShipExecutor(TestCase):
         assert result.ok is False
         assert "max_open_prs_per_repo_per_ticket" in result.detail
         host.create_pr.assert_not_called()
+        push.assert_not_called()
 
     def test_loop_ship_path_allows_pr_when_budget_not_reached(self) -> None:
         # Inert-at-limit companion: with the cap at 1 and no existing open PR for
@@ -140,8 +142,8 @@ class TestShipExecutor(TestCase):
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates — the
         # same bypass class the budget gate closed. With require_debt_delta on and
         # a net-new noqa in the branch diff, the ship is refused and NO PR is
-        # created. RED before the _open_pr_and_record debt guard: the pre-fix loop
-        # path calls host.create_pr with the debt un-gated.
+        # created. #4151: nor is the branch PUSHED — the push opens a PR through the
+        # pre-push `ensure-pr` hook, so a refusal concluded after it is a lie.
         slug = "souliane/teatree"
         ticket = self._ticket_with_worktree()
         host = MagicMock()
@@ -156,7 +158,7 @@ class TestShipExecutor(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
             patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
@@ -167,6 +169,7 @@ class TestShipExecutor(TestCase):
         assert result.ok is False
         assert "debt_delta_gate" in result.detail
         host.create_pr.assert_not_called()
+        push.assert_not_called()
 
     def test_loop_ship_path_allows_pr_when_diff_is_clean(self) -> None:
         # Inert companion: require_debt_delta on but the branch introduces no

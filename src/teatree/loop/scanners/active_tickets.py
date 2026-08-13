@@ -14,9 +14,8 @@ emits ``issue_url=""`` so the renderer drops the clickable wrap and
 prints a bare ``#N`` instead of an unreachable link.
 ``short_description`` is generated lazily: when a ticket has a
 non-blank ``extra["issue_title"]`` but blank ``short_description``,
-the scanner enqueues a ``Task(phase="short_describe",
-execution_target=HEADLESS)``. The actual LLM call lives in the
-headless worker — no synchronous LLM in scan().
+the scanner enqueues a ``Task(phase="short_describe")``. The actual
+LLM call lives in the worker — no synchronous LLM in scan().
 
 That enqueue dedups on the ARTIFACT, not on a task: only in-flight work
 suppresses a duplicate, because a terminal task proves an attempt was made
@@ -134,7 +133,6 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
         ticket=ticket,
         session=session,
         phase=SHORT_DESCRIBE_PHASE,
-        execution_target=Task.ExecutionTarget.HEADLESS,
         subject=f"Summarize #{ticket.ticket_number}",
         execution_reason="Auto-scheduled short_describe — generate terminal-friendly ticket summary",
     )

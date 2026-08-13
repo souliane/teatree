@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.agents.phase_blocks import build_reviewer_dispatch_prompt, intake_survey_json, phase_specific_lines
+from teatree.agents.phase_blocks import (
+    build_reviewer_dispatch_prompt,
+    embedded_intake_survey_json,
+    intake_survey_json,
+    phase_specific_lines,
+)
 from teatree.core.models import LandscapeArtifact, Session, Task, Ticket
 
 
@@ -49,11 +54,40 @@ class TestIntakeSurveyJson(TestCase):
         assert intake_survey_json(task) in phase_specific_lines(task, [])
 
 
+class TestEmbeddedIntakeSurveyJson(TestCase):
+    """Only the phase that EMBEDS the survey offers it to the byte-budget pass.
+
+    The pass truncates by exact-substring replace, so a survey handed to it for
+    a phase whose block never embedded it is a phantom that can reclaim nothing.
+    This is the gate that keeps the two in step — whichever phases
+    ``_PHASE_BLOCK_BUILDERS`` grows, a survey is offered iff it is in the text.
+    """
+
+    def _recorded(self, phase: str) -> Task:
+        task = _task(phase)
+        LandscapeArtifact.record(ticket=task.ticket, survey={"a": 1}, recorded_by="t3:intake")
+        return task
+
+    def test_planning_offers_the_string_its_block_embeds(self) -> None:
+        task = self._recorded("planning")
+
+        assert embedded_intake_survey_json(task) == intake_survey_json(task)
+        assert embedded_intake_survey_json(task) in phase_specific_lines(task, [])
+
+    def test_a_phase_that_does_not_embed_the_survey_offers_nothing(self) -> None:
+        for phase in ("coding", "testing", "reviewing", "shipping"):
+            with self.subTest(phase=phase):
+                task = self._recorded(phase)
+
+                assert embedded_intake_survey_json(task) == ""
+                assert intake_survey_json(task) not in phase_specific_lines(task, [])
+
+
 class TestBuildReviewerDispatchPrompt(TestCase):
     """The shared reviewer dispatch-prompt builder embeds the overlay review skills.
 
     A review sub-agent dispatched via the Agent tool / a dynamic workflow /
-    a headless reviewer structurally loads them through the REQUIRED load
+    a reviewer structurally loads them through the REQUIRED load
     block instead of relying on the orchestrator to remember.
     """
 

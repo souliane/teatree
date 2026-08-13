@@ -1,6 +1,6 @@
 """The dispatch-zone phase-task mint is idempotent in its side effects (#3969).
 
-``create_phase_task`` is the mint for the phases ``Ticket._schedule_headless``
+``create_phase_task`` is the mint for the phases ``Ticket._schedule_phase_task``
 does not cover — ``debugging`` / ``e2e`` / ``answering`` / ``codex_reviewing`` and
 the corrective ``coding`` re-entries. It used to mint unconditionally, so two
 dispatchers that both passed a caller's ``has_open_task`` pre-check before either

@@ -109,7 +109,6 @@ class QueueTaskTests(TestCase):
         assert task is not None
         assert task.phase == PHASE
         assert task.status == Task.Status.PENDING
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
         assert task.ticket.overlay == OVERLAY
         assert task.ticket.issue_url == f"eval-local://{OVERLAY}"
 

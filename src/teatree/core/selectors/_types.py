@@ -25,7 +25,6 @@ class DashboardTaskRow:
     last_error: str
     result_summary: str
     session_agent_id: str
-    execution_target: str
     phase: str
     issue_url: str = ""
     elapsed_time: str = ""
@@ -36,7 +35,6 @@ class DashboardTaskRow:
 class ActiveSessionRow:
     pid: int
     uptime: str
-    kind: str  # "headless", "interactive", "manual"
     task_id: int | None
     ticket_id: int | None
     ticket_display_id: str
@@ -61,7 +59,7 @@ class ReviewCommentDetail:
 
 @dataclass(frozen=True, slots=True)
 class ActionRequiredItem:
-    kind: str  # "interactive_task", "needs_review_request", "needs_reply", "needs_approval", "review_draft"
+    kind: str  # "needs_review_request", "needs_reply", "needs_approval", "review_draft"
     label: str
     url: str
     ticket_id: int
@@ -82,7 +80,6 @@ class RecentActivityRow:
     result_summary: str
     error: str
     ended_at: str
-    execution_target: str
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
@@ -93,7 +90,6 @@ class UnifiedSessionRow:
     """A single row in the unified Sessions panel."""
 
     row_status: str  # "running", "queued", "completed", "failed", "manual"
-    execution_target: str  # "headless", "interactive", "manual"
     task_id: int | None
     ticket_id: int | None
     ticket_display_id: str
@@ -130,7 +126,6 @@ class TaskAttemptDetail:
     exit_code: int | None
     error: str
     result: Mapping[str, object]
-    execution_target: str
     agent_session_id: str
 
 
@@ -139,7 +134,6 @@ class TaskRelatedRow:
     task_id: int
     phase: str
     status: str
-    execution_target: str
     execution_reason: str
 
 
@@ -150,7 +144,6 @@ class TaskDetail:
     ticket_display_id: str
     phase: str
     status: str
-    execution_target: str
     execution_reason: str
     claimed_by: str
     session_agent_id: str

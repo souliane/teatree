@@ -191,6 +191,9 @@ depends_on = [
   "teatree.core.models.errors",
   "teatree.core.models",
   "teatree.core.schema_readiness",
+  # the mirror gate (#4387): CoreConfig.ready() freezes its snapshot and
+  # gates/schema_guard renders the records it publishes.
+  "teatree.core.process_freshness",
   # selectors reuse the single-source overlay Q-builder that lives in its own
   # managers_overlay leaf (F1.6) — a downward edge, mirroring teatree.core.models
   # → managers.
@@ -237,6 +240,11 @@ layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
+path = "teatree.core.claim_liveness"
+layer = "platform"
+depends_on = ["teatree.core.loop_lease_liveness"]
+
+[[modules]]
 path = "teatree.core.loop_lease_manager"
 layer = "domain"
 depends_on = ["teatree.utils"]
@@ -254,12 +262,12 @@ depends_on = []
 [[modules]]
 path = "teatree.core.managers_task_claim"
 layer = "domain"
-depends_on = ["teatree.core.schema_readiness"]
+depends_on = ["teatree.config", "teatree.core.process_freshness", "teatree.core.schema_readiness"]
 
 [[modules]]
 path = "teatree.core.managers_task_sweeps"
 layer = "domain"
-depends_on = ["teatree.core.modelkit", "teatree.core.repair_loop"]
+depends_on = ["teatree.core.claim_liveness", "teatree.core.modelkit", "teatree.core.repair_loop"]
 
 [[modules]]
 path = "teatree.core.managers_inbound"
@@ -287,10 +295,20 @@ layer = "domain"
 depends_on = ["teatree.config"]
 
 [[modules]]
+# The mirror of schema_readiness (#4387): "is the code THIS process loaded as new as the
+# schema the DB has applied?". Its own node for the same reason — the claim chokepoint
+# reads it through managers_task_claim, and CoreConfig.ready() freezes its snapshot, so it
+# must stay below both with no cycle.
+path = "teatree.core.process_freshness"
+layer = "domain"
+depends_on = ["teatree.paths", "teatree.utils", "teatree.core.loop_lease_liveness"]
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
   "teatree.config",
+  "teatree.core.claim_liveness",
   "teatree.utils",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
@@ -310,6 +328,7 @@ depends_on = [
 path = "teatree.core.models"
 layer = "domain"
 depends_on = [
+  "teatree.core.claim_liveness",
   "teatree.core.modelkit",
   "teatree.core.managers",
   "teatree.core.models.errors",
@@ -845,6 +864,7 @@ depends_on = [
   "teatree.agents",
   "teatree.config",
   "teatree.core",
+  "teatree.core.claim_liveness",
   "teatree.core.modelkit",
   "teatree.loop",
   "teatree.loop.loop_state_db",

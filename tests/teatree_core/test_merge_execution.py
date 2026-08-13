@@ -103,16 +103,17 @@ def _seed_sibling_verdict(clear: MergeClear) -> None:
     ``execute_bound_merge`` fails closed. Seeding the verdict is NOT a weakening
     — it reproduces exactly what the production ``clear`` path records (a
     non-author ``merge_safe`` at the reviewed SHA). Skipped when the CLEAR's
-    reviewer is a non-reviewer role or its checks are non-green: those CLEARs
+    reviewer is not an independent checker, or its checks are non-green: those CLEARs
     are refused at the authorization step BEFORE the gate, and
     ``ReviewVerdict.record`` would itself reject them.
     """
-    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
+    from teatree.core.models.reviewer_identity import (  # noqa: PLC0415 — deferred: ORM/app-registry
+        is_independent_reviewer_identity,
+    )
 
     if (
-        not clear.reviewer_identity.strip()
-        or is_non_reviewer_role(clear.reviewer_identity)
+        not is_independent_reviewer_identity(clear.reviewer_identity)
         or clear.gh_verify_result != MergeClear.VerifyResult.GREEN
     ):
         return

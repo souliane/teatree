@@ -40,6 +40,12 @@ _SIGNAL_PER_INBOUND_LINK = 40
 _SIGNAL_RECENT = 200
 _TYPE_WEIGHTS = {"feedback": 90, "retro": 70, "reference": 30, "project": 20, "user": 10, "other": 10}
 
+#: A RESOLVED per-ticket record — ``ticket-<n>-reviewed-merge-safe.md``,
+#: ``ticket-<n>-done.md``. Anchored with a REQUIRED ticket number, because a
+#: ``ticket-plan-*.md`` name is a standing rule ABOUT ticket plans — it merely starts with
+#: the same word — and must not be swept up with the settled history (#4385).
+_SETTLED_TICKET_RECORD_RE = re.compile(r"^ticket-\d+[-.]")
+
 
 def over_budget(byte_size: int, line_count: int) -> bool:
     """Whether an index of *byte_size* bytes / *line_count* lines is over the gate-(d) budget.
@@ -59,9 +65,52 @@ def over_budget(byte_size: int, line_count: int) -> bool:
     return byte_size > INDEX_BYTE_BUDGET or line_count > INDEX_LINE_BUDGET
 
 
+def under_drain_target(byte_size: int, line_count: int) -> bool:
+    """Whether an index of *byte_size* / *line_count* has drained to the budget-tier TARGET.
+
+    The sibling of :func:`over_budget`, reading the drain targets rather than the budgets:
+    the budget is the CEILING gate (d) grades, this is where the tier STOPS. Stopping on
+    the ceiling landed the index on exactly 200 lines with zero headroom, so the first
+    memory written after the pass truncated the tail and it stayed truncated until the next
+    nightly pass (#4385). The two predicates are deliberately NOT the same call — the tier
+    still FIRES on the ceiling (:func:`index_over_budget`) and drains to here, which is the
+    hysteresis that keeps a corpus sitting between the two from being archived nightly for
+    nothing (#2755).
+    """
+    from teatree.loops.dream.gates import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        INDEX_BYTE_DRAIN_TARGET,
+        INDEX_LINE_DRAIN_TARGET,
+    )
+
+    return byte_size <= INDEX_BYTE_DRAIN_TARGET and line_count <= INDEX_LINE_DRAIN_TARGET
+
+
 def index_over_budget(index_text: str) -> bool:
     """Whether the rendered ``MEMORY.md`` exceeds either gate-(d) session-load budget."""
     return over_budget(len(index_text.encode("utf-8")), len(index_text.splitlines()))
+
+
+def is_settled_ticket_record(memory: MemoryFile) -> bool:
+    """True for a resolved per-ticket record — settled history, archived out of the hot index first.
+
+    The hot index exists to surface STANDING rules, but settled per-ticket records
+    accumulate monotonically while standing rules do not, so an index ordered on signal
+    alone drifts toward being mostly history. The drift is not merely passive: the
+    cross-link phase has no fan-out cap, so these near-identical records become a
+    mutually-citing clique and each collects +40 x ~30 of inbound-link signal — ranking
+    every one of them ABOVE an uncited durable rule. Measured on a real ~220-memory corpus,
+    that inversion spent 12 of a 26-file drain on durable standing rules (#4385).
+
+    Fails CLOSED toward RETENTION: anything this cannot classify is NOT settled, so it
+    keeps its normal signal score and is archived only if the budget forces it. The costs
+    are asymmetric — a false positive archives a live standing rule and stops it
+    influencing behaviour until somebody notices, a false negative costs one index line, of
+    which the drain target now provides ~60.
+
+    The ticket NUMBER is required: a ``ticket-plan-*`` name is a standing rule ABOUT ticket
+    plans, not a record of one.
+    """
+    return _SETTLED_TICKET_RECORD_RE.match(memory.path.name) is not None
 
 
 def _resolved_type(memory: MemoryFile) -> str:
@@ -137,18 +186,31 @@ class BudgetProjection:
 
 
 def budget_tier_candidates(files: Sequence[MemoryFile], projection: BudgetProjection) -> Iterable[MemoryFile]:
-    """Yield budget-tier archival candidates lowest-signal first, just enough to fit budget.
+    """Yield budget-tier archival candidates settled-history first, then lowest-signal.
 
-    Fires only when the live ``MEMORY.md`` is over budget. Each file is scored by
-    :func:`_signal_score` and the lowest-signal files are archived first. A referenced
-    file (a live consumer still ``[[link]]``s it) is NOT hard-retained here (#2753): the
-    cross-link phase runs before decay and references most of the corpus, so a hard skip
-    floored the tier above the referenced count and the index could never reach budget.
-    Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so referenced
+    Fires only when the live ``MEMORY.md`` is over the gate-(d) CEILING, and drains to the
+    lower :data:`~teatree.loops.dream.gates.INDEX_LINE_DRAIN_TARGET` /
+    :data:`~teatree.loops.dream.gates.INDEX_BYTE_DRAIN_TARGET`. The asymmetry is deliberate
+    hysteresis (#4385): stopping ON the ceiling left the index at exactly the budget, so the
+    first memory written after the pass truncated the tail and it stayed truncated until the
+    next nightly pass, while gate (d) — which grades once, immediately after the pass —
+    reported PASS. Firing on the target instead would archive a file a night forever.
+
+    Candidates are ordered SETTLED-HISTORY-FIRST (:func:`is_settled_ticket_record`), then by
+    :func:`signal_score` within each tier. Signal alone inverts on the real corpus: the
+    uncapped cross-link fan-out makes the resolved per-ticket records a mutually-citing
+    clique worth ~+1200 of inbound-link signal each, ranking every one of them above an
+    uncited durable rule, so the lowest-first walk archived the standing rules the index
+    exists to surface and left the settled history hot.
+
+    A referenced file (a live consumer still ``[[link]]``s it) is NOT hard-retained here
+    (#2753): the cross-link phase runs before decay and references most of the corpus, so a
+    hard skip floored the tier above the referenced count and the index could never reach
+    budget. Instead :func:`signal_score` adds +40 per inbound ``[[name]]`` link, so referenced
     entries rank HIGHER and are archived LAST — only when the budget genuinely forces it.
     After each removal the survivor set's PROJECTED index — rendered exactly as the
     re-index will render it — is re-measured on BOTH axes, and the walk STOPS as soon as
-    it is under the byte AND line budgets, so the MINIMUM number of (lowest-signal) files is
+    it has drained to the byte AND line targets, so the MINIMUM number of files is
     archived and as much high-signal memory as fits stays hot. user / BINDING entries
     score highest and are archived only if the budget forces it. Every archived entry
     stays restorable (full body in ``archive/`` with provenance) and recall-able (its
@@ -173,11 +235,14 @@ def budget_tier_candidates(files: Sequence[MemoryFile], projection: BudgetProjec
 
     ordered = sorted(
         files,
-        key=lambda m: signal_score(
-            m,
-            inbound_links=len(projection.citers.get(m.path.name, ())),
-            now=projection.now,
-            retention=projection.retention,
+        key=lambda m: (
+            0 if is_settled_ticket_record(m) else 1,
+            signal_score(
+                m,
+                inbound_links=len(projection.citers.get(m.path.name, ())),
+                now=projection.now,
+                retention=projection.retention,
+            ),
         ),
     )
     line_bytes = {m.path: len(reindex.index_line_for(m.path.name).encode("utf-8")) for m in files}
@@ -191,8 +256,8 @@ def budget_tier_candidates(files: Sequence[MemoryFile], projection: BudgetProjec
         # count: the per-line "\n" join + trailing newline total ``survivor_count`` bytes,
         # and each survivor contributes exactly one line past the header's own.
         projected_bytes = header_bytes + survivor_bytes + survivor_count
-        if not over_budget(projected_bytes, header_lines + survivor_count):
-            break  # projected survivor index fits BOTH budgets — archive no more
+        if under_drain_target(projected_bytes, header_lines + survivor_count):
+            break  # projected survivor index has drained to BOTH targets — archive no more
         survivor_count -= 1
         survivor_bytes -= line_bytes[memory.path]
         yield memory
@@ -202,6 +267,8 @@ __all__ = [
     "BudgetProjection",
     "budget_tier_candidates",
     "index_over_budget",
+    "is_settled_ticket_record",
     "over_budget",
     "signal_score",
+    "under_drain_target",
 ]

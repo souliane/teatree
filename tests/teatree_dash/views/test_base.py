@@ -96,7 +96,7 @@ class HtmxFormSubmitterTestCase(TestCase):
 
     def setUp(self) -> None:
         Loop.objects.create(name="submitter-probe", delay_seconds=60, script="run.py", enabled=True)
-        Mode.objects.get_or_create(name="engaged", defaults={"entries": {}})
+        Mode.objects.get_or_create(name="present", defaults={"entries": {}})
         ModeSchedule.objects.get_or_create(name="weekly")
 
     def test_no_htmx_form_carries_a_named_submit_button(self) -> None:

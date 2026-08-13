@@ -40,6 +40,7 @@ from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.hooks import banned_terms_scanner
+from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -129,6 +130,7 @@ def file_core_gap_tickets(
     umbrella_url: str = UMBRELLA_ISSUE_URL,
     classifier: MemoryClassifier | None = None,
     dry_run: bool = False,
+    budget: PromotionBudget | None = None,
 ) -> list[TicketOutcome]:
     """Triage every untriaged row; drive each core gap to a fix-and-merge (#2663).
 
@@ -152,6 +154,10 @@ def file_core_gap_tickets(
     drained first, so such a stranded gap is picked up and promoted rather than left
     forever. Returns one outcome per promoted core-gap row (user-specific rows and a
     dry-run yield no outcome).
+
+    *budget* bounds how many gaps THIS pass promotes (``None`` ⇒ unbounded, #4176).
+    Triage still runs to completion — it is cheap and durable — so a gap the cap defers
+    stays classified in the ``needs_ticket`` queue and the next pass drains it.
     """
     classify = classifier or triage_disposition
     outcomes: list[TicketOutcome] = []
@@ -163,7 +169,7 @@ def file_core_gap_tickets(
     # dry-run) FIRST, before this pass classifies any new core gap — reading the queue
     # up front means a row classified below is never re-drained in the same pass.
     outcomes.extend(
-        _promote_one_gap(host, stranded, umbrella_url=umbrella_url)
+        _promote_one_gap(host, stranded, umbrella_url=umbrella_url, budget=budget)
         for stranded in ConsolidatedMemory.objects.needs_ticket()
     )
     for row in ConsolidatedMemory.objects.untriaged():
@@ -171,11 +177,13 @@ def file_core_gap_tickets(
             row.classify_user_specific()
             continue
         row.classify_core_gap()
-        outcomes.append(_promote_one_gap(host, row, umbrella_url=umbrella_url))
+        outcomes.append(_promote_one_gap(host, row, umbrella_url=umbrella_url, budget=budget))
     return outcomes
 
 
-def _promote_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella_url: str) -> TicketOutcome:
+def _promote_one_gap(
+    host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella_url: str, budget: PromotionBudget | None = None
+) -> TicketOutcome:
     """Drive one core-gap row to a fix-and-merge via the umbrella ledger (#2663).
 
     Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
@@ -189,6 +197,7 @@ def _promote_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella
         host,
         umbrella_url=umbrella_url,
         gap=umbrella_ledger.GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key),
+        budget=budget,
     )
     return TicketOutcome(
         cluster_key=row.cluster_key,

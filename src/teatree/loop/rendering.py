@@ -165,7 +165,7 @@ def cost_chip_lines() -> list[str]:
         anchor = settings.billing_cycle_anchor_day or None
         today = timezone.localdate()
         start_dt = cycle_start_datetime(today, anchor_day=anchor)
-        breakdown = TaskAttempt.objects.headless().filter(started_at__gte=start_dt).cost_breakdown()
+        breakdown = TaskAttempt.objects.filter(started_at__gte=start_dt).cost_breakdown()
         if breakdown.attempts == 0:
             return []
         report = CostReport.build(
