@@ -129,7 +129,7 @@ nothing. The `api` lane never runs silently; it runs only when passed explicitly
 t3 eval --model-free   # fast pre-push gate: model-free deterministic lanes only
 t3 eval                # whole suite: model-free lanes + grade recorded transcripts
 t3 eval list           # discovered scenarios
-t3 eval coverage       # per-skill covered / exempt / gap (--fail-on-gap to enforce)
+t3 eval coverage       # per-skill covered / exempt / gap (a gap exits non-zero)
 ```
 
 The AI lane can't be a pure CLI — a standalone process has no in-session `Agent`

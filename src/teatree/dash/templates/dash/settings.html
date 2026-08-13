@@ -86,6 +86,10 @@
         <h3>{% if import_applied %}Imported{% else %}Import preview — dry-run, nothing written{% endif %}</h3>
         {% if import_result.rejected %}
           <p class="banner-red">{{ import_result.rejected|length }} row(s) rejected — the whole import was refused, nothing was written.</p>
+          {% if import_result.private_backup %}
+            <p class="banner-red">That file is an <span class="mono">--include-private</span> personal backup. Restore it from the CLI:
+              <span class="mono">t3 &lt;overlay&gt; config_setting import --input &lt;file&gt; --restore-private</span>.</p>
+          {% endif %}
           <ul>
             {% for r in import_result.rejected %}
               <li class="mono">{{ r.key }} [{{ r.scope|default:"global" }}] — {{ r.reason }}</li>

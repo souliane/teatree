@@ -16,7 +16,7 @@ matter how a gate's detection misbehaves:
     ``t3 <overlay> gate plan disable``,
     ``t3 <overlay> gate add-all disable``,
     ``t3 <overlay> gate raw-merge disable``): the orchestrator-Bash,
-    skill-loading-on-task, config-overwrite, main-clone, and out-of-band
+    skill-loading, config-overwrite, main-clone, and out-of-band
     raw-merge kill-switches (#1474, #2836) — each must reach its own disable
     even if its gate misdetects.
 - The fail-open toggle (``t3 <overlay> gate fail-open enable``): the master

@@ -164,14 +164,46 @@ class TestTheAvailableFigure:
 class TestTheReadingCarriesItsScope:
     """A number the absolute watermarks may judge, or UNKNOWN — never a sidecar's number."""
 
-    def test_a_sidecar_cgroup_is_unknown_to_box_wide_watermarks(self) -> None:
+    def test_a_sidecar_cgroup_is_judged_on_the_host_reading_not_its_own(self) -> None:
         # The live admin container: a fixed 2 GiB cap, 357 MiB charged, on a box with
         # 22 GB free. The old reader answered 1.65 GB and every dispatch was denied.
         with _in_cgroup(limit_bytes=_ADMIN_LIMIT_BYTES, current_bytes=_ADMIN_CURRENT_BYTES):
             headroom = read_ram_headroom()
         assert headroom.available_mib == 1691
         assert headroom.cgroup_limit_mib == 2048
-        assert headroom.box_watermark_mib is None
+        assert headroom.box_watermark_mib == _HOST_AVAILABLE_MIB
+
+    def test_a_sidecar_on_a_starved_box_brakes(self) -> None:
+        # #4252: the sidecar HAS a box-wide reading — `/proc/meminfo` reports the host at
+        # any cap — and abstaining threw it away, so a genuinely starved box did not brake.
+        with _in_cgroup(
+            limit_bytes=_ADMIN_LIMIT_BYTES,
+            current_bytes=_ADMIN_CURRENT_BYTES,
+            host_available_mib=500,
+        ):
+            assert read_ram_headroom().box_watermark_mib == 500
+
+    def test_the_sidecars_own_headroom_never_becomes_the_box_figure(self) -> None:
+        # The cgroup arm is the SMALLER one here, so `min()` would answer 248. Only
+        # returning the host component distinguishes the fix from carrying `available_mib`.
+        with _in_cgroup(
+            limit_bytes=_ADMIN_LIMIT_BYTES,
+            current_bytes=_ADMIN_LIMIT_BYTES - 248 * _MIB,
+            host_available_mib=500,
+        ):
+            headroom = read_ram_headroom()
+        assert headroom.available_mib == 248
+        assert headroom.box_watermark_mib == 500
+
+    def test_a_sidecar_with_no_host_reading_stays_unknown(self) -> None:
+        # The remedy must not be "fail closed on None": that is the permanent lockout
+        # #4217 fixed. Unreadable host + out-of-scope cgroup is still UNKNOWN.
+        with _in_cgroup(
+            limit_bytes=_ADMIN_LIMIT_BYTES,
+            current_bytes=_ADMIN_CURRENT_BYTES,
+            host_available_mib=0,
+        ):
+            assert read_ram_headroom().box_watermark_mib is None
 
     def test_a_worker_sized_cgroup_still_produces_a_number(self) -> None:
         with _in_cgroup(
@@ -217,10 +249,13 @@ class TestTheReadingCarriesItsScope:
     def test_the_floor_override_moves_the_scope_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(AGENT_WORKLOAD_FLOOR_ENV, "32")
         with _in_cgroup(limit_bytes=_WORKER_LIMIT_BYTES, current_bytes=_WORKER_CURRENT_BYTES):
-            assert read_ram_headroom().box_watermark_mib is None
+            headroom = read_ram_headroom()
+        assert headroom.available_mib != _HOST_AVAILABLE_MIB
+        assert headroom.box_watermark_mib == _HOST_AVAILABLE_MIB
 
     def test_a_reading_with_no_cap_recorded_is_judged(self) -> None:
-        assert RamHeadroom(available_mib=1691, cgroup_limit_mib=None).box_watermark_mib == 1691
+        headroom = RamHeadroom(available_mib=1691, cgroup_limit_mib=None, host_available_mib=None)
+        assert headroom.box_watermark_mib == 1691
 
 
 class TestReclaimableCacheIsCredited:

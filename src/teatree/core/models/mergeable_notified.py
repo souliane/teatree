@@ -12,6 +12,15 @@ row keyed on the unique ``(slug, pr_id, head_sha)`` and returns ``None``
 on a dup, so re-ticking on the same head produces no second DM. A new
 push (new head SHA) records a fresh row and re-fires exactly one DM.
 
+COLLABORATIVE-ONLY, and that is by design (#4250). ``solo_overlay=True``
+takes ``_evaluate_solo_overlay`` instead and never reaches the recorder,
+because a solo deployment has no colleague to route the PR to. So an old
+newest row means "the recorder cannot run here", NOT "nothing is stuck" —
+do not read this table as a solo liveness signal. The solo equivalents are
+the ``no_independent_review`` flag (which also arms a reviewer), the
+aged-skip surfacer for a persistent skip, and ``t3 doctor check``'s
+unconsumed-CLEAR backlog report.
+
 Mirrors :class:`teatree.core.models.scanned_failed_e2e.ScannedFailedE2E`
 and :class:`teatree.core.models.auto_review_dispatch.AutoReviewDispatch`
 (insert-once ``record`` keyed on a per-head unique constraint).

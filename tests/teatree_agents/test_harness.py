@@ -32,8 +32,8 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
 import teatree.agents.pydantic_ai_config as pyconfig_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents import harness_registry
 from teatree.agents.harness import (
     ClaudeSdkHarness,
@@ -48,7 +48,6 @@ from teatree.agents.harness import (
 )
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import InvalidHarnessProviderError, register_harness
-from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
 from teatree.agents.pydantic_ai_config import (
     LANE_BULK,
@@ -59,6 +58,7 @@ from teatree.agents.pydantic_ai_config import (
     build_openai_compatible_provider,
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
+from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.llm.credentials import CredentialError
@@ -224,7 +224,7 @@ class TestDriveThroughInjectedHarness(TestCase):
         harness = FakeHarness([assistant_text("hi"), result_message(session_id="s1")])
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
 
-        with patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))):
+        with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))):
             outcome = asyncio.run(_drive_with_heartbeat(self.task, "p", options, harness, watchdog=watchdog))
 
         assert harness.opened_options is options
@@ -242,7 +242,7 @@ class TestDriveThroughInjectedHarness(TestCase):
         harness = PydanticAiHarness(model=TestModel(custom_output_text="hello from pydantic_ai"))
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
 
-        with patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))):
+        with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))):
             outcome = asyncio.run(_drive_with_heartbeat(self.task, "p", options, harness, watchdog=watchdog))
 
         assert outcome.stuck_reason is None
@@ -265,7 +265,7 @@ class TestPydanticAiThread:
 
 
 class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
-    """``run_headless`` genuinely dispatches through ``PydanticAiHarness`` when selected."""
+    """``run_agent`` genuinely dispatches through ``PydanticAiHarness`` when selected."""
 
     def setUp(self) -> None:
         self.ticket = Ticket.objects.create()
@@ -286,10 +286,10 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         result_json = '{"summary": "test summary", "plan_text": "the plan"}'
         fake_harness = PydanticAiHarness(model=TestModel(custom_output_text=result_json))
         with (
-            patch.object(headless_mod, "resolve_harness", return_value=fake_harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=fake_harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(self.task, phase="planning", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="planning", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert attempt.exit_code == 0
@@ -303,11 +303,11 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         ConfigSetting.objects.set_value("openai_compatible_model", "vendor/some-model")
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
             os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
-            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert attempt.exit_code == 1
@@ -333,11 +333,11 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
 
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             os.environ.pop("OPENAI_COMPATIBLE_BASE_URL", None)
             os.environ.pop("OPENAI_COMPATIBLE_API_KEY", None)
-            attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(resumed_task, phase="coding", overlay_skill_metadata={})
 
         resumed_task.refresh_from_db()
         assert attempt.exit_code == 1
@@ -365,10 +365,10 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
 
         with (
             patch.object(harness_mod.PydanticAiHarness, "_resolve_model", _boom),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
             pytest.raises(RuntimeError, match="backend router transport unavailable"),
         ):
-            run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+            run_agent(resumed_task, phase="coding", overlay_skill_metadata={})
 
         # The non-CredentialError failure still propagates (the caller records it), but
         # the parked ancestor thread was restored, so the resume is recoverable.
@@ -544,7 +544,7 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     The seam maps the error into the same ``is_error`` ``ResultMessage`` the
     claude_sdk lane yields, so the driver's failure taxonomy (park/rotate or a
     recorded FAILED) fires without any transport special-casing. Before the fix a
-    429 propagated raw out of ``asyncio.run`` and ``run_headless`` re-raised it (a
+    429 propagated raw out of ``asyncio.run`` and ``run_agent`` re-raised it (a
     ``sdk_error`` FAILED-with-traceback), leaving the park path unreachable.
     """
 
@@ -557,10 +557,10 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     def _run_raising(self, exc: Exception) -> TaskAttempt:
         harness = PydanticAiHarness(model=FunctionModel(stream_function=_raising_stream(exc)))
         with (
-            patch.object(headless_mod, "resolve_harness", return_value=harness),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
         self.task.refresh_from_db()
         return attempt
 
@@ -631,7 +631,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
     """End-to-end park -> resume through the REAL ``resolve_harness`` (#2886).
 
     Unlike ``TestRunHeadlessDrivesPydanticAiHarness`` (which injects a fixed
-    harness, bypassing resolution), this drives ``run_headless`` through the
+    harness, bypassing resolution), this drives ``run_agent`` through the
     genuine ``resolve_harness(task)`` seam for BOTH the parking dispatch and
     the resumed continuation — proving the persisted thread actually reaches
     the resumed session's first turn, not just that the plumbing types check.
@@ -645,7 +645,6 @@ class TestRunHeadlessCachedResumeParity(TestCase):
             ticket=self.ticket,
             session=self.session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
     def test_resumed_dispatch_rehydrates_the_parked_conversation(self) -> None:
@@ -665,18 +664,18 @@ class TestRunHeadlessCachedResumeParity(TestCase):
                 "_resolve_model",
                 lambda self, options: FunctionModel(stream_function=stream_fn),
             ),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            park_attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+            park_attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
 
         self.task.refresh_from_db()
         assert park_attempt.result["needs_user_input"] is True
         self.ticket.refresh_from_db()
         assert str(self.task.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
 
-        from teatree.core.models.task_handoff import schedule_headless_resume  # noqa: PLC0415
+        from teatree.core.models.task_handoff import schedule_resume  # noqa: PLC0415 — deferred: Django-dependent
 
-        resumed_task = schedule_headless_resume(self.task, answer="go ahead")
+        resumed_task = schedule_resume(self.task, answer="go ahead")
 
         with (
             patch.object(
@@ -684,9 +683,9 @@ class TestRunHeadlessCachedResumeParity(TestCase):
                 "_resolve_model",
                 lambda self, options: FunctionModel(stream_function=stream_fn),
             ),
-            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
-            resume_attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+            resume_attempt = run_agent(resumed_task, phase="coding", overlay_skill_metadata={})
 
         assert resume_attempt.result["summary"] == "done"
         # The resumed turn's model call carried more messages than a bare

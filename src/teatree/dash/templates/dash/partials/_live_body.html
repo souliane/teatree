@@ -15,7 +15,7 @@
   <table class="dash">
     <thead>
       <tr>
-        <th>ticket</th><th>phase</th><th>target / lane</th><th>model</th>
+        <th>ticket</th><th>phase</th><th>lane</th><th>model</th>
         <th>skills</th><th>elapsed</th><th>transcript</th>
       </tr>
     </thead>
@@ -29,7 +29,7 @@
             {% else %}<span class="muted small">—</span>{% endif %}
           </td>
           <td>{{ row.phase|default:"—" }}</td>
-          <td>{{ row.execution_target }}{% if row.lane %} · {{ row.lane }}{% endif %}</td>
+          <td>{{ row.lane|default:"—" }}</td>
           <td class="mono small">{{ row.model|default:"—" }}</td>
           <td>{% include "dash/partials/_skills.html" with skills=row.skills skills_fault=row.skills_fault %}</td>
           <td>{{ row.elapsed }}</td>
@@ -53,7 +53,7 @@
   </h2>
   <table class="dash">
     <thead>
-      <tr><th>ticket</th><th>phase</th><th>status</th><th>claimed by</th><th>target</th></tr>
+      <tr><th>ticket</th><th>phase</th><th>status</th><th>claimed by</th></tr>
     </thead>
     <tbody>
       {% for row in live.queued %}
@@ -67,7 +67,6 @@
           <td>{{ row.phase|default:"—" }}</td>
           <td><span class="chip small">{{ row.status }}</span></td>
           <td class="mono small">{{ row.claimed_by|default:"—" }}</td>
-          <td>{{ row.execution_target }}</td>
         </tr>
       {% empty %}
         <tr class="empty-row"><td colspan="5">The queue is empty.</td></tr>

@@ -30,7 +30,6 @@ tests/cli_setup/test_slack_provision.py
 tests/cli_setup/test_slack_token_store.py
 tests/cli_setup/test_slack_user_token.py
 tests/cli_setup/test_validate_repo.py
-tests/config/test_agent_runtime_config.py
 tests/config/test_cold_reader.py
 tests/config/test_dirs_and_helpers.py
 tests/config/test_load_config.py
@@ -129,7 +128,6 @@ tests/teatree_loop/test_reviewer_prs_skip_conditions_1321.py
 tests/teatree_loop/test_scanner_url_prefix_gate.py
 tests/teatree_loop/test_scanners.py
 tests/teatree_loop/test_scanning_news_scanner.py
-tests/teatree_loop/test_self_update_ci.py
 tests/teatree_loop/test_self_update_scanner.py
 tests/teatree_loop/test_slack_broadcasts_classify.py
 tests/teatree_loop/test_slack_broadcasts_multichannel.py

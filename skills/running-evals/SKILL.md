@@ -67,7 +67,7 @@ Bare `t3 eval` runs the MODEL-FREE lanes, then for the AI lane grades recorded t
 
 ```bash
 # Model-free deterministic lanes (no model spend).
-t3 eval coverage          # per-skill eval coverage: covered / eval_exempt / gap (warn-first)
+t3 eval coverage          # per-skill eval coverage: covered / eval_exempt / gap (a gap exits 1)
 t3 eval pinned-regressions
 
 # List discovered scenarios (rich table: Name / Scenario / Agent / File / Asserts).
@@ -84,7 +84,7 @@ t3 eval
 
 ## Authoring evals
 
-A skill's behavioral evals live in the central catalog at `evals/scenarios/<skill>.yaml` (one file per skill, the **same `EvalSpec` schema** as any other scenario). Each spec carries an explicit `agent_path: skills/<name>/SKILL.md` that attributes it back to the skill it grades — coverage keys on that path, not on where the YAML sits. Scenario bodies never live inside the `skills/` tree (`tests/eval_replay/test_no_inline_skill_evals.py` keeps it prose-only). Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap.
+A skill's behavioral evals live in the central catalog at `evals/scenarios/<skill>.yaml` (one file per skill, the **same `EvalSpec` schema** as any other scenario). Each spec carries an explicit `agent_path: skills/<name>/SKILL.md` that attributes it back to the skill it grades — coverage keys on that path, not on where the YAML sits. Scenario bodies never live inside the `skills/` tree (`tests/eval_replay/test_no_inline_skill_evals.py` keeps it prose-only). Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap and exits non-zero.
 
 ## Measuring the shipped hook system (`production_hooks`)
 

@@ -33,7 +33,7 @@ Scope: ONLY the live t3-master session (the session holding the ``t3-master``
 ``LoopLease``); a non-owner interactive session and every sub-agent pass
 untouched. Off-ramps (any one suppresses the nudge): a per-call
 ``[orchestration-ok: <reason>]`` token (mirroring ``[fg-ok:]`` /
-``[skip-skill-gate:]``) and the out-of-repo kill-switch ``[teatree]
+``[skill-load-ok:]``) and the out-of-repo kill-switch ``[teatree]
 orchestrator_investigation_gate_enabled = false``.
 
 ``call_is_from_subagent`` / ``PYTEST_VERB_FINDER`` come from the shared

@@ -33,12 +33,13 @@ from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
-def _backend(name: str = "acme", overlay: object = None) -> OverlayBackends:
+def _backend(name: str = "acme", overlay: object = None, exclude_labels: tuple[str, ...] = ()) -> OverlayBackends:
     return OverlayBackends(
         name=name,
         hosts=(MagicMock(spec=CodeHostBackend),),
         messaging=None,
         ready_labels=(),
+        exclude_labels=exclude_labels,
         identities=("alice",),
         overlay=overlay,
     )
@@ -123,6 +124,20 @@ class IssueIntakeGateTests(TestCase):
             scanner = _issue_intake_scanner_for(_backend(overlay=overlay))
         assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
+
+    def test_overlay_exclude_labels_reach_the_scanner(self) -> None:
+        """#4134: the field was plumbed onto the backend and read by nobody on this path."""
+        backend = _backend(exclude_labels=("interactive-implementation", "on-hold"))
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(backend)
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.exclude_labels == ("interactive-implementation", "on-hold")
+
+    def test_an_overlay_with_no_exclude_labels_leaves_the_policy_empty(self) -> None:
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.exclude_labels == ()
 
     def test_no_overlay_leaves_repo_slugs_empty(self) -> None:
         """A backend with no overlay keeps intake unscoped (back-compat, no crash)."""

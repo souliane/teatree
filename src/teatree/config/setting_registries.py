@@ -12,7 +12,7 @@ declares the dataclasses themselves; re-exported from ``teatree.config`` so ever
 from collections.abc import Callable
 from typing import Any, Final
 
-from teatree.config.agent_enums import AgentHarnessProvider, AgentRuntime, parse_harness_name
+from teatree.config.agent_enums import AgentHarnessProvider, parse_harness_name
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -60,7 +60,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "wip": Wip.parse,
     "write_wip": _parse_strict_int,
     "merge_wip": _parse_strict_int,
-    "agent_runtime": AgentRuntime.parse,
     "agent_harness": parse_harness_name,
     "agent_harness_provider": AgentHarnessProvider.parse,
     "enforce_regulated_path": _parse_strict_bool,
@@ -76,7 +75,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "ticket_budget_max_cost_usd": _parse_strict_float,
     "subagent_spawn_ceiling": _parse_strict_int,
     "envelope_stop_gate_refusals": _parse_strict_int,
-    "headless_max_turns": _parse_strict_int,
+    "agent_max_turns": _parse_strict_int,
     "openai_compatible_base_url": _parse_strict_str,
     "openai_compatible_model": _parse_strict_str,
     "openai_compatible_credential_entry": _parse_strict_str,
@@ -166,6 +165,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "intake_ram_per_agent_gb": _parse_strict_float,
     "disk_cache_allowlist": _parse_str_list,
     "allow_destructive_disk": _parse_strict_bool,
+    "venv_idle_days": _parse_strict_float,
     "worktree_stale_days": _parse_strict_int,
     "max_worktree_gc_per_tick": _parse_strict_int,
     "allow_destructive_ram": _parse_strict_bool,
@@ -180,6 +180,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "park_attempt_retention_days": _parse_strict_int,
     "ticket_transition_prune_disabled": _parse_strict_bool,
     "task_result_retention_days": _parse_strict_int,
+    "scratch_retention_days": _parse_strict_int,
+    "scratch_sweep_root": _parse_strict_str,
     "session_stale_after_hours": _parse_strict_int,
     "provision_step_timeout_seconds": _parse_strict_int,
     "idle_stack_reaper_disabled": _parse_strict_bool,
@@ -210,8 +212,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
     "issue_implementer_max_concurrent": _parse_strict_int,
-    "issue_implementer_cadence_hours": _parse_strict_int,
     "trusted_issue_authors": _parse_str_list,
+    "independent_reviewer_identities": _parse_str_list,
     "umbrella_issue_labels": _parse_str_list,
     "fleet_claim_enabled": _parse_strict_bool,
     "auto_disposition_enabled": _parse_strict_bool,
@@ -272,21 +274,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
     # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
     "check_updates": _parse_strict_bool,
-    # DB-home cutover: ``timezone`` was tagged "needed to open the DB", but Django
-    # ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES``
-    # without reading it — so it is not a bootstrap dep. It has no live reader
-    # (DB-home for partition consistency). (The former sibling ``worktrees_dir``
-    # was removed — it duplicated ``worktree_root()``'s "where worktrees are
-    # created" role with a divergent default; see ``tests/config/
-    # test_removed_dead_settings.py``.)
-    "timezone": _parse_strict_str,
-    # DB-home cutover: the last two per-overlay-TOML-overridable carve-out
-    # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
-    # ``orchestrator_bash_gate_enabled``'s reader (``teatree_gate._gate_key_is_enabled``)
-    # is already DB-first via ``cold_reader`` (toml fallback for the cold self-rescue);
-    # ``privacy`` has no live production reader.
+    # DB-home cutover: ``orchestrator_bash_gate_enabled``'s reader
+    # (``teatree_gate._gate_key_is_enabled``) is already DB-first via ``cold_reader``
+    # (toml fallback for the cold self-rescue). Its former carve-out siblings
+    # ``privacy`` / ``timezone`` were retired reader-less (#4203).
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
-    "privacy": _parse_strict_str,
     # DB-home cutover: ``handover_mirror_path``. The pre-Django reader
     # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
     # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the
@@ -369,7 +361,6 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_WIP": ("wip", Wip.parse),
     "T3_WRITE_WIP": ("write_wip", int),
     "T3_MERGE_WIP": ("merge_wip", int),
-    "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", parse_harness_name),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
     "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),
@@ -408,8 +399,9 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
 # config write IS the human authorization"), delegates a keystone sign-off
 # (``substrate_self_signoff``), disarms an egress/on-behalf pre-gate
 # (``on_behalf_post_mode = IMMEDIATE``, ``on_behalf_auto_actions``), or WIDENS a
-# fail-closed intake / egress / regulated allowlist (``trusted_issue_authors``,
-# ``send_proxy_allowlist``, ``regulated_path_model_allowlist``), raises the global
+# fail-closed intake / egress / regulated / maker≠checker allowlist
+# (``trusted_issue_authors``, ``send_proxy_allowlist``, ``regulated_path_model_allowlist``,
+# ``independent_reviewer_identities``), raises the global
 # autonomy posture (``autonomy``, ``enforce_regulated_path``), or relaxes an
 # autonomous-close boundary (``bulk_close_threshold``). The MCP ``config_setting_set``
 # surface REFUSES every key here by declared EFFECT (``teatree.mcp.write_tools`` reads
@@ -431,6 +423,7 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "on_behalf_auto_actions",
         "send_proxy_allowlist",
         "trusted_issue_authors",
+        "independent_reviewer_identities",
         "bulk_close_threshold",
     }
 )

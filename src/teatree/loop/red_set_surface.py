@@ -19,13 +19,12 @@ Every failure is swallowed: an unreachable forge, a missing overlay, a broken DM
 transport or a malformed payload must degrade to a quiet tick, never abort one.
 """
 
-import json
 import logging
 import os
 import shutil
 from collections.abc import Callable, Iterable
-from typing import TypedDict, cast
 
+from teatree.loop.main_check_runs import CheckRun, check_runs_argv, parse_check_run_pages
 from teatree.loop.red_set_report import MIN_SET_SIZE, PrRedRecord, RedSetReport, SetVerdict, analyse_red_set
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_sweep_types import GREEN_TERMINAL_CONCLUSIONS
@@ -42,21 +41,8 @@ _SWEEP_PREFIX = "pr_sweep."
 #: fallback and this report can never disagree about which commit is "main".
 _MAIN_BRANCH = "main"
 
-#: Page size under ``--paginate``. Main carried 86 check-runs at one sampled
-#: commit against a 30-run default page, so this is the request count today's
-#: board costs — never the ceiling, which is what ``--paginate`` is for.
-_CHECK_RUNS_PAGE = 100
-
 type MainChecks = Callable[..., frozenset[str] | None]
 type CycleNotifier = Callable[..., None]
-
-
-class _CheckRun(TypedDict, total=False):
-    """One entry of a ``check_runs`` page body."""
-
-    name: object
-    status: object
-    conclusion: object
 
 
 def record_red_set(
@@ -169,25 +155,18 @@ def _default_main_checks(*, slug: str, overlay: str) -> frozenset[str] | None:
     required contexts it reported depended on the order the API happened to
     return them — five of the seven required contexts were absent from page 1 at
     one sampled commit. A verdict keyed on a content-addressed signature has to
-    be repeatable, so the read is paginated.
+    be repeatable, so the read (and its flattening) go through the shared
+    :mod:`teatree.loop.main_check_runs` reader — the primitive :meth:`GhPrApiClient.
+    main_check_failed` and :class:`~teatree.loop.scanners.self_update_ci.GhMainCiStatus`
+    share, so a fourth call site cannot reintroduce the truncation.
 
-    ``--slurp`` is required rather than preferred: bare ``--paginate`` emits
-    concatenated JSON documents that :func:`json.loads` rejects, and ``gh``
-    refuses ``--slurp`` together with ``--jq``, so the projection moves into
-    :func:`_failing_check_names`.
-
-    ``None`` on ANY read failure (no ``gh``, non-zero exit, unparsable body), so
-    an unreadable ``main`` can never be mistaken for a green one — which also
-    covers a ``gh`` older than 2.53, where ``--slurp`` exits non-zero.
+    ``None`` on ANY read failure (no ``gh``, non-zero exit, unparsable body, or a
+    payload with no check-run evidence at all), so an unreadable ``main`` can never
+    be mistaken for a green one — which also covers a ``gh`` older than 2.53, where
+    ``--slurp`` exits non-zero.
     """
     gh = shutil.which("gh") or "gh"
-    argv = [
-        gh,
-        "api",
-        "--paginate",
-        "--slurp",
-        f"repos/{slug}/commits/{_MAIN_BRANCH}/check-runs?per_page={_CHECK_RUNS_PAGE}",
-    ]
+    argv = [gh, *check_runs_argv(slug=slug, ref=_MAIN_BRANCH)]
     token = _github_token(overlay)
     try:
         result = run_allowed_to_fail(
@@ -198,41 +177,17 @@ def _default_main_checks(*, slug: str, overlay: str) -> frozenset[str] | None:
     if result.returncode != 0:
         logger.warning("red_set: could not read main check-runs for %s (rc=%d)", slug, result.returncode)
         return None
-    return _failing_check_names(result.stdout)
-
-
-def _failing_check_names(out: str) -> frozenset[str] | None:
-    """Classify the slurped pages, or ``None`` when they carry no evidence.
-
-    ``--slurp`` yields one list of page bodies, each ``{"total_count", "check_runs"}``,
-    so the runs are flattened across pages. A payload with NO check-run at all is
-    indeterminate, not green — nothing has reported on that commit, the same
-    "cannot tell" the non-zero exit above returns — and that now covers GitHub's
-    real empty shape, one page carrying an empty list.
-    """
-    try:
-        pages = json.loads(out or "[]")
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(pages, list):
-        return None
-    runs = [
-        cast("_CheckRun", run)
-        for page in pages
-        if isinstance(page, dict)
-        for run in page.get("check_runs", [])
-        if isinstance(run, dict)
-    ]
-    if not runs:
+    runs = parse_check_run_pages(result.stdout)
+    if runs is None:
         return None
     return frozenset(_check_name(run) for run in runs if _is_failing(run)) - {""}
 
 
-def _check_name(run: "_CheckRun") -> str:
+def _check_name(run: "CheckRun") -> str:
     return str(run.get("name") or "")
 
 
-def _is_failing(run: "_CheckRun") -> bool:
+def _is_failing(run: "CheckRun") -> bool:
     """A check-run that has FINISHED on a non-green conclusion.
 
     A still-running check is not a failure, and an absent conclusion on a

@@ -95,17 +95,16 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "agent_session_effort": _parse_strict_str,
     "agent_session_permission_mode": _parse_strict_str,
     "agent_honesty_model": _parse_strict_str,
-    # Tunables that used to live in the file: the availability schedule / timeouts /
-    # loops sub-tables, the operator's Slack id, and the master fail-open gate switch
-    # (the always-available Bash/gate self-rescue).
+    # Tunables that used to live in the file: the timeouts / loops sub-tables, the
+    # operator's Slack id, and the master fail-open gate switch (the always-available
+    # Bash/gate self-rescue).
     "slack_user_id": _parse_strict_str,
     "slack_user_channel": _parse_strict_str,
-    "availability_schedule": _parse_registry_dict,
     "timeouts": _parse_registry_dict,
     "loops": _parse_registry_dict,
     "danger_gate_fail_open": _parse_strict_bool,
     # Loop preset + schedule layer (#3159): the active weekly-schedule selector and
-    # the default-off low-power auto-engage flag + its re-pointable target preset.
+    # the default-off low-token auto-engage flag + its re-pointable target preset.
     "active_loop_schedule": _parse_strict_str,
     "low_power_auto_engage": _parse_strict_bool,
     "low_power_preset_name": _parse_strict_str,

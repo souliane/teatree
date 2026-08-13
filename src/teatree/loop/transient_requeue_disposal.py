@@ -10,6 +10,7 @@ A row with a LIVE SUCCESSOR is parked FAILED — its phase is unfinished and som
 is finishing it, so marking it COMPLETED would advance the ticket over the successor.
 """
 
+from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
@@ -160,11 +161,7 @@ def _retire_dead_review(task: Task) -> None:
     reason = f"{task.execution_reason}\n{DEAD_REVIEW_STAMP}".strip() if task.execution_reason else DEAD_REVIEW_STAMP
     Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.COMPLETED,
-        claimed_at=None,
-        claimed_by="",
-        claimed_by_session="",
-        lease_expires_at=None,
-        heartbeat_at=None,
+        **RELEASED_CLAIM,
         execution_reason=reason,
     )
     _ignore_ticket_if_allowed(task.ticket)
@@ -192,11 +189,7 @@ def _retire_superseded(task: Task) -> None:
     reason = f"{task.execution_reason}\n{SUPERSEDED_STAMP}".strip() if task.execution_reason else SUPERSEDED_STAMP
     Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.COMPLETED,
-        claimed_at=None,
-        claimed_by="",
-        claimed_by_session="",
-        lease_expires_at=None,
-        heartbeat_at=None,
+        **RELEASED_CLAIM,
         execution_reason=reason,
     )
 

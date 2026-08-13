@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
-from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
 from teatree.config.enums import (
     Autonomy,
     CriticGateMode,
@@ -65,7 +65,6 @@ class _WorkspaceCoreSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Workspace", "Engagement & identity")
 
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
-    privacy: str = ""
     check_updates: bool = True
     # #256 Default-OFF teatree engagement. When false (the default) a fresh
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
@@ -79,7 +78,6 @@ class _WorkspaceCoreSettings:
     # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
     # session regardless of this default.
     autoload: bool = False
-    timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
 
@@ -89,7 +87,7 @@ class _WorkspaceCoreSettings:
 #: only bills for tokens actually generated, and the real spend guards on this lane are the
 #: watchdog cost ceiling and ``pydantic_ai_request_limit``, not this cap. Should a run STILL
 #: hit it, the truncation is recorded FAILED AND escalated to the owner
-#: (:func:`teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
+#: (:func:`teatree.agents.runner_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
 #: raised deliberately rather than failing silently. pydantic_ai's Anthropic binding otherwise
 #: defaults to 4096, which truncates a long result envelope mid-JSON.
 #:
@@ -115,17 +113,8 @@ class _ModeHarnessSettings:
 
     mode: Mode = Mode.AUTO
     autonomy: Autonomy = Autonomy.FULL
-    # The single LANE selector for loop-dispatched phase agents (those whose
-    # (role, phase) has a registered phase sub-agent). ``interactive`` dispatches
-    # them in-session via the ``/loop`` slot's ``Agent`` tool; ``headless`` (the
-    # default) runs them via ``agents/headless.py`` behind the two-layer
-    # ``agent_harness`` (transport) / ``agent_harness_provider`` (credential) pair
-    # (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
-    agent_runtime: AgentRuntime = AgentRuntime.HEADLESS
     # Layer 1 of the two-layer harness config model (#2887): which in-process
-    # TRANSPORT a headless run uses. Orthogonal to ``agent_runtime`` (which LANE —
-    # interactive vs headless — a task dispatches into): once a run IS headless,
-    # this picks the transport that opens the agent session behind the
+    # TRANSPORT an agent run uses — the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
     # behaviour) is the ``claude-agent-sdk`` backend; ``pydantic_ai`` (#2885) is the
     # generic OpenAI-compatible backend. The backend set is OPEN (#3157 E1):
@@ -136,12 +125,11 @@ class _ModeHarnessSettings:
     # overridable; ``T3_AGENT_HARNESS`` env wins.
     agent_harness: str = AgentHarness.CLAUDE_SDK
     # Layer 2 of the two-layer harness config model (#2887): the provider/
-    # credential a headless run authenticates with, CONSTRAINED by Layer 1
+    # credential an agent run authenticates with, CONSTRAINED by Layer 1
     # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum
     # docstring for the full constraint table). Default ``None`` — NO explicit
     # pin: a ``ClaudeSdkHarness`` dispatch inherits the ambient environment
-    # unchanged (today's behaviour, and the legacy default the pre-#2887
-    # ``agent_runtime=interactive``/``api`` fallthrough exercised), so an
+    # unchanged, so an
     # operator who never touches this setting is never forced through an eager
     # credential lookup they haven't configured. An explicit ``subscription_oauth``
     # forces the plan's OAuth token (stripping the API key) — the ``claude_sdk``
@@ -193,7 +181,7 @@ class _ModeHarnessSettings:
     # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (64000) — deliberately generous because a ceiling
     # only bills for tokens actually generated. Should a run STILL hit it, the truncation is
     # recorded FAILED AND escalated to the owner
-    # (``teatree.agents.headless_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
+    # (``teatree.agents.runner_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
     # deliberately rather than failing silently. Keep it ≤ the SMALLEST output limit among the
     # models a dispatch can resolve to (this one value is merged into every request whatever
     # tier ran, and the Anthropic API 400s on a ``max_tokens`` above the addressed model's own
@@ -242,7 +230,7 @@ class _ModeHarnessSettings:
     watchdog_max_runtime_seconds: int = 3 * 60 * 60
     watchdog_max_turns: int = 0
     watchdog_max_cost_usd: float = 0.0
-    # Per-TICKET cumulative cost cap for the headless lane (#885 / #398-4, F9.5), folded
+    # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5), folded
     # off the former Django-settings ``TEATREE_TICKET_BUDGET`` dict into the DB-home
     # config tier for the same #1775 provenance reason. ``TicketBudget.from_settings``
     # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.
@@ -259,7 +247,7 @@ class _ModeHarnessSettings:
     # matching the ceilings above. Per-overlay overridable.
     envelope_stop_gate_refusals: int = 2
     # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
-    # (``ClaudeAgentOptions.max_turns`` via ``agents/_headless_options``). Cache-read
+    # (``ClaudeAgentOptions.max_turns`` via ``agents/_runner_options``). Cache-read
     # cost is ``turns x context_size`` and each turn re-reads the run's whole context,
     # so the turn count is the multiplier on a dispatch's bill — a dimension the
     # wall-clock ``watchdog_max_runtime_seconds`` cannot see and the
@@ -267,11 +255,11 @@ class _ModeHarnessSettings:
     # in-flight one. The default clears a long healthy phase run with headroom while
     # bounding a run that has stopped converging. Reaching it is NOT silent: the CLI
     # ends the run with ``ResultMessage(subtype="error_max_turns")``, which
-    # ``agents/headless`` records FAILED naming this setting AND escalates to the owner
-    # (``agents/headless_truncation``), so the ceiling is raised deliberately rather
+    # ``agents/runner`` records FAILED naming this setting AND escalates to the owner
+    # (``agents/runner_truncation``), so the ceiling is raised deliberately rather
     # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
     # escape hatch, matching the ceilings above). Per-overlay overridable.
-    headless_max_turns: int = 250
+    agent_max_turns: int = 250
 
 
 @dataclass
@@ -559,6 +547,16 @@ class _ReviewGateSettings:
     """Review-phase evidence gates + review-board admission + the E2E confidence bar."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Review")
+
+    # Identities this deployment additionally trusts as INDEPENDENT checkers (#4241),
+    # on top of the harness's recognised reviewer-role tokens. maker≠checker is a
+    # fail-CLOSED allowlist, so a reviewer whose handle carries no role word — every
+    # human, an external review service, a novel agent role — is refused until it is
+    # named here (the owner's own `user_identity_aliases` are unioned in for free, so
+    # the common case needs no configuration). Widening a fail-closed trust boundary is
+    # itself an authorization, so the key is a `SAFETY_POSTURE_KEYS` member the MCP
+    # write surface refuses. DB-home (#1775), per-overlay overridable.
+    independent_reviewer_identities: list[str] = field(default_factory=list)
 
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
     # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is
@@ -913,6 +911,12 @@ class _ResourcePressureSettings:
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
     disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
+    # #4244 The retention policy for the checkout pool: a ``.venv`` untouched for
+    # this long is evicted as the pure cache it is (``uv sync`` rebuilds it), so
+    # the pool's steady state is roughly one venv per checkout worked inside the
+    # window rather than one per checkout ever created. Not a destructive lever —
+    # a venv holds no work — but a live process inside a checkout always wins.
+    venv_idle_days: float = 2.0
 
 
 @dataclass
@@ -1019,6 +1023,18 @@ class _RetentionSettings:
     # matches the cadence the maintenance chain already ran at. ``0`` disables the
     # lane (the library's own floor is 1 day; sub-day retention is not expressible).
     task_result_retention_days: int = 1
+    # #4165 agent-scratch retention under the temp root. On this box ``/tmp`` is a
+    # RAM-backed tmpfs, so week-old sqlite/venv scratch is not idle disk — it is
+    # 28% of the working memory pool, permanently. Ships OFF (``0``) because the
+    # lane is a recursive delete and every destructive lever defaults OFF; 3 days
+    # is the window the manual reclaim used, and arming it needs a venue whose
+    # liveness probe can actually resolve host fds. The root is blank by default
+    # and auto-resolves to the host view (``/host-tmp``, paired with
+    # ``/host-proc``) when the deployment mounts it, else this venue's own
+    # ``/tmp`` — a containerised sweep of the container's own temp root reclaims
+    # nothing of what actually fills the box. Per-overlay overridable.
+    scratch_retention_days: int = 0
+    scratch_sweep_root: str = ""
     # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
     # consults (``Ticket.has_active_work``). An agent that crashed without closing
     # its Session would otherwise pin its ticket — and so its worktree, its

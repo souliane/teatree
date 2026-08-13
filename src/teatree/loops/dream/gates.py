@@ -97,6 +97,25 @@ INDEX_BYTE_BUDGET = 24 * 1024
 #: neither substitutes for the other.
 INDEX_LINE_BUDGET = 200
 
+#: Where the decay budget tier STOPS draining — deliberately BELOW the budgets above, and
+#: declared beside them so the "ceiling vs target" relationship is one glance (#4385).
+#:
+#: The BUDGET is what gate (d) GRADES; the TARGET is where decay STOPS. Draining to the
+#: ceiling and stopping there leaves ZERO headroom: the pass lands the index on exactly
+#: 200 lines, gate (d) grades it once (200 <= 200, PASS) and never again, and the first
+#: memory written afterwards truncates the tail — which stays truncated until the next
+#: nightly pass. The measured live corpus wrote 25 memories in the 11 hours after one such
+#: landing, so the index was 225 lines by morning. ~60 lines of headroom absorbs ~2.4 days
+#: at that rate. 140 is also the figure the curated index header itself carried.
+#:
+#: The tier still FIRES on the ceiling (:func:`~teatree.loops.dream.decay_signal.index_over_budget`),
+#: not on the target — deliberate hysteresis. Firing on the target too would archive a file
+#: a night forever, undoing #2755's "don't archive for nothing" lesson.
+INDEX_LINE_DRAIN_TARGET = 140
+#: The byte-axis drain target — 70% of the byte budget, the same headroom margin the line
+#: axis takes, so neither axis can strand the other on the ceiling.
+INDEX_BYTE_DRAIN_TARGET = (INDEX_BYTE_BUDGET * 7) // 10
+
 
 #: How a probe is checked against a snapshot — injectable so a future LLM answerer
 #: can replace the deterministic signature-match without touching the gates.
@@ -526,7 +545,9 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
 
 __all__ = [
     "INDEX_BYTE_BUDGET",
+    "INDEX_BYTE_DRAIN_TARGET",
     "INDEX_LINE_BUDGET",
+    "INDEX_LINE_DRAIN_TARGET",
     "ComplianceRemediationView",
     "DreamQaReport",
     "Gate",

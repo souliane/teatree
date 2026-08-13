@@ -33,7 +33,6 @@ def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) ->
 def _add_failed_attempt(task: Task, *, error: str) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1,
         error=error,

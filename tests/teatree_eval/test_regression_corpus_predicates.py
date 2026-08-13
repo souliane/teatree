@@ -41,6 +41,12 @@ class TestNonDbPredicatesHoldOnRealCode(TestCase):
     def test_mr_description_first_line_validated(self) -> None:
         assert predicates._check_mr_description_first_line_validated() is True
 
+    def test_causeless_failure_does_not_trip_the_stall(self) -> None:
+        assert predicates._check_causeless_failure_does_not_trip_the_stall() is True
+
+    def test_causeless_kind_is_dropped_from_the_kind_stall(self) -> None:
+        assert predicates._check_causeless_kind_is_dropped_from_the_kind_stall() is True
+
 
 class TestDbBackedPredicatesHoldOnRealCode(TestCase):
     """The ORM-backed predicates hold against the migrated test DB."""
@@ -77,6 +83,20 @@ class TestPredicatesAreAntiVacuous(TestCase):
         with patch("teatree.core.review.mr_metadata.validate_mr_metadata", return_value=[]):
             # A validator that never rejects → the must-reject leg fails.
             assert predicates._check_mr_description_first_line_validated() is False
+
+    def test_causeless_predicates_red_when_the_causeless_drop_is_removed(self) -> None:
+        with patch("teatree.core.modelkit.task_failure_taxonomy.is_causeless", return_value=False):
+            # Both mechanisms consult it: the fingerprint filter keeps the constant
+            # reason's self-collision, the kind filter keeps the two ceiling kinds.
+            assert predicates._check_causeless_failure_does_not_trip_the_stall() is False
+            assert predicates._check_causeless_kind_is_dropped_from_the_kind_stall() is False
+
+    def test_kind_predicate_red_when_normalization_collapses_the_breach(self) -> None:
+        with patch("teatree.core.repair_loop.normalize_terminal_reason", return_value="collapsed"):
+            # The discrimination leg: a normalizer that masks the second count makes the
+            # two ceiling reasons fingerprint identically, which is the silent change the
+            # corrected prose depends on not happening.
+            assert predicates._check_causeless_kind_is_dropped_from_the_kind_stall() is False
 
     def test_allowlist_predicate_red_when_matcher_substring_matches(self) -> None:
         with patch("teatree.hooks._repo_visibility.slug_is_allowlisted_private", return_value=True):

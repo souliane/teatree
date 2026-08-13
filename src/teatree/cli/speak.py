@@ -1,15 +1,19 @@
-"""``t3 speak`` — read text aloud via the local text-to-speech seam (#2060).
+"""``t3 speak`` — the local text-to-speech seam (#2060), refused for user contact.
 
-Top-level convenience over the ``speak`` Django management command.
-Anything that resolves config + the Slack backend runs through the
-management framework (Django bootstrapped by it, not a manual
-``django.setup()`` in a plain typer command) — so this delegates via
-``call_command`` exactly like ``t3 cost``.
+Local audio is a sink nobody is sitting in front of, so it can never reach the
+user: teatree runs headless, and contact routes through ``needs_user_input`` →
+``DeferredQuestion`` → Slack. The command stays so the refusal is stated rather
+than the text vanishing into a box no one is at.
 """
 
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
+
+_REFUSAL = (
+    "t3 speak is a local-audio-only sink and cannot reach the user — route user contact "
+    "through the needs_user_input → DeferredQuestion → Slack path instead. Nothing was spoken."
+)
 
 
 def speak(
@@ -17,28 +21,7 @@ def speak(
     *,
     overlay: str = typer.Option("", "--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay Slack creds)."),
 ) -> None:
-    """Read text aloud through the local speakers per [teatree.speak] (no-op unless local = all)."""
+    """Refuse to speak — local audio cannot reach the user."""
+    del text, overlay
     ensure_django()
-
-    if _runtime_is_headless():
-        typer.echo(
-            "t3 speak is a local-audio-only sink and cannot reach an away user under "
-            "agent_runtime=headless — route user contact through the needs_user_input → "
-            "DeferredQuestion → Slack path instead. Nothing was spoken.",
-            err=True,
-        )
-        return
-
-    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
-
-    call_command("speak", text, overlay=overlay)
-
-
-def _runtime_is_headless() -> bool:
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: Django-dependent read at call time
-    from teatree.config.agent_enums import AgentRuntime  # noqa: PLC0415 — deferred
-
-    try:
-        return get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
-    except Exception:  # noqa: BLE001 — a settings-read failure must never silence a present user's read
-        return False
+    typer.echo(_REFUSAL, err=True)

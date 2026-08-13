@@ -1,28 +1,20 @@
 {% if page_error %}<p class="banner-red" role="alert">{{ page_error }}</p>{% endif %}
   <section class="band">
     <h2>Mode</h2>
-    <p>Current — <strong>{{ control.mode_name }}</strong> (decided by {{ control.mode_source }}) — {{ control.mode_posture }}</p>
-    {% comment %} One form per posture: the vendored htmx drops the clicked submitter, so
+    <p>Current — <strong>{{ control.mode_name }}</strong> (decided by {{ control.mode_source }})</p>
+    {% comment %} One form per mode: the vendored htmx drops the clicked submitter, so
     the value rides in a hidden input rather than on the button. {% endcomment %}
     <div class="toolbar">
-      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+      {% for name in control.mode_names %}
+      <form method="post" action="{% url 'dash:mode-switch' %}" hx-post="{% url 'dash:mode-switch' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
         {% csrf_token %}
-        <input type="hidden" name="posture" value="reachable">
-        <button class="dash-btn" type="submit">reachable</button>
+        <input type="hidden" name="mode" value="{{ name }}">
+        <button class="dash-btn" type="submit">{{ name }}</button>
       </form>
-      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+      {% endfor %}
+      <form method="post" action="{% url 'dash:mode-switch' %}" hx-post="{% url 'dash:mode-switch' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
         {% csrf_token %}
-        <input type="hidden" name="posture" value="defer-questions">
-        <button class="dash-btn" type="submit">defer questions</button>
-      </form>
-      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-        {% csrf_token %}
-        <input type="hidden" name="posture" value="pause-everything">
-        <button class="dash-btn" type="submit">pause everything</button>
-      </form>
-      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-        {% csrf_token %}
-        <input type="hidden" name="posture" value="auto">
+        <input type="hidden" name="mode" value="auto">
         <button class="dash-btn" type="submit">auto</button>
       </form>
     </div>

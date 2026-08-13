@@ -48,7 +48,6 @@ class GenerateStandupTests(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         att = TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             ended_at=timezone.now() - timedelta(hours=hours_ago),
             exit_code=exit_code,
         )

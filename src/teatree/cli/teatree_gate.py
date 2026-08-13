@@ -16,13 +16,12 @@ the gate's heavy-Bash denylist (``_ORCHESTRATOR_HEAVY_BASH_RE``) does not match
 a ``t3 …`` command, and ``t3 …`` invocations are the orchestration prefix the
 gate is built to allow.
 
-A second gate rides the same self-rescue surface: the skill-loading-on-task
-gate (``handle_enforce_skill_loading_on_task_create``, [#1488]) can deny a
-fanned-out ``TaskCreated`` until the matching teatree skill is loaded. If its
-detection ever misbehaves, ``t3 <overlay> gate skill-loading disable`` flips the
+A second gate rides the same self-rescue surface: the skill-loading gate
+(``handle_enforce_skill_loading``, [#1488]) hard-blocks ``Bash``/``Edit``/``Write``
+code work until the matching teatree skill is loaded. If its detection ever
+misbehaves, ``t3 <overlay> gate skill-loading disable`` flips the
 ``skill_loading_gate_enabled`` kill-switch — reachable for the same reason
-(``t3 …`` is the orchestration prefix every gate allows; the ``TaskCreated``
-gate does not govern Bash at all).
+(``t3 …`` is the orchestration prefix every gate allows).
 
 Every read/write is a Django-free stdlib access of the canonical config DB — it
 does NOT route through Django or an overlay ``manage.py`` subprocess, so it stays
@@ -49,6 +48,7 @@ OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
 STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
 GLAB_STALE_BASE_REMOTE_GATE_KEY = "glab_stale_base_remote_gate_enabled"
 GIT_ADD_ALL_GATE_KEY = "git_add_all_gate_enabled"
+VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -78,7 +78,7 @@ def gate_is_enabled() -> bool:
 
 
 def skill_loading_gate_is_enabled() -> bool:
-    """Resolve the skill-loading-on-task gate (``SKILL_GATE_KEY``, default True)."""
+    """Resolve the skill-loading gate (``SKILL_GATE_KEY``, default True)."""
     return _gate_key_is_enabled(SKILL_GATE_KEY)
 
 
@@ -225,7 +225,7 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         gate_group,
         name="skill-loading",
         key=SKILL_GATE_KEY,
-        label="Skill-loading-on-task gate",
+        label="Skill-loading gate",
     )
 
     _register_keyed_gate(
@@ -317,6 +317,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="add-all",
         key=GIT_ADD_ALL_GATE_KEY,
         label="Whole-tree `git add -A` / `git add .` gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="verbatim-paste",
+        key=VERBATIM_PASTE_GATE_KEY,
+        label="Verbatim operator-paste publish gate",
     )
 
     overlay_app.add_typer(gate_group, name="gate")

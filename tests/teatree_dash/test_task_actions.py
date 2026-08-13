@@ -1,9 +1,11 @@
 """The drawer's enqueue-button read model: which phases, enabled, and why not (#4085)."""
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.models.task import Task
+from teatree.core.models.task_enqueue import DuplicatePhaseTaskError, enqueue_phase_task_once
 from teatree.core.models.ticket import Ticket
 from teatree.dash.task_actions import (
     BOARD_PHASES,
@@ -53,6 +55,23 @@ class EnqueueButtonsTestCase(TestCase):
         TaskFactory(ticket=self.ticket, phase="reviewing", status=Task.Status.CLAIMED)
         buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
         assert buttons["reviewing"].enabled
+
+    def test_the_disabled_button_names_the_oldest_task_the_post_would_refuse_against(self) -> None:
+        """The drawer half of the guarantee the board sibling already pins (#4271).
+
+        Flip the ordering in ``_oldest_pending_task_per_phase`` and the button names the
+        newest task while the POST still refuses against the oldest — the exact
+        disagreement its docstring says can never happen.
+        """
+        oldest = TaskFactory(ticket=self.ticket, phase="shipping", status=Task.Status.PENDING)
+        TaskFactory(ticket=self.ticket, phase="shipping", status=Task.Status.PENDING)
+        buttons = {button.phase: button for button in enqueue_buttons(self.ticket)}
+        with pytest.raises(DuplicatePhaseTaskError) as refusal:
+            enqueue_phase_task_once(ticket=self.ticket, phase="shipping", reason="Ship now.")
+
+        assert not buttons["shipping"].enabled
+        assert buttons["shipping"].reason == f"TODO-{oldest.pk} is already queued for shipping"
+        assert f"TODO-{oldest.pk} " in str(refusal.value)
 
     def test_the_button_set_costs_one_query_whatever_the_task_count(self) -> None:
         for scale in (2, 20):

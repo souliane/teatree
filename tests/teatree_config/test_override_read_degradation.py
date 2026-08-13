@@ -12,9 +12,11 @@ being useless, so every fail-closed case has an absent-override twin that must s
 resolve to the shipped default.
 """
 
+import json
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -428,3 +430,115 @@ class TestTheMarkerIsRecordedWhereTheFaultWasObserved(TestCase):
             clear_degraded_read()
             assert degraded_read_report() is None
         assert not fallback.exists()
+
+
+class TestReadingTheHealthRecordWritesNothing(TestCase):
+    """Asking whether the tier is degraded must not touch the filesystem (#4205).
+
+    ``marker_paths`` decided "can this venue write here?" by ATTEMPTING the directory —
+    ``mkdir(parents=True)`` — so ``degraded_read_report``, ``clear_degraded_read`` and the
+    doctor check each materialised a directory tree on a pure read. A health probe that
+    creates the venue it is inspecting reports on its own side effect.
+    """
+
+    def _absent_tree(self) -> tuple[Path, Path]:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root / "control-db" / "nested" / MARKER_FILENAME, root / MARKER_FILENAME
+
+    def test_a_report_read_creates_no_directory(self) -> None:
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert degraded_read_report() is None
+        assert not canonical.parent.exists(), "a pure read materialised the marker directory"
+
+    def test_clearing_creates_no_directory(self) -> None:
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            clear_degraded_read()
+        assert not canonical.parent.exists(), "acknowledging a fault materialised the marker directory"
+
+    def test_a_creatable_canonical_dir_is_still_the_only_candidate(self) -> None:
+        # Foil: probing without creating must not start reporting a writable venue as
+        # unwritable — that would offer the per-user path unconditionally, the very
+        # stale-marker-outvotes-a-healthy-venue defect `marker_paths` guards against.
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert marker_paths() == (canonical,)
+
+    def test_an_uncreatable_canonical_dir_still_offers_the_fallback(self) -> None:
+        # The other foil: the write path must keep both candidates when the canonical
+        # directory cannot be created here, which is the whole point of the fallback.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        (root / "blocking-file").write_text("not a directory")
+        canonical = root / "blocking-file" / "control-db" / MARKER_FILENAME
+        fallback = root / MARKER_FILENAME
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert marker_paths() == (canonical, fallback)
+
+
+class TestTheFreshestRecordDecides(TestCase):
+    """Recency, not candidate order, answers "is the tier degraded NOW?" (#4205).
+
+    The candidates are venue-local files that never see each other's writes, so a
+    canonical-first read answers "did it ever degrade in this one directory?" instead.
+    That was documented as load-bearing and pinned by nothing: `found[0]` left the whole
+    degradation lane green.
+
+    `marker_paths` is patched rather than reconstructed from an unwritable canonical dir:
+    the ordering inside `_read_marker` is the property under test, and a permission-bit
+    fixture would couple the assertion to a filesystem mechanism it is not about.
+    """
+
+    def _marker(self, *, scope: str, last_seen: float) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        path = root / MARKER_FILENAME
+        path.write_text(
+            json.dumps(
+                {
+                    "scopes": [scope],
+                    "callers": [],
+                    "occurrences": 1,
+                    "first_seen": last_seen,
+                    "last_seen": last_seen,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _both(self) -> tuple[Path, Path]:
+        now = time.time()
+        # Both well inside MARKER_TTL_SECONDS, so this is about ordering, not staleness.
+        return self._marker(scope="stale", last_seen=now - 3600), self._marker(scope="fresh", last_seen=now - 5)
+
+    def _report_over(self, candidates: tuple[Path, ...]) -> Any:
+        with mock.patch("teatree.config.override_read_health.marker_paths", return_value=candidates):
+            return degraded_read_report()
+
+    def test_the_newest_record_wins_when_it_is_last(self) -> None:
+        stale, fresh = self._both()
+        report = self._report_over((stale, fresh))
+        assert report is not None
+        assert (report.scopes, report.path) == (("fresh",), fresh)
+
+    def test_the_newest_record_wins_when_it_is_first(self) -> None:
+        # The paired foil: "always take the last candidate" passes the case above.
+        stale, fresh = self._both()
+        report = self._report_over((fresh, stale))
+        assert report is not None
+        assert (report.scopes, report.path) == (("fresh",), fresh)

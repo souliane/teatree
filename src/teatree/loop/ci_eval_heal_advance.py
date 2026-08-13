@@ -25,7 +25,8 @@ marked green. ``GREEN`` is reachable from exactly ONE place — a run whose CI
 conclusion is ``success`` (an empty red set) — and the model's ``_no_reds`` guard
 independently refuses ``mark_green`` while any red remains. The fixer only PROPOSES:
 the #3282 anti-cheat gate (``record_fix``) runs over the proposed diff BEFORE any
-push, so a fix editing ``evals/scenarios/**`` or a red matcher is REJECTED and
+push, so a fix editing ``evals/scenarios/**`` or the eval harness
+(``src/teatree/eval/**``) is REJECTED and
 DISCARDED, never reaching the branch. A red, an infra failure, an unconfirmable
 result, an exhausted budget, or a rejected/empty fix all terminate at ``HALTED`` and
 escalate to the human via a :class:`~teatree.core.models.DeferredQuestion` (the

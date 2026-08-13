@@ -1,7 +1,7 @@
 """Governor gating of the INTERACTIVE dispatch chokepoint (#4107).
 
 ``decide_admission`` had exactly two callers, both factory lanes
-(``core.headless_admission``, ``loop.admission``), so an orchestrator session
+(``core.agent_admission``, ``loop.admission``), so an orchestrator session
 dispatching through the ``Agent``/``Task`` tool was admitted with no ceiling and
 no load brake — the two agent populations summed unchecked (measured: load 58 on
 8 cores while ``issue_implementer_max_concurrent = 3`` was in force). These cover
@@ -174,9 +174,8 @@ class TestTheCeilingSeesItsOwnAdmissions(TestCase):
         assert InteractiveDispatch.objects.live_seats().count() == 0
 
     def test_the_ceiling_exempt_arm_is_still_counted(self) -> None:
-        # A sub-agent's onward dispatch and the TaskCreated fan-out keep their documented
-        # exemption from the CEILING, but they put an agent on the box either way — so the
-        # arm that does clamp must be able to see them.
+        # A sub-agent's onward dispatch keeps its documented exemption from the CEILING,
+        # but puts an agent on the box either way — so the arm that does clamp must see it.
         with _signals(), patch.object(gate_mod, "decide_admission", return_value=_admits(ceiling=1)):
             assert dispatch_admission_denied_reason(apply_ceiling=False, session_id="s-4129") is None
             reason = dispatch_admission_denied_reason(session_id="s-4129")
@@ -220,27 +219,24 @@ class TestSeatRelease(TestCase):
 class TestLiveAgentCount(TestCase):
     """The count the ceiling is compared against — the TOTAL live agent population."""
 
-    def _claimed(self, target: str) -> Task:
+    def _claimed(self) -> Task:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         return Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=target,
             status=Task.Status.CLAIMED,
             lease_expires_at=timezone.now() + dt.timedelta(minutes=10),
             phase="architectural_review",
         )
 
-    def test_counts_both_execution_targets(self) -> None:
-        # ``live_headless_agent_count`` counts only the headless half; an interactive
-        # dispatch adds to the host population BOTH halves live in.
-        self._claimed(Task.ExecutionTarget.HEADLESS)
-        self._claimed(Task.ExecutionTarget.INTERACTIVE)
+    def test_counts_every_live_claim(self) -> None:
+        self._claimed()
+        self._claimed()
         assert gate_mod.live_agent_count() == 2
 
     def test_an_expired_lease_is_not_live(self) -> None:
-        task = self._claimed(Task.ExecutionTarget.INTERACTIVE)
+        task = self._claimed()
         task.lease_expires_at = timezone.now() - dt.timedelta(minutes=1)
         task.save(update_fields=["lease_expires_at"])
         assert gate_mod.live_agent_count() == 0
@@ -263,7 +259,6 @@ class TestNoDoubleCountForALoopClaimedTask(TestCase):
         return Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.CLAIMED,
             claimed_by_session=session_id,
             lease_expires_at=timezone.now() + dt.timedelta(minutes=10),

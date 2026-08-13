@@ -5,7 +5,6 @@ import os
 import sqlite3
 import tempfile
 import time
-from collections.abc import Iterator
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
@@ -22,7 +21,6 @@ from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
-from tests._agent_runtime_env import interactive_runtime
 from tests._loop_principal_env import pinned_loop_principal
 
 
@@ -44,18 +42,7 @@ def _seed_cold_config(db: Path, key: str, value: object) -> None:
 
 
 class _LoopDispatchTest(TestCase):
-    """``loop_dispatch`` is the IN-SESSION claimer, so every case here pins that lane.
-
-    The shipped ``agent_runtime`` is ``headless`` (#3895), under which
-    ``_dispatchable_q()`` deliberately matches nothing — the headless factory owns
-    every loop-dispatched phase. These tests are about the interactive claim itself,
-    so they name the runtime they exercise instead of inheriting the shipped one.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        with interactive_runtime():
-            yield
+    """``loop_dispatch`` is the loop slot's claim surface over ``Task.dispatchable_q()``."""
 
     def _reviewer_task(self, *, url: str = "https://example.com/pr/1", head_sha: str = "x") -> Task:
         ticket = Ticket.objects.create(
@@ -372,7 +359,6 @@ class TestClaimNextAdmissionPriority(_LoopDispatchTest):
             session=session,
             phase="planning",
             status=Task.Status.PENDING,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
     def test_claim_next_admits_todo_before_lower_pk_new_ticket(self) -> None:
@@ -564,7 +550,7 @@ class TestGovernorGate(_LoopDispatchTest):
 
     def test_an_absent_sidecar_budget_still_takes_the_governors_ceiling(self) -> None:
         # This lane passes ``static_ceiling=budget``, so an absent budget is the same
-        # ``None`` the headless lane passes (#4097): the governor's own ceiling has to
+        # ``None`` the agent lane passes (#4097): the governor's own ceiling has to
         # apply, or "no operator cap" would read as "no cap".
         from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
         from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
@@ -750,26 +736,20 @@ class TestExternalDeliveryExclusion(_LoopDispatchTest):
         assert [e["task_id"] for e in payload] == [task.pk]
 
 
-class TestBudgetCountsHeadlessInFlight(_LoopDispatchTest):
-    """#6: the admit-budget gate counts HEADLESS in-flight claims, not just INTERACTIVE.
+class TestBudgetCountsWorkerInFlight(_LoopDispatchTest):
+    """#6: the admit-budget gate counts every in-flight claim.
 
-    ``orchestrate`` computes the target and its ``in_flight`` subtraction over
-    the dispatchable filter WITHOUT any execution_target narrowing, so a
-    headless worker in flight consumes budget. The live claimer must count with
-    the SAME set; the pre-fix gate counted only INTERACTIVE in-flight, so with N
-    headless workers already running it saw zero and overshot the boost budget.
+    ``orchestrate`` computes the target and its ``in_flight`` subtraction over the
+    dispatchable filter, so a worker in flight consumes budget. The live claimer
+    must count with the SAME set or it overshoots the boost budget.
     """
 
     def _headless_in_flight(self, n: int) -> list[Task]:
-        """Seed *n* dispatchable HEADLESS CLAIMED tasks with a live lease."""
+        """Seed *n* dispatchable CLAIMED tasks with a live lease."""
         claimed: list[Task] = []
         for i in range(n):
-            task = self._author_task(url=f"https://example.com/issues/headless/{i}")
-            # A raw UPDATE forces HEADLESS without the save() re-route back to
-            # INTERACTIVE (a loop-dispatched phase under the default runtime).
-            Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS)
-            task.refresh_from_db()
-            task.claim(claimed_by="headless-worker")
+            task = self._author_task(url=f"https://example.com/issues/worker/{i}")
+            task.claim(claimed_by="task-worker")
             claimed.append(task)
         return claimed
 

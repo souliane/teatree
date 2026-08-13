@@ -287,7 +287,7 @@ class TestEveryGovernorConsumerHasALiveCaller:
         found = set(governor_consumers())
         expected = {
             "governor_verdict",
-            "headless_admission_verdict",
+            "agent_admission_verdict",
             "with_test_worker_cap",
             "dispatch_admission_denied_reason",
         }
@@ -297,25 +297,25 @@ class TestEveryGovernorConsumerHasALiveCaller:
 class TestHeadlessLaneWiresGovernor:
     """The #3678 case: the HEADLESS admission path references the governor, not only the interactive one."""
 
-    _HEADLESS_ADMISSION_MODULE = "core/headless_admission.py"
-    _HEADLESS_ENV_MODULE = "agents/_headless_env.py"
+    _HEADLESS_ADMISSION_MODULE = "core/agent_admission.py"
+    _HEADLESS_ENV_MODULE = "agents/_runner_env.py"
     _INTERACTIVE_CONSUMER = "governor_verdict"
     #: The module's governor-admission seams. A chokepoint gates on the governor by
     #: calling EITHER: the single-shot ``…_denied_reason`` (one unit of work, one probe)
     #: or the ``…_verdict`` a queue walker holds across N rows so the classification
     #: costs one probe rather than N (#4098). Both resolve the same pure decision.
-    _HEADLESS_CONSUMERS = ("headless_admission_denied_reason", "headless_admission_verdict")
+    _HEADLESS_CONSUMERS = ("agent_admission_denied_reason", "agent_admission_verdict")
     #: The three headless chokepoints that must gate on the governor: the post_save
     #: auto-enqueue, the drain safety net, and issue intake (#3644 / F9).
     _HEADLESS_CHOKEPOINTS = ("core/signals.py", "core/tasks.py", "loop/scanners/issue_intake.py")
 
-    def test_headless_admission_module_consults_the_pure_governor_decision(self) -> None:
+    def test_agent_admission_module_consults_the_pure_governor_decision(self) -> None:
         assert module_references(self._HEADLESS_ADMISSION_MODULE, frozenset({"decide_admission"})), (
             "the headless admission module no longer references decide_admission — "
-            "the headless lane has been un-wired from the governor"
+            "the agent lane has been un-wired from the governor"
         )
 
-    def test_headless_env_cap_references_the_governor(self) -> None:
+    def test_runner_env_cap_references_the_governor(self) -> None:
         targets = frozenset(_GOVERNOR_DECISION_API | {"admission_governor"})
         assert module_references(self._HEADLESS_ENV_MODULE, targets), (
             "the headless env test-worker cap no longer references the admission governor"
@@ -336,8 +336,8 @@ class TestHeadlessLaneWiresGovernor:
         # #4098: nothing changes between iterations of the drain loop, so a per-row
         # re-ask would return the same verdict N times at N times the cost. The drain
         # must hold the VERDICT, never call the single-shot wrapper inside its loop.
-        assert module_calls("core/tasks.py", "headless_admission_verdict")
-        assert not module_calls("core/tasks.py", "headless_admission_denied_reason")
+        assert module_calls("core/tasks.py", "agent_admission_verdict")
+        assert not module_calls("core/tasks.py", "agent_admission_denied_reason")
 
     def test_the_interactive_lane_also_still_gates_on_the_governor(self) -> None:
         # The contract is "BOTH lanes", so the interactive verdict must stay wired too —
@@ -354,7 +354,7 @@ class TestDispatchGateWiresGovernor:
 
     _DISPATCH_MODULE = "core/dispatch_admission.py"
     _DISPATCH_CONSUMER = "dispatch_admission_denied_reason"
-    #: Both dispatch arms — ``PreToolUse`` misses the fan-out, which only ``TaskCreated`` sees.
+    #: The ``Agent``/``Task`` ``PreToolUse`` matcher — the ONE interception point a dispatch has.
     _DISPATCH_GATE = "hooks/scripts/dispatch_admission_gate.py"
 
     def test_the_dispatch_module_consults_the_pure_governor_decision(self) -> None:

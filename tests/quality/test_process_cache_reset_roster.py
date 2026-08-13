@@ -140,8 +140,13 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.overlay_loader:_discover_overlays": "reset_overlay_cache",
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
+    # Task pks this process is executing (#4164). Pk-keyed, so it is exactly the recycled-rowid
+    # class above: a leaked entry makes a later test's fresh task read as still-executing and
+    # the sweep withholds a reap that test asserts it takes.
+    "teatree.core.claim_liveness:_driving": "reset_driving_registry",
     "teatree.hooks.quote_scanner:_BLOCKLIST_CACHE": "reset_blocklist_cache",
     "teatree.core.schema_readiness:_MEMO": "invalidate_schema_readiness",
+    "teatree.core.process_freshness:_MEMO": "invalidate_process_freshness",
     "teatree.config.host_projection:_warned": "reset_advisory_memo",
     "teatree.core.worktree.branch_classification:_declared_single_branch_repos": "reset_single_branch_cache",
     "teatree.loop.scanners.my_prs_ci:_MEMO": "reset_ci_memo",

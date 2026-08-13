@@ -15,7 +15,8 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
-from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
+from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest
+from teatree.core.models.reviewer_identity import is_non_reviewer_role
 from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
@@ -81,6 +82,15 @@ class TestIsNonReviewerRoleUnit(TestCase):
 
     def test_coding_agent_is_blocked(self) -> None:
         assert is_non_reviewer_role("coding-agent") is True
+
+    def test_space_delimited_loop_is_blocked(self) -> None:
+        assert is_non_reviewer_role("merge loop") is True
+
+    def test_dot_and_slash_delimited_maker_is_blocked(self) -> None:
+        assert is_non_reviewer_role("team.maker/x") is True
+
+    def test_space_delimited_maker_after_a_reviewer_word_is_blocked(self) -> None:
+        assert is_non_reviewer_role("cold maker") is True
 
     # --- must return False ---
 

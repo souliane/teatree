@@ -45,15 +45,9 @@ def enqueue_phase_task(
     ticket: Ticket,
     phase: str,
     reason: str,
-    interactive: bool = False,
     agent_id: str = "phase-handoff",
 ) -> Task:
-    """Create the phase task for *ticket*, on the ticket's canonical phase session.
-
-    The returned row carries the PERSISTED execution target, which is not always the
-    requested one — ``Task.save`` routes a loop-dispatched phase to the interactive
-    lane whatever the caller asked for.
-    """
+    """Create the phase task for *ticket*, on the ticket's canonical phase session."""
     if not phase.strip():
         msg = "phase is required (scoping, coding, testing, reviewing, or shipping)."
         raise TaskEnqueueError(msg)
@@ -61,12 +55,10 @@ def enqueue_phase_task(
         msg = "a non-blank reason is required — it is the prompt body the worker receives."
         raise TaskEnqueueError(msg)
     session = ticket.resolve_phase_session(agent_id=agent_id)
-    target = Task.ExecutionTarget.INTERACTIVE if interactive else Task.ExecutionTarget.HEADLESS
     return Task.objects.create(
         ticket=ticket,
         session=session,
         phase=phase,
-        execution_target=target,
         execution_reason=reason,
     )
 
@@ -76,7 +68,6 @@ def enqueue_phase_task_once(
     ticket: Ticket,
     phase: str,
     reason: str,
-    interactive: bool = False,
     agent_id: str = "dashboard",
 ) -> Task:
     """:func:`enqueue_phase_task`, refused while an unstarted task for the phase exists.
@@ -93,6 +84,5 @@ def enqueue_phase_task_once(
             ticket=ticket,
             phase=phase,
             reason=reason,
-            interactive=interactive,
             agent_id=agent_id,
         )

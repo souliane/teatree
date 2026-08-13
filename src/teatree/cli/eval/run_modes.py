@@ -221,7 +221,14 @@ class RegressionGates:
 
     @staticmethod
     def scores(record: "EvalRunRecord", *, enabled: bool) -> bool:
-        """Diff *record* against each model's baseline; print drops; True if any regressed."""
+        """Diff *record* against each model's baseline; print drops; True if any regressed.
+
+        An UNMEASURED scenario — one the candidate recorded but graded nothing for,
+        the all-errored weekly-lane shape — is reported under its own headline and
+        still fails the gate, because a requested gate that could not compare a
+        scenario cannot report a green for it. What it is NOT is a behavioral
+        regression, which is what defaulting the missing rate to ``0.0`` printed.
+        """
         if not enabled:
             return False
         from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -234,7 +241,13 @@ class RegressionGates:
                 continue
             any_baseline = True
             for entry in EvalRunRecord.regression_diff(baseline=baseline_run, candidate=record, model=model):
-                if entry.regressed:
+                if entry.unmeasured:
+                    any_regressed = True
+                    typer.echo(
+                        f"UNMEASURED {entry.scenario_name} [{entry.model}]: baseline "
+                        f"{entry.baseline_pass_rate:.2f}, candidate graded no trial (all errored or skipped)"
+                    )
+                elif entry.regressed:
                     any_regressed = True
                     typer.echo(
                         f"REGRESSED {entry.scenario_name} [{entry.model}]: "

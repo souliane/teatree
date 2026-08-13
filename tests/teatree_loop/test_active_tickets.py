@@ -24,7 +24,6 @@ def _short_describe_task(ticket: Ticket, status: str) -> Task:
         ticket=ticket,
         session=Session.objects.create(ticket=ticket, agent_id="short-describe"),
         phase=SHORT_DESCRIBE_PHASE,
-        execution_target=Task.ExecutionTarget.HEADLESS,
     )
     Task.objects.filter(pk=task.pk).update(status=status)
     return task

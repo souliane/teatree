@@ -1,5 +1,6 @@
 """Tests for teatree.agents.context_budget — the E2BIG append byte budget."""
 
+import logging
 import re
 from pathlib import Path
 
@@ -66,6 +67,67 @@ class TestEnforceBudget:
         out = enforce_budget(text, [("", "absent"), (text, "present")], max_bytes=1000)
         assert len(out.encode()) <= 1000
         assert "see present" in out
+
+
+class TestPhantomBlockReclaimsNothing:
+    """A block that is not a substring of *text* must not spend the budget.
+
+    ``enforce_budget`` truncates by exact-substring replace, so a caller that
+    passes a block the assembled context never embedded reclaims zero bytes. If
+    the pass credits those bytes anyway, ``overage`` reaches 0 on a phantom and
+    the loop exits before it reaches the real, genuinely over-budget block —
+    which is how the E2BIG spawn failure of #4386 shipped a 144 KB append.
+    """
+
+    def test_absent_block_reclaims_nothing_and_the_real_block_absorbs_it(self) -> None:
+        real = "R" * 20000
+        phantom = "P" * 20000  # never appears in `text` — the non-planning survey shape
+        text = f"head\n{real}\ntail"
+
+        out = enforce_budget(text, [(phantom, "the phantom"), (real, "the real block")], max_bytes=5000)
+
+        assert len(out.encode()) <= 5000
+        assert "see the real block" in out
+        assert "see the phantom" not in out
+
+    def test_a_phantom_mid_list_does_not_strand_the_block_that_can_pay(self) -> None:
+        # The phantom sits between a block too small to clear the overage and the
+        # one large enough to: crediting it exits the pass with the payer intact.
+        small = "S" * 3000
+        payer = "B" * 20000
+        text = f"{small}\n{payer}"
+
+        out = enforce_budget(text, [(small, "small"), ("Q" * 20000, "phantom"), (payer, "payer")], max_bytes=5000)
+
+        assert len(out.encode()) <= 5000
+        assert "see payer" in out
+
+
+class TestBudgetPostcondition:
+    """The returned text is within budget or the pass says so — never both silently.
+
+    The arithmetic is not the contract; the byte count is. A pass that reports
+    success while returning an over-budget string surfaces as an opaque
+    ``[Errno 7] Argument list too long`` at spawn, far from the cause.
+    """
+
+    def test_unabsorbable_overage_is_still_cut_to_the_budget(self) -> None:
+        out = enforce_budget("U" * 10000, [], max_bytes=1000)
+
+        assert len(out.encode()) <= 1000
+
+    def test_unabsorbable_overage_is_logged_at_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.ERROR, logger="teatree.agents.context_budget"):
+            enforce_budget("U" * 10000, [], max_bytes=1000)
+
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_a_budget_met_by_the_blocks_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        block = "B" * 10000
+        with caplog.at_level(logging.ERROR, logger="teatree.agents.context_budget"):
+            enforce_budget(f"head\n{block}", [(block, "the block")], max_bytes=5000)
+
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 def _sectioned_block(sections: int, *, body_bytes: int, skill: str = "rules") -> str:
@@ -151,7 +213,7 @@ class TestProductionSkillBundleFitsOrElidesLegibly:
 
     Measured on this repo's own ``skills/`` tree, so the regression is the same
     on every host. Each production bundle is 1.7-2.3x the append budget today, so
-    every headless dispatch truncates — the contract is that what survives is
+    every agent dispatch truncates — the contract is that what survives is
     whole sections and the marker names the rest.
     """
 

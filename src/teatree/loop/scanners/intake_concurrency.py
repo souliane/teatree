@@ -77,10 +77,7 @@ class IntakeConcurrencyScanner:
     def _decide(self, marker: "ResourcePressureMarker") -> _Decision | None:
         available_mib = read_ram_headroom().box_watermark_mib
         if available_mib is None:
-            logger.warning(
-                "intake_concurrency: headroom unreadable, or measured in a cgroup too small to describe "
-                "the box — intake keeps the static ceiling"
-            )
+            logger.warning("intake_concurrency: no box-scoped headroom readable — intake keeps the static ceiling")
             return None
         previous = marker.adaptive_intake_concurrency or self.static_ceiling
         available_gb = available_mib / _MIB_PER_GB

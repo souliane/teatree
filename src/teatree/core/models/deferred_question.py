@@ -106,7 +106,7 @@ class DeferredQuestion(models.Model):
     """One queued user-directed question recorded while availability=away.
 
     The question text and options are the verbatim ``AskUserQuestion``
-    payload; the hook layer (see ``hook_router.handle_route_away_mode_question``)
+    payload; the hook layer (see ``hook_router.handle_mirror_question_to_slack``)
     is the only producer. Single-use: once :meth:`consume` stamps either
     ``answered_at`` or ``dismissed_at``, the row no longer matches a
     pending-question scan. The original ``tool_use_id`` (when the harness

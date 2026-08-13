@@ -12,17 +12,11 @@ _AUTOMATION_WINDOW_HOURS = 24
 
 def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
     cutoff = timezone.now() - timezone.timedelta(hours=_AUTOMATION_WINDOW_HOURS)
-    task_filter = Q(
-        execution_target=Task.ExecutionTarget.HEADLESS,
-        status=Task.Status.CLAIMED,
-    )
+    task_filter = Q(status=Task.Status.CLAIMED)
     if overlay:
         task_filter &= _overlay_q(overlay)
     running = Task.objects.filter(task_filter).count()
-    attempt_filter = Q(
-        task__execution_target=Task.ExecutionTarget.HEADLESS,
-        ended_at__gte=cutoff,
-    ) & _task_overlay_q(overlay)
+    attempt_filter = Q(ended_at__gte=cutoff) & _task_overlay_q(overlay)
     recent_attempts = TaskAttempt.objects.filter(attempt_filter)
     completed_24h = recent_attempts.count()
     succeeded_24h = recent_attempts.filter(exit_code=0).count()
@@ -36,7 +30,7 @@ def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
     total_cost_24h = token_stats["total_cost"] or 0.0
     last_attempt = (
         TaskAttempt.objects.filter(
-            Q(task__execution_target=Task.ExecutionTarget.HEADLESS, ended_at__isnull=False) & _task_overlay_q(overlay),
+            Q(ended_at__isnull=False) & _task_overlay_q(overlay),
         )
         .order_by("-ended_at")
         .first()
@@ -55,25 +49,7 @@ def build_automation_summary(overlay: str | None = None) -> AutomationSummary:
 
 def build_action_required(overlay: str | None = None) -> list[ActionRequiredItem]:
     """Aggregate all items that need human attention."""
-    task_qs = Task.objects.filter(
-        execution_target=Task.ExecutionTarget.INTERACTIVE,
-        status=Task.Status.PENDING,
-    ).select_related("ticket")
-    if overlay:
-        task_qs = task_qs.filter(_overlay_q(overlay))
-    items: list[ActionRequiredItem] = [
-        ActionRequiredItem(
-            kind="interactive_task",
-            label=f"#{task.ticket.ticket_number} — interactive task",
-            url="",
-            ticket_id=task.ticket_id,
-            detail=task.execution_reason[:120],
-        )
-        for task in task_qs
-    ]
-
-    items.extend(_action_items_from_prs(overlay))
-    return items
+    return _action_items_from_prs(overlay)
 
 
 def _action_items_from_prs(overlay: str | None = None) -> list[ActionRequiredItem]:

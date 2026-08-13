@@ -185,7 +185,6 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
             ticket=ticket,
             session=session,
             phase="planning",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="test",
         )
 
@@ -204,7 +203,6 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
             ticket=ticket,
             session=session,
             phase="planning",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="test",
         )
         result = {"summary": "Plan done", "plan_text": "Step 1: do X."}
@@ -231,7 +229,6 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="test",
         )
         count_before = PlanArtifact.objects.filter(ticket=ticket).count()

@@ -85,7 +85,7 @@ _OVERLAY_COMMANDS = (
     "worktree start",
     "worktree status",
     "worktree teardown",
-    "tasks work-next-headless",
+    "tasks work-next",
     "followup refresh",
     "followup remind",
     "checking show",

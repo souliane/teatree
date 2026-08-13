@@ -61,7 +61,7 @@ class AttemptRow:
     model: str
     reasoning_effort: str
     skills_loaded: tuple[str, ...]
-    #: An EMPTY ``skills_loaded`` on a headless dispatch is a fault, not an absence
+    #: An EMPTY ``skills_loaded`` on a agent dispatch is a fault, not an absence
     #: of information (#3886) — the drawer must say so rather than render nothing.
     skills_fault: bool
     duration: str
@@ -73,7 +73,6 @@ class AttemptRow:
     cache_write_tokens: int | None
     num_turns: int | None
     lane: str
-    execution_target: str
     outcome: str
     exit_code: int | None
     error: str
@@ -89,7 +88,6 @@ class TaskRow:
     phase: str
     status: str
     claimed_by: str
-    execution_target: str
     attempts: tuple[AttemptRow, ...] = ()
     attempts_total: int = 0
 
@@ -228,7 +226,6 @@ def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
             phase=task.phase,
             status=task.get_status_display(),
             claimed_by=task.claimed_by,
-            execution_target=task.execution_target,
             attempts=tuple(_attempt_row(attempt) for attempt in task.attempts.all()),
             attempts_total=task.attempts_total,
         )
@@ -254,7 +251,6 @@ def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
         cache_write_tokens=attempt.cache_write_tokens,
         num_turns=attempt.num_turns,
         lane=attempt.lane,
-        execution_target=attempt.execution_target,
         outcome=attempt.get_outcome_display() if attempt.outcome else "",  # ty: ignore[unresolved-attribute]
         exit_code=attempt.exit_code,
         error=attempt.error,

@@ -118,7 +118,7 @@ class TestRecordContract(TestCase):
         for identity in ("maker", "coding-agent", "merge-loop", "maker:opus", "loop"):
             with (
                 self.subTest(identity=identity),
-                pytest.raises(ReviewVerdictError, match="maker/coding-agent/loop role"),
+                pytest.raises(ReviewVerdictError, match="maker/coding-agent/loop"),
             ):
                 ReviewVerdict.record(
                     pr_id=1,
@@ -233,7 +233,7 @@ class TestReviewerIdentityIdempotency(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="hold",
-            reviewer_identity="Codex",
+            reviewer_identity="Cold-Reviewer",
             gh_verify_result="failed",
         )
         second = ReviewVerdict.record(
@@ -241,7 +241,7 @@ class TestReviewerIdentityIdempotency(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="codex ",  # same identity, different spelling
+            reviewer_identity="cold-reviewer ",  # same identity, different spelling
         )
         assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
         assert second.pk == first.pk
@@ -290,7 +290,7 @@ class TestQueryHelpers(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_OTHER_SHA,
             verdict="hold",
-            reviewer_identity="r1",
+            reviewer_identity="cold-reviewer-1",
             gh_verify_result="failed",
         )
         newest = ReviewVerdict.record(
@@ -298,7 +298,7 @@ class TestQueryHelpers(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r2",
+            reviewer_identity="cold-reviewer-2",
         )
         assert ReviewVerdict.objects.latest_for_pr("souliane/teatree", 7) == newest
 
@@ -311,14 +311,14 @@ class TestQueryHelpers(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
         )
         ReviewVerdict.record(
             pr_id=7,
             slug="other/repo",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
         )
         assert ReviewVerdict.objects.for_pr("souliane/teatree", 7).count() == 1
 
@@ -330,7 +330,7 @@ class TestStalenessAndSafety(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
         )
         assert verdict.is_stale_at(_OTHER_SHA)
         assert not verdict.is_stale_at(_SHA.upper())
@@ -341,7 +341,7 @@ class TestStalenessAndSafety(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
         )
         assert verdict.is_safe_to_approve_at(_SHA, live_checks_status="green")
         assert not verdict.is_safe_to_approve_at(_OTHER_SHA, live_checks_status="green")
@@ -353,7 +353,7 @@ class TestStalenessAndSafety(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="hold",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
             gh_verify_result="failed",
         )
         assert not verdict.is_safe_to_approve_at(_SHA, live_checks_status="green")
@@ -364,7 +364,7 @@ class TestStalenessAndSafety(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
             blast_class="substrate",
         )
         assert verdict.blast_class == MergeClear.BlastClass.SUBSTRATE
@@ -375,7 +375,7 @@ class TestStalenessAndSafety(TestCase):
             slug="souliane/teatree",
             reviewed_sha=_SHA,
             verdict="merge_safe",
-            reviewer_identity="r",
+            reviewer_identity="cold-reviewer",
         )
         assert str(verdict) == f"review-verdict<souliane/teatree#99@{_SHA[:8]} merge_safe>"
 

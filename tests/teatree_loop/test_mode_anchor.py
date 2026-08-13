@@ -41,20 +41,18 @@ class TestModeHandleRidesLoopLine:
         return lines[0]
 
     def test_manual_override_renders_mode_manual_never_a_second_segment(self) -> None:
-        Mode.objects.update_or_create(
-            name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
-        )
-        ModeOverride.objects.set_override("offline")
+        Mode.objects.update_or_create(name="off", defaults={"entries": {}})
+        ModeOverride.objects.set_override("off")
         line = self._loop_line()
         assert "mode: manual" in line, line
         assert "availability:" not in line, line
         assert "preset:" not in line, line
 
     def test_default_mode_renders_its_name(self) -> None:
-        Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
-        ConfigSetting.objects.set_value("default_mode", "engaged")
+        Mode.objects.update_or_create(name="present", defaults={"entries": {}})
+        ConfigSetting.objects.set_value("default_mode", "present")
         line = self._loop_line()
-        assert "mode: engaged" in line, line
+        assert "mode: present" in line, line
         assert "availability:" not in line, line
 
 

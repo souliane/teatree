@@ -22,7 +22,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
-from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.models import Session, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import (
@@ -678,6 +678,52 @@ class TestNonMainDefaultThreading(TestCase):
         assert analysis.proven_redundant is False
         assert any("origin/master" in r for r in analysis.kept_reasons), analysis.kept_reasons
         assert not any("origin/main" in r for r in analysis.kept_reasons), analysis.kept_reasons
+
+
+class TestCaptureCoversEveryDisposition(_ReaperFixture):
+    """The sweep observes a KEPT row's work, not only a torn-down one's (#4272).
+
+    The capture ran solely inside teardown, so the one disposition that never
+    tears anything down — a row the sweep KEEPS because its ticket is open —
+    wrote no record, and the surfacing half (#3891) had nothing to age. Measured
+    on the host that filed the ticket: 75 of 77 registered rows uncaptured, the
+    worst holding 25 modified files with no commit and no remote branch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _capture_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.cleanup.unshipped_work.get_data_dir", lambda *_a, **_k: tmp_path / "captures")
+
+    def test_a_kept_open_ticket_row_is_captured_so_the_doctor_can_age_it(self) -> None:
+        (self.wt_path / "stranded.txt").write_text("exists on one disk and nowhere else\n", encoding="utf-8")
+        worktree = self._make_worktree(Ticket.State.STARTED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        record = UnshippedWorkRecord.objects.get(checkout_path=str(self.wt_path))
+        assert "stranded.txt" in record.dirty_paths
+
+    def test_an_active_row_the_pre_gate_skips_is_captured_before_the_gate_decides(self) -> None:
+        (self.wt_path / "stranded.txt").write_text("live, and still unshipped\n", encoding="utf-8")
+        worktree = self._make_worktree(Ticket.State.STARTED)
+
+        with patch(
+            "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
+            return_value=LivenessVerdict(active=True, reason="a session is live in it"),
+        ):
+            outcome = self._reap(worktree)
+
+        assert outcome.action == "active", outcome.label
+        assert UnshippedWorkRecord.objects.filter(checkout_path=str(self.wt_path)).exists()
+
+    def test_a_dry_run_preview_records_nothing(self) -> None:
+        (self.wt_path / "stranded.txt").write_text("preview must stay side-effect free\n", encoding="utf-8")
+        worktree = self._make_worktree(Ticket.State.STARTED)
+
+        self._reap(worktree, dry_run=True)
+
+        assert not UnshippedWorkRecord.objects.exists()
 
 
 def test_effective_default_target_failsafe_to_main_on_unresolvable(tmp_path: Path) -> None:

@@ -53,8 +53,6 @@ class _LoopFlagAndCredentialSettings:
     # constant, because which marker a deployment uses is its own policy. Emptying it
     # turns the LABEL half off; the structural half still declines an unlabelled epic.
     umbrella_issue_labels: list[str] = field(default_factory=lambda: ["epic", "umbrella", "tracking"])
-    # Internal dispatch-rate floor (hours) between auto-implement pickups.
-    issue_implementer_cadence_hours: int = 1
     # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the cross-instance
     # MUTEX (``teatree.core.fleet.claim`` — a GitHub claim ref as a server-side CAS)
     # governs the whole in-flight lifecycle: the issue-implementer dispatch WINS the

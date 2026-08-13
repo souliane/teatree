@@ -14,8 +14,25 @@ from pathlib import Path
 import pytest
 
 from teatree.config import cold_reader
+from teatree.config.host_projection import ProjectionPublisher
 
 Row = tuple[str, str, object]
+
+# The publisher projects the loop/mode tables alongside settings, so a source database it
+# is pointed at has to carry them. Empty is honest: these tests are about the settings tier.
+_PROJECTION_SOURCE_TABLES = (
+    "CREATE TABLE IF NOT EXISTS teatree_loop_state (name TEXT, status TEXT)",
+    (
+        "CREATE TABLE IF NOT EXISTS teatree_loop_preset "
+        "(name TEXT, defers_questions INT, pauses_self_pump INT, presence_sensitive INT)"
+    ),
+    "CREATE TABLE IF NOT EXISTS teatree_loop_preset_override (preset_name TEXT, until TEXT, set_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS teatree_loop_schedule (name TEXT, id INT, timezone TEXT)",
+    (
+        "CREATE TABLE IF NOT EXISTS teatree_loop_schedule_slot "
+        "(schedule_id INT, days TEXT, start_time TEXT, preset_name TEXT)"
+    ),
+)
 
 
 def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:
@@ -159,6 +176,74 @@ class TestReadSettingConfirmed:
         finally:
             writer.rollback()
             writer.close()
+
+
+class TestAnUnreadableCanonicalDbFallsThroughToTheProjection:
+    """The projection answers for a store that is PRESENT but unreadable, not only an absent one (#4205).
+
+    The fall-through was keyed on `not db.exists()`, so the 0-byte stub the control-DB
+    migration left at the old host path — a file that exists and holds no table — never
+    reached the projection published for exactly that host. The shell tier gained this
+    fall-through in #4197; the asymmetry is what made aligning the two path resolvers
+    hazardous. An unreadable store with NO projection is still unreadable: the point is to
+    answer where an answer exists, never to launder a read fault into a confident value.
+    """
+
+    @pytest.fixture(autouse=True)
+    def stub_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        db = tmp_path / "stub.sqlite3"
+        db.touch()  # the migration leftover: present, 0 bytes, no table
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        monkeypatch.delenv("T3_DATA_DIR", raising=False)
+        return db
+
+    def _publish(self, tmp_path: Path, rows: Iterable[Row]) -> None:
+        """Write the projection the way production does — through the real publisher."""
+        source = tmp_path / "source.sqlite3"
+        _make_db(source, rows)
+        conn = sqlite3.connect(source)
+        try:
+            for ddl in _PROJECTION_SOURCE_TABLES:
+                conn.execute(ddl)
+            conn.commit()
+        finally:
+            conn.close()
+        data_dir = tmp_path / "xdg" / "teatree"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        ProjectionPublisher(source, data_dir).publish()
+
+    def test_a_published_value_answers_for_the_stub(self, tmp_path: Path) -> None:
+        self._publish(tmp_path, [("", "autoload", True)])
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (True, True)
+
+    def test_no_projection_keeps_the_store_unreadable(self) -> None:
+        # Anti-vacuous foil: a fall-through that always reported readable would pass the
+        # test above and hide exactly the conflation this whole ticket is about.
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (None, False)
+
+    def test_an_explicit_db_path_never_substitutes_the_projection(self, tmp_path: Path) -> None:
+        # A caller that NAMED a file means that file; answering from a projection would
+        # answer a different question — the banned-terms readers depend on this.
+        self._publish(tmp_path, [("", "autoload", True)])
+        read = cold_reader.read_setting_confirmed("autoload", db_path=tmp_path / "stub.sqlite3")
+        assert (read.value, read.readable) == (None, False)
+
+    def test_a_projection_with_no_row_for_the_key_stays_unreadable(self, tmp_path: Path) -> None:
+        """A trustworthy projection missing THIS key is not a confirmed unset (#4205).
+
+        `trustworthy` is generation-monotonic, not recency-checked: a projection whose
+        publish failed after the corrupt store's last write is still FRESH, so a missing
+        key here is evidence the projection never saw it, not that the operator left it
+        unset. Reporting ``readable=True`` for that gap reopened #4008: the corrupt DB
+        that gates ``resolve_banned_terms`` would silently collapse to "not configured"
+        instead of raising ``BannedTermsUnreadableError``.
+        """
+        self._publish(tmp_path, [("", "some_other_key", True)])  # answers, but not for "autoload"
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (None, False)
 
 
 class TestTypedWrappers:

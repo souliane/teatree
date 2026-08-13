@@ -25,12 +25,14 @@ call still hard-blocks (the gate keeps its teeth) while non-code work passes.
 """
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _skill_gate_targets_code_work, handle_enforce_skill_loading
@@ -230,3 +232,101 @@ class TestLoopBootstrapExemption:
         assert blocked is True
         assert payload is not None
         assert payload["permissionDecision"] == "deny"
+
+
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the gate resolves."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# The exact ``teatree_config_setting`` shape Django's migration emits — the unique
+# (scope, key) constraint the cold writer's UPSERT ``ON CONFLICT`` targets, plus the
+# NOT-NULL timestamp columns it populates. Required by the self-rescue CLI write path.
+_WRITABLE_CONFIG_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, '
+    '"key" varchar(255) NOT NULL, '
+    '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
+    '"created_at" datetime NOT NULL, '
+    '"updated_at" datetime NOT NULL, '
+    'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
+
+
+class TestKillSwitch:
+    """``skill_loading_gate_enabled`` is THIS gate's global off-ramp (#4216).
+
+    The switch and its ``gate skill-loading disable`` self-rescue CLI were read by
+    the retired ``TaskCreated`` arm while every doc named this one — the gate that
+    actually hard-blocks ``Bash``/``Edit``/``Write``, and so the one an operator
+    reaches for the switch to escape.
+    """
+
+    def _code_work(self) -> dict:
+        return {"session_id": "sess-kill", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+
+    def test_explicit_false_disables(self, gate: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_pending("sess-kill", ["ac-python"])
+        db = tmp_path / "db.sqlite3"
+        _seed_config_db(db, {"skill_loading_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        blocked, payload = _run(self._code_work())
+        assert blocked is False
+        assert payload is None
+
+    def test_missing_config_fails_open_to_enabled(self, gate: Path) -> None:
+        _write_pending("sess-kill", ["ac-python"])
+        blocked, _ = _run(self._code_work())
+        assert blocked is True
+
+    def test_non_bool_config_fails_open_to_enabled(
+        self, gate: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_pending("sess-kill", ["ac-python"])
+        db = tmp_path / "db.sqlite3"
+        _seed_config_db(db, {"skill_loading_gate_enabled": "false"})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        blocked, _ = _run(self._code_work())
+        assert blocked is True
+
+
+class TestCliSelfRescue:
+    """``t3 <overlay> gate skill-loading disable`` writes ``= false`` (self-rescue)."""
+
+    def test_disable_writes_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(_WRITABLE_CONFIG_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        from teatree.cli.overlay import OverlayAppBuilder  # noqa: PLC0415 — deferred: after T3_CONFIG_DB is pinned
+        from teatree.cli.teatree_gate import (  # noqa: PLC0415 — deferred: same pinned-env window
+            SKILL_GATE_KEY,
+            skill_loading_gate_is_enabled,
+        )
+
+        app = OverlayAppBuilder(overlay_name="acme", project_path=None).build()
+        result = CliRunner().invoke(app, ["gate", "skill-loading", "disable"])
+        assert result.exit_code == 0, result.output
+
+        from teatree.config import cold_reader  # noqa: PLC0415 — deferred: read back through the same pinned config DB
+
+        assert cold_reader.read_setting(SKILL_GATE_KEY) is False
+        assert skill_loading_gate_is_enabled() is False

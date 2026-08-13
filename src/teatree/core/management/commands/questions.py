@@ -31,7 +31,7 @@ from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
-from teatree.core.models.task_handoff import schedule_headless_resume
+from teatree.core.models.task_handoff import schedule_resume
 from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.core.table_output import print_table
 
@@ -262,7 +262,7 @@ class Command(MachineOutputCommand):
                         resolver_id=resolver_id,
                     )
                     if row.parked_task is not None:
-                        schedule_headless_resume(row.parked_task, answer=text)
+                        schedule_resume(row.parked_task, answer=text)
                     answered.append(row.pk)
             except DeferredQuestionError as exc:
                 self.stderr.write(str(exc))

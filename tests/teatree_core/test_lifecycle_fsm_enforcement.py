@@ -459,7 +459,6 @@ class TestLoopPathRecordsVisitedPhase(TestCase):
             ticket=ticket,
             session=session,
             phase="testing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="test",
         )
         task.complete()
@@ -480,7 +479,6 @@ class TestLoopPathRecordsVisitedPhase(TestCase):
             ticket=ticket,
             session=session,
             phase="",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="bookkeeping",
         )
         task.complete()
@@ -600,7 +598,6 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="cold review",
         )
         assert task.status == Task.Status.PENDING
@@ -619,7 +616,6 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="cold review",
         )
 
@@ -650,7 +646,6 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
             ticket=ticket,
             session=session,
             phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="cold review",
         )
 

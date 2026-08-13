@@ -17,9 +17,13 @@ from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and
 from teatree.core.merge.pr_slug_resolution import (
     _GIT_BRANCH_PREFIXES,
     _looks_like_owner_repo,
+    fallback_repo_slug,
+    known_repo_slugs,
     normalize_repo_slug,
+    reconcile_issuance_slug,
     resolve_pr_repo_slug,
     resolved_repo_slug,
+    slug_is_registered_repo,
 )
 
 __all__ = [
@@ -39,11 +43,15 @@ __all__ = [
     "classify_required_rollup",
     "execute_bound_merge",
     "failing_required_names",
+    "fallback_repo_slug",
+    "known_repo_slugs",
     "merge_ticket_pr",
     "normalize_repo_slug",
+    "reconcile_issuance_slug",
     "record_merge_and_advance",
     "resolve_host_kind",
     "resolve_pr_repo_slug",
     "resolved_repo_slug",
     "restore_caller_branch",
+    "slug_is_registered_repo",
 ]

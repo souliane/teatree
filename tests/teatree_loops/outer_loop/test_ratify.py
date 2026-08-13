@@ -40,6 +40,28 @@ class TestRatify(TestCase):
         assert try_admit(self._fresh(exp)) == "rejected"
         assert self._fresh(exp).state == OuterLoopExperiment.State.REJECTED
 
+    def test_a_prose_approval_admits(self) -> None:
+        # The exact-token match this loop used to carry rejected every one of these.
+        for answer in ("RATIFIED, NO SETTING — just do it.", "Approved. Ship it."):
+            exp = self._proposed()
+            question = ask_ratification(exp)
+            DeferredQuestion.consume(question.pk, answer=answer)
+            assert try_admit(self._fresh(exp)) == "admitted", answer
+            assert self._fresh(exp).state == OuterLoopExperiment.State.ADMITTED, answer
+
+    def test_an_undecidable_answer_re_asks_instead_of_reaching_the_terminal_state(self) -> None:
+        for answer in ("not approved yet", "let's talk about this at standup tomorrow"):
+            exp = self._proposed()
+            first = ask_ratification(exp)
+            DeferredQuestion.consume(first.pk, answer=answer)
+            assert try_admit(self._fresh(exp)) == "reasked", answer
+            held = self._fresh(exp)
+            assert held.state == OuterLoopExperiment.State.RATIFY_PENDING, answer
+            assert held.ratify_question is not None
+            assert held.ratify_question.pk != first.pk, answer
+            assert held.ratify_question.answered_at is None, answer
+            assert try_admit(held) == "pending", answer
+
 
 def _make_experiment(
     *,

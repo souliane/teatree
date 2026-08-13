@@ -11,8 +11,9 @@ import subprocess
 
 import pytest
 
+from teatree.loop.main_check_runs import PAGE_SIZE as _CHECK_RUNS_PAGE
 from teatree.loop.red_set_report import SetVerdict
-from teatree.loop.red_set_surface import _CHECK_RUNS_PAGE, _default_main_checks, record_red_set
+from teatree.loop.red_set_surface import _default_main_checks, record_red_set
 from teatree.loop.scanners.base import ScanSignal
 
 SLUG = "souliane/teatree"

@@ -49,7 +49,7 @@ class TestInteractivePermissionModeCheck:
         # keeps them apart. The advice must say so, or an operator reasonably fears
         # that narrowing the interactive session will also throttle the factory.
         lowered = out.lower()
-        assert "headless" in lowered, "must say the headless lane is unaffected"
+        assert "headless" in lowered, "must say the agent lane is unaffected"
         assert "--permission-mode" in lowered, "must name the pin that makes that true"
 
     def test_an_unset_mode_suggests_enabling_auto(

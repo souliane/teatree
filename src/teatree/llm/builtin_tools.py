@@ -2,7 +2,7 @@
 
 The single source of truth for "every tool name the CLI knows", shared by two layers
 that must agree on it: :mod:`teatree.eval.toolset` (the clean-room denylist complement)
-and :mod:`teatree.agents._headless_options` (the #116 reader phase's exhaustive
+and :mod:`teatree.agents._runner_options` (the #116 reader phase's exhaustive
 tool-lockdown). It lives in the ``teatree.llm`` foundation layer so both the
 ``integration``-layer eval runner and the ``domain``-layer agents dispatch can import
 it without a backward dependency edge.

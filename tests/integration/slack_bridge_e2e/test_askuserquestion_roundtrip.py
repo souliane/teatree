@@ -43,7 +43,6 @@ class TestAskUserQuestionRoundtrip:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         _own_loop("s-loop", monkeypatch, tmp_path)
-        monkeypatch.setattr(router, "_resolved_pauses_self_pump", lambda: False)
         monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: False)
         monkeypatch.setattr(router, "_slack_config_from_toml", lambda: ("tok/ref", "U_HUMAN"))
         monkeypatch.setattr(router, "_perform_slack_post", lambda _cfg, _q: "1700000000.0001")

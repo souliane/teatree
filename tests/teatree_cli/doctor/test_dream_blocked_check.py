@@ -67,9 +67,9 @@ class DreamBlockedGatesTheDoctorExitCodeTestCase(TestCase):
     def test_the_advisory_set_does_not_swallow_it(self) -> None:
         import inspect  # noqa: PLC0415 — deferred: only this structural assertion needs it
 
-        from teatree.cli.doctor import app  # noqa: PLC0415 — deferred: heavy CLI import at call time
+        from teatree.cli.doctor import run_checks  # noqa: PLC0415 — deferred: heavy CLI import at call time
 
-        assert "_check_dream_consolidation_blocked" not in inspect.getsource(app._run_daily_advisories)
+        assert "_check_dream_consolidation_blocked" not in inspect.getsource(run_checks._run_daily_advisories)
 
 
 def _calls_feeding_the_exit_code() -> set[str]:
@@ -83,9 +83,9 @@ def _calls_feeding_the_exit_code() -> set[str]:
     import inspect  # noqa: PLC0415 — deferred: only this structural assertion needs it
     import textwrap  # noqa: PLC0415 — deferred: only this structural assertion needs it
 
-    from teatree.cli.doctor import app  # noqa: PLC0415 — deferred: heavy CLI import at call time
+    from teatree.cli.doctor import run_checks  # noqa: PLC0415 — deferred: heavy CLI import at call time
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app.run_doctor_checks)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(run_checks.run_doctor_checks)))
     return {
         call.func.id
         for node in ast.walk(tree)

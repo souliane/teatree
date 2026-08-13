@@ -1,4 +1,4 @@
-"""Scope and frame per-stage overlay skills for a headless dispatch prompt.
+"""Scope and frame per-stage overlay skills for a agent dispatch prompt.
 
 An overlay's ``stage_skills`` map declares ADDITIONAL skills per phase. A
 no-Skill-tool maker agent (``t3:coder``/``t3:debugger``/``t3:tester``/``t3:e2e``/

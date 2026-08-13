@@ -50,11 +50,11 @@ class TestSchemaBehindBlocksNewClaims(_SchemaGateBase):
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
 
     def test_claimable_for_target_is_empty_while_the_schema_is_behind(self) -> None:
-        TaskFactory(status=Task.Status.PENDING, execution_target=Task.ExecutionTarget.INTERACTIVE)
+        TaskFactory(status=Task.Status.PENDING)
 
         with self._behind():
-            assert not Task.objects.claimable_for_interactive().exists()
-            assert not Task.objects.claimable_for_headless().exists()
+            assert not Task.objects.claimable().exists()
+            assert not Task.objects.claimable().exists()
 
     def test_claim_admits_again_once_the_migrations_are_applied(self) -> None:
         TaskFactory(status=Task.Status.PENDING)

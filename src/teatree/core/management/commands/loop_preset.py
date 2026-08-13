@@ -16,7 +16,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
-from teatree.core.mode_resolution import clear_mode_override, posture_label, resolve_active_mode, set_mode_override
+from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
 from teatree.core.models import Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.enable_verdict import effective_verdicts
@@ -49,14 +49,9 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
 
 
 def _resolved_line() -> str:
-    """The resolved mode, the layer that decided it, and its DERIVED posture label.
-
-    The one-line answer the retired availability group used to print, now rendered
-    from the resolver's booleans rather than a persisted token (#3826).
-    """
+    """The resolved mode and the layer that decided it."""
     resolved = resolve_active_mode()
-    posture = posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump)
-    return f"mode={resolved.name} source={resolved.source} posture={posture}"
+    return f"mode={resolved.name} source={resolved.source}"
 
 
 def _unknown_entry_loops(entries: dict[str, bool]) -> list[str]:
@@ -113,10 +108,8 @@ class Command(TyperCommand):
     ) -> None:
         """Activate *name* as the L3 manual override (default: until the next scheduled boundary).
 
-        Routes through :func:`set_mode_override`, the ONE override write chokepoint, so
-        activating a reachable mode drains the deferred-question backlog to the user's
-        Slack DM exactly as the dash switch does. The drain resolves its Slack target
-        from config; ``auto`` takes explicit routing flags for the rare non-default one.
+        Routes through :func:`set_mode_override`, the ONE override write chokepoint the
+        dash switch also uses.
         """
         if Mode.objects.by_name(name) is None:
             self._refuse(f"no preset named {name!r} — run `t3 loop preset list`", json_output=json_output)
@@ -130,15 +123,9 @@ class Command(TyperCommand):
         )
 
     @command(name="auto")
-    def auto(
-        self,
-        *,
-        user_id: Annotated[str, typer.Option("--user-id", help="Slack user id for the backlog drain.")] = "",
-        overlay: Annotated[str, typer.Option("--overlay", help="Overlay name for the drain's bot routing.")] = "",
-        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
-    ) -> None:
+    def auto(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
         """Clear the manual override so the active schedule / default mode decides again."""
-        cleared = clear_mode_override(user_id=user_id, overlay=overlay)
+        cleared = clear_mode_override()
         message = (
             "cleared the manual override — the schedule decides again." if cleared else "no manual override was set."
         )
@@ -158,7 +145,7 @@ class Command(TyperCommand):
             self._refuse(f"preset {name!r} already exists — use `edit`", json_output=False)
         preset = Mode.objects.create(
             name=name,
-            entries=self._entries_from_edits({}, set_, json_output=False),
+            entries=self._entries_from_edits({}, set_, preset_name=name, json_output=False),
             description=description,
             overlay_scope=_scope_list(scope),
         )
@@ -177,7 +164,7 @@ class Command(TyperCommand):
         preset = Mode.objects.by_name(name)
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=False)
-        preset.entries = self._entries_from_edits(preset.entries, set_, json_output=False)
+        preset.entries = self._entries_from_edits(preset.entries, set_, preset_name=preset.name, json_output=False)
         if description:
             preset.description = description
         if scope:
@@ -238,8 +225,6 @@ class Command(TyperCommand):
                 "active": _summary_payload(summary),
                 "mode": resolved.name,
                 "source": resolved.source,
-                "defers_questions": resolved.defers_questions,
-                "pauses_self_pump": resolved.pauses_self_pump,
                 "loops": [
                     {"name": v.name, "admitted": v.admitted, "layer": v.layer, "detail": v.detail} for v in verdicts
                 ],
@@ -259,9 +244,11 @@ class Command(TyperCommand):
             return parsed
         return next_boundary()
 
-    def _entries_from_edits(self, entries: object, edits: list[str], *, json_output: bool) -> dict[str, bool]:
+    def _entries_from_edits(
+        self, entries: object, edits: list[str], *, preset_name: str, json_output: bool
+    ) -> dict[str, bool]:
         try:
-            return apply_entry_edits(entries, edits)
+            return apply_entry_edits(entries, edits, preset_name=preset_name)
         except ValueError as exc:
             self._refuse(str(exc), json_output=json_output)
 

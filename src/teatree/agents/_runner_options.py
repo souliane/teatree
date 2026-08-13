@@ -1,0 +1,373 @@
+"""SDK option-building for the agent runner — the real-environment options.
+
+Split out of :mod:`teatree.agents.runner` for the module-health LOC cap: the
+``ClaudeAgentOptions`` builder plus its model-tiering glue (:func:`_build_options`),
+the worktree-cwd resolver (:func:`_resolve_task_cwd`), the resumable-session walker
+(:func:`_get_resume_session_id`), and the spawn constants they read. Re-exported
+from ``teatree.agents.runner`` so ``from teatree.agents.runner import
+_build_options`` (and the ``_PERMISSION_MODE`` / ``UUID_RE`` /
+``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in
+``core.management.commands.tasks``) stays valid.
+"""
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import cast
+
+from claude_agent_sdk import ClaudeAgentOptions
+from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
+
+from teatree.agents import permission_modes
+from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
+from teatree.agents.model_tiering import (
+    model_supports_thinking,
+    resolve_fallback_model,
+    resolve_spawn_effort,
+    resolve_spawn_model,
+)
+from teatree.agents.reader_profile import is_reader_phase
+from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
+from teatree.config import get_effective_settings
+from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
+from teatree.core.models import Task
+from teatree.core.models.worktree import Worktree
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
+
+_PERMISSION_MODE = permission_modes.UNATTENDED
+_READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
+# The external-contact / interactive built-ins — every CLI built-in that can reach
+# the user or an external endpoint directly. NO headless phase may call any of them:
+# there is no live human at the SDK/headless harness (AskUserQuestion would silently
+# stall) and a headless agent must never contact the user or an outside service on its
+# own — the ONLY sanctioned user-contact path is the structured ``needs_user_input`` +
+# ``user_input_reason`` return, which the durable DeferredQuestion → Slack → resume
+# loop routes to the user. None of these is a teatree capability (none appears in any
+# phase's allowed complement), so denying them removes nothing a work phase needs. Each
+# is a real member of the ``claude`` CLI's built-in registry (pinned by
+# :func:`test_floor_is_a_valid_subset_of_the_builtin_registry`), so it is a valid deny
+# rule. The reader phase denies the full :data:`KNOWN_BUILTIN_TOOLS` superset on top.
+_EXTERNAL_CONTACT_BUILTINS: tuple[str, ...] = (
+    "AskUserQuestion",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "SendMessage",
+)
+# The floor denied on EVERY headless spawn; the per-phase least-privilege complement
+# is layered on top at build time — see :func:`_disallowed_tools_for_phase`.
+_DISALLOWED_TOOLS = _EXTERNAL_CONTACT_BUILTINS
+# Adaptive thinking, pinned EXPLICITLY on every reasoning-capable production
+# spawn. Opus 4.8 runs WITHOUT thinking when the ``thinking`` option is omitted,
+# so the Opus-4.8 planning/coding/debugging/reviewing phases would silently lose
+# extended thinking; setting adaptive makes them deterministically think (the
+# model still decides HOW MUCH). GUARDED by
+# :func:`~teatree.agents.model_tiering.model_supports_thinking` so the cheap/Haiku
+# tier — which rejects the lever — never receives it.
+_ADAPTIVE_THINKING: ThinkingConfig = {"type": "adaptive"}
+
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _disallowed_tools_for_phase(phase: str) -> list[str]:
+    """The full disallow list for a agent dispatch — floor plus per-phase complement.
+
+    The property this enforces: NO headless phase can reach the user or an external
+    endpoint via a built-in — the only sanctioned user-contact path is the
+    ``needs_user_input`` → DeferredQuestion → Slack DM egress. That is the floor
+    :data:`_DISALLOWED_TOOLS` (:data:`_EXTERNAL_CONTACT_BUILTINS` — ``AskUserQuestion`` /
+    ``Monitor`` / ``PushNotification`` / ``RemoteTrigger`` / ``SendMessage``), denied on
+    EVERY headless spawn. The per-phase least-privilege complement is layered on
+    top, mapped from the phase_tools SSOT to SDK tool names by
+    :func:`~teatree.agents.sdk_tool_map.sdk_disallowed_tools_for_phase`. A review phase
+    (``reviewing`` / ``e2e_reviewing`` / ``requesting_review``) therefore additionally
+    denies the shell (git-write), ``Write``/``Edit``, and the spawn tools — the
+    cold-review least-privilege that keeps the transcript at its verdict. A write phase's
+    complement is empty, so its list stays exactly the floor, and the floor never names a
+    capability tool (Read/Write/Edit/Bash), so a work phase keeps every tool it needs. The
+    #116 reader phase denies the EXHAUSTIVE
+    :data:`~teatree.llm.builtin_tools.KNOWN_BUILTIN_TOOLS` set (the binary-validated
+    registry — a superset of the floor, so the overlap is harmless), so no tool of ANY
+    kind remains. Sorted & deduplicated for determinism.
+    """
+    denied = set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase))
+    if is_reader_phase(phase):
+        denied |= set(KNOWN_BUILTIN_TOOLS)
+    return sorted(denied)
+
+
+@dataclass(frozen=True, slots=True)
+class SpawnOverrides:
+    """Per-dispatch values the DRIVER resolves and the option builder pins verbatim.
+
+    Both depend on which backend the dispatch resolved to, which the builder cannot see:
+    *env* pins the ``agent_harness_provider`` credential on a spawned ``claude`` CLI
+    child, and *turn_ceiling* is the per-run turn cap for the lane that owns one. Their
+    defaults reproduce a builder-resolved spawn, so a caller that names neither (every
+    test that only cares about the other options) gets the ordinary dispatch shape.
+    """
+
+    #: The child env for the ``claude`` CLI. ``None`` inherits the ambient env.
+    env: dict[str, str] | None = field(default=None)
+    #: The per-run turn cap. ``None`` defers to :func:`resolve_agent_max_turns`.
+    turn_ceiling: int | None = field(default=None)
+
+
+def _build_options(
+    task: Task,
+    system_context: str,
+    *,
+    phase: str,
+    skills: list[str],
+    overrides: SpawnOverrides | None = None,
+) -> ClaudeAgentOptions:
+    """Build the REAL-environment SDK options for a headless task.
+
+    Mirrors what the deleted ``_build_headless_command`` passed: the appended
+    system context, the resolved spawn model (the most-capable-wins floor merge
+    of the per-phase tier and the per-skill MODEL floors of the loaded skills,
+    else the user's default), the per-tier reasoning effort for the same phase
+    (:func:`resolve_spawn_effort` — ``xhigh`` for a frontier phase, ``high`` for a
+    balanced phase, unset for the cheap/Haiku phases), the worktree as ``cwd`` /
+    ``add_dirs``, and the parent session to resume. NO clean-room isolation — a
+    headless run executes a real task and needs the real environment, skills, and
+    project context.
+
+    *overrides* carries the two backend-dependent values only the driver can resolve
+    (:class:`SpawnOverrides`): the ``claude`` CLI child's credential env, and the per-run
+    turn ceiling. The ceiling is named by the driver rather than resolved here because
+    ``max_turns`` is not a lane-neutral field — the neutral ``HarnessOptions`` adapter
+    treats a positive value as the CALLER's explicit cap and lets it win over a backend's
+    own per-run limit, so a ceiling meant for the ``claude_sdk`` CLI would silently
+    displace another backend's (``pydantic_ai_request_limit``). Each lane keeps its own.
+    """
+    overrides = overrides or SpawnOverrides()
+    cwd = _resolve_task_cwd(task)
+    add_dirs = [cwd] if cwd else []
+    resume_session_id = _get_resume_session_id(task)
+    # session_id + task pk are threaded so a situational honesty-critical
+    # escalation (teatree#2263) can raise a verification spawn to the most-honest
+    # model; both default absent → byte-identical to today when none is active.
+    escalation_session_id = resume_session_id or (task.session.agent_id if task.session_id else "")  # ty: ignore[unresolved-attribute]
+    spawn_model = resolve_spawn_model(
+        phase,
+        skills=skills,
+        session_id=escalation_session_id or None,
+        task_id=int(task.pk),
+    )
+    options = ClaudeAgentOptions(
+        # APPEND to the claude_code preset, never REPLACE it: a plain-str
+        # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
+        # used --append-system-prompt), which would drop the Claude Code preset
+        # on every production headless run.
+        #
+        # ``exclude_dynamic_sections`` strips the preset's per-run content (cwd,
+        # git status, auto-memory) out of the system prefix and re-injects it into
+        # the first user message. Prompt caching on this lane is CLI-internal and
+        # exposes no ``cache_control`` surface, so prefix STABILITY is the only
+        # lever teatree has over the hit rate: without this, git status churning
+        # between dispatches in the same worktree invalidates the cached prefix
+        # every time. Older CLIs ignore the option silently.
+        system_prompt=SystemPromptPreset(
+            type="preset",
+            preset="claude_code",
+            append=system_context,
+            exclude_dynamic_sections=True,
+        ),
+        model=spawn_model or None,
+        # Capacity-exhaustion degrade: when the spawn model's pool is exhausted the
+        # SDK continues for a turn on the next-cheaper catalog rung rather than
+        # parking the task (claude-agent-sdk ``fallback_model``). ``None`` when the
+        # spawn model is at the cheapest rung / a pin teatree does not recognise / an
+        # inherited default — byte-identical to before the field existed.
+        fallback_model=resolve_fallback_model(spawn_model),
+        cwd=cwd,
+        add_dirs=add_dirs,
+        permission_mode=_PERMISSION_MODE,
+        disallowed_tools=_disallowed_tools_for_phase(phase),
+        # The per-run TURN ceiling (:func:`resolve_agent_max_turns`). Cache-read cost
+        # is ``turns x context_size`` and every turn re-reads the run's context, so turns
+        # are the multiplier on a dispatch's bill — the dimension neither the wall-clock
+        # runtime ceiling nor the completed-attempt ``watchdog_max_turns`` totals can see
+        # while the run is still in flight. Resolved per dispatch so an operator retunes
+        # it without a deploy; ``0`` (the escape hatch) leaves the spawn uncapped.
+        max_turns=resolve_agent_max_turns() if overrides.turn_ceiling is None else overrides.turn_ceiling,
+        resume=resume_session_id or None,
+        # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8
+        # omits thinking by default). Guarded so the cheap/Haiku tier — which
+        # rejects the lever — and an inherited-default spawn (``None``) keep the
+        # SDK default.
+        thinking=_ADAPTIVE_THINKING if model_supports_thinking(spawn_model) else None,
+        # Pin the per-abstract-TIER reasoning effort for the SAME phase the model
+        # resolved from (frontier → xhigh, balanced → high). ``None`` for the
+        # cheap/Haiku phases (which reject the lever) and a sentinel-opted-out
+        # phase, so those spawns inherit the SDK default effort. The resolver
+        # returns the domain ``str | None`` (validated to the effort scale);
+        # cast it to the SDK ``EffortLevel`` literal at this boundary.
+        effort=cast("EffortLevel | None", resolve_spawn_effort(phase)),
+    )
+    if overrides.env is not None:
+        options.env = overrides.env
+    options.hooks = spawn_ceiling_hooks(SpawnCeiling(limit=resolve_spawn_ceiling())) | envelope_stop_hooks(
+        EnvelopeStopGate(phase or task.phase, limit=resolve_envelope_stop_refusals())
+    )
+    if is_reader_phase(phase):
+        _apply_reader_tool_lockdown(options)
+    else:
+        _wire_teatree_mcp_server(options)
+    return options
+
+
+def resolve_spawn_ceiling() -> int:
+    """The configured per-run sub-agent spawn ceiling; ``0`` disables the gate.
+
+    Resolved ONCE here rather than inside the hook: the hook runs on the SDK's
+    async path, where a DB read would be both a per-tool-call cost and an
+    async-context hazard. The dispatch closes over the resolved int instead.
+    """
+    return get_effective_settings().subagent_spawn_ceiling
+
+
+def resolve_agent_max_turns() -> int:
+    """The configured per-run turn ceiling for this dispatch; ``0`` leaves it uncapped.
+
+    Cache-read cost on this lane is ``turns x context_size`` and every turn re-reads
+    the run's context, so the turn count is the multiplier on the bill. The wall-clock
+    ``watchdog_max_runtime_seconds`` cannot see that dimension, and
+    ``watchdog_max_turns`` reads ``TaskAttempt`` totals that only land once an attempt
+    has ENDED — so neither bounds the turns of the run in flight. This does, at the one
+    place the SDK accepts it (``ClaudeAgentOptions.max_turns``).
+    """
+    return get_effective_settings().agent_max_turns
+
+
+def resolve_envelope_stop_refusals() -> int:
+    """The configured per-run envelope Stop-gate refusal ceiling; ``0`` disables it.
+
+    Resolved here for the same reason as the spawn ceiling: the hook runs on the
+    SDK's async path, where a DB read is both a per-turn cost and an
+    async-context hazard. The dispatch closes over the resolved int instead.
+    """
+    return get_effective_settings().envelope_stop_gate_refusals
+
+
+def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:
+    """Inject teatree's own local-stdio MCP server so lifecycle sub-agents reach it (#3242).
+
+    Claude Code does not forward a local-stdio server (``t3 mcp serve``) to a
+    sub-agent, and it ignores the ``mcpServers`` frontmatter on a plugin-provided
+    sub-agent definition — so the shipped ``.mcp.json`` alone never gives the
+    dispatched coder/reviewer/shipper the ``mcp__teatree__*`` structured-read
+    tools; they fall back to shelling out to the ``t3`` CLI. The headless
+    dispatch owns its options, so it wires the server explicitly here. The
+    launch command mirrors ``.mcp.json`` (:mod:`teatree.core.mcp_registration`
+    is the single source of truth). Skipped for the #116 reader, which stays
+    hermetic (:func:`_apply_reader_tool_lockdown`).
+    """
+    from teatree.core.mcp_registration import (  # noqa: PLC0415 — deferred: keeps the option-build import light
+        EXPECTED_ARGS,
+        EXPECTED_COMMAND,
+        TEATREE_MCP_SERVER_NAME,
+    )
+
+    existing = options.mcp_servers if isinstance(options.mcp_servers, dict) else {}
+    options.mcp_servers = {
+        **existing,
+        TEATREE_MCP_SERVER_NAME: {"type": "stdio", "command": EXPECTED_COMMAND, "args": list(EXPECTED_ARGS)},
+    }
+
+
+def _apply_reader_tool_lockdown(options: ClaudeAgentOptions) -> None:
+    """Close the #116 reader's tool-acquisition residual: load NO settings, NO MCP config.
+
+    The ``disallowed_tools`` denylist covers every capability tool + every named built-in
+    (:func:`_disallowed_tools_for_phase`), but under ``bypassPermissions`` a tool the
+    denylist does not name — an MCP-server tool, a custom slash command loaded from
+    ``~/.claude`` / project settings — would still be reachable. Loading NO setting
+    sources (``--setting-sources=`` empty) and NO MCP config (``strict_mcp_config`` +
+    empty ``mcp_servers``) removes every such source, so the reader has zero tools from
+    any origin. An empty ``allowed_tools`` is NOT the mechanism — the SDK omits the
+    ``--allowedTools`` flag when the list is empty, so it would be a silent no-op; the
+    closure is source-suppression, verified against the SDK transport.
+
+    :data:`_READER_PERMISSION_MODE` closes the same residual from the other side.
+    ``bypassPermissions`` auto-approves whatever survives; ``dontAsk`` denies anything
+    not pre-approved by an allow rule, and the reader carries none — so an unnamed tool
+    reaching the reader by any route is refused by DEFAULT rather than by enumeration.
+    Source-suppression and default-deny are independent, and the reader keeps both.
+    """
+    options.setting_sources = []
+    options.mcp_servers = {}
+    options.strict_mcp_config = True
+    options.permission_mode = _READER_PERMISSION_MODE
+
+
+def _resolve_task_cwd(task: Task) -> str | None:
+    """Determine the working directory for a task from its ticket's worktrees.
+
+    A materialised ticket worktree wins. When there is none, a scanner-dispatched
+    repo-work phase (``architectural_review``) falls back to the overlay's main
+    teatree clone (:func:`_main_clone_cwd`) — its synthetic per-overlay ticket
+    carries no worktree, yet the review must start IN a checkout to Read the tree,
+    do ``git`` archaeology, run ``t3 tool verify-gates``, and cold-worktree off it.
+    Every other phase keeps the historical ``None`` (cwd unset) when no ticket
+    worktree exists.
+    """
+    worktree = Worktree.objects.for_ticket(task.ticket).order_by("pk").first()
+    if worktree and Path(worktree.repo_path).is_dir():
+        return str(worktree.repo_path)
+    return _main_clone_cwd(task)
+
+
+#: Scanner-dispatched repo-work phases whose synthetic ticket carries no
+#: materialised worktree, so ``_resolve_task_cwd`` starts them in the overlay's
+#: main clone instead of an unset cwd. ``architectural_review`` reads the whole
+#: teatree tree and cold-worktrees off it; the main-clone guard keeps its git
+#: read-only + ``worktree add`` while blocking any mutation of the shared clone.
+_MAIN_CLONE_DISPATCH_PHASES: frozenset[str] = frozenset({ARCHITECTURAL_REVIEW_PHASE})
+
+
+def _main_clone_cwd(task: Task) -> str | None:
+    """Overlay main teatree clone as cwd for a scanner-dispatched review, else ``None``.
+
+    Only ``_MAIN_CLONE_DISPATCH_PHASES`` fall back here — every other phase keeps the
+    historical ``None`` (byte-identical). Resolution mirrors the loop's own clone
+    lookup (``teatree.core.fleet.wire._resolve_clone``): the ``T3_REPO`` main clone
+    when it is a git checkout, else a ``teatree`` clone discovered under the clone
+    root. ``None`` when neither resolves on this host, so a dispatch degrades to an
+    unset cwd rather than crashing.
+    """
+    if normalize_phase(task.phase) not in _MAIN_CLONE_DISPATCH_PHASES:
+        return None
+    import os  # noqa: PLC0415 — deferred: keeps the option-build import light
+
+    from teatree.config.loader import clone_root  # noqa: PLC0415 — deferred
+    from teatree.core.worktree.clone_paths import find_clone_path  # noqa: PLC0415 — deferred
+
+    env_repo = os.environ.get("T3_REPO", "").strip()
+    if env_repo and (Path(env_repo) / ".git").is_dir():
+        return env_repo
+    try:
+        found = find_clone_path(clone_root(), "teatree")
+    except Exception:  # noqa: BLE001 — clone-discovery failure degrades to unset cwd, never a dispatch crash
+        return None
+    return str(found) if found is not None else None
+
+
+def _get_resume_session_id(task: Task) -> str:
+    """Walk the parent_task chain to find a resumable Claude session.
+
+    When a headless task follows an interactive one (or vice versa),
+    the session_id from the previous run lets us resume with full context.
+    """
+    current = task.parent_task
+    while current is not None:
+        last_attempt = current.attempts.order_by("-pk").first()
+        if last_attempt and last_attempt.agent_session_id and UUID_RE.match(last_attempt.agent_session_id):
+            return last_attempt.agent_session_id
+        agent_id = current.session.agent_id if current.session_id else ""
+        if agent_id and UUID_RE.match(agent_id):
+            return agent_id
+        current = current.parent_task
+    return ""

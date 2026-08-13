@@ -9,7 +9,7 @@ from django.db.models.functions import Coalesce
 from django.db.models.lookups import LessThan
 from django.utils import timezone
 
-from teatree.config import worker_is_quiescing
+from teatree.core.claim_liveness import current_owner
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
     T3_MASTER_SLOT,
@@ -26,7 +26,7 @@ from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_session import SessionQuerySet
-from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, schema_behind_code
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim_admission_block_reason
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
@@ -82,8 +82,8 @@ logger = logging.getLogger(__name__)
 ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
 
 
-def _cheap_headless_q() -> Q:
-    """Every HEADLESS row of the cheap phase class, whichever spelling it was stored with.
+def _cheap_phase_q() -> Q:
+    """Every row of the cheap phase class, whichever spelling it was stored with.
 
     The lane's membership test, held apart from any one question about it so the seat
     predicates below share a single hop to the phase vocabulary — one intra-core edge
@@ -91,9 +91,7 @@ def _cheap_headless_q() -> Q:
     """
     from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
 
-    task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-    return Q(execution_target=task_model.ExecutionTarget.HEADLESS, phase__in=cheap_phase_spellings())
+    return Q(phase__in=cheap_phase_spellings())
 
 
 def _cheap_lane_occupancy_q(now: datetime) -> Q:
@@ -106,7 +104,7 @@ def _cheap_lane_occupancy_q(now: datetime) -> Q:
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    return _cheap_headless_q() & (
+    return _cheap_phase_q() & (
         Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
         | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
     )
@@ -234,7 +232,7 @@ class TaskQuerySet(models.QuerySet):
         ticket's or the session's, so the scope clause spans both relations
         and includes legacy empty-overlay rows. An empty ``overlay`` returns
         every task. Delegates to :func:`overlay_scope_q`, the single source of
-        truth for the Task overlay clause, shared with ``_claimable_for_target``
+        truth for the Task overlay clause, shared with ``claimable``
         (the loop claim), the MCP ``loop_stats`` read, and the dashboard
         selectors (F1.6).
         """
@@ -297,7 +295,7 @@ class TaskQuerySet(models.QuerySet):
         """Pending/claimed tasks for one overlay+phase — the dedupe lock (SSOT).
 
         Read by the periodic cadence scanners AND by the phase-task mint itself
-        (``Ticket._schedule_headless``, #3903), so the one lock the codebase
+        (``Ticket._schedule_phase_task``, #3903), so the one lock the codebase
         documents is consulted at the write rather than restated per caller.
         Matches every accepted spelling of *phase* via ``phase_spellings``, the
         same SSOT ``pending_in_phase`` reads.
@@ -310,15 +308,27 @@ class TaskQuerySet(models.QuerySet):
         """Most recent ``Session.started_at`` for an overlay+phase task, or ``None`` — the cadence clock."""
         return _last_run_at_for_phase(self, overlay, phase, statuses=statuses)
 
-    def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
+    def claimable(self, overlay: str | None = None) -> models.QuerySet:
+        """The tasks a worker may claim right now — the ONE claim candidate set.
+
+        Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
+        the claim commands admit zero new tasks during the deploy window. Orthogonal
+        to the supervisor's stop condition — in-flight leases keep renewing.
+        """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self._claimable_for_target(task_model.ExecutionTarget.HEADLESS, overlay)
-
-    def claimable_for_interactive(self, overlay: str | None = None) -> models.QuerySet:
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-        return self._claimable_for_target(task_model.ExecutionTarget.INTERACTIVE, overlay)
+        if claim_admission_block_reason():
+            return self.none()
+        now = timezone.now()
+        qs = (
+            self.filter(status__in=task_model.Status.active())
+            .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+            .filter(_claimable_now_q(now))
+            .order_by("pk")
+        )
+        if overlay:
+            qs = qs.for_overlay(overlay)
+        return qs
 
     def claim_next_pending(
         self,
@@ -365,7 +375,7 @@ class TaskQuerySet(models.QuerySet):
         # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
         # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
         # are untouched by either.
-        if worker_is_quiescing() or schema_behind_code():
+        if claim_admission_block_reason():
             return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
@@ -382,6 +392,7 @@ class TaskQuerySet(models.QuerySet):
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
             # predicate is the status CAS token and stays untouched by it.
+            owner_pid, owner_pid_namespace = current_owner()
             claimed_count = self.filter(pk=oldest_pk, status=task_model.Status.PENDING).update(
                 status=task_model.Status.CLAIMED,
                 claimed_by=claimed_by,
@@ -389,6 +400,9 @@ class TaskQuerySet(models.QuerySet):
                 claimed_at=now,
                 heartbeat_at=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
+                owner_pid=owner_pid,
+                owner_pid_namespace=owner_pid_namespace,
+                owner_driving_since=None,
             )
             if claimed_count != 1:
                 return None
@@ -422,7 +436,7 @@ class TaskQuerySet(models.QuerySet):
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
 
-    def live_headless_agent_count(self) -> int:
+    def claimed_agent_count(self) -> int:
         """Live HEADLESS agents in flight — CLAIMED, unexpired-lease, HEADLESS target.
 
         The single divisor for the per-agent test-worker budget AND the
@@ -440,13 +454,12 @@ class TaskQuerySet(models.QuerySet):
         return self.filter(
             status=task_model.Status.CLAIMED,
             lease_expires_at__gt=now,
-            execution_target=task_model.ExecutionTarget.HEADLESS,
         ).count()
 
     def cheap_lane_occupancy(self) -> int:
         """How full the CHEAP admission lane is — the bound BOTH chokepoints read (#4098).
 
-        Deliberately a sibling of :meth:`live_headless_agent_count` rather than a
+        Deliberately a sibling of :meth:`claimed_agent_count` rather than a
         parameter on it: that number is also the per-agent test-worker divisor, and it
         must keep counting EVERY live agent. This one answers a different question —
         how full is the small lane the cheap class is admitted through while the
@@ -476,7 +489,7 @@ class TaskQuerySet(models.QuerySet):
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         return self.filter(
-            _cheap_headless_q(),
+            _cheap_phase_q(),
             status=task_model.Status.PENDING,
             admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
         ).count()
@@ -531,29 +544,6 @@ class TaskQuerySet(models.QuerySet):
         agent.
         """
         return self.active_claims().exists()
-
-    def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
-        task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-        # Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
-        # the interactive/headless claim commands admit zero new tasks during the
-        # deploy window. Orthogonal to the supervisor's stop condition — in-flight
-        # leases keep renewing.
-        if worker_is_quiescing() or schema_behind_code():
-            return self.none()
-        now = timezone.now()
-        qs = (
-            self.filter(
-                execution_target=target,
-                status__in=task_model.Status.active(),
-            )
-            .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
-            .filter(_claimable_now_q(now))
-            .order_by("pk")
-        )
-        if overlay:
-            qs = qs.for_overlay(overlay)
-        return qs
 
 
 TicketManager = models.Manager.from_queryset(TicketQuerySet)

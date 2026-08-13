@@ -45,9 +45,9 @@ def statusline_chunk(now: dt.datetime | None = None) -> str:
     """The one-chunk merged ``mode:`` segment (#3494, #61).
 
     Collapses the old ``preset:`` + ``availability:`` handles into ONE ``mode:``
-    handle — the mode name now conveys reachability (``unattended`` / ``offline``
-    read as away; ``engaged`` / ``heads-down`` as present), so the separate
-    availability segment is gone. Spelled out for the loop line: a MANUAL override
+    handle — the mode name is the whole answer (``present`` / ``away`` /
+    ``maintenance`` / ``low-token`` / ``off``), so the separate availability segment
+    is gone. Spelled out for the loop line: a MANUAL override
     renders ``mode: manual`` (the operator's cue that the active schedule is NOT
     governing); a schedule-driven or default mode renders ``mode: <name>``. A
     boundary is appended when the mode expires at a known time (``mode: manual

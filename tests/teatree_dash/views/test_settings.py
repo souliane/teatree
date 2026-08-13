@@ -18,6 +18,7 @@ from teatree.config.enums import Autonomy
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import UNGROUPED_PATH, setting_comment, setting_group_path
 from teatree.config.setting_help import setting_help
+from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
     SettingsEditorView,
@@ -651,6 +652,18 @@ class TestSettingsImportTakesAFile(TestCase):
         assert response.status_code == 200
         assert "rejected" in response.content.decode()
         assert ConfigSetting.objects.count() == 0
+
+    def test_a_personal_backup_upload_is_told_where_it_can_be_restored(self) -> None:
+        # The page cannot restore private rows, so a refusal that only listed per-key secret
+        # rejections would leave the operator with a file and no next step (#4156).
+        ConfigSetting.objects.set_value("slack_user_id", "<the-operator>")
+        block = _import_block(self._post(export_db_to_toml(include_private=True, scan_terms=()).toml).content.decode())
+        assert "--restore-private" in block
+
+    def test_an_ordinary_rejected_upload_is_not(self) -> None:
+        # Anti-vacuous control: the pointer is tied to the backup marker, not to any refusal.
+        block = _import_block(self._post("[teatree]\nnot_a_setting = 1\n").content.decode())
+        assert "--restore-private" not in block
 
 
 class TestShippedDefaultColumn(TestCase):
