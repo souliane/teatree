@@ -153,3 +153,26 @@ def transient_failure_signature(error: str) -> str:
 def is_transient_failure(error: str) -> bool:
     """Whether a FAILED attempt's *error* classifies as a transient interruption."""
     return bool(transient_failure_signature(error))
+
+
+#: Phrases a FAILED attempt carries when the agent PROCESS never started — the named
+#: E2BIG refusal (:mod:`teatree.agents.spawn_payload`) and the SDK/kernel text it is
+#: built from, so a pre-#4301 attempt recorded as a raw traceback classifies too.
+_SPAWN_FAILURE_PHRASES = (
+    "agent could not be spawned",
+    "argument list too long",
+    "[errno 7]",
+    "failed to start claude code",
+)
+
+
+def is_spawn_failure(error: str) -> bool:
+    """Whether *error* says the agent process could not START, rather than that work failed.
+
+    The distinction is what a human needs first: no ticket content is implicated by a
+    spawn death, so asking whether to investigate or rework the TICKET sends the operator
+    at the one thing that cannot be the cause. Deliberately narrow — a run that started
+    and then failed carries none of these phrases.
+    """
+    haystack = error.casefold()
+    return any(phrase in haystack for phrase in _SPAWN_FAILURE_PHRASES)
