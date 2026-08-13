@@ -576,6 +576,7 @@ depends_on = [
   "teatree.loop.review_request_tracker",
   "teatree.loop.dispatch_tables",
   "teatree.loop.pr_ticket_index",
+  "teatree.loop.main_check_runs",
   "teatree.loop.scanners",
   "teatree.loop.dispatch_reducer",
   "teatree.loop.dispatch_gates",
@@ -637,6 +638,16 @@ depends_on = []
 path = "teatree.loop.inbound_reading"
 layer = "domain"
 depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
+
+[[modules]]
+# The shared paginated ``check-runs`` argv + page-parser (#4090 sibling). A pure leaf
+# (stdlib only) consumed by teatree.loop.scanners AND by the bare teatree.loop
+# (orchestration) module (red_set_surface), so it is declared at domain rather than
+# inheriting orchestration from its package — the same sub-node shape as
+# teatree.loop.inbound_classifier above.
+path = "teatree.loop.main_check_runs"
+layer = "domain"
+depends_on = []
 
 [[modules]]
 path = "teatree.loop.loop_scoping"
@@ -722,6 +733,7 @@ path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
   "teatree.loop.inbound_reading",
+  "teatree.loop.main_check_runs",
   "teatree.types",
   "teatree.paths",
   "teatree.utils",
