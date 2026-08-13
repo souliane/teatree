@@ -10,6 +10,7 @@ import re
 import tomllib
 from io import StringIO
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from django.core.management import call_command
@@ -582,6 +583,114 @@ class TestConfigSettingImport(TestCase):
             call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
         assert "invalid TOML" in err.getvalue()
         assert ConfigSetting.objects.count() == 0
+
+
+class TestPrivateBackupRoundTripOverTheCli(TestCase):
+    """`export --include-private` then `import --restore-private` — the operator's path (#4156).
+
+    The flag exists to make a COMPLETE backup, and the rows it adds are the ones an ordinary
+    import refuses. So the export SAYS what it wrote and how to restore it, the refusal names
+    the flag rather than dribbling out per-key secret rejections, and the flag restores.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    #: One synthetic row per KEY-classified withhold class — a one-class fixture passes against
+    #: a one-class fix. The fourth class (a banned term matched on the VALUE) is unit-covered in
+    #: ``test_config_migration`` instead: it needs live scan terms, and this command resolves
+    #: those through a cold reader that cannot see a test transaction's rows.
+    PRIVATE_ROWS: ClassVar[dict[str, str | list[str]]] = {
+        "banned_terms": ["synthetic-scanned-term"],  # private-key
+        "banned_brands": ["synthetic-brand"],  # private-key
+        "anthropic_oauth_pass_paths": ["synthetic/oauth-entry"],  # credential-coordinate
+        "slack_user_id": "synthetic-user-ref",  # personal-identifier
+    }
+
+    def setUp(self) -> None:
+        for key, value in self.PRIVATE_ROWS.items():
+            ConfigSetting.objects.set_value(key, value)
+        ConfigSetting.objects.set_value("merge_wip", 4)
+
+    @staticmethod
+    def _private_value_fragments() -> list[str]:
+        """Every private VALUE as it would read on screen — what must never appear in stdout."""
+        fragments: list[str] = []
+        for value in TestPrivateBackupRoundTripOverTheCli.PRIVATE_ROWS.values():
+            fragments.extend(value if isinstance(value, list) else [value])
+        return fragments
+
+    def _backup(self) -> tuple[Path, str]:
+        path = self.tmp_path / "backup.toml"
+        err = StringIO()
+        call_command("config_setting", "export", "--include-private", "--output", str(path), stderr=err)
+        return path, err.getvalue()
+
+    def _import(self, path: Path, *flags: str) -> tuple[str, str]:
+        out, err = StringIO(), StringIO()
+        call_command("config_setting", "import", "--input", str(path), *flags, stdout=out, stderr=err)
+        return out.getvalue(), err.getvalue()
+
+    def test_the_export_says_what_it_wrote_and_how_to_restore_it(self) -> None:
+        _, err = self._backup()
+        assert "PERSONAL BACKUP" in err
+        assert "--restore-private" in err
+
+    def test_a_plain_export_says_none_of_that(self) -> None:
+        # Anti-vacuous control: the notice is tied to the flag, not printed on every export.
+        err = StringIO()
+        call_command("config_setting", "export", "--output", str(self.tmp_path / "plain.toml"), stderr=err)
+        assert "PERSONAL BACKUP" not in err.getvalue()
+
+    def test_an_ordinary_import_refuses_it_and_names_the_flag(self) -> None:
+        path, _ = self._backup()
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "pass --restore-private" in err.getvalue()
+
+    def test_the_flag_restores_the_private_rows(self) -> None:
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        self._import(path, "--restore-private")
+        for key, value in self.PRIVATE_ROWS.items():
+            assert ConfigSetting.objects.get_effective(key) == value
+        assert ConfigSetting.objects.get_effective("merge_wip") == 4
+
+    def test_the_restore_never_echoes_a_private_value_to_stdout(self) -> None:
+        # A CLI an agent runs writes its stdout into transcripts, so the restore names the
+        # KEYS it wrote and withholds their values — the same convention the export follows.
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        out, _ = self._import(path, "--restore-private")
+        for fragment in self._private_value_fragments():
+            assert fragment not in out, f"private value {fragment!r} leaked to stdout"
+        for key in self.PRIVATE_ROWS:
+            assert f"{key} = <withheld: private>" in out, f"the operator was not told {key} was restored"
+
+    def test_the_dry_run_preview_never_echoes_a_private_value_either(self) -> None:
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        out, _ = self._import(path, "--restore-private", "--dry-run")
+        for fragment in self._private_value_fragments():
+            assert fragment not in out, f"private value {fragment!r} leaked to the preview"
+        for key in self.PRIVATE_ROWS:
+            assert f"{key} = <withheld: private>" in out, f"the preview did not name {key}"
+
+    def test_a_non_private_row_still_renders_its_value(self) -> None:
+        # Anti-vacuous control: blanking EVERY value would pass the leak tests trivially.
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        out, _ = self._import(path, "--restore-private")
+        assert re.search(r"merge_wip = 4\b", out), out
+
+    def test_the_flag_is_reported_ignored_on_a_file_that_is_not_a_backup(self) -> None:
+        path = self.tmp_path / "shared.toml"
+        path.write_text("[teatree]\nmerge_wip = 4\n", encoding="utf-8")
+        _, err = self._import(path, "--restore-private")
+        assert "--restore-private ignored" in err
 
 
 class TestConfigSettingSeed(TestCase):

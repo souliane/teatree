@@ -20,10 +20,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import tomlkit
-from tomlkit import items as tomlkit_items
 
 from teatree.config import effective_default
-from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table, shipped_defaults_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.defaults_snapshot import render_toml as render_shipped_file
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
@@ -34,8 +33,20 @@ from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.stored_row_health import is_operator_configuration, stored_row_kind
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.config_interchange.registry_rows import merged_registry, overlay_table_split
-from teatree.core.config_interchange.secret_guard import RedactedRow, redaction_reason, resolve_export_scan_terms
+from teatree.core.config_interchange.document_layout import (
+    GLOBAL_SCOPE,
+    import_candidates,
+    registry_value,
+    sorted_table,
+)
+from teatree.core.config_interchange.registry_rows import merged_registry
+from teatree.core.config_interchange.secret_guard import (
+    RedactedRow,
+    is_private_backup,
+    mark_private_backup,
+    redaction_reason,
+    resolve_export_scan_terms,
+)
 from teatree.core.config_interchange.seed_tables import (
     SeedFieldDisposition,
     classify_seed_rows,
@@ -47,11 +58,6 @@ from teatree.core.config_interchange.seed_tables import (
 from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, OmittedRow, RejectedRow
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
-
-GLOBAL_SCOPE = ""
-_TEATREE_TABLE = "teatree"
-_OVERLAYS_TABLE = "overlays"
-_E2E_REPOS_TABLE = "e2e_repos"
 
 
 @dataclass
@@ -152,18 +158,27 @@ def export_db_to_toml(
     store, a key outliving its declaration — is omitted whatever the filters say, and
     rides back the same way (#4147). Not a privacy rule but an interchange one: the
     import has no home for such a key and refuses the whole file on it.
+
+    An ``include_private`` dump STAMPS itself a personal backup (#4156), so the file says
+    which of the two formats it is and ``import --restore-private`` can read it back. The
+    defaults shape is exempt: it must stay a byte-identical replacement for ``defaults.toml``,
+    and it drops the private classes anyway.
     """
     terms = scan_terms if scan_terms is not None else resolve_export_scan_terms()
     guard = _ExportGuard(include_private=include_private, terms=terms, redacted=[], omitted=[])
     document = tomlkit.document()
+    if include_private:
+        mark_private_backup(document)
     all_global = ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE)
-    overlays_registry = _registry_value(all_global, "overlays")
-    e2e_repos_registry = _registry_value(all_global, "e2e_repos")
+    overlays_registry = registry_value(all_global, "overlays")
+    e2e_repos_registry = registry_value(all_global, "e2e_repos")
 
     if overlay is not None:
         scoped_registry = {overlay: overlays_registry[overlay]} if overlay in overlays_registry else {}
         _emit_overlay_tables(document, [overlay], scoped_registry, guard=guard)
-        return ConfigExport(tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted))
+        return ConfigExport(
+            tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted), private_backup=include_private
+        )
 
     # The registry keys are rendered as their own top-level tables below, never under
     # ``[teatree]`` (they are NOT ``UserSettings`` fields) — exclude them from the
@@ -192,8 +207,10 @@ def export_db_to_toml(
         )
         _emit_overlay_tables(document, scopes, overlays_registry, guard=guard)
         _emit_e2e_repos_tables(document, e2e_repos_registry, guard=guard)
-    emit_seed_tables(document, _toml_table)
-    return ConfigExport(tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted))
+    emit_seed_tables(document, sorted_table)
+    return ConfigExport(
+        tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted), private_backup=include_private
+    )
 
 
 def _shipped_file_text() -> str:
@@ -252,24 +269,6 @@ def _teatree_table_keys() -> frozenset[str]:
     return frozenset(ALL_KNOWN_CONFIG_SETTINGS) - frozenset(REGISTRY_KEYS)
 
 
-def _registry_value(global_rows: dict[str, ConfigValue], key: str) -> dict[str, Any]:
-    """The stored registry dict for *key* in the global rows, or ``{}`` when absent/malformed."""
-    value = global_rows.get(key)
-    return value if isinstance(value, dict) else {}
-
-
-def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
-    """A ``[table]`` of *rows* (key-sorted), each native value rendered as its TOML scalar.
-
-    Sorted so the dump is a deterministic function of the store's CONTENT, not the DB
-    insertion order — the property ``export -> import -> export`` byte-stability rests on.
-    """
-    table = tomlkit.table()
-    for key in sorted(rows):
-        table[key] = rows[key]
-    return table
-
-
 def _emit_overlay_tables(
     document: tomlkit.TOMLDocument,
     scopes: list[str],
@@ -292,7 +291,7 @@ def _emit_overlay_tables(
         stored = _configuration_rows(ConfigSetting.objects.overrides_for_scope(name), name, guard=guard)
         rows = _exportable_rows({**overlays_registry.get(name, {}), **stored}, name, guard=guard)
         if rows:
-            overlays[name] = _toml_table(rows)
+            overlays[name] = sorted_table(rows)
             emitted = True
     if emitted:
         document["overlays"] = overlays
@@ -318,7 +317,7 @@ def _emit_e2e_repos_tables(
             continue
         rows = _exportable_rows(entry, f"e2e_repos.{name}", guard=guard)
         if rows:
-            repos[name] = _toml_table(rows)
+            repos[name] = sorted_table(rows)
             emitted = True
     if emitted:
         document["e2e_repos"] = repos
@@ -327,61 +326,54 @@ def _emit_e2e_repos_tables(
 # ---- import (the inverse of export) -----------------------------------------------------
 
 
-def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]:
-    """Flatten a parsed export document into ``(scope, key, value)`` candidate rows.
+@dataclass(frozen=True)
+class _ImportPolicy:
+    """What this import may do, threaded through the row classifier.
 
-    Reverses the export layout: the ``[teatree]`` table -> global settings; each
-    ``[overlays.<name>]`` table splits — through the export's own join predicate,
-    :func:`~teatree.core.config_interchange.registry_rows.overlay_table_split` — into per-overlay
-    SETTING rows and overlay-DEFINITION keys (``path`` / ``class`` / …, folded back into
-    the ``overlays`` registry row); each ``[e2e_repos.<name>]`` table rebuilds the
-    ``e2e_repos`` registry row.
-
-    A rebuilt registry value is a candidate, not the row: it describes only what the file
-    could say, and the import MERGES it onto the stored row rather than replacing it (see
-    :mod:`teatree.core.config_interchange.registry_rows`).
-
-    The ``[teatree]`` table goes through the SAME flattener the cold reader applies, so a
-    nested file and a flat one import to the same rows and the group wrappers never reach
-    the store as keys.
+    Every authorization an import can carry, named in one place: the live ban terms the
+    content scan reads, the operator's safety-posture declaration, and the two halves of the
+    private-backup restore. Bundled so the classifier stays within the arg-count cap, like
+    ``_ExportGuard``.
     """
-    candidates: list[tuple[str, str, ConfigValue]] = []
-    for key, value in flatten_settings_table(doc.get(_TEATREE_TABLE, {})).items():
-        candidates.append((GLOBAL_SCOPE, key, value))
-    overlays_registry: dict[str, Any] = {}
-    for name, table in doc.get(_OVERLAYS_TABLE, {}).items():
-        if not isinstance(table, dict):
-            continue
-        settings, definitions = overlay_table_split(table)
-        candidates.extend((name, key, value) for key, value in settings.items())
-        if definitions:
-            overlays_registry[name] = definitions
-    if overlays_registry:
-        candidates.append((GLOBAL_SCOPE, _OVERLAYS_TABLE, overlays_registry))
-    e2e_registry: dict[str, Any] = {n: dict(t) for n, t in doc.get(_E2E_REPOS_TABLE, {}).items() if isinstance(t, dict)}
-    if e2e_registry:
-        candidates.append((GLOBAL_SCOPE, _E2E_REPOS_TABLE, e2e_registry))
-    return candidates
+
+    terms: tuple[str, ...]
+    allow_safety_posture: bool
+    private_backup: bool
+    restore_private: bool
+
+    @property
+    def allow_private(self) -> bool:
+        """Whether a private row may be stored — the CALLER asked AND the FILE declared it.
+
+        Two independent halves, both required, which is what keeps ``restore_private`` from
+        being a blanket relaxation of the row rule: it reaches only a file this tooling wrote
+        as a personal backup (#4156).
+        """
+        return self.restore_private and self.private_backup
 
 
-def _unstorable_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:
+def _unstorable_reason(key: str, value: ConfigValue, policy: _ImportPolicy) -> str | None:
     """Why this row has no home in the store at all, else None.
 
     A removed key (loud, no home), an unknown key, and a secret/personal-identifier row
     (reusing the export withhold rule so a shared TOML never smuggles customer data back in).
+    ``policy.allow_private`` lifts only that last class, and only for a file that declared
+    itself a personal backup — it is what makes ``--include-private`` restorable (#4156).
     """
     if key in REMOVED_SETTING_KEYS:
         entry = removed_setting(key)
         return f"removed ({entry.reason if entry is not None else 'the setting was removed'})"
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return "unknown key"
-    if (secret := redaction_reason(key, value, terms)) is not None:
+    if policy.allow_private:
+        return None
+    if (secret := redaction_reason(key, value, policy.terms)) is not None:
         return f"secret ({secret})"
     return None
 
 
 def _classify_import_row(
-    key: str, value: ConfigValue, terms: tuple[str, ...], *, stored: ConfigValue | None, allow_safety_posture: bool
+    key: str, value: ConfigValue, *, stored: ConfigValue | None, policy: _ImportPolicy
 ) -> tuple[str, ConfigValue]:
     """One row's disposition: ``("reject", reason)`` / ``("skip"|"unchanged"|"write", canonical)``.
 
@@ -409,7 +401,7 @@ def _classify_import_row(
     so a pasted TOML dump is not a quieter route to `autonomy = "full"`. A safety-posture value
     equal to its default, or to what the store already holds, changes nothing to authorize.
     """
-    if (unstorable := _unstorable_reason(key, value, terms)) is not None:
+    if (unstorable := _unstorable_reason(key, value, policy)) is not None:
         return ("reject", unstorable)
     candidate = merged_registry(value, stored) if key in REGISTRY_KEYS and isinstance(value, dict) else value
     try:
@@ -420,7 +412,7 @@ def _classify_import_row(
         return ("skip", canonical)
     if canonical == stored:
         return ("unchanged", canonical)
-    if key in SAFETY_POSTURE_KEYS and not allow_safety_posture:
+    if key in SAFETY_POSTURE_KEYS and not policy.allow_safety_posture:
         return ("reject", "safety-posture")
     return ("write", canonical)
 
@@ -431,6 +423,7 @@ def import_toml_to_db(
     dry_run: bool = False,
     scan_terms: tuple[str, ...] | None = None,
     allow_safety_posture: bool = False,
+    restore_private: bool = False,
 ) -> ConfigImport:
     """Load a ``config_setting export`` TOML dump into the ``ConfigSetting`` store — the export inverse.
 
@@ -461,37 +454,62 @@ def import_toml_to_db(
     passes it because a directly-typed ``config_setting import`` IS that authorization. It
     defaults to False so a caller that never considered the question refuses those keys.
     Each written row carries ``is_safety_posture`` so a dry-run preview can flag them.
+
+    ``restore_private`` accepts the private rows an ``--include-private`` backup carries, so
+    the flag whose purpose is a COMPLETE backup produces a file that can actually be restored
+    (#4156). It grants nothing on its own: the allowance also needs *text* to declare itself a
+    personal backup, so an ordinary shared dump is refused under it exactly as without it, and
+    the default-False posture every other caller keeps is untouched. Each such row carries
+    ``is_private`` so every render site withholds its VALUE while still naming the key — the
+    flag is what lets a private row reach a renderer at all.
     """
     doc = tomllib.loads(text)
-    terms = scan_terms if scan_terms is not None else resolve_export_scan_terms()
+    policy = _ImportPolicy(
+        terms=scan_terms if scan_terms is not None else resolve_export_scan_terms(),
+        allow_safety_posture=allow_safety_posture,
+        private_backup=is_private_backup(doc),
+        restore_private=restore_private,
+    )
     stored: dict[str, dict[str, ConfigValue]] = {}
     by_kind: dict[str, list[ImportedRow]] = {"write": [], "skip": [], "unchanged": []}
     folded: list[tuple[str, str]] = []
     rejected: list[RejectedRow] = []
-    for scope, raw_key, value in _import_candidates(doc):
+    for scope, raw_key, value in import_candidates(doc):
         key = RENAMED_SETTING_KEYS.get(raw_key, raw_key)
         if key != raw_key:
             folded.append((raw_key, key))
         rows = stored.setdefault(scope, ConfigSetting.objects.overrides_for_scope(scope))
-        kind, payload = _classify_import_row(
-            key, value, terms, stored=rows.get(key), allow_safety_posture=allow_safety_posture
-        )
+        kind, payload = _classify_import_row(key, value, stored=rows.get(key), policy=policy)
         if kind == "reject":
             rejected.append(RejectedRow(scope, key, str(payload)))
         else:
-            by_kind[kind].append(ImportedRow(scope, key, payload, is_safety_posture=key in SAFETY_POSTURE_KEYS))
+            by_kind[kind].append(
+                ImportedRow(
+                    scope,
+                    key,
+                    payload,
+                    is_safety_posture=key in SAFETY_POSTURE_KEYS,
+                    # Asked of `redaction_reason` DIRECTLY, never through `_unstorable_reason`:
+                    # that returns None under `allow_private`, which is exactly the rows at risk.
+                    is_private=redaction_reason(key, payload, policy.terms) is not None,
+                )
+            )
 
     to_write, skipped, unchanged = by_kind["write"], by_kind["skip"], by_kind["unchanged"]
     seed_writes = _file_seed_dispositions(doc, skipped=skipped, unchanged=unchanged, rejected=rejected)
     if rejected:
-        return ConfigImport((), tuple(skipped), tuple(folded), tuple(rejected), dry_run, tuple(unchanged))
+        return ConfigImport(
+            (), tuple(skipped), tuple(folded), tuple(rejected), dry_run, tuple(unchanged), policy.private_backup
+        )
     if not dry_run:
         for row in to_write:
             ConfigSetting.objects.set_value(row.key, row.value, scope=row.scope)
         for entry in seed_writes:
             write_seed_field(entry.table, entry.name, entry.field, entry.value)
+    # Seed rows keep the default is_private=False deliberately: `redaction_reason` is a rule
+    # about SETTINGS keys, and a seed field is a [loops]/[modes]/[schedules] entry, not one.
     written = (*to_write, *(ImportedRow(e.scope, e.field, e.value) for e in seed_writes))
-    return ConfigImport(written, tuple(skipped), tuple(folded), (), dry_run, tuple(unchanged))
+    return ConfigImport(written, tuple(skipped), tuple(folded), (), dry_run, tuple(unchanged), policy.private_backup)
 
 
 def _file_seed_dispositions(
