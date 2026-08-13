@@ -15,6 +15,12 @@ Their currently-unresolved references are pinned in
 directions: the listed ones are visible instead of invisible, a NEW stale citation
 reds, and a listed one that got FIXED reds until its entry is deleted.
 
+:class:`TestPythonProse` extends it again to Python docstrings and ``#:``
+comments under ``src/teatree`` and ``hooks`` — the surface a `:func:` citation of
+a function that MOVED modules shipped through, because the markdown walk cannot
+read a ``.py`` file at all. Its ratchet is
+:data:`_KNOWN_UNRESOLVED_PYTHON_PROSE_REFS`, two-sided for the same reason.
+
 :class:`TestGoldenCorpus` proves the scanner is neither vacuous nor
 over-blocking against a committed ``*.md.txt`` corpus — a must-FLAG set (absent
 path, absent module, absent attribute, absent imported name, an absent bare
@@ -29,10 +35,12 @@ widening must never sweep in).
 """
 
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
+from teatree.quality.python_prose_refs import prose_lines, scan_python_source, scan_python_tree
 from teatree.quality.skill_symbol_refs import (
     RepoIndex,
     SymbolRefFinding,
@@ -141,6 +149,184 @@ class TestCharterDocs:
         # reaches real content: BLUEPRINT.md alone cites dozens of live symbols.
         resolved = [f for f in scan_file(_REPO_ROOT / "BLUEPRINT.md", _REPO_ROOT) if f.reason is None]
         assert len(resolved) > 10, "BLUEPRINT.md yielded almost no teatree-shaped references — the walk is broken"
+
+
+#: The docstring shape that shipped to ``main``: ``_retire_superseded`` moved into
+#: ``transient_requeue_disposal`` and this citation stayed on the old home.
+_MOVED_FUNCTION_DOCSTRING = '''"""Requeue a transient failure.
+
+The disposal half is :func:`teatree.loop.transient_requeue._retire_superseded`.
+"""
+'''
+
+#: ``(module, reference)`` pairs that do not resolve today, seeded so the walk can
+#: land without a tree-wide cleanup first. Some are genuinely stale citations, some
+#: are illustrative stand-ins, some are tokens the scanner cannot tell apart from an
+#: importable name (an entry-point group, a Django settings attribute) — the remedy
+#: for the last is a ``skill-symbol-ref:`` pragma on the citing line. Either way the
+#: set may only ever SHRINK, asserted in both directions below.
+_KNOWN_UNRESOLVED_PYTHON_PROSE_REFS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("hooks/scripts/session_start_skills.py", "scripts/lib/skill_loader.suggest_skills"),
+        ("hooks/scripts/worker_supervisor.py", "teatree.config.settings._parse_env_bool"),
+        ("src/teatree/_overlay_api.py", "teatree.overlays"),
+        ("src/teatree/agents/attempt_recorder.py", "prompt._REVIEW_VERDICT_RETURN_LINES"),
+        ("src/teatree/agents/envelope_refusal.py", "agents/prompt.py"),
+        ("src/teatree/agents/harness_registry.py", "teatree.harnesses"),
+        ("src/teatree/agents/harness_registry.py", "teatree.overlays"),
+        ("src/teatree/agents/pydantic_ai_session.py", "models._get_final_result_event"),
+        ("src/teatree/agents/regulated_path.py", "teatree.config.UserSettings.regulated_path_model_allowlist"),
+        ("src/teatree/agents/runner_usage.py", "agents/runner.py"),
+        ("src/teatree/backends/forge_merge_rpc.py", "github._run_gh"),
+        ("src/teatree/backends/gitlab/sync_terminal.py", "hooks/check_module_health.py"),
+        ("src/teatree/cli/doctor/app.py", "teatree.cli.doctor._x"),
+        ("src/teatree/cli/doctor/checks_environment.py", "teatree.overlays"),
+        ("src/teatree/cli/enforcement_tools.py", "teatree.targetBranch"),
+        ("src/teatree/cli/overlay_dev.py", "teatree.overlays"),
+        ("src/teatree/cli/review/evidence_gate.py", "src/teatree/cli/foo.py"),
+        ("src/teatree/cli/review/on_behalf.py", "hooks/scripts/check_module_health.py"),
+        ("src/teatree/cli/update.py", "teatree.overlays"),
+        ("src/teatree/config/agent_enums.py", "teatree.harnesses"),
+        ("src/teatree/config/discovery.py", "teatree.overlays"),
+        ("src/teatree/config/fleet_policy.py", "deploy/teatree.env"),
+        ("src/teatree/config/fleet_policy.py", "teatree.env"),
+        ("src/teatree/config/loader.py", "settings.T3_WORKSPACE_DIR"),
+        ("src/teatree/config/loader.py", "teatree.log"),
+        ("src/teatree/config/overlay_code_defaults.py", "teatree.overlays"),
+        ("src/teatree/config/reviewer_identities.py", "teatree.core.models.merge_clear.REVIEWER_ROLE_COMPONENTS"),
+        ("src/teatree/core/cleanup/cleanup_emit.py", "src/gate.py"),
+        ("src/teatree/core/code_tokens.py", "teatree.core.tasks.claim"),
+        ("src/teatree/core/gates/review_request_guard.py", "slack._iter_review_matches"),
+        ("src/teatree/core/harness_todos.py", "hooks/scripts/hook_router._newest_task_agent_id"),
+        ("src/teatree/core/management/commands/run.py", "src/foo.py"),
+        ("src/teatree/core/management/commands/ticket_short_describe.py", "teatree.core.ticket_short_description"),
+        (
+            "src/teatree/core/merge/clear_reconcile.py",
+            "teatree.core.models.pull_request.PullRequest.record_forge_merge",
+        ),
+        ("src/teatree/core/merge/merge_response.py", "execution._is_transient_merge_response"),
+        ("src/teatree/core/modelkit/diff_scope.py", "src/other_paths.py"),
+        ("src/teatree/core/modelkit/diff_scope.py", "src/paths.py"),
+        ("src/teatree/core/models/merge_clear.py", "src/teatree/core/merger/"),
+        ("src/teatree/core/models/review_verdict.py", "teatree.core.review.diff_scope_gate"),
+        ("src/teatree/core/review/diff_scope_probe.py", "teatree.core.review.diff_scope_gate"),
+        ("src/teatree/core/views/github_webhook.py", "settings.TEATREE_GITHUB_WEBHOOK_SECRET"),
+        ("src/teatree/core/views/gitlab_webhook.py", "settings.TEATREE_GITLAB_WEBHOOK_TOKEN"),
+        ("src/teatree/eval/corpus_models.py", "teatree.eval.scenarios"),
+        ("src/teatree/eval/git_fixture.py", "src/teatree/util/money.py"),
+        ("src/teatree/eval/git_fixture.py", "teatree.util.money"),
+        ("src/teatree/eval/models.py", "teatree.eval.api_runner.resolve_max_turns_override"),
+        ("src/teatree/eval/pydantic_ai_runner.py", "teatree.agents.harness._X_LANE_HEADER"),
+        ("src/teatree/hooks/publish_destination.py", "public_visibility._destination_visibility"),
+        ("src/teatree/hooks/quote_scanner.py", "hook_router._agent_prompt_skip_token"),
+        ("src/teatree/loop/rendering.py", "teatree.loop.rendering.X"),
+        ("src/teatree/loop/scanners/issue_disposition.py", "src/teatree/foo.py"),
+        ("src/teatree/loop/scanners/self_update_ci.py", "teatree.loop.scanners.pr_sweep.GhPrApiClient"),
+        (
+            "src/teatree/loop/scanners/self_update_ci.py",
+            "teatree.loop.scanners.pr_sweep.GhPrApiClient.main_check_failed",
+        ),
+        ("src/teatree/loop/substrate_pinger.py", "teatree.loop.scanners.pr_sweep.SubstratePinger"),
+        ("src/teatree/loop/transient_requeue.py", "teatree.loop.config_self_repair.SELF_REPAIR_STAMP"),
+        ("src/teatree/loops/dream/recall.py", "hook_router._AMBIENT_CONTEXT_RE"),
+        ("src/teatree/overlay_sdk/factory.py", "teatree.agents._"),
+        ("src/teatree/quality/affected_tests.py", "src/teatree/foo/bar.py"),
+        ("src/teatree/quality/affected_tests.py", "teatree.foo.bar"),
+        ("src/teatree/quality/full_suite_invocation.py", "tests/foo.py"),
+        ("src/teatree/quality/mutation_run.py", "src/teatree/x.py"),
+        ("src/teatree/quality/mutation_run.py", "teatree.x"),
+        ("src/teatree/quality/skill_symbol_refs.py", "phase_tools.PHASE_TOOLS"),
+        ("src/teatree/quality/snapshot_baseline.py", "e2e/foo.spec.ts-snapshots/"),
+        ("src/teatree/self_update.py", "teatree.overlays"),
+        ("src/teatree/settings.py", "teatree.overlays"),
+        ("src/teatree/utils/coverage_exclusions.py", "src/myvenv_helper.py"),
+        ("src/teatree/utils/django_db/testdb_clone.py", "importer._copy_ref_to_ticket"),
+        ("src/teatree/utils/editable_pth.py", "teatree.overlays"),
+        ("src/teatree/utils/git_branch.py", "teatree.targetBranch"),
+    },
+)
+
+
+@lru_cache(maxsize=1)
+def _python_prose_findings() -> tuple[SymbolRefFinding, ...]:
+    """The whole-tree walk, run once per worker rather than once per test that reads it."""
+    return tuple(scan_python_tree(_REPO_ROOT))
+
+
+def _unresolved_python_prose_refs() -> set[tuple[str, str]]:
+    """Every ``(module, unresolved reference)`` pair the Python-prose walk reports now."""
+    return {
+        (str(finding.path.relative_to(_REPO_ROOT)), finding.ref)
+        for finding in _python_prose_findings()
+        if finding.reason is not None
+    }
+
+
+class TestPythonProse:
+    def test_no_new_python_prose_reference_is_unresolved(self) -> None:
+        new = _unresolved_python_prose_refs() - _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS
+        assert new == set(), (
+            "Python docstring/#: reference(s) naming a symbol the tree does not have — a reader "
+            f"following one finds nothing and cannot tell renamed from moved from deleted: {sorted(new)}"
+        )
+
+    def test_no_known_python_prose_reference_is_stale(self) -> None:
+        stale = _KNOWN_UNRESOLVED_PYTHON_PROSE_REFS - _unresolved_python_prose_refs()
+        assert stale == set(), (
+            "Pinned Python-prose reference(s) the scanner no longer reports as unresolved — "
+            f"delete them so the ratchet stays tight: {sorted(stale)}"
+        )
+
+    def test_the_python_tree_is_actually_walked(self) -> None:
+        # Both ratchet directions are satisfied by scanning nothing, so pin that the
+        # walk reaches real content: the tree cites hundreds of live symbols in prose.
+        resolved = [f for f in _python_prose_findings() if f.reason is None]
+        assert len(resolved) > 100, "the Python tree yielded almost no teatree-shaped references — the walk is broken"
+
+    def test_a_moved_function_reference_in_a_docstring_is_flagged(self) -> None:
+        findings = scan_python_source(_MOVED_FUNCTION_DOCSTRING, Path("probe.py"), _REPO_ROOT)
+        (finding,) = _unresolved(findings)
+        assert finding.ref == "teatree.loop.transient_requeue._retire_superseded"
+
+    def test_the_markdown_walk_cannot_see_a_python_docstring(self, tmp_path: Path) -> None:
+        # The gap the guard had: its walk is `rglob("*.md")`, so the stale citation
+        # above is invisible to it however the tree is arranged.
+        (tmp_path / "probe.py").write_text(_MOVED_FUNCTION_DOCSTRING, encoding="utf-8")
+        assert scan_tree(tmp_path, _REPO_ROOT) == []
+
+    def test_a_module_local_symbol_the_module_lacks_is_flagged(self) -> None:
+        source = '"""The claim is settled by ``skill_symbol_refs._NO_SUCH_HELPER``."""\n'
+        (finding,) = _unresolved(scan_python_source(source, Path("probe.py"), _REPO_ROOT))
+        assert finding.ref == "skill_symbol_refs._NO_SUCH_HELPER"
+
+    def test_a_hash_colon_comment_is_walked(self) -> None:
+        source = "#: Keyed off ``skill_symbol_refs._NO_SUCH_HELPER``.\nVALUE = 1\n"
+        (finding,) = _unresolved(scan_python_source(source, Path("probe.py"), _REPO_ROOT))
+        assert (finding.lineno, finding.ref) == (1, "skill_symbol_refs._NO_SUCH_HELPER")
+
+    def test_a_plain_comment_and_a_non_docstring_literal_are_not_walked(self) -> None:
+        source = (
+            "# Keyed off skill_symbol_refs._NO_SUCH_HELPER.\n"
+            'PROMPT = "see skill_symbol_refs._NO_SUCH_HELPER"\n'
+            "CALL = skill_symbol_refs._NO_SUCH_HELPER\n"
+        )
+        assert scan_python_source(source, Path("probe.py"), _REPO_ROOT) == []
+
+    def test_an_unparsable_module_yields_no_prose(self) -> None:
+        assert prose_lines("def broken(:\n") == frozenset()
+
+    def test_a_leading_non_string_expression_is_not_a_docstring(self) -> None:
+        assert prose_lines("42\nVALUE = 1\n") == frozenset()
+
+    def test_a_class_and_function_docstring_are_both_prose(self) -> None:
+        source = (
+            '"""Module."""\n\n\nclass Probe:\n    """Class."""\n\n    def run(self) -> None:\n        """Method."""\n'
+        )
+        assert prose_lines(source) == frozenset({1, 5, 8})
+
+    def test_the_pragma_exempts_a_docstring_line(self) -> None:
+        source = '"""Registered under ``teatree.overlays``.  skill-symbol-ref: entry-point group."""\n'
+        assert _unresolved(scan_python_source(source, Path("probe.py"), _REPO_ROOT)) == []
 
 
 class TestResolver:
