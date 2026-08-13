@@ -1498,7 +1498,8 @@ quoted payloads elided, so a matcher scopes to what the shell would actually run
 It is selected per matcher by naming it where the arg goes
 (`no_tool_call_matching: { Bash.command_span: ~ "…" }`); the registry is
 `_ARG_VIEWS` in `teatree.eval.matchers` and the scanner is
-`teatree.eval.command_span.executed_span`. A name in `DERIVED_VIEW_NAMES` with no
+`teatree.eval.command_span.executed_span`, over the quote-aware scan and reachability
+window in `teatree.eval.command_window`. A name in `DERIVED_VIEW_NAMES` with no
 `_ARG_VIEWS` transform raises `UnknownArgViewError` — a view whose code is dropped
 can never degrade to a missing arg, which reads as a silent green.
 
@@ -1514,7 +1515,7 @@ while keeping a payload only ever reds loudly:
 | `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
 | the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
-| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1` and a `;`/`}`/`)` inside an enclosing group stop hiding a later `\| bash`, and a process substitution (`> >(bash)`) blocks the proof outright; the whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
+| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1`, a `;`/`}`/`)` inside an enclosing group, and a `;`/newline inside `if…fi`, `while`/`until`/`for`/`select…done` or `case…esac` all stop hiding a later `\| bash`; a process substitution (`> >(bash)`) blocks the proof outright, and so does a redirection inside a function body, whose stdout flows to the call site instead. The whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
 
 The redirection rule is stated as a READER proof, not an interpreter list, because the
@@ -1525,7 +1526,7 @@ complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l;
 through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
 class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
 
-Three measured residues, all in the OVER-keeping direction — they cost a loud red, never
+Four measured residues, all in the OVER-keeping direction — they cost a loud red, never
 a silent one, and none is a regression against `origin/main`:
 
 - `_STDIN_READERS` is narrow (12 names) and `_stage_command_word` resolves a PREFIXED
@@ -1540,6 +1541,12 @@ a silent one, and none is a regression against `origin/main`:
   it. `origin/main` elides the whole class.
 - A quoted-delimiter heredoc BODY is literal to bash, and the view splices it anyway — a
   body line ending in a backslash loses its terminator, so the remainder is kept raw.
+- A redirection inside a FUNCTION body is never proved data-only, even where the call
+  turns out to be a reader. Its stdout flows to the CALL site, textually elsewhere
+  (`f() { cat <<<'…'; }; f \| bash`), so no window over the definition can see the pipe;
+  tracking the call interprocedurally does not terminate (`x=f; $x \| bash`, recursion,
+  a definition in a sourced file), which is why this one is fail-closed rather than
+  windowed.
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
 `ticket clear` are things that must not HAPPEN, and a model that escalates

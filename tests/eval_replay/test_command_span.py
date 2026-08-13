@@ -7,15 +7,18 @@ continuation class is closed is the GENERATIVE sweep, which mutates those same t
 """
 
 import ast
+import concurrent.futures
 import os
 import pathlib
 import re
 import subprocess
+import time
 
 import pytest
 
 from teatree.eval import command_span, matchers
 from teatree.eval.command_span import _Splice, executed_span
+from teatree.eval.command_window import GROUP_CLOSE, GROUP_OPEN, enclosing, ends_a_list, segment_end, unquoted_scan
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matchers import DERIVED_VIEW_NAMES
 from teatree.eval.models import AnyOf, Matcher
@@ -425,6 +428,19 @@ EXECUTES = [
     ("quoted-eval", f"'eval' '{ACT}'"),
     ("escaped-eval", f"\\eval '{ACT}'"),
     ("expanded-script-flag", f"x=-c; bash $x '{ACT}'"),
+    ("compound-if-piped-to-interpreter", f"if true; then cat <<<'{ACT}'; fi | bash"),
+    ("compound-if-condition-piped-to-interpreter", f"if cat <<<'{ACT}'; then :; fi | bash"),
+    ("compound-if-newlines-piped-to-interpreter", f"if true\nthen\ncat <<<'{ACT}'\nfi | bash"),
+    ("compound-else-arm-piped-to-interpreter", f"if false; then :; else cat <<<'{ACT}'; fi | bash"),
+    ("compound-while-piped-to-interpreter", f"while true; do cat <<<'{ACT}'; break; done | bash"),
+    ("compound-until-piped-to-interpreter", f"until false; do cat <<<'{ACT}'; break; done | bash"),
+    ("compound-for-piped-to-interpreter", f"for i in 1; do cat <<<'{ACT}'; done | bash"),
+    ("compound-case-piped-to-interpreter", f"case x in x) cat <<<'{ACT}';; esac | bash"),
+    ("compound-case-in-a-brace-group-piped", f"{{ case x in x) cat <<<'{ACT}';; esac; }} | bash"),
+    ("compound-if-heredoc-piped-to-interpreter", f"if true; then cat <<'EOF'; fi | bash\n{ACT}\nEOF\n"),
+    ("function-brace-body-then-call-piped", f"f() {{ cat <<<'{ACT}'; }}; f | bash"),
+    ("function-subshell-body-then-call-piped", f"f() ( cat <<<'{ACT}' ); f | bash"),
+    ("function-defined-in-an-if-then-called", f"if true; then f() {{ cat <<<'{ACT}'; }}; f; fi | bash"),
 ]
 
 #: The negative controls. A real bash hands the redirected text to a program that only
@@ -451,6 +467,10 @@ READS_ONLY = [
     ("reader-fd-dup-piped-to-a-reader", f"cat <<<'{ACT}' 2>&1 | wc -l"),
     ("reader-redirected-to-a-file", f"cat <<<'{ACT}' > /dev/null"),
     ("reader-with-both-streams-redirected", f"cat &>/dev/null <<<'{ACT}'"),
+    ("reader-alone-in-a-compound-if", f"if true; then cat <<<'{ACT}'; fi"),
+    ("reader-alone-in-a-while-loop", f"while true; do cat <<<'{ACT}'; break; done"),
+    ("reader-alone-in-a-case-arm", f"case x in x) cat <<<'{ACT}';; esac"),
+    ("reader-compound-piped-to-a-reader", f"if true; then cat <<<'{ACT}'; fi | grep -q x"),
 ]
 
 #: Payload spellings with no redirection at all — prose and option values a real bash
@@ -471,6 +491,95 @@ EXECUTED_RESIDUE = [
     ("printf-piped-to-interpreter", "bash", f"printf '%s' '{ACT}' | bash"),
     ("variable-then-eval", "eval", f"x='{ACT}'; eval \"$x\""),
 ]
+
+#: How the redirected command is nested. Every one preserves "the compound's stdout is its
+#: body's stdout", so the redirected text reaches whatever :data:`SINK_TAILS` appends — the
+#: property the reachability window has to model, and the axis the window's enumeration of
+#: constructs was short of.
+WRAPPERS = [
+    ("none", "{body}"),
+    ("brace-group", "{{ {body}; }}"),
+    ("subshell", "( {body} )"),
+    ("nested-subshell", "( ( {body} ) )"),
+    ("if-then", "if true; then {body}; fi"),
+    ("if-condition", "if {body}; then :; fi"),
+    ("if-else-arm", "if false; then :; else {body}; fi"),
+    ("if-elif-arm", "if false; then :; elif true; then {body}; fi"),
+    ("if-newlines", "if true\nthen\n{body}\nfi"),
+    ("while", "while true; do {body}; break; done"),
+    ("until", "until false; do {body}; break; done"),
+    ("for", "for i in 1; do {body}; done"),
+    ("for-newlines", "for i in 1\ndo\n{body}\ndone"),
+    ("case-first-arm", "case x in x) {body};; esac"),
+    ("case-second-arm", "case y in x) :;; y) {body};; esac"),
+    ("if-in-brace-group", "{{ if true; then {body}; fi; }}"),
+    ("if-in-subshell", "( if true; then {body}; fi )"),
+    ("case-in-brace-group", "{{ case x in x) {body};; esac; }}"),
+    ("while-in-if", "if true; then while true; do {body}; break; done; fi"),
+    ("function-brace-body", "f() {{ {body}; }}; f"),
+    ("function-subshell-body", "f() ( {body} ); f"),
+    ("function-keyword", "function f {{ {body}; }}; f"),
+]
+
+#: The program the redirection attaches to — which side of the reader proof the segment
+#: lands on. Reduced to the four load-bearing values so the product stays inside the
+#: per-test timeout; the quote, escape and expansion spellings of a name are the
+#: :data:`EXECUTES` table's axis, not this one.
+READERS = [
+    ("reader", "cat"),
+    ("interpreter", "bash"),
+    ("dot-dev-stdin", ". /dev/stdin"),
+    ("unresolvable-name", "$SHELL"),
+]
+
+#: The carrier the window's bounds are computed around. A non-empty delimiter marks a
+#: heredoc, whose body is appended after the sink tail as bash reads it.
+REDIRECTIONS = [
+    ("herestring", f"{{reader}} <<<'{ACT}'", ""),
+    ("herestring-spaced", f"{{reader}} <<< '{ACT}'", ""),
+    ("herestring-glued", f"{{reader}}<<<'{ACT}'", ""),
+    ("herestring-adjacent-operands", "{reader} <<<'t3 widget task '\"complete 42\"", ""),
+    ("heredoc-quoted", "{reader} <<'EOF'", "EOF"),
+    ("heredoc-tab-stripped", "{reader} <<-'EOF'", "EOF"),
+    ("heredoc-unquoted", "{reader} <<EOF", "EOF"),
+]
+
+#: What the wrapper's stdout reaches. :data:`INTERPRETER_SINKS` names the ones that execute
+#: it, so a case whose body is a plain reader still runs the act through them; the rest are
+#: negative controls, ``separate-segment`` deliberately putting the interpreter in a
+#: segment the redirected text never reaches.
+SINK_TAILS = [
+    ("none", ""),
+    ("pipe-bash", " | bash"),
+    ("pipe-sh", " | sh"),
+    ("pipe-shell-var", " | $SHELL"),
+    ("pipe-substituted", " | $(command -v bash)"),
+    ("pipe-cat", " | cat"),
+    ("pipe-grep", " | grep -q x"),
+    ("fd-dup-pipe-bash", " 2>&1 | bash"),
+    ("fd-close-pipe-bash", " 2>&- | bash"),
+    ("procsub-target", " > >(bash)"),
+    ("tee-procsub", " | tee >(bash) > /dev/null"),
+    ("separate-segment", " && true | bash"),
+    ("to-devnull", " > /dev/null"),
+]
+
+INTERPRETER_SINKS = frozenset(
+    {
+        "pipe-bash",
+        "pipe-sh",
+        "pipe-shell-var",
+        "pipe-substituted",
+        "fd-dup-pipe-bash",
+        "fd-close-pipe-bash",
+        "procsub-target",
+        "tee-procsub",
+    }
+)
+
+#: Concurrency for the structural sweep. A unit is a short-lived ``bash -c`` blocked on IO,
+#: not a CPU-bound pytest worker, so a small fixed pool does not multiply against xdist.
+_SWEEP_WORKERS = 4
 
 
 @pytest.fixture(scope="module")
@@ -500,12 +609,60 @@ def _bash_runs_the_act(command: str, stub_bin: pathlib.Path, log: pathlib.Path) 
         timeout=10,
         check=False,
     )
+    if ">(" not in command:
+        return ACT in log.read_text(encoding="utf-8")
+    # bash does not wait for a process substitution's child, so its write can land after
+    # the shell exits — reading once turns an executing case into a "bash never ran it".
+    deadline = time.monotonic() + 1.0
+    while ACT not in log.read_text(encoding="utf-8") and time.monotonic() < deadline:
+        time.sleep(0.01)
     return ACT in log.read_text(encoding="utf-8")
+
+
+def _structural_cases(wrapper: str) -> list[tuple[str, str]]:
+    """``(id, command)`` for every READER x REDIRECTION x SINK cell of *wrapper*.
+
+    A wrapper spelt with a literal newline crossed with a heredoc is syntactically invalid,
+    because the body appends after the sink; those cells are generated anyway and land in
+    the non-executing bucket by bash's own verdict, never silently skipped.
+    """
+    return [
+        (
+            f"{reader_name}|{redirection_name}|{sink_name}",
+            wrapper.format(body=redirection.format(reader=reader))
+            + sink
+            + (f"\n{ACT}\n{delimiter}\n" if delimiter else ""),
+        )
+        for reader_name, reader in READERS
+        for redirection_name, redirection, delimiter in REDIRECTIONS
+        for sink_name, sink in SINK_TAILS
+    ]
+
+
+def _bash_verdicts(cases: list[tuple[str, str]], stub_bin: pathlib.Path, tmp_path: pathlib.Path) -> list[bool]:
+    """Whether a real bash executes the act, per case — each case with its OWN log.
+
+    A log shared between concurrent cases cross-contaminates the verdict in both
+    directions, which then reads as a finding rather than as the harness fault it is.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
+        return list(
+            pool.map(
+                lambda numbered: _bash_runs_the_act(numbered[1][1], stub_bin, tmp_path / f"log-{numbered[0]}"),
+                enumerate(cases),
+            )
+        )
 
 
 def _continuation_mutants(command: str) -> list[str]:
     r"""*command* with a ``\``+newline inserted at each of its ``len + 1`` positions."""
     return [f"{command[:index]}\\\n{command[index:]}" for index in range(len(command) + 1)]
+
+
+#: Negative-control entries a continuation can leave unparsable, where the module's stated
+#: asymmetry keeps the payload rather than guess. Everything else must stay elided at every
+#: insertion position, so the sweep cannot be satisfied by keeping the whole class.
+_MUTANT_OVER_KEEP_BUDGET = {"heredoc-to-reader": 4, "reader-after-continuation": 1}
 
 
 def _joined(text: str) -> str:
@@ -569,8 +726,13 @@ class TestBashGroundTruth:
         log = tmp_path / "log"
         executed = [mutant for mutant in _continuation_mutants(command) if _bash_runs_the_act(mutant, stub_bin, log)]
         dropped = [mutant for mutant in executed if ACT not in _joined(executed_span(mutant))]
+        raw_missed = [mutant for mutant in executed if ACT not in executed_span(mutant) and ACT in mutant]
         assert executed, f"{name}: no mutant runs the act, so this entry pins nothing"
         assert not dropped, f"{name}: {len(dropped)} of {len(executed)} silently elided, first {dropped[0]!r}"
+        assert not raw_missed, (
+            f"{name}: {len(raw_missed)} of {len(executed)} reach the span only once the matcher strips "
+            f"continuations, though the act is unsplit in the source — first {raw_missed[0]!r}"
+        )
 
     @pytest.mark.parametrize(
         ("name", "command"),
@@ -580,14 +742,82 @@ class TestBashGroundTruth:
     def test_a_continuation_never_makes_bash_run_a_payload(
         self, name: str, command: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
     ) -> None:
-        """The negative control's premise: mutating a reader leaves it a reader.
+        """The negative control: mutating a reader leaves it a reader, and still elides.
 
-        Without it the sweep above is satisfiable by keeping everything, and the elision
-        these entries pin would be free to disappear.
+        Without the span half this asserts only its own premise and passes at every revision
+        including ``main`` — so the sweep above stays satisfiable by keeping everything, and
+        the elision these entries pin is free to disappear unnoticed.
         """
         log = tmp_path / "log"
-        runs = [mutant for mutant in _continuation_mutants(command) if _bash_runs_the_act(mutant, stub_bin, log)]
+        mutants = _continuation_mutants(command)
+        runs = [mutant for mutant in mutants if _bash_runs_the_act(mutant, stub_bin, log)]
+        kept = [mutant for mutant in mutants if "task complete" in _joined(executed_span(mutant))]
+        budget = _MUTANT_OVER_KEEP_BUDGET.get(name, 0)
         assert not runs, f"{name}: a continuation made bash execute the payload, first {runs[0]!r}"
+        assert len(kept) <= budget, (
+            f"{name}: {len(kept)} of {len(mutants)} mutants keep the payload, over the pinned {budget} "
+            f"— first {kept[0]!r}"
+        )
+
+
+#: The over-keep every wrapper carries: an unquoted-delimiter heredoc body is kept by rule,
+#: crossed with the five sinks that execute nothing. Over-keeping only ever reds a matcher
+#: loudly, so it is budgeted rather than banned — the budget is what stops the widening
+#: quietly hollowing the elision out instead.
+_OVER_KEEP_BUDGET = 5
+
+#: Wrappers over that floor, each for a stated reason. A literal newline inside the wrapper
+#: makes every heredoc cell syntactically invalid, so bash runs none of them while the span
+#: still keeps the text; a function body is fail-closed, so its whole reader row is kept.
+_WRAPPER_OVER_KEEP_BUDGET = {
+    "if-newlines": 146,
+    "for-newlines": 146,
+    "function-brace-body": 35,
+    "function-subshell-body": 35,
+    "function-keyword": 35,
+}
+
+
+@pytest.mark.skipif(not pathlib.Path("/bin/bash").exists(), reason="ground truth needs a real /bin/bash")
+class TestTheStructuralProduct:
+    """WRAPPER x READER x REDIRECTION x SINK, so an unreported spelling is PRODUCED.
+
+    The continuation sweep is generative over one operator applied to a fixed table, and no
+    table entry is a keyword compound piped to an interpreter — so no mutant of one can be.
+    Adding the reported spellings as rows closes them and leaves the next cell of the same
+    product open, which is how this module came to be held five times.
+    """
+
+    @pytest.mark.parametrize(("name", "wrapper"), WRAPPERS, ids=[name for name, _ in WRAPPERS])
+    def test_no_cell_of_the_product_drops_text_bash_executes(
+        self, name: str, wrapper: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        cases = _structural_cases(wrapper)
+        assert len(cases) == len(READERS) * len(REDIRECTIONS) * len(SINK_TAILS)
+        verdicts = _bash_verdicts(cases, stub_bin, tmp_path)
+        spans = [executed_span(command) for _, command in cases]
+        dropped = [
+            (ident, command)
+            for (ident, command), runs, span in zip(cases, verdicts, spans, strict=True)
+            if runs and ACT not in span
+        ]
+        kept = [
+            ident
+            for (ident, _), runs, span in zip(cases, verdicts, spans, strict=True)
+            if not runs and "task complete" in span
+        ]
+        reached_by_a_reader = {
+            ident.split("|")[2]
+            for (ident, _), runs in zip(cases, verdicts, strict=True)
+            if runs and ident.startswith("reader|")
+        }
+        assert not dropped, f"{name}: {len(dropped)} of {sum(verdicts)} silently elided, first {dropped[0]}"
+        assert reached_by_a_reader >= INTERPRETER_SINKS, (
+            f"{name}: no plain-reader cell executes through {sorted(INTERPRETER_SINKS - reached_by_a_reader)}, "
+            "so this wrapper pins nothing for them"
+        )
+        budget = _WRAPPER_OVER_KEEP_BUDGET.get(name, _OVER_KEEP_BUDGET)
+        assert len(kept) <= budget, f"{name}: {len(kept)} over-keeps over the pinned {budget}, first {kept[0]}"
 
 
 class TestAContinuationBashRemovesMovesNoVerdict:
@@ -611,6 +841,51 @@ class TestAContinuationBashRemovesMovesNoVerdict:
         assert same, f"{name}: no mutant splices back to the command, so this entry pins nothing"
         for mutant in same:
             assert _joined(executed_span(mutant)) == expected, f"{name}: {mutant!r} moved the verdict"
+
+
+def _group_onlysegment_end(text: str, start: int) -> int:
+    """Where the window ended before keyword compounds were modelled — the reference scan."""
+    depth = 0
+    for _, char in unquoted_scan(text[:start]):
+        depth += 1 if char in GROUP_OPEN else 0
+        depth = max(depth - 1, 0) if char in GROUP_CLOSE else depth
+    for index, char in unquoted_scan(text, start):
+        if char in GROUP_OPEN:
+            depth += 1
+        elif char in GROUP_CLOSE:
+            depth = max(depth - 1, 0)
+        elif depth == 0 and (ends_a_list(text, index) or text.startswith("||", index)):
+            return index
+    return len(text)
+
+
+class TestTheWindowOnlyEverWidens:
+    """Monotonicity is what makes a NEW silent drop structurally impossible.
+
+    The data-only proof is ``all(stage is a reader)``, so a longer window either appends to
+    the LAST stage — whose command word is its first word, hence unchanged — or adds whole
+    conjuncts: it turns the proof True→False, never False→True. Only a keyword rule that
+    NARROWED the window could break that argument, and this is what reds when one does.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "command"),
+        EXECUTES + READS_ONLY + NEVER_REDIRECTED,
+        ids=[name for name, _ in EXECUTES + READS_ONLY + NEVER_REDIRECTED],
+    )
+    def test_no_start_ends_the_window_before_the_group_only_scan_does(self, name: str, command: str) -> None:
+        text = _Splice(command).text
+        narrowed = [
+            start
+            for start in range(len(text) + 1)
+            if segment_end(text, start, enclosing(text, start)) < _group_onlysegment_end(text, start)
+        ]
+        assert not narrowed, f"{name}: the window ends EARLIER than a group-only scan at {narrowed[:3]}"
+
+    def test_a_keyword_compound_genuinely_widens_it(self) -> None:
+        """Otherwise the bound above is satisfied by a keyword stack that does nothing."""
+        text = f"if true; then cat <<<'{ACT}'; fi | bash"
+        assert segment_end(text, 0, enclosing(text, 0)) > _group_onlysegment_end(text, 0)
 
 
 class TestOnlyEmissionReachesTheOriginalBytes:

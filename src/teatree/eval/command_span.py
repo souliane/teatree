@@ -11,10 +11,26 @@ the scanner cannot name a payload is kept.
 
 Elision is opt-in per matcher (``Bash.command_span``); plain ``Bash.command`` still
 grades the whole string, because for a large class the payload IS the graded artifact.
+
+Where bash's grammar puts a boundary — the quote-aware scan, and the reachability window
+the reader proof runs over — is :mod:`teatree.eval.command_window`. This module decides
+what those boundaries MEAN for the payload verdict.
 """
 
 import re
 from collections.abc import Iterator
+
+from teatree.eval.command_window import (
+    GROUP_CLOSE,
+    closing_double_quote,
+    enclosing,
+    ends_a_list,
+    matching_paren,
+    quoted_region_end,
+    segment_end,
+    unquoted_scan,
+    word_end,
+)
 
 #: The token before a quoted operand that makes that operand a SCRIPT rather than
 #: payload — ``bash -c '…'``, ``eval "…"``, and the clustered short-option runs
@@ -43,17 +59,6 @@ _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 
 #: Words a compound command opens with that precede its command word without being it.
 _NOT_A_COMMAND = frozenset({"(", "{", "!", "if", "then", "elif", "else", "while", "until", "do", "time"})
-
-#: Characters bash reads as a control operator ENDING a command list. A single ``|`` is
-#: absent on purpose: a pipeline is ONE segment, because ``cat <<'EOF' | bash`` executes
-#: its body. ``&`` is here conditionally — see :func:`_ends_a_list`.
-_LIST_TERMINATOR = ";&\n"
-
-#: Openers and closers of a command GROUP. A terminator inside one ends nothing at the
-#: outer level, and a group's stdout is its contents' stdout, so the window has to widen
-#: through both — ``{ cat <<<'…'; } | bash`` feeds the here-string to ``bash``.
-_GROUP_OPEN = "({"
-_GROUP_CLOSE = ")}"
 
 #: A process substitution names a program that RECEIVES the redirected text without being
 #: a pipeline stage (``cat <<<'…' > >(bash)`` runs it under bash). Its command word is
@@ -190,7 +195,7 @@ class _SpanScanner:
             else:
                 self._emit(self._pos, self._pos + 1)
                 self._pos += 1
-                if char == "|" or char in _GROUP_CLOSE or _ends_a_list(self._src, self._pos - 1):
+                if char == "|" or char in GROUP_CLOSE or ends_a_list(self._src, self._pos - 1):
                     self._segment_start = self._pos
         return "".join(self._out)
 
@@ -205,7 +210,7 @@ class _SpanScanner:
         if self._herestring_pending:
             if not char.isspace():
                 self._herestring_pending = False
-                self._herestring_operand = self._src[self._pos : _word_end(self._src, self._pos)]
+                self._herestring_operand = self._src[self._pos : word_end(self._src, self._pos)]
         elif self._herestring_operand and (char.isspace() or char in ";|&()<>"):
             self._herestring_operand = ""
 
@@ -252,7 +257,7 @@ class _SpanScanner:
         self._pos = close + 1
 
     def _scan_double_quoted(self) -> None:
-        close = _closing_double_quote(self._src, self._pos)
+        close = closing_double_quote(self._src, self._pos)
         if close is None:
             self._keep_raw_remainder()
             return
@@ -289,13 +294,21 @@ class _SpanScanner:
         word leaves the segment unproven, and unproven keeps. The window is every program
         the redirected text can reach — bounded by bash's own control operators, not by a
         physical line — so a newline inside a quoted argument, an intervening heredoc body,
-        an enclosing group and a redirection operator spelling ``&`` all stop bounding it.
-        A ``\``+newline continuation is already gone: the text scanned here is
+        an enclosing group or keyword compound, and a redirection operator spelling ``&``
+        all stop bounding it; :mod:`teatree.eval.command_window` owns where those bounds
+        fall. A ``\``+newline continuation is already gone: the text scanned here is
         :class:`_Splice`'s, so no bound is derived from bytes bash removed before parsing.
+
+        A function body has no window at all — its stdout flows to the call site, textually
+        elsewhere — so one is never proved data-only. That is read at the CURSOR, not at the
+        segment start: the enclosing ``{`` opens after the start, so a start-side check sees
+        no function at all.
         """
+        if enclosing(self._src, self._pos).in_a_function_body():
+            return False
         start = self._segment_start
-        segment = self._src[start : _segment_end(self._src, start, _open_groups(self._src, start))]
-        if any(segment.startswith(_PROCESS_SUBSTITUTION, index) for index, _ in _unquoted_scan(segment)):
+        segment = self._src[start : segment_end(self._src, start, enclosing(self._src, start))]
+        if any(segment.startswith(_PROCESS_SUBSTITUTION, index) for index, _ in unquoted_scan(segment)):
             return False
         return all(_stage_command_word(stage) in _STDIN_READERS for stage in _pipeline_stages(segment))
 
@@ -345,7 +358,7 @@ def _resolve_word(raw: str) -> str | None:
             out.append(raw[index + 1 : close])
             index = close + 1
         elif char == '"':
-            close = _closing_double_quote(raw, index)
+            close = closing_double_quote(raw, index)
             if close is None:
                 return None
             body = raw[index + 1 : close]
@@ -361,109 +374,15 @@ def _resolve_word(raw: str) -> str | None:
     return "".join(out) or None
 
 
-def _unquoted_scan(text: str, start: int = 0) -> Iterator[tuple[int, str]]:
-    """``(index, char)`` for each char of *text* outside a quote, escape or substitution."""
-    index = start
-    while index < len(text):
-        char = text[index]
-        if char == "\\":
-            index += 2
-        elif char == "'":
-            close = text.find("'", index + 1)
-            index = len(text) if close == -1 else close + 1
-        elif char == '"':
-            close = _closing_double_quote(text, index)
-            index = len(text) if close is None else close + 1
-        elif char == "`":
-            close = text.find("`", index + 1)
-            index = len(text) if close == -1 else close + 1
-        elif text.startswith("$(", index):
-            close = _matching_paren(text, index + 1)
-            index = len(text) if close is None else close + 1
-        elif text.startswith("${", index):
-            close = text.find("}", index + 2)
-            index = len(text) if close == -1 else close + 1
-        else:
-            yield index, char
-            index += 1
-
-
-def _word_end(text: str, start: int) -> int:
-    """Index just past the single shell word beginning at *start*."""
-    for index, char in _unquoted_scan(text, start):
-        if char.isspace() or char in ";|&()<>":
-            return index
-    return len(text)
-
-
-def _ends_a_list(text: str, index: int) -> bool:
-    r"""Whether *text*\ [*index*] is a control operator that ends a command list.
-
-    A raw ``&`` is one only OUTSIDE a redirection operator: ``2>&1``, ``2>&-``, ``&>``
-    and ``|&`` all spell it inside one, where bash reads no list boundary at all. Taking
-    the character at face value cuts the window short of a later ``| bash``, which then
-    reads as a segment every stage of which is a reader — the silent elision.
-    """
-    char = text[index]
-    if char not in _LIST_TERMINATOR:
-        return False
-    if char != "&":
-        return True
-    if text[index + 1 : index + 2] == ">":
-        return False
-    before = index - 1
-    while before >= 0 and text[before] in " \t":
-        before -= 1
-    return before < 0 or text[before] not in "><|"
-
-
-def _open_groups(text: str, end: int) -> int:
-    """How many command groups are still open just before *end*."""
-    depth = 0
-    for _, char in _unquoted_scan(text[:end]):
-        if char in _GROUP_OPEN:
-            depth += 1
-        elif char in _GROUP_CLOSE:
-            depth = max(depth - 1, 0)
-    return depth
-
-
-def _segment_end(text: str, start: int, open_groups: int) -> int:
-    """Index just past every program the text redirected at *start* can reach.
-
-    *open_groups* is how many groups enclose *start*, so the scan runs past their own
-    terminators and closers to the outer pipeline: a group's stdout is its contents'
-    stdout, which is what carries the redirected text out of ``{ … }`` into ``| bash``.
-    """
-    depth = open_groups
-    for index, char in _unquoted_scan(text, start):
-        if char in _GROUP_OPEN:
-            depth += 1
-        elif char in _GROUP_CLOSE:
-            depth = max(depth - 1, 0)
-        elif depth == 0 and (_ends_a_list(text, index) or text.startswith("||", index)):
-            return index
-    return len(text)
-
-
 def _pipeline_stages(segment: str) -> list[str]:
     """*segment* cut at each unquoted ``|`` — one entry per program bash would run."""
     stages: list[str] = []
     cut = 0
-    for index, char in _unquoted_scan(segment):
+    for index, char in unquoted_scan(segment):
         if char == "|":
             stages.append(segment[cut:index])
             cut = index + 1
     return [*stages, segment[cut:]]
-
-
-def _quoted_region_end(text: str, start: int) -> int | None:
-    """Index just past the quoted region opening at *start*, or ``None`` if it is unclosed."""
-    if text[start] == "'":
-        close = text.find("'", start + 1)
-        return None if close == -1 else close + 1
-    close = _closing_double_quote(text, start)
-    return None if close is None else close + 1
 
 
 def _stage_tokens(stage: str) -> Iterator[str]:
@@ -480,7 +399,7 @@ def _stage_tokens(stage: str) -> Iterator[str]:
             word.append(stage[index : index + 2])
             index += 2
         elif char in "'\"":
-            close = _quoted_region_end(stage, index)
+            close = quoted_region_end(stage, index)
             if close is None:
                 break
             word.append(stage[index:close])
@@ -522,65 +441,6 @@ def _stage_command_word(stage: str) -> str | None:
     return None
 
 
-def _closing_double_quote(text: str, start: int) -> int | None:
-    """Index of the ``"`` closing the region opened at *start*, or ``None``."""
-    index = start + 1
-    while index < len(text):
-        char = text[index]
-        if char == "\\":
-            index += 2
-        elif char == '"':
-            return index
-        elif text.startswith("$(", index):
-            end = _matching_paren(text, index + 1)
-            if end is None:
-                return None
-            index = end + 1
-        elif char == "`":
-            backtick = text.find("`", index + 1)
-            if backtick == -1:
-                return None
-            index = backtick + 1
-        else:
-            index += 1
-    return None
-
-
-def _matching_paren(text: str, open_index: int) -> int | None:
-    """Index of the ``)`` closing the ``(`` at *open_index*, or ``None``.
-
-    Quoted regions are skipped whole — a ``)`` inside one closes nothing, so a
-    substitution is never truncated mid-way.
-    """
-    depth = 0
-    index = open_index
-    while index < len(text):
-        char = text[index]
-        if char == "\\":
-            index += 2
-        elif char == "'":
-            close = text.find("'", index + 1)
-            if close == -1:
-                return None
-            index = close + 1
-        elif char == '"':
-            close = _closing_double_quote(text, index)
-            if close is None:
-                return None
-            index = close + 1
-        elif char == "(":
-            depth += 1
-            index += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0:
-                return index
-            index += 1
-        else:
-            index += 1
-    return None
-
-
 def _substitution_spans(body: str) -> Iterator[tuple[int, int]]:
     """``(start, end)`` for each ``$( … )`` and backtick span of a double-quoted *body*."""
     index = 0
@@ -588,7 +448,7 @@ def _substitution_spans(body: str) -> Iterator[tuple[int, int]]:
         if body[index] == "\\":
             index += 2
         elif body.startswith("$(", index):
-            end = _matching_paren(body, index + 1)
+            end = matching_paren(body, index + 1)
             if end is None:
                 return
             yield index, end + 1
