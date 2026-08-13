@@ -14,6 +14,7 @@ enabled-but-not-yet-running detects as driverless and says so).
 """
 
 from teatree.config.resolution import get_effective_settings
+from teatree.core.loop_lease_liveness import namespace_is_attributable
 from teatree.core.models import LoopDriver
 from teatree.core.session_identity import owner_record
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held, pid_alive
@@ -72,11 +73,20 @@ def _self_pump_is_driving(session_id: str) -> bool:
         return False
     if not record or record.get("session_id") != session_id:
         return False
-    return _pid_is_alive(record.get("pid"))
+    return _pid_is_alive(record.get("pid"), record.get("pid_namespace"))
 
 
-def _pid_is_alive(pid: object) -> bool:
-    """Whether ``pid`` (an int or a digit string from the registry) names a live process."""
+def _pid_is_alive(pid: object, pid_namespace: object) -> bool:
+    """Whether ``pid`` (an int or a digit string from the registry) names a live process.
+
+    A pid resolves only in the namespace it was recorded in (#4270), so a record written
+    by a sibling container is a collision rather than evidence. An UNRECORDED namespace
+    leaves the pid as the only evidence there is — blank-tolerant here because the
+    verdict only reports a driver, and the record regains a namespace on the owner's next
+    SessionStart.
+    """
+    if not namespace_is_attributable(str(pid_namespace or "")):
+        return False
     if isinstance(pid, bool) or not isinstance(pid, int | str):
         return False
     text = str(pid).strip()

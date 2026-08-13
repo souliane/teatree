@@ -28,10 +28,25 @@ from pathlib import Path
 import typer
 
 from teatree.utils.editable_pth import host_root_for_checkout
+from teatree.utils.install_headroom import install_headroom_refusal
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 from teatree.utils.uv_overrides import uv_overrides_args
 
 type SubprocessRunner = Callable[..., CompletedProcess[str]]
+
+
+def uv_tool_dir(uv_bin: str, *, runner: SubprocessRunner | None = None) -> Path | None:
+    """Where uv rebuilds the tool venv, or ``None`` when uv cannot say.
+
+    The filesystem to measure before the destructive reinstall (#4338) and the home of the
+    install receipt, so both read the same one answer. ``runner`` defaults to the audited
+    :func:`teatree.utils.run.run_allowed_to_fail` resolved AT CALL TIME, so patching the
+    module attribute still takes effect.
+    """
+    result = (runner or run_allowed_to_fail)([uv_bin, "tool", "dir"], expected_codes=None)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip())
 
 
 def current_editable_source(uv_bin: str) -> Path | None:
@@ -44,10 +59,10 @@ def current_editable_source(uv_bin: str) -> Path | None:
         [tool]
         requirements = [{ name = "teatree", editable = "/path/to/clone" }]
     """
-    result = run_allowed_to_fail([uv_bin, "tool", "dir"], expected_codes=None)
-    if result.returncode != 0 or not result.stdout.strip():
+    tool_dir = uv_tool_dir(uv_bin)
+    if tool_dir is None:
         return None
-    receipt = Path(result.stdout.strip()) / "teatree" / "uv-receipt.toml"
+    receipt = tool_dir / "teatree" / "uv-receipt.toml"
     if not receipt.is_file():
         return None
     try:
@@ -92,6 +107,10 @@ class ReinstallResult:
     ok: bool
     reinstalled: bool
     error: str = ""
+    #: The reinstall was REFUSED before it destroyed anything (no free-space headroom), not
+    #: attempted and failed. The caller must retry rather than record a failure: a transient
+    #: low-disk moment that permanently disarmed self-update would be a new stuck state.
+    deferred: bool = False
 
 
 def reinstall_running_editable(*, runner: SubprocessRunner = run_allowed_to_fail) -> ReinstallResult:
@@ -102,6 +121,11 @@ def reinstall_running_editable(*, runner: SubprocessRunner = run_allowed_to_fail
     same ``uv tool install --editable <src> --reinstall`` + ``t3 setup``
     sequence. ``runner`` is injectable for tests — production passes the
     audited :func:`teatree.utils.run.run_allowed_to_fail`.
+
+    ``--reinstall`` DELETES the working tool venv before rebuilding it, so the
+    free-space precondition (#4338) is checked first and a shortfall returns
+    ``deferred`` WITHOUT invoking the runner: the previous, functional install is
+    left exactly as it was.
     """
     reinstalled = False
     errors: list[str] = []
@@ -109,6 +133,12 @@ def reinstall_running_editable(*, runner: SubprocessRunner = run_allowed_to_fail
     if uv_bin:
         source = current_editable_source(uv_bin)
         if source is not None and source.is_dir():
+            refusal = install_headroom_refusal(uv_tool_dir(uv_bin, runner=runner))
+            if refusal:
+                # Return BEFORE the runner and before ``t3 setup``: the venv the refusal
+                # protects is the one this process is running from, and setup is not the
+                # problem, so re-running it would only burn a minute.
+                return ReinstallResult(ok=False, reinstalled=False, deferred=True, error=refusal)
             result = runner(
                 _reinstall_argv(uv_bin, source),
                 expected_codes=None,
@@ -267,4 +297,5 @@ __all__ = [
     "ensure_self_db_migrated",
     "reinstall_running_editable",
     "seed_default_loops",
+    "uv_tool_dir",
 ]

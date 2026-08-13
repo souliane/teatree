@@ -15,6 +15,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
@@ -190,16 +191,28 @@ class GhPrApiClient:
         return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
-        argv = [
-            "api",
-            f"repos/{slug}/commits/main/check-runs",
-            "--jq",
-            f'.check_runs | map(select(.name == "{check_name}")) | .[0].conclusion // ""',
-        ]
+        """Whether *check_name* has a completed, non-green conclusion on ``main`` (#4090 sibling).
+
+        Reads across ALL pages via the shared :mod:`teatree.loop.main_check_runs` reader —
+        an unpaginated single-page read sees only GitHub's first 30 check-runs, so a named
+        check landing past page 1 would read as absent and this would report "not failed"
+        even when ``main`` genuinely is red on it. Any read failure (non-zero ``gh`` exit,
+        unparsable pages, the check absent from every page) degrades to ``False`` — the
+        existing fail-toward-"not confirmed failed" direction the uv-audit fallback caller
+        already treats as safe.
+        """
+        argv = check_runs_argv(slug=slug, ref="main")
         rc, out, _ = self._run_gh(argv)
         if rc != 0:
             return False
-        return out.strip().lower() not in {"success", "neutral", "skipped", ""}
+        runs = parse_check_run_pages(out)
+        if runs is None:
+            return False
+        match = next((run for run in runs if str(run.get("name") or "") == check_name), None)
+        if match is None:
+            return False
+        conclusion = str(match.get("conclusion") or "").strip().lower()
+        return conclusion not in {"success", "neutral", "skipped", ""}
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
         """SHA-bound squash merge (#1985) — delegates to the keystone primitive.

@@ -134,6 +134,42 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
         assert not work.exists
 
 
+class TestWrongVenueIsNamedAsSuch(_CheckoutFixture):
+    """A checkout whose admin dir belongs to another execution context (#4272).
+
+    ``t3`` runs in Docker, so a container-created checkout records a gitdir the
+    host cannot resolve, and git answers in the same words it uses for a directory
+    that never held a repository. Reported as a repository verdict, the operator
+    reads a broken worktree and hand-probes it; reported as a venue, they know to
+    probe from the container instead.
+    """
+
+    def _misdirect_gitdir(self) -> Path:
+        elsewhere = Path("/nonexistent-venue/clone/.git/worktrees/agent-deadbeef")
+        (self.checkout / ".git").write_text(f"gitdir: {elsewhere}\n", encoding="utf-8")
+        return elsewhere
+
+    def test_unresolvable_gitdir_reports_the_venue_not_a_repository_verdict(self) -> None:
+        elsewhere = self._misdirect_gitdir()
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert work.exists, "a checkout this venue cannot read has not been proven empty"
+        assert str(elsewhere) in work.unreadable
+        assert "does not exist in this execution context" in work.unreadable
+        assert "HEAD" not in work.unreadable, f"a venue miss is not a repository verdict: {work.unreadable}"
+
+    def test_a_genuine_non_checkout_keeps_the_repository_verdict(self) -> None:
+        not_a_repo = self.checkout.parent / "agent-notgit"
+        not_a_repo.mkdir()
+
+        work = probe_unshipped_work(not_a_repo)
+
+        assert "execution context" not in work.unreadable, (
+            "a dir that never claimed to be a checkout must not be excused as a venue miss"
+        )
+
+
 class TestCaptureWritesArtifactsAndRow(_CheckoutFixture):
     def _capture(self) -> UnshippedWorkRecord | None:
         return capture_unshipped_work(self.checkout, branch="feat", overlay="test", artifact_root=self.artifacts)

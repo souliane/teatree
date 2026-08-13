@@ -85,7 +85,14 @@ class Task(models.Model):
     # was recorded in (#4253): each service in the deployment has its own, so the same
     # integer names a different process — or none — depending on who reads it.
     owner_pid = models.PositiveIntegerField(null=True, blank=True)
-    owner_pid_namespace = models.CharField(max_length=64, blank=True, default="")
+    # ``db_default`` beside the Python default is load-bearing, not belt-and-braces (#4379):
+    # Django never persists a Python ``default`` into the column, so #4309's ``AddField``
+    # produced a NOT NULL column with NO DB default. An INSERT from a process whose model
+    # class predates the field OMITS it and writes NULL — the measured
+    # ``IntegrityError: NOT NULL constraint failed: teatree_task.owner_pid_namespace`` that
+    # rolled back completed runs. The claim gate (#4387) protects processes running the new
+    # code; this protects every process, including ones older than the gate itself.
+    owner_pid_namespace = models.CharField(max_length=64, blank=True, default="", db_default="")
     # #4164 follow-up: SET once when a drive begins, CLEARED once when it ends — never
     # periodically renewed, so a memory-thrashed event loop that cannot heartbeat still
     # recorded it before the stall began. The cross-process twin of claim_liveness's

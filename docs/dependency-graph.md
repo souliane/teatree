@@ -53,6 +53,7 @@ graph TD
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
     teatree.core --> teatree.core.schema_readiness
+    teatree.core --> teatree.core.process_freshness
     teatree.core --> teatree.core.managers
     teatree.core --> teatree.core.managers_overlay
     teatree.core --> teatree.core.loop_lease_manager
@@ -64,6 +65,8 @@ graph TD
     teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
     teatree.core.loop_lease_manager --> teatree.utils
+    teatree.core.managers_task_claim --> teatree.config
+    teatree.core.managers_task_claim --> teatree.core.process_freshness
     teatree.core.managers_task_claim --> teatree.core.schema_readiness
     teatree.core.managers_task_sweeps --> teatree.core.claim_liveness
     teatree.core.managers_task_sweeps --> teatree.core.modelkit
@@ -71,6 +74,9 @@ graph TD
     teatree.core.managers_session --> teatree.config
     teatree.core.managers_session --> teatree.core.managers_overlay
     teatree.core.schema_readiness --> teatree.config
+    teatree.core.process_freshness --> teatree.paths
+    teatree.core.process_freshness --> teatree.utils
+    teatree.core.process_freshness --> teatree.core.loop_lease_liveness
     teatree.core.managers --> teatree.config
     teatree.core.managers --> teatree.core.claim_liveness
     teatree.core.managers --> teatree.utils
@@ -240,6 +246,7 @@ graph TD
     teatree.loop --> teatree.loop.review_request_tracker
     teatree.loop --> teatree.loop.dispatch_tables
     teatree.loop --> teatree.loop.pr_ticket_index
+    teatree.loop --> teatree.loop.main_check_runs
     teatree.loop --> teatree.loop.scanners
     teatree.loop --> teatree.loop.dispatch_reducer
     teatree.loop --> teatree.loop.dispatch_gates
@@ -287,6 +294,7 @@ graph TD
     teatree.loop.loop_state_db --> teatree.loop.preset_resolution
     teatree.loop.preset_resolution --> teatree.core.models
     teatree.loop.scanners --> teatree.loop.inbound_reading
+    teatree.loop.scanners --> teatree.loop.main_check_runs
     teatree.loop.scanners --> teatree.types
     teatree.loop.scanners --> teatree.paths
     teatree.loop.scanners --> teatree.utils
@@ -419,6 +427,7 @@ graph TD
     teatree.loop.loop_cadences
     teatree.failure_signatures
     teatree.loop.inbound_classifier
+    teatree.loop.main_check_runs
     teatree.loop.url_specificity
     teatree.instance_id
     teatree.slack_mrkdwn

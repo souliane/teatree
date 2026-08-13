@@ -17,6 +17,7 @@ from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_
 from teatree.core.worktree.branch_classification import reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from tests._db_template import build_or_reuse_template, restore_from_template
+from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
 # Keep a stale shell DJANGO_SETTINGS_MODULE out of any SUBPROCESS a test spawns. The
@@ -363,6 +364,23 @@ def _schema_readiness_current_by_default(request: pytest.FixtureRequest) -> Iter
     invalidate_schema_readiness()
 
 
+@pytest.fixture(autouse=True)
+def _process_freshness_memo_isolated() -> Iterator[None]:
+    """Drop the #4387 process-freshness memo around every test.
+
+    The verdict is memoised per alias for 60 s and is read on the claim hot path, so a
+    case that records an applied migration would otherwise leak its BEHIND verdict into
+    the next test in the same xdist worker.
+    """
+    from teatree.core.process_freshness import (  # noqa: PLC0415 — deferred: importing it at collection pulls Django in
+        invalidate_process_freshness,
+    )
+
+    invalidate_process_freshness()
+    yield
+    invalidate_process_freshness()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     """Create a minimal workspace structure with a main repo."""
@@ -458,14 +476,16 @@ def _no_live_aux_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Arm the worker-thread DB-handle sentinel for the whole suite.
+    """Arm the two cross-test thread sentinels for the whole suite.
 
-    Always on: a stranded handle reds a random bystander test in a random shard,
-    so the sentinel that names the culprit has to already be running when it
-    happens — an opt-in flag would only ever be switched on after the fact. See
-    ``tests/_thread_db_sentinel.py``.
+    Always on, both for the same reason: each catches a failure that lands on a
+    random bystander in a random shard, so a sentinel that has to be switched on
+    could only ever be switched on after the fact. See ``tests/_thread_db_sentinel.py``
+    (a worker thread that STRANDS a DB handle) and ``tests/_speak_thread_sentinel.py``
+    (a test that LEAKS a local-playback thread into the next test, #4277).
     """
     config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
+    config.pluginmanager.register(SpeakThreadSentinel(), "speak-thread-sentinel")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

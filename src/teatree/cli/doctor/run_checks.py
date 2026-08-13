@@ -453,9 +453,16 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # self-DB schema guard reports the REAL pending-migration state rather than
     # silently WARNing on ``ImproperlyConfigured`` and masking a stale runtime
     # self-DB that locks out the merge path (#126).
-    from teatree.core.gates.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415 — lazy CLI import
+    from teatree.core.gates.schema_guard import (  # noqa: PLC0415 — lazy CLI import
+        doctor_check_process_code_freshness,
+        doctor_check_self_db_migrations,
+    )
 
     ok = doctor_check_self_db_migrations() and ok
+    # The MIRROR reading (#4387/#4390): is a long-running role behind the schema the DB has
+    # applied? This process cannot answer that about another one — a fresh interpreter's own
+    # snapshot is always current — so the check reads what those roles publish.
+    ok = doctor_check_process_code_freshness() and ok
 
     # Worker-role gates: flock liveness (advisory) + the CRITICAL skills-present
     # and memory-adequate HARD FAILs (role-aware no-ops off the worker). See

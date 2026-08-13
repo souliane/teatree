@@ -9,7 +9,6 @@ from django.db.models.functions import Coalesce
 from django.db.models.lookups import LessThan
 from django.utils import timezone
 
-from teatree.config import worker_is_quiescing
 from teatree.core.claim_liveness import current_owner
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
@@ -27,7 +26,7 @@ from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_session import SessionQuerySet
-from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, schema_behind_code
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim_admission_block_reason
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
@@ -318,7 +317,7 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        if worker_is_quiescing() or schema_behind_code():
+        if claim_admission_block_reason():
             return self.none()
         now = timezone.now()
         qs = (
@@ -376,7 +375,7 @@ class TaskQuerySet(models.QuerySet):
         # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
         # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
         # are untouched by either.
-        if worker_is_quiescing() or schema_behind_code():
+        if claim_admission_block_reason():
             return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))

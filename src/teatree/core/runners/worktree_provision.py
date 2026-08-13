@@ -111,10 +111,10 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     """
     if not wt_path or not Path(wt_path).is_dir():
         return None
-    # #3582: register the `generated` merge driver so this worktree resolves a
-    # generated-doc conflict by regeneration. Worktrees share the main clone's
-    # `.git/config`, so this is a no-op repeat once the clone is registered, but
-    # it also covers a worktree whose clone `t3 setup` never touched.
+    # #3582: register the `generated` merge driver so a generated-doc merge here warns
+    # that the doc needs regenerating. Worktrees share the main clone's `.git/config`,
+    # so this is a no-op repeat once the clone is registered, but it also covers a
+    # worktree whose clone `t3 setup` never touched.
     logger.debug("%s", install_merge_driver(Path(wt_path)))
     repo_name = Path(wt_path).name
     core_lines = [f"dotenv ../{CACHE_DIRNAME}/{repo_name}/{CACHE_FILENAME}"]

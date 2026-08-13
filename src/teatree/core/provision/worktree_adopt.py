@@ -48,6 +48,16 @@ class WorktreeAdoptError(RuntimeError):
     """
 
 
+class NotAWorktreeError(WorktreeAdoptError):
+    """The adopted path is not a linked git worktree.
+
+    Its own type so the CLI boundary can tell "the operator stood outside a
+    worktree" from "the operator's directory never crossed the container
+    boundary" (#4281) — the same refusal here, opposite fixes there — without
+    duplicating this module's ``.git``-is-a-file predicate.
+    """
+
+
 def _repo_name_for(cwd_path: Path) -> str:
     """The REPO this checkout belongs to — its clone's leaf, not the directory's name.
 
@@ -74,8 +84,9 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
 
     Guardrails (each raises :class:`WorktreeAdoptError`):
 
-    - *cwd* must be a git *worktree* — ``.git`` present as a FILE. A main clone
-        keeps ``.git`` as a directory and is refused (mirrors the #752 refusal).
+    - *cwd* must be a git *worktree* — ``.git`` present as a FILE, else
+        :class:`NotAWorktreeError`. A main clone keeps ``.git`` as a directory
+        and is refused (mirrors the #752 refusal).
     - the checkout must be on a feature branch (not ``HEAD``/``main``/``master``).
     - it must sit in the ticket's ONE workspace dir when the ticket already has one
         (:func:`~teatree.core.worktree.ticket_workspace.assert_joins_ticket_workspace`):
@@ -96,7 +107,7 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
             f"Refusing to adopt {cwd_path}: not a git worktree (its .git is not a file). "
             "Run pr create from the follow-up PR's worktree directory."
         )
-        raise WorktreeAdoptError(msg)
+        raise NotAWorktreeError(msg)
 
     branch = git.current_branch(repo=str(cwd_path))
     if not branch or branch in _NON_FEATURE_BRANCHES:

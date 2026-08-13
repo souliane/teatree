@@ -5,14 +5,12 @@ and writes ``docs/generated/management-commands.md``.  Auto-stages the file on
 change.
 
 ``argv[0]`` selects the output path and is ALWAYS the file written, mirroring
-``generate_cli_reference.py``. That is the merge-driver contract: when
-``git_merge_generated`` runs this hook it passes git's ``%A`` output slot — a
-``.merge_file_XXXXXX`` temp path in the repo root — and takes whatever is left
-there as the merge result. Deriving a destination from ``argv[0].parent``
-instead would leave the slot untouched (resolving the merge to "ours" while
-reporting success) and drop the real output in the repo root. The ``.json``
-sibling is written only alongside the committed default output, where the
-docs-drift gate reads it.
+``generate_cli_reference.py``. Callers that redirect the output rely on it —
+``generate_all_docs --output-dir`` writes a drift check's scratch copy, never the
+committed doc. Deriving a destination from ``argv[0].parent`` instead would leave
+the caller's path untouched while reporting success, and drop the real output
+beside it. The ``.json`` sibling is written only alongside the committed default
+output, where the docs-drift gate reads it.
 """
 
 import os
