@@ -42,3 +42,38 @@ class TestQuestionsReachability(TestCase):
 
         # The count is the headline the operator acts on; the table itself is print_table's.
         assert "1 reachable by no resolver" in err.getvalue()
+
+
+class TestQuestionsListShowsEscalations(TestCase):
+    """An age-backstop escalation is readable on the operator's own surface (#4178)."""
+
+    def test_json_carries_the_escalation_stamp(self) -> None:
+        row = DeferredQuestion.record("Merge it?")
+        assert row.mark_escalated("pending past the ceiling")
+
+        out = io.StringIO()
+        call_command("questions", "list", "--json", stdout=out)
+
+        payload = {entry["id"]: entry for entry in json.loads(out.getvalue())}
+        assert payload[row.pk]["escalation_count"] == 1
+        assert payload[row.pk]["escalated_at"] is not None
+
+    def test_an_unescalated_row_reports_no_stamp(self) -> None:
+        row = DeferredQuestion.record("Merge it?")
+
+        out = io.StringIO()
+        call_command("questions", "list", "--json", stdout=out)
+
+        payload = {entry["id"]: entry for entry in json.loads(out.getvalue())}
+        assert payload[row.pk]["escalation_count"] == 0
+        assert payload[row.pk]["escalated_at"] is None
+
+    def test_human_view_counts_the_escalated_rows(self) -> None:
+        row = DeferredQuestion.record("Merge it?")
+        DeferredQuestion.record("And this one?")
+        assert row.mark_escalated("pending past the ceiling")
+        err = io.StringIO()
+
+        call_command("questions", "list", stderr=err)
+
+        assert "1 past the age ceiling" in err.getvalue()

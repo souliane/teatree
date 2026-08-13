@@ -14,7 +14,9 @@ The over-resolve guard is pinned throughout: a live or undeterminable subject is
 
 from datetime import timedelta
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
@@ -245,6 +247,29 @@ class TestAgeBackstopDisabled(TestCase):
         assert drain_pending_questions().escalated == 0
         question.refresh_from_db()
         assert question.escalated_at is None
+
+
+class TestSweepCost(TestCase):
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 3)
+
+    def _sweep_queries(self) -> int:
+        with CaptureQueriesContext(connection) as captured:
+            drain_pending_questions()
+        return len(captured.captured_queries)
+
+    def test_the_sweep_cost_does_not_grow_with_the_backlog(self) -> None:
+        # Everything one sweep needs — the subject index, the clock, the ceiling — is
+        # resolved ONCE. Resolving the effective settings per row made a 40-deep backlog
+        # cost 82 queries; it also re-read the clock per row, so the cutoff drifted
+        # WITHIN a single sweep and two equally-old rows could decide differently.
+        DeferredQuestion.record("Question 0")
+        one_row = self._sweep_queries()
+
+        for i in range(1, 20):
+            DeferredQuestion.record(f"Question {i}")
+
+        assert self._sweep_queries() == one_row
 
 
 class TestTickWiring(TestCase):

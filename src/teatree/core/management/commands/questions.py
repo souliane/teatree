@@ -43,6 +43,8 @@ class DeferredQuestionRow(TypedDict):
     status: str
     question: str
     created_at: str | None
+    escalated_at: str | None
+    escalation_count: int
 
 
 class QuestionReachRow(TypedDict):
@@ -75,16 +77,26 @@ def _render_reachability_table(rows: list["QuestionReachRow"]) -> str:
 
 def _render_questions_table(rows: list[DeferredQuestion]) -> str:
     buffer = io.StringIO()
+    escalated = sum(1 for row in rows if row.escalated_at is not None)
     table_rows = [
-        [row.pk, row.status, row.created_at.isoformat() if row.created_at is not None else "?", row.question]
+        [
+            row.pk,
+            row.status,
+            f"{row.escalation_count}x" if row.escalated_at is not None else "—",
+            row.created_at.isoformat() if row.created_at is not None else "?",
+            row.question,
+        ]
         for row in rows
     ]
+    title = f"{len(rows)} deferred question(s)"
+    if escalated:
+        title += f", {escalated} past the age ceiling"
     print_table(
-        ["ID", "Status", "Created", "Question"],
+        ["ID", "Status", "Escalated", "Created", "Question"],
         table_rows,
-        title=f"{len(rows)} deferred question(s)",
+        title=title,
         stream=buffer,
-        justify=["right", "left", "left", "left"],
+        justify=["right", "left", "right", "left", "left"],
     )
     return buffer.getvalue()
 
@@ -166,6 +178,8 @@ class Command(MachineOutputCommand):
                 "status": row.status,
                 "question": row.question,
                 "created_at": row.created_at.isoformat() if row.created_at is not None else None,
+                "escalated_at": row.escalated_at.isoformat() if row.escalated_at is not None else None,
+                "escalation_count": row.escalation_count,
             }
             for row in rows
         ]
