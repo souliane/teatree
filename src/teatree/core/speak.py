@@ -74,6 +74,7 @@ from teatree.utils.thread_db import close_thread_db_connections
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "SPEAK_THREAD_NAME",
     "clean_for_speech",
     "deliver_user_dm",
     "deliver_user_dm_sidecar",
@@ -83,6 +84,12 @@ __all__ = [
 ]
 
 SAY_BINARY = "say"
+
+#: The name EVERY local-playback daemon thread carries (#4277). CPython's default
+#: (``Thread-N (_speak_local_closing_connections)``) is an implementation detail, so
+#: the test-suite sentinel that fails a test leaking one of these threads — and any
+#: live-process dump — is keyed on this single canonical name instead.
+SPEAK_THREAD_NAME = "t3-speak-local"
 _AFCONVERT_BINARY = "afconvert"
 _SPEAK_SUBPROCESS_TIMEOUT = 120
 
@@ -180,7 +187,9 @@ def speak(text: str, *, block: bool = False) -> None:
     if block:
         _speak_local(cleaned)
         return
-    thread = threading.Thread(target=_speak_local_closing_connections, args=(cleaned,), daemon=True)
+    thread = threading.Thread(
+        target=_speak_local_closing_connections, args=(cleaned,), daemon=True, name=SPEAK_THREAD_NAME
+    )
     thread.start()
 
 
@@ -363,7 +372,9 @@ def _maybe_speak_local(config: SpeakConfig, text: str) -> None:
     cleaned = clean_for_speech(text)
     if not cleaned:
         return
-    thread = threading.Thread(target=_speak_local_closing_connections, args=(cleaned,), daemon=True)
+    thread = threading.Thread(
+        target=_speak_local_closing_connections, args=(cleaned,), daemon=True, name=SPEAK_THREAD_NAME
+    )
     thread.start()
 
 
