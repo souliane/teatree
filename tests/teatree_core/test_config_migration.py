@@ -313,6 +313,22 @@ class TestImportTomlToDb(TestCase):
         result = import_toml_to_db('[teatree]\nmode = "interactive"\n', scan_terms=())
         assert [(r.key, r.is_safety_posture) for r in result.written] == [("mode", False)]
 
+    def test_a_restored_private_row_is_flagged_and_withholds_its_value(self) -> None:
+        text = '[backup]\ninclude_private = true\n[teatree]\nslack_user_id = "synthetic-user-ref"\nmerge_wip = 4\n'
+        result = import_toml_to_db(text, scan_terms=(), restore_private=True)
+        assert [(r.key, r.is_private) for r in result.written] == [("slack_user_id", True), ("merge_wip", False)]
+        rendered = {r.key: r.toml_value for r in result.written}
+        assert "synthetic-user-ref" not in rendered["slack_user_id"]
+        assert rendered["merge_wip"] == "4"
+
+    def test_a_row_private_only_by_its_value_is_flagged_too(self) -> None:
+        # The fourth withhold class: no key rule catches it, so `is_private` must be asked of
+        # `redaction_reason` and not of `_unstorable_reason` (which returns None under the flag).
+        text = '[backup]\ninclude_private = true\n[teatree]\ndashboard_instance_label = "acmecorp"\n'
+        result = import_toml_to_db(text, scan_terms=("acmecorp",), restore_private=True)
+        assert [(r.key, r.is_private) for r in result.written] == [("dashboard_instance_label", True)]
+        assert "acmecorp" not in result.written[0].toml_value
+
     def test_a_safety_posture_value_equal_to_its_default_is_skipped_not_rejected(self) -> None:
         # It writes no row, so there is nothing for the confirm gate to authorize.
         result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=())

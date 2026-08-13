@@ -10,6 +10,7 @@ import re
 import tomllib
 from io import StringIO
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from django.core.management import call_command
@@ -597,9 +598,29 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
+    #: One synthetic row per KEY-classified withhold class — a one-class fixture passes against
+    #: a one-class fix. The fourth class (a banned term matched on the VALUE) is unit-covered in
+    #: ``test_config_migration`` instead: it needs live scan terms, and this command resolves
+    #: those through a cold reader that cannot see a test transaction's rows.
+    PRIVATE_ROWS: ClassVar[dict[str, str | list[str]]] = {
+        "banned_terms": ["synthetic-scanned-term"],  # private-key
+        "banned_brands": ["synthetic-brand"],  # private-key
+        "anthropic_oauth_pass_paths": ["synthetic/oauth-entry"],  # credential-coordinate
+        "slack_user_id": "synthetic-user-ref",  # personal-identifier
+    }
+
     def setUp(self) -> None:
-        ConfigSetting.objects.set_value("slack_user_id", "<the-operator>")
+        for key, value in self.PRIVATE_ROWS.items():
+            ConfigSetting.objects.set_value(key, value)
         ConfigSetting.objects.set_value("merge_wip", 4)
+
+    @staticmethod
+    def _private_value_fragments() -> list[str]:
+        """Every private VALUE as it would read on screen — what must never appear in stdout."""
+        fragments: list[str] = []
+        for value in TestPrivateBackupRoundTripOverTheCli.PRIVATE_ROWS.values():
+            fragments.extend(value if isinstance(value, list) else [value])
+        return fragments
 
     def _backup(self) -> tuple[Path, str]:
         path = self.tmp_path / "backup.toml"
@@ -634,8 +655,36 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
         path, _ = self._backup()
         ConfigSetting.objects.all().delete()
         self._import(path, "--restore-private")
-        assert ConfigSetting.objects.get_effective("slack_user_id") == "<the-operator>"
+        for key, value in self.PRIVATE_ROWS.items():
+            assert ConfigSetting.objects.get_effective(key) == value
         assert ConfigSetting.objects.get_effective("merge_wip") == 4
+
+    def test_the_restore_never_echoes_a_private_value_to_stdout(self) -> None:
+        # A CLI an agent runs writes its stdout into transcripts, so the restore names the
+        # KEYS it wrote and withholds their values — the same convention the export follows.
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        out, _ = self._import(path, "--restore-private")
+        for fragment in self._private_value_fragments():
+            assert fragment not in out, f"private value {fragment!r} leaked to stdout"
+        for key in self.PRIVATE_ROWS:
+            assert f"{key} = <withheld: private>" in out, f"the operator was not told {key} was restored"
+
+    def test_the_dry_run_preview_never_echoes_a_private_value_either(self) -> None:
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        out, _ = self._import(path, "--restore-private", "--dry-run")
+        for fragment in self._private_value_fragments():
+            assert fragment not in out, f"private value {fragment!r} leaked to the preview"
+        for key in self.PRIVATE_ROWS:
+            assert f"{key} = <withheld: private>" in out, f"the preview did not name {key}"
+
+    def test_a_non_private_row_still_renders_its_value(self) -> None:
+        # Anti-vacuous control: blanking EVERY value would pass the leak tests trivially.
+        path, _ = self._backup()
+        ConfigSetting.objects.all().delete()
+        out, _ = self._import(path, "--restore-private")
+        assert re.search(r"merge_wip = 4\b", out), out
 
     def test_the_flag_is_reported_ignored_on_a_file_that_is_not_a_backup(self) -> None:
         path = self.tmp_path / "shared.toml"

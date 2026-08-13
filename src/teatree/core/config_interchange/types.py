@@ -13,6 +13,10 @@ import tomlkit
 from teatree.core.config_interchange.secret_guard import RedactedRow
 from teatree.core.models.config_setting import ConfigValue
 
+#: What a private row renders as. Says the row exists and why its value is absent, so a
+#: withheld render can never be mistaken for an empty string the store actually holds.
+_WITHHELD = "<withheld: private>"
+
 
 @dataclass(frozen=True)
 class OmittedRow:
@@ -55,6 +59,7 @@ class ImportedRow:
     key: str
     value: ConfigValue
     is_safety_posture: bool = False
+    is_private: bool = False
 
     @property
     def toml_value(self) -> str:
@@ -64,8 +69,15 @@ class ImportedRow:
         ``str()`` the same value reads ``True`` where the file says ``true`` and
         ``['abc']`` where it says ``["abc"]``, which is a DIFFERENCE on screen between a
         value and itself (#4147).
+
+        A private row renders WITHHELD instead, because ``--restore-private`` is what first
+        lets one reach a render site at all: the export names a withheld row by KEY only, and
+        an import that echoed the value would undo that on the way back in — into a terminal,
+        a CI log, or an agent transcript. Withholding here rather than at each call site makes
+        every present and future renderer safe by construction; ``.value`` stays the raw datum
+        the write path consumes, so only the DISPLAY changes (#4156).
         """
-        return tomlkit.item(self.value).as_string()
+        return _WITHHELD if self.is_private else tomlkit.item(self.value).as_string()
 
 
 @dataclass(frozen=True)

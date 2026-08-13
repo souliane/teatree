@@ -459,7 +459,9 @@ def import_toml_to_db(
     the flag whose purpose is a COMPLETE backup produces a file that can actually be restored
     (#4156). It grants nothing on its own: the allowance also needs *text* to declare itself a
     personal backup, so an ordinary shared dump is refused under it exactly as without it, and
-    the default-False posture every other caller keeps is untouched.
+    the default-False posture every other caller keeps is untouched. Each such row carries
+    ``is_private`` so every render site withholds its VALUE while still naming the key — the
+    flag is what lets a private row reach a renderer at all.
     """
     doc = tomllib.loads(text)
     policy = _ImportPolicy(
@@ -481,7 +483,17 @@ def import_toml_to_db(
         if kind == "reject":
             rejected.append(RejectedRow(scope, key, str(payload)))
         else:
-            by_kind[kind].append(ImportedRow(scope, key, payload, is_safety_posture=key in SAFETY_POSTURE_KEYS))
+            by_kind[kind].append(
+                ImportedRow(
+                    scope,
+                    key,
+                    payload,
+                    is_safety_posture=key in SAFETY_POSTURE_KEYS,
+                    # Asked of `redaction_reason` DIRECTLY, never through `_unstorable_reason`:
+                    # that returns None under `allow_private`, which is exactly the rows at risk.
+                    is_private=redaction_reason(key, payload, policy.terms) is not None,
+                )
+            )
 
     to_write, skipped, unchanged = by_kind["write"], by_kind["skip"], by_kind["unchanged"]
     seed_writes = _file_seed_dispositions(doc, skipped=skipped, unchanged=unchanged, rejected=rejected)
@@ -494,6 +506,8 @@ def import_toml_to_db(
             ConfigSetting.objects.set_value(row.key, row.value, scope=row.scope)
         for entry in seed_writes:
             write_seed_field(entry.table, entry.name, entry.field, entry.value)
+    # Seed rows keep the default is_private=False deliberately: `redaction_reason` is a rule
+    # about SETTINGS keys, and a seed field is a [loops]/[modes]/[schedules] entry, not one.
     written = (*to_write, *(ImportedRow(e.scope, e.field, e.value) for e in seed_writes))
     return ConfigImport(written, tuple(skipped), tuple(folded), (), dry_run, tuple(unchanged), policy.private_backup)
 
