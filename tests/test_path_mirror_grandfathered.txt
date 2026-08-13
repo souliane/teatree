@@ -128,7 +128,6 @@ tests/teatree_loop/test_reviewer_prs_skip_conditions_1321.py
 tests/teatree_loop/test_scanner_url_prefix_gate.py
 tests/teatree_loop/test_scanners.py
 tests/teatree_loop/test_scanning_news_scanner.py
-tests/teatree_loop/test_self_update_ci.py
 tests/teatree_loop/test_self_update_scanner.py
 tests/teatree_loop/test_slack_broadcasts_classify.py
 tests/teatree_loop/test_slack_broadcasts_multichannel.py
