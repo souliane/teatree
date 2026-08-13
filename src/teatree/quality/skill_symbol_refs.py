@@ -72,7 +72,7 @@ _MODULE_SYMBOL = re.compile(r"[A-Z][A-Z0-9_]*|_[A-Za-z0-9_]+")
 _NON_MODULE_TAILS = frozenset({"cfg", "json", "lock", "md", "pth", "py", "sqlite3", "toml", "txt", "yaml", "yml"})
 _ELISIONS = ("*", "...")
 _TEATREE_SRC = "src/teatree/"
-_INDEXED_PACKAGES = ("src/teatree", "hooks")
+INDEXED_PACKAGES = ("src/teatree", "hooks")
 #: A slash-bearing reference whose tail names a file, so only the path reading applies.
 _NO_SYMBOL_READING = "the tail names no module symbol"
 
@@ -117,7 +117,7 @@ class RepoIndex:
 def build_repo_index(repo_root: Path) -> RepoIndex:
     """Index the importable modules and top-level directories a skill can name."""
     modules: dict[str, list[str]] = {}
-    for package in _INDEXED_PACKAGES:
+    for package in INDEXED_PACKAGES:
         for source in sorted((repo_root / package).rglob("*.py")):
             parts = source.relative_to(repo_root).with_suffix("").parts
             parts = parts[1:] if parts[0] == "src" else parts
