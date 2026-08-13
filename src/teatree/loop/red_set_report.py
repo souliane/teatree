@@ -23,10 +23,15 @@ or the merge-and-re-run experiment) that no surface records, which is also why
 ``independent`` gains no new rung: making it reachable for n≥2 would mean
 claiming exactly the dependency this module cannot observe.
 
-The two indeterminate rungs are load-bearing. A run judged against a base the
-branch has fallen behind carries an UNKNOWN verdict (#4063), and an unreadable
-``main`` cannot be assumed green — either one refuses to read a red the board
-inherits as a property of the set.
+The two indeterminate rungs are load-bearing, and each is its own verdict rather
+than prose on a definite one. A run judged against a base the branch has fallen
+behind carries an UNKNOWN verdict (#4063), and an unreadable ``main`` cannot be
+assumed green — either one refuses to read a red the board inherits as a property
+of the set. ``base-indeterminate`` covers a lone stale-base red too: folding it
+into ``independent`` renders "each red is that PR's own" over a run whose verdict
+was never established (#4284). Both rungs sit BELOW ``main-red`` and
+``shared-cause``, which are read off the records directly and so survive a run
+that judged a stale base.
 """
 
 import hashlib
@@ -42,8 +47,8 @@ __all__ = [
     "analyse_red_set",
 ]
 
-#: Below this there is no SET to reason about — a lone red PR's failure is its
-#: own, and every per-PR surface already says so.
+#: Below this there is no SET to reason about — a lone red PR judged against the
+#: CURRENT base has a failure of its own, and every per-PR surface already says so.
 MIN_SET_SIZE = 2
 
 
@@ -52,6 +57,7 @@ class SetVerdict(Enum):
 
     MAIN_RED = "main-red"
     MAIN_INDETERMINATE = "main-indeterminate"
+    BASE_INDETERMINATE = "base-indeterminate"
     SHARED_CAUSE = "shared-cause"
     DISJOINT_REDS = "disjoint-reds"
     INDEPENDENT = "independent"
@@ -139,6 +145,8 @@ class RedSetReport:
             return f"every PR here inherits main's {_names(self.inherited)} — no merge ordering clears it"
         if self.verdict is SetVerdict.MAIN_INDETERMINATE:
             return "main's checks could not be read, so a cycle cannot be claimed over it"
+        if self.verdict is SetVerdict.BASE_INDETERMINATE:
+            return self._base_indeterminate_note()
         if self.verdict is SetVerdict.SHARED_CAUSE:
             return f"{len(self.records)} PRs fail {_names(self.shared) or 'a common check'} — one cause, one fix"
         if self.verdict is SetVerdict.DISJOINT_REDS:
@@ -149,6 +157,19 @@ class RedSetReport:
                 "is missing) and equally with unrelated failures"
             )
         return "no shared cause across the set — each red is that PR's own"
+
+    def _base_indeterminate_note(self) -> str:
+        """What was OBSERVED, then what the stale run leaves unknown — never a claim over it."""
+        if len(self.records) < MIN_SET_SIZE:
+            return (
+                "one red PR, judged against a stale base — its verdict is unknown, so this surface "
+                "cannot say whether the red is still real"
+            )
+        return (
+            f"{len(self.records)} PRs, no failing check in common, but at least one run was judged "
+            "against a stale base — its verdict is unknown, so this surface cannot say whether the "
+            "reds share a cause"
+        )
 
 
 def analyse_red_set(
@@ -185,11 +206,11 @@ def _verdict(
 ) -> SetVerdict:
     if inherited:
         return SetVerdict.MAIN_RED
-    if len(records) < MIN_SET_SIZE:
-        return SetVerdict.INDEPENDENT
     if _any_pair_overlaps(records):
         return SetVerdict.SHARED_CAUSE
     if not all(record.base_current for record in records):
+        return SetVerdict.BASE_INDETERMINATE
+    if len(records) < MIN_SET_SIZE:
         return SetVerdict.INDEPENDENT
     if main_failing is None:
         return SetVerdict.MAIN_INDETERMINATE

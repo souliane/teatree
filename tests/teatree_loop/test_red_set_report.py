@@ -69,7 +69,31 @@ class TestVerdict:
         report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b", base_current=False))
 
         assert report is not None
-        assert report.verdict is SetVerdict.INDEPENDENT
+        assert report.verdict is SetVerdict.BASE_INDETERMINATE
+
+    def test_a_lone_stale_base_red_is_indeterminate_not_independent(self) -> None:
+        report = _analyse(_record(4101, "shard-a", base_current=False))
+
+        assert report is not None
+        assert report.verdict is SetVerdict.BASE_INDETERMINATE
+
+    def test_an_observed_shared_check_outranks_a_stale_base(self) -> None:
+        # The overlap is read off both records directly, so it survives a run
+        # whose own CI verdict is unknown.
+        report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-a", base_current=False))
+
+        assert report is not None
+        assert report.verdict is SetVerdict.SHARED_CAUSE
+
+    def test_an_inherited_red_outranks_a_stale_base(self) -> None:
+        report = _analyse(
+            _record(4101, "shard-a"),
+            _record(4102, "shard-b", base_current=False),
+            main_failing=frozenset({"shard-a"}),
+        )
+
+        assert report is not None
+        assert report.verdict is SetVerdict.MAIN_RED
 
     def test_unreadable_main_refuses_the_cycle_claim(self) -> None:
         report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b"), main_failing=None)
@@ -157,6 +181,36 @@ class TestRender:
 
         assert report is not None
         assert "shard-a" in report.render().splitlines()[0]
+
+    def test_a_stale_base_note_states_the_unknown_rather_than_asserting_ownership(self) -> None:
+        # #4284: the fall-through used to render "each red is that PR's own" — an
+        # assertion over a run whose own verdict is unknown.
+        report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b", base_current=False))
+
+        assert report is not None
+        rendered = report.render()
+        assert "base-indeterminate" in rendered
+        assert "no failing check in common" in rendered
+        assert "stale base" in rendered
+        assert "verdict is unknown" in rendered
+        assert "cannot say whether the reds share a cause" in rendered
+        assert "each red is that PR's own" not in rendered
+
+    def test_a_lone_stale_base_note_does_not_claim_the_red_is_that_prs_own(self) -> None:
+        report = _analyse(_record(4101, "shard-a", base_current=False))
+
+        assert report is not None
+        rendered = report.render()
+        assert "one red PR" in rendered
+        assert "stale base" in rendered
+        assert "verdict is unknown" in rendered
+        assert "each red is that PR's own" not in rendered
+
+    def test_a_lone_current_base_red_is_still_that_prs_own(self) -> None:
+        report = _analyse(_record(4101, "shard-a"))
+
+        assert report is not None
+        assert "each red is that PR's own" in report.render()
 
     def test_stale_base_is_visible_per_pr(self) -> None:
         report = _analyse(_record(4101, "shard-a"), _record(4102, "shard-b", base_current=False))

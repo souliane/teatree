@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from teatree.loop.red_set_report import SetVerdict
-from teatree.loop.red_set_surface import _CHECK_RUNS_PAGE, _default_main_checks, record_red_set
+from teatree.loop.red_set_surface import _default_main_checks, record_red_set
 from teatree.loop.scanners.base import ScanSignal
 
 SLUG = "souliane/teatree"
@@ -243,7 +243,7 @@ class TestMainProbe:
         assert "--paginate" in argv, "an unpaginated read sees only page 1 of main's check-runs"
         assert "--slurp" in argv, "bare --paginate emits concatenated docs json.loads rejects"
         assert "--jq" not in argv, "gh refuses --slurp together with --jq"
-        assert f"per_page={_CHECK_RUNS_PAGE}" in endpoint
+        assert "per_page=100" in endpoint, "a self-referential page-size assertion cannot catch a shrunk page"
         return result
 
     @staticmethod
