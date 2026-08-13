@@ -410,6 +410,9 @@ class TestDeliverUserDmAttachAudio:
         with (
             patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=False)),
             patch.object(speak_mod, "synthesise") as synth,
+            # ``local = dm`` makes this spawn a REAL playback thread, which nothing here
+            # joins — it then lands in the next test and calls ITS mocks (#4277).
+            patch.object(speak_mod.threading, "Thread"),
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
         synth.assert_not_called()

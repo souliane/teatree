@@ -23,6 +23,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     is_causeless,
     is_environmental,
     stall_fingerprints,
+    stall_kinds,
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.repair_loop import terminal_reason_fingerprint
@@ -32,6 +33,11 @@ from teatree.failure_signatures import is_transient_failure
 if TYPE_CHECKING:
     from teatree.core.management.commands.tasks_session_view import TaskRow
     from teatree.dash.selectors import KanbanBoard, KanbanCard
+
+
+def _ceiling_reason(seconds: int) -> str:
+    """The production runtime-ceiling reason (``agents.runner``), which interpolates the breach."""
+    return f"stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting"
 
 
 def _task(*, phase: str = "reviewing", status: str = Task.Status.PENDING) -> Task:
@@ -184,6 +190,50 @@ class TestCauselessKinds:
 
     def test_an_empty_fingerprint_is_dropped_as_before(self) -> None:
         assert stall_fingerprints([(FailureKind.UNCLASSIFIED, ""), (FailureKind.UNCLASSIFIED, "fp")]) == ["fp"]
+
+    def test_runtime_ceiling_reasons_never_collide_so_the_fingerprint_filter_has_nothing_to_drop(self) -> None:
+        # The fact the corrected #4075 prose rests on: ``\b\d+\b`` has no word boundary
+        # before the ``s``, so the breach survives normalization.
+        assert terminal_reason_fingerprint(_ceiling_reason(3601)) != terminal_reason_fingerprint(_ceiling_reason(3722))
+
+    def test_the_collision_assertion_can_detect_a_collision(self) -> None:
+        # Control for the assertion above: the same two counts written as bare words ARE
+        # masked, so it is a real discrimination and not a hash that differs on everything.
+        bare = "stuck_loop: runtime ceiling exceeded: ran {} seconds without exiting"
+        assert terminal_reason_fingerprint(bare.format(3601)) == terminal_reason_fingerprint(bare.format(3722))
+
+
+class TestStallKinds:
+    """#4276: the KIND-side stall filter — the mechanism ``runtime_ceiling`` actually needs.
+
+    ``no_result_envelope``'s reason is a module constant, so it self-collides and the
+    fingerprint filter drops it even with this clause gone. ``runtime_ceiling``'s
+    interpolates the breach and never collides, so this drop is its whole mechanism.
+    """
+
+    def test_a_causeless_kind_is_dropped(self) -> None:
+        assert stall_kinds([FailureKind.RUNTIME_CEILING, FailureKind.RUNTIME_CEILING]) == []
+        assert stall_kinds([FailureKind.NO_RESULT_ENVELOPE, FailureKind.NO_RESULT_ENVELOPE]) == []
+
+    def test_a_named_deterministic_kind_still_counts(self) -> None:
+        # The control the whole filter rests on: the named-cause stall must still fire.
+        kinds = [FailureKind.EVIDENCE_MISSING, FailureKind.EVIDENCE_MISSING]
+        assert stall_kinds(kinds) == kinds
+
+    def test_an_environmental_kind_is_dropped(self) -> None:
+        assert stall_kinds([FailureKind.OUTAGE, FailureKind.LEASE_LOST]) == []
+
+    def test_an_unnamed_kind_is_dropped(self) -> None:
+        assert stall_kinds([FailureKind.UNCLASSIFIED, FailureKind.UNRECORDED]) == []
+
+    def test_a_blank_kind_is_dropped(self) -> None:
+        assert stall_kinds(["", FailureKind.EVIDENCE_MISSING]) == [FailureKind.EVIDENCE_MISSING]
+
+    def test_a_dropped_kind_leaves_the_survivors_in_order(self) -> None:
+        # Dropping rather than substituting a placeholder is what breaks a run: the two
+        # named kinds either side of a causeless one are not adjacent, so they never stall.
+        kinds = [FailureKind.RECORDING_REFUSED, FailureKind.RUNTIME_CEILING, FailureKind.EVIDENCE_MISSING]
+        assert stall_kinds(kinds) == [FailureKind.RECORDING_REFUSED, FailureKind.EVIDENCE_MISSING]
 
 
 class TestAttemptStampsFailureKind(TestCase):

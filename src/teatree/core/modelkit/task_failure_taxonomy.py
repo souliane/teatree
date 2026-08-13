@@ -50,12 +50,12 @@ happens to repeat: ``no_result_envelope`` is a module constant
 (:data:`teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`), so it always self-collides on
 the fingerprint, but ``runtime_ceiling``'s reason interpolates the breach (``ran 3601s``
 vs ``ran 3722s`` fingerprint differently) and so does NOT collide by construction — for it,
-the KIND-level drop in ``_deterministic_kinds`` is what does the work, and the fingerprint
+the KIND-level drop in :func:`stall_kinds` is what does the work, and the fingerprint
 side is only sometimes redundant with it.
 
-Deliberately NARROWER than ``_UNNAMED_KINDS`` in
-:mod:`teatree.loop.stuck_ticket_redispatch`: those two kinds fail to name a cause because
-classification could not place a reason that IS there, so the text still carries the
+Deliberately NARROWER than :data:`_UNNAMED`, the other set :func:`stall_kinds` drops: those
+two kinds fail to name a cause because classification could not place a reason that IS
+there, so the text still carries the
 defect and the fingerprint check discriminates it (``UNRECORDED`` is the one exception —
 its text is blank by definition, so its fingerprint is empty and already dropped by the
 existing empty-fingerprint guard). A causeless kind's reason, in contrast, IS the reason —
@@ -127,6 +127,17 @@ _CAUSELESS: frozenset[str] = frozenset(
     {
         FailureKind.NO_RESULT_ENVELOPE,
         FailureKind.RUNTIME_CEILING,
+    },
+)
+
+#: Kinds that are the ABSENCE of a NAME rather than a cause, so two of them are two
+#: unrelated failures rather than one repeating defect. See the module docstring on why
+#: this is deliberately WIDER than :data:`_CAUSELESS`: the defect's own text is still
+#: there underneath, so the fingerprint check discriminates them and is kept.
+_UNNAMED: frozenset[str] = frozenset(
+    {
+        FailureKind.UNCLASSIFIED,
+        FailureKind.UNRECORDED,
     },
 )
 
@@ -217,6 +228,25 @@ def stall_fingerprints(kind_fingerprints: Iterable[tuple[str, str]]) -> list[str
     return [fingerprint for kind, fingerprint in kind_fingerprints if fingerprint and not is_causeless(kind)]
 
 
+def stall_kinds(kinds: Iterable[str]) -> list[str]:
+    """The failure kinds that count toward the NAMED-DETERMINISTIC stall check (#3957).
+
+    The kind-side sibling of :func:`stall_fingerprints`, and the single builder every
+    ``last_two_deterministic_kinds`` caller shares. This is the mechanism that actually
+    carries ``runtime_ceiling``: its reason interpolates the breach, so two of them
+    fingerprint DIFFERENTLY and the fingerprint filter never sees a collision to drop.
+
+    Dropping rather than substituting a placeholder is load-bearing — one dropped kind
+    between two identical named ones leaves them non-adjacent, so only two CONSECUTIVE
+    named deterministic failures halt.
+    """
+    return [
+        kind
+        for kind in kinds
+        if kind and kind not in _UNNAMED and not is_causeless(kind) and not is_environmental(kind)
+    ]
+
+
 __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
@@ -227,4 +257,5 @@ __all__ = [
     "is_causeless",
     "is_environmental",
     "stall_fingerprints",
+    "stall_kinds",
 ]
