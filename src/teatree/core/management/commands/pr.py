@@ -14,6 +14,7 @@ from django_typer.management import command
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
 from teatree.core.gates.orphan_guard import classify_branch
+from teatree.core.invocation_cwd import invocation_cwd
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
 from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, skip_for_classified
@@ -375,8 +376,9 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         # workstream). Record the INVOKING worktree's current git branch
         # so ShipExecutor ships THIS branch, not the earliest (often
         # already-merged) `worktrees.first()` row. Read from the cwd the
-        # CLI was invoked in (the worktree the user ran `pr create` from).
-        invoking_branch = git.current_branch(repo=".")
+        # CLI was invoked in (the worktree the user ran `pr create` from) —
+        # which under `deploy/t3` only the DECLARED value knows (#4281).
+        invoking_branch = git.current_branch(repo=str(invocation_cwd()))
         if invoking_branch and invoking_branch not in {"HEAD", "main", "master"}:
             # #800 N3: canonical locked RMW (was a blind whole-extra
             # overwrite from a stale read — clobbered the ship worker's
