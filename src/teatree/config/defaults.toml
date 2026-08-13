@@ -295,6 +295,7 @@ ram_kill_allowlist = [] # list — processes the RAM reaper may kill under press
 worktree_stale_days = 30 # int — days after which an untouched worktree counts as stale
 
 [teatree.Infrastructure."Retention & sweeps"]
+deferred_question_age_ceiling_days = 3 # int — days a deferred question may sit unresolved before it is escalated
 incoming_event_retention_days = 30 # int — days an incoming event row is kept
 max_concurrent_local_stacks = 1 # int — how many tickets may hold a running local stack at once
 park_attempt_retention_days = 7 # int — days a parked attempt is kept before it is pruned

@@ -1,4 +1,4 @@
-"""Auto-drain stale repair-loop escalation questions when their subject reconciles (#3692).
+"""Derive the subject tickets behind a repair-loop escalation question (#3692).
 
 A repair-loop escalation records a durable ``DeferredQuestion`` when an auto-retry
 is halted (``repair-halt:``), a phase stalls on two identical failures
@@ -13,25 +13,26 @@ terminal tickets), so the only possible answer is "ignore". Left pending, these
 moot rows pile up in the away-mode queue and bury the one live question the owner
 actually needs to answer.
 
-This tick reconcile dismisses exactly the provably-moot rows and no others. The
-conservatism guard is per-subject: a row is drained ONLY when EVERY ticket that
-raised it is terminal. A ticket-keyed marker (``repair-stall``/``repair-cap``)
-carries its subject ticket pk directly; a fingerprint-keyed ``repair-halt`` marker
-collapses several tickets onto one row, so its subjects are re-derived from the
-parked (:data:`~teatree.loop.transient_requeue.HALT_STAMP`) tasks that share the
-marker. If even one such ticket is still live — or the subject cannot be
-determined at all — the row is KEPT. Dropping a question whose subject is still
-live is the failure mode this must never commit.
+This module answers only "which tickets raised it, and what state are they in?".
+A ticket-keyed marker (``repair-stall``/``repair-cap``) carries its subject ticket
+pk directly; a fingerprint-keyed ``repair-halt`` marker collapses several tickets
+onto one row, so its subjects are re-derived from the parked
+(:data:`~teatree.loop.transient_requeue.HALT_STAMP`) tasks that share the marker.
+An undeterminable subject answers ``None``, which the sweep treats as KEEP —
+dropping a question whose subject is still live is the failure mode this must
+never commit.
 
 Lives in ``teatree.loop`` (orchestration): it composes the ``DeferredQuestion``
 and ``Task``/``Ticket`` domain models with the ``transient_requeue`` escalation
-marker, so only an orchestration-layer module may own it.
+marker, so only an orchestration-layer module may own it. The sweep that consumes
+this derivation is :mod:`teatree.loop.question_drain`, which applies the same
+terminal-subject predicate to every pending row rather than only the ``repair-``
+prefixed ones.
 """
 
 from collections import defaultdict
 
 from teatree.core.models import Task, Ticket
-from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.transient_requeue import HALT_STAMP, escalation_marker
 
 _HALT_PREFIX = "repair-halt:"
@@ -40,36 +41,7 @@ _TICKET_KEYED_PREFIXES = ("repair-stall:", "repair-cap:")
 _TICKET_KEYED_FIELDS = 3
 
 
-def resolve_reconciled_repair_halts() -> int:
-    """Dismiss pending repair-loop questions whose every subject ticket is terminal.
-
-    Returns the number of questions drained. A question is dismissed as STALE only
-    when its subjects are determinable AND every one is in a terminal state; any
-    live or undeterminable subject leaves the row pending untouched.
-    """
-    pending = list(
-        DeferredQuestion.objects.filter(
-            answered_at__isnull=True,
-            dismissed_at__isnull=True,
-            dedupe_marker__startswith="repair-",
-        )
-    )
-    if not pending:
-        return 0
-    halt_subjects = _halt_marker_subject_states(
-        {q.dedupe_marker for q in pending if q.dedupe_marker.startswith(_HALT_PREFIX)}
-    )
-    resolved = 0
-    for question in pending:
-        states = _subject_states(question.dedupe_marker, halt_subjects)
-        if states and all(state in Ticket._TERMINAL_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
-            reason = f"repair-loop escalation moot: every subject ticket is terminal [{question.dedupe_marker}]"
-            question.mark_stale(reason)
-            resolved += 1
-    return resolved
-
-
-def _subject_states(marker: str, halt_subject_states: dict[str, list[str]]) -> list[str] | None:
+def repair_marker_subject_states(marker: str, halt_subject_states: dict[str, list[str]]) -> list[str] | None:
     """The FSM state of every ticket that raised *marker*, or ``None`` if undeterminable.
 
     A ticket-keyed ``repair-stall``/``repair-cap`` marker carries its subject pk; a
@@ -93,7 +65,7 @@ def _ticket_keyed_states(marker: str) -> list[str] | None:
     return [state] if state is not None else None
 
 
-def _halt_marker_subject_states(markers: set[str]) -> dict[str, list[str]]:
+def halt_marker_subject_states(markers: set[str]) -> dict[str, list[str]]:
     """Map each ``repair-halt`` marker in *markers* to the states of the tickets that raised it.
 
     One pass over the parked (:data:`HALT_STAMP`) FAILED tasks — the durable record

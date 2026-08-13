@@ -24,8 +24,10 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     Chains :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps` (the single
     SSOT, shared with ``t3 recover``), :func:`~teatree.loop.transient_requeue.requeue_transient_failed`
     (the bounded reopen of transient-FAILED tasks a crashed-session boot sweep never
-    rescues), and :func:`~teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets`
-    (the bounded re-dispatch of stuck non-terminal tickets). The two loop-layer sweeps
+    rescues), :func:`~teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets`
+    (the bounded re-dispatch of stuck non-terminal tickets), and
+    :func:`~teatree.loop.question_drain.drain_pending_questions` (the deferred-question
+    backlog's automated drain plus its age backstop). The two loop-layer sweeps
     compose the ``agents``/``core`` surfaces, so they run here rather than in the
     core-only ``run_boot_sweeps``.
 
@@ -42,7 +44,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     """
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
-        repair_halt_reconcile,
+        question_drain,
         stuck_ticket_redispatch,
         transient_requeue,
     )
@@ -51,7 +53,7 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         ("recovery:boot_sweeps", run_boot_sweeps),
         ("recovery:transient_requeue", transient_requeue.requeue_transient_failed),
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
-        ("recovery:repair_halt_reconcile", repair_halt_reconcile.resolve_reconciled_repair_halts),
+        ("recovery:question_drain", question_drain.drain_pending_questions),
     )
     for label, sweep in sweeps:
         try:
