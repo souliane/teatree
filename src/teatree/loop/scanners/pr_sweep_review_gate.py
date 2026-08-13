@@ -25,9 +25,9 @@ from dataclasses import dataclass
 
 from teatree.loop.scanners.pr_sweep_decision import own_or_same_repo, pr_ticket_under_external_delivery
 from teatree.loop.scanners.pr_sweep_ports import ReviewDispatcher
-from teatree.loop.scanners.pr_sweep_types import PrSummary
+from teatree.loop.scanners.pr_sweep_types import HeadReview, MergeAttempt, PrSummary
 
-__all__ = ["ReviewArmContext", "arm_cold_review"]
+__all__ = ["ReviewArmContext", "arm_cold_review", "held_head_attempt"]
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,26 @@ class ReviewArmContext:
     enabled: bool
     self_identities: tuple[str, ...] = ()
     overlay: str = ""
+
+
+def held_head_attempt(pr: PrSummary, *, review: HeadReview) -> MergeAttempt:
+    """The refusal a held head produces — reported, with nothing armed (#4380).
+
+    Lives beside :func:`arm_cold_review` because it is the same doctrine seen from
+    the other side: ``review_dispatched`` stays ``False`` because accumulating one
+    more verdict on a head somebody is holding is how the newer row came to
+    authorise the merge. The verdict refs ride out to the signal so the owner DM
+    names who stands where.
+    """
+    return MergeAttempt(
+        slug=pr.slug,
+        pr_id=pr.number,
+        decision="flag_held",
+        reason=review.hold_reason,
+        url=pr.url,
+        held_verdicts=review.held_verdicts,
+        authorizing_verdict=review.authorizing_verdict,
+    )
 
 
 def arm_cold_review(pr: PrSummary, *, ctx: ReviewArmContext) -> bool:

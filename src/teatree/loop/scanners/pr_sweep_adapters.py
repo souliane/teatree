@@ -19,6 +19,7 @@ from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
 from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON as _CONTESTED_HOLD_REASON
+from teatree.loop.scanners.pr_sweep_types import HOLD_AT_HEAD_REASON as _HOLD_AT_HEAD_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
@@ -298,7 +299,18 @@ class AutoReviewTaskDispatcher:
 #: Flag reasons the owner is DM'd about instead of only logged — a condition no
 #: further tick can clear on its own. The BotPing ledger still caps each at one DM
 #: per ``(repo, PR, reason)``, so escalating cannot reintroduce per-tick spam.
-OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset({_CLEAR_PRESENT_UNUSABLE_REASON, _CONTESTED_HOLD_REASON})
+OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset(
+    {
+        _CLEAR_PRESENT_UNUSABLE_REASON,
+        _CONTESTED_HOLD_REASON,
+        _HOLD_AT_HEAD_REASON,
+    }
+)
+
+_HELD_REMEDY = (
+    "the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at that SHA, "
+    "or a new commit moves the head"
+)
 
 _FLAG_TEXTS: dict[str, str] = {
     _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
@@ -306,9 +318,10 @@ _FLAG_TEXTS: dict[str, str] = {
         "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
     ),
     _CONTESTED_HOLD_REASON: (
-        "two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, "
-        "so the auto-merge is refused until the holding reviewer lifts it, a CLEAR is issued at "
-        "that SHA, or a new commit moves the head"
+        f"two cold reviews disagree at this PR's live head — a HOLD stands that no one took back, so {_HELD_REMEDY}"
+    ),
+    _HOLD_AT_HEAD_REASON: (
+        f"a cold review returned HOLD at this PR's live head and nobody took it back, so {_HELD_REMEDY}"
     ),
 }
 
@@ -347,12 +360,13 @@ class SlackMergeNotifier:
             user_id=self.user_id or None,
         )
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
         from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
         from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
 
         target = url or f"{slug}#{pr_id}"
-        text = _FLAG_TEXTS.get(reason, f"flag ({reason})") + f" {target}"
+        suffix = f" ({detail})" if detail else ""
+        text = _FLAG_TEXTS.get(reason, f"flag ({reason})") + f" {target}{suffix}"
         notify_user(
             text,
             kind=NotifyKind.INFO,
@@ -369,9 +383,11 @@ class NullMergeNotifier:
 
     calls: list[tuple[str, int, str, bool]] = field(default_factory=list)
     flag_calls: list[tuple[str, int, str, str]] = field(default_factory=list)
+    flag_details: list[str] = field(default_factory=list)
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
         self.calls.append((slug, pr_id, merged_sha, fallback))
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
         self.flag_calls.append((slug, pr_id, reason, url))
+        self.flag_details.append(detail)

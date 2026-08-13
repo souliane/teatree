@@ -1108,11 +1108,14 @@ class TestSoloOverlayRequiresIndependentColdReview:
         # A recorded HOLD is not a merge-safe verdict — it must not unlock the bypass.
         # And it is not "no independent review" either: a reviewer looked and said no,
         # so the flag names the hold and no further reviewer is armed over it (#4380).
+        # It is not a DISAGREEMENT either: one verdict, nobody contesting it — this is
+        # the ordinary outcome of every cold review that holds, so it carries its own
+        # reason rather than the owner DM claiming two reviewers who do not exist.
         dispatcher = FakeReviewDispatcher()
-        _record_hold(reviewer="cold-reviewer")
+        hold = _record_hold(reviewer="cold-reviewer")
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone()
-        scanner, _ = _scanner(
+        scanner, notifier = _scanner(
             api=api, keystone=keystone, solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
         )
 
@@ -1120,8 +1123,11 @@ class TestSoloOverlayRequiresIndependentColdReview:
 
         assert api.merge_pr_calls == []
         assert signals[0].kind == "pr_sweep.flag_held"
-        assert signals[0].payload["reason"] == "contested_hold_at_head"
+        assert signals[0].payload["reason"] == "hold_at_head"
+        assert signals[0].payload["held_verdicts"] == [[hold.pk, "cold-reviewer"]]
+        assert signals[0].payload["authorizing_verdict"] is None
         assert signals[0].payload["review_dispatched"] is False
+        assert notifier.flag_details == [f"holding: #{hold.pk} cold-reviewer"]
         assert dispatcher.calls == []  # a held head never arms another reviewer
 
     def test_contested_hold_at_head_is_not_auto_merged(self) -> None:
@@ -1130,8 +1136,8 @@ class TestSoloOverlayRequiresIndependentColdReview:
         # autonomous no-CLEAR bypass merged over a hold nobody ever reconciled.
         # An unreconciled hold at the live head blocks the robot, whatever its
         # timestamp says.
-        _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
-        _record_cold_review(reviewer="cold-reviewer-b", at=_LATER_MERGE_SAFE_AT)
+        hold = _record_hold(reviewer="cold-reviewer-a", at=_HOLD_AT)
+        allow = _record_cold_review(reviewer="cold-reviewer-b", at=_LATER_MERGE_SAFE_AT)
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
@@ -1142,7 +1148,12 @@ class TestSoloOverlayRequiresIndependentColdReview:
         assert notifier.calls == []  # and no merge was announced
         assert signals[0].kind == "pr_sweep.flag_held"
         assert signals[0].payload["merged"] is False
+        assert signals[0].payload["authorizing_verdict"] == [allow.pk, "cold-reviewer-b"]
         assert notifier.flag_calls == [(SLUG, 6230, "contested_hold_at_head", f"https://github.com/{SLUG}/pull/6230")]
+        # The DM names WHICH two disagreed rather than asserting a disagreement.
+        assert notifier.flag_details == [
+            f"holding: #{hold.pk} cold-reviewer-a; merge_safe: #{allow.pk} cold-reviewer-b"
+        ]
 
     def test_stale_hold_does_not_block_the_fixed_head(self) -> None:
         # Anti-vacuity: the guard is head-scoped, not "any hold this PR ever had".
@@ -1158,6 +1169,21 @@ class TestSoloOverlayRequiresIndependentColdReview:
 
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert signals[0].kind == "pr_sweep.merged"
+
+    def test_merged_signal_names_the_verdict_that_authorised_it(self) -> None:
+        # #4380 acceptance 3: ``reason=solo_overlay_no_clear`` records that no CLEAR
+        # existed but not what was relied on instead, so an audit of a no-CLEAR merge
+        # could not answer WHICH review authorised it from the record.
+        allow = _record_cold_review(reviewer="cold-reviewer-b")
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+        assert signals[0].payload["authorizing_verdict"] == [allow.pk, "cold-reviewer-b"]
 
     def test_same_reviewer_lifting_own_hold_merges(self) -> None:
         # Anti-vacuity + the escape hatch: the F8 idempotency key is
@@ -1877,7 +1903,7 @@ class TestErrorIsolation:
             def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:  # pragma: no cover
                 return
 
-            def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+            def flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
                 msg = "slack down"
                 raise RuntimeError(msg)
 

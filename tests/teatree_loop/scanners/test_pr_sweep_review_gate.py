@@ -1,21 +1,22 @@
-"""Tests for the sweep's review-arm and the contested-hold predicate (#68, #4380).
+"""Tests for the sweep's review-arm and the held-head predicate (#68, #4380).
 
 Covers :func:`arm_cold_review` — the claimable-review enqueue the sweep fires when
-it refuses to self-merge — and :func:`unreconciled_hold_at_head`, the precondition
-that stops the autonomous no-CLEAR merge from resolving a reviewer disagreement by
-timestamp. The scanner-level decision ladder that calls both is pinned in
-``test_pr_sweep_scanner.py``.
+it refuses to self-merge — and :func:`head_review_state`, the precondition that stops the
+autonomous no-CLEAR merge from resolving a reviewer disagreement by timestamp, plus
+the reason split that keeps a LONE hold from being reported as a disagreement. The
+scanner-level decision ladder that calls both is pinned in ``test_pr_sweep_scanner.py``.
 """
 
+import datetime as dt
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
 import pytest
 
 from teatree.core.models.review_verdict import ReviewVerdict
-from teatree.loop.scanners.pr_sweep_decision import unreconciled_hold_at_head
+from teatree.loop.scanners.pr_sweep_decision import head_review_state
 from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review
-from teatree.loop.scanners.pr_sweep_types import PrSummary
+from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON, HOLD_AT_HEAD_REASON, PrSummary
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -26,6 +27,8 @@ STALE = "deadbeef00000000000000000000000000000000"
 SELF_LOGIN = "souliane"
 PR_ID = 4380
 _ENQUEUE_ERROR = "forge unreachable"
+_EARLIER = dt.datetime(2026, 6, 19, 1, 34, 32, tzinfo=dt.UTC)
+_LATER = dt.datetime(2026, 6, 19, 2, 5, 36, tzinfo=dt.UTC)
 
 
 @dataclass(slots=True)
@@ -66,14 +69,19 @@ def _ctx(dispatcher: _FakeDispatcher | None, *, enabled: bool = True) -> ReviewA
     )
 
 
-def _record(*, verdict: str, reviewer: str, sha: str = HEAD) -> ReviewVerdict:
-    return ReviewVerdict.record(
+def _record(*, verdict: str, reviewer: str, sha: str = HEAD, at: dt.datetime | None = None) -> ReviewVerdict:
+    """Record one verdict, optionally pinning ``recorded_at`` so newest-wins is deterministic."""
+    row = ReviewVerdict.record(
         pr_id=PR_ID,
         slug=SLUG,
         reviewed_sha=sha,
         verdict=verdict,
         reviewer_identity=reviewer,
     )
+    if at is not None:
+        ReviewVerdict.objects.filter(pk=row.pk).update(recorded_at=at)
+        row.refresh_from_db()
+    return row
 
 
 class TestArmColdReview:
@@ -141,26 +149,80 @@ class TestArmColdReview:
             assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
 
 
-class TestUnreconciledHoldAtHead:
+class TestHeadReviewState:
     """A hold nobody took back, independent of newest-wins supersession (#4380)."""
 
-    def test_hold_superseded_by_another_reviewers_pass_still_counts(self) -> None:
-        # The #4332 shape: newest-wins says MERGE_SAFE, the hold still stands.
-        _record(verdict="hold", reviewer="cold-reviewer-a")
-        _record(verdict="merge_safe", reviewer="cold-reviewer-b")
+    def test_hold_superseded_by_another_reviewers_pass_is_contested(self) -> None:
+        # The #4332 shape: newest-wins says MERGE_SAFE, the hold still stands. TWO
+        # reviewers really do disagree here, so the contested wording is earned.
+        hold = _record(verdict="hold", reviewer="cold-reviewer-a", at=_EARLIER)
+        allow = _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_LATER)
 
-        assert unreconciled_hold_at_head(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
+        review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+
+        assert review.hold_reason == CONTESTED_HOLD_REASON
+        assert review.held_verdicts == ((hold.pk, "cold-reviewer-a"),)
+        assert review.authorizing_verdict == (allow.pk, "cold-reviewer-b")
+
+    def test_lone_hold_is_not_reported_as_a_disagreement(self) -> None:
+        # The ORDINARY outcome of a cold review that holds — one verdict, nobody
+        # disagreeing. Reporting it as "two cold reviews disagree" names a second
+        # reviewer who does not exist, and this is the far more common shape.
+        hold = _record(verdict="hold", reviewer="cold-reviewer-a")
+
+        review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+
+        assert review.hold_reason == HOLD_AT_HEAD_REASON
+        assert review.authorizing_verdict is None
+        assert review.hold_detail == f"holding: #{hold.pk} cold-reviewer-a"
+
+    def test_stale_merge_safe_beside_a_hold_is_not_a_disagreement(self) -> None:
+        # A merge_safe against a tree the PR has moved off contests nothing at the
+        # LIVE head — the hold is still lone.
+        _record(verdict="merge_safe", reviewer="cold-reviewer-b", sha=STALE)
+        _record(verdict="hold", reviewer="cold-reviewer-a")
+
+        review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+
+        assert review.held_verdicts
+        assert review.hold_reason == HOLD_AT_HEAD_REASON
 
     def test_reviewer_lifting_their_own_hold_clears_it(self) -> None:
         _record(verdict="hold", reviewer="cold-reviewer-a")
         _record(verdict="merge_safe", reviewer="cold-reviewer-a")
 
-        assert unreconciled_hold_at_head(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is False
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts == ()
 
     def test_hold_at_a_superseded_head_does_not_block(self) -> None:
         _record(verdict="hold", reviewer="cold-reviewer-a", sha=STALE)
 
-        assert unreconciled_hold_at_head(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is False
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts == ()
 
     def test_no_verdicts_at_all_is_not_a_hold(self) -> None:
-        assert unreconciled_hold_at_head(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is False
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).held_verdicts == ()
+
+
+class TestAuthorizingVerdict:
+    """What the merge names as its authorisation (#4380 acceptance 3)."""
+
+    def test_names_the_newest_non_stale_merge_safe(self) -> None:
+        _record(verdict="merge_safe", reviewer="cold-reviewer-a", at=_EARLIER)
+        newer = _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_LATER)
+
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).authorizing_verdict == (
+            newer.pk,
+            "cold-reviewer-b",
+        )
+
+    def test_a_standing_hold_authorises_nothing(self) -> None:
+        # Reads the SHARED newest-wins ``effective_state_at`` rather than a second
+        # copy of it, so a head the merge gate refuses can never be named here.
+        _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_EARLIER)
+        _record(verdict="hold", reviewer="cold-reviewer-a", at=_LATER)
+
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).authorizing_verdict is None
+
+    def test_no_verdict_at_the_head_authorises_nothing(self) -> None:
+        _record(verdict="merge_safe", reviewer="cold-reviewer-b", sha=STALE)
+
+        assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).authorizing_verdict is None

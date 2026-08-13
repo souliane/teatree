@@ -59,21 +59,22 @@ from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
     classify_sweep_ci,
     has_independent_cold_review,
+    head_review_state,
     own_or_same_repo,
     record_mergeable_notified,
     red_required_at_stale_base,
-    unreconciled_hold_at_head,
     untrusted_merge_provenance,
     with_ci_context,
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
-from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review
+from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
 from teatree.loop.scanners.pr_sweep_types import (
     CLEAR_PRESENT_UNUSABLE_REASON,
     CONTESTED_HOLD_REASON,
     GH_CONFLICT_MERGE_STATE,
     GH_CONFLICT_MERGEABLE,
     GREEN_TERMINAL_CONCLUSIONS,
+    HOLD_AT_HEAD_REASON,
     MERGEABLE_AWAITING_REVIEW_REASON,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
@@ -88,6 +89,7 @@ __all__ = [
     "GH_CONFLICT_MERGEABLE",
     "GH_CONFLICT_MERGE_STATE",
     "GREEN_TERMINAL_CONCLUSIONS",
+    "HOLD_AT_HEAD_REASON",
     "MERGEABLE_AWAITING_REVIEW_REASON",
     "REQUIRED_CHECK_NAME",
     "UV_AUDIT_CHECK_NAME",
@@ -364,8 +366,10 @@ class PrSweepScanner:
         ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
-        if unreconciled_hold_at_head(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
-            return self._flag_no_review(pr, unusable_clear=unusable_clear, held=True)
+        review = head_review_state(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        if review.held_verdicts:
+            self._flag(slug=pr.slug, pr_id=pr.number, reason=review.hold_reason, url=pr.url, detail=review.hold_detail)
+            return held_head_attempt(pr, review=review)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr, unusable_clear=unusable_clear)
         if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
@@ -374,6 +378,7 @@ class PrSweepScanner:
             presented_authorizer=self.substrate_standing_authorizer,
         ):
             return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
+        authorizing = review.authorizing_verdict
         ok, merged_sha = self.api.merge_pr_squash_bound(
             slug=pr.slug,
             pr_id=pr.number,
@@ -388,6 +393,7 @@ class PrSweepScanner:
             )
         self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
         reason = "solo_overlay_no_clear_uv_audit" if fallback else "solo_overlay_no_clear"
+        logger.info("pr_sweep merged %s#%d at %s on verdict %s", pr.slug, pr.number, merged_sha, authorizing)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
@@ -395,6 +401,7 @@ class PrSweepScanner:
             merged=True,
             merged_sha=merged_sha,
             reason=reason,
+            authorizing_verdict=authorizing,
         )
 
     def _evaluate_no_clear_collaborative(self, pr: PrSummary) -> MergeAttempt:
@@ -437,7 +444,7 @@ class PrSweepScanner:
         self._flag(slug=pr.slug, pr_id=pr.number, reason="conflict", url=pr.url)
         return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="flag_conflict", reason="conflict", url=pr.url)
 
-    def _flag_no_review(self, pr: PrSummary, *, unusable_clear: bool = False, held: bool = False) -> MergeAttempt:
+    def _flag_no_review(self, pr: PrSummary, *, unusable_clear: bool = False) -> MergeAttempt:
         """Refuse a solo-overlay auto-merge with no recorded cold-review, then arm the review (#68).
 
         The maker≠checker boundary still forbids a self-merge — that part is
@@ -452,26 +459,18 @@ class PrSweepScanner:
         for a PR whose CLEAR merely missed the live head pointed readers at the wrong
         cause. The review is armed either way — a fresh verdict unblocks both.
 
-        *held* names the third cause (#4380): a HOLD stands at the live head that
-        nobody took back. That is not "no independent review" — a reviewer looked
-        and said no — and it is emphatically not something a fresh reviewer should
-        be armed over, because accumulating one more verdict on a contested head is
-        exactly how the newer row came to authorise the merge. So a held head
-        refuses, reports, and arms nothing; only the holding reviewer, a human
-        CLEAR, or a new push moves it.
+        A head carrying a standing HOLD never reaches here — :func:`head_review_state`
+        refuses first (#4380). A reviewer who looked and said no is not "no independent
+        review", and arming another over a held head is how the newer verdict came to be.
         """
-        reason = CONTESTED_HOLD_REASON if held else "no_independent_review"
-        self._flag(slug=pr.slug, pr_id=pr.number, reason=reason, url=pr.url)
-        dispatched = False if held else self._enqueue_review(pr)
+        self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
-            decision="flag_held" if held else "flag_no_review",
-            reason=CONTESTED_HOLD_REASON
-            if held
-            else (CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review"),
+            decision="flag_no_review",
+            reason=CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review",
             url=pr.url,
-            review_dispatched=dispatched,
+            review_dispatched=self._enqueue_review(pr),
         )
 
     def _enqueue_review(self, pr: PrSummary) -> bool:
@@ -485,9 +484,9 @@ class PrSweepScanner:
             ),
         )
 
-    def _flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def _flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
         try:
-            self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url)
+            self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url, detail=detail)
         except Exception:
             logger.exception("pr_sweep failed to post flag notification for %s#%d", slug, pr_id)
 
@@ -608,5 +607,7 @@ def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
             "review_dispatched": attempt.review_dispatched,
             "failing_required": list(attempt.failing_required),
             "base_current": attempt.base_current,
+            "held_verdicts": [list(ref) for ref in attempt.held_verdicts],
+            "authorizing_verdict": None if attempt.authorizing_verdict is None else list(attempt.authorizing_verdict),
         },
     )

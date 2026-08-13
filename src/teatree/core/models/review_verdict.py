@@ -234,6 +234,24 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
             return HeadVerdictState.HOLD
         return HeadVerdictState.MERGE_SAFE
 
+    def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
+        """The non-stale ``merge_safe`` row the newest-wins verdict rests on, else ``None``.
+
+        Answers "WHICH verdict authorised this merge" — the record #4380 asks the
+        solo-overlay merge path to name, since ``reason=solo_overlay_no_clear`` states
+        that no CLEAR existed but not what was relied on instead. It is also what tells
+        a genuinely CONTESTED hold (a merge_safe stands beside it) from a lone one.
+
+        Gated on :meth:`effective_state_at` rather than re-deriving newest-wins, because
+        that method is shared with the merge keystone's ``assert_review_verdict_gate``
+        and a second copy of the tie-breaking rules would drift from it.
+        """
+        if self.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha) is not HeadVerdictState.MERGE_SAFE:
+            return None
+        head = head_sha.strip().lower()
+        passes = [v for v in self.for_pr(slug, pr_id) if v.is_merge_safe() and not v.is_stale_at(head)]
+        return max(passes, key=lambda verdict: verdict.recorded_at, default=None)
+
     def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
         """Every non-stale HOLD standing at *head_sha*, IGNORING newest-wins supersession (#4380).
 
