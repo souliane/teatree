@@ -55,7 +55,8 @@ def held_head_attempt(pr: PrSummary, *, review: HeadReview) -> MergeAttempt:
     the other side: ``review_dispatched`` stays ``False`` because accumulating one
     more verdict on a head somebody is holding is how the newer row came to
     authorise the merge. The verdict refs ride out to the signal so the owner DM
-    names who stands where.
+    names who stands where — nothing merged here, so ``authorizing_verdict`` carries
+    the PASS standing beside the hold, whichever of the two was recorded last.
     """
     return MergeAttempt(
         slug=pr.slug,
@@ -64,7 +65,7 @@ def held_head_attempt(pr: PrSummary, *, review: HeadReview) -> MergeAttempt:
         reason=review.hold_reason,
         url=pr.url,
         held_verdicts=review.held_verdicts,
-        authorizing_verdict=review.authorizing_verdict,
+        authorizing_verdict=review.standing_merge_safe,
     )
 
 

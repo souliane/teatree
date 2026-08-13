@@ -13,9 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import head_review_state
-from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review
+from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
 from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON, HOLD_AT_HEAD_REASON, PrSummary
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -176,6 +178,20 @@ class TestHeadReviewState:
         assert review.authorizing_verdict is None
         assert review.hold_detail == f"holding: #{hold.pk} cold-reviewer-a"
 
+    def test_a_hold_recorded_after_another_reviewers_pass_is_still_contested(self) -> None:
+        # The mirror of the case above, and a third of contested heads in practice.
+        # Recording ORDER decides what a merge may rest on; it does not decide
+        # whether two reviewers disagree, so it must not decide the wording either.
+        allow = _record(verdict="merge_safe", reviewer="cold-reviewer-b", at=_EARLIER)
+        hold = _record(verdict="hold", reviewer="cold-reviewer-a", at=_LATER)
+
+        review = head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+
+        assert review.hold_reason == CONTESTED_HOLD_REASON
+        assert review.hold_detail == f"holding: #{hold.pk} cold-reviewer-a; merge_safe: #{allow.pk} cold-reviewer-b"
+        assert review.authorizing_verdict is None
+        assert held_head_attempt(_pr(), review=review).authorizing_verdict == (allow.pk, "cold-reviewer-b")
+
     def test_stale_merge_safe_beside_a_hold_is_not_a_disagreement(self) -> None:
         # A merge_safe against a tree the PR has moved off contests nothing at the
         # LIVE head — the hold is still lone.
@@ -226,3 +242,30 @@ class TestAuthorizingVerdict:
         _record(verdict="merge_safe", reviewer="cold-reviewer-b", sha=STALE)
 
         assert head_review_state(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).authorizing_verdict is None
+
+
+class TestTheHeldReportReachesAHuman:
+    """The owner DM is a held head's ONLY mover, so both reasons pin the report path.
+
+    ``held_head_attempt`` leaves ``review_dispatched`` False and no reviewer is armed,
+    so nothing else in the loop can move the PR: the escalation audience and the wording
+    are load-bearing, not cosmetic. The ordinary-flag-stays-log-only companion lives in
+    ``test_pr_sweep_unusable_clear_report.py`` and is not duplicated here.
+    """
+
+    @pytest.mark.parametrize(
+        ("reason", "wording"),
+        [(CONTESTED_HOLD_REASON, "two cold reviews disagree"), (HOLD_AT_HEAD_REASON, "nobody took it back")],
+    )
+    def test_each_held_reason_dms_the_owner_in_its_own_words(self, reason: str, wording: str) -> None:
+        detail = "holding: #7 cold-reviewer-a; merge_safe: #8 cold-reviewer-b"
+        assert reason in OWNER_ESCALATION_FLAG_REASONS
+
+        with patch("teatree.core.notify.notify_user") as notify:
+            SlackMergeNotifier(backend=None).flag(
+                slug=SLUG, pr_id=PR_ID, reason=reason, url="https://example.test/pr", detail=detail
+            )
+
+        assert notify.call_args.kwargs["audience"] is NotifyAudience.OWNER_ESCALATION
+        assert wording in notify.call_args.args[0]
+        assert f"({detail})" in notify.call_args.args[0]

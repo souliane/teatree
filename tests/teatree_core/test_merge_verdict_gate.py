@@ -136,11 +136,15 @@ class TestKeystoneMergeVerdictGate(TestCase):
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_3_hold_then_later_merge_safe_allows(self) -> None:
-        # The user-chosen override: a later PASS supersedes an earlier HOLD.
+        # The user-chosen override: a later PASS supersedes an earlier HOLD. DISTINCT
+        # reviewers, because ``record`` is an update_or_create keyed on the normalised
+        # identity — one reviewer re-recording overwrites their own row, so the default
+        # name would collapse the two verdicts into one and pin nothing about newest-wins.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket=ticket)
-        _record("hold", at=_T0)
-        _record("merge_safe", at=_T0 + dt.timedelta(seconds=1))
+        _record("hold", reviewer="reviewer-a", at=_T0)
+        _record("merge_safe", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
+        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         outcome = _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
@@ -250,7 +254,15 @@ def _solo_pr() -> PrSummary:
 
 
 class TestSoloOverlayPathHonoursNewestWins(TestCase):
-    """``_evaluate_solo_overlay`` flags / merges on the SAME newest-wins logic (companion)."""
+    """``_evaluate_solo_overlay`` under BOTH rules that govern the no-CLEAR bypass.
+
+    Newest-wins (#2829) decides what a merge may rest on, and the #4380 unreconciled-hold
+    refusal decides whether it may run at all — a hold nobody took back blocks the bypass
+    even where newest-wins says MERGE_SAFE. Verdicts are recorded under DISTINCT reviewer
+    identities wherever a scenario means two to coexist: ``ReviewVerdict.record`` is an
+    ``update_or_create`` keyed on the normalised identity, so the same name twice is one
+    row and the scenario silently becomes a single-verdict one.
+    """
 
     @pytest.fixture(autouse=True)
     def _internal_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -274,22 +286,28 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
         assert signals[0].kind == "pr_sweep.flag_no_review"
 
     def test_hold_wins_flags_not_merges(self) -> None:
-        _record("merge_safe", at=_T0)
-        _record("hold", at=_T0 + dt.timedelta(seconds=1))
+        _record("merge_safe", reviewer="reviewer-a", at=_T0)
+        _record("hold", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
+        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         scanner, api, _keystone = _solo_scanner([_solo_pr()])
         signals = scanner.scan()
         assert api.merge_pr_calls == []  # the newest non-stale verdict is a HOLD
         # #4380: a held head is flagged as HELD, not as "no independent review" —
-        # a reviewer looked and said no. The refusal above is what this case pins;
-        # the label is the corrected one.
+        # a reviewer looked and said no. Two reviewers really do disagree here, and
+        # the HOLD landing second must not downgrade that to a lone hold.
         assert signals[0].kind == "pr_sweep.flag_held"
+        assert signals[0].payload["reason"] == "contested_hold_at_head"
 
-    def test_hold_then_later_merge_safe_merges(self) -> None:
+    def test_the_holding_reviewer_lifting_their_own_hold_merges(self) -> None:
+        # The #4380 escape hatch, and why it needs no machinery: ``record`` is an
+        # update_or_create on the normalised identity, so the same reviewer re-recording
+        # at one head OVERWRITES their own row. One verdict remains and nothing is held.
         _record("hold", at=_T0)
         _record("merge_safe", at=_T0 + dt.timedelta(seconds=1))
+        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 1
         scanner, api, _keystone = _solo_scanner([_solo_pr()])
         signals = scanner.scan()
-        assert api.merge_pr_calls == [(_SLUG, _PR, _HEAD)]  # the later PASS unlocks the bypass
+        assert api.merge_pr_calls == [(_SLUG, _PR, _HEAD)]
         assert signals[0].kind == "pr_sweep.merged"
 
 
@@ -297,13 +315,15 @@ class TestHasIndependentColdReviewNewestWins(TestCase):
     """Scenario 7: the companion predicate returns False when the newest verdict is a HOLD."""
 
     def test_newest_hold_returns_false(self) -> None:
-        _record("merge_safe", at=_T0)
-        _record("hold", at=_T0 + dt.timedelta(seconds=1))
+        _record("merge_safe", reviewer="reviewer-a", at=_T0)
+        _record("hold", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
+        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         assert has_independent_cold_review(slug=_SLUG, pr_id=_PR, head_sha=_HEAD) is False
 
     def test_newest_merge_safe_returns_true(self) -> None:
-        _record("hold", at=_T0)
-        _record("merge_safe", at=_T0 + dt.timedelta(seconds=1))
+        _record("hold", reviewer="reviewer-a", at=_T0)
+        _record("merge_safe", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
+        assert ReviewVerdict.objects.for_pr(_SLUG, _PR).count() == 2
         assert has_independent_cold_review(slug=_SLUG, pr_id=_PR, head_sha=_HEAD) is True
 
     def test_no_merge_safe_returns_false(self) -> None:
