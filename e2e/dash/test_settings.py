@@ -117,9 +117,11 @@ def test_one_row_carries_every_scope_and_the_nav_counts_what_drifted(live_server
 
 
 @pytest.mark.usefixtures("seeded_board")
-def test_the_page_carries_one_csrf_token_and_no_hidden_row_fields(live_server: LiveServer, page: Page) -> None:
+def test_the_page_carries_no_form_fields_of_its_own(live_server: LiveServer, page: Page) -> None:
+    # Every write here is an htmx POST riding the body's hx-headers, and the one real form
+    # left — the import upload — moved to its own page (#4340).
     page.goto(f"{live_server.url}/dash/settings/")
-    expect(page.locator('input[name="csrfmiddlewaretoken"]')).to_have_count(1)
+    expect(page.locator('input[name="csrfmiddlewaretoken"]')).to_have_count(0)
     expect(page.locator('#settings-pane input[type="hidden"]')).to_have_count(0)
 
 

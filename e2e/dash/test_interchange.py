@@ -16,7 +16,10 @@ from teatree.core.config_interchange.scope import EXPORT_SECTIONS
 @pytest.mark.usefixtures("seeded_board")
 def test_the_page_is_its_own_nav_entry(live_server: LiveServer, page: Page) -> None:
     page.goto(f"{live_server.url}/dash/settings/")
-    page.get_by_role("link", name="Import / export", exact=True).click()
+    # Scoped to the nav landmark: the settings page ALSO links here from its pointer band,
+    # which is the point — reachable from both, hosted by neither but this page.
+    nav = page.get_by_role("navigation", name="Dashboard sections")
+    nav.get_by_role("link", name="Import / export", exact=True).click()
     expect(page).to_have_url(f"{live_server.url}/dash/import-export/")
 
 
