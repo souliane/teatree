@@ -40,6 +40,7 @@ CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
 ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
 UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
+BRIEF_ANCHOR_GATE_KEY = "brief_anchor_gate_enabled"
 MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
 MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
@@ -261,6 +262,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="unbacked-claim",
         key=UNBACKED_CLAIM_GATE_KEY,
         label="Evidence gate (a diagnosis or an escalation cites what was read)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="brief-anchor",
+        key=BRIEF_ANCHOR_GATE_KEY,
+        label="Brief-anchor lint (a dispatch brief anchors its assertions or licenses overruling them)",
     )
 
     _register_keyed_gate(
