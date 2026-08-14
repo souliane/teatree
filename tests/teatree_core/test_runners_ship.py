@@ -19,6 +19,8 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
+from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
+from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.models import PullRequest, Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
@@ -1404,3 +1406,94 @@ class TestShipTitleSkipsMergeCommits(TestCase):
         assert result.ok is True
         (spec,) = host.create_pr.call_args.args
         assert spec.title == "feat: the branch's own work"
+
+
+class _HookHost:
+    """The forge the pre-push ``ensure-pr`` hook opens its PR against."""
+
+    URL = "https://github.com/souliane/teatree/pull/4305"
+
+    def current_user(self) -> str:
+        return "souliane"
+
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        return True
+
+    def create_pr(self, spec):
+        return {"web_url": self.URL}
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        return PrOpenState.OPEN
+
+
+class TestPostPushRefusalLeavesAReconcilableState(TestCase):
+    """#4305: a refusal reached AFTER the push must not orphan the PR the push opened.
+
+    ``push_branch`` fires the git pre-push hook, which runs ``ensure-pr`` and opens
+    a PR for the branch. Every refusal after that point — the post-push fleet-claim
+    fence here, the PR-open half's no-URL / wrong-slug / 404 returns — returns
+    ``ok=False`` for a ship whose PR is live on the forge. Unrecorded, that PR was
+    invisible to the retry, which collided with ``already exists``.
+    """
+
+    BRANCH = "fix/4305-post-push"
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _repo(self) -> Path:
+        origin = self._tmp_path / "origin.git"
+        subprocess.run([_GIT, "init", "--bare", str(origin)], check=True, capture_output=True)
+        work = self._tmp_path / "work"
+        subprocess.run([_GIT, "init", "-b", "main", str(work)], check=True, capture_output=True)
+        _run_git("config", "user.email", "agent@example.com", cwd=work)
+        _run_git("config", "user.name", "agent", cwd=work)
+        _run_git("remote", "add", "origin", str(origin), cwd=work)
+        (work / "README.md").write_text("seed\n")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-m", "seed", cwd=work)
+        _run_git("push", "-u", "origin", "main", cwd=work)
+        _run_git("checkout", "-b", self.BRANCH, cwd=work)
+        (work / "fix.py").write_text("x = 1\n")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-m", "fix(core): own commit", cwd=work)
+        return work
+
+    def test_the_hook_opened_pr_is_on_the_ticket_after_a_post_push_refusal(self) -> None:
+        repo = self._repo()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/4305")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(repo),
+            branch=self.BRANCH,
+            extra={"worktree_path": str(repo)},
+        )
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: _HookHost())
+        ship_host = MagicMock()
+        ship_host.current_user.return_value = "souliane"
+
+        def fire_pre_push_hook(*, repo: str, remote: str, branch: str):
+            create_or_defer_pr(repo, branch)
+            return MagicMock(ok=True)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=ship_host),
+            patch("teatree.core.runners.ship.push_branch", side_effect=fire_pre_push_hook),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("fix(core): own commit", "")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch.object(
+                ShipExecutor,
+                "_fleet_claim_lost",
+                side_effect=[None, RunnerResult(ok=False, detail="fleet claim lost")],
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        ship_host.create_pr.assert_not_called()
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"] == {self.BRANCH: _HookHost.URL}

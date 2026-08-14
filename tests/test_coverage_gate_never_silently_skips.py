@@ -36,6 +36,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts import coverage_gate
 from hooks.scripts.coverage_gate import diff_coverage_finding
+from hooks.scripts.hook_budget import HOOK_CEILING_S
 from hooks.scripts.hook_router import handle_block_uncovered_diff
 from tests._git_repo import make_git_repo, run_git
 
@@ -45,13 +46,13 @@ _FAILING_REPORT = json.dumps({"passes": False, "uncovered": [{"path": "a.py", "l
 _PASSING_REPORT = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
 
 # The gate's COMPLETE set of decline paths, across the two functions that own them.
-# In ``coverage_finding_for_command``: an out-of-scope repo, ``t3`` off PATH, a
-# crashed measurement — all three announce themselves, plus the verdict-shaped
-# returns of ``diff_coverage_finding``. In ``handle_block_uncovered_diff``: "not a
-# merge-class mutation" (silent by design — the gate was never in scope) and "no
+# In ``coverage_finding_for_command``: an out-of-scope repo, ``t3`` off PATH, a spent
+# hook budget (#4305), a crashed measurement — all four announce themselves, plus the
+# verdict-shaped returns of ``diff_coverage_finding``. In ``handle_block_uncovered_diff``:
+# "not a merge-class mutation" (silent by design — the gate was never in scope) and "no
 # finding". A rewrite that adds a decline path changes a count and lands here,
 # which is the whole point: the last rewrite added a silent one unnoticed.
-_GATE_DECLINE_PATHS = 3
+_GATE_DECLINE_PATHS = 4
 _HANDLER_DECLINE_PATHS = 2
 
 
@@ -103,6 +104,19 @@ def t3_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
 
 
+class _StepClock:
+    """A monotonic clock that jumps *step* seconds between reads — a spent budget, instantly."""
+
+    def __init__(self, step: float) -> None:
+        self._now = 0.0
+        self._step = step
+
+    def monotonic(self) -> float:
+        now = self._now
+        self._now += self._step
+        return now
+
+
 class TestEveryUnmeasuredDeclineAnnouncesItself:
     """Every fail-open branch, driven through the real handler."""
 
@@ -143,6 +157,23 @@ class TestEveryUnmeasuredDeclineAnnouncesItself:
         data = _create_in(_shipping_repo(tmp_path))
         with _t3_reports("", raises=subprocess.TimeoutExpired(cmd="t3", timeout=30)):
             assert handle_block_uncovered_diff(data) is False
+        assert _SKIP_MARKER in capsys.readouterr().err
+
+    def test_a_spent_hook_budget_notes_the_skip(
+        self,
+        tmp_path: Path,
+        t3_on_path: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """#4305: the ceiling is shared, so the gate can arrive with nothing left to spend.
+
+        Starting a measurement anyway does not merely waste time — the harness
+        cancels the overrunning hook and no decision is emitted at all.
+        """
+        monkeypatch.setattr(coverage_gate, "time", _StepClock(step=float(HOOK_CEILING_S)))
+        with _t3_reports(_FAILING_REPORT, returncode=1):
+            assert handle_block_uncovered_diff(_create_in(_shipping_repo(tmp_path))) is False
         assert _SKIP_MARKER in capsys.readouterr().err
 
     def test_unparsable_report_notes_the_skip(

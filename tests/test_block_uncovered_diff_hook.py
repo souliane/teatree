@@ -28,7 +28,10 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import coverage_gate
 from hooks.scripts.coverage_gate import diff_coverage_finding, repo_ships_branch, shipped_branch
+from hooks.scripts.existing_artifact import _PROBE_TIMEOUT_S
+from hooks.scripts.hook_budget import HOOK_CEILING_S
 from hooks.scripts.hook_router import _is_merge_class_mutation, handle_block_uncovered_diff
 from teatree.utils.diff_coverage import UNREFERENCED_SYMBOL_IMPORT_HINT
 
@@ -74,7 +77,9 @@ class T3Measurement:
     calls: int = 0
     argv: list[str] = field(default_factory=list)
     cwd: str | None = None
+    timeout: float | None = None
     open_pr_argv: list[str] = field(default_factory=list)
+    open_pr_timeout: float | None = None
 
     @property
     def ran(self) -> bool:
@@ -83,6 +88,20 @@ class T3Measurement:
     @property
     def repo(self) -> Path:
         return Path(self.argv[self.argv.index("--repo") + 1])
+
+
+@dataclass
+class MeasurementClock:
+    """A monotonic clock the faked measurement advances, so "slow" costs no real time."""
+
+    cost_s: float = 0.0
+    now: float = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def spend(self) -> None:
+        self.now += self.cost_s
 
 
 NO_OPEN_PR = json.dumps({"outcome": "none", "url": ""})
@@ -95,6 +114,7 @@ def t3_reports(
     returncode: int = 0,
     raises: Exception | None = None,
     open_pr: str = NO_OPEN_PR,
+    clock: MeasurementClock | None = None,
 ) -> Iterator[T3Measurement]:
     """Fake ONLY the ``t3 tool`` shellouts; let every git probe run for real.
 
@@ -111,12 +131,16 @@ def t3_reports(
     def dispatch(argv, **kwargs):
         if isinstance(argv, list) and "open-pr" in argv:
             measurement.open_pr_argv = argv
+            measurement.open_pr_timeout = kwargs.get("timeout")
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout=open_pr, stderr="")
         if not (isinstance(argv, list) and "diff-coverage" in argv):
             return real_run(argv, **kwargs)
         measurement.calls += 1
         measurement.argv = argv
         measurement.cwd = kwargs.get("cwd")
+        measurement.timeout = kwargs.get("timeout")
+        if clock is not None:
+            clock.spend()
         if raises is not None:
             raise raises
         return subprocess.CompletedProcess(args=argv, returncode=returncode, stdout=stdout, stderr="")
@@ -352,6 +376,55 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
         with t3_reports(CLEAN_REPORT, open_pr=self.OPEN_PR) as measurement:
             assert handle_block_uncovered_diff(self._create_call(shipping_repo)) is False
         assert measurement.open_pr_argv == []
+
+
+class TestOneCeilingSharedByMeasurementAndProbe:
+    """#4305: two shellouts, one 30s PreToolUse budget — the second must see the first.
+
+    Before this, the measurement held a fixed 30s and the probe a fixed 15s: 45s of
+    timeouts in a 30s window. Overrunning does not truncate the probe, it costs the
+    DECISION — the harness cancels the hook, no ``permissionDecision`` is emitted,
+    and the guarded create proceeds past a gate that had already refused it.
+    """
+
+    CREATE = f"gh pr create --head {SHIP_BRANCH} --title t --body b"
+    OPEN_PR = json.dumps({"outcome": "found", "url": "https://github.com/o/r/pull/4305"})
+
+    @pytest.fixture(autouse=True)
+    def _t3_on_path(self, monkeypatch):
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+
+    def _deny(self, repo: Path, capsys) -> str:
+        data = {"tool_name": "Bash", "tool_input": {"command": self.CREATE}, "cwd": str(repo)}
+        assert handle_block_uncovered_diff(data) is True
+        return json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    def test_measurement_leaves_room_under_the_ceiling(self, shipping_repo, capsys):
+        with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR) as measurement:
+            self._deny(shipping_repo, capsys)
+        assert measurement.timeout is not None
+        assert measurement.timeout < HOOK_CEILING_S
+
+    def test_a_slow_measurement_shrinks_the_probe_rather_than_adding_to_it(self, shipping_repo, monkeypatch, capsys):
+        clock = MeasurementClock(cost_s=25.0)
+        monkeypatch.setattr(coverage_gate, "time", clock)
+        with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR, clock=clock) as measurement:
+            reason = self._deny(shipping_repo, capsys)
+        assert measurement.open_pr_timeout is not None
+        assert measurement.open_pr_timeout < _PROBE_TIMEOUT_S
+        assert clock.now + measurement.open_pr_timeout <= HOOK_CEILING_S
+        assert "ALREADY EXISTS" in reason
+
+    def test_a_measurement_that_spends_the_ceiling_drops_the_probe_and_still_decides(
+        self, shipping_repo, monkeypatch, capsys
+    ):
+        # The acceptance case: the probe is what gets sacrificed, never the deny.
+        clock = MeasurementClock(cost_s=float(HOOK_CEILING_S))
+        monkeypatch.setattr(coverage_gate, "time", clock)
+        with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR, clock=clock) as measurement:
+            reason = self._deny(shipping_repo, capsys)
+        assert measurement.open_pr_argv == []
+        assert "ALREADY EXISTS" not in reason
 
 
 class TestFindingNamesImportWorkaround:

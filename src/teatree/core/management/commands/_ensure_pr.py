@@ -35,6 +35,7 @@ from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -310,7 +311,24 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         if "no commits between" in (exc.stderr or str(exc)).lower():
             return _owe_pr(repo_path, branch_name, reason=PRE_PUSH_RACE_DEFERRAL, spec=spec)
         raise
-    return _verified_pr_result(host, raw, branch_name)
+    result = _verified_pr_result(host, raw, branch_name)
+    _record_verified_url(owning_ticket, result, branch_name)
+    return result
+
+
+def _record_verified_url(ticket: "Ticket | None", result: EnsurePrResult, branch_name: str) -> None:
+    """Put a hook-opened PR on the ticket's record, so a post-push refusal reconciles (#4305).
+
+    This runs inside the git PRE-push hook, so by the time a ship's own post-push
+    refusal fires — the fleet-claim fence, or its PR-open half's no-URL /
+    wrong-slug / 404 returns — this PR is already live on the forge. Recorded, the
+    next attempt adopts it (``_recorded_url_for_branch``) rather than retrying
+    into ``already exists``. A genuinely orphan branch has no ticket to record on.
+    """
+    url = result.get("url") or ""
+    if ticket is None or not url:
+        return
+    record_pr_url(ticket, url, branch_name)
 
 
 def _verified_pr_result(host: CodeHostBackend, raw: "RawAPIDict", branch_name: str) -> EnsurePrResult:
