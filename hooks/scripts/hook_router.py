@@ -55,6 +55,7 @@ if __name__ == "__main__":
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
+from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
     _ask_question_has_relax_option,  # noqa: F401 — re-export for test access
@@ -525,9 +526,7 @@ def _state_file(session_id: str, suffix: str) -> Path:
 
 
 def _teatree_active(session_id: str) -> bool:
-    if not session_id:
-        return False
-    return _state_file(session_id, "teatree-active").is_file()
+    return bool(session_id) and _state_file(session_id, "teatree-active").is_file()
 
 
 def _t3_engaged(session_id: str) -> bool:
@@ -5362,6 +5361,7 @@ _HANDLERS: dict[str, list] = {
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_dispatch_admission,
+        handle_brief_anchor_lint,
         handle_banned_terms_pretool,
         handle_block_verbatim_operator_paste,
         handle_enforce_skill_loading,

@@ -6944,6 +6944,9 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    only dispatch) kill-switch (self-rescue).                 │
 │ unbacked-claim     Evidence gate (a diagnosis or an escalation cites what    │
 │                    was read) kill-switch (self-rescue).                      │
+│ brief-anchor       Brief-anchor lint (a dispatch brief anchors its           │
+│                    assertions or licenses overruling them) kill-switch       │
+│                    (self-rescue).                                            │
 │ main-clone         Main-clone working-tree mutation gate kill-switch         │
 │                    (self-rescue).                                            │
 │ memory-recall      Cold-tier memory recall injector kill-switch              │
@@ -7313,6 +7316,60 @@ Usage: t3 teatree gate unbacked-claim disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate unbacked-claim enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate brief-anchor`
+
+```
+Usage: t3 teatree gate brief-anchor [OPTIONS] COMMAND [ARGS]...
+
+ Brief-anchor lint (a dispatch brief anchors its assertions or licenses
+ overruling them) kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate brief-anchor status`
+
+```
+Usage: t3 teatree gate brief-anchor status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate brief-anchor disable`
+
+```
+Usage: t3 teatree gate brief-anchor disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate brief-anchor enable`
+
+```
+Usage: t3 teatree gate brief-anchor enable [OPTIONS]
 
  Re-enable the gate.
 
