@@ -117,6 +117,7 @@ def _run_pass(tmp_path: Path, **stub_env: str) -> str:
     # Both cross-pass ledgers are per-test, never the shared host defaults — a red pass in
     # one test must not make another test's green pass announce a clear.
     env["TEATREE_WATCHDOG_RED_STATE"] = str(tmp_path / "red.state")
+    env["TEATREE_WATCHDOG_UNDELIVERED_STATE"] = str(tmp_path / "undelivered.state")
     env["TEATREE_WATCHDOG_DEPLOY_PENDING_STATE"] = str(tmp_path / "pending.state")
     env.setdefault("STUB_INIT_PS", '{"State":"exited","ExitCode":0}')
     env.setdefault("STUB_DOCTOR_JSON", _GREEN_VERDICT)

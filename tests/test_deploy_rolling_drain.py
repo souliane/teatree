@@ -37,7 +37,7 @@ _OBSERVED_IDLE_TEARDOWN_SECONDS = 276
 #: Anchors bounding deploy.sh's stranded-gate fail-safe, so the signal probe below runs
 #: the SHIPPED code rather than a re-typed copy of it.
 _FAIL_SAFE_START = "_DRAINED=false"
-_FAIL_SAFE_END = "trap _clear_quiescing_if_stranded EXIT"
+_FAIL_SAFE_END = "trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT"
 
 #: Anchors bounding deploy.sh's `compose` helper, which the fail-safe calls (#4193 wired
 #: the host-identity overlay behind it). Lifted verbatim for the same reason the
@@ -216,7 +216,7 @@ class TestDeployDrain:
         # swap must clear the gate on EXIT so the still-live old worker resumes
         # admission instead of staying quiesced forever.
         body = _DEPLOY_SH.read_text(encoding="utf-8")
-        assert "trap _clear_quiescing_if_stranded EXIT" in body
+        assert _FAIL_SAFE_END in body
         assert "config_setting set worker_quiescing false" in body, (
             "the stranded-gate fail-safe must clear worker_quiescing on abnormal exit."
         )

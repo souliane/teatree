@@ -899,10 +899,17 @@ service is down — exactly the outage it exists to repair.
    on the box and the detector widens with it rather than calling a slower-but-legal
    convergence an outage.
 4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
-   the finding set so an ongoing outage does not re-spam every pass. (The default
-   deploy wires no Slack credential; until you add one the DM step no-ops and the
-   findings are visible in the watchdog's own container logs and `t3 doctor check`.)
-   Three of those findings are **deploy-gated** — see below.
+   the finding set so an ongoing outage does not re-spam every pass. A page the
+   transport cannot carry is **parked**, not lost: body and idempotency key go into
+   the undelivered ledger (`TEATREE_WATCHDOG_UNDELIVERED_STATE`, default
+   `/var/tmp/teatree-watchdog-undelivered.state`, newest `TEATREE_WATCHDOG_UNDELIVERED_MAX`
+   kept), every pass re-sends it and reports the depth while any remain, and the
+   original key means a re-send that races a recovered channel is deduped rather
+   than doubled ([#4339](https://github.com/souliane/teatree/issues/4339) — the one
+   channel that would have surfaced an outage was itself down, so the detection was
+   as silent as no detection at all). Until you wire a Slack credential the DM step
+   parks every page; the findings are also visible in the watchdog's own container
+   logs and `t3 doctor check`. Three of those findings are **deploy-gated** — see below.
 
 The DM leaves the box via a `docker compose exec` inside a *live app container*,
 not from the watchdog itself — the watchdog runs `network_mode: none`, so the
@@ -953,7 +960,7 @@ Exactly three findings are what a deploy manufactures, so exactly three are gate
 **worker-flock-not-held**, **slack-listener-down**, **clone-behind-origin**. Every
 other finding pages on the first observation, unchanged.
 
-A convergence is detected two ways, either sufficient:
+A convergence is detected three ways, any one sufficient:
 
 - **The deploy flock.** `deploy.sh` holds `${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}`
   for its whole run. The watchdog probes it **read-only** — it matches the file's
@@ -961,14 +968,26 @@ A convergence is detected two ways, either sufficient:
   probe that briefly *acquired* the lock would make a deploy starting in that
   instant see it as busy, and `deploy.sh` exits 0 on a busy lock (a silently
   skipped deploy). The host `/tmp` is mounted read-only at `/host-tmp` so the lock
-  is visible; without that mount the probe degrades to the signal below.
-- **Very-recent container creation**, read from the docker socket. `Created` (not
-  started) is the discriminating field: a crash-looping container restarts without
-  being recreated, so a genuine outage never reads as a deploy. The grace window is
-  one watchdog interval. The timestamp comes from `inspect --format '{{.Created}}'`
-  (RFC3339 UTC) and never `ps --format '{{.CreatedAt}}'`, whose local-zone
-  abbreviation (`… +0200 CEST`) GNU date refuses to parse on this tzdata-less image
-  — every sample would fail to parse and the probe would silently never fire.
+  is visible; without that mount the probe degrades to the signals below.
+- **The deploy's own in-progress record.** `deploy.sh` writes `<pid> <epoch>` into
+  that same lock file once it holds the flock and truncates it on exit. `/proc/locks`
+  is filtered by pid namespace, so the flock itself is invisible from the watchdog
+  *container*; this record is what crosses the boundary, and a crash loop cannot
+  write it. It counts as a live holder only while it is younger than
+  `TEATREE_WATCHDOG_DEPLOY_MARKER_MAX_AGE` (default 1800s), so a hard-killed deploy's
+  leftover record — a lock file with no live holder — reads as **not held**.
+- **Very-recent container creation**, read from the docker socket, **provided the
+  container is not crash-looping**. The row is
+  `inspect --format '{{.Created}}\t{{.RestartCount}}\t{{.State.Status}}'`: a container
+  created inside the grace window (one watchdog interval) is evidence of a settling
+  swap only when it has never restarted and is `running`/`created`. Age alone is not
+  sufficient — a crash loop renews its container faster than the window expires, which
+  kept the condition permanently true and suppressed the repair on every pass
+  ([#4339](https://github.com/souliane/teatree/issues/4339)). The timestamp comes from
+  `inspect .Created` (RFC3339 UTC) and never `ps --format '{{.CreatedAt}}'`, whose
+  local-zone abbreviation (`… +0200 CEST`) GNU date refuses to parse on this
+  tzdata-less image — every sample would fail to parse and the probe would silently
+  never fire.
 
 Then:
 
@@ -995,6 +1014,7 @@ same-daemon supervisor can cover, and is honest about the two it cannot:
 | an app service crashed / exited | ✅ | `up -d --no-recreate` restarts it |
 | the **watchdog itself** crashed | ✅ | `restart: always` — the daemon relaunches it in seconds |
 | the probe's target is mid-restart when the pass runs | ✅ | the daemon's "container is restarting" refusal is classified as transient and retried (`TEATREE_WATCHDOG_DOCTOR_RETRIES`); it never pages the owner. A run that COMPLETED but emitted no verdict is still RED and still DMs |
+| the alerting channel is down when a page is raised | ✅ | the page is parked in the undelivered ledger and re-sent every pass until it lands; the depth is logged meanwhile |
 | the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
 | `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
 | the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
