@@ -85,6 +85,11 @@ class _IntakeTestCase(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The governor reads live box load, so on a busy host it denies admission and the
+        # scan claims nothing — which is not what any test below is about.
+        governor = patch("teatree.core.agent_admission.agent_admission_denied_reason", return_value=None)
+        governor.start()
+        self.addCleanup(governor.stop)
 
     def _scanner(self, host: _Host, **overrides: object) -> IssueIntakeScanner:
         kwargs: dict[str, object] = {
@@ -223,3 +228,49 @@ class PartialPassTests(_IntakeTestCase):
 
         cursor = IntakeScanCursor.objects.get(overlay=OVERLAY)
         assert cursor.consecutive_incomplete_passes == 0
+
+
+class AgeOrderFairnessTests(_IntakeTestCase):
+    """Resuming must not rotate the queue for a pass that FINISHED (#4238).
+
+    The oldest admissible issue takes the first slot that frees. A resume point carried
+    into a completed pass starts the next walk at a newer issue, so the slot goes to it
+    and the longest-waiting issue keeps losing — the exact starvation #4238 closed.
+    """
+
+    OLD = _url(4188)
+
+    def _queue(self) -> list[RawAPIDict]:
+        return [
+            _issue(4188, created_at="2026-08-01T09:00:00Z"),
+            _issue(4230, created_at="2026-08-02T09:00:00Z"),
+            _issue(4330, created_at="2026-08-03T09:00:00Z"),
+        ]
+
+    def test_a_completed_pass_leaves_no_resume_point(self) -> None:
+        host = _Host(authored={OWNER: self._queue()})
+        self._scanner(host, can_claim=False).scan()
+
+        assert IntakeScanCursor.objects.resume_after(OVERLAY) == ""
+
+    def test_the_oldest_issue_takes_the_slot_after_a_completed_pass(self) -> None:
+        host = _Host(authored={OWNER: self._queue()})
+        self._scanner(host, can_claim=False).scan()
+
+        signals = self._scanner(host, max_concurrent=1).scan()
+
+        assert [signal.payload["url"] for signal in signals] == [self.OLD]
+
+    def test_an_incomplete_pass_does_leave_a_resume_point(self) -> None:
+        host = _Host(authored={OWNER: self._queue()})
+
+        # 3s examines two candidates (the deadline is read once before the walk), so the
+        # resume point is genuinely past the head of the queue.
+        self._scanner(
+            host,
+            can_claim=False,
+            pass_budget_seconds=3.0,
+            monotonic=_one_second_per_candidate(),
+        ).scan()
+
+        assert IntakeScanCursor.objects.resume_after(OVERLAY) == _url(4230)

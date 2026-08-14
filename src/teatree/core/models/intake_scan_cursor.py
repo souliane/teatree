@@ -23,9 +23,17 @@ class IntakeScanCursorManager(models.Manager["IntakeScanCursor"]):
     """Read the resume point, and record what each pass managed to cover."""
 
     def resume_after(self, overlay: str) -> str:
-        """The issue URL the last pass stopped on — ``""`` starts at the oldest candidate."""
+        """The issue URL an INCOMPLETE last pass stopped on — ``""`` starts at the oldest.
+
+        A pass that FINISHED leaves no resume point, so the next one starts at the oldest
+        candidate and the first freed slot goes to the longest-waiting issue (#4238).
+        Resuming is what an unfinished pass needs to reach the frontier; carrying it into a
+        finished pass would rotate the queue every tick and hand the slot to a newer issue.
+        """
         row = self.filter(overlay=overlay).first()
-        return row.last_issue_url if row else ""
+        if row is None or not row.consecutive_incomplete_passes:
+            return ""
+        return row.last_issue_url
 
     def record_pass(
         self,
