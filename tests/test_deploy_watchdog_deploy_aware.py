@@ -53,8 +53,10 @@ def _write_docker_stub(bin_dir: Path) -> None:
     """A ``docker`` shim modelling the docker + compose calls ``run_pass`` makes.
 
     The container-creation probe is TWO calls, exactly as the real one is: ``ps
-    --format '{{.ID}}'`` then ``inspect --format '{{.Created}}'``. ``STUB_CREATED``
-    supplies the RFC3339 creation time (empty → no containers). Every invocation is
+    --format '{{.ID}}'`` then an ``inspect`` whose row carries the creation time,
+    the restart count and the state. ``STUB_CREATED`` supplies the RFC3339 creation
+    time (empty → no containers), ``STUB_RESTARTS`` / ``STUB_STATUS`` the other two
+    fields that tell a settling deploy from a crash loop. Every invocation is
     appended to ``STUB_DOCKER_LOG`` so the argv shape itself can be asserted.
 
     A doctor ``exec`` prints ``STUB_DOCTOR_JSON``; a ``notify send`` exec captures
@@ -68,7 +70,8 @@ def _write_docker_stub(bin_dir: Path) -> None:
         'if [ "$1" != compose ]; then\n'
         '  case "$1 $*" in\n'
         '    "ps "*.ID*) [ -z "${STUB_CREATED:-}" ] || printf "%s\\n" "stubcid" ;;\n'
-        '    "inspect "*) printf "%s\\n" "${STUB_CREATED:-}" ;;\n'
+        '    "inspect "*) [ -z "${STUB_CREATED:-}" ] || printf "%s\\t%s\\t%s\\n" '
+        '"$STUB_CREATED" "${STUB_RESTARTS:-0}" "${STUB_STATUS:-running}" ;;\n'
         "  esac\n"
         "  exit 0\n"
         "fi\n"
@@ -114,6 +117,7 @@ def _run_pass(tmp_path: Path, *, label: str = "1", **stub_env: str) -> str:
     # so a red pass here can never make another test's green pass announce a clear.
     env.setdefault("TEATREE_WATCHDOG_DEPLOY_PENDING_STATE", str(tmp_path / "pending.state"))
     env.setdefault("TEATREE_WATCHDOG_RED_STATE", str(tmp_path / "red.state"))
+    env.setdefault("TEATREE_WATCHDOG_UNDELIVERED_STATE", str(tmp_path / "undelivered.state"))
     env.setdefault("TEATREE_WATCHDOG_DEPLOY_LOCK", str(tmp_path / "absent-deploy.lock"))
     env.update(stub_env)
     subprocess.run([_BASH, str(harness)], capture_output=True, text=True, check=False, env=env)
@@ -176,9 +180,8 @@ class TestDeployInFlightSuppressesTheThreeFindings:
         assert "CreatedAt" not in log, "the tzdata-dependent human timestamp must never be parsed"
 
     def test_a_long_running_container_is_not_a_deploy(self, tmp_path: Path) -> None:
-        # A crash-looping container RESTARTS without being recreated, so an old
-        # creation timestamp must never read as a deploy — only the two-strikes
-        # rule gates here, and the second pass pages.
+        # An old creation timestamp must never read as a deploy — only the
+        # two-strikes rule gates here, and the second pass pages.
         env = {"STUB_DOCTOR_JSON": _verdict(_FLOCK_FAIL), "STUB_CREATED": _created(seconds_ago=86400)}
         assert _run_pass(tmp_path, label="1", **env) == ""
         assert "holds the flock" in _run_pass(tmp_path, label="2", **env)
@@ -280,6 +283,88 @@ class TestTheSupervisorStandsBackDuringAConvergence:
         _run_pass(tmp_path)
 
         assert _compose_ups(tmp_path), "gating the restart must not disable the self-heal itself"
+
+
+class TestACrashLoopIsNotADeploy:
+    """#4339: the crash loop kept resetting the liveness heuristic meant to detect it.
+
+    The worker's restart policy renewed the container every ~50s, so "a stack container
+    was created <300s ago" stayed true forever and the supervisor declined to restart
+    services on every pass, indefinitely — the failure suppressing its own repair.
+    """
+
+    @pytest.mark.parametrize(("restarts", "status"), [("7", "restarting"), ("3", "exited"), ("0", "restarting")])
+    def test_a_crash_looping_container_does_not_suppress_the_restart(
+        self, tmp_path: Path, restarts: str, status: str
+    ) -> None:
+        _run_pass(tmp_path, STUB_CREATED=_created(seconds_ago=20), STUB_RESTARTS=restarts, STUB_STATUS=status)
+
+        assert _compose_ups(tmp_path), "a crash loop must never gate the repair it needs"
+
+    def test_a_crash_looping_container_does_not_gate_the_deploy_sensitive_findings(self, tmp_path: Path) -> None:
+        env = {
+            "STUB_DOCTOR_JSON": _verdict(_FLOCK_FAIL),
+            "STUB_CREATED": _created(seconds_ago=20),
+            "STUB_RESTARTS": "7",
+            "STUB_STATUS": "restarting",
+        }
+        assert _run_pass(tmp_path, label="1", **env) == ""
+        assert "holds the flock" in _run_pass(tmp_path, label="2", **env)
+
+    def test_a_settling_deploy_container_still_suppresses(self, tmp_path: Path) -> None:
+        # The anti-vacuous control: a freshly recreated, RUNNING container is a real
+        # image swap and must keep the supervisor standing back.
+        _run_pass(tmp_path, STUB_CREATED=_created(), STUB_RESTARTS="0", STUB_STATUS="running")
+
+        assert _compose_ups(tmp_path) == []
+
+
+def _record(*, age_seconds: int = 0) -> str:
+    """The `<pid> <epoch>` in-progress record deploy.sh writes into the lock file."""
+    return f"4242 {int(time.time()) - age_seconds}\n"
+
+
+class TestTheDeployRecordIsTheCrossVenueSignal:
+    """#4339: an explicit marker the deploy writes and clears, which a crash loop cannot fake.
+
+    ``/proc/locks`` is filtered by pid namespace, so the kernel flock deploy.sh holds on
+    the host is invisible from the watchdog CONTAINER. The record deploy.sh writes into
+    the lock file is the only evidence of a convergence that crosses that boundary.
+    """
+
+    def test_a_fresh_record_stops_the_restart_pass(self, tmp_path: Path) -> None:
+        lock = tmp_path / "deploy.lock"
+        lock.write_text(_record(), encoding="utf-8")
+
+        _run_pass(tmp_path, TEATREE_WATCHDOG_DEPLOY_LOCK=str(lock))
+
+        assert _compose_ups(tmp_path) == []
+
+    def test_a_cleared_record_is_not_held(self, tmp_path: Path) -> None:
+        # deploy.sh truncates the file on exit, so the leftover lock FILE is not a holder.
+        lock = tmp_path / "deploy.lock"
+        lock.write_text("", encoding="utf-8")
+
+        _run_pass(tmp_path, TEATREE_WATCHDOG_DEPLOY_LOCK=str(lock))
+
+        assert _compose_ups(tmp_path), "a lock file with no live holder must read as not held"
+
+    def test_a_stale_record_is_not_held(self, tmp_path: Path) -> None:
+        # A hard-killed deploy leaves its record behind; past the ceiling it is not a holder.
+        lock = tmp_path / "deploy.lock"
+        lock.write_text(_record(age_seconds=7200), encoding="utf-8")
+
+        _run_pass(tmp_path, TEATREE_WATCHDOG_DEPLOY_LOCK=str(lock))
+
+        assert _compose_ups(tmp_path), "a record past the max age must read as not held"
+
+    def test_a_garbage_record_is_not_held(self, tmp_path: Path) -> None:
+        lock = tmp_path / "deploy.lock"
+        lock.write_text("not-a-record\n", encoding="utf-8")
+
+        _run_pass(tmp_path, TEATREE_WATCHDOG_DEPLOY_LOCK=str(lock))
+
+        assert _compose_ups(tmp_path)
 
 
 if __name__ == "__main__":

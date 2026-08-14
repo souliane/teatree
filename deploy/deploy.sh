@@ -54,11 +54,19 @@ compose() {
 # convergence at a time; a second invocation exits cleanly, since the holder always
 # fast-forwards to the latest main and GitHub re-fires for any later push.
 DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
-exec 9>"$DEPLOY_LOCK"
+# Append, never truncate: `>` would wipe the winner's in-progress record below from an
+# invocation that goes on to lose the race.
+exec 9>>"$DEPLOY_LOCK"
 if ! flock -n 9; then
     echo "deploy: another convergence already holds $DEPLOY_LOCK — exiting (it converges to latest main)." >&2
     exit 0
 fi
+
+# The convergence's own in-progress record (#4339). /proc/locks is filtered by pid
+# namespace, so the flock above is invisible from the watchdog CONTAINER; this record is
+# what crosses that boundary, and a crash loop cannot write it. Cleared on exit, so a
+# lock file outliving its holder reads as not held.
+printf '%s %s\n' "$$" "$(date -u +%s)" >"$DEPLOY_LOCK"
 
 # Fail-safe against a stranded quiescing gate. If this run drains the worker (which
 # sets `worker_quiescing` ON) but then exits BEFORE the swap that would recreate the
@@ -79,6 +87,16 @@ _DRAINED=false
 _SWAP_DONE=false
 _INIT_RAN=false
 _WORKER_SWAPPED=false
+# Clears the in-progress record above (#4339). The `if` guards `${DEPLOY_LOCK:-}`
+# rather than a bare `$DEPLOY_LOCK` so this stays a safe no-op wherever the var is
+# unset — e.g. this fail-safe block lifted verbatim into a test harness that never
+# declared it — and an `if` condition (unlike a bare `&&` list) is exempt from
+# `set -e` under this script's own `set -euo pipefail`.
+_release_deploy_record() {
+    if [ -n "${DEPLOY_LOCK:-}" ]; then
+        : >"$DEPLOY_LOCK" 2>/dev/null || true
+    fi
+}
 _clear_quiescing_if_stranded() {
     if [ "$_DRAINED" = true ] && [ "$_SWAP_DONE" = false ]; then
         # Say "cleanup", loudly. This runs LAST, so it is the final line in the
@@ -95,7 +113,7 @@ _clear_quiescing_if_stranded() {
             t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
     fi
 }
-trap _clear_quiescing_if_stranded EXIT
+trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT
 
 # The admin can serve while the worker crash-loops, so a converged deploy must
 # confirm the worker process itself is running.

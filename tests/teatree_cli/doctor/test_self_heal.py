@@ -10,9 +10,11 @@ import base64
 import datetime as dt
 import io
 import json as _json
+import os
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from django.test import TestCase
@@ -356,6 +358,60 @@ class RuntimeCloneBranchCheckTest(TestCase):
         with mock.patch(f"{_MOD}._Probe.runtime_clone_root", return_value=None):
             ok, _out = _echoes(self_heal._check_runtime_clone_on_default_branch)
         assert ok is True
+
+
+class RuntimeCloneResolutionTest(TestCase):
+    """#4339: the clone is resolved from what the deployment declares, never hard-coded.
+
+    The hard-coded box path was absent on the box, so the lookup degraded to ``None``
+    and the drift detector was silently inert — the failure mode that goes unnoticed
+    precisely because nothing crashes.
+    """
+
+    _ABSENT = Path("/nonexistent-runtime-clone")
+
+    def test_the_declared_clone_dir_wins(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            with mock.patch.dict(os.environ, {"TEATREE_CLONE_DIR": str(root)}, clear=True):
+                assert self_heal._Probe.runtime_clone_root() == root
+
+    def test_the_deploy_checkout_is_the_next_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            env = {"TEATREE_CLONE_DIR": str(root / "absent"), "TEATREE_DEPLOY_CHECKOUT": str(root)}
+            with mock.patch.dict(os.environ, env, clear=True):
+                assert self_heal._Probe.runtime_clone_root() == root
+
+    def test_a_venue_declaring_none_resolves_nothing(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(self_heal, "_BOX_RUNTIME_CLONE", self._ABSENT),
+        ):
+            assert self_heal._Probe.declared_runtime_clones() == []
+            assert self_heal._Probe.runtime_clone_root() is None
+
+    def test_a_declared_but_unresolvable_clone_is_reported(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"TEATREE_CLONE_DIR": str(self._ABSENT)}, clear=True),
+            mock.patch.object(self_heal, "_BOX_RUNTIME_CLONE", self._ABSENT),
+        ):
+            ok, out = _echoes(self_heal._check_runtime_clone_on_default_branch)
+        assert ok is True, "an inert detector must not redden the run"
+        assert out.startswith("WARN")
+        assert str(self._ABSENT) in out
+
+    def test_a_venue_declaring_none_stays_silent(self) -> None:
+        # The anti-vacuous control: a dev machine with no H24 clone is not a misconfiguration.
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(self_heal, "_BOX_RUNTIME_CLONE", self._ABSENT),
+        ):
+            ok, out = _echoes(self_heal._check_runtime_clone_on_default_branch)
+        assert ok is True
+        assert out == ""
 
 
 class RunAllAndJsonTest(TestCase):

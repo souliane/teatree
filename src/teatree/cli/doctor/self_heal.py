@@ -64,8 +64,11 @@ _STALE_TIMER_CADENCE_MULTIPLIER = 2
 _MIN_STALE_TIMER_SECONDS = 300
 #: A loop with no interval/daily cadence falls back to this nominal cadence.
 _DEFAULT_CADENCE_SECONDS = 300
-#: The box's runtime clone; used as a fallback when the running code's repo root
-#: cannot be resolved (``deploy/docker-compose.yml`` mounts the clone here).
+#: Env vars ``deploy/docker-compose.yml`` forwards into every service naming the box's
+#: runtime clone, most specific first. Hard-coding the box default instead left the
+#: drift detector silently inert wherever the deployment put its clone elsewhere.
+_RUNTIME_CLONE_ENVS = ("TEATREE_CLONE_DIR", "TEATREE_DEPLOY_CHECKOUT")
+#: Where the box has historically kept it, for a venue that declares neither.
 _BOX_RUNTIME_CLONE = Path("/home/teatree/teatree")
 
 
@@ -212,17 +215,28 @@ class _Probe:
         return [(str(row.id), row.started_at) for row in rows if row.started_at is not None and row.started_at < cutoff]
 
     @staticmethod
+    def declared_runtime_clones() -> list[Path]:
+        """Every runtime-clone path this venue's deployment declares, most specific first.
+
+        Empty on a venue that declares none (any dev machine) — which is what tells a
+        misconfigured deployment from a laptop that simply has no H24 clone.
+        """
+        declared = (os.environ.get(name, "").strip() for name in _RUNTIME_CLONE_ENVS)
+        return [Path(value) for value in declared if value]
+
+    @staticmethod
     def runtime_clone_root() -> Path | None:
         """The box's long-lived runtime clone if present as a git checkout, else ``None``.
 
-        Scoped to the fixed box mount (``deploy/docker-compose.yml`` mounts the
-        clone there) — deliberately NOT the running code's repo root, so this
-        invariant fires only for the H24 factory's own runtime clone and never
-        for a legitimate feature-branch worktree a developer runs ``t3`` from.
-        A box without that clone (any dev machine) resolves to ``None`` and the
-        check degrades to a pass.
+        Scoped to what the DEPLOYMENT declares (:func:`declared_runtime_clones`, falling
+        back to the historical box path) — deliberately NOT the running code's repo root,
+        so this invariant fires only for the H24 factory's own runtime clone and never
+        for a legitimate feature-branch worktree a developer runs ``t3`` from. A venue
+        with no such clone (any dev machine) resolves to ``None`` and the check degrades
+        to a pass.
         """
-        return _BOX_RUNTIME_CLONE if (_BOX_RUNTIME_CLONE / ".git").exists() else None
+        candidates = [*_Probe.declared_runtime_clones(), _BOX_RUNTIME_CLONE]
+        return next((root for root in candidates if (root / ".git").exists()), None)
 
     @staticmethod
     def parse_findings(text: str) -> list[dict[str, str]]:
@@ -429,13 +443,23 @@ def _check_runtime_clone_on_default_branch() -> bool:
     The box's ``t3 worker`` imports teatree from a long-lived clone that must
     track the default branch; a stray checkout (or a self-update left mid-flight)
     leaves the loop running stale/wrong code with no error. Best-effort: a
-    non-git or unresolvable clone degrades to a pass.
+    non-git or unresolvable clone degrades to a pass — but a DECLARED clone that
+    cannot be resolved is WARNed rather than passed over in silence, since an
+    inert detector reads exactly like a healthy one (#4339).
     """
     from teatree.utils import git  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     try:
         root = _Probe.runtime_clone_root()
         if root is None:
+            declared = _Probe.declared_runtime_clones()
+            if declared:
+                typer.echo(
+                    f"WARN  No declared runtime clone is a git checkout "
+                    f"({', '.join(str(path) for path in declared)}) — the drift detector cannot "
+                    f"run, so a clone left on a stray branch would go unreported. Point "
+                    f"{_RUNTIME_CLONE_ENVS[0]} at the box's clone, or mount it there."
+                )
             return True
         current = git.current_branch(repo=str(root))
         default = git.default_branch(repo=str(root))
