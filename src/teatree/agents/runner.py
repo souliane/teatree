@@ -62,6 +62,7 @@ from teatree.agents.runner_truncation import (
 from teatree.agents.runner_usage import DispatchProvenance, _attempt_usage
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
+from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import (
     LimitSignal,
     maybe_park_for_active_window,
@@ -233,10 +234,14 @@ def _run_agent(
         reader_scrub = reader_env_hermetic() if is_reader_phase(phase) else contextlib.nullcontext()
         with git_env_hermetic(), reader_scrub:
             outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness, watchdog=watchdog))
-    except CredentialError as exc:
+    except (CredentialError, AgentSpawnError) as exc:
+        # Two ways a run never STARTS, recorded identically as their own one-line cause.
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
         # ``harness.open`` — this is the same "fail loud, record it" contract
-        # the eager ``child_env`` catch above gives the ClaudeSdkHarness.
+        # the eager ``child_env`` catch above gives the ClaudeSdkHarness. An
+        # ``AgentSpawnError`` is the child that could not be exec'd (#4301): recorded
+        # here so the durable text is the named cause the repair-halt reads, not the
+        # forty SDK frames the generic re-raise below would store.
         # ``resolve_harness`` (above) already popped any resumed pydantic_ai
         # thread as a side effect of BUILDING the harness — restore it, since
         # a run that never opened never actually consumed it (#2916).

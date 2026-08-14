@@ -1,13 +1,12 @@
-"""Byte budget for the headless system-context append — the E2BIG spawn guard.
+"""Byte budget for the headless system-context append — the context-size bound.
 
-The claude-agent-sdk passes the whole assembled system context as ONE
-``--append-system-prompt`` argv element (its subprocess transport). Linux caps a
-single argv element at ``MAX_ARG_STRLEN`` = 128 KiB, so an oversized append makes
-the ``claude`` child die at spawn with ``OSError: [Errno 7] Argument list too
-long``. :data:`MAX_APPEND_BYTES` bounds the append well under that limit, leaving
-headroom for the rest of argv; :func:`enforce_budget` truncates the largest
-budgetable blocks first and leaves a pointer marker so the agent knows context
-was elided rather than silently dropped.
+The append no longer rides argv: :mod:`teatree.agents.claude_cli_spawn` writes it to a
+file and passes ``--append-system-prompt-file``, so the kernel's per-argument cap is no
+longer what sizes this budget (#4301). :data:`MAX_APPEND_BYTES` is retained at the value
+that cap gave it, as a bound on how much context a dispatch carries; raising it is a
+context/cost decision, not a spawn one. :func:`enforce_budget` truncates the largest
+budgetable blocks first and leaves a pointer marker so the agent knows context was
+elided rather than silently dropped.
 
 Every production skill bundle is 1.7-2.3x the budget, so truncation is the normal
 path, not the exception. It therefore drops whole ``## `` sections off the tail
@@ -19,9 +18,7 @@ The bound is a postcondition, not an accounting result. Truncation is by exact
 substring replace, so a block the assembled context never embedded reclaims zero
 bytes however large it is; the pass credits a reduction only once the replace has
 landed, and re-measures the finished text rather than trusting the running
-overage. The kernel limit the budget protects is ``MAX_ARG_STRLEN`` — a cap on
-any SINGLE argument (measured on Linux: 131,071 accepted, 131,072 refused) — not
-the multi-megabyte total ``ARG_MAX``, so a total-size check never sees this.
+overage.
 """
 
 import logging
@@ -32,8 +29,8 @@ from itertools import accumulate
 
 logger = logging.getLogger(__name__)
 
-# 96 KiB — comfortably below the 128 KiB kernel per-argv-element limit, leaving
-# ~32 KiB of headroom for the preset prefix and the rest of the spawn argv.
+# 96 KiB — inherited from the kernel per-argument limit this used to guard, kept as the
+# context bound now that the append travels by file (#4301).
 MAX_APPEND_BYTES = 96 * 1024
 
 #: Caps the marker so a bundle shedding hundreds of sections cannot spend kilobytes
@@ -99,7 +96,7 @@ def _truncate_sections(block: str, keep_bytes: int, *, where: str) -> str | None
 
     ``None`` when the block carries no droppable section, or when even keeping
     none of them overruns — the caller falls back to the byte prefix so the
-    argv-element bound holds unconditionally. Keeps as many sections as fit, so
+    byte bound holds unconditionally. Keeps as many sections as fit, so
     the elision is the smallest section-aligned one that clears the budget.
     """
     preamble, sections = _split_sections(block)
