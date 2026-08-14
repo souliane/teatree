@@ -14,6 +14,7 @@ pins that.
 
 import typer
 
+from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_cold_hooks import (
@@ -478,6 +479,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # box on a trajectory to full is named long before the absolute-GB scanner
     # thresholds fire. CRITICAL hard-FAILs — a full disk stops every other subsystem.
     ok = _check_root_disk_headroom() and ok
+
+    # Agent-spawn headroom (#4301): argv+envp against ARG_MAX, the budget whose
+    # exhaustion kills a dispatch at execve with no partial degradation.
+    ok = _check_agent_spawn_headroom() and ok
 
     # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
     # wiring) — all surfacing-only, never gating the exit code.
