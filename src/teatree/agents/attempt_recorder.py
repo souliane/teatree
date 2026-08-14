@@ -16,7 +16,7 @@ the two dispatch backends.
 
 import dataclasses
 import json
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
 from django.utils import timezone
 
@@ -30,13 +30,10 @@ from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Task, TaskAttempt, Worktree
-from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
+from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-
-if TYPE_CHECKING:
-    from teatree.core.models import Ticket
 
 
 @dataclasses.dataclass(frozen=True)
@@ -314,20 +311,6 @@ _REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
 _DEFAULT_HEADLESS_REVIEWER = "headless-reviewer"
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _ReviewTarget:
-    """The PR a reviewing task's verdict binds to, resolved from the dispatch context."""
-
-    slug: str
-    pr_id: int
-    head_sha: str
-    ticket: "Ticket | None"
-    #: Identity under which THIS dispatch path holds the per-MR review lock, or
-    #: "" for a path that took none and cannot know whose identity did. A named
-    #: non-holder releases nothing; an unnamed one releases (MRReviewLock.resolve).
-    lock_holder: str = ""
-
-
 def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: str) -> str:
     """Record a reviewing task's returned ``review_verdict`` server-side (corr-11).
 
@@ -335,21 +318,29 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
     RETURNS a typed ``review_verdict``; this records the ``ReviewVerdict`` (which
     resolves the per-MR :class:`MRReviewLock`) — maker≠checker holds because THIS
     actor is not the author. Returns an error string when the verdict is malformed, the
-    reviewer identity is a maker/loop role, or the reviewer's self-asserted head diverges
-    from the dispatch head (the caller fails the task so the block surfaces), else ``""``.
-    A non-reviewing phase, a result without a ``review_verdict``, or a reviewing task with
-    no resolvable PR target is a no-op (``""``).
+    reviewer identity is a maker/loop role, the reviewer's self-asserted head diverges
+    from the dispatch head, or the recorded row is unreachable by read-back (the caller
+    fails the task so the block surfaces), else ``""``.
+
+    A non-reviewing phase, or a result without a ``review_verdict``, is a no-op. So is a
+    task answerable for NO pull request — an author-role reviewing task keyed by an issue
+    URL is a self-review with no merge guard behind it, and refusing it would strand the
+    author lane rather than protect anything. A task that IS answerable for one and cannot
+    persist there fails loudly instead (#4308).
     """
-    if normalize_phase(phase or task.phase) not in _REVIEW_VERDICT_PHASES:
+    envelope = _returned_review_verdict(result, phase=phase or task.phase)
+    if envelope is None:
         return ""
-    raw_envelope = result.get("review_verdict")
-    if not isinstance(raw_envelope, dict):
-        return ""
-    target = _resolve_review_target(task)
+    target = review_target_for_task(task)
     if target is None:
         return ""
+    if not target.head_sha:
+        return (
+            f"review verdict cannot be persisted: this review is answerable for "
+            f"{target.slug}#{target.pr_id} but no pull request head is recorded for it, so the "
+            f"verdict would bind to no tree and no merge guard could ever read it"
+        )
 
-    envelope = cast("ReviewVerdictEnvelope", raw_envelope)
     binding_error = _head_binding_error(
         asserted=str(envelope.get("reviewed_sha") or "").strip(), dispatch_head=target.head_sha
     )
@@ -371,14 +362,39 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             findings=findings,
             gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
             blast_class=str(envelope.get("blast_class") or "logic"),
-            ticket=target.ticket,
+            ticket=task.ticket,
             lock_holder=target.lock_holder,
             changed_files=changed_file_set_for_findings(findings, slug=target.slug, pr_id=target.pr_id),
             merge_result_retake=bool(envelope.get("merge_result_retake")),
         )
     except ReviewVerdictError as exc:
         return f"review verdict recording refused: {exc}"
-    return ""
+    return _unpersisted_verdict_error(target)
+
+
+def _returned_review_verdict(result: AgentResultBlob, *, phase: str) -> "ReviewVerdictEnvelope | None":
+    """The typed verdict *result* hands back on a verdict-recording phase, else ``None``."""
+    if normalize_phase(phase) not in _REVIEW_VERDICT_PHASES:
+        return None
+    raw = result.get("review_verdict")
+    return cast("ReviewVerdictEnvelope", raw) if isinstance(raw, dict) else None
+
+
+def _unpersisted_verdict_error(target: ReviewTarget) -> str:
+    """Refuse a recording the consumers' own lookup cannot find, or ``""`` (#4308).
+
+    The write reporting success is not the same fact as the row being readable under the
+    key the merge guard and the landed-work guard query, and only a read-back distinguishes
+    them. Without it a reviewing task completed exit 0 over a verdict that reached nothing —
+    indistinguishable from a review that ran and approved.
+    """
+    if verdict_at(target) is not None:
+        return ""
+    return (
+        f"review verdict recorded but not persisted: no verdict is readable for "
+        f"{target.slug}#{target.pr_id} at the reviewed head {target.head_sha[:8]} on read-back, so "
+        f"nothing downstream can see this judgement"
+    )
 
 
 #: Shortest self-asserted prefix that still identifies the dispatch head — git's own
@@ -419,27 +435,6 @@ def _head_binding_error(*, asserted: str, dispatch_head: str) -> str:
         f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
         f"({dispatch_head}) — a reviewer that judged a different tree than the one it was "
         f"dispatched for is itself a finding; the verdict is not recorded"
-    )
-
-
-def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
-    """Resolve the PR a reviewing task's verdict binds to, or ``None``.
-
-    One dispatch context carries the target: the #68 auto-review dispatch (the
-    lock-holding path) links the reviewing task to an
-    :class:`AutoReviewDispatch` row carrying ``(slug, pr_id, head_sha)``.
-    ``None`` for a reviewing task without one — its returned verdict is evidence
-    but has no PR to bind to.
-    """
-    dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
-    if dispatch is None:
-        return None
-    return _ReviewTarget(
-        slug=dispatch.slug,
-        pr_id=dispatch.pr_id,
-        head_sha=dispatch.head_sha,
-        ticket=task.ticket,
-        lock_holder=LOOP_SCANNER_HOLDER,
     )
 
 
