@@ -87,7 +87,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return False
         return True
 
-    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
         """Open PRs authored by *author*, ENRICHED with head SHA + CI rollup (#7).
 
         The ``search/issues`` API carries no pipeline fields, so a bare search hit
@@ -98,12 +98,18 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         so ``head_sha`` and the aggregate CI state reach the scanner. An
         enrichment that fails (auth/network/unknown PR) leaves the hit unenriched
         — the scanner then warns about the gap rather than silently reading "".
+
+        ``enrich=False`` skips it entirely for a caller that reads only the search
+        hit's own fields: the enrichment is one SEQUENTIAL ``gh pr view`` per PR, which
+        cost intake ~14s of its 60s scan budget for CI state it never looks at (#4466).
         """
         terms = [f"is:pr is:open author:{author}"]
         if updated_after:
             terms.append(f"updated:>={updated_after}")
         query = quote_plus(" ".join(terms))
         hits = _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        if not enrich:
+            return hits
         return [_pr_reads.enrich_pr_pipeline(hit, token=self._token) for hit in hits]
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:

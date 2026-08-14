@@ -255,6 +255,7 @@ class TeatreeSettingsSchema(BaseSettings):
     issue_implementer_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     issue_implementer_label: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     issue_implementer_max_concurrent: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    issue_intake_pass_budget_seconds: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     limit_autorecovery_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     local_stack_queue_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     local_stack_queue_max_attempts: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
