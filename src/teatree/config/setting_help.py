@@ -158,6 +158,7 @@ SETTING_HELP: dict[str, str] = {
     "mcp_privacy_gate_enabled": "scan MCP tool payloads for private data before they leave the box",
     "mcp_slack_write_gate_enabled": "gate MCP Slack writes behind the on-behalf rules",
     "memory_recall_enabled": "recall durable memories into a session's context",
+    "merged_detection_gate_enabled": "warn when a hand-rolled probe asks whether a branch has landed",
     "merge_wip": "how many merges may be in flight at once",
     "missing_issue_ref_policy": "what to do with a branch carrying no issue reference",
     "mode": "publishing posture: auto pushes without waiting, interactive asks first",
