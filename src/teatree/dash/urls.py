@@ -18,6 +18,9 @@ from teatree.dash.views import (
     gate_toggle,
     health,
     health_bands_partial,
+    interchange,
+    interchange_export,
+    interchange_import,
     live,
     live_body_partial,
     loop_action,
@@ -38,9 +41,7 @@ from teatree.dash.views import (
     schedule_slot_delete,
     sessions,
     settings,
-    settings_export,
     settings_group,
-    settings_import,
     settings_readouts,
     settings_restore,
     settings_set,
@@ -89,8 +90,17 @@ urlpatterns = [
     # in the query string beside it, since the global scope is the empty string.
     path("settings/set/<str:key>/", settings_set, name="settings_set"),
     path("settings/restore/<str:key>/", settings_restore, name="settings_restore"),
-    path("settings/export/", settings_export, name="settings_export"),
-    path("settings/import/", settings_import, name="settings_import"),
+    # Moved out of settings: the dump reaches past the settings store (#4340). The export is
+    # a bookmarkable GET, so its old address redirects (filters and all); the import was
+    # POST-only, which nothing can have bookmarked.
+    path(
+        "settings/export/",
+        RedirectView.as_view(pattern_name="dash:interchange_export", permanent=False, query_string=True),
+        name="settings_export",
+    ),
+    path("import-export/", interchange, name="interchange"),
+    path("import-export/export/", interchange_export, name="interchange_export"),
+    path("import-export/import/", interchange_import, name="interchange_import"),
     path("tickets/<int:ticket_id>/", ticket_drawer, name="ticket_drawer"),
     path("tickets/<int:ticket_id>/transition/", ticket_transition, name="ticket_transition"),
     # The phase rides in the POST body, not the path: the button set is a drawer

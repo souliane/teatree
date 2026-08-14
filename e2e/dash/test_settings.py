@@ -158,19 +158,3 @@ def test_a_configured_secret_never_reaches_the_browser(live_server: LiveServer, 
     page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
     expect(page.locator("#setting-banned_terms")).to_contain_text("***")
     expect(page.locator("body")).not_to_contain_text("sentinel-marker-xyz")
-
-
-@pytest.mark.usefixtures("seeded_board")
-def test_the_import_control_takes_a_file_not_a_textarea(live_server: LiveServer, page: Page) -> None:
-    page.goto(f"{live_server.url}/dash/settings/")
-    expect(page.get_by_label("TOML file to import")).to_be_visible()
-    expect(page.locator("textarea")).to_have_count(0)
-
-
-@pytest.mark.usefixtures("seeded_board")
-def test_the_export_control_offers_both_filters_unticked(live_server: LiveServer, page: Page) -> None:
-    page.goto(f"{live_server.url}/dash/settings/")
-    for label in ("Export default keys only", "Include values that are the same as default"):
-        checkbox = page.get_by_label(label)
-        expect(checkbox).to_be_visible()
-        expect(checkbox).not_to_be_checked()

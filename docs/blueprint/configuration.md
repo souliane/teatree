@@ -858,10 +858,26 @@ file, with a control proving a single live override moves exactly one line.
 **The one settings page** (`/dash/settings/`). Model-driven and EDITABLE: it walks the
 schema so every key is listable with no hand-kept list, writes each edit through
 `ConfigSetting.set_value` (the same validating seam), restores-to-default by DELETING the
-row, gates a safety-posture key behind an extra confirm phrase, and offers export + a
-dry-run preview of an UPLOADED import file. A SECRET value AND its shipped default are
-masked to `***` before the row enters the response context — pinned by a test asserting a
-configured secret never appears in the response bytes.
+row, and gates a safety-posture key behind an extra confirm phrase. A SECRET value AND its
+shipped default are masked to `***` before the row enters the response context — pinned by a
+test asserting a configured secret never appears in the response bytes.
+
+**The import/export page** (`/dash/import-export/`,
+[#4340](https://github.com/souliane/teatree/issues/4340)). Its own page, because a dump is a
+superset of the settings page: alongside `[teatree]` / `[overlays.*]` / `[e2e_repos.*]` it
+carries the `[loops.*]` / `[modes.*]` / `[schedules.*]` seed families, so importing one from
+the settings page could change loop enablement and the active schedule while reading as
+"restore my settings". The page STATES that scope before the controls, from
+`core/config_interchange/scope.py`'s `EXPORT_SECTIONS` — one entry per top-level table with
+what it holds, declared off the same constants `document_layout` and
+`seed_defaults.SEED_TABLES` hand the writers, so the copy and the file cannot drift.
+`tests/teatree_core/config_interchange/test_scope.py` is the pin: it exports a box tuned in
+every family and asserts the emitted top-level tables against the statement, the `[backup]`
+format marker being the one named exception. The dry-run preview is counted PER section too
+(`dash/interchange.py`'s `changed_sections`, over the single `section_for_row` canonicaliser),
+so a preview reading "12 rows" cannot hide the one that changes a loop. Export and the
+safety-posture confirm phrase are otherwise unchanged; the settings page links here, and
+`/dash/settings/export/` redirects with its filters intact.
 
 **One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
 Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key
