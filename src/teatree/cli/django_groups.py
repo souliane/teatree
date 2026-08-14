@@ -108,6 +108,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
             ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
+            ("branch-verdict", "Is this branch's work already on the default branch? The canonical answer."),
             ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),
             (
                 "reclaim-disk",

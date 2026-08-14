@@ -8238,6 +8238,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                          PR).                                                │
 │ landscape                Survey in-flight PRs/MRs and local unsynced work    │
 │                          before planning (read-only).                        │
+│ branch-verdict           Is this branch's work already on the default        │
+│                          branch? The canonical answer.                       │
 │ reap-stale               Tear down ABANDONED docker stacks no live worktree  │
 │                          owns (age-guarded).                                 │
 │ reclaim-disk             Reclaim disk via zero-data-loss docker prunes       │
@@ -8472,6 +8474,32 @@ Usage: t3 teatree workspace landscape [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace branch-verdict`
+
+```
+Usage: t3 teatree workspace branch-verdict [OPTIONS] BRANCHES...
+
+ Is this branch's work already on the default branch? The canonical answer
+ (#4070).
+
+ Read-only. Serializes the three-layer content classifier, INCLUDING the forge
+ signal beside the post-merge delta — a branch the forge calls merged whose tip
+ still carries unique commits is reported NOT redundant, with those shas named,
+ so
+ "merged" is never readable on its own as "safe to delete".
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    branches      BRANCHES...  Branch name(s) to judge — the sweep is one   │
+│                                 call.                                        │
+│                                 [required]                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  Repo/worktree path holding the branches. [default: .]    │
+│ --json              Emit the verdicts as JSON on stdout.                     │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
