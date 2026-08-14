@@ -150,6 +150,8 @@ t3 <overlay> workspace branch-verdict <branch> [<branch> …] [--repo <path>] [-
 
 Read-only, works on any local branch (no `Worktree` row needed), and the sweep across N worktrees is ONE call. It serializes the three-layer content classifier: `redundant` + the deciding `source` (`cherry-zero-unique` / `synthetic-squash` / `branch-merged`), plus `forge_merged`, `merged_with_post_merge_work` and `unique_shas` **together** — a branch the forge calls merged whose tip still carries unique commits is reported NOT redundant with those SHAs named, so "merged" is never readable on its own as "safe to delete". An inconclusive probe answers NOT landed, so an uncertain branch is kept.
 
+A fourth field, `content_present_on_target`, is the present-tense question the other three structurally cannot ask: `git cherry` reads a patch's PRIOR appearance on the target, and a REVERT there does not erase it, so a squash-merged-then-reverted branch reads `redundant` on every patch-id layer. The report carries both, and the human line says so; the boolean `branch_is_landed` (what `ship`'s duplicate-PR refusal consumes) requires BOTH, so a reverted branch ships a fresh PR instead of being refused one. Post-merge drift on unrelated files stays LANDED; drift that re-edits the same region reads NOT LANDED — an unmergeable region is not proof of presence, and a needless PR is the cheap direction to be wrong in.
+
 `workspace landscape` cannot answer this: its `has_unpushed` is SHA-based and deliberately fail-open (it asks "might something be in flight?"). `workspace emit` signals a landed branch only by ABSENCE. A `PreToolUse` advisory (`t3 <overlay> gate merged-detect`) nudges a hand-rolled probe back here.
 
 ## Cleanup Patterns

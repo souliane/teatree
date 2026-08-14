@@ -257,7 +257,9 @@ class ShipExecutor(RunnerBase):
         # squash-merge rewrites the branch's shas, so the branch is no ancestor
         # of base and the ancestor test let the duplicate through. Inconclusive
         # stays NOT-landed and ship proceeds — a wrongly-refused PR strands
-        # work, while a wrongly-opened one is a visible duplicate.
+        # work, while a wrongly-opened one is a visible duplicate. Same reason
+        # the content must still be PRESENT on base: a revert, or a re-edit of
+        # the same region, ships rather than refuses.
         if branch_is_landed(repo_path, branch):
             self._clear_invoking_branch(ticket, extra)
             return RunnerResult(

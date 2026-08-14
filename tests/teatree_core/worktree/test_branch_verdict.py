@@ -15,7 +15,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.worktree import branch_classification
-from teatree.core.worktree.branch_verdict import branch_is_landed, branch_verdict_report
+from teatree.core.worktree.branch_verdict import branch_is_landed, branch_verdict_report, render_verdict
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -48,6 +48,11 @@ def _squash_merge(repo: Path, branch: str, message: str) -> None:
     run_git(repo, "checkout", "-q", "main")
     run_git(repo, "merge", "-q", "--squash", branch)
     run_git(repo, "commit", "-q", "-m", message)
+    run_git(repo, "push", "-q", "origin", "main")
+    run_git(repo, "fetch", "-q", "origin")
+
+
+def _publish_main(repo: Path) -> None:
     run_git(repo, "push", "-q", "origin", "main")
     run_git(repo, "fetch", "-q", "origin")
 
@@ -110,6 +115,65 @@ class TestMergedIsNeverReadableAsSafeToDelete(BranchVerdictCase):
         assert report.redundant is False
         assert report.merged_with_post_merge_work is True
         assert report.unique_shas, "the post-merge delta must be named, not silently dropped"
+
+
+class TestAPatchRevertedOnTheTargetIsNotLanded(BranchVerdictCase):
+    """The patch-id layers read a patch's PRIOR appearance, which a revert does not erase.
+
+    Left uncorrected, a squash-merged-then-reverted branch reads as LANDED, so ``ship``
+    refuses the fresh PR that would re-land it and the re-push is stranded — the exact
+    direction the #776 refusal calls unacceptable.
+    """
+
+    def test_a_squash_merge_then_revert_reads_as_not_landed(self) -> None:
+        repo = self._repo_with_branch("one.py")
+        _squash_merge(repo, "feature", "feat: one (#1)")
+        run_git(repo, "checkout", "-q", "main")
+        run_git(repo, "revert", "--no-edit", "HEAD")
+        _publish_main(repo)
+
+        assert branch_is_landed(str(repo), "feature") is False
+
+    def test_the_front_door_reports_the_absent_content_beside_the_stale_layers(self) -> None:
+        repo = self._repo_with_branch("one.py")
+        _squash_merge(repo, "feature", "feat: one (#1)")
+        run_git(repo, "checkout", "-q", "main")
+        run_git(repo, "revert", "--no-edit", "HEAD")
+        _publish_main(repo)
+
+        report = branch_verdict_report(str(repo), "feature")
+
+        assert report.content_present_on_target is False
+        assert report.redundant is True, "the layered verdict is unchanged — presence is the new, separate layer"
+        assert "NOT on origin/main now" in render_verdict(report)
+
+    def test_post_merge_drift_on_unrelated_files_stays_landed(self) -> None:
+        repo = self._repo_with_branch("one.py")
+        _squash_merge(repo, "feature", "feat: one (#1)")
+        run_git(repo, "checkout", "-q", "main")
+        _commit(repo, "unrelated.py", "moved on since\n")
+        _publish_main(repo)
+
+        assert branch_is_landed(str(repo), "feature") is True
+
+    def test_post_merge_drift_on_the_same_region_reads_as_not_landed(self) -> None:
+        """The accepted trade: an unmergeable region is not provable presence, so ship opens a PR."""
+        repo = self._repo_with_branch("one.py")
+        _squash_merge(repo, "feature", "feat: one (#1)")
+        run_git(repo, "checkout", "-q", "main")
+        (repo / "one.py").write_text("rewritten on main\n")
+        run_git(repo, "commit", "-q", "-am", "refactor: rewrite one.py")
+        _publish_main(repo)
+
+        assert branch_is_landed(str(repo), "feature") is False
+
+
+class TestTheBooleanPathPaysNoForgeProbe(BranchVerdictCase):
+    def test_an_unlanded_branch_never_reaches_the_forge_cli(self) -> None:
+        repo = self._repo_with_branch("one.py")
+
+        with patch.object(branch_classification, "probe_host_cli", side_effect=AssertionError("forge probed")):
+            assert branch_is_landed(str(repo), "feature") is False
 
 
 class TestTheTargetIsResolvedNotHardcoded(BranchVerdictCase):
