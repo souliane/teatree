@@ -1515,7 +1515,7 @@ while keeping a payload only ever reds loudly:
 | `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
 | the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
-| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1`, a `;`/`}`/`)` inside an enclosing group, and a `;`/newline inside `if…fi`, `while`/`until`/`for`/`select…done` or `case…esac` all stop hiding a later `\| bash`; a process substitution (`> >(bash)`) blocks the proof outright, and so does a redirection inside a function body, whose stdout flows to the call site instead. The whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
+| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1`, a `;`/`}`/`)` inside an enclosing group, and a `;`/newline inside `if…fi`, `while`/`until`/`for…done` or `case…esac` all stop hiding a later `\| bash`. The bound is **fail-closed**: it is returned only where every token from the segment start to it was positively recognised, so a construct the scanner does not model — `((…))`, `[[…]]`, `select`, `\|&`, a closer matching no open compound — leaves the window running to end of text and the redirected text KEPT. A process substitution (`> >(bash)`) blocks the proof outright, and so does a redirection inside a function body, whose stdout flows to the call site instead. The whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
 
 The redirection rule is stated as a READER proof, not an interpreter list, because the
@@ -1526,7 +1526,16 @@ complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l;
 through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
 class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
 
-Four measured residues, all in the OVER-keeping direction — they cost a loud red, never
+The reachability window's default is the same asymmetry one level down, and it is the
+module's load-bearing invariant. `teatree.eval.command_window.Recogniser` walks the text
+against an explicit accept table; `segment_end` returns a bound only where nothing on the
+way to it was unrecognised. So an unmodelled construct costs an over-keep — loud — and can
+never cost an elision. `RECOGNISED_COMPOUNDS` is the tunable and the default is the
+invariant: retire an over-keep by ADDING a production, never by loosening the default. The
+generative sweep in `tests/eval_replay/test_command_span.py` derives its wrapper axis from
+that same set, so teaching one side a construct without the other reds.
+
+Five measured residues, all in the OVER-keeping direction — they cost a loud red, never
 a silent one, and none is a regression against `origin/main`:
 
 - `_STDIN_READERS` is narrow (12 names) and `_stage_command_word` resolves a PREFIXED
@@ -1547,6 +1556,10 @@ a silent one, and none is a regression against `origin/main`:
   tracking the call interprocedurally does not terminate (`x=f; $x \| bash`, recursion,
   a definition in a sourced file), which is why this one is fail-closed rather than
   windowed.
+- A construct outside the accept table — an arithmetic or double-bracket compound,
+  `select`, `\|&`, an unmatched closer — leaves the window unbounded, so every redirected
+  text inside one is kept. That is the fail-closed default working, not a defect; the
+  fix for any given spelling is to teach `Recogniser` the production.
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
 `ticket clear` are things that must not HAPPEN, and a model that escalates

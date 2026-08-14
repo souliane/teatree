@@ -18,7 +18,15 @@ import pytest
 
 from teatree.eval import command_span, matchers
 from teatree.eval.command_span import _Splice, executed_span
-from teatree.eval.command_window import GROUP_CLOSE, GROUP_OPEN, enclosing, ends_a_list, segment_end, unquoted_scan
+from teatree.eval.command_window import (
+    GROUP_CLOSE,
+    GROUP_OPEN,
+    RECOGNISED_COMPOUNDS,
+    enclosing,
+    ends_a_list,
+    segment_end,
+    unquoted_scan,
+)
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matchers import DERIVED_VIEW_NAMES
 from teatree.eval.models import AnyOf, Matcher
@@ -441,6 +449,38 @@ EXECUTES = [
     ("function-brace-body-then-call-piped", f"f() {{ cat <<<'{ACT}'; }}; f | bash"),
     ("function-subshell-body-then-call-piped", f"f() ( cat <<<'{ACT}' ); f | bash"),
     ("function-defined-in-an-if-then-called", f"if true; then f() {{ cat <<<'{ACT}'; }}; f; fi | bash"),
+    # A function body is any compound_command, not only a group. Recognising the definition
+    # by the group it opens with sees no definition at all here, so the keyword stack widens
+    # the window to the DEFINITION's terminator and it never reaches the call-site pipe.
+    ("function-if-body-then-call-piped", f"f() if true; then cat <<<'{ACT}'; fi; f | bash"),
+    ("function-while-body-then-call-piped", f"f() while true; do cat <<<'{ACT}'; break; done; f | bash"),
+    ("function-until-body-then-call-piped", f"f() until false; do cat <<<'{ACT}'; break; done; f | bash"),
+    ("function-for-body-then-call-piped", f"f() for i in 1; do cat <<<'{ACT}'; done; f | bash"),
+    ("function-case-body-then-call-piped", f"f() case x in x) cat <<<'{ACT}';; esac; f | bash"),
+    ("function-keyword-if-body-then-call-piped", f"function f if true; then cat <<<'{ACT}'; fi; f | bash"),
+    ("function-keyword-while-body-then-call-piped", f"function f while true; do cat <<<'{ACT}'; break; done; f | bash"),
+    ("function-keyword-until-body-call", f"function f until false; do cat <<<'{ACT}'; break; done; f | bash"),
+    ("function-keyword-for-body-then-call-piped", f"function f for i in 1; do cat <<<'{ACT}'; done; f | bash"),
+    ("function-keyword-case-body-then-call-piped", f"function f case x in x) cat <<<'{ACT}';; esac; f | bash"),
+    # bash accepts far more in a function NAME than a word-character class admits, and every
+    # spelling outside that class read as a plain command rather than as a definition.
+    ("function-name-with-a-plus", f"f+g() {{ cat <<<'{ACT}'; }}; f+g | bash"),
+    ("function-name-with-a-colon", f"f:g() {{ cat <<<'{ACT}'; }}; f:g | bash"),
+    ("function-name-with-an-at", f"f@g() {{ cat <<<'{ACT}'; }}; f@g | bash"),
+    ("function-name-with-a-percent", f"f%g() {{ cat <<<'{ACT}'; }}; f%g | bash"),
+    ("function-name-with-a-comma", f"f,g() {{ cat <<<'{ACT}'; }}; f,g | bash"),
+    ("function-name-with-brackets", f"f[g]() {{ cat <<<'{ACT}'; }}; f[g] | bash"),
+    ("function-name-with-a-bang", f"f!g() {{ cat <<<'{ACT}'; }}; f!g | bash"),
+    # A closer word inside a COMMENT is no closer at all. Reading one pops a live compound
+    # and ends the window at the next separator, short of the sink the body's stdout reaches.
+    ("comment-hiding-a-done", f"for i in 1; do cat <<<'{ACT}' # x; done\ndone | bash"),
+    ("comment-hiding-a-fi", f"if true; then cat <<<'{ACT}' # x; fi\nfi | bash"),
+    ("comment-hiding-an-esac", f"case x in x) cat <<<'{ACT}' # x; esac\n;; esac | bash"),
+    ("comment-hiding-a-brace", f"{{ cat <<<'{ACT}' # x; }}\n}} | bash"),
+    # The converse, and the reason the comment rule is gated on word position: a mid-word
+    # hash is a literal, and skipping from it would hide the ``|`` after it from the
+    # pipeline split — removing a conjunct from the reader proof and DROPPING an act.
+    ("mid-word-hash-is-not-a-comment", f"cat <<<'{ACT}' | grep a#b -v | bash"),
 ]
 
 #: The negative controls. A real bash hands the redirected text to a program that only
@@ -492,34 +532,84 @@ EXECUTED_RESIDUE = [
     ("variable-then-eval", "eval", f"x='{ACT}'; eval \"$x\""),
 ]
 
-#: How the redirected command is nested. Every one preserves "the compound's stdout is its
-#: body's stdout", so the redirected text reaches whatever :data:`SINK_TAILS` appends — the
-#: property the reachability window has to model, and the axis the window's enumeration of
-#: constructs was short of.
-WRAPPERS = [
-    ("none", "{body}"),
-    ("brace-group", "{{ {body}; }}"),
-    ("subshell", "( {body} )"),
-    ("nested-subshell", "( ( {body} ) )"),
-    ("if-then", "if true; then {body}; fi"),
-    ("if-condition", "if {body}; then :; fi"),
-    ("if-else-arm", "if false; then :; else {body}; fi"),
-    ("if-elif-arm", "if false; then :; elif true; then {body}; fi"),
-    ("if-newlines", "if true\nthen\n{body}\nfi"),
-    ("while", "while true; do {body}; break; done"),
-    ("until", "until false; do {body}; break; done"),
-    ("for", "for i in 1; do {body}; done"),
-    ("for-newlines", "for i in 1\ndo\n{body}\ndone"),
-    ("case-first-arm", "case x in x) {body};; esac"),
-    ("case-second-arm", "case y in x) :;; y) {body};; esac"),
-    ("if-in-brace-group", "{{ if true; then {body}; fi; }}"),
-    ("if-in-subshell", "( if true; then {body}; fi )"),
-    ("case-in-brace-group", "{{ case x in x) {body};; esac; }}"),
-    ("while-in-if", "if true; then while true; do {body}; break; done; fi"),
-    ("function-brace-body", "f() {{ {body}; }}; f"),
-    ("function-subshell-body", "f() ( {body} ); f"),
-    ("function-keyword", "function f {{ {body}; }}; f"),
+#: One spelling per ``compound_command`` production, tagged with the production it exercises.
+#: Every one preserves "the compound's stdout is its body's stdout", so the redirected text
+#: reaches whatever :data:`SINK_TAILS` appends — the property the reachability window has to
+#: model, and the axis the window's enumeration of constructs was short of.
+_COMPOUND_SPELLINGS: list[tuple[str, str, str]] = [
+    ("brace-group", "brace-group", "{ {body}; }"),
+    ("subshell", "subshell", "( {body} )"),
+    ("if-then", "if", "if true; then {body}; fi"),
+    ("if-condition", "if", "if {body}; then :; fi"),
+    ("if-else-arm", "if", "if false; then :; else {body}; fi"),
+    ("if-elif-arm", "if", "if false; then :; elif true; then {body}; fi"),
+    ("if-newlines", "if", "if true\nthen\n{body}\nfi"),
+    ("while", "while", "while true; do {body}; break; done"),
+    ("until", "until", "until false; do {body}; break; done"),
+    ("for", "for", "for i in 1; do {body}; done"),
+    ("for-newlines", "for", "for i in 1\ndo\n{body}\ndone"),
+    ("case-first-arm", "case", "case x in x) {body};; esac"),
+    ("case-second-arm", "case", "case y in x) :;; y) {body};; esac"),
 ]
+
+#: Names a real bash accepts for a function and this module's scanner must too. A character
+#: class naming what a name may CONTAIN drops every spelling it did not think of, which is
+#: how seven of these came to be silently elided while bash ran them.
+_FUNCTION_NAMES = ["f", "_f", "f.g", "f-g", "f+g", "f:g", "f@g", "f%g", "f,g", "f[g]", "f!g"]
+
+#: The two ways bash spells a function-definition header, each followed by the call whose
+#: pipe the window over the DEFINITION can never see.
+_FUNCTION_HEADERS = [("paren", "{name}() {compound}; {name}"), ("keyword", "function {name} {compound}; {name}")]
+
+_IDENTITY_WRAPPER = ("none", "", "{body}")
+
+
+def _apply(template: str, body: str) -> str:
+    """*template* with its ``{body}`` hole filled, leaving every literal brace untouched.
+
+    ``str.format`` would unescape the doubled braces a brace group is spelt with, so the
+    result could not be nested a second time — the recursion this generator is built on.
+    """
+    return template.replace("{body}", body)
+
+
+def _nested_wrappers() -> list[tuple[str, str, str]]:
+    """Each compound production wrapped in each other one — ``compound_command`` at depth 2."""
+    return [
+        (f"{outer}/{inner}", outer_production, _apply(outer_template, inner_template))
+        for outer, outer_production, outer_template in _COMPOUND_SPELLINGS
+        for inner, _, inner_template in _COMPOUND_SPELLINGS
+    ]
+
+
+def _function_wrappers() -> list[tuple[str, str, str]]:
+    """Every compound production used AS A FUNCTION BODY, over every name bash accepts.
+
+    ``function_definition ::= name ( ) compound_command`` — the body is any compound, not
+    only a group, and the call site is textually elsewhere. Producing the cross is what
+    stops the next unlisted body spelling from shipping unmeasured.
+    """
+    return [
+        (
+            f"function-{header}-{name}-{spelling}",
+            "function-definition",
+            header_template.replace("{name}", name).replace("{compound}", template),
+        )
+        for name in _FUNCTION_NAMES
+        for spelling, _, template in _COMPOUND_SPELLINGS
+        for header, header_template in _FUNCTION_HEADERS
+    ]
+
+
+#: The whole grammar-derived axis. DERIVED, never typed: a wrapper spelling absent from a
+#: fixed table cannot be produced by mutating that table, and the eight cells that leaked
+#: past seven passes were exactly the rows nobody had typed.
+GRAMMAR_WRAPPERS = [_IDENTITY_WRAPPER, *_COMPOUND_SPELLINGS, *_nested_wrappers(), *_function_wrappers()]
+
+#: The slice carrying the deep READERS x REDIRECTIONS x SINK_TAILS cross — identity plus
+#: every production at depth 1. It is a strict subset of :data:`GRAMMAR_WRAPPERS`, so the
+#: nested and function spellings stay covered by the broad axis's discriminating cross.
+WRAPPERS = [(name, template) for name, _, template in (_IDENTITY_WRAPPER, *_COMPOUND_SPELLINGS)]
 
 #: The program the redirection attaches to — which side of the reader proof the segment
 #: lands on. Reduced to the four load-bearing values so the product stays inside the
@@ -619,7 +709,12 @@ def _bash_runs_the_act(command: str, stub_bin: pathlib.Path, log: pathlib.Path) 
     return ACT in log.read_text(encoding="utf-8")
 
 
-def _structural_cases(wrapper: str) -> list[tuple[str, str]]:
+def _structural_cases(
+    wrapper: str,
+    readers: list[tuple[str, str]],
+    redirections: list[tuple[str, str, str]],
+    sinks: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
     """``(id, command)`` for every READER x REDIRECTION x SINK cell of *wrapper*.
 
     A wrapper spelt with a literal newline crossed with a heredoc is syntactically invalid,
@@ -629,13 +724,13 @@ def _structural_cases(wrapper: str) -> list[tuple[str, str]]:
     return [
         (
             f"{reader_name}|{redirection_name}|{sink_name}",
-            wrapper.format(body=redirection.format(reader=reader))
+            _apply(wrapper, redirection.replace("{reader}", reader))
             + sink
             + (f"\n{ACT}\n{delimiter}\n" if delimiter else ""),
         )
-        for reader_name, reader in READERS
-        for redirection_name, redirection, delimiter in REDIRECTIONS
-        for sink_name, sink in SINK_TAILS
+        for reader_name, reader in readers
+        for redirection_name, redirection, delimiter in redirections
+        for sink_name, sink in sinks
     ]
 
 
@@ -768,14 +863,15 @@ _OVER_KEEP_BUDGET = 5
 
 #: Wrappers over that floor, each for a stated reason. A literal newline inside the wrapper
 #: makes every heredoc cell syntactically invalid, so bash runs none of them while the span
-#: still keeps the text; a function body is fail-closed, so its whole reader row is kept.
-_WRAPPER_OVER_KEEP_BUDGET = {
-    "if-newlines": 146,
-    "for-newlines": 146,
-    "function-brace-body": 35,
-    "function-subshell-body": 35,
-    "function-keyword": 35,
-}
+#: still keeps the text.
+_WRAPPER_OVER_KEEP_BUDGET = {"if-newlines": 146, "for-newlines": 146}
+
+#: The discriminating inner cross the broad generated axis carries. One reader, both
+#: redirection carriers, and the three sinks that separate executing from not — enough to
+#: tell a drop from a keep, small enough that 469 wrappers stay inside the timeout.
+_BROAD_READERS = [("reader", "cat")]
+_BROAD_REDIRECTIONS = [("herestring", f"{{reader}} <<<'{ACT}'", ""), ("heredoc-quoted", "{reader} <<'EOF'", "EOF")]
+_BROAD_SINKS = [("none", ""), ("pipe-bash", " | bash"), ("pipe-cat", " | cat")]
 
 
 @pytest.mark.skipif(not pathlib.Path("/bin/bash").exists(), reason="ground truth needs a real /bin/bash")
@@ -792,7 +888,7 @@ class TestTheStructuralProduct:
     def test_no_cell_of_the_product_drops_text_bash_executes(
         self, name: str, wrapper: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
     ) -> None:
-        cases = _structural_cases(wrapper)
+        cases = _structural_cases(wrapper, READERS, REDIRECTIONS, SINK_TAILS)
         assert len(cases) == len(READERS) * len(REDIRECTIONS) * len(SINK_TAILS)
         verdicts = _bash_verdicts(cases, stub_bin, tmp_path)
         spans = [executed_span(command) for _, command in cases]
@@ -820,6 +916,89 @@ class TestTheStructuralProduct:
         assert len(kept) <= budget, f"{name}: {len(kept)} over-keeps over the pinned {budget}, first {kept[0]}"
 
 
+@pytest.mark.skipif(not pathlib.Path("/bin/bash").exists(), reason="ground truth needs a real /bin/bash")
+class TestTheGrammarDerivedProduct:
+    """The broad axis: every wrapper the GRAMMAR admits, not every wrapper someone typed.
+
+    A fixed table crossed with itself can only ever produce cells whose spellings are
+    already rows, so the eight that leaked past seven passes were never producible. This
+    axis derives its wrappers from ``compound_command`` — expanded recursively, and used as
+    a function body over every name bash accepts — and carries the minimal inner cross that
+    still separates an executed act from an elided one.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "production", "wrapper"), GRAMMAR_WRAPPERS, ids=[name for name, _, _ in GRAMMAR_WRAPPERS]
+    )
+    def test_no_cell_of_the_generated_product_drops_text_bash_executes(
+        self, name: str, production: str, wrapper: str, stub_bin: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        cases = _structural_cases(wrapper, _BROAD_READERS, _BROAD_REDIRECTIONS, _BROAD_SINKS)
+        assert len(cases) == len(_BROAD_READERS) * len(_BROAD_REDIRECTIONS) * len(_BROAD_SINKS)
+        verdicts = _bash_verdicts(cases, stub_bin, tmp_path)
+        spans = [executed_span(command) for _, command in cases]
+        dropped = [
+            (ident, command)
+            for (ident, command), runs, span in zip(cases, verdicts, spans, strict=True)
+            if runs and ACT not in span
+        ]
+        elided = [
+            ident
+            for (ident, _), runs, span in zip(cases, verdicts, spans, strict=True)
+            if not runs and "task complete" not in span
+        ]
+        assert not dropped, f"{name}: {len(dropped)} of {sum(verdicts)} silently elided, first {dropped[0]}"
+        # A function body is fail-closed by rule — its stdout flows to the call site — so it
+        # elides nothing, by design. Every other wrapper must still elide, or "keep the whole
+        # class" would satisfy the drop assertion above and the view would deliver nothing.
+        assert production == "function-definition" or elided, f"{name}: elides no cell at all"
+
+
+def test_the_generator_emits_every_compound_the_recogniser_accepts() -> None:
+    """Teaching the scanner a construct without teaching the generator to produce it REDS.
+
+    This is what structurally closes the fixed-table defect: the two sets are one contract,
+    so neither side can grow a production the other has never seen.
+    """
+    assert {production for _, production, _ in GRAMMAR_WRAPPERS if production} == RECOGNISED_COMPOUNDS
+
+
+def test_the_generated_axis_has_the_cardinality_it_claims() -> None:
+    """Asserted up front — discovering it with a while-len-seen loop hung this suite once."""
+    assert len(_COMPOUND_SPELLINGS) == 13
+    assert len(GRAMMAR_WRAPPERS) == 1 + 13 + 13 * 13 + len(_FUNCTION_NAMES) * 13 * 2
+    assert len(GRAMMAR_WRAPPERS) == 469
+    assert len(WRAPPERS) == 14
+
+
+@pytest.mark.skipif(not pathlib.Path("/bin/bash").exists(), reason="ground truth needs a real /bin/bash")
+class TestTheFailClosedDefault:
+    """A construct outside the accept table must leave the window UNBOUNDED, hence kept.
+
+    Without this the default could be flipped fail-open — bound the window and hope — and
+    every other test here would still pass, because they all pin constructs it recognises.
+    """
+
+    _RECOGNISED = f"{{ true; cat <<<'{ACT}'; }} && true | bash"
+    _UNRECOGNISED = f"{{ (( 1 )); cat <<<'{ACT}'; }} && true | bash"
+
+    def test_neither_spelling_runs_the_act(self, stub_bin: pathlib.Path, tmp_path: pathlib.Path) -> None:
+        """Both are negative controls, so the difference below is the scanner's, not bash's."""
+        assert not _bash_runs_the_act(self._RECOGNISED, stub_bin, tmp_path / "recognised")
+        assert not _bash_runs_the_act(self._UNRECOGNISED, stub_bin, tmp_path / "unrecognised")
+
+    def test_a_fully_recognised_window_is_bounded_and_elides(self) -> None:
+        assert "task complete" not in executed_span(self._RECOGNISED)
+
+    def test_an_unrecognised_construct_leaves_the_text_kept(self) -> None:
+        assert "task complete" in executed_span(self._UNRECOGNISED)
+
+    def test_the_unbounded_window_is_what_keeps_it(self) -> None:
+        text = _Splice(self._UNRECOGNISED).text
+        start = text.index("cat")
+        assert segment_end(text, start, enclosing(text, start)) == len(text)
+
+
 class TestAContinuationBashRemovesMovesNoVerdict:
     r"""A mutant bash reads IDENTICALLY must span identically — the property, not its instances.
 
@@ -843,6 +1022,50 @@ class TestAContinuationBashRemovesMovesNoVerdict:
             assert _joined(executed_span(mutant)) == expected, f"{name}: {mutant!r} moved the verdict"
 
 
+#: Starts whose window is genuinely BOUNDED across the tables below. A floor, because the
+#: recognition invariant is satisfied outright by never bounding anything — which is the
+#: shape the fail-closed default degrades to if its accept table rots away. Measured at 851
+#: over 5,652 starts, against 1,086 for the group-plus-keyword scan this replaces: fewer
+#: START POSITIONS bound, but MORE table entries bound at least one (47 against 34), because
+#: recognising the function-definition production bounds windows the enumeration never saw.
+_BOUNDED_WINDOW_FLOOR = 800
+
+_WINDOW_TABLE = EXECUTES + READS_ONLY + NEVER_REDIRECTED
+
+
+def _bounded_starts(command: str) -> list[int]:
+    """Every start of *command* whose reachability window ends before end of text."""
+    text = _Splice(command).text
+    return [start for start in range(len(text) + 1) if segment_end(text, start, enclosing(text, start)) < len(text)]
+
+
+class TestAWindowIsBoundedOnlyWhereTheGrammarWasRecognised:
+    """The primary invariant: a bound is a CLAIM that everything up to it was understood.
+
+    This is what makes a silent drop structurally impossible rather than empirically absent.
+    A window ends early only where the scanner positively recognised every token on the way,
+    so a construct it does not model can cost an over-keep — loud — and never an elision.
+    """
+
+    @pytest.mark.parametrize(("name", "command"), _WINDOW_TABLE, ids=[name for name, _ in _WINDOW_TABLE])
+    def test_no_bound_it_returns_carries_an_unrecognised_token(self, name: str, command: str) -> None:
+        text = _Splice(command).text
+        unjustified = [
+            start
+            for start in range(len(text) + 1)
+            if (bound := segment_end(text, start, enclosing(text, start))) < len(text)
+            and enclosing(text, bound).unrecognised
+        ]
+        assert not unjustified, f"{name}: the window is bounded over unrecognised text at {unjustified[:3]}"
+
+    def test_the_tables_still_bound_most_of_their_windows(self) -> None:
+        bounded = sum(len(_bounded_starts(command)) for _, command in _WINDOW_TABLE)
+        assert bounded >= _BOUNDED_WINDOW_FLOOR, (
+            f"only {bounded} starts bound their window, under the pinned {_BOUNDED_WINDOW_FLOOR} — "
+            "the fail-closed default has swallowed the feature"
+        )
+
+
 def _group_onlysegment_end(text: str, start: int) -> int:
     """Where the window ended before keyword compounds were modelled — the reference scan."""
     depth = 0
@@ -860,12 +1083,14 @@ def _group_onlysegment_end(text: str, start: int) -> int:
 
 
 class TestTheWindowOnlyEverWidens:
-    """Monotonicity is what makes a NEW silent drop structurally impossible.
+    """A SECONDARY ratchet: no-worse-than a group-only scan. NOT the no-drop property.
 
-    The data-only proof is ``all(stage is a reader)``, so a longer window either appends to
-    the LAST stage — whose command word is its first word, hence unchanged — or adds whole
-    conjuncts: it turns the proof True→False, never False→True. Only a keyword rule that
-    NARROWED the window could break that argument, and this is what reds when one does.
+    The lower bound is the pre-keyword reference scan, which this PR itself proves too
+    short — it misses every keyword compound, so a window matching it exactly can still
+    drop an act. What it does buy is a ratchet against regressing BELOW where the module
+    started, on the argument that widening turns ``all(stage is a reader)`` True→False and
+    never False→True. The property that makes a silent drop structurally impossible is
+    :class:`TestAWindowIsBoundedOnlyWhereTheGrammarWasRecognised`; this is a floor under it.
     """
 
     @pytest.mark.parametrize(
