@@ -211,11 +211,24 @@ class RegressionGates:
     returns ``True`` when the caller should exit non-zero. Shared by all three
     run shapes (single-trial, pass@k, matrix), so a cost blow-up fails loud in
     every lane, not only the single-trial one.
+
+    A gate the caller EXPLICITLY enabled and could not evaluate returns ``True``.
+    The control DB is a docker volume recreated on a rebuild, so "no baseline for
+    any model" is the state right after every reset — and reporting a requested
+    gate that compared zero scenarios as PASS is the "I cannot tell" → "nothing
+    regressed" collapse. Record a baseline (``--baseline``) before gating on one.
     """
 
     @staticmethod
     def scores(record: "EvalRunRecord", *, enabled: bool) -> bool:
-        """Diff *record* against each model's baseline; print drops; True if any regressed."""
+        """Diff *record* against each model's baseline; print drops; True if any regressed.
+
+        An UNMEASURED scenario — one the candidate recorded but graded nothing for,
+        the all-errored weekly-lane shape — is reported under its own headline and
+        still fails the gate, because a requested gate that could not compare a
+        scenario cannot report a green for it. What it is NOT is a behavioral
+        regression, which is what defaulting the missing rate to ``0.0`` printed.
+        """
         if not enabled:
             return False
         from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
@@ -228,7 +241,13 @@ class RegressionGates:
                 continue
             any_baseline = True
             for entry in EvalRunRecord.regression_diff(baseline=baseline_run, candidate=record, model=model):
-                if entry.regressed:
+                if entry.unmeasured:
+                    any_regressed = True
+                    typer.echo(
+                        f"UNMEASURED {entry.scenario_name} [{entry.model}]: baseline "
+                        f"{entry.baseline_pass_rate:.2f}, candidate graded no trial (all errored or skipped)"
+                    )
+                elif entry.regressed:
                     any_regressed = True
                     typer.echo(
                         f"REGRESSED {entry.scenario_name} [{entry.model}]: "
@@ -240,7 +259,12 @@ class RegressionGates:
                         f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
                     )
         if not any_baseline:
-            typer.echo("baseline: no baseline recorded for these models — nothing to compare")
+            typer.echo(
+                "baseline: no baseline recorded for these models — --gate-regressions was requested "
+                "but compared zero scenarios, so it cannot report a green. Record one with --baseline.",
+                err=True,
+            )
+            return True
         return any_regressed
 
     @staticmethod
@@ -251,8 +275,8 @@ class RegressionGates:
         more than *tolerance* (relative drift) versus the baseline run. A scenario
         whose baseline cost is ``0.0`` (subscription baseline — no metered
         reference) has an undefined relative drift, so it is skipped, never flagged
-        and never a divide-by-zero. When no model has a baseline at all, the gate
-        reports "no cost baseline" and passes.
+        and never a divide-by-zero. When no model has a baseline at all the gate
+        compared nothing, so it fails rather than reporting an unearned green.
         """
         if not enabled:
             return False
@@ -276,7 +300,12 @@ class RegressionGates:
                         f"(+{entry.pct_increase:.0%}, tolerance {tolerance:.0%})"
                     )
         if not any_baseline:
-            typer.echo("cost: no cost baseline recorded for these models — nothing to compare")
+            typer.echo(
+                "cost: no cost baseline recorded for these models — --gate-cost-regression was requested "
+                "but compared zero scenarios, so it cannot report a green. Record one with --baseline.",
+                err=True,
+            )
+            return True
         return any_regressed
 
 
@@ -289,6 +318,12 @@ class CostBoundsGate:
     a scenario over ``bound_usd * (1 + margin)`` is RED, and a *configured*
     scenario the run recorded no cost for is RED too (fail-loud, never
     skip-as-pass). The ceiling survives a DB reset because it lives in the diff.
+
+    An EMPTY ceiling set fails the same way a missing file does. ``load_cost_bounds``
+    makes an absent file a hard error precisely because "no ceilings" would make the
+    gate vacuously green; a committed file pinning zero scenarios is that same
+    vacuity through a different door, so a requested gate with nothing to gate is a
+    refusal, not a pass.
     """
 
     @staticmethod
@@ -300,8 +335,13 @@ class CostBoundsGate:
 
         config = load_cost_bounds()
         if not config.bounds:
-            typer.echo("cost-bounds: no scenarios pinned in evals/cost_bounds.yaml — nothing to gate")
-            return False
+            typer.echo(
+                "cost-bounds: --gate-cost-bounds was requested but evals/cost_bounds.yaml pins zero "
+                "scenarios, so the gate would certify a run it never checked. Calibrate a bound_usd "
+                "for the metered scenarios the lane runs.",
+                err=True,
+            )
+            return True
         result = check_cost_bounds(record.costs_by_scenario(), config)
         for violation in result.violations:
             typer.echo(violation.render())

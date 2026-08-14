@@ -19,14 +19,12 @@ class TestBuildTaskDetail(TestCase):
         parent_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             phase="testing",
             execution_reason="Run tests",
         )
         child_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             phase="testing",
             execution_reason="Manual verification",
             parent_task=parent_task,
@@ -34,7 +32,6 @@ class TestBuildTaskDetail(TestCase):
         # Also create an attempt for the parent
         TaskAttempt.objects.create(
             task=parent_task,
-            execution_target="headless",
             exit_code=0,
             error="",
             result={"summary": "All pass"},
@@ -60,14 +57,12 @@ class TestBuildTaskDetail(TestCase):
         parent_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             phase="shipping",
             execution_reason="Ship it",
         )
         child_task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
             phase="shipping",
             execution_reason="Needs input",
             parent_task=parent_task,
@@ -86,11 +81,9 @@ class TestBuildTaskDetail(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             result="not-a-dict",
         )
 
@@ -106,7 +99,6 @@ class TestBuildTaskDetail(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
 
         detail = build_task_detail(task.pk)

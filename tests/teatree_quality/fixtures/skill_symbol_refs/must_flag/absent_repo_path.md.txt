@@ -1,0 +1,3 @@
+# Repo path outside src/teatree/ naming no file
+
+The guard's own test is `tests/quality/test_skill_symbol_refs.py`.

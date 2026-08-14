@@ -25,6 +25,12 @@ output it narrows a section-scoped scenario to the sections that actually moved.
 Paths still come from STDIN, so a diff the parser cannot read costs precision,
 never a missed scenario.
 
+A scenario in the known-red QUARANTINE is dropped from the lane and NAMED on
+stderr (#4173), so a tracked red stops blocking every PR touching the prose it
+grades without the shrunken lane going unnoticed. The registry sits beside the
+scenarios dir (``evals/scenarios`` -> ``evals/quarantine.yaml``), so a consumer
+passing its own ``--scenarios-dir`` gets its own registry with no extra flag.
+
 Exit 0 when at least one scenario matched; exit ``--skip-code`` (default 1) when
 nothing matched, so the caller's eval job skips cleanly with no API spend.
 """
@@ -37,6 +43,7 @@ import typer
 from teatree.eval.changed_scenarios import REPO_ROOT, select_changed_scenarios, specs_under
 from teatree.eval.changed_sections import changed_sections_by_path
 from teatree.eval.discovery import discover_specs
+from teatree.eval.quarantine import quarantine_path_for, suppressed_scenario_names
 from teatree.utils.django_bootstrap import ensure_django
 
 _EMPTY_CATALOG_EXIT = 2
@@ -81,10 +88,19 @@ def changed_scenarios(
     sections = None
     if diff_file is not None:
         sections = changed_sections_by_path(diff_file.read_text(encoding="utf-8"), repo_root=root)
-    selection = select_changed_scenarios(sys.stdin, repo_root=root, specs=specs, changed_sections=sections)
+    selection = select_changed_scenarios(
+        sys.stdin,
+        repo_root=root,
+        specs=specs,
+        changed_sections=sections,
+        quarantined=suppressed_scenario_names(path=quarantine_path_for(scenarios_dir)),
+    )
     # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
     # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
     if note := selection.truncation_note():
+        typer.echo(note, err=True)
+    # Same reason for a quarantine suppression (#4173) — a shrunken lane must be visible.
+    if note := selection.quarantine_note():
         typer.echo(note, err=True)
     if not selection.names:
         raise SystemExit(skip_code)

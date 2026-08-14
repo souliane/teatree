@@ -132,7 +132,7 @@ class TestOwnerSessionEmitsReactiveSlots:
         router.handle_enforce_loop_on_prompt({"session_id": owner_session})
         assert capsys.readouterr().out == ""  # emit-once per session
 
-    def test_non_owner_session_emits_nothing(
+    def test_non_owner_session_registers_no_reactive_slot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         state = tmp_path / "state"
@@ -141,6 +141,7 @@ class TestOwnerSessionEmitsReactiveSlots:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         # No ``.teatree-active`` marker => not the loop owner => never registers.
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
+        monkeypatch.setattr(loop_registrations, "_standing_directives", list)  # isolate reactive behaviour
         router.handle_enforce_loop_on_prompt({"session_id": "stranger"})
         assert capsys.readouterr().out == ""
 
@@ -159,6 +160,7 @@ class TestOwnerSessionEmitsReactiveSlots:
         loser = "loser-session"
         (state / f"{loser}.teatree-active").touch()  # the loser DID opt into teatree
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
+        monkeypatch.setattr(loop_registrations, "_standing_directives", list)  # isolate reactive behaviour
         # A DIFFERENT, live (alive pid) session already holds the tick-owner record.
         router._write_loop_registry(
             {
@@ -173,7 +175,7 @@ class TestOwnerSessionEmitsReactiveSlots:
 
         router.handle_enforce_loop_on_prompt({"session_id": loser})
 
-        assert capsys.readouterr().out == "", "a loser with a LIVE foreign owner must register NOTHING"
+        assert capsys.readouterr().out == "", "a loser with a LIVE foreign owner must register NO reactive slot"
         assert not (state / f"{loser}.loop-pending").is_file(), "the loser must write no pending marker (no nudge)"
         assert router._read_loop_registry()[router._OWNER_LOOP]["session_id"] == "master-session"
 

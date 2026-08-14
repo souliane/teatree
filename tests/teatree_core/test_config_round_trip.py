@@ -22,9 +22,10 @@ from typing import ClassVar
 from django.test import TestCase
 
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.secret_guard import is_private_backup
 from teatree.core.config_interchange.types import ConfigImport
 from teatree.core.models import ConfigSetting, Loop
-from teatree.dash.settings_editor import export_text, import_preview
+from teatree.dash.interchange import export_text, import_preview
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
 #: Rows a live box holds in the ``ConfigSetting`` store that are NOT operator configuration —
@@ -202,3 +203,77 @@ class TestDashboardImportPreviewRoundTrip(TestCase):
         rendered = {row.key: row.toml_value for row in import_preview(export_text()).unchanged}
         assert rendered["clean_ignore"] == '["c236659ccc03"]'
         assert import_preview("[teatree]\nautoload = true\n").written[0].toml_value == "true"
+
+
+class TestAPrivateBackupIsRestorable(TestCase):
+    """`export --include-private` writes a file its own box can restore (#4156).
+
+    The flag exists to make a COMPLETE backup, and the rows it adds are exactly the ones the
+    import refuses by design — so the file was one nothing could read back, and nothing said
+    so. The row rule is untouched: an ordinary import still refuses those rows, and a file
+    that does not DECLARE itself a personal backup is refused even under the restore flag.
+    What changed is that the backup says which of the two formats it is, so restoring it is a
+    named act rather than an impossibility.
+    """
+
+    _TERMS: ClassVar[tuple[str, ...]] = ("acmecorp",)
+
+    #: One row per withhold class the guard has a rule for. Every value is SYNTHETIC.
+    _PRIVATE_ROWS: ClassVar[dict[str, object]] = {
+        "banned_brands": ["acmebrand"],  # private-key
+        "slack_user_id": "<the-operator>",  # personal-identifier
+        "ban_close_trailers_on_namespaces": ["acmecorp"],  # banned-term content scan
+    }
+
+    def setUp(self) -> None:
+        for key, value in self._PRIVATE_ROWS.items():
+            ConfigSetting.objects.set_value(key, value)
+        ConfigSetting.objects.set_value("merge_wip", 4)
+
+    def _backup(self) -> str:
+        return export_db_to_toml(include_private=True, scan_terms=self._TERMS).toml
+
+    def _import(self, text: str, *, dry_run: bool = True, restore_private: bool = False) -> ConfigImport:
+        return import_toml_to_db(
+            text,
+            dry_run=dry_run,
+            scan_terms=self._TERMS,
+            allow_safety_posture=True,
+            restore_private=restore_private,
+        )
+
+    def test_a_shared_export_is_not_marked_a_personal_backup(self) -> None:
+        # The premise every assertion below rests on: the marker distinguishes the two
+        # formats, so it must be absent from the one an ordinary import already accepts.
+        assert is_private_backup(tomllib.loads(export_db_to_toml(scan_terms=self._TERMS).toml)) is False
+
+    def test_the_private_export_declares_itself_a_personal_backup(self) -> None:
+        result = export_db_to_toml(include_private=True, scan_terms=self._TERMS)
+        assert is_private_backup(tomllib.loads(result.toml)) is True
+        assert result.private_backup is True
+
+    def test_an_ordinary_import_still_refuses_it_and_says_what_it_is(self) -> None:
+        result = self._import(self._backup())
+        assert {row.key for row in result.rejected} == set(self._PRIVATE_ROWS)
+        assert result.private_backup is True
+
+    def test_it_restores_onto_a_store_that_lost_everything(self) -> None:
+        backup = self._backup()
+        ConfigSetting.objects.all().delete()
+        result = self._import(backup, dry_run=False, restore_private=True)
+        assert result.rejected == (), result.rejected
+        rows = ConfigSetting.objects.overrides_for_scope("")
+        assert {key: rows.get(key) for key in self._PRIVATE_ROWS} == self._PRIVATE_ROWS
+        assert rows["merge_wip"] == 4
+
+    def test_restoring_onto_the_box_that_wrote_it_changes_nothing(self) -> None:
+        result = self._import(self._backup(), restore_private=True)
+        assert result.rejected == ()
+        assert result.written == ()
+
+    def test_the_restore_flag_does_not_relax_a_file_that_is_not_a_backup(self) -> None:
+        # Anti-vacuous control: the allowance is tied to the file DECLARING itself a personal
+        # backup, so a shared dump carrying a secret row is refused exactly as it always was.
+        result = self._import('[teatree]\nbanned_brands = ["acmebrand"]\n', restore_private=True)
+        assert [(row.key, row.reason) for row in result.rejected] == [("banned_brands", "secret (private-key)")]
+        assert result.private_backup is False

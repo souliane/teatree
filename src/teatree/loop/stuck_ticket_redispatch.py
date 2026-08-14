@@ -15,6 +15,14 @@ own most recent task rather than from a state map. A failure whose phase output
 DEMONSTRABLY LANDED is excluded: it is a dead artifact, and re-running it is the
 already-done redispatch flood the ``transient_requeue`` sweep retires it to avoid.
 
+Neither class reaches a ticket whose NEWEST task an operator CANCELLED (#4105). A
+cancel leaves exactly the shape both predicates match — non-terminal, nothing in
+flight, a failed newest attempt — so the sweep re-queued the same phase on the next
+tick and the decision lasted one tick; two cancels were needed to stop it, and only
+by exhausting the budget below, which pages a human about a doomed phase rather than
+an honoured decision. Anything the pipeline does afterwards is a newer task, which is
+the "something changed" that puts the ticket back in play.
+
 The re-dispatch is HARD-BOUNDED by the #2009 repair-loop budget, on ONE path for
 both classes: a ticket-phase at its iteration cap, stalled on two consecutive
 identical failures, or stalled on two consecutive failures of the same NAMED
@@ -38,7 +46,7 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
@@ -143,7 +151,7 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
     candidates = []
     for ticket in _live_tickets_with_nothing_in_flight():
         phase = _implied_phase(ticket)
-        if phase is None:
+        if phase is None or ticket.newest_task_was_cancelled():
             continue
         if _phase_is_failing(ticket, phase=phase) or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
@@ -289,7 +297,7 @@ def _schedule_for_state(ticket: Ticket) -> Task:
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
     """Return the loud halt reason if *ticket*'s phase is out of repair budget, else ``None``."""
     attempts = _phase_attempts(ticket, phase=phase)
-    last_two = [a.error_fingerprint for a in attempts[-2:] if a.error_fingerprint]
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
     try:
         requeue_verdict(
             ticket_id=ticket.pk,
@@ -303,26 +311,14 @@ def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
     return None
 
 
-#: Kinds that are the ABSENCE of a name rather than a cause, so two of them are not
-#: evidence of one repeating defect — two unrelated failures both land here. They keep
-#: the text-based fingerprint stall, which compares what actually differs between them.
-_UNNAMED_KINDS = frozenset({FailureKind.UNCLASSIFIED, FailureKind.UNRECORDED})
-
-
 def _deterministic_kinds(attempts: list[TaskAttempt]) -> list[str]:
     """The last two attempts' failure kinds, keeping only the NAMED deterministic ones (#3957).
 
-    An environmental kind is dropped rather than compared: a lost lease or an API outage
-    is the environment's fault, so repeating it says nothing about the work and must stay
-    retryable up to the iteration cap. Dropping (rather than substituting a placeholder)
-    also means one environmental failure between two identical deterministic ones breaks
-    the run — only two CONSECUTIVE named deterministic failures halt.
+    Which kinds survive is the taxonomy's call, not this sweep's: :func:`stall_kinds` is
+    the one place an environmental, unnamed or CAUSELESS kind is withheld, so it cannot be
+    dropped on one repair path and compared on another.
     """
-    return [
-        a.failure_kind
-        for a in attempts[-2:]
-        if a.failure_kind and a.failure_kind not in _UNNAMED_KINDS and not is_environmental(a.failure_kind)
-    ]
+    return stall_kinds(a.failure_kind for a in attempts[-2:])
 
 
 def _phase_attempts(ticket: Ticket, *, phase: str) -> list[TaskAttempt]:

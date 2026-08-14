@@ -26,6 +26,7 @@ from teatree.core.models import ImplementedIssueMarker
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR
+from teatree.loop.reconcile_lanes import reconcile_holder_pr_rows_best_effort, reconcile_settled_clears_best_effort
 from teatree.loop.scanner_host_fanout import _competing_url_prefixes, _jobs_for_backend_hosts
 from teatree.loop.scanners import (
     ArchitecturalReviewScanner,
@@ -173,6 +174,9 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     # require_human_approval_to_merge=false: a human-approval overlay keeps the
     # human in the merge loop, so the agent must not auto-dispatch its own review.
     auto_review_dispatch = solo_overlay and not settings.require_human_approval_to_merge
+    # #4250: spend the authorisations whose PR already settled before the sweep reads
+    # the backlog, so the operator alarm converges to zero instead of standing forever.
+    reconcile_settled_clears_best_effort()
     return PrSweepScanner(
         repos=repos,
         api=GhPrApiClient(token=github_token),
@@ -345,26 +349,6 @@ def _owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
     return tuple(slugs)
 
 
-def _reconcile_holder_pr_rows(overlay_name: str) -> None:
-    """Ask the forge about each budget holder's PR before the budget is read (#3984).
-
-    Both intake readings — the release rule and the deadlock alarm — are drawn from
-    ``PullRequest.state``, so a row nobody advanced after its PR merged holds the slot
-    AND silences the alarm about it. Best-effort: an unreadable forge leaves rows
-    unsettled (the reader collapses every error to UNKNOWN, which never settles), and a
-    failure here must not stop the tick claiming.
-    """
-    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: loaded at tick time
-    from teatree.core.intake.budget import reconcile_holder_pr_rows  # noqa: PLC0415 — leaf import
-
-    try:
-        reconcile_holder_pr_rows(overlay_name, read_state=pr_open_state)
-    except Exception:
-        logger.exception(
-            "intake: could not reconcile held PR rows for %s — reading the budget as recorded", overlay_name
-        )
-
-
 def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | None:
     """Build the per-overlay unified intake scanner behind the triple gate (#3634).
 
@@ -383,10 +367,11 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     :data:`~teatree.core.intake.factory_admission.DEFAULT_ADMIT_LABEL`); the scanner
     unions in the DB ``TrustedIdentity`` rows and applies the top-down decision table.
 
-    Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is emitted
-    even at a full budget — with ``can_claim=False`` it claims nothing new but STILL
-    runs the per-tick heartbeat sweep, so an in-flight claim can never expire and be
-    stolen mid-dispatch.
+    The scanner is emitted at a FULL budget too, with ``can_claim=False``: it claims
+    nothing, but it still runs the per-tick heartbeat sweep (an in-flight claim would
+    otherwise expire and be stolen mid-dispatch) and still records the queue it cannot
+    act on. Returning ``None`` here is what made starvation invisible — the forge was
+    never asked, so an issue that never got a slot was never even seen (#4238).
 
     The in-flight LIMIT comes from :func:`resolve_intake_concurrency` (#3992), which
     hands back the resource loop's headroom-derived number, or
@@ -397,8 +382,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         MERGE_STUCK_AFTER_TICKS,
         read_merge_signal,
     )
-    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
-    from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
+    from teatree.core.intake import factory_admission  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
@@ -406,7 +390,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     code_host = backend.host
     if code_host is None:
         return None
-    _reconcile_holder_pr_rows(backend.name)
+    reconcile_holder_pr_rows_best_effort(backend.name)
     # #3275: self-heal the in-flight budget BEFORE reading it. A marker orphaned
     # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
     # so it strands its slot and the budget gate reads false forever.
@@ -436,14 +420,14 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
                 merge.open_prs,
                 MERGE_STUCK_AFTER_TICKS,
             )
-    if not can_claim and not wire.fleet_claim_enabled(backend.name):
-        return None
     return IssueIntakeScanner(
         host=code_host,
-        admit_label=settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,
+        admit_label=settings.issue_implementer_label or factory_admission.DEFAULT_ADMIT_LABEL,
         overlay_name=backend.name,
+        umbrella_labels=factory_admission.resolve_umbrella_labels(backend.name),
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
+        exclude_labels=backend.exclude_labels,
         repo_slugs=_owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
         max_concurrent=limit,

@@ -832,6 +832,14 @@ class TestAttachTouchedPaths:
         assert clear.substrate_paths_indeterminate is True
         assert clear.is_substrate() is True
 
+    def test_empty_path_list_holds_as_substrate(self) -> None:
+        # A real open PR always changes >=1 file, so `[]` is a failed read rather than a
+        # confirmed non-substrate diff — the rule ``pr_diff_is_substrate`` already applies.
+        clear = self._logic_clear()
+        attach_touched_paths(clear, _StubQuery([]))
+        assert clear.substrate_paths_indeterminate is True
+        assert clear.is_substrate() is True
+
 
 class TestExpectedRequiredContextsFloor(TestCase):
     """The operator floor fails a DETERMINATE-EMPTY required set closed (Medium finding)."""

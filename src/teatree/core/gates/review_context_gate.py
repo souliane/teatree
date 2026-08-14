@@ -5,7 +5,7 @@ forecloses: ``lifecycle visit-phase <id> reviewing`` records the
 independent-review attestation even when the reviewer never retrieved the work
 item, never followed the links in the MR description + ticket, and never
 downloaded + analyzed the referenced documents (specs, design docs,
-amortization / Tilgungsplan schedules, requirement docs). A diff-only verdict
+amortization schedules, requirement docs). A diff-only verdict
 checks that the code compiles, not that it matches the specified requirements
 and business rules.
 

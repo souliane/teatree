@@ -12,17 +12,39 @@ Discovery is scoped so the factory never even fetches work it may not do:
     overlay's own repo slugs — a stranger's issue is never fetched;
 * one label-scoped query for the owner-applied admit label, same repo scope —
     this is the ONLY route by which an untrusted author's issue enters, and it
-    requires the owner's explicit label (rule 4).
+    requires the owner's explicit label (the admit-label rule).
 
 Selection narrows; the decision function decides. Every candidate is re-checked
 at claim time through the shared :mod:`~teatree.core.review.author_trust` seam,
-so an over-returning forge query cannot launder an untrusted author past rule 5.
+so an over-returning forge query cannot launder an untrusted author past the
+fail-closed last rule.
+
+An UMBRELLA/epic row is declined outright (#4105). Discovery cannot exclude it —
+it is authored by the same trusted human as everything else — so the decision
+table refuses it: an epic's scope is unbounded, so it holds a bounded in-flight
+slot with no state of the world that ends the claim, displacing implementable
+work for the whole run.
 
 Claims go through the TOCTOU-safe :meth:`ImplementedIssueMarker.claim` (or the
 cross-instance fleet ref when that kill-switch is on), so a re-tick or a
 concurrent overlay never double-dispatches.
+
+Candidates are claimed OLDEST FILED FIRST (#4238). Each discovery query asks its forge
+for that order, and the merged set is re-sorted here — sorting inside one query says
+nothing about the union of several, so the merge is where fairness is actually decided.
+Plain age order needs no aging term to be starvation-free: a candidate's rank can only
+improve, because every issue filed after it sorts behind it. What can push it back is an
+older issue becoming admissible late (an admit label applied, a reopen, an author newly
+trusted) — an operator act, not a stream.
+
+Every admissible candidate the budget or the governor stopped us from claiming is
+recorded in :class:`UnclaimedIntakeCandidate`, because intake's own decision is per-tick
+and log-only: without the ledger a passed-over issue is indistinguishable from one that
+was never filed, which is how three issues went unadmitted for a full day with every
+health surface green.
 """
 
+import datetime as dt
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -32,8 +54,15 @@ from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.fleet import wire
-from teatree.core.intake.factory_admission import decide_issue_intake
-from teatree.core.models import ImplementedIssueMarker
+from teatree.core.intake.factory_admission import (
+    IntakeLabelPolicy,
+    IntakeVerdict,
+    decide_issue_intake,
+    payload_body,
+    payload_labels,
+)
+from teatree.core.intake.umbrella import umbrella_reason
+from teatree.core.models import ImplementedIssueMarker, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.core.review.author_trust import (
     AuthorSubject,
     AutonomyGate,
@@ -54,6 +83,11 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+
+#: Where an issue with no readable filing date sorts. LAST, so a payload-shape change
+#: degrades the whole queue to arrival order instead of letting one undated issue
+#: overtake every dated one waiting ahead of it.
+_UNDATED = dt.datetime.max.replace(tzinfo=dt.UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +111,22 @@ def issue_url(issue: RawAPIDict) -> str:
 def _issue_title(issue: RawAPIDict) -> str:
     title = issue.get("title")
     return title if isinstance(title, str) else ""
+
+
+def issue_created_at(issue: RawAPIDict) -> dt.datetime | None:
+    """When *issue* was FILED — the intake queue's ordering key on both forges.
+
+    GitHub and GitLab both name the field ``created_at``. A naive timestamp is read as
+    UTC, which is what both forges emit; an absent or unparsable one yields ``None``.
+    """
+    raw = issue.get("created_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        moment = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=dt.UTC)
 
 
 def issue_author(issue: RawAPIDict) -> str:
@@ -139,8 +189,8 @@ class IssueIntakeScanner:
 
     ``admit_label`` is the owner-applied admission label (the effective
     ``issue_implementer_label``). It is BOTH the label-scoped discovery query and
-    rule 4 of the decision table — an untrusted author's issue enters only through
-    it.
+    the admit-label rule of the decision table — an untrusted author's issue enters
+    only through it.
 
     ``trusted_authors`` is the CONFIG tier of the trust union (the owner's
     ``user_identity_aliases`` plus the ``trusted_issue_authors`` allowlist); the DB
@@ -151,13 +201,23 @@ class IssueIntakeScanner:
     ``identities`` is the OPERATOR's own handle set. It is deliberately NOT the
     trust set: it scopes the read-back's PR queries, because the PR implementing an
     issue is authored by the operator regardless of who filed the issue.
+
+    ``exclude_labels`` is the overlay's denylist (``OverlayConfig.exclude_labels``) —
+    the exclude rule of the decision table. It holds an issue whoever filed it, so it is
+    the operator's reservation surface against the factory (#4134).
     """
 
     host: CodeHostBackend
     admit_label: str
     overlay_name: str = ""
+    #: Labels marking an umbrella/epic parent — the umbrella rule's operator-maintained half,
+    #: resolved from ``umbrella_issue_labels``. Empty is the honest "none configured",
+    #: not a stand-in for the shipped set: the structural half needs no configuration,
+    #: so an empty set still declines an unlabelled epic.
+    umbrella_labels: frozenset[str] = frozenset()
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     identities: tuple[str, ...] = field(default_factory=tuple)
+    exclude_labels: tuple[str, ...] = field(default_factory=tuple)
     #: The overlay's OWN repo slugs (``owner/name``). Every discovery query is
     #: scoped to them. Empty keeps the pre-scope global search (back-compat).
     repo_slugs: tuple[str, ...] = field(default_factory=tuple)
@@ -165,51 +225,64 @@ class IssueIntakeScanner:
     readback_enabled: bool = True
     #: The single-ticket in-flight budget; 0 means uncapped.
     max_concurrent: int = 0
-    #: When False this tick only HEARTBEATS in-flight fleet claims and claims
-    #: nothing new — the heartbeat must run even at full budget or an in-flight
-    #: claim would expire mid-dispatch.
+    #: When False this tick claims nothing new. It still HEARTBEATS in-flight fleet
+    #: claims (one would otherwise expire mid-dispatch) and still runs discovery, so
+    #: the queue an unclaimable tick is sitting on is recorded rather than unseen —
+    #: the full-budget tick is exactly when a starved issue needs a witness (#4238).
     can_claim: bool = True
 
     def scan(self) -> list[ScanSignal]:
         wire.heartbeat_inflight_claims(self.overlay_name)
-        if not self.can_claim:
-            return []
         trusted = self._trusted_author_set()
-        operators = self._resolve_identities()
         candidates = self._candidate_issues(trusted)
         if not candidates:
+            UnclaimedIntakeCandidate.objects.sync(self.overlay_name, [])
             return []
-        open_prs = fetch_open_prs(self.host, authors=operators) if self.readback_enabled else []
-        merged_prs = fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else []
+        operators = self._resolve_identities()
         context = _TickContext(
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
-            open_prs=open_prs,
-            merged_prs=merged_prs,
+            open_prs=fetch_open_prs(self.host, authors=operators) if self.readback_enabled else [],
+            merged_prs=fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else [],
         )
         signals: list[ScanSignal] = []
+        waiting: list[WaitingCandidate] = []
+        claiming = self.can_claim
         for issue in candidates:
-            if self._budget_exhausted() or self._governor_denied():
-                break
             url = issue_url(issue)
             try:
-                signal = self._signal_for(issue, url, context=context)
+                verdict = self._admits(issue, url, context=context)
+                if verdict is None:
+                    continue
+                claiming = claiming and not (self._budget_exhausted() or self._governor_denied())
+                if claiming:
+                    self._append_claim(issue, url, verdict, signals)
+                    continue
             except Exception:
                 logger.exception("IssueIntakeScanner failed on issue %s", url)
                 continue
-            if signal is not None:
-                signals.append(signal)
+            waiting.append(
+                WaitingCandidate(issue_url=url, title=_issue_title(issue), issue_created_at=issue_created_at(issue)),
+            )
+        UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting)
         return signals
 
-    def _signal_for(self, issue: RawAPIDict, url: str, *, context: "_TickContext") -> ScanSignal | None:
-        """Decide *issue*, claim it when the verdict acts, and build its signal.
+    def _label_policy(self) -> IntakeLabelPolicy:
+        """The overlay's two configured label sets, as the ONE value the table reads."""
+        return IntakeLabelPolicy(exclude=frozenset(self.exclude_labels), umbrella=self.umbrella_labels)
 
-        Rule 2's "work exists" fact is the union of the local ticket ledger and the
-        forge read-back, so a cross-instance PR that already cites the issue is seen
-        even though no local row exists.
+    def _admits(self, issue: RawAPIDict, url: str, *, context: "_TickContext") -> "IntakeVerdict | None":
+        """The admitting verdict for *issue*, or ``None`` when the table refuses it.
+
+        Decides only — the claim is a separate step, so a candidate can be judged
+        admissible on a tick that has no budget to act on it.
+
+        The "work exists" fact is the union of the local ticket ledger and the forge
+        read-back, so a cross-instance PR that already cites the issue is seen even
+        though no local row exists.
         """
         work_exists = bool(url) and url in context.tracked
-        readback_reason = ""
+        detail = ""
         if not work_exists and self.readback_enabled:
             hit = existing_work_for_issue(
                 issue_url=url,
@@ -219,25 +292,53 @@ class IssueIntakeScanner:
             )
             if hit is not None:
                 work_exists = True
-                readback_reason = f"{hit.reason} ({hit.evidence_url})"
+                detail = f"{hit.reason} ({hit.evidence_url})"
         verdict = decide_issue_intake(
             issue,
             author_trusted=author_is_trusted(issue, context.trusted),
             work_exists=work_exists,
             admit_label=self.admit_label,
+            label_policy=self._label_policy(),
         )
-        if not verdict.acts:
-            logger.info(
-                "IssueIntakeScanner %s %s (author %r)%s",
-                verdict.value,
-                url,
-                issue_author(issue),
-                f": {readback_reason}" if readback_reason else "",
+        if verdict.acts:
+            return verdict
+        if verdict is IntakeVerdict.IGNORE_UMBRELLA:
+            # Re-derived rather than threaded out of the verdict: an enum member cannot
+            # carry a per-issue reason, and a decline with no account of itself is how an
+            # issue disappears from intake with every surface still reading green.
+            detail = umbrella_reason(
+                body=payload_body(issue),
+                labels=payload_labels(issue),
+                umbrella_labels=self.umbrella_labels,
             )
-            return None
-        marker = self._claim(url)
-        if marker is None:
-            return None
+        logger.info(
+            "IssueIntakeScanner %s %s (author %r)%s",
+            verdict.value,
+            url,
+            issue_author(issue),
+            f": {detail}" if detail else "",
+        )
+        return None
+
+    def _append_claim(
+        self,
+        issue: RawAPIDict,
+        url: str,
+        verdict: "IntakeVerdict",
+        signals: list[ScanSignal],
+    ) -> None:
+        """Claim *issue* and append its signal; a refused claim appends nothing.
+
+        A refusal means an existing marker or a live work lease already holds the issue,
+        so it is NOT a waiting candidate — someone is on it. That distinction is why the
+        claim attempt is the last step: only a candidate we never tried to claim is one
+        the budget passed over.
+        """
+        if self._claim(url) is None:
+            return
+        signals.append(self._signal(issue, url, verdict))
+
+    def _signal(self, issue: RawAPIDict, url: str, verdict: "IntakeVerdict") -> ScanSignal:
         return ScanSignal(
             kind="issue_intake.admitted",
             summary=f"Admitted for auto-implement: {_issue_title(issue)}",
@@ -278,9 +379,9 @@ class IssueIntakeScanner:
         admits is a new coding ticket, so it is braked exactly as it was before
         the cheap-phase exemption existed.
         """
-        from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred
+        from teatree.core.agent_admission import agent_admission_denied_reason  # noqa: PLC0415 — deferred
 
-        reason = headless_admission_denied_reason()
+        reason = agent_admission_denied_reason()
         if reason is not None:
             logger.info("IssueIntakeScanner deferring new intake: governor DENIED admission: %s", reason)
         return reason is not None
@@ -316,7 +417,7 @@ class IssueIntakeScanner:
         return config_tier | trusted_handles()
 
     def _tracked_issue_urls(self) -> frozenset[str]:
-        """Issue URLs a ticket already owns — rule 2's local half.
+        """Issue URLs a ticket already owns — the work-exists rule's local half.
 
         Ownership is :meth:`Ticket.issue_owning_states` (every state but IGNORED), the
         SSOT rather than a second hand-maintained list — the list this replaced omitted
@@ -345,12 +446,16 @@ class IssueIntakeScanner:
         return (user,) if user else ()
 
     def _candidate_issues(self, trusted: frozenset[str]) -> list[RawAPIDict]:
-        """Open, URL-bearing issues from both scoped discovery queries, deduped by URL.
+        """Open, URL-bearing issues from both scoped discovery queries, OLDEST FILED FIRST.
+
+        The sort is over the DEDUPED UNION, not per query: each query already asks its
+        forge for created-ascending, but a per-query order says nothing about the merge
+        of a per-author fan-out plus the label query, and the merge is what the budget
+        consumes. Sorting is stable, so issues the forge gave no filing date for keep
+        their arrival order behind the dated ones.
 
         An app handle (any ``/``-containing handle) is skipped outright: it can never
-        author a real intake, so its query is pure waste. Authors are sorted so the
-        query fan-out — and hence the claim order under a tight budget — is
-        deterministic across ticks.
+        author a real intake, so its query is pure waste.
 
         Each query is fault-isolated (#3508): one identity's rate limit, deleted
         account, or transient forge error is logged and skipped, so a sibling
@@ -374,7 +479,7 @@ class IssueIntakeScanner:
                 seen_urls,
                 issues,
             )
-        return issues
+        return sorted(issues, key=lambda issue: issue_created_at(issue) or _UNDATED)
 
     @staticmethod
     def _collect(

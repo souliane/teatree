@@ -43,6 +43,11 @@ class TestBuildManagementCommandsDocPayload:
         names = {entry["name"] for entry in payload["commands"]}
         assert "tasks_session_view" not in names
 
+    def test_every_helper_module_in_the_commands_package_is_excluded(self) -> None:
+        """A helper with no Command class crashes load_command_class, killing the whole build."""
+        payload = build_management_commands_doc_payload()
+        assert "tasks_session_view" not in {entry["name"] for entry in payload["commands"]}
+
     def test_each_entry_has_name_help_and_subcommands(self) -> None:
         payload = build_management_commands_doc_payload()
         for entry in payload["commands"]:
@@ -239,42 +244,39 @@ class TestGenerateAllDocsIncludesManagementCommands:
 
 
 class TestGeneratorWritesTheOutputPathItIsGiven:
-    """The hook must write ``argv[0]`` itself — the merge-driver output contract.
+    """The hook must write ``argv[0]`` itself — the redirected-output contract.
 
-    ``git_merge_generated`` hands this generator git's ``%A`` output slot (a
-    ``.merge_file_XXXXXX`` temp path in the repo root) and takes whatever is left
-    there as the merge result. A generator that derives its own destination from
-    ``argv[0].parent`` instead of writing ``argv[0]`` therefore resolves every
-    merge to "ours" while reporting success, and drops its real output next to the
-    slot — in the repo root. Its sibling ``generate_cli_reference.py`` writes the
-    given path directly; this pins the same contract here.
+    Every caller that redirects the output relies on it: ``generate_all_docs
+    --output-dir`` builds a drift check's scratch copy and reads back exactly the
+    path it named. A generator that derives its own destination from
+    ``argv[0].parent`` instead leaves that path untouched while reporting success —
+    so the check compares the caller's stale file against itself — and drops its
+    real output beside it as litter. Its sibling ``generate_cli_reference.py``
+    writes the given path directly; this pins the same contract here.
     """
 
     def test_writes_the_given_path(self, tmp_path: Path) -> None:
-        slot_dir = tmp_path / "repo-root"
-        slot_dir.mkdir()
-        slot = slot_dir / ".merge_file_ABC123"
-        slot.write_text("OURS — the un-regenerated side\n", encoding="utf-8")
+        target_dir = tmp_path / "scratch"
+        target_dir.mkdir()
+        target = target_dir / "management-commands.copy.md"
+        target.write_text("STALE — the caller's pre-existing content\n", encoding="utf-8")
 
-        assert generator.main([str(slot)]) == 0
+        assert generator.main([str(target)]) == 0
 
-        written = slot.read_text(encoding="utf-8")
-        assert written != "OURS — the un-regenerated side\n", (
-            "the generator left its output slot untouched — a merge driver using it "
-            "silently resolves to 'ours' instead of regenerating."
+        written = target.read_text(encoding="utf-8")
+        assert written != "STALE — the caller's pre-existing content\n", (
+            "the generator left the path it was given untouched, so a caller reading it back "
+            "sees its own stale content and reports no drift."
         )
-        assert "lifecycle" in written, "the slot must hold the REGENERATED reference, not the ours-side content."
+        assert "lifecycle" in written, "the given path must hold the REGENERATED reference."
 
     def test_writes_nothing_beside_the_given_path(self, tmp_path: Path) -> None:
-        slot_dir = tmp_path / "repo-root"
-        slot_dir.mkdir()
-        slot = slot_dir / ".merge_file_ABC123"
-        slot.write_text("OURS\n", encoding="utf-8")
+        target_dir = tmp_path / "scratch"
+        target_dir.mkdir()
+        target = target_dir / "management-commands.copy.md"
+        target.write_text("STALE\n", encoding="utf-8")
 
-        generator.main([str(slot)])
+        generator.main([str(target)])
 
-        strays = sorted(p.name for p in slot_dir.iterdir() if p != slot)
-        assert not strays, (
-            "the generator wrote files beside its output slot; during a real merge that slot's "
-            f"parent is the REPO ROOT, so these land there as untracked litter: {strays}"
-        )
+        strays = sorted(p.name for p in target_dir.iterdir() if p != target)
+        assert not strays, f"the generator wrote files beside the path it was given: {strays}"

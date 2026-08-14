@@ -1,10 +1,11 @@
 # Generated docs collide on nearly every CLI-touching PR (two PRs each adding a
-# `t3` subcommand touch adjacent lines of the same generated list). Resolve those
-# conflicts by REGENERATING, never by textual 3-way merge: the `generated` merge
-# driver (scripts/hooks/git_merge_generated.py) discards both sides and re-runs the
-# file's generator. The driver is registered per-clone by `t3 setup` and worktree
-# provisioning (`git config merge.generated.driver …`); a clone without it falls
-# back to a normal textual merge. See souliane/teatree#3582.
+# `t3` subcommand touch adjacent lines of the same generated list), and the right
+# resolution is a re-run of the file's generator. A merge driver cannot be that
+# re-run — it runs before git writes any of the merge result to the working tree, so
+# it would regenerate from the ours side and record that as a clean merge. The
+# `generated` driver (scripts/hooks/git_merge_generated.py) therefore merges these
+# paths exactly as an unregistered clone does and warns on stderr that they must be
+# regenerated after the merge. See souliane/teatree#4259 and souliane/teatree#3582.
 docs/generated/cli-reference.md merge=generated
 docs/generated/antipattern-catalog.md merge=generated
 docs/generated/management-commands.md merge=generated

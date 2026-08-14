@@ -2,7 +2,7 @@
 
 The ``claude_sdk`` harness resumes a parked headless run cheaply via the SDK's
 own ``--resume <session_id>`` (server-side session storage, see
-:func:`teatree.agents._headless_options._get_resume_session_id`). The
+:func:`teatree.agents._runner_options._get_resume_session_id`). The
 ``pydantic_ai`` transport has no equivalent server-side session, so its
 in-memory conversation (``list[ModelMessage]``) must be persisted by teatree
 itself on PARK and rehydrated on RESUME — the piece epic #2565-C names as the
@@ -11,10 +11,10 @@ itself on PARK and rehydrated on RESUME — the piece epic #2565-C names as the
 No migration: reuses ``Ticket.extra`` (an already-migrated per-ticket JSON
 store — precedent: ``more_prs_coming``, ``prs``) under the
 ``pydantic_ai_threads`` key, keyed by the PARKED ``Task``'s own pk — the SAME
-identifier :func:`~teatree.agents._headless_options._get_resume_session_id`
+identifier :func:`~teatree.agents._runner_options._get_resume_session_id`
 walks the ``parent_task`` chain to find, so a pydantic_ai resume locates the
 same ancestor a claude_sdk resume would. Entries are single-use: a resume
-POPS its entry, mirroring ``schedule_headless_resume``'s idempotent chaining
+POPS its entry, mirroring ``schedule_resume``'s idempotent chaining
 — the store never accumulates stale threads across repeated park/resume
 cycles. Follows the same unlocked-outer-read + ``merge_extra``-locked-write
 shape ``backends/gitlab/sync_terminal.py`` already uses for the nested
@@ -35,7 +35,7 @@ way: an empty history, never an exception.
 Pop-then-restore (souliane/teatree#2916): :func:`rehydrate_thread_for_resume`
 still consumes the entry the moment it is READ, not the moment it is
 actually driven through a harness — cheaper than plumbing a commit-on-success
-callback through the async driver. A caller (:mod:`teatree.agents.headless`)
+callback through the async driver. A caller (:mod:`teatree.agents.runner`)
 that refuses the dispatch this seeded BEFORE the harness genuinely opens (an
 over-budget ticket, a failed backend credential) must restore the popped
 entry via :func:`persist_parked_thread`, or a run that never happened
@@ -69,7 +69,7 @@ def persist_parked_thread(task: Task, history: "list[ModelMessage]") -> None:
     ordinary completed run, where there is nothing to resume. Also reused to
     RESTORE a thread :func:`rehydrate_thread_for_resume` already popped when
     the dispatch it seeded is refused before it ever runs (see
-    :func:`teatree.agents.headless._restore_unconsumed_resume_thread`).
+    :func:`teatree.agents.runner._restore_unconsumed_resume_thread`).
     """
     ticket = task.ticket
     threads = dict(ticket.extra.get(_THREAD_STORE_KEY, {}) if isinstance(ticket.extra, dict) else {})
@@ -126,7 +126,7 @@ def rehydrate_thread_for_resume(task: Task) -> "ResumedThread | None":
     *task* itself is checked first: a usage-limit park re-queues the same row, so its
     conversation is keyed under its own pk (#3605). Otherwise the walk follows
     ``parent_task`` exactly like
-    :func:`~teatree.agents._headless_options._get_resume_session_id`, so a
+    :func:`~teatree.agents._runner_options._get_resume_session_id`, so a
     pydantic_ai resume finds the SAME ancestor a claude_sdk resume would.
     Consumes the entry on read (single-use). Never raises — see the module
     docstring's fallback policy.

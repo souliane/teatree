@@ -16,6 +16,8 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -56,7 +58,6 @@ def _finished_task(
     task = Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
     attempt = TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=1 if error else 0,
         error=error,
@@ -180,7 +181,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=f"planning failed run {'x' * (i + 1)}",
@@ -209,7 +209,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=err,
@@ -228,7 +227,6 @@ class TestStuckTicketRedispatch(TestCase):
             task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
             attempt = TaskAttempt.objects.create(
                 task=task,
-                execution_target=task.execution_target,
                 ended_at=timezone.now(),
                 exit_code=1,
                 error=f"planning failed run {'x' * (i + 1)}",
@@ -424,12 +422,58 @@ class TestFailingCandidates(TestCase):
                 ticket,
                 phase="testing",
                 status=Task.Status.FAILED,
-                error=f"no_result_envelope: agent produced prose only in {suffix}",
+                error=f"missing required evidence for phase 'testing': no tests_run in {suffix}",
             )
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_repeated_causeless_failures_are_redispatched_within_the_cap(self) -> None:
+        # #4075: ``no_result_envelope`` is the ABSENCE of a cause — the run reported
+        # nothing — so two of them are one silence repeated, not one defect. Halting here
+        # declared four real phases doomed that later ran the same phase and succeeded.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for suffix in ("alpha", "beta"):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"no_result_envelope: agent produced prose only in {suffix}",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_repeated_identical_causeless_failures_are_redispatched_too(self) -> None:
+        # The real shape: the reason is a CONSTANT, so both attempts also share one
+        # fingerprint — the FINGERPRINT stall, not just the kind stall, must let it through.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for _ in range(2):
+            _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=NO_ENVELOPE_ERROR)
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_repeated_runtime_ceilings_are_redispatched_though_their_fingerprints_differ(self) -> None:
+        # #4276: the sibling causeless kind, and the one the KIND-level drop actually
+        # carries — the reason interpolates the breach, so the two fingerprint
+        # differently and the fingerprint filter has nothing to drop. Only
+        # ``_deterministic_kinds`` keeps this out of the two-strikes stall.
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        for seconds in (3601, 3722):
+            _finished_task(
+                ticket,
+                phase="testing",
+                status=Task.Status.FAILED,
+                error=f"stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting",
+            )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
 
     def test_repeated_environmental_failures_are_redispatched_within_the_cap(self) -> None:
         # A transient/environmental failure is the environment's fault, not the work's,
@@ -467,7 +511,7 @@ class TestFailingCandidates(TestCase):
                 ticket,
                 phase="testing",
                 status=Task.Status.FAILED,
-                error=f"no_result_envelope: {suffix}",
+                error=f"missing required evidence for phase 'testing': {suffix}",
                 hours_ago=48,
             )
         _finished_task(ticket, phase="testing", status=Task.Status.COMPLETED, hours_ago=48)
@@ -552,3 +596,74 @@ class TestEveryClassPassesTheBudget(TestCase):
 
         assert redispatch_stuck_tickets() == 4
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 4
+
+
+class TestOperatorCancelledTickets(TestCase):
+    """A cancellation is a DECISION, and the drain must not undo it (#4105).
+
+    Cancelling a task leaves exactly the shape both admission predicates match — a
+    non-terminal ticket, nothing in flight, a failed newest attempt — so the sweep
+    re-queued the same phase on the next tick and the operator's decline lasted one
+    tick. Two cancels were needed to halt it, and only by exhausting the repair
+    budget, which reports a doomed phase rather than an honoured decision.
+    """
+
+    def _cancelled_ticket(self, *, state: str = Ticket.State.CODED, idle_hours: int = 0) -> Ticket:
+        ticket = _stuck_ticket(state=state, idle_hours=idle_hours)
+        self._cancel(ticket)
+        return ticket
+
+    @staticmethod
+    def _cancel(ticket: Ticket) -> None:
+        """What `t3 <overlay> tasks cancel` leaves behind: a failed attempt plus a named task."""
+        task = _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}not now")
+        task.fail(reason=f"{CANCELLED_PREFIX}not now")
+
+    def test_a_cancelled_phase_is_not_redispatched(self) -> None:
+        ticket = self._cancelled_ticket()
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_second_cancel_is_honoured_rather_than_escalated(self) -> None:
+        """One cancel suffices, so the budget never runs out.
+
+        Two cancels used to be what stopped the sweep, and only by exhausting the
+        repair budget — which pages the operator with "this phase is doomed" about a
+        phase they deliberately stopped.
+        """
+        ticket = self._cancelled_ticket()
+        self._cancel(ticket)
+
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_the_idle_class_does_not_reach_it_either(self) -> None:
+        """Ageing past the idle threshold is not "something changed"."""
+        ticket = self._cancelled_ticket(idle_hours=DEFAULT_STUCK_IDLE_HOURS * 8)
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_newer_failure_puts_the_ticket_back_in_play(self) -> None:
+        """The NEWEST task decides — a cancel the pipeline moved past is not the last word."""
+        ticket = self._cancelled_ticket()
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+
+        assert redispatch_stuck_tickets() == 1
+
+    def test_an_uncancelled_failure_of_the_same_shape_is_still_redispatched(self) -> None:
+        """The control: without it, a sweep finding no candidates would pass for the wrong reason."""
+        ticket = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+
+        assert redispatch_stuck_tickets() == 1
+
+    def test_a_cancelled_reviewer_ticket_is_not_redispatched(self) -> None:
+        """The guard is asked for EVERY live ticket, reviewer role included — not just author's."""
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/9")
+        task = _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}not now")
+        task.fail(reason=f"{CANCELLED_PREFIX}not now")
+
+        assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0

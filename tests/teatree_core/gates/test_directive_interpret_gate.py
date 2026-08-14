@@ -14,7 +14,7 @@ from teatree.core.gates.directive_interpret_gate import (
     validate_setting_key,
 )
 from teatree.core.models import DeferredQuestion, Directive, DirectiveDispatch, Session, Task, Ticket
-from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
+from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
 
 def _dispatched_directive() -> tuple[Directive, Task]:
@@ -51,6 +51,26 @@ class TestRecordSketch(TestCase):
         assert "N=2" in error
         directive.refresh_from_db()
         assert directive.state == Directive.State.CAPTURED  # unchanged — no garbage recorded
+
+    def test_a_setting_policy_gate_with_no_second_consumer_is_refused_at_the_recorder(self) -> None:
+        # #4181 criterion 2: the refusal is observable as a task failure, not a log line —
+        # the shipped-inert setting never reaches the human's ratify question.
+        directive, task = _dispatched_directive()
+        envelope = {"directive_interpretation": {"sketch": valid_envelope(activation_scope="")}}
+        error = record_returned_directive_interpretation(task, envelope)
+        assert "SECOND overlay" in error
+        assert "default_behaviour" in error
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.CAPTURED  # unchanged — no inert setting recorded
+
+    def test_a_default_behaviour_sketch_moves_the_directive_to_interpreted(self) -> None:
+        directive, task = _dispatched_directive()
+        envelope = {"directive_interpretation": {"sketch": default_behaviour_envelope()}}
+        assert record_returned_directive_interpretation(task, envelope) == ""
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.INTERPRETED
+        assert directive.sketch is not None
+        assert directive.sketch.setting_key == ""  # no knob minted
 
     def test_an_unregistered_activation_scope_fails_the_recorder(self) -> None:
         # The registry half of validation lives in the gate (it needs the overlay

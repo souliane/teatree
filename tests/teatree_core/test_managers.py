@@ -1,4 +1,3 @@
-from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -9,8 +8,7 @@ from django.utils import timezone
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.modelkit.phases import phase_spellings
-from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
-from tests._agent_runtime_env import interactive_runtime
+from teatree.core.models import DeferredQuestion, IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
 
 class TestTicketQuerySet(TestCase):
@@ -204,17 +202,13 @@ class TestTaskQuerySet(TestCase):
             lease_expires_at=future,
             heartbeat_at=timezone.now(),
         )
-        user_ready = Task.objects.create(
+        also_ready = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
-        sdk_tasks = list(Task.objects.claimable_for_headless())
-        user_tasks = list(Task.objects.claimable_for_interactive())
-
-        assert sdk_tasks == [sdk_ready, sdk_reclaimable]
-        assert user_tasks == [user_ready]
+        # A live lease is not claimable; an expired one is reclaimable.
+        assert list(Task.objects.claimable()) == [sdk_ready, sdk_reclaimable, also_ready]
 
     def test_claim_next_pending_atomically_claims_oldest(self) -> None:
         """#786: claim_next_pending atomically selects+claims the oldest PENDING task."""
@@ -1029,13 +1023,6 @@ class TestReplayOrphanedTransitions(TestCase):
     ``_advance_ticket`` path — no parallel transition mechanism.
     """
 
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     def test_backend_is_sqlite(self) -> None:
         from django.db import connection  # noqa: PLC0415
 
@@ -1214,10 +1201,10 @@ class TestReplayOrphanedTransitions(TestCase):
         assert ticket.state == Ticket.State.STARTED
 
     def test_needs_user_input_held_task_is_not_force_advanced(self) -> None:
-        # #927 BLOCKER — a headless coding task that returned
+        # #927 BLOCKER — a coding task that returned
         # ``{"needs_user_input": True}`` is correctly *held* by
-        # ``_advance_ticket`` (ticket stays STARTED, an interactive
-        # followup is scheduled, the task ends COMPLETED). The replay
+        # ``_advance_ticket`` (ticket stays STARTED, a durable question is
+        # recorded, the task ends COMPLETED). The replay
         # sweep then finds that COMPLETED task as latest-per-ticket and
         # must NOT force-advance the ticket past the phase the agent
         # said it could not finish. The needs-user-input suppression
@@ -1230,13 +1217,11 @@ class TestReplayOrphanedTransitions(TestCase):
             exit_code=0,
             result={"needs_user_input": True, "user_input_reason": "blocked on a design decision"},
         )
-        # Precondition: the live path held the ticket and scheduled the
-        # interactive followup — this is the state the sweep then sees.
+        # Precondition: the live path held the ticket and recorded the
+        # question — this is the state the sweep then sees.
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
-        followup = Task.objects.filter(parent_task=task).first()
-        assert followup is not None
-        assert followup.execution_target == Task.ExecutionTarget.INTERACTIVE
+        assert DeferredQuestion.objects.filter(parked_task=task).exists()
 
         replayed = Task.objects.replay_orphaned_transitions()
 
@@ -1244,11 +1229,10 @@ class TestReplayOrphanedTransitions(TestCase):
         assert replayed == 0
         assert ticket.state == Ticket.State.STARTED, (
             f"replay force-advanced a needs-user-input-held ticket to {ticket.state!r} — "
-            "the agent said it could not finish coding; the interactive followup is orphaned"
+            "the agent said it could not finish coding; the recorded question is orphaned"
         )
-        # The interactive followup must survive the sweep untouched.
-        followup.refresh_from_db()
-        assert followup.status == Task.Status.PENDING
+        # The recorded question must survive the sweep untouched.
+        assert DeferredQuestion.objects.filter(parked_task=task).exists()
 
     def test_completed_task_without_needs_user_input_still_replays(self) -> None:
         # #927 anti-vacuity: the fix must suppress *only* the

@@ -54,10 +54,6 @@ SEED_ROW_FIELDS: dict[str, dict[str, tuple[str, type]]] = {
     "modes": {
         "description": ("description", str),
         "entries": ("entries", dict),
-        "availability_mode": ("availability_mode", str),
-        "defers_questions": ("defers_questions", bool),
-        "pauses_self_pump": ("pauses_self_pump", bool),
-        "presence_sensitive": ("presence_sensitive", bool),
     },
     "schedules": {
         "description": ("description", str),

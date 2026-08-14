@@ -50,7 +50,7 @@ _SPAWN_TOOLS = frozenset(CAPABILITY_TO_SDK_TOOLS["dispatch_subtask"])
 class SpawnCeiling:
     """Counts one run's sub-agent spawns and refuses the ones past *limit*.
 
-    One instance per headless dispatch — the count is the run's, and a fresh
+    One instance per agent dispatch — the count is the run's, and a fresh
     dispatch starts from zero. A *limit* of ``0`` (or below) disables the gate
     entirely, matching the ``0 = disabled`` convention the watchdog ceilings use.
     """

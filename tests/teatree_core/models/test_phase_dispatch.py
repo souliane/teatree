@@ -1,6 +1,5 @@
 """Per-phase auto-dispatch tests (souliane/teatree#443 split of test_models.py)."""
 
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +7,6 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
-from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -22,18 +20,13 @@ class TestPhaseAutoDispatch(TestCase):
     """Auto-dispatch of next-phase tasks at each phase boundary (issue #364).
 
     The assertions below are about the IN-SESSION lane a loop-dispatched phase lands
-    in, so the runtime is named: the shipped ``agent_runtime`` is ``headless`` (#3895),
+    in, so the lane is named:
     under which the same phase rows stay HEADLESS for the headless factory.
     """
 
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
-
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        with interactive_runtime():
-            yield
 
     def test_start_provisions_then_schedules_planning_task(self) -> None:
         ticket = Ticket.objects.create()
@@ -47,7 +40,6 @@ class TestPhaseAutoDispatch(TestCase):
         # Planning is loop-dispatched ((author, planning) → t3:planner), so it
         # runs as an in-session sub-agent (subscription-covered), not a metered
         # detached claude -p.
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.session.agent_id == "planning"
         assert ticket.state == Ticket.State.STARTED
 
@@ -63,7 +55,6 @@ class TestPhaseAutoDispatch(TestCase):
 
         task = ticket.tasks.get(phase="testing")
         # Testing is loop-dispatched ((author, testing) → t3:tester) → in-session.
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.session.agent_id == "testing"
         assert ticket.state == Ticket.State.CODED
 
@@ -140,7 +131,6 @@ class TestPhaseAutoDispatch(TestCase):
             env.pop("T3_AUTO_SHIP", None)
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "user approval" in task.execution_reason
 
     def test_shipping_is_auto_when_db_mode_is_auto(self) -> None:
@@ -154,7 +144,6 @@ class TestPhaseAutoDispatch(TestCase):
             env.pop("T3_MODE", None)
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "auto mode" in task.execution_reason
 
     def test_shipping_gates_on_user_approval_when_db_mode_is_manual(self) -> None:
@@ -172,7 +161,6 @@ class TestPhaseAutoDispatch(TestCase):
             env.pop("T3_MODE", None)
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "user approval" in task.execution_reason
 
     def test_t3_auto_ship_env_no_longer_overrides_db_mode_manual(self) -> None:
@@ -189,7 +177,6 @@ class TestPhaseAutoDispatch(TestCase):
             env.pop("T3_MODE", None)
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "user approval" in task.execution_reason
 
     def test_shipping_is_interactive_with_auto_reason_when_global_mode_is_auto(self) -> None:
@@ -201,7 +188,6 @@ class TestPhaseAutoDispatch(TestCase):
             env.pop("T3_AUTO_SHIP", None)
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "auto mode" in task.execution_reason
 
     def test_shipping_task_completion_advances_to_shipped(self) -> None:

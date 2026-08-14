@@ -25,6 +25,8 @@ from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.core.models.loop_lease import LoopLease
 
 _LIVE_PID = os.getpid()
+#: Patched where it is DEFINED — ``live`` reaches it through a deferred import.
+_STARVED_SEAM = "teatree.loops.chain_membership.starved_loop_names"
 _DEAD_PID = 2_000_000_000
 
 
@@ -224,15 +226,19 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
     def test_masked_off_loop_shows_masked(self) -> None:
         Loop.objects.all().delete()
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("heads-down", {"review": False})
+        self._activate("maintenance", {"review": False})
         line = next(ln for ln in _run().splitlines() if "review" in ln)
         assert "masked" in line
 
     def test_forced_on_base_disabled_loop_shows_forced_on(self) -> None:
         Loop.objects.all().delete()
         _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        self._activate("engaged", {"audit": True})
-        line = next(ln for ln in _run().splitlines() if "audit" in ln)
+        self._activate("present", {"audit": True})
+        # ``audit`` is a registered loop, so a forced-on row with no timer chain is
+        # genuinely ``starved`` and that label wins the column (#4185). Give it a driver
+        # so this stays a test of the forced-on label, not of starvation.
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = next(ln for ln in _run().splitlines() if "audit" in ln)
         assert "forced-on" in line
 
     def test_plain_disabled_loop_is_not_labelled_masked(self) -> None:
@@ -245,7 +251,7 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
     def test_json_carries_admitted_verdict(self) -> None:
         Loop.objects.all().delete()
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("heads-down", {"review": False})
+        self._activate("maintenance", {"review": False})
         review = next(e for e in json.loads(_run_json())["mini_loops"] if e["name"] == "review")
         assert review["admitted"] is False
         assert review["enabled"] is True
@@ -403,3 +409,42 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
             payload = json.loads(_run_json())
         assert "per_loop_owners" not in payload
         assert set(payload["owner"].keys()) == {"session_id", "owner_pid", "pid_is_alive", "is_live"}
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestLoopListRendersStarved(django.test.TestCase):
+    """An admitted loop with no timer chain reads ``starved``, never healthy (#4185).
+
+    ``forced-on`` says the preset decided it; ``starved`` says nothing is driving it.
+    The second is the alarming half, so it takes precedence in the one signal column.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
+        Mode.objects.create(name="present", entries={"audit": True})
+        ModeOverride.objects.set_override("present")
+
+    def test_a_driverless_admitted_loop_reads_starved(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            line = next(ln for ln in _run().splitlines() if "audit" in ln)
+        assert "starved" in line
+        # Precedence: the alarming state wins the column outright.
+        assert "forced-on" not in line
+
+    def test_a_driven_admitted_loop_keeps_its_forced_on_label(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = next(ln for ln in _run().splitlines() if "audit" in ln)
+        assert "starved" not in line
+        assert "forced-on" in line
+
+    def test_json_carries_the_starved_flag(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            payload = json.loads(_run_json())
+        audit = next(entry for entry in payload["mini_loops"] if entry["name"] == "audit")
+        assert audit["starved"] is True
+
+    def test_an_infra_slot_is_never_starved(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            payload = json.loads(_run_json())
+        assert all(entry["starved"] is False for entry in payload["infra_slots"])

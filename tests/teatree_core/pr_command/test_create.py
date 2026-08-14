@@ -1,11 +1,12 @@
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.models import Session, Ticket, Worktree
 
@@ -263,6 +264,11 @@ class TestPrCreateRecordsInvokingBranch(TestCase):
     ship mocking is needed.
     """
 
+    @pytest.fixture(autouse=True)
+    def _inject(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._tmp = tmp_path
+        self._monkeypatch = monkeypatch
+
     def test_persists_invoking_branch_from_git_current_branch(self) -> None:
         ticket = _shippable_ticket()
 
@@ -304,6 +310,24 @@ class TestPrCreateRecordsInvokingBranch(TestCase):
 
         ticket.refresh_from_db()
         assert "ship_invoking_branch" not in (ticket.extra or {})
+
+    def test_reads_the_branch_from_the_declared_invocation_cwd(self) -> None:
+        # #4281: a hardcoded `repo="."` reads the image WORKDIR under `deploy/t3`,
+        # so the producer returned nothing and #776 was inert in the container.
+        ticket = _shippable_ticket()
+        stood_here = self._tmp / "worktree"
+        stood_here.mkdir()
+        self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(stood_here))
+        current_branch = MagicMock(return_value="s-776-feature")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", current_branch),
+            patch.object(pr_command.git, "last_commit_message", return_value=("feat: x", "body")),
+        ):
+            call_command("pr", "create", str(ticket.id), dry_run=True)
+
+        assert call(repo=str(stood_here)) in current_branch.call_args_list
 
 
 class TestPrCreateNoCommitsAheadGuard(TestCase):

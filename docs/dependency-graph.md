@@ -53,6 +53,7 @@ graph TD
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
     teatree.core --> teatree.core.schema_readiness
+    teatree.core --> teatree.core.process_freshness
     teatree.core --> teatree.core.managers
     teatree.core --> teatree.core.managers_overlay
     teatree.core --> teatree.core.loop_lease_manager
@@ -60,15 +61,24 @@ graph TD
     teatree.core --> teatree.core.session_identity
     teatree.core --> teatree.loop.loop_cadences
     teatree.core --> teatree.loop.preset_resolution
+    teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
+    teatree.core.claim_liveness --> teatree.core.loop_lease_liveness
     teatree.core.loop_lease_manager --> teatree.utils
+    teatree.core.managers_task_claim --> teatree.config
+    teatree.core.managers_task_claim --> teatree.core.process_freshness
     teatree.core.managers_task_claim --> teatree.core.schema_readiness
+    teatree.core.managers_task_sweeps --> teatree.core.claim_liveness
     teatree.core.managers_task_sweeps --> teatree.core.modelkit
     teatree.core.managers_task_sweeps --> teatree.core.repair_loop
     teatree.core.managers_session --> teatree.config
     teatree.core.managers_session --> teatree.core.managers_overlay
     teatree.core.schema_readiness --> teatree.config
+    teatree.core.process_freshness --> teatree.paths
+    teatree.core.process_freshness --> teatree.utils
+    teatree.core.process_freshness --> teatree.core.loop_lease_liveness
     teatree.core.managers --> teatree.config
+    teatree.core.managers --> teatree.core.claim_liveness
     teatree.core.managers --> teatree.utils
     teatree.core.managers --> teatree.core.modelkit
     teatree.core.managers --> teatree.core.models.errors
@@ -82,10 +92,12 @@ graph TD
     teatree.core.managers --> teatree.core.managers_task_sweeps
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
+    teatree.core.models --> teatree.core.claim_liveness
     teatree.core.models --> teatree.core.modelkit
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
     teatree.core.models --> teatree.core.repair_loop
+    teatree.core.models --> teatree.core.session_identity
     teatree.core.models --> teatree.instance_id
     teatree.core.models --> teatree.url_classify
     teatree.core.models --> teatree.verification
@@ -234,6 +246,7 @@ graph TD
     teatree.loop --> teatree.loop.review_request_tracker
     teatree.loop --> teatree.loop.dispatch_tables
     teatree.loop --> teatree.loop.pr_ticket_index
+    teatree.loop --> teatree.loop.main_check_runs
     teatree.loop --> teatree.loop.scanners
     teatree.loop --> teatree.loop.dispatch_reducer
     teatree.loop --> teatree.loop.dispatch_gates
@@ -281,6 +294,7 @@ graph TD
     teatree.loop.loop_state_db --> teatree.loop.preset_resolution
     teatree.loop.preset_resolution --> teatree.core.models
     teatree.loop.scanners --> teatree.loop.inbound_reading
+    teatree.loop.scanners --> teatree.loop.main_check_runs
     teatree.loop.scanners --> teatree.types
     teatree.loop.scanners --> teatree.paths
     teatree.loop.scanners --> teatree.utils
@@ -355,6 +369,7 @@ graph TD
     teatree.loops --> teatree.agents
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
+    teatree.loops --> teatree.core.claim_liveness
     teatree.loops --> teatree.core.modelkit
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.loop.loop_state_db
@@ -399,7 +414,6 @@ graph TD
     teatree.core.modelkit
     teatree.core.models.errors
     teatree.core.session_identity
-    teatree.core.session_handover_manager
     teatree.core.repair_loop
     teatree.core.managers_overlay
     teatree.core.managers_inbound
@@ -413,6 +427,7 @@ graph TD
     teatree.loop.loop_cadences
     teatree.failure_signatures
     teatree.loop.inbound_classifier
+    teatree.loop.main_check_runs
     teatree.loop.url_specificity
     teatree.instance_id
     teatree.slack_mrkdwn

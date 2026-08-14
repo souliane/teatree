@@ -2,22 +2,22 @@
 
 The scanner core (:class:`PrSweepScanner`, the signal builders) lives in
 ``pr_sweep``; this module holds the pure check-classification predicates and the
-``MergeClear`` / ``ReviewVerdict`` / external-delivery lookups the decision
-ladder consults. Splitting them out keeps the scanner module focused on
-orchestration and under the module-health LOC cap (same split rationale as
-``pr_sweep_adapters``).
+``ReviewVerdict`` / external-delivery lookups the decision ladder consults (the
+CLEAR lookup is its own concern, in ``pr_sweep_clear_lookup``). Splitting them out
+keeps the scanner module focused on orchestration and under the module-health LOC
+cap (same split rationale as ``pr_sweep_adapters``).
 """
 
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from teatree.core.merge import classify_required_rollup, failing_required_names
-from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, PrSummary
+from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, MergeAttempt, PrSummary
 
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict
@@ -104,6 +104,23 @@ def classify_sweep_ci(
     return None, False, failing
 
 
+def with_ci_context(attempt: MergeAttempt, *, pr: PrSummary, failing: set[str]) -> MergeAttempt:
+    """Stamp the CI facts a CROSS-PR comparison needs onto *attempt* (#4090).
+
+    The failing REQUIRED set and whether the run judged the CURRENT base are both
+    already computed for the merge decision; carrying them out to the signal is
+    what lets the set-level report compare PRs without re-listing them and
+    running a second, divergent classifier over the same rollups (#12). The PR
+    URL rides along so the report can render a clickable ref for a plain skip.
+    """
+    return replace(
+        attempt,
+        failing_required=tuple(sorted(failing)),
+        base_current=not pr.behind_main,
+        url=attempt.url or pr.url,
+    )
+
+
 def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool) -> bool:
     """True iff ≥1 REQUIRED check is failing against a base that has MOVED (#4063).
 
@@ -124,32 +141,12 @@ def red_required_at_stale_base(failing_required: set[str], *, behind_main: bool)
     return bool(failing_required) and behind_main
 
 
-def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear | None:
-    """Locate the actionable, SHA-matched CLEAR for *(slug, pr_id, head_sha)*.
-
-    A row whose ``reviewed_sha`` does not match the live PR head is treated
-    as absent (the CLEAR was issued against stale code — §17.4.2 binds the
-    authorisation to the exact reviewed tree). The keystone transition
-    re-validates SHA-match at merge time as well, so even a stale match
-    here would be refused — this lookup just keeps the scanner quiet.
-    """
-    candidates = MergeClear.objects.filter(
-        slug=slug,
-        pr_id=pr_id,
-        consumed_at__isnull=True,
-    ).order_by("-issued_at")
-    for clear in candidates:
-        if clear.reviewed_sha == head_sha and clear.is_actionable():
-            return clear
-    return None
-
-
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
     """True iff the EFFECTIVE (newest-wins) verdict vouches for this exact head (#68, #2829).
 
     A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
     durable record of a cold review; ``ReviewVerdict.record`` refuses a
-    self-attested verdict (``is_non_reviewer_role``), so any row that
+    self-attested verdict (``is_independent_reviewer_identity``), so any row that
     exists was issued by an identity that is not the maker/coding-agent/
     loop. The bypass requires a ``merge_safe`` verdict bound to the live
     head SHA — a stale verdict reviewed a tree the PR no longer points at

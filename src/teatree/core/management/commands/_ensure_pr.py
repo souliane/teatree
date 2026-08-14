@@ -31,9 +31,11 @@ from teatree.core.backend_protocols import BackendResolutionError, CodeHostBacke
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -71,6 +73,7 @@ class DischargeResult(TypedDict, total=False):
 
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
+PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
 
 
 def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestSpec | None = None) -> EnsurePrResult:
@@ -122,6 +125,35 @@ def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestS
 def defer_unpushed_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     """Owe the PR for a branch git has not put on the remote yet (the FIRST push)."""
     return _owe_pr(repo_path, branch_name, reason=UNPUSHED_DEFERRAL)
+
+
+def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for a branch whose open-PR state the forge would not report (#4116).
+
+    Creating on a can't-tell probe is what refused the SECOND push to a branch
+    whose PR already existed: ``gh pr create`` answered ``already exists`` and the
+    hook aborted the very push that was addressing review findings. Deferring
+    keeps the push moving, and the obligation — not a bare exit 0 — is what stops
+    the branch from shipping with no PR when the forge really was silent.
+    """
+    return _owe_pr(repo_path, branch_name, reason=PR_UNKNOWN_DEFERRAL)
+
+
+def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) -> EnsurePrResult | None:
+    """The answer a classification already carries, or ``None`` when a PR must be created.
+
+    A pure mapping over the classification — four of the five branch states are
+    a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
+    """
+    if report.status is BranchStatus.SYNCED:
+        return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
+    if report.status is BranchStatus.OPEN_PR:
+        return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
+    if report.status is BranchStatus.UNPUSHED_ORPHAN:
+        return defer_unpushed_pr(repo_path, branch_name)
+    if report.status is BranchStatus.PR_UNKNOWN:
+        return defer_unreadable_pr_state(repo_path, branch_name)
+    return None
 
 
 def _ticket_for_branch(branch_name: str) -> "Ticket | None":
@@ -279,7 +311,24 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         if "no commits between" in (exc.stderr or str(exc)).lower():
             return _owe_pr(repo_path, branch_name, reason=PRE_PUSH_RACE_DEFERRAL, spec=spec)
         raise
-    return _verified_pr_result(host, raw, branch_name)
+    result = _verified_pr_result(host, raw, branch_name)
+    _record_verified_url(owning_ticket, result, branch_name)
+    return result
+
+
+def _record_verified_url(ticket: "Ticket | None", result: EnsurePrResult, branch_name: str) -> None:
+    """Put a hook-opened PR on the ticket's record, so a post-push refusal reconciles (#4305).
+
+    This runs inside the git PRE-push hook, so by the time a ship's own post-push
+    refusal fires — the fleet-claim fence, or its PR-open half's no-URL /
+    wrong-slug / 404 returns — this PR is already live on the forge. Recorded, the
+    next attempt adopts it (``_recorded_url_for_branch``) rather than retrying
+    into ``already exists``. A genuinely orphan branch has no ticket to record on.
+    """
+    url = result.get("url") or ""
+    if ticket is None or not url:
+        return
+    record_pr_url(ticket, url, branch_name)
 
 
 def _verified_pr_result(host: CodeHostBackend, raw: "RawAPIDict", branch_name: str) -> EnsurePrResult:

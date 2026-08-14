@@ -32,10 +32,12 @@ readable: measure + upsert marker, emit nothing (silent tick). L1 WARN — disk 
 band: advisory ``resource.pressure_warn`` to the statusline, no freeing. L2
 CRITICAL — disk OR ram below the CRIT threshold AND the freeing rate-limit has
 elapsed: ``resource.cleanup_needed`` to the mechanical handler (allow-list
-cache purge / idle-container stop, both non-destructive). L3 CRITICAL
-DESTRUCTIVE — flag-gated: worktree GC (``allow_destructive_disk``) and renderer
-SIGTERM (``allow_destructive_ram`` after >= 2 consecutive CRITICAL-RAM ticks)
-live in the handler, never run without an explicit opt-in.
+cache purge, docker reclaim, dormant-venv eviction, the proven-done worktree
+sweep, idle-container stop — each losing nothing that is not rebuilt on demand).
+L3 CRITICAL DESTRUCTIVE — flag-gated: the heuristic worktree GC
+(``allow_destructive_disk``) and renderer SIGTERM (``allow_destructive_ram``
+after >= 2 consecutive CRITICAL-RAM ticks) live in the handler, never run
+without an explicit opt-in.
 
 Every action is best-effort: a measurement or freeing failure logs and
 returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
@@ -50,7 +52,8 @@ from dataclasses import dataclass, field
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
-from teatree.utils.ram_probe import cgroup_v2_memory_mib, linux_mem_available_kb
+from teatree.utils.ram_probe import linux_mem_available_kb
+from teatree.utils.ram_scope import cgroup_headroom_mib
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -108,8 +111,9 @@ def read_ram_avail_gb() -> float | None:
     reclaimable ``vm_stat`` page classes) and this process's own cgroup. Reading
     only the machine is how a 23 GB-capped worker was OOM-killed three times while
     the 30 GB host still reported ~10 GB free, an order of magnitude above every
-    threshold (#4104). Mirrors :func:`ram_probe.effective_available_ram_mib`, which
-    the sibling intake scanner in this same mini-loop already reasons in.
+    threshold (#4104). Mirrors :func:`ram_scope.read_ram_headroom`, which the sibling
+    intake scanner in this same mini-loop already reasons in — and shares its cgroup
+    reader outright, so the two cannot drift.
 
     ``None`` means no scope could answer — the caller reports the RAM ladder INERT
     rather than skipping it silently.
@@ -133,12 +137,15 @@ def _read_machine_ram_avail_gb(system: str) -> float | None:
 
 
 def _read_cgroup_headroom_gb() -> float | None:
-    """What this process's cgroup can still allocate — the scope a container OOMs in."""
-    limit_mib = cgroup_v2_memory_mib("memory.max")
-    current_mib = cgroup_v2_memory_mib("memory.current")
-    if limit_mib is None or current_mib is None:
-        return None
-    return max(0, limit_mib - current_mib) / 1024
+    """What this process's cgroup can still allocate — the scope a container OOMs in.
+
+    Delegated to :func:`~teatree.utils.ram_scope.cgroup_headroom_mib` so this reader and
+    the admission governor's cannot drift on what "available" means: both credit the
+    reclaimable page cache ``memory.current`` charges, exactly as ``MemAvailable`` does
+    on the machine arm above (#4217).
+    """
+    headroom_mib = cgroup_headroom_mib()
+    return None if headroom_mib is None else headroom_mib / 1024
 
 
 def _ram_inert_reason(system: str) -> str:
@@ -261,10 +268,13 @@ class ResourcePressureScanner:
     min_free_interval_minutes: int = 30
     disk_cache_allowlist: tuple[str, ...] = ()
     allow_destructive_disk: bool = False
+    venv_idle_days: float = 2.0
     worktree_stale_days: int = 30
     max_worktree_gc_per_tick: int = 3
     allow_destructive_ram: bool = False
     ram_kill_allowlist: tuple[str, ...] = field(default_factory=tuple)
+    scratch_retention_days: int = 0
+    scratch_sweep_root: str = ""
     name: str = "resource_pressure"
 
     def scan(self) -> list[ScanSignal]:
@@ -376,10 +386,13 @@ class ResourcePressureScanner:
                 "level": "critical",
                 "disk_cache_allowlist": list(self.disk_cache_allowlist),
                 "allow_destructive_disk": self.allow_destructive_disk,
+                "venv_idle_days": self.venv_idle_days,
                 "worktree_stale_days": self.worktree_stale_days,
                 "max_worktree_gc_per_tick": self.max_worktree_gc_per_tick,
                 "allow_destructive_ram": self.allow_destructive_ram,
                 "ram_kill_allowlist": list(self.ram_kill_allowlist),
+                "scratch_retention_days": self.scratch_retention_days,
+                "scratch_sweep_root": self.scratch_sweep_root,
                 "consecutive_critical": getattr(marker, "consecutive_critical", 0) or 0,
             },
         )

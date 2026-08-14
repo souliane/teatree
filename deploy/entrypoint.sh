@@ -291,6 +291,37 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-teatree@localhost}"
 git config --global init.defaultBranch main
 git config --global --add safe.directory "$CLONE_DIR"
 
+# Point clone discovery at a checkout every venue can reach.
+#
+# `git worktree add` bakes an ABSOLUTE `gitdir:` pointer into its SOURCE CLONE,
+# so the clone's path — not the worktree's — decides who can use the result. The
+# image links `~/workspace/souliane/teatree` at the `teatree_src` volume, a path
+# that exists nowhere but this container, so a worktree cut here answered
+# `fatal: not a git repository` from the host even though its files were readable
+# through the `t3-workspaces` bind (#4120). The deploy checkout is bind-mounted at
+# path identity, so pointing the link there makes the recorded pointer portable.
+#
+# Degrades to the image's link rather than failing: with nothing exported dockerd
+# creates an empty dir at the default path, and a container that provisions
+# container-only worktrees is still better than one that cannot provision at all.
+retarget_clone_discovery() {
+    local link="${1:-/home/teatree/workspace/souliane/teatree}"  # privacy-scan:allow — the box's public, documented deploy home
+    local checkout="${TEATREE_DEPLOY_CHECKOUT:-}"
+    if [ -z "$checkout" ] || ! git -C "$checkout" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "entrypoint: no git checkout at TEATREE_DEPLOY_CHECKOUT='${checkout}' - leaving clone discovery on the image link; worktrees cut here resolve only inside this container (#4120)" >&2
+        return 0
+    fi
+    # A real directory is someone's clone, not the image's link — never clobber it.
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        echo "entrypoint: $link is a real directory, not the image's discovery link - leaving it untouched (#4120)" >&2
+        return 0
+    fi
+    mkdir -p "$(dirname "$link")"
+    ln -sfn "$checkout" "$link"
+}
+
+retarget_clone_discovery
+
 # True when the box pass store holds at least one Anthropic account entry —
 # the option-b credential source (anthropic_oauth_pass_paths routing).
 pass_store_has_anthropic() {
@@ -565,7 +596,7 @@ seed_setting() {
 #
 # OWNER-INTAKE loops are NEVER forced off here (#3632): `directive_loop` interprets
 # the owner's captured directives and `dispatch` posts deferred owner questions.
-# `autonomous_away` means the human is unreachable *now* — captured intent must
+# an away mode means the human is unreachable *now* — captured intent must
 # QUEUE for later, not be dropped unread. A prior default forced `directive_loop`
 # off on every deploy, so captured owner directives sat uninterpreted for days; the
 # owner-intake set (`t3 loop intake-loops`) is pruned from the DISABLED set below.
@@ -656,7 +687,7 @@ apply_fleet_loop_policy() {
             echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         elif grep -qxF "$loop" <<<"$intake"; then
             dropped+=("$loop")
-            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
+            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even while the owner is away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         else
             pruned_disable+=("$loop")
         fi
@@ -723,6 +754,38 @@ network_up() {
         1 | true | yes) return 1 ;;
     esac
     git ls-remote --quiet --exit-code "$REPO_URL" HEAD >/dev/null 2>&1
+}
+
+# `uv tool install --reinstall` DELETES the working tool venv before rebuilding it, so a
+# filesystem that fills mid-build leaves neither install: #4338 measured 391 MB free, 124
+# packages written, `click` absent, and every CLI invocation dead at `import typer` with
+# the worker crash-looping for 13 hours. Refusing the boot leaves the PREVIOUS venv intact,
+# which is recoverable; proceeding is not.
+#
+# Measure the filesystem holding the UV TOOL DIR, not `/`: /opt/teatree/uv is a named
+# volume and may be a different device, which would make a `df /` gate vacuous or
+# spuriously firing. An unmeasurable filesystem PROCEEDS - an absent reading is not
+# evidence of no room. The floor mirrors `teatree.utils.install_headroom`'s Python default;
+# `tests/test_deploy_entrypoint_install_headroom.py` pins the two to the same number.
+require_install_headroom() {
+    local floor target free
+    floor="${TEATREE_INSTALL_MIN_FREE_MB:-2048}"
+    target="$(uv tool dir 2>/dev/null || true)"
+    [ -n "$target" ] || target="${UV_TOOL_DIR:-$HOME/.local/share/uv/tools}"
+    while [ ! -d "$target" ] && [ "$target" != "/" ] && [ "$target" != "." ]; do
+        target="$(dirname "$target")"
+    done
+    free="$(df -Pm "$target" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [ -z "$free" ]; then
+        echo "entrypoint: WARNING could not measure free space on '$target' - proceeding with the reinstall" >&2
+        return 0
+    fi
+    if [ "$free" -lt "$floor" ]; then
+        echo "entrypoint: FATAL refusing the destructive editable reinstall: ${free} MB free on '${target}', floor ${floor} MB (TEATREE_INSTALL_MIN_FREE_MB)." >&2
+        echo "entrypoint: the previous tool venv is left INTACT - reclaim space, then restart this container:" >&2
+        echo "entrypoint:   docker system prune -f              # reclaim image and build cache" >&2
+        exit 1
+    fi
 }
 
 ensure_clone() {
@@ -858,8 +921,19 @@ init)
         # dispatch. Empty for a standalone core clone, where `set --` expands to nothing
         # and this is the original single-package install.
         set -- ${HOST_ROOT:+--with-editable "$HOST_ROOT"}
+        require_install_headroom
         uv tool install --editable "${CLONE_DIR}[slack]" "$@" --reinstall --python 3.13 \
             --overrides "${CLONE_DIR}/uv-overrides.txt"
+        # An install that produced a venv whose CLI cannot start is an install FAILURE, not
+        # a later mystery (#4338). The console script is `t3_bootstrap:main` -> `from
+        # teatree.cli import main`, so `--help` exercises the whole import chain - the exact
+        # `import typer` death - while touching no DB, config or network. Adjacent to the
+        # install so the error names its origin instead of surfacing downstream as a
+        # confusing traceback in an unrelated step.
+        if ! t3 --help >/dev/null 2>&1; then
+            echo "entrypoint: FATAL the editable install completed but the CLI does not run (\`t3 --help\` fails) - the tool venv is incomplete: a truncated install leaves declared dependencies missing, e.g. typer without click. Reclaim disk and restart this container." >&2
+            exit 1
+        fi
         # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
         # editable tool install above does NOT provide it. Worktree provisioning
         # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on
@@ -911,7 +985,6 @@ init)
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
-    seed_setting agent_runtime '"headless"'
     seed_setting loop_runner_enabled true
     # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
     # provenance-aware seeder intentionally SKIPS it — the runtime already

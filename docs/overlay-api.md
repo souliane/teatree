@@ -217,9 +217,9 @@ Most of these are defined in `teatree/types.py` (the Django-free shared types mo
 | `HealthCheck` | dataclass | `name`, `check`, `description` |
 | `MergeGuard` | dataclass (frozen) | `allowed`, `reason`, `escalate` |
 
-## Ship your own harness (headless factory overlays, #3157)
+## Ship your own harness (factory overlays, #3157)
 
-The headless agent runtime drives an in-process agent session behind the
+The agent runner drives an in-process agent session behind the
 `teatree.agents.harness.Harness` protocol (`open(options) -> HarnessSession`). The backend
 set is **open**: an overlay registers a third transport (a direct Anthropic Messages-API
 backend, an enterprise cloud endpoint, a self-hosted model) with **zero core edits** via the
@@ -258,7 +258,7 @@ my_harness = "my_overlay.harness:my_harness_spec"
 Select it with `t3 <overlay> config_setting set agent_harness my_harness`. The dispatch path
 resolves the backend from the registry and reads its `capabilities` — it never
 `isinstance`-branches on a concrete harness class. A factory overlay also drives the full
-dispatch → attempt → cost cycle through the SDK: `run_headless`, `record_result_envelope` /
-`AttemptUsage`, `headless_cost_breakdown`, plus `ContextPlan` (cache-control breakpoints on
+dispatch → attempt → cost cycle through the SDK: `run_agent`, `record_result_envelope` /
+`AttemptUsage`, `agent_cost_breakdown`, plus `ContextPlan` (cache-control breakpoints on
 the direct-API binding), `CompactionPolicy`, `TicketBudget` / `LoopWatchdog`, and
 `build_lane_b_toolsets` — all from `teatree.overlay_sdk`.

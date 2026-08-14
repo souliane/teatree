@@ -67,3 +67,19 @@ def branch_is_landed(repo: str, branch: str) -> bool:
     off.
     """
     return branch_verdict_report(repo, branch).redundant
+
+
+def render_verdict(verdict: BranchVerdict) -> str:
+    """One human line per branch, with the post-merge delta never omitted.
+
+    A landed branch reads as landed; a forge-merged branch that still owes work says so
+    on the same line, because that is the pair a reader acts on.
+    """
+    landed = "LANDED" if verdict.redundant else "NOT LANDED"
+    line = f"  {verdict.branch}: {landed} vs {verdict.target} ({verdict.source})"
+    if verdict.merged_with_post_merge_work:
+        return (
+            f"{line}\n    forge says merged, but {len(verdict.unique_shas)} commit(s) are NOT on the target: "
+            + ", ".join(sha[:8] for sha in verdict.unique_shas)
+        )
+    return line

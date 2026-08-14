@@ -6,7 +6,6 @@ requires:
 compatibility: macOS/Linux, zsh or bash, git, docker with compose plugin, PostgreSQL CLIs (psql, createdb, dropdb, pg_restore), direnv, lsof. Optional dslr, uv, jq.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Environment & Workspace Lifecycle
@@ -93,6 +92,11 @@ row. Re-firing `start` against an already-running worktree is allowed
 (the candidate row is excluded from its own count, preserving FSM
 idempotence). The cap is scoped per overlay, so a heavy overlay can
 cap to `1` while a cheap dogfood overlay stays unbounded.
+
+This cap covers docker stacks only. The sibling bound — concurrent
+**test workers**, where each dispatched agent's `-n auto` pool multiplies
+by the number of agents — is `/t3:rules` § "Sub-Agent Limitations", and it
+is set per brief, not per overlay.
 
 ### Data Directory (XDG-Compliant)
 
@@ -190,7 +194,38 @@ It reports per-step and total reclaimed bytes. `--dry-run` plans the set without
 
 **It fails loud, and `0B` means `0B`.** A prune that docker actively refuses (daemon down, or no `/var/run/docker.sock` in the container the CLI runs in) is marked `FAILED — <reason>` on its step and exits the command **non-zero**. Every step still runs, so one refusal never forfeits the reclaim the others can do. Only an *absent* docker binary (CI sandboxes) stays silent. So a clean exit reporting `Total reclaimed: 0B` genuinely means there was nothing left to reclaim — treat it as such, and never read a `FAILED` line as "already clean".
 
-**When `t3` itself cannot reach docker.** The containerized `t3` entry point (`deploy/t3`) execs into `teatree-worker`, which mounts the docker socket and is granted it via `group_add` — so the prunes normally work there. They fail with `failed to connect to the docker API at unix:///var/run/docker.sock` only when that grant is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container), and the command then exits 1 having freed nothing. Fix the grant — re-deploy so compose re-reads `deploy/docker-socket-gid.sh` — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on the host, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
+**When `t3` itself cannot reach docker.** The containerized `t3` entry point (`deploy/t3`) execs into `teatree-worker`, which mounts the docker socket and is granted it via `group_add` — so the prunes normally work there. They fail with `failed to connect to the docker API at unix:///var/run/docker.sock` only when that grant is missing (a stack brought up from a compose file predating it, or a `TEATREE_DOCKER_SOCKET_GID` that does not match the socket's owner inside the container), and the command then exits 1 having freed nothing. Fix the grant — re-deploy so `deploy/deploy.sh` re-resolves the socket gid — rather than routing around it. If you must free space before that lands, running the prunes yourself is correct rather than a workaround: execute **exactly** the three commands listed above, on the host, in that order — no `-a` on the image or volume prune, and nothing else. Report the freed bytes and STOP. Everything the sanctioned path forbids stays forbidden.
+
+### The checkout pool's retention policy (#4244)
+
+Docker cache is not where the disk goes. The pool of checkouts is: each carries a
+`.venv` and a `.venv-hook` at roughly 1.1 GB together, and they accumulate across every
+ticket ever worked — measured at ~82 GB across two locations on a box that was 92% full,
+about half of it in ad-hoc session checkouts (`wt-*`, `fix<NNNN>`, `cold<NNNN>`) that
+appear in **no** ledger, so `workspace emit` never surfaces them.
+
+The policy is enforced by the `resource_pressure` loop, not by a human running a command:
+
+- **A venv untouched for `venv_idle_days` (default 2) is evicted as the cache it is.** `uv
+  sync` rebuilds it, so the checkout recovers with no manual step and no work is at risk —
+  the tree, the commits and every uncommitted change live outside the venv. Set the
+  retention with `t3 <overlay> config_setting set venv_idle_days <days>`.
+- **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
+  candidate set; a live process decides. The guard reads the HOST's process table
+  (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it
+  cannot — a container's own PID namespace shows none of the host's agents. The same
+  refusal now governs the heuristic worktree GC, which until [#4244](https://github.com/souliane/teatree/issues/4244)
+  read an unusable table's empty answer as "nobody is inside".
+- **The guard is re-established immediately before each deletion, not at plan time.** Minutes
+  of walks and prunes separate the two, and a checkout is matched under both its written and
+  its resolved spelling — a symlinked one never matched the kernel's canonical `/proc/<pid>/cwd`.
+  What the delete-time guard stopped is named in the persisted plan.
+- **Steady state is therefore one venv per checkout worked inside the window** — on this
+  box's cadence, single-digit GB rather than tens. A pool materially above that means the
+  pass is being refused; read `t3 loop status`'s persisted plan, which reports
+  considered/evicting/kept counts and names what it could not see.
+- Worktrees whose ticket is done are swept on the same pass (the `clean-merged` predicate),
+  so a merged ticket's checkout does not wait for someone to remember.
 
 ### Single-repo cleanup
 
@@ -227,12 +262,23 @@ When `clean-all` skips a branch with this warning, the branch has commits the cl
 
 `clean-all` drops only stashes whose source branch is gone. For stashes you encounter on existing branches, verify before dropping:
 
+Every worktree of a repo shares ONE stash stack, so `stash@{N}` names a different
+entry the moment any other worktree pushes or drops one. Resolve the entry to a
+SHA and work from that:
+
 ```bash
-git stash show -p stash@{N}  # inspect the diff
+sha=$(git rev-parse "stash@{N}")   # pin the identity before doing anything else
+git stash show -p "$sha"           # inspect by SHA, never by index
 # Grep main for the changed lines/sections to confirm content is on main
 ```
 
-If the content is on `main` (typical for stashes that pre-date a squash-merged branch), drop with `git stash drop stash@{N}`.
+If the content is on `main` (typical for stashes that pre-date a squash-merged
+branch), drop it — but re-check that the index still resolves to the SHA you
+inspected, because the drop is the step that destroys the wrong entry:
+
+```bash
+[ "$(git rev-parse "stash@{N}")" = "$sha" ] && git stash drop "stash@{N}"
+```
 
 ## Rules
 
@@ -305,6 +351,24 @@ Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3
 - Health checks after startup
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
+
+### Cut Every Branch From Fresh `origin/main` (Non-Negotiable)
+
+A local `main` is stale the moment anything merges upstream, so a branch forked from it carries a base nobody else shares and conflicts on every later merge. Every new branch starts from a freshly-fetched `origin/main` — never from whatever the local ref happens to hold.
+
+```bash
+# RIGHT — the sanctioned path: it fast-forwards the clone's default branch, then forks the branch off that:
+t3 <overlay> workspace ticket <issue-url-or-id>
+
+# RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
+# `--no-track` is load-bearing: without it the branch tracks origin/main, so `git push`
+# refuses confusingly — and aims at main under push.default=upstream.
+git fetch origin main -q && git worktree add -b <branch> --no-track ../<repo>-wt-<slug> origin/main
+
+# WRONG — forks whatever the local ref holds:
+git checkout -b <branch>     # FORBIDDEN — stale local main
+git fetch origin main        # FORBIDDEN as the whole answer — refreshes the ref, branches nothing
+```
 
 ### Never Edit Files in the Main Clone (Non-Negotiable)
 
@@ -438,6 +502,7 @@ stateDiagram-v2
     provisioned --> services_up : start_services
     services_up --> created : teardown
     services_up --> provisioned : db_refresh
+    services_up --> provisioned : start_failed
     services_up --> provisioned : stop_services
     services_up --> services_up : start_services
     services_up --> ready : verify

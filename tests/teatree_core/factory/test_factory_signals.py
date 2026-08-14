@@ -713,3 +713,69 @@ class ReportShapeTests(FactorySignalsTestBase):
             MergeAuditFactory(clear=clear, merged_at=merged_at)
         reading = review_catch_rate(overlay="t3-teatree", now=self.now)
         assert reading.status == SignalStatus.INSUFFICIENT_DATA
+
+
+class TicketlessClearScopeTests(FactorySignalsTestBase):
+    """#4250: an overlay-scoped read must see the ticket-less CLEAR, which is the NORM.
+
+    Measured on the live control DB when the ticket was filed: 599 of 622 CLEARs and
+    87 of 87 unconsumed ones carry ``ticket=None``, so a ``ticket__overlay`` join
+    matched nothing and S4 reported healthy over a 19-day-old backlog. Every case
+    here seeds ``ticket=None`` deliberately — the factory's ``SubFactory(TicketFactory)``
+    default is what kept the whole class invisible to the existing suite.
+    """
+
+    OVERLAY = "t3-teatree"
+
+    def test_ticketless_stale_clear_trips_the_overlay_scoped_stale_red(self) -> None:
+        MergeClearFactory(ticket=None, pr_id=4250, slug=self.SLUG, issued_at=self.now - timedelta(hours=49))
+        report = compute_factory_signals(overlay=self.OVERLAY, now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.evidence["stale_clear_hours"] > 48.0
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+
+    def test_ticketless_sibling_supersede_is_seen_under_the_overlay_scope(self) -> None:
+        # The supersede companion must widen in LOCKSTEP with the age signal: read
+        # through the old ticket-join it returns an empty context, so every widened
+        # row reads as non-superseded and a moved-past CLEAR alarms forever.
+        MergeClearFactory(
+            ticket=None, pr_id=4251, slug=self.SLUG, reviewed_sha="a" * 40, issued_at=self.now - timedelta(hours=49)
+        )
+        MergeClearFactory(
+            ticket=None, pr_id=4251, slug=self.SLUG, reviewed_sha="b" * 40, issued_at=self.now - timedelta(hours=2)
+        )
+        report = compute_factory_signals(overlay=self.OVERLAY, now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.evidence["stale_clear_hours"] < 48.0
+        assert row.tripped is False
+
+    def test_ticketless_merges_count_toward_the_overlay_scoped_sample(self) -> None:
+        # The third site with the same wrong key: ``_merge_audits_in`` joins
+        # ``clear__ticket__overlay``, so the overlay-scoped merge sample saw 23 of
+        # 260 real merges and every latency/quality signal under-sampled ~10x.
+        for i in range(5):
+            merged_at = self.now - timedelta(days=5)
+            clear = MergeClearFactory(
+                ticket=None,
+                pr_id=4260 + i,
+                slug=self.SLUG,
+                issued_at=merged_at - timedelta(hours=2),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at, repo_slug=self.SLUG)
+        reading = merge_latency(overlay=self.OVERLAY, now=self.now)
+        assert reading.status == SignalStatus.OK
+        assert reading.sample_size == 5
+
+    def test_a_ticketless_clear_in_a_foreign_repo_stays_out_of_scope(self) -> None:
+        # Anti-vacuity twin: widening must not collapse to "everything counts". A
+        # ticket-less CLEAR whose repo is not one the overlay declares is another
+        # factory's problem and must not raise this overlay's alarm.
+        MergeClearFactory(
+            ticket=None, pr_id=4270, slug="someone-else/other-repo", issued_at=self.now - timedelta(hours=49)
+        )
+        report = compute_factory_signals(overlay=self.OVERLAY, now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.evidence["stale_clear_hours"] == pytest.approx(0.0)
+        assert row.tripped is False

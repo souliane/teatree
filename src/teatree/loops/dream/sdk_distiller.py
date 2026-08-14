@@ -37,13 +37,14 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from teatree.agents.model_tiering import resolve_tier
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DistillEmptyReason, DistillResult
+from teatree.loops.dream.engine import DistilledCluster, DistillEmptyReason, DistillResult
 from teatree.loops.dream.json_scan import first_object_bearing_array
+from teatree.loops.dream.replay import ConsolidationExtract
 
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
 
-    from teatree.agents._headless_env import ChildEnvResolver
+    from teatree.agents._runner_env import ChildEnvResolver
 
 _DISTILL_SYSTEM_PROMPT = (
     "You consolidate an agent's recent feedback and lessons into durable rules. "
@@ -106,7 +107,7 @@ def sdk_distill(extract: ConsolidationExtract, *, child_env: "ChildEnvResolver |
     succeeded (staleness keeps firing) — never laundered into a fake success.
 
     *child_env* injects the credential resolver (#3512); ``None`` uses the production
-    :func:`~teatree.agents._headless_env.system_child_env`.
+    :func:`~teatree.agents._runner_env.system_child_env`.
     """
     if not extract.snippets:
         return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
@@ -140,7 +141,7 @@ def _run_distiller_turn(extract: ConsolidationExtract, *, child_env: "ChildEnvRe
     import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
     import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.agents._headless_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy headless runner
+    from teatree.agents._runner_env import (  # noqa: PLC0415 — deferred: avoids pulling the SDK-heavy agent runner
         system_child_env,
     )
 
@@ -166,9 +167,9 @@ def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOption
     hardcoded id, so this aux call follows the same tiering as every other agent.
 
     *env*, when set, pins the ``agent_harness_provider`` credential onto the spawned
-    ``claude`` (the caller resolves it via :func:`~teatree.agents._headless_env.system_child_env`);
+    ``claude`` (the caller resolves it via :func:`~teatree.agents._runner_env.system_child_env`);
     ``None`` leaves the SDK default empty env so the child inherits the ambient auth
-    state unchanged — the same "no pin → ambient" contract the headless runner keeps.
+    state unchanged — the same "no pin → ambient" contract the agent runner keeps.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
@@ -221,7 +222,7 @@ def _parse_distill_result(raw: str) -> DistillResult:
         return DistillResult(clusters=[], empty_reason=DistillEmptyReason.EMPTY_RAW)
     payload = _extract_json_array(raw)
     if payload is None:
-        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE)
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE, raw_excerpt=raw)
     clusters: list[DistilledCluster] = []
     for entry in payload:
         cluster = _coerce_cluster(entry)
@@ -229,8 +230,9 @@ def _parse_distill_result(raw: str) -> DistillResult:
             clusters.append(cluster)
     if clusters:
         return DistillResult(clusters=clusters, empty_reason=None)
-    reason = DistillEmptyReason.NOTHING_TO_CONSOLIDATE if not payload else DistillEmptyReason.ALL_ENTRIES_DROPPED
-    return DistillResult(clusters=[], empty_reason=reason)
+    if payload:
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.ALL_ENTRIES_DROPPED, raw_excerpt=raw)
+    return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
 
 
 def _extract_json_array(raw: str) -> list[object] | None:

@@ -2,7 +2,8 @@
 
 Agents must drive workspace / server / database / test operations through the
 ``t3`` CLI, never the underlying tools (``manage.py runserver``, ``docker compose
-up``, ``createdb``, ``playwright test``, ``pip install``, ``--no-verify``, the
+up``, ``createdb``, ``playwright test``, ``pip install``, ``--no-verify``,
+``PYTHONPATH=…src python3``, the
 ``git -c core.hooksPath=…`` hook-silencer, the ``git push -o
 merge_request.merge_when_pipeline_succeeds`` auto-merge, …). This gate closes
 those bypasses at the Bash boundary: a command matching the denylist is denied
@@ -43,6 +44,19 @@ from pathlib import PurePosixPath
 # re-exports and a test patching a helper here operate on ONE module object.
 sys.modules.setdefault("direct_command_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.direct_command_guard", sys.modules[__name__])
+
+# The flag alone is not the offence — a browser RUN carrying it is. Requiring the
+# verb in the same segment is what keeps authoring the rule possible: a test
+# fixture, a doc line or a script body naming the flag is data, and a gate that
+# cannot tell those apart from an invocation blocks the work that pins it.
+_BROWSER_RUN_VERB_RE = re.compile(r"\b(?:playwright|cypress|e2e|visual-qa|chromium?|chrome)\b", re.IGNORECASE)
+_HEADED_FLAG_RE = re.compile(r"(?:^|\s)(?:--headed(?=\s|$)|--headless[= ]+(?:false|0|no)(?=\s|$))", re.IGNORECASE)
+_HEADED_BROWSER_DENY_REASON = (
+    "BLOCKED: a headed browser. Every agent-driven browser run is headless — a window "
+    "opening on the owner's desktop mid-session is not acceptable, and the flag also "
+    "drops `CI=1`, so the run no longer matches what CI executes. Drop the flag; "
+    "a visible browser is for a human watching a run on their own machine."
+)
 
 _REMOTE_DUMP_ENV_RE = re.compile(r"\bT3_ALLOW_REMOTE_DUMP\s*=\s*1\b")
 _REMOTE_DUMP_DENY_REASON = (
@@ -104,6 +118,19 @@ _RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
+# A source root of THIS tree on ``PYTHONPATH``: the ``src`` entry of a project
+# (so it must sit right after the ``=`` or a ``:`` separator) or the vendored
+# core's own ``src``. An unrelated path that merely carries the segment
+# (``/usr/src/app``) is not one, and neither is a bare directory name inside it.
+_REPO_SOURCE_ROOT = r"(?:(?<=[=:])src|vendor/teatree/src)(?![\w.-])"
+# A hand-set ``PYTHONPATH`` is only the offence when a HOST interpreter is the
+# very next thing it feeds — further env assignments may sit between, nothing
+# else. That is what leaves ``PYTHONPATH=… uv run …`` and ``PYTHONPATH=… t3 …``
+# alone: those already resolve the environment the assignment is trying to fake.
+_HOST_PYTHON_ON_REPO_PATH_RE = re.compile(
+    rf"\bPYTHONPATH=\S*{_REPO_SOURCE_ROOT}\S*(?:\s+\w+=\S+)*\s+(?:\S*/)?python(?:3(?:\.\d+)?)?\b"
+)
+
 # Patterns that match a TOOL INVOCATION that, in any real command, appears
 # unquoted at command position.  These are scanned against a quote-stripped
 # copy of the command so a tool name that merely appears inside a quoted
@@ -112,6 +139,15 @@ _QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"\.venv/bin/"),
         "BLOCKED: `.venv/bin/...` — use `uv run` instead so the resolved environment matches `pyproject.toml`.",
+    ),
+    (
+        _HOST_PYTHON_ON_REPO_PATH_RE,
+        (
+            "BLOCKED: `PYTHONPATH=...src python3 ...` — hand-building an import path for a "
+            "host interpreter runs this tree's code outside the environment `pyproject.toml` "
+            "resolves, so the result says nothing about the real one. Run it through "
+            "`t3 <overlay> run ...` (or the container) instead."
+        ),
     ),
     (
         re.compile(r"manage\.py\s+runserver"),
@@ -280,7 +316,7 @@ def _strip_forge_heredoc_bodies(command: str) -> str:
     return _HEREDOC_BODY_RE.sub(blank, command)
 
 
-def _executing_segments(quote_stripped: str) -> str:
+def _executing_segments(quote_stripped: str, *, t3_is_allowlisted: bool = True) -> str:
     """*quote_stripped* minus the segments a ``t3``/read-only leader owns (#3562).
 
     A segment led by ``grep``/``cat``/``t3`` READS a blocked tool's name as an
@@ -296,14 +332,36 @@ def _executing_segments(quote_stripped: str) -> str:
     kept = [
         segment
         for segment in _CMD_SEP_SPLIT_RE.split(quote_stripped)
-        if _SUBSTITUTION_RE.search(segment) or not _leader_is_allowlisted(segment)
+        if _SUBSTITUTION_RE.search(segment) or not _leader_is_allowlisted(segment, t3_is_allowlisted=t3_is_allowlisted)
     ]
     return "\n".join(kept)
 
 
-def _leader_is_allowlisted(segment: str) -> bool:
+def _leader_is_allowlisted(segment: str, *, t3_is_allowlisted: bool = True) -> bool:
     leader = segment.lstrip()
-    return bool(_T3_CMD_PREFIX_RE.match(leader) or _READONLY_CMD_PREFIX_RE.match(leader))
+    if t3_is_allowlisted and _T3_CMD_PREFIX_RE.match(leader):
+        return True
+    return bool(_READONLY_CMD_PREFIX_RE.match(leader))
+
+
+def _headed_browser_deny(command: str) -> str | None:
+    """The deny reason when *command* RUNS a browser headed, else None.
+
+    Scanned BEFORE the ``t3``/read-only leader short-circuit, and with ``t3``
+    dropped from the allowlist, because ``t3 <overlay> e2e run --headed`` is the
+    exact shape the short-circuit waves through: a flag whose whole point is that
+    it must never run cannot depend on which verb spells it.
+
+    Narrow on purpose: the flag AND a browser-run verb must sit in the SAME shell
+    segment. Read-only leaders stay allowlisted and quoted text is still stripped,
+    so documenting the flag — a doc line, a commit message, a heredoc script body
+    carrying it as test data — reads as the data it is rather than an invocation.
+    """
+    executing = _executing_segments(_QUOTED_LITERAL_RE.sub(" ", command), t3_is_allowlisted=False)
+    for segment in _CMD_SEP_SPLIT_RE.split(executing):
+        if _HEADED_FLAG_RE.search(segment) and _BROWSER_RUN_VERB_RE.search(segment):
+            return _HEADED_BROWSER_DENY_REASON
+    return None
 
 
 def deny_match(command: str) -> str | None:
@@ -312,6 +370,8 @@ def deny_match(command: str) -> str | None:
     # never opt in to remote pg_dump regardless of the surrounding command.
     if _REMOTE_DUMP_ENV_RE.search(command):
         return _REMOTE_DUMP_DENY_REASON
+    if headed := _headed_browser_deny(command):
+        return headed
     stripped = command.lstrip()
     # F6: only honor the readonly/t3 prefix allowlist when there is no shell
     # chaining operator in the command. ``grep x /dev/null; pip install y``

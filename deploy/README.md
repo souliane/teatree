@@ -1,8 +1,8 @@
 # teatree headless deployment
 
 Run teatree headless on a single existing box, reached over direct SSH, driven
-by one GitHub Action. teatree runs the autonomous loop (`t3 worker`,
-`agent_runtime=headless`), self-updates via its own loop, autostarts on reboot,
+by one GitHub Action. teatree runs the autonomous loop (`t3 worker`),
+self-updates via its own loop, autostarts on reboot,
 and serves the Django admin on the box loopback for SSH-tunnel access. The image
 is **self-contained** — it bakes a pinned source@ref + interpreter + locked deps
 so a fresh box boots deterministically and offline; see
@@ -22,8 +22,9 @@ overlay is the built-in `t3-teatree`.
    checking.
 3. Writes the box secrets file `deploy/teatree.env` over SSH (piped over stdin,
    mode 600 — never on a command line or in logs).
-4. Runs `deploy/deploy.sh` on the box, which brings the checkout current and runs
-   `docker compose up -d --build`.
+4. Runs `deploy/deploy.sh` on the box, which brings the checkout current and
+   converges the stack one service at a time — see
+   [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
 
 The stack is five services from one image (`deploy/Dockerfile`), selected by
 `TEATREE_ROLE`:
@@ -113,6 +114,66 @@ there. Boot logs the switch. Notes:
   still sees the image's `GNUPGHOME`; pass `-e GNUPGHOME=/home/teatree/.gnupg-run/gnupg`
   for a one-off `exec` that needs to decrypt.
 
+### Staged convergence: the control plane never goes fully down (#4214)
+
+A single `up -d --build` recreates every service at once. `teatree-admin`,
+`teatree-worker` and `teatree-slack-listener` each `depends_on` init with
+`service_completed_successfully`, so compose creates all five container objects
+and holds three of them in `Created` until init exits — **67 seconds measured on
+the box**, once per merged PR. In that window the dashboard is gone, the only
+control-DB CLI route is gone, and the container logs a live diagnosis was reading
+have been destroyed with the container objects.
+
+`deploy.sh` therefore stages the convergence. Every stage leaves at least one of
+`teatree-admin` / `teatree-worker` answering:
+
+| # | Stage | What is still serving |
+| --- | --- | --- |
+| 1 | `compose build` | everything — the longest phase recreates nothing, so a failed build costs no availability |
+| 2 | `t3 worker drain` | everything; in-flight agents finish before migrations run |
+| 3 | `up -d --no-deps teatree-init`, poll for `exited 0` | the OLD admin and worker; a failed init recreates no app service at all |
+| 4 | `t3 worker drain` again | init clears `worker_quiescing` as its last act, so the gate is re-asserted before the worker can claim — and then lose — a task |
+| 5 | `up -d --no-deps teatree-admin`, poll the dashboard | the worker |
+| 6 | `up -d --no-deps teatree-worker teatree-slack-listener` | the new admin |
+| 7 | clear `worker_quiescing` on the fresh worker | — |
+| 8 | `up -d --no-deps <every remaining service>` | — |
+
+Init is excluded from stage 8 because a plain `up -d` **starts** an exited
+one-shot, replaying the whole ~minute init.
+
+**An aborted convergence fails towards a stall, not a mismatch.** A run that
+drains and then dies before the swap leaves the gate ON, so an EXIT trap clears it
+and admission resumes. Between stages 3 and 6 that clear is deliberately withheld:
+init has migrated the control DB and the live worker is still the pre-migration
+one, so re-opening admission there hands it fresh work to run against a schema its
+code does not match. The `schema_readiness` gate does not cover this direction —
+it refuses when the code is ahead of the DB, and here the DB is ahead of the code.
+Staying quiesced only stalls the box, which is printed, visible in
+`worker_quiescing`, and cleared by the next successful convergence or by
+`t3 teatree config_setting set worker_quiescing false`.
+
+**The residual window, stated rather than implicit.** Stage 5 still swaps the
+dashboard's own container, so the dashboard is unavailable for that swap —
+seconds, not the 67-second init gate, and the worker answers throughout it.
+`deploy.sh` measures it and prints `deploy: dashboard unavailable for at most Ns
+(bound …)`. Exceeding `TEATREE_ADMIN_SWAP_BUDGET` (default 300s) **stops the
+convergence before the worker is touched**, so a broken new admin can never leave
+the box with no route at all.
+
+**Logs survive the recreate.** Each service's container log is copied to
+`${TEATREE_DEPLOY_LOG_ARCHIVE_DIR:-~/.local/share/teatree/deploy-logs}` immediately
+before that service is recreated (newest `TEATREE_DEPLOY_LOG_ARCHIVE_KEEP`, default
+200, files kept), so a post-incident read spans the swap.
+
+**An update is distinguishable from an outage.** `deploy/t3` dispatches into
+whichever control-DB service is running, so a call landing mid-swap uses the
+sibling and simply succeeds. When none is running it probes `deploy.sh`'s
+convergence flock read-only (the same `/proc/locks` match the watchdog uses) and,
+if a deploy is in flight, waits up to `TEATREE_UPDATE_WAIT_SECONDS` (default 180,
+`0` disables) for a route to return — then either dispatches or exits **75**
+(`EX_TEMPFAIL`) saying an update is in progress. It never reports docker's bare
+`service "…" is not running`, which is the text a genuine outage produces.
+
 ### Worker sizing: derived from the host
 
 The worker reads its own **cgroup-capped** CPU/RAM view, so a host-derived
@@ -156,6 +217,94 @@ Django-free Claude Code hooks consult now that they cannot open the database
 `teatree_uv` stays a Docker-managed named volume. `teatree_src` is the **default**
 for the source tree; see [Running a host working tree](#running-a-host-working-tree)
 for the bind-mount mode.
+
+### The host namespace the scratch sweep reads: `/host-tmp` + `/host-proc`
+
+The host's temp root is bound **read-write** at `/host-tmp` (source
+`${TEATREE_HOST_TMP:-/tmp}`) and the host process table **read-only** at
+`/host-proc`. Both are distinct targets, so the container's own `/tmp` and `/proc`
+are untouched.
+
+They exist for the agent-scratch retention sweep (`t3 <overlay> retention scratch`,
+and the resource-pressure ladder's automatic pass). A container has its own `/tmp`,
+so a container-scoped sweep reclaims none of the host scratch that actually fills
+the box — and on a tmpfs-backed `/tmp` that scratch is **memory**, not idle disk.
+
+The pair is inseparable. The sweep refuses to remove any path a live process holds
+open, and that guard is answered from a process table; reading this container's
+while sweeping the host's files would answer confidently about the wrong namespace.
+When only one half is present the sweep falls back to this venue's own `/tmp` +
+`/proc` rather than mixing them.
+
+**The open-file guard's own namespace is read from `TEATREE_HOST_TMP`, the same
+variable the mount source is built from.** Each app service (init/worker/admin/
+slack-listener) forwards it into its own environment with the identical default
+expression (`${TEATREE_HOST_TMP:-/tmp}`), so the value the sweep compares
+candidate paths against can never drift from the value the bind mount actually
+points at. Reading a value that disagreed with the mount source — a stale
+hard-coded `/tmp` while the operator had overridden the source — would silently
+blind the guard: a file a live host process holds open under the real override
+path would read as unheld and become removable.
+
+The mount is strictly narrower than what the worker already has — the docker socket
+below is root-equivalent on the host. What bounds the sweep is its own guards
+(tree-wide age — not just the top-level entry's own mtime, uid ownership,
+open-file via fd/cwd/mmap/bound-AF_UNIX-socket, git repository anywhere in the
+tree whether registered or ad-hoc, protected-name), each of which keeps an entry
+it cannot evaluate.
+
+**The open-file guard's witness is RESOLUTION, not listability, and it fails
+CLOSED probe-wide.** Measured in a container matching the worker's image, uid
+and caps (uid 1001, no added caps, its own PID namespace, reading the host's
+`/proc` through the read-only bind): of 325 host pids, 35 present an `fd` or
+`map_files` directory this uid can LIST while every `readlink()` inside it
+raises. Scoring that listing as an answer is what let the guard report an
+unreadable world as an empty one — `_held_paths()` returned a 300-entry
+frozenset, `probe_gap` was empty, and `apply()` deleted a stale entry outright.
+A source is now ANSWERED only when it resolves at least one entry (or is
+genuinely empty and readable — every kernel thread presents that), SKIP when
+the listing itself fails (the ordinary another-uid case), and BLIND when
+entries exist and none resolve. One BLIND source anywhere blinds the whole
+probe: an unknowable pid may hold ANY candidate path, so a sibling that answers
+buys no partial knowledge. The same measurement after the change reports
+`probe_gap` and reclaims 0 bytes.
+
+`--cap-add SYS_PTRACE` leaves 31 pids blind and `--pid host` leaves 31 blind;
+`kernel.yama.ptrace_scope = 1` alone bounds them, and no compose knob lifts it.
+The PID namespace is not required: `ptrace_scope = 1` denies `readlink` on a
+same-uid non-dumpable process's `fd`, which is the ordinary state of an Ubuntu
+host running `systemd --user` — so this is not a container property.
+
+Nor is the guard uniformly blind in either venue. Three measurements: 35 of 325
+sources blind in the deployed worker, 4 of 4 blind on the CI runner, 0 of 35
+blind in a container reading its own `/proc` (233 paths resolved). The probe
+blinds whenever ANY same-uid pid presents a listable-but-unresolvable gated
+source, which is a property of the live process table at that instant, in EITHER
+venue. Arming is therefore not predictable from the venue — which is why the
+sweep ships OFF (`scratch_retention_days` defaults to `0`) rather than on with a
+venue-conditional guard, and why `probe_gap` in the plan report is the
+operator-visible reason it reclaimed nothing.
+
+The bound-socket source is read per pid, as `<pid>/net/unix`, never the bare
+`/proc/net/unix`: the latter is a magic symlink to `self/net` resolved against
+the READING process, so under the host `/proc` bind mount it succeeds and
+returns the container's own (empty) socket table — no error for a fail-closed
+path to catch. That per-pid table is mode 0444 where `fd` and `map_files` are
+0500 behind `ptrace_may_access`, so it answers for every pid regardless of what
+this uid can reach; it therefore contributes holder paths but is deliberately
+never counted as evidence the probe can see the process table, which would
+retire the fail-closed guard above on any real `/proc`.
+
+`/tmp` itself stays a tmpfs; teatree does not move it to disk. On the measured box
+the root filesystem was 84% full, so a 15 GB disk-backed `/tmp` would trade RAM
+pressure for a filesystem-full failure that breaks the control DB — and tmpfs is
+wiped on reboot, which is what bounded the observed leak. The sizing is the defect:
+`t3 doctor check` WARNs when the tmpfs may claim more than
+`TEATREE_TMPFS_MAX_RAM_PERCENT` (default 25) of machine RAM and prints the
+`systemctl edit tmp.mount` cap. The check runs INSIDE the container, where a plain
+`/tmp` is the image's own overlay layer rather than the host's tmpfs, so it
+inspects `/host-tmp` — the same bind the sweep reads — whenever that mount is
+present, falling back to this venue's own `/tmp` only when it is not.
 
 ### Exporting the DB by hand
 
@@ -211,7 +360,16 @@ match and keeps the self-updating volume.
 The `[slack]` editable install on `teatree_uv` resolves `teatree` through this
 mount path, so the mounted tree supplies the code while the volume supplies the
 dependency set. A working tree whose dependency pins have moved past the image's
-needs a rebuild (`docker compose build`) or an `init` run.
+does NOT need an image rebuild — re-run the `init` role, which reinstalls the
+editable tool from the mounted tree into the `teatree_uv` volume (that volume
+shadows the image-baked install):
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --force-recreate teatree-init
+```
+
+`docker compose build` is only required when the *image* itself must change (a new
+system package, a new baked stage) — not for source or dependency edits.
 
 ### Off-box (an operator laptop)
 
@@ -396,7 +554,7 @@ authoritative planes:
   colleague-facing `review` loop stays off here under any mode. Idempotent.
 - **OWNER-INTAKE loops are never forced off** (`t3 loop intake-loops` —
   `directive_loop` / `dispatch` / `inbox`). They interpret the owner's captured
-  directives and deliver deferred owner questions; `autonomous_away` means the
+  directives and deliver deferred owner questions; an away mode means the
   human is unreachable *now*, so that intent must QUEUE for later, not be dropped
   unread. Any intake loop listed in `TEATREE_DISABLED_LOOPS` is pruned (with a
   warning) before the DISABLED set is applied, so a redeploy can never re-mask it.
@@ -631,10 +789,12 @@ the deploy workflow never rewrites the on-disk secret file for it.
 
 teatree runs **exclusively in Docker** — the CLI as well as the servers — so the
 box needs no host Python / uv / py3.13 / prek / direnv / ttyd. `deploy/t3` is a
-container-wrapping entry: it `docker compose exec`s into the running
-`teatree-worker` (falling back to a one-off `run --rm` when the stack is down) so
-`t3 <args>` executes inside a container that shares the live DB, credential, and
-session mounts.
+container-wrapping entry: it `docker compose exec`s into the first running
+control-DB service — `teatree-worker`, then `teatree-admin` (falling back to a
+one-off `run --rm` when the stack is down) — so `t3 <args>` executes inside a
+container that shares the live DB, credential, and session mounts. Only the worker
+carries the docker-socket group, so a provisioning command needs it specifically;
+the fallback is announced on stderr when it is used.
 
 `t3 setup` (run by the `init` role, and available to run on the host) installs a
 shell alias into `~/.bashrc` (and `~/.zshrc` when present) so `t3 …` on the host
@@ -649,8 +809,9 @@ alias t3="/home/teatree/teatree-deploy/deploy/t3"
 `deploy/t3` entry executable, `docker` on PATH, and the alias not pointing at a
 stale clone path) and WARNs with the fix — re-run `t3 setup` — when a piece is
 missing. The alias install and the doctor check both no-op **inside** a container
-(there the container *is* the CLI). Override the target service with
-`TEATREE_DOCKER_CLI_SERVICE` if needed.
+(there the container *is* the CLI). Override the preferred service with
+`TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
+`TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)
 
@@ -705,7 +866,10 @@ service is down — exactly the outage it exists to repair.
    from the `up -d`, because `up -d --no-recreate` re-runs a completed one-shot
    init on every pass (verified empirically) and that would replay the heavy
    ~minute init every 5 minutes; a *missing or failed* init is included, so the
-   init-failure outage still recovers.
+   init-failure outage still recovers. Skipped entirely while a convergence is in
+   flight: `deploy.sh` stages its swap service by service, so a restart pass
+   landing between two stages would re-create the container the deploy is mid-swap
+   on. One pass is given up; the next heals whatever the deploy left down.
 2. **Announces the repair.** The pass samples container state *before* the `up -d`,
    re-reads it after, and DMs the owner naming every service it had to bring back —
    with how long it had been gone, carried in the `<service> <last-seen-running>`
@@ -721,19 +885,31 @@ service is down — exactly the outage it exists to repair.
 3. `t3 doctor check --json` inside a live container — reads the factory health,
    including the H24 self-heal detectors: a compose init container that exited
    non-zero / a worker stuck `Created`, a free worker flock over overdue loop
-   work, an `execute_headless_task` stranded RUNNING with no live worker, a READY
-   loop timer stale past 2× its cadence, a PENDING `interactive` task under
-   `agent_runtime=headless`, a FAILED task on a still-live ticket, a runtime
+   work, an `execute_task` stranded RUNNING with no live worker, a READY
+   loop timer stale past 2× its cadence, a FAILED task on a still-live ticket, a runtime
    clone drifted off its default branch, and a `worker_quiescing` gate older than
    any deploy could explain
    ([#3983](https://github.com/souliane/teatree/issues/3983) — a deploy killed
    between its drain and the swap that clears the gate leaves the claim path
-   admitting ZERO work while every other surface stays green).
+   admitting ZERO work while every other surface stays green). That last budget is
+   **summed from the staged convergence's own per-stage timeouts**
+   (`TEATREE_DRAIN_TIMEOUT` + `TEATREE_INIT_WAIT_TIMEOUT` +
+   `TEATREE_ADMIN_SWAP_BUDGET` + `TEATREE_RESUME_TIMEOUT`, plus slack for the untimed
+   `up -d` steps), because stages 2–7 are serial inside one gate-ON window: raise one
+   on the box and the detector widens with it rather than calling a slower-but-legal
+   convergence an outage.
 4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
-   the finding set so an ongoing outage does not re-spam every pass. (The default
-   deploy wires no Slack credential; until you add one the DM step no-ops and the
-   findings are visible in the watchdog's own container logs and `t3 doctor check`.)
-   Three of those findings are **deploy-gated** — see below.
+   the finding set so an ongoing outage does not re-spam every pass. A page the
+   transport cannot carry is **parked**, not lost: body and idempotency key go into
+   the undelivered ledger (`TEATREE_WATCHDOG_UNDELIVERED_STATE`, default
+   `/var/tmp/teatree-watchdog-undelivered.state`, newest `TEATREE_WATCHDOG_UNDELIVERED_MAX`
+   kept), every pass re-sends it and reports the depth while any remain, and the
+   original key means a re-send that races a recovered channel is deduped rather
+   than doubled ([#4339](https://github.com/souliane/teatree/issues/4339) — the one
+   channel that would have surfaced an outage was itself down, so the detection was
+   as silent as no detection at all). Until you wire a Slack credential the DM step
+   parks every page; the findings are also visible in the watchdog's own container
+   logs and `t3 doctor check`. Three of those findings are **deploy-gated** — see below.
 
 The DM leaves the box via a `docker compose exec` inside a *live app container*,
 not from the watchdog itself — the watchdog runs `network_mode: none`, so the
@@ -760,7 +936,7 @@ reason:
   service that can open it: the socket is mode `0660` root-owned and every app
   service runs as the non-root `TEATREE_UID`, so the grant is the worker's
   `group_add: ["${TEATREE_DOCKER_SOCKET_GID:-0}"]`, not the mount.
-  `deploy/docker-socket-gid.sh` resolves that GID — the host socket's group on
+  `deploy/deploy.sh` and `deploy/t3` resolve that GID — the host socket's group on
   Linux (where the daemon shares the host kernel), `0` under Docker Desktop
   (where the socket comes from the product's own VM as root:root).
 
@@ -784,7 +960,7 @@ Exactly three findings are what a deploy manufactures, so exactly three are gate
 **worker-flock-not-held**, **slack-listener-down**, **clone-behind-origin**. Every
 other finding pages on the first observation, unchanged.
 
-A convergence is detected two ways, either sufficient:
+A convergence is detected three ways, any one sufficient:
 
 - **The deploy flock.** `deploy.sh` holds `${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}`
   for its whole run. The watchdog probes it **read-only** — it matches the file's
@@ -792,14 +968,26 @@ A convergence is detected two ways, either sufficient:
   probe that briefly *acquired* the lock would make a deploy starting in that
   instant see it as busy, and `deploy.sh` exits 0 on a busy lock (a silently
   skipped deploy). The host `/tmp` is mounted read-only at `/host-tmp` so the lock
-  is visible; without that mount the probe degrades to the signal below.
-- **Very-recent container creation**, read from the docker socket. `Created` (not
-  started) is the discriminating field: a crash-looping container restarts without
-  being recreated, so a genuine outage never reads as a deploy. The grace window is
-  one watchdog interval. The timestamp comes from `inspect --format '{{.Created}}'`
-  (RFC3339 UTC) and never `ps --format '{{.CreatedAt}}'`, whose local-zone
-  abbreviation (`… +0200 CEST`) GNU date refuses to parse on this tzdata-less image
-  — every sample would fail to parse and the probe would silently never fire.
+  is visible; without that mount the probe degrades to the signals below.
+- **The deploy's own in-progress record.** `deploy.sh` writes `<pid> <epoch>` into
+  that same lock file once it holds the flock and truncates it on exit. `/proc/locks`
+  is filtered by pid namespace, so the flock itself is invisible from the watchdog
+  *container*; this record is what crosses the boundary, and a crash loop cannot
+  write it. It counts as a live holder only while it is younger than
+  `TEATREE_WATCHDOG_DEPLOY_MARKER_MAX_AGE` (default 1800s), so a hard-killed deploy's
+  leftover record — a lock file with no live holder — reads as **not held**.
+- **Very-recent container creation**, read from the docker socket, **provided the
+  container is not crash-looping**. The row is
+  `inspect --format '{{.Created}}\t{{.RestartCount}}\t{{.State.Status}}'`: a container
+  created inside the grace window (one watchdog interval) is evidence of a settling
+  swap only when it has never restarted and is `running`/`created`. Age alone is not
+  sufficient — a crash loop renews its container faster than the window expires, which
+  kept the condition permanently true and suppressed the repair on every pass
+  ([#4339](https://github.com/souliane/teatree/issues/4339)). The timestamp comes from
+  `inspect .Created` (RFC3339 UTC) and never `ps --format '{{.CreatedAt}}'`, whose
+  local-zone abbreviation (`… +0200 CEST`) GNU date refuses to parse on this
+  tzdata-less image — every sample would fail to parse and the probe would silently
+  never fire.
 
 Then:
 
@@ -826,6 +1014,7 @@ same-daemon supervisor can cover, and is honest about the two it cannot:
 | an app service crashed / exited | ✅ | `up -d --no-recreate` restarts it |
 | the **watchdog itself** crashed | ✅ | `restart: always` — the daemon relaunches it in seconds |
 | the probe's target is mid-restart when the pass runs | ✅ | the daemon's "container is restarting" refusal is classified as transient and retried (`TEATREE_WATCHDOG_DOCTOR_RETRIES`); it never pages the owner. A run that COMPLETED but emitted no verdict is still RED and still DMs |
+| the alerting channel is down when a page is raised | ✅ | the page is parked in the undelivered ledger and re-sent every pass until it lands; the depth is logged meanwhile |
 | the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
 | `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
 | the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
@@ -855,8 +1044,8 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
 | `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
 | `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
-| `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target for the watchdog's read-only mount, and the root it execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` |
-| `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/docker-socket-gid.sh` |
+| `TEATREE_DEPLOY_CHECKOUT` | `/home/teatree/teatree-deploy` | the checkout holding `deploy/` — bind source AND target (path identity) for the watchdog's read-only mount and the app services' read-write one, the clone `workspace ticket` cuts worktrees from (#4120), and the root the watchdog execs `deploy/watchdog.sh` from; exported by `deploy.sh` and `deploy/t3` <!-- privacy-scan:allow — the box's public, documented deploy home --> |
+| `TEATREE_DOCKER_SOCKET_GID` | `0`, or the host socket's group on Linux | the supplementary group `teatree-worker` is given so the non-root worker can drive the daemon; resolved by `deploy/deploy.sh` and `deploy/t3` |
 
 It needs `python3` in the image for the richest DM body (baked into the image);
 without it the DM degrades to a generic "red findings" body.

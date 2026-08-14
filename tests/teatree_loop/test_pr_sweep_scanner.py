@@ -29,6 +29,7 @@ import pytest
 from teatree.core.models import AutoReviewDispatch, BotPing, BranchUpdateAttempt, MergeableNotified, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
@@ -2174,3 +2175,101 @@ class TestSubstrateStandingDelegation:
 
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
         assert pinger.calls == []
+
+
+class TestRedSetSignalContext:
+    """The sweep stamps what a CROSS-PR comparison needs onto its own signal (#4090).
+
+    The failing REQUIRED set and the base freshness are already computed for the
+    merge decision; without them on the payload the set-level report would have to
+    re-list every PR and re-classify it — a second forge read and a second
+    classifier, the #12 divergence this repo forbids.
+    """
+
+    def test_a_ci_red_skip_carries_its_failing_required_checks(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert signals[0].payload["reason"] == "ci_red"
+        assert signals[0].payload["failing_required"] == ["lint"]
+        assert signals[0].payload["base_current"] is True
+        assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_red_judged_against_a_moved_base_is_marked_stale(self) -> None:
+        # A behind-main branch's red judged a base it has fallen behind (#4063), so
+        # the report must not read it as a live verdict.
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
+        )
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
+
+        assert signals[0].payload["base_current"] is False
+        assert signals[0].payload["failing_required"] == ["lint"]
+
+    def test_a_green_pr_carries_no_failing_checks(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(merged=True))
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["failing_required"] == []
+
+
+class TestSoloOverlayNoClearIsNeverSilent:
+    """#4250: the uncleared-PR notifier must be REACHABLE on a solo-overlay deployment.
+
+    ``record_mergeable_notified`` has exactly one call site, inside
+    ``_evaluate_no_clear_collaborative`` — a branch ``solo_overlay=True`` never enters.
+    That is correct by design (a solo overlay has no colleague to route the PR to) but
+    it read as live coverage, and the most recent ``MergeableNotified`` row being two
+    weeks old was taken as "nothing has been stuck" rather than "the recorder cannot
+    run at all". These pin the SOLO equivalents so neither can become dead code again.
+    """
+
+    def test_solo_no_clear_without_a_cold_review_still_notifies(self) -> None:
+        # The solo counterpart of the mergeable DM: no CLEAR and no independent cold
+        # review is flagged to the operator AND arms a reviewer — never a silent skip.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, notifier = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+        )
+
+        signals = scanner.scan()
+
+        assert notifier.flag_calls == [(SLUG, 6230, "no_independent_review", f"https://github.com/{SLUG}/pull/6230")]
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        assert len(dispatcher.calls) == 1
+        assert MergeableNotified.objects.count() == 0  # collaborative-only ledger, never touched here
+
+    def test_a_solo_skip_reaches_the_aged_skip_surfacer(self) -> None:
+        # The other solo surface: a genuine skip (CI red) emits ``pr_sweep.skip``, which
+        # the tick's ``record_sweep_outcomes`` folds into the streak ledger and announces
+        # once it ages. Read end to end from the SOLO branch, not from a hand-made signal.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_red_lint(),))]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(), solo_overlay=True)
+        announced: list[str] = []
+
+        def _notify(*, text: str, idempotency_key: str) -> None:
+            _ = text, idempotency_key
+            announced.append(idempotency_key)
+
+        with _required("lint"):
+            for _ in range(SURFACE_AFTER_TICKS):
+                record_sweep_outcomes(scanner.scan(), notify=_notify)
+
+        assert announced, "a solo-overlay skip must age into an announcement"

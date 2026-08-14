@@ -2,6 +2,7 @@
 name: internals
 description: "How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`."
 eval_exempt: reference for teatree's own internals; the behaviours it describes are graded by the code/review skills' evals and by the repo's own gates, not by a trajectory over this overview
+compatibility: macOS/Linux, a teatree checkout; reading-only, no services required.
 metadata:
   version: 0.0.1
 ---
@@ -20,11 +21,15 @@ TeaTree is a personal code factory for multi-repo projects — it turns a ticket
 
 ## Lifecycle Phases
 
+`CANONICAL_PHASES` (`teatree.core.modelkit.phases`) holds ten, not the six a shorter drawing
+suggests — the four extra ones are where most of the gating actually happens:
+
 ```
-ticket → code → test → review → ship → review-request
+scoping → planning → coding → testing → e2e → e2e_reviewing → reviewing → requesting_review → shipping → retro
 ```
 
-Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model tracks visited phases and enforces quality gates (e.g., can't ship without testing).
+Each phase maps to a skill (`t3:ticket`, `t3:code`, …). The `Session` model tracks visited
+phases and enforces quality gates (e.g. can't ship without testing).
 
 **Posture: autonomous end-to-end completion of in-scope tickets.** The resolved default is that the factory carries an in-scope ticket all the way through these phases without pausing to ask "should I continue?". When a ticket sits at a phase boundary (e.g. `TESTED`) with no blocker and no genuine decision, the agent's next action *advances* it toward ship/review — it does not stall on a permission check the user never needs to answer (cross-ref `/t3:rules` § "Publishing Actions Are Mode-Conditional" for `auto` vs `interactive`, and the autonomy posture in CLAUDE.md). A pause is reserved for a real blocker or a genuine ask (a debatable architectural choice, an ambiguous destination); the absence of those is the signal to proceed, not to check in. Pinned by `evals/scenarios/factory_finishes_in_scope_ticket.yaml`.
 
@@ -43,8 +48,7 @@ t3 <overlay> worktree provision          # Provision worktree (ports, DB, overla
 t3 <overlay> worktree start          # Start dev servers
 t3 <overlay> worktree status         # Show worktree state
 t3 <overlay> worktree teardown       # Stop services, clean up
-t3 <overlay> tasks work-next-headless      # Claim/execute next headless task; refuses loop-dispatched phases while agent_runtime=interactive
-t3 <overlay> tasks start              # Claim and launch next interactive task in the current terminal
+t3 <overlay> tasks work-next          # Claim and execute the next pending task
 t3 <overlay> pr create <ticket-id>    # Open the PR: validate ship gates + trigger the ship transition (advance a TESTED ticket toward review)
 t3 <overlay> followup sync            # Daily ticket/PR sync
 ```
@@ -126,18 +130,35 @@ These models are surfaced in a small Django admin dashboard. A rendered, drift-c
 
 ## Overlay API
 
-Overlays subclass `OverlayBase` and override methods:
+The API is **faceted**. `OverlayBase` keeps only the handful of hooks that are not about one
+subsystem; everything else lives on a composed facet reached as `overlay.<facet>.<method>`.
+A flat `get_*` name on the base is the pre-facet shape — it no longer resolves, and an
+override written against it is silently dead code the caller never invokes.
+
+Still on `OverlayBase`:
 
 - `get_repos()` — repo list for worktree creation
 - `get_provision_steps(worktree)` — setup steps (migrations, fixtures)
-- `get_run_commands(worktree)` — dev server commands
-- `get_db_import_strategy(worktree)` — DSLR/dump import config
-- `get_services_config(worktree)` — Docker services
-- `get_visual_qa_targets(changed_files)` — URL paths the pre-push browser sanity gate should load (default: `[]` — opt in by mapping diff paths to URLs)
-- `get_e2e_env_extras(env_cache)` — overlay-specific env vars merged into the Playwright environment (e.g. map `WT_VARIANT` → `CUSTOMER`); default `{}`
-- `get_e2e_preflight(customer, base_url)` — pre-Playwright gates that fail fast on auth/SSO/network issues; default `[]`
-- `get_e2e_run_provenance(spec_path)` — resolve a vanilla spec path to its manifest entry id (e.g. CI lane) recorded on the run so it is reproducible from the DB alone; default `""` (overlay with no per-spec manifest)
-- `get_e2e_scenarios(spec_path)` — the per-feature acceptance scenarios for a spec (overlay-defined frozen `Scenario` elements: `surface`/`title`/`preconditions`/`steps`/`expected`/`modality`/`captures`) that the templated-test-plan renderer reads through this overlay-agnostic seam; default `()` (overlay with no scenario manifest)
+- `get_workspace_repos()` — repos the workspace commands span
+- `get_statusline_segments()`, `get_issue_title(url)`,
+  `is_issue_done(url)`, `resolve_mr_token(...)`, `resolve_issue_token(...)`,
+  `get_timeouts()`, `get_health_signals()`, `get_checking_sources()`,
+  `get_eval_scenarios_dir()`
+
+On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
+`.connectors`, `.metadata`):
+
+| Facet | Methods |
+|---|---|
+| `provisioning` | `env_extra(worktree)`, `db_import_strategy(worktree)`, `db_import(...)`, `post_db_steps(...)`, `services_config(worktree)`, `compose_file(...)`, `symlinks(...)`, `envrc_lines(...)`, `docker_services(...)`, `health_checks(...)`, `cleanup_steps(...)`, `resolve_variant(...)` |
+| `runtime` | `run_commands(worktree)`, `pre_run_steps(...)`, `test_command(...)`, `lint_command(...)`, `verify_endpoints(...)`, `readiness_probes(...)` |
+| `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
+| `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)` |
+| `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
+| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()` |
+
+There is no `get_gitlab_url()` anywhere: the URL is a pydantic field on `OverlayConfig`, not a
+method. Reaching for one is the reliable sign a doc predates the facet split.
 
 ## Management Command Patterns
 
@@ -149,6 +170,19 @@ Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperComma
 - Tests: `with pytest.raises(SystemExit) as exc_info: call_command(...)` then assert `exc_info.value.code == N`. `pytest.raises(typer.Exit)` reports `DID NOT RAISE` even though the source did raise — call_command eats it before pytest sees it.
 - `typer.Exit` is still correct in `src/teatree/cli/*.py` files that go through the typer runner directly (different call site).
 - Anti-pattern: returning an error string from a management command instead of raising. The CLI exits 0 and CI reports green on real failures.
+
+### Structured refusals: return the dict, inherit the non-zero exit
+
+A refusal that an in-process caller must route on (the `mcp` write tools, the loop) is RETURNED as `{"error": …, "hint": …}`, not raised — raising would destroy the value those callers read. That is the one sanctioned form of the anti-pattern above, and it is only sanctioned because the exit code is restored at the boundary: inherit `teatree.core.management.refusal_exit.RefusalExitTyperCommand` instead of `TyperCommand`, and a returned refusal exits `1` on the argv path while `call_command` still gets the dict verbatim.
+
+- The predicate is one pure function, `refusal_exit_code(result)` — non-zero iff the result is a mapping with a truthy `error`. A new refusal shape therefore needs an `error` key and nothing else; a shape without one silently exits 0 again.
+- The gate is `_called_from_command_line`, the flag Django's `run_from_argv` sets and `call_command` does not — so the shell and the in-process consumer get opposite, correct answers from one refusal.
+- Loud is the default; `soft_refusal_commands` exempts named subcommands, so a *new* refusal is loud without being listed anywhere. Exempt one only when its caller depends on a *soft* refusal: `pr ensure-pr` is the pre-push hook's entry point, where reporting and letting the push through is the designed behaviour (#792).
+- Seven groups carry it via this base class: `pr`, `ticket`, `review`, `repro`, `lifecycle`, `e2e`, `followup`. `ticket` is the sharpest — `t3 <overlay> ship <id> && t3 <overlay> ticket clear …` now stops on a refused ship, and `ticket merge` still hands `CallCommandMergeKeystone.merge_clear` the five keys it routes on. Canonical example: `src/teatree/core/management/commands/pr.py` `Command` — its control-DB, missing-ticket, missing-worktree and ship-gate refusals all exit non-zero.
+- Give the `Command` a one-line class docstring. Without one, `docs/generated/management-commands.*` and `--help` inherit the *base class's* docstring and advertise the seam's internals as the command group's description.
+- A command that has no in-process consumer of its failure still uses `raise SystemExit(N)` — that is simpler and stays the default.
+- The guard is `tests/teatree_core/management_commands/test_exit_contract_seam.py`: an AST ratchet refuses a `{"error": …}` return in a class that does not inherit the seam, and a non-zero int return anywhere in the command tree — the `ast.Constant`, `ast.IfExp`, `ast.UnaryOp` (`return -1`) and `ast.BoolOp` (`return failures and 1 or 0`) shapes — plus a live `run_from_argv` case per refusing subcommand. Static AST scanning cannot see a computed/variable return, so this is a strong low-false-positive backstop, not a proof the anti-pattern can never recur — the tree is clean *as far as that ratchet reads*, which is the only claim to make about it; its constant-only first cut scored `return 0 if ok else 1` as clean and let an `env` site through, so widen the detector before reading a green as coverage of a new return shape.
+- The ratchet only reads a literal `{"error": …}` at the `@command`-decorated method's own `return`. A refusal computed in a private helper and handed back through a `Call` — `return json.dumps(self._run(...))`, `return self._helper(...)` — is invisible to it in both directions (dict-shaped *or* wrapped-to-`str`), which is exactly how `retro review-findings` escaped both this guard and the runtime seam (a cold review of #4235 found it: `_run`'s five `{"error": …}` sites reach the CLI through a `json.dumps` that turns the return into a `str`, so `refusal_exit_code`'s `isinstance(result, Mapping)` check never fires either). Fixed there by routing `refusal_exit_code` by hand at the one call site rather than widening the shared ratchet — a broader helper-method walk also flags `handover.py`'s list-nested `error` key and `tasks.py`'s `routing_error` substring match, both already-accepted non-escapes, so it is not a safe default to reach for. A new command that wraps its own refusal the same way needs the same local, hand-routed check; the base class alone does not catch it. **Write the payload before you raise.** The base class raises from `execute()`, *after* `super().execute()` has already printed the result, so its refusals reach the shell with the `error` payload on stdout. A hand-routed check raises from inside the command method, which lands before any write — a first cut of the `retro` fix exited 1 with both streams empty, which is worse than the exit 0 it replaced: the operator gets a failure with no reason and every machine consumer loses the payload. `t3 <overlay> retro review-findings` is the reference shape (`self.stdout.write(json.dumps(result))`, then `raise SystemExit(code)`).
 
 ### Annotated typer options must have defaults for `call_command`
 

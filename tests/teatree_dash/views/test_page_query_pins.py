@@ -31,22 +31,51 @@ State = Ticket.State
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 
 #: url name -> the exact number of queries the page issues, at any population size.
+#:
+#: The pages that read the loop fleet each carry the #4185 starvation axis: ONE bounded
+#: ``status__in`` read of the live ``loop_timer`` rows, plus the effective-verdict bulk
+#: read where the page did not already resolve it. Both are O(1) in the population — the
+#: two-population assertion below is what proves that, and it is the invariant this file
+#: exists to hold. A count that differs BETWEEN the two populations is the failure; a
+#: flat count that rose because the page reads a new datum is a re-pin, not an N+1.
+#:
+#: #4196 folded the effective verdict onto the resolver the tick itself gates on, and
+#: routed the loop-list/statusline read model through it too. That nets OUT on every page
+#: that already resolved the operating mode — health, the bands and the loop table each
+#: shed the duplicate preset read they used to pay. ``live`` resolved no mode at all, so
+#: it now pays the L0 default lookup its membership read needs. Still flat, still one
+#: bounded read per datum.
+#: #4202 collapsed the mode to a pure loop table. The presence upgrade no longer keys on a
+#: posture boolean already on the resolved row, so it reads the ``presence_upgrade_mode``
+#: setting once per resolve — +1 on every page that resolves a mode. The loops header also
+#: offers the LIVE set of mode names instead of three hard-coded posture tokens, which is
+#: one bounded ``Mode`` name read. Both are O(1) in the population.
+#: #4340's transfer page reads no work at all — its scope statement is code — so its two
+#: queries are the nav's instance label alone, and flat by construction.
+#: #4085 put "Review now" / "Ship now" on every card. Their enabled state is ONE bounded
+#: read of the whole board's unstarted tasks, not one per card — which is precisely what
+#: the two-population assertion below proves, on the page where an N+1 would be
+#: multiplied by the 4s poll.
 PAGE_QUERY_PINS: dict[str, int] = {
-    "dash:board": 11,
-    "dash:board_columns": 9,
+    "dash:board": 12,
+    "dash:board_columns": 10,
     "dash:cycle_time": 10,
     "dash:health": 20,
     "dash:health_bands": 20,
-    "dash:live": 12,
-    "dash:live_body": 10,
+    "dash:live": 20,
+    "dash:live_body": 18,
     "dash:loops": 17,
     "dash:loops_table": 17,
     "dash:presets": 15,
     "dash:sessions": 3,
     "dash:settings": 7,
+    "dash:interchange": 2,
     "dash:settings_readouts": 3,
 }
-TICKET_DRAWER_QUERIES = 11
+# #4085 added the enqueue-button row: ONE bounded read of the ticket's unstarted tasks,
+# O(1) in the population. A re-pin because the drawer reads a new datum, not an N+1 —
+# the two-population assertion below is what tells those apart.
+TICKET_DRAWER_QUERIES = 12
 TRANSCRIPT_QUERIES = 2
 
 
@@ -58,7 +87,6 @@ def _populate(scale: int) -> Ticket:
         task = TaskFactory(ticket=each, phase="coding")
         TaskAttempt.objects.create(
             task=task,
-            execution_target="headless",
             model="claude-opus-4-8",
             agent_session_id=f"sess-{each.pk}",
         )
@@ -99,7 +127,7 @@ class DashboardPageQueryPlansTestCase(TestCase):
         ticket = _populate(3)
         for scale in (4, 40):
             task = TaskFactory(ticket=ticket, phase="coding")
-            TaskAttempt.objects.bulk_create(TaskAttempt(task=task, execution_target="headless") for _ in range(scale))
+            TaskAttempt.objects.bulk_create(TaskAttempt(task=task) for _ in range(scale))
             TicketTransition.objects.bulk_create(
                 TicketTransition(ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start")
                 for _ in range(scale)

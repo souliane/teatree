@@ -63,13 +63,36 @@ def _real_home_owners(text: str) -> set[str]:
     return {owner for owner in _HOME_PATH_RE.findall(text) if owner.lower() not in _PLACEHOLDER_HOME_OWNERS}
 
 
+#: A floor, not a pin: fixtures churn, so this only has to catch the scan
+#: silently matching far fewer files than the corpus holds. Currently 680.
+_MIN_EXPECTED_FIXTURES = 600
+
+
 def _fixture_files() -> list[Path]:
-    return sorted(FIXTURES_DIR.glob("*.jsonl"))
+    # rglob, not glob: a fixture filed into a subdirectory must still be scanned.
+    return sorted(FIXTURES_DIR.rglob("*.jsonl"))
 
 
 def test_fixtures_dir_exists_and_is_non_empty() -> None:
     assert FIXTURES_DIR.is_dir(), f"missing fixtures dir: {FIXTURES_DIR}"
     assert _fixture_files(), "no fixtures found — the privacy scan would be vacuous"
+
+
+def test_scan_covers_the_whole_corpus_not_just_the_top_level() -> None:
+    """A nested fixture must not fall out of the scan.
+
+    The non-emptiness check above only catches the corpus vanishing entirely. A
+    PARTIAL move — some fixtures filed into subdirectories, the rest left flat —
+    would leave this gate green while silently never reading the nested ones, and
+    an unscanned fixture is exactly where a real captured transcript hides.
+    """
+    scanned = _fixture_files()
+    assert len(scanned) >= _MIN_EXPECTED_FIXTURES, (
+        f"privacy scan matched only {len(scanned)} fixture(s), below the "
+        f"{_MIN_EXPECTED_FIXTURES} floor — the glob has stopped reaching part of the corpus"
+    )
+    nested = sorted(FIXTURES_DIR.rglob("*.jsonl"))
+    assert scanned == nested, "the scan set and the on-disk set diverged"
 
 
 @pytest.mark.parametrize("fixture", _fixture_files(), ids=lambda p: p.name)

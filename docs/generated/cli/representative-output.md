@@ -25,8 +25,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 credit.                                                      │
 │ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
 │                 status.                                                      │
-│ speak           Read text aloud through the local speakers per  (no-op       │
-│                 unless local = all).                                         │
+│ speak           Refuse to speak — local audio cannot reach the user.         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
 │ push            Push a branch using the forge credential the loop already    │
@@ -194,6 +193,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  then drains a bounded batch of the fresh remainder, and     │
 │                  stands down while a live worker holds either worker         │
 │                  singleton.                                                  │
+│ directives       Read the standing directives, or switch a slot off and back │
+│                  on (#4166).                                                 │
 │ preset           Named loop-state presets — mode switching (#3159).          │
 │ schedule         Weekly preset schedules — the L2 calendar (#3159).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯

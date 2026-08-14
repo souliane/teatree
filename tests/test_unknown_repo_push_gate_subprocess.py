@@ -89,11 +89,13 @@ def home_with_opt_in() -> Iterator[Path]:
         yield home
 
 
-def _drive_push(repo: Path, home: Path) -> subprocess.CompletedProcess[str]:
+def _drive_push(
+    repo: Path, home: Path, command: str = "git push origin HEAD", cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     payload = {
         "tool_name": "Bash",
-        "tool_input": {"command": "git push origin HEAD"},
-        "cwd": str(repo),
+        "tool_input": {"command": command},
+        "cwd": str(cwd if cwd is not None else repo),
         "session_id": "subproc-scope-live",
     }
     code = _DRIVER.format(payload=json.dumps(payload))
@@ -123,6 +125,22 @@ def test_unknown_repo_push_denies_in_the_real_subprocess(tmp_path: Path, home_wi
     decision = json.loads(result.stdout)
     assert decision["permissionDecision"] == "deny"
     assert "owned_repos" in decision["permissionDecisionReason"]
+
+
+def test_dash_c_push_denies_in_the_real_subprocess(tmp_path: Path, home_with_opt_in: Path) -> None:
+    """The landing-dir resolver must reach the un-bootstrapped subprocess too.
+
+    ``git -C <unknown> push`` from an OWNED session cwd: the target repo decides,
+    and resolving it imports ``teatree.hooks._commit_repo_dir`` in a process where
+    ``teatree`` is only importable via the gate's own src-path insert.
+    """
+    unknown = _repo_with_remote(tmp_path / "dashc-unk", "git@github.com:randomuser/randomrepo.git")
+    session = _repo_with_remote(tmp_path / "dashc-own", "git@github.com:souliane/teatree.git")
+    result = _drive_push(unknown, home_with_opt_in, command=f"git -C {unknown} push origin main", cwd=session)
+    assert result.returncode == 2, (
+        "a `git -C <unknown-repo> push` must DENY on the TARGET repo, not the session cwd; "
+        f"got exit {result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
+    )
 
 
 def test_owned_repo_push_allows_in_the_real_subprocess(tmp_path: Path, home_with_opt_in: Path) -> None:

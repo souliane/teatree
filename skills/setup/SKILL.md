@@ -5,7 +5,6 @@ eval_exempt: first-time bootstrap/validation reference; one-shot installation st
 compatibility: macOS/Linux, git, python3.13+, uv.
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Teatree Setup
@@ -23,7 +22,7 @@ Teatree now has two layers:
 - The **skill repo** you are in now. It provides the workflow skills (`skills/*/`), references, hooks, and the `teatree` Django extension package.
 - An **overlay package** created with `t3 startoverlay`. The overlay subclasses `OverlayBase` and registers via entry points. Teatree itself owns the Django settings.
 
-Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlays. Those are legacy migration artifacts.
+Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlays. Those are legacy migration artifacts. <!-- skill-symbol-ref: a legacy artifact named so it is never re-created; it must NOT exist -->
 
 ## What This Skill Does
 
@@ -83,7 +82,6 @@ Useful optional values:
 | `T3_AUTO_PUSH_FORK` | Auto-push retro commits to the user's fork without prompting (requires `T3_PUSH=true` and origin ≠ `T3_UPSTREAM`) | `false` |
 | `T3_MODE` | Effective publishing mode. `auto` opts the pipeline into pushing without pausing for shipping approval; `interactive` (default) gates at shipping. Equivalent DB-home setting: `t3 <overlay> config_setting set mode auto`. (Supersedes the retired `T3_AUTO_SHIP` env var, #2697.) | `interactive` |
 | `T3_UPSTREAM` | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) | empty |
-| `T3_PRIVATE_TESTS` | Private QA repo path | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
 | `T3_ISSUE_TRACKER` | `gitlab` or `github` | detected |
 | `T3_SKILL_OWNERSHIP_FILE` | Ownership config for skill editing | `$HOME/.ac-reviewing-codebase` |
@@ -99,7 +97,6 @@ export T3_ISSUE_TRACKER="gitlab"
 export T3_PUSH=false
 export T3_AUTO_PUSH_FORK=false
 export T3_UPSTREAM=""
-export T3_PRIVATE_TESTS=""
 export T3_BRANCH_PREFIX="ac"
 export T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
 ```
@@ -261,7 +258,7 @@ This is a suggestion, not a gate: the mode is Claude Code's setting, not teatree
 
 **Changing it reaches only the session you drive, even though every lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag); `t3 loop start` pins the same flag on the argv it execs; and `t3 agent "<task>"` pins it on the `-p` argv it execs. A pinned flag beats the settings default, so none of those lanes inherits your choice here.
 
-Those pins are the only thing separating the lanes, and each is asserted — `tests/teatree_agents/test_headless_least_privilege.py`, `tests/teatree_cli/test_cli_loop.py`, and `tests/teatree_cli/test_cli_agent.py` — so removing one fails a test rather than silently classifier-gating unattended work.
+Those pins are the only thing separating the lanes, and each is asserted — `tests/teatree_agents/test_runner_least_privilege.py`, `tests/teatree_cli/test_cli_loop.py`, and `tests/teatree_cli/test_cli_agent.py` — so removing one fails a test rather than silently classifier-gating unattended work.
 
 Note the split inside `t3 agent`: with a task argument it execs `claude -p`, which is headless and therefore pinned; with no task it execs an interactive `claude` and pins nothing, because you are the human sitting in front of it.
 
@@ -272,7 +269,7 @@ Five contexts — do not generalise one to the others:
 | Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
 | Bare `t3 agent` (no task argument) | unpinned — inherits your `defaultMode` | execs an interactive `claude`; the session is attended, so the mode is yours to choose |
 | `t3 agent "<task>"` | `bypassPermissions` (pinned) | execs `claude -p`; print-mode runs headless with nobody present to answer a denial |
-| The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended under `autonomous_away`, so a classifier denial has nobody to override it |
+| The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended while the owner is away, so a classifier denial has nobody to override it |
 | Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` (pinned) | no human to approve a `Write`; narrowing it strands the run |
 | The quarantined reader phase | `dontAsk` (pinned) | its tool set is meant to be empty, so default-deny is correct |
 
@@ -328,17 +325,26 @@ If the user already has a project-local virtualenv, using that is fine too. The 
 
 ## Companion Skills
 
-Offer companion skills by stack, but install them only if they are missing:
+`ac-reviewing-codebase`, `ac-python` and `ac-django` are REQUIRED, not offers. They are
+declared in `apm.yml` `dependencies.apm`, `t3 setup` provisions them, and `t3 doctor check`
+FAILs on any that is absent with its `apm install <spec>` line. Nothing to decide per stack —
+if one is missing, run the line the FAIL prints:
 
-- All stacks: `ac-reviewing-codebase`
-- Django: `ac-django`, `ac-python`
-- Python only: `ac-python`
+```bash
+apm install souliane/skills/ac-reviewing-codebase#<ref>
+```
+
+None of the three is carried in this repo's `skills/` tree: a local copy would satisfy the
+mandate from the plugin-first install path and hide an unreachable source.
+
+Offer the rest by stack, and install only if missing:
+
 - Ruff migration work: `ac-adopting-ruff`
 
 Prefer consumer installs for skills the user does not maintain:
 
 ```bash
-npx skills add <upstream-owner>/skills --skill ac-django --skill ac-python -g -y
+npx skills add <upstream-owner>/skills --skill ac-adopting-ruff -g -y
 ```
 
 ## Rules

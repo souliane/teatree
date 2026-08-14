@@ -23,6 +23,17 @@ The fault RECORD is a file, not a row. The store that failed is the DB, so recor
 degradation there is the one place guaranteed not to work; the marker sits beside the
 primary control DB, where ``t3 doctor`` and the operator can both find it without reading
 a worker log.
+
+Beside the control DB is not always WRITABLE, though, and that gap made the record useless
+in the venue that needs it most (#4041). The canonical path is inside the container's
+control-DB volume, so a HOST process — a hook, a statusline's ``t3`` call — observes the
+fault and then cannot create ``/var/lib/teatree`` to record it. The recorder caught the
+``OSError`` and logged that the fault "is visible only in this log": a health marker
+conceding it cannot do its job in the exact place the job exists. :func:`marker_paths`
+closes that — when the canonical directory is not writable HERE, a per-user location under
+this venue's own data dir is offered as well, so the record lands where the fault was seen.
+It is offered ONLY on that condition, because an unconditional second location would let a
+stale per-user marker outvote a healthy canonical venue.
 """
 
 import json
@@ -92,6 +103,10 @@ class DegradedReadReport:
     reader captures holds only the ORM frames, which are identical for every fault; the caller
     is the one fact that makes the record actionable, so it travels with it. Empty for a marker
     written before the field existed.
+
+    ``path`` is the file this record was actually read from, so an operator told to delete the
+    marker is told the one that exists rather than the canonical path a fallback venue never
+    wrote to. ``None`` for a report built without reading a file.
     """
 
     scopes: tuple[str, ...]
@@ -99,6 +114,7 @@ class DegradedReadReport:
     first_seen: float
     last_seen: float
     callers: tuple[str, ...] = ()
+    path: Path | None = None
 
     @property
     def age_seconds(self) -> float:
@@ -118,6 +134,49 @@ def marker_path() -> Path:
     return ControlDb(os.environ).primary().parent / MARKER_FILENAME
 
 
+def fallback_marker_path() -> Path:
+    """Where the marker goes for a venue that cannot write beside the control DB.
+
+    This venue's OWN data dir — the same root the host projection is published into, so a
+    host that can read teatree's data can read teatree's health record. Deliberately reuses
+    ``data_dir_root`` rather than minting a second root: it already resolves ``T3_DATA_DIR``
+    then the XDG data home per call, which is exactly "somewhere this process can write".
+    """
+    from teatree.paths import data_dir_root  # noqa: PLC0415 — deferred: env-sensitive path resolution at call time
+
+    return data_dir_root() / MARKER_FILENAME
+
+
+def _dir_is_writable(directory: Path) -> bool:
+    """Whether a marker could be written under *directory* — WITHOUT creating anything.
+
+    The nearest existing ancestor answers it, because that is what a later
+    ``mkdir(parents=True)`` would need. Asking by ATTEMPTING the directory made
+    :func:`marker_paths` — and so ``degraded_read_report``, ``clear_degraded_read`` and the
+    doctor check — materialise a directory tree on a pure read (#4205).
+    """
+    for candidate in (directory, *directory.parents):
+        if candidate.exists():
+            return candidate.is_dir() and os.access(candidate, os.W_OK)
+    return False
+
+
+def marker_paths() -> tuple[Path, ...]:
+    """Every location this venue may find the marker in, canonical first.
+
+    The fallback is appended ONLY when the canonical directory cannot be written here. A
+    venue that can write the canonical marker has one answer and must keep having one:
+    offering the per-user path unconditionally would let a stale host marker outvote a
+    healthy container record, which is the same "unverifiable signal read as evidence"
+    defect one layer up.
+    """
+    canonical = marker_path()
+    if _dir_is_writable(canonical.parent):
+        return (canonical,)
+    fallback = fallback_marker_path()
+    return (canonical,) if fallback == canonical else (canonical, fallback)
+
+
 def record_degraded_read(scope: str, *, caller: str = "") -> None:
     """Record that *scope*'s override read failed, merging into any live marker.
 
@@ -125,31 +184,47 @@ def record_degraded_read(scope: str, *, caller: str = "") -> None:
     scopes do, capped at :data:`MAX_RECORDED_CALLERS` so a caller in a hot loop cannot grow the
     file without bound.
 
+    Written to the first of :func:`marker_paths` this venue can actually write, so a host
+    process that cannot reach the container's control-DB volume still leaves a record where
+    it observed the fault instead of only a log line.
+
     Never raises: the caller is a settings resolution that must still return a value, and
-    a marker that cannot be written must not become a second outage. A write failure is
-    logged, so the log remains the backstop when the filesystem is the problem too.
+    a marker that cannot be written must not become a second outage. Exhausting every
+    candidate is reported as a single WARNING line and no traceback — this function runs
+    under the statusline and ``t3 loop status``, whose output must stay quiet and
+    crash-proof, and the frames of an already-handled ``OSError`` name nothing the operator
+    can act on that the path and message do not already say.
     """
     now = time.time()
-    try:
-        existing = _read_marker()
-        scopes = tuple(sorted({*(existing.scopes if existing else ()), scope}))
-        seen_callers = {*(existing.callers if existing else ()), *([caller] if caller else [])}
-        payload = {
+    existing = _read_marker()
+    scopes = tuple(sorted({*(existing.scopes if existing else ()), scope}))
+    seen_callers = {*(existing.callers if existing else ()), *([caller] if caller else [])}
+    blob = json.dumps(
+        {
             "scopes": list(scopes),
             "callers": sorted(seen_callers)[:MAX_RECORDED_CALLERS],
             "occurrences": (existing.occurrences if existing else 0) + 1,
             "first_seen": existing.first_seen if existing else now,
             "last_seen": now,
         }
-        path = marker_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        _logger.exception(
-            "ConfigSetting override read degraded for scope %r AND the degradation marker "
-            "could not be written — this fault is visible only in this log.",
-            scope,
-        )
+    )
+
+    refusals: list[str] = []
+    for candidate in marker_paths():
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text(blob, encoding="utf-8")
+        except OSError as exc:
+            refusals.append(f"{candidate}: {exc}")
+            continue
+        return
+
+    _logger.warning(
+        "ConfigSetting override read degraded for scope %r AND no degradation marker could be "
+        "written (%s) — this fault is visible only in this log.",
+        scope,
+        "; ".join(refusals) or "no candidate path",
+    )
 
 
 def degraded_read_report() -> DegradedReadReport | None:
@@ -166,16 +241,33 @@ def degraded_read_report() -> DegradedReadReport | None:
 
 
 def clear_degraded_read() -> None:
-    """Drop the marker — the operator has acknowledged/repaired the fault."""
-    try:
-        marker_path().unlink(missing_ok=True)
-    except OSError:
-        _logger.exception("could not clear the ConfigSetting degraded-read marker")
+    """Drop every marker this venue can see — the operator acknowledged/repaired the fault.
+
+    All candidates, not just the canonical one: acknowledging a fault that was recorded in
+    the fallback location has to clear THAT file, or the doctor keeps reporting a fault the
+    operator already dismissed.
+    """
+    for candidate in marker_paths():
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as exc:
+            _logger.warning("could not clear the ConfigSetting degraded-read marker %s: %s", candidate, exc)
 
 
 def _read_marker() -> DegradedReadReport | None:
+    """The FRESHEST record across every candidate location.
+
+    Freshest rather than canonical-first: the candidates are venue-local files that never
+    see each other's writes, so the newest ``last_seen`` is the only ordering that answers
+    "is the tier degraded now?" rather than "did it ever degrade in this one directory?".
+    """
+    found = [report for report in (_read_marker_at(path) for path in marker_paths()) if report is not None]
+    return max(found, key=lambda report: report.last_seen) if found else None
+
+
+def _read_marker_at(path: Path) -> DegradedReadReport | None:
     try:
-        raw = json.loads(marker_path().read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict):
@@ -195,6 +287,7 @@ def _read_marker() -> DegradedReadReport | None:
         first_seen=float(first_seen),
         last_seen=float(last_seen),
         callers=tuple(str(entry) for entry in callers) if isinstance(callers, list) else (),
+        path=path,
     )
 
 
@@ -207,6 +300,8 @@ __all__ = [
     "DegradedReadReport",
     "clear_degraded_read",
     "degraded_read_report",
+    "fallback_marker_path",
     "marker_path",
+    "marker_paths",
     "record_degraded_read",
 ]

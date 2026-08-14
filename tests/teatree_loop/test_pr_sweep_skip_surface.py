@@ -102,6 +102,17 @@ class TestSurfacesOnPersistence(django.test.TestCase):
         assert len(notifier.sent) == 2
         assert "changes_requested" in notifier.sent[1][0]
 
+    def test_a_flapping_ci_verdict_still_reaches_the_threshold(self) -> None:
+        """The flappiest PRs are the ones the operator most needs told about (#4095)."""
+        notifier = _Recorder()
+        flapping = ["ci_pending", "ci_red", "required_checks_indeterminate", "ci_red", "uv_audit_red_but_clean_on_main"]
+
+        for reason in flapping:
+            record_sweep_outcomes([_skip(reason=reason)], notify=notifier)
+
+        assert len(notifier.sent) == 1
+        assert f"{SURFACE_AFTER_TICKS} consecutive" in notifier.sent[0][0]
+
     def test_the_idempotency_key_pins_the_pr_and_the_cooldown_window(self) -> None:
         notifier = _Recorder()
         moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)

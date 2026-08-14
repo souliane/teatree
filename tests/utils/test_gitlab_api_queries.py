@@ -269,6 +269,26 @@ def test_list_open_issues_for_author(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "updated_after=2024-01-01T00%3A00%3A00Z" in captured_endpoints[0]
 
 
+def test_intake_issue_queries_ask_the_forge_for_oldest_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#4238 — GitLab's issues endpoint defaults to NEWEST first, which starves the backlog."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured_endpoints: list[str] = []
+
+    def _capture(endpoint: str) -> list[dict[str, object]]:
+        captured_endpoints.append(endpoint)
+        return []
+
+    monkeypatch.setattr(client, "get_json_paginated", _capture)
+
+    client.list_open_issues_for_author("trusted-colleague")
+    client.list_open_issues_for_label("t3-auto-implement")
+
+    assert len(captured_endpoints) == 2
+    for endpoint in captured_endpoints:
+        assert "order_by=created_at" in endpoint
+        assert "sort=asc" in endpoint
+
+
 def test_list_open_issues_for_author_returns_empty_on_no_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(client, "get_json_paginated", lambda _endpoint: [])

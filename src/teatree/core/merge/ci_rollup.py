@@ -184,11 +184,19 @@ def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
     """Populate ``clear.touched_paths`` from the forge's live changed-file list.
 
     A non-``MergeClear`` *clear* (the gate handles that refusal) is a no-op. When the
-    changed-path list cannot be read to completion — a forge error (exception) or the
-    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff — the diff
-    can no longer be PROVEN non-substrate, so ``substrate_paths_indeterminate`` is set
-    and ``is_substrate()`` fails CLOSED (holds the merge). A complete list populates
-    ``touched_paths`` for the path detector and clears the indeterminate flag.
+    changed-path list cannot be read to completion — a forge error (exception), the
+    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff, or an EMPTY
+    list — the diff can no longer be PROVEN non-substrate, so
+    ``substrate_paths_indeterminate`` is set and ``is_substrate()`` fails CLOSED (holds
+    the merge). A complete list populates ``touched_paths`` for the path detector and
+    clears the indeterminate flag.
+
+    An empty list is a read failure, not a confirmed non-substrate diff: a real open PR
+    always changes at least one file, so ``[]`` means the fetch returned nothing usable
+    (a rate-limited 200 with an empty array, a response-shape change, a token whose
+    scope yields no files). The solo sibling
+    (:func:`~teatree.loop.scanners.pr_sweep_substrate.pr_diff_is_substrate`) already
+    holds on it; both paths read the same rule so they cannot disagree on one diff.
     """
     if not isinstance(clear, MergeClear):
         return
@@ -202,9 +210,9 @@ def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
         )
         clear.substrate_paths_indeterminate = True
         return
-    if changed_paths_unavailable(paths):
+    if not paths or changed_paths_unavailable(paths):
         logger.warning(
-            "ci_rollup: changed-paths list truncated/unavailable for %s#%s — holding as substrate (fail closed)",
+            "ci_rollup: empty/truncated changed-paths list for %s#%s — holding as substrate (fail closed)",
             query.ref.slug,
             query.ref.pr_id,
         )

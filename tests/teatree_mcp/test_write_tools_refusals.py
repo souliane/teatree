@@ -45,6 +45,7 @@ _DELEGATION_GLOBS = (
     "*post_mode",
     "enforce_*",
     "*_threshold",
+    "*_identities",
 )
 
 # The specific keys the F9.1 attack turns on: an MCP agent self-granting substrate-merge
@@ -55,6 +56,7 @@ _DELEGATION_ATTACK_KEYS = (
     "trusted_issue_authors",
     "send_proxy_allowlist",
     "on_behalf_post_mode",
+    "independent_reviewer_identities",
     "autonomy",
 )
 

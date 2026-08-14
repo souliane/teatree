@@ -95,7 +95,6 @@ class StandupCommandTests(TestCase):
         task = Task.objects.create(ticket=ticket, session=session)
         att = TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             ended_at=timezone.now() - timedelta(days=9),
         )
         TaskAttempt.objects.filter(pk=att.pk).update(
@@ -117,7 +116,6 @@ class StandupCommandTests(TestCase):
         task = Task.objects.create(ticket=ticket, session=session)
         att = TaskAttempt.objects.create(
             task=task,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             ended_at=timezone.now() - timedelta(days=4),
         )
         TaskAttempt.objects.filter(pk=att.pk).update(

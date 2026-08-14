@@ -35,8 +35,10 @@ from typing import IO, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.config import get_effective_settings
 from teatree.core.machine_output import emit
 from teatree.core.retention.prune import PARK_TABLE, apply_retention, plan_retention
+from teatree.core.retention.scratch import ScratchEntry, ScratchSweepPlan, sweep_scratch
 from teatree.core.table_output import print_table
 from teatree.utils.django_db.vacuum import VacuumOutcome, vacuum_control_db
 
@@ -93,6 +95,26 @@ class RetentionReport(TypedDict):
     total_rows: int
     tables: list[_TableRow]
     vacuum: _VacuumRow
+
+
+class _ScratchRow(TypedDict):
+    path: str
+    size_bytes: int
+    age_days: float
+    removable: bool
+    reason: str
+
+
+class ScratchReport(TypedDict):
+    applied: bool
+    refused: bool
+    root: str
+    retention_days: int
+    probe_gap: str
+    reclaimed_bytes: int
+    candidate_bytes: int
+    resident_bytes: int
+    entries: list[_ScratchRow]
 
 
 class Command(TyperCommand):
@@ -155,6 +177,103 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=lambda stream: _render(payload, stream, applied=apply),
         )
+
+    @command()
+    def scratch(
+        self,
+        *,
+        root: Annotated[
+            str,
+            typer.Option("--root", help="Temp root to sweep. Default: the configured scratch_sweep_root."),
+        ] = "",
+        days: Annotated[
+            int,
+            typer.Option("--days", help="Retention window. Default: the configured scratch_retention_days."),
+        ] = -1,
+        apply: Annotated[
+            bool,
+            typer.Option("--apply", help="Actually reclaim the stale scratch. Without it, this is a dry run."),
+        ] = False,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the sweep report as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> None:
+        """Reclaim stale agent scratch under the temp root (dry-run unless --apply).
+
+        On a RAM-backed ``/tmp`` this is memory, not disk: the measured box held
+        8.8 GB of week-old sqlite/venv scratch, 28% of the working pool. An entry
+        is reclaimed only when NO file anywhere in its tree was touched inside the
+        window (not just the top-level entry's own mtime), it is owned by this
+        uid, held open by no live process (fd, cwd, mmap, or a bound AF_UNIX
+        socket), and holds no git repository anywhere in its tree — registered or
+        ad-hoc — anything the sweep cannot prove stale is kept with the reason
+        printed beside it.
+        """
+        settings = get_effective_settings()
+        plan = sweep_scratch(
+            configured_root=root or settings.scratch_sweep_root,
+            retention_days=days if days >= 0 else settings.scratch_retention_days,
+            apply=apply,
+        )
+        payload: ScratchReport = {
+            "applied": plan.applied,
+            "refused": plan.refused,
+            "root": plan.root,
+            "retention_days": plan.retention_days,
+            "probe_gap": plan.probe_gap,
+            "reclaimed_bytes": plan.reclaimed_bytes,
+            "candidate_bytes": plan.candidate_bytes,
+            "resident_bytes": plan.resident_bytes,
+            "entries": [
+                {
+                    "path": entry.path,
+                    "size_bytes": entry.size_bytes,
+                    "age_days": entry.age_days,
+                    "removable": entry.removable,
+                    "reason": entry.reason,
+                }
+                for entry in plan.entries
+            ],
+        }
+        logger.info("retention scratch: %s", plan.summary)
+
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_scratch(plan, stream, applied=apply),
+        )
+        if apply and plan.refused:
+            # The payload is written first: an unattended caller that only sees a
+            # non-zero exit with empty streams learns less than the exit 0 it replaces.
+            raise SystemExit(1)
+
+
+def _scratch_row(entry: ScratchEntry) -> list[str]:
+    return [
+        entry.path,
+        entry.size_human,
+        f"{entry.age_days:.1f}d",
+        ("RECLAIM" if entry.removable else "KEEP") + f" — {entry.reason}",
+    ]
+
+
+def _render_scratch(plan: ScratchSweepPlan, stream: IO[str], *, applied: bool) -> None:
+    title = f"Scratch retention — {plan.summary}"
+    if plan.refused:
+        title += " — REFUSED, nothing was removed"
+    elif not applied:
+        title += " (dry run — pass --apply to reclaim)"
+    print_table(
+        ["Path", "Size", "Age", "Verdict"],
+        [_scratch_row(entry) for entry in plan.entries],
+        title=title,
+        stream=stream,
+        justify=["left", "right", "right", "left"],
+    )
 
 
 def _detail(table: _TableRow) -> str:

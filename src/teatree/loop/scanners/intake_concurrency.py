@@ -21,7 +21,8 @@ from django.utils import timezone
 from teatree.core.intake.budget import read_intake_budget
 from teatree.core.intake.concurrency import BoxSizing, adapt_concurrency
 from teatree.loop.scanners.base import ScanSignal
-from teatree.utils.ram_probe import available_cpu_count, effective_available_ram_mib
+from teatree.utils.ram_probe import available_cpu_count
+from teatree.utils.ram_scope import read_ram_headroom
 
 if TYPE_CHECKING:
     from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
@@ -74,9 +75,9 @@ class IntakeConcurrencyScanner:
         return self._signals(decision)
 
     def _decide(self, marker: "ResourcePressureMarker") -> _Decision | None:
-        available_mib = effective_available_ram_mib()
+        available_mib = read_ram_headroom().box_watermark_mib
         if available_mib is None:
-            logger.warning("intake_concurrency: headroom unreadable — intake keeps the static ceiling")
+            logger.warning("intake_concurrency: no box-scoped headroom readable — intake keeps the static ceiling")
             return None
         previous = marker.adaptive_intake_concurrency or self.static_ceiling
         available_gb = available_mib / _MIB_PER_GB

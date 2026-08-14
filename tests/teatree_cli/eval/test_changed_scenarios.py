@@ -11,9 +11,11 @@ exercised end to end.
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.eval import quarantine
 from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS, specs_under
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 
@@ -176,3 +178,34 @@ class TestDiffFileNarrowsProseSelection:
         # The unchanged STDIN-only contract stays fail-safe: unknown granularity selects
         # more, never the pre-#3944 zero.
         assert self._run(None)
+
+
+class TestQuarantineSuppression:
+    """A scenario in the known-red registry is dropped from the lane and named (#4173)."""
+
+    def test_a_quarantined_scenario_is_dropped_and_named_on_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        catalog_file = min(SCENARIOS_DIR.glob("*.yaml"))
+        rel = catalog_file.relative_to(_REPO_ROOT).as_posix()
+        names = sorted(s.name for s in discover_specs() if s.source_path == catalog_file)
+        registry = tmp_path / "quarantine.yaml"
+        registry.write_text(
+            f"scenarios:\n  {names[0]}:\n"
+            f"    issue: https://github.com/souliane/teatree/issues/4172\n"
+            f"    until: 2999-01-01\n    reason: tracked known red\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(quarantine, "QUARANTINE_PATH", registry)
+        result = CliRunner().invoke(app, ["eval", "changed-scenarios", "--skip-code", "3"], input=f"{rel}\n")
+        assert names[0] not in [line for line in result.output.splitlines() if line in names]
+        assert "suppressed 1 quarantined known-red scenario(s)" in result.output
+        assert names[0] in result.output
+
+    def test_the_registry_sits_beside_the_scenarios_dir(self, tmp_path: Path) -> None:
+        # The convention teatree's own layout defines, so a consumer passing its own
+        # --scenarios-dir reaches its own registry with no extra flag.
+        assert quarantine.quarantine_path_for(None) == quarantine.QUARANTINE_PATH
+        assert quarantine.quarantine_path_for(tmp_path / "eval" / "scenarios") == (
+            tmp_path / "eval" / "quarantine.yaml"
+        )

@@ -5,10 +5,19 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.tools import tool_app
-from teatree.triage import LABEL_KEYWORDS, DuplicateFinder, LabelSuggester, TriageScanner, infer_labels, normalize_title
+from teatree.triage import (
+    LABEL_KEYWORDS,
+    DuplicateFinder,
+    ForgeEnumerationError,
+    LabelSuggester,
+    TriageScanner,
+    infer_labels,
+    normalize_title,
+)
 
 
 def _issue_fixture() -> list[dict]:
@@ -103,11 +112,11 @@ class TestLabelSuggester:
         numbers_edited = {call.args[0][call.args[0].index("edit") + 1] for call in edit_calls}
         assert numbers_edited == {"1", "2"}
 
-    def test_gh_failure_returns_empty(self) -> None:
+    def test_gh_failure_raises_rather_than_reporting_an_empty_scan(self) -> None:
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="", stderr="gh: not found", returncode=1)
-            suggestions = LabelSuggester("souliane/teatree").collect_suggestions()
-        assert suggestions == []
+            with pytest.raises(ForgeEnumerationError):
+                LabelSuggester("souliane/teatree").collect_suggestions()
 
 
 class TestNormalizeTitle:
@@ -205,11 +214,11 @@ class TestDuplicateFinder:
         assert len(pair_keys) == len(matches) == 3
         assert all(m.a_number != m.b_number for m in matches)
 
-    def test_gh_failure_returns_empty(self) -> None:
+    def test_gh_failure_raises_rather_than_reporting_an_empty_scan(self) -> None:
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="", stderr="gh: not found", returncode=1)
-            matches = DuplicateFinder("souliane/teatree").find()
-        assert matches == []
+            with pytest.raises(ForgeEnumerationError):
+                DuplicateFinder("souliane/teatree").find()
 
 
 def _pr_fixture(number: int, title: str) -> dict:
@@ -270,14 +279,15 @@ class TestTriageScanner:
         assert len(stale) == 1
         assert stale[0].issue_number == 2
 
-    def test_find_resolved_gh_pr_failure_returns_empty(self) -> None:
+    def test_find_resolved_gh_pr_failure_raises(self) -> None:
         issues = [_issue_with_age(42, "feat: thing")]
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
             mock_run.side_effect = [
                 SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
                 SimpleNamespace(stdout="", stderr="error", returncode=1),
             ]
-            assert TriageScanner("souliane/teatree").find_resolved() == []
+            with pytest.raises(ForgeEnumerationError):
+                TriageScanner("souliane/teatree").find_resolved()
 
     def test_stale_skips_empty_updated_at(self) -> None:
         issues = [{"number": 1, "title": "No date", "body": "", "labels": [], "updatedAt": ""}]
@@ -331,11 +341,13 @@ class TestTriageScanner:
         assert len(resolved) == 1
         assert resolved[0].confidence == "high"
 
-    def test_gh_failure_returns_empty(self) -> None:
+    def test_gh_failure_raises_rather_than_reporting_an_empty_scan(self) -> None:
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
             mock_run.return_value = SimpleNamespace(stdout="", stderr="error", returncode=1)
-            assert TriageScanner("souliane/teatree").find_resolved() == []
-            assert TriageScanner("souliane/teatree").find_stale() == []
+            with pytest.raises(ForgeEnumerationError):
+                TriageScanner("souliane/teatree").find_resolved()
+            with pytest.raises(ForgeEnumerationError):
+                TriageScanner("souliane/teatree").find_stale()
 
 
 runner = CliRunner()

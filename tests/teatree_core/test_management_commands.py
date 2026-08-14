@@ -1,8 +1,6 @@
 import io
 import json
 import tempfile
-from collections.abc import Iterator
-from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -11,17 +9,17 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 import teatree.core.management.commands.tasks as tasks_cmd
-import teatree.core.management.commands.tasks_interactive_launch as tasks_launch
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
+from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.core.overlay import (
     DbImportStrategy,
@@ -32,7 +30,6 @@ from teatree.core.overlay import (
     RunCommands,
 )
 from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
-from tests._agent_runtime_env import interactive_runtime
 from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
@@ -88,8 +85,7 @@ class TestLifecycleCommands(TestCase):
                 extra={"worktree_path": wt_path},
             )
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
@@ -155,8 +151,7 @@ class TestHealMissingProvisionedDb(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _ticket, _wt, wt_path = self._make_worktree(tmp_path)
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
             reprovision = MagicMock()
             reprovision.run.return_value = MagicMock(ok=True, detail="healed")
             with (
@@ -179,8 +174,7 @@ class TestHealMissingProvisionedDb(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _ticket, _wt, wt_path = self._make_worktree(tmp_path)
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
@@ -230,8 +224,7 @@ class TestProvisionTicketFlag(TestCase):
             manual_path.mkdir()
             (manual_path / ".git").write_text("gitdir: /some/.git/worktrees/manual-backend\n")
 
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = tmp_path
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
 
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
@@ -279,11 +272,11 @@ class TestTaskCommands(TestCase):
         ):
             claimed_task_id = cast(
                 "int",
-                call_command("tasks", "claim", execution_target="headless", claimed_by="worker-1"),
+                call_command("tasks", "claim", claimed_by="worker-1"),
             )
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
+                call_command("tasks", "work-next", claimed_by="worker-1"),
             )
             refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
             reminders = cast("list[int]", call_command("followup", "remind"))
@@ -301,55 +294,11 @@ class TestTaskCommands(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_return_none_when_no_work_available(self) -> None:
-        assert call_command("tasks", "work-next-headless", claimed_by="worker-1") is None
-
-    def test_work_next_headless_refuses_loop_dispatched_phase(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "interactive")
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
-        # ``Task.save`` auto-routes a registered-phase HEADLESS insert to
-        # INTERACTIVE; force HEADLESS via ``route_to_headless`` (an UPDATE,
-        # not an insert) so the save default does not re-fire.
-        task.route_to_headless(reason="forced headless for the regression")
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
-
-        with patch.object(headless_mod, "run_headless", MagicMock()) as run_headless_mock:
-            sdk_result = cast(
-                "dict[str, str]",
-                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
-            )
-
-        run_headless_mock.assert_not_called()
-        assert "routing_error" in sdk_result
-        assert sdk_result["exit_code"] == "1"
-
-        task.refresh_from_db()
-        assert task.status == Task.Status.FAILED
-
-        attempt = TaskAttempt.objects.get(task=task)
-        assert attempt.exit_code == 1
-        assert "routing_error" in attempt.result
-
-    def test_work_next_headless_allows_loop_dispatched_phase_under_headless_runtime(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "headless")
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
-        task.route_to_headless(reason="forced headless for the regression")
-
-        attempt = TaskAttempt(task=task, execution_target=task.execution_target, exit_code=0)
-        with (
-            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(headless_mod, "run_headless", MagicMock(return_value=attempt)) as run_headless_mock,
-        ):
-            call_command("tasks", "work-next-headless", claimed_by="worker-1")
-
-        run_headless_mock.assert_called_once()
+        assert call_command("tasks", "work-next", claimed_by="worker-1") is None
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_work_next_headless_records_durable_failure_when_runner_raises(self) -> None:
-        # Under the no-fallback SDK cutover, ``work_next_headless`` calls ``run_headless``
+    def test_work_next_records_durable_failure_when_runner_raises(self) -> None:
+        # Under the no-fallback SDK cutover, ``work_next`` calls ``run_agent``
         # which may RAISE on an SDK client startup/query/response error. Without the
         # same failure-recording the Celery-style wrapper does, the task stays
         # silently CLAIMED until lease reap, then re-fires forever with NO durable
@@ -363,14 +312,14 @@ class TestTaskCommands(TestCase):
         boom = RuntimeError("SDK client failed to start")
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(headless_mod, "run_headless", MagicMock(side_effect=boom)) as run_headless_mock,
+            patch.object(runner_mod, "run_agent", MagicMock(side_effect=boom)) as run_agent_mock,
         ):
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
+                call_command("tasks", "work-next", claimed_by="worker-1"),
             )
 
-        run_headless_mock.assert_called_once()
+        run_agent_mock.assert_called_once()
         # Nonzero command result surfaced to the caller.
         assert sdk_result["exit_code"] == "1"
 
@@ -475,7 +424,6 @@ class TestSessionTodoRendering(TestCase):
             ticket_id=ticket_id,
             ticket_title=ticket_title,
             status=status,
-            execution_target="headless",
             phase=phase,
             execution_reason=reason,
             claimed_by="",
@@ -1046,13 +994,6 @@ class TestTicketCommand(TestCase):
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
 
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
     def test_create_headless_defaults_for_free_form_phase(self) -> None:
         # ``scoping`` has no registered author phase agent, so it is genuinely
         # headless and the default sticks. (A loop-dispatched phase like
@@ -1064,11 +1005,9 @@ class TestTasksCreateCommand(TestCase):
             call_command("tasks", "create", ticket.pk, phase="scoping", reason="Decide X."),
         )
         assert result["phase"] == "scoping"
-        assert result["execution_target"] == Task.ExecutionTarget.HEADLESS
         task = Task.objects.get(pk=result["task_id"])
         assert task.ticket_id == ticket.pk
         assert task.execution_reason == "Decide X."
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
         assert task.session.ticket_id == ticket.pk
 
     def test_create_loop_dispatched_phase_is_interactive(self) -> None:
@@ -1077,9 +1016,7 @@ class TestTasksCreateCommand(TestCase):
             "dict[str, object]",
             call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
         )
-        assert result["execution_target"] == Task.ExecutionTarget.INTERACTIVE
-        task = Task.objects.get(pk=result["task_id"])
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+        Task.objects.get(pk=result["task_id"])
 
     def test_create_reuses_latest_session(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
@@ -1090,15 +1027,6 @@ class TestTasksCreateCommand(TestCase):
         )
         task = Task.objects.get(pk=result["task_id"])
         assert task.session_id == existing.pk
-
-    def test_create_interactive_flag(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-        result = cast(
-            "dict[str, object]",
-            call_command("tasks", "create", ticket.pk, phase="scoping", reason="Decide X.", interactive=True),
-        )
-        task = Task.objects.get(pk=result["task_id"])
-        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
 
     def test_create_reason_from_file(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
@@ -1156,7 +1084,6 @@ class TestTasksCancelCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         call_command("tasks", "cancel", task.pk)
         task.refresh_from_db()
@@ -1168,7 +1095,6 @@ class TestTasksCancelCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         task.claim(claimed_by="worker-1")
         with pytest.raises(SystemExit):
@@ -1180,7 +1106,6 @@ class TestTasksCancelCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         task.claim(claimed_by="worker-1")
         call_command("tasks", "cancel", task.pk, confirm=True)
@@ -1194,7 +1119,6 @@ class TestTasksCancelCommand(TestCase):
             ticket=ticket,
             session=session,
             status=Task.Status.COMPLETED,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         with pytest.raises(SystemExit):
             call_command("tasks", "cancel", task.pk)
@@ -1212,7 +1136,6 @@ class TestTasksCancelCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
         call_command("tasks", "cancel", task.pk, reason="superseded by !6219")
@@ -1237,7 +1160,6 @@ class TestTasksCancelCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
         call_command("tasks", "cancel", task.pk)
@@ -1255,7 +1177,6 @@ class TestTasksCancelCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
         call_command("tasks", "cancel", task.pk, reason="   ")
@@ -1281,7 +1202,6 @@ class TestTasksCompleteCommand(TestCase):
             ticket=ticket,
             session=session,
             phase="coding",
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         task.claim(claimed_by="worker-1")
         return task
@@ -1341,7 +1261,6 @@ class TestTasksCompleteCommand(TestCase):
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         with pytest.raises(SystemExit) as exc:
             call_command("tasks", "complete", task.pk)
@@ -1356,7 +1275,6 @@ class TestTasksCompleteCommand(TestCase):
             ticket=ticket,
             session=session,
             status=Task.Status.FAILED,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         with pytest.raises(SystemExit) as exc:
             call_command("tasks", "complete", task.pk)
@@ -1377,12 +1295,10 @@ class TestTasksListCommand(TestCase):
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
         )
         result = cast("list[dict[str, object]]", call_command("tasks", "list"))
         assert len(result) == 2
@@ -1394,38 +1310,16 @@ class TestTasksListCommand(TestCase):
             ticket=ticket,
             session=session,
             status=Task.Status.COMPLETED,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
         result = cast(
             "list[dict[str, object]]",
             call_command("tasks", "list", status="completed"),
         )
         assert len(result) == 1
-
-    def test_list_filters_by_execution_target(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
-        session = Session.objects.create(ticket=ticket, overlay="test")
-        Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        )
-        Task.objects.create(
-            ticket=ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-        )
-        result = cast(
-            "list[dict[str, object]]",
-            call_command("tasks", "list", execution_target="interactive"),
-        )
-        assert len(result) == 1
-        assert result[0]["execution_target"] == "interactive"
 
     def test_list_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
         # `tasks list` is a PURE READ — it makes no writes of any kind, not even
@@ -1442,7 +1336,6 @@ class TestTasksListCommand(TestCase):
         stale = Task.objects.create(
             ticket=ticket,
             session=session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.CLAIMED,
             claimed_by="dead-worker",
             lease_expires_at=timezone.now() - timedelta(minutes=5),
@@ -1467,7 +1360,6 @@ class TestTasksListCommand(TestCase):
                 ticket_id=42,
                 ticket_title="fix the broken widget",
                 status="pending",
-                execution_target="interactive",
                 phase="coding",
                 execution_reason="resume after user input",
                 claimed_by="",
@@ -1483,7 +1375,6 @@ class TestTasksListCommand(TestCase):
         assert "ID" in out
         assert "Ticket" in out
         assert "Phase" in out
-        assert "interactive" in out
         assert "coding" in out
         assert "resume after" in out
         # #2092: the table carries the ticket title, never a bare numeric id alone.
@@ -1498,129 +1389,6 @@ class TestTasksListCommand(TestCase):
         buf = StringIO()
         render_tasks_table([], stream=buf)
         assert "No tasks" in buf.getvalue()
-
-
-class TestTasksStartCommand(TestCase):
-    """Tests for the tasks start subcommand (inline interactive launch)."""
-
-    @pytest.fixture(autouse=True)
-    def _interactive_lane(self) -> Iterator[None]:
-        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
-        # in-session interactive lane, so it names the runtime it exercises.
-        with interactive_runtime():
-            yield
-
-    def setUp(self) -> None:
-        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
-        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
-
-    @staticmethod
-    def _patch_env(run_mock: MagicMock) -> list[AbstractContextManager[object]]:
-        return [
-            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(tasks_launch.shutil, "which", return_value="/usr/bin/claude"),
-            patch("teatree.utils.run.run_streamed", new=run_mock),
-        ]
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_start_claims_next_interactive_task_and_runs_claude(self) -> None:
-        Task.objects.create(
-            ticket=self.ticket,
-            session=self.session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-        )
-        user_task = Task.objects.create(
-            ticket=self.ticket,
-            session=self.session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-            phase="coding",
-        )
-
-        run_mock = MagicMock(return_value=0)
-        p1, p2, p3 = self._patch_env(run_mock)
-        with p1, p2, p3, pytest.raises(SystemExit) as exc:
-            call_command("tasks", "start")
-
-        assert exc.value.code == 0
-        run_mock.assert_called_once()
-        argv = run_mock.call_args[0][0]
-        assert argv[0] == "/usr/bin/claude"
-        assert "--append-system-prompt" in argv
-
-        user_task.refresh_from_db()
-        assert user_task.status == Task.Status.CLAIMED
-        assert user_task.claimed_by == "cli"
-        assert TaskAttempt.objects.filter(task=user_task, launch_url="").count() == 1
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_start_with_task_id_claims_specific_task(self) -> None:
-        task = Task.objects.create(
-            ticket=self.ticket,
-            session=self.session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        )
-
-        run_mock = MagicMock(return_value=0)
-        p1, p2, p3 = self._patch_env(run_mock)
-        with p1, p2, p3, pytest.raises(SystemExit):
-            call_command("tasks", "start", task.pk)
-
-        run_mock.assert_called_once()
-        task.refresh_from_db()
-        assert task.status == Task.Status.CLAIMED
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_start_with_no_pending_tasks_skips_run(self) -> None:
-        run_mock = MagicMock(return_value=0)
-        p1, p2, p3 = self._patch_env(run_mock)
-        with p1, p2, p3:
-            call_command("tasks", "start")
-        run_mock.assert_not_called()
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_start_rejects_headless_task_id(self) -> None:
-        task = Task.objects.create(
-            ticket=self.ticket,
-            session=self.session,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-        )
-
-        run_mock = MagicMock(return_value=0)
-        p1, p2, p3 = self._patch_env(run_mock)
-        with p1, p2, p3, pytest.raises(SystemExit):
-            call_command("tasks", "start", task.pk)
-
-        run_mock.assert_not_called()
-        task.refresh_from_db()
-        assert task.status == Task.Status.PENDING
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_start_resumes_when_session_has_claude_uuid(self) -> None:
-        uuid = "01234567-89ab-cdef-0123-456789abcdef"
-        session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id=uuid)
-        Task.objects.create(
-            ticket=self.ticket,
-            session=session,
-            execution_target=Task.ExecutionTarget.INTERACTIVE,
-        )
-
-        run_mock = MagicMock(return_value=0)
-        p1, p2, p3 = self._patch_env(run_mock)
-        with p1, p2, p3, pytest.raises(SystemExit):
-            call_command("tasks", "start")
-
-        argv = run_mock.call_args[0][0]
-        assert "--resume" in argv
-        assert uuid in argv
-
-    @override_settings(**COMMAND_SETTINGS)
-    def test_start_with_invalid_task_id_exits(self) -> None:
-        run_mock = MagicMock(return_value=0)
-        p1, p2, p3 = self._patch_env(run_mock)
-        with p1, p2, p3, pytest.raises(SystemExit) as exc:
-            call_command("tasks", "start", 99999)
-        assert exc.value.code == 1
-        run_mock.assert_not_called()
 
 
 class TestResolveReason:

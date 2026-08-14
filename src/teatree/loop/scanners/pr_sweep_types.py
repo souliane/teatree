@@ -32,6 +32,14 @@ GH_CONFLICT_MERGE_STATE = "DIRTY"
 # can never drift.
 MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 
+# The reason a PR carries when a CLEAR for it EXISTS but cannot authorise the live
+# head (issued against a since-superseded tree, or missing a load-bearing field).
+# Distinct from the no-CLEAR reasons on purpose: reporting an absent authorisation
+# as a verdict about review named the wrong cause and hid a re-issuable CLEAR
+# behind a log line for as long as it existed (#4249). Owner-audience — see
+# ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
+CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
+
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:
@@ -67,7 +75,13 @@ class PrSummary:
 
 @dataclass(frozen=True, slots=True)
 class MergeAttempt:
-    """The scanner's per-PR decision plus any merge outcome."""
+    """The scanner's per-PR decision plus any merge outcome.
+
+    ``failing_required`` and ``base_current`` are the CI facts the decision was
+    made on, carried out to the emitted signal so a CROSS-PR comparison (#4090)
+    can ask a question about the SET without re-listing and re-classifying every
+    PR. Empty / ``True`` on any path that never reached the CI gate.
+    """
 
     slug: str
     pr_id: int
@@ -77,3 +91,5 @@ class MergeAttempt:
     reason: str = ""
     url: str = ""
     review_dispatched: bool = False
+    failing_required: tuple[str, ...] = ()
+    base_current: bool = True

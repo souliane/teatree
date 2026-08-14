@@ -16,9 +16,10 @@ from teatree.loops.directive_loop.ratify import (
     RatificationVerdict,
     ask_ratification,
     classify_ratification_answer,
+    render_sketch,
     try_admit,
 )
-from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
+from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
 #: The six ratifications the owner actually recorded against directives #38, #40, #41,
 #: #42, #43 and #45 — verbatim, from the DeferredQuestion rows they were answered on.
@@ -62,6 +63,20 @@ DESTROYED_OWNER_APPROVAL = (
     "implementation already covers it."
 )
 
+#: A negated approval is the owner saying *not yet, here is what I need first*. "I do not
+#: approve this" is the same shape as "not approved yet", so no token classifier can tell
+#: a decided refusal from a deferral — the undecidable one must hold, never reject (#4184).
+NEGATED_APPROVALS = (
+    "not approved yet",
+    "cannot approve until the chokepoint is named",
+    "I won't approve this without a regression test",
+    "I do not approve this.",
+    "no approval from me",
+)
+
+#: A bare denial its own opening clause then takes back.
+CONTRADICTED_DENIAL = "Nope, actually approve it"
+
 
 def _interpreted_directive() -> Directive:
     directive = Directive.objects.capture("max 1 MR per repo for overlay X", source=Directive.Source.CLI)
@@ -102,6 +117,14 @@ class TestAskRatification(TestCase):
         assert question.question.startswith(f"Ratify directive #{directive.pk}: at most 1 open PR")
         assert "provenance=" not in question.question
         assert "Verbatim source" not in question.question
+
+    def test_a_default_behaviour_sketch_renders_as_unconditional_not_as_an_empty_setting(self) -> None:
+        # #4181: the ratify DM is the human's decision surface — a setting-less sketch
+        # must not render "add setting `` ()" as if a knob were being minted.
+        rendered = render_sketch(sketch_from_envelope(default_behaviour_envelope()))
+        assert "unconditional" in rendered
+        assert "setting=" not in rendered
+        assert "activate" not in rendered
 
     def test_ask_refuses_a_directive_with_no_sketch(self) -> None:
         directive = Directive.objects.capture("not interpreted", source=Directive.Source.CLI)
@@ -152,26 +175,6 @@ class TestTryAdmit(TestCase):
         assert "scope it to open PRs only" in directive.decision_reason
 
 
-@pytest.mark.parametrize(
-    ("answer", "expected"),
-    [
-        ("approve", RatificationVerdict.APPROVAL),
-        ("RATIFIED, NO SETTING (directive #41). Do NOT mint the setting.", RatificationVerdict.APPROVAL),
-        ("NO SETTING, RATIFIED — just do it.", RatificationVerdict.APPROVAL),
-        ("Approved. The owner approves ALL directives on this box.", RatificationVerdict.APPROVAL),
-        ("I do not approve this.", RatificationVerdict.DENIAL),
-        ("no approval from me", RatificationVerdict.DENIAL),
-        ("no, this is the wrong mechanism", RatificationVerdict.DENIAL),
-        ("Rejected — it duplicates the existing gate.", RatificationVerdict.DENIAL),
-        ("let's talk about this at standup tomorrow", RatificationVerdict.UNRECOGNISED),
-        ("what is the approval policy for this class?", RatificationVerdict.UNRECOGNISED),
-        ("", RatificationVerdict.UNRECOGNISED),
-    ],
-)
-def test_ratification_answer_classification(answer: str, expected: RatificationVerdict) -> None:
-    assert classify_ratification_answer(answer) is expected
-
-
 class TestProseRatification(TestCase):
     """An owner ratification is prose, not one of eight bare tokens (#4160)."""
 
@@ -197,13 +200,32 @@ class TestProseRatification(TestCase):
             assert try_admit(directive) == "rejected", answer
             assert directive.state == Directive.State.REJECTED
 
-    def test_a_denial_containing_the_word_approve_still_rejects(self) -> None:
-        directive = _interpreted_directive()
-        question = ask_ratification(directive)
-        DeferredQuestion.consume(question.pk, answer="I do not approve this.")
-        directive.refresh_from_db()
-        assert try_admit(directive) == "rejected"
-        assert directive.state == Directive.State.REJECTED
+    def test_a_bare_denial_still_reaches_the_terminal_state(self) -> None:
+        # The fix must not make a genuine refusal unexpressible (#4184 AC2).
+        for answer in ("no", "rejected", "denied"):
+            directive = _interpreted_directive()
+            question = ask_ratification(directive)
+            DeferredQuestion.consume(question.pk, answer=answer)
+            directive.refresh_from_db()
+            assert try_admit(directive) == "rejected", answer
+            assert directive.state == Directive.State.REJECTED, answer
+
+
+class TestNegatedApprovalIsADeferralNotARefusal(TestCase):
+    """#4184: an answer the classifier cannot confidently read as a denial re-asks."""
+
+    def test_a_negated_approval_holds_at_ratify_pending(self) -> None:
+        for answer in (*NEGATED_APPROVALS, CONTRADICTED_DENIAL):
+            directive = _interpreted_directive()
+            first = ask_ratification(directive)
+            DeferredQuestion.consume(first.pk, answer=answer)
+            directive.refresh_from_db()
+            assert try_admit(directive) == "reasked", answer
+            directive.refresh_from_db()
+            assert directive.state == Directive.State.RATIFY_PENDING, answer
+            assert directive.ratify_question is not None
+            assert directive.ratify_question.pk != first.pk, answer
+            assert directive.ratify_question.answered_at is None, answer
 
 
 class TestUndecidableAnswerDefers(TestCase):

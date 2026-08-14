@@ -24,7 +24,17 @@ from tests.factories import TaskAttemptFactory, TaskFactory, TicketFactory
 State = Ticket.State
 
 _BOARD_MAX_QUERIES = 12
-_HEALTH_MAX_QUERIES = 30
+#: The health panel resolves the operating mode twice when nothing memoizes it — once for
+#: its own band, once inside the effective-verdict read behind the starvation axis — and
+#: each resolve now reads BOTH sides of the live-presence flip, because membership is the
+#: closure over them and knowing both sides costs one mode lookup. The SERVED page pays
+#: neither: ``cached_per_request`` under the dash middleware's request scope collapses the
+#: resolves to one, and its pinned plan is two queries CHEAPER than before #4196. This
+#: builder is called bare, which is the un-memoized worst case the bound exists to cap.
+#: #4202 adds one settings read per resolve — the presence-upgrade target is no longer
+#: decided from a boolean already on the row — so that worst case is +2.
+#: Flatness across row count — the property this file actually asserts — is unaffected.
+_HEALTH_MAX_QUERIES = 36
 _PRESETS_MAX_QUERIES = 14
 
 

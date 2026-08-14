@@ -1,4 +1,4 @@
-"""Two readings of ``dev/.test_durations``, both ahead of the outage rather than during it (#4048).
+"""Three readings of ``dev/.test_durations``, all ahead of the outage rather than during it (#4048).
 
 The daily scheduled ``refresh-durations`` job is the only thing that keeps the
 file current, and its failure mode is silence: the job is skipped, no refresh PR
@@ -14,13 +14,19 @@ the tight local ceiling was sized for; the recorded durations are what say
 whether a test is living off that raise. A raise nobody measures only moves the
 cliff.
 
-So both signals are read off the committed artifact — the shape #3892 landed for
+The third reading is the one that says the refresh has *stopped* rather than merely
+fallen behind: how long ago a commit last touched the artifact. Coverage cannot say
+it — a stalled pipeline and a pipeline still catching up read the same there — and it
+is the only reading here that pages.
+
+So all three signals are read off the committed artifact — the shape #3892 landed for
 the CI OAuth pool, whose identical failure was a decaying value nobody was
-watching until every merge stopped. Neither is a PR gate: staleness and drift are
+watching until every merge stopped. None is a PR gate: staleness and drift are
 not attributable to any diff, and a required check that reds every PR for
 something no author caused is the very thing this epic exists to remove.
 """
 
+import datetime as dt
 from typing import TYPE_CHECKING
 
 import typer
@@ -45,9 +51,10 @@ def check_test_durations_coverage() -> bool:
     mode this epic exists to remove, one surface over. The reading itself is
     unchanged — the same numbers and the same remedy print at every session start.
 
-    ``MIN_FILE_COVERAGE`` is untouched; only the severity is. The companion headroom
-    check keeps its FAIL, because a recorded over-run is a discrete, attributable fact
-    that a single commit clears.
+    ``MIN_FILE_COVERAGE`` is untouched; only the severity is. What a shortfall cannot
+    say is whether anything is closing it — a pipeline catching up and a pipeline that
+    has stopped both read as low coverage here. That is
+    :func:`check_test_durations_freshness`'s question, and it is the one that pages.
     """
     from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.quality import durations_coverage, durations_file  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -87,6 +94,60 @@ def check_test_durations_coverage() -> bool:
     return True
 
 
+def check_test_durations_freshness() -> bool:
+    """FAIL when no commit has refreshed the durations artifact for ``MAX_REFRESH_AGE`` (#4130).
+
+    The one page on this surface, and deliberately keyed on age rather than on the
+    coverage figure its sibling reports. A shortfall clears only when a refresh PR
+    merges, which can take weeks, so paging on it is a standing nightly alarm for
+    something no actor caused — the failure this epic exists to remove. An age past
+    the threshold is the opposite: it says the refresh itself has stopped, it is
+    actionable by whoever reads it, and merging one refresh PR clears it for good.
+
+    Silent when the age cannot be established (not a checkout, or a clone too shallow
+    to hold the commit), and a WARN — never a FAIL, never silence — when git refuses
+    to answer at all, so a check that has quietly stopped measuring is visible as
+    unverified rather than indistinguishable from a healthy one.
+    """
+    from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.quality import durations_freshness  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    repo = DoctorService.find_teatree_repo()
+    if repo is None:
+        return True
+
+    try:
+        freshness = durations_freshness.measure_durations_freshness(repo, now=dt.datetime.now(tz=dt.UTC))
+    except durations_freshness.DurationsHistoryUnreadableError as exc:
+        typer.echo(f"WARN  Test-shard durations refresh age is UNVERIFIED: {exc}")
+        return True
+    except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
+        typer.echo(f"WARN  Test-shard durations freshness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+
+    if freshness is None:
+        return True
+
+    landed = freshness.last_refreshed_at.date().isoformat()
+    if not freshness.is_stale:
+        day_word = "day" if freshness.age.days == 1 else "days"
+        typer.echo(f"OK    Test-shard durations were refreshed {freshness.age.days} {day_word} ago ({landed})")
+        return True
+
+    typer.echo(
+        f"FAIL  Test-shard durations have not been refreshed in {freshness.age.days} days "
+        f"(last landed {landed}, threshold {durations_freshness.MAX_REFRESH_AGE.days} days) — the daily "
+        "refresh has stopped reaching `main`, so the 12-way split is drifting further from the suite "
+        "it is splitting with nothing else to say so."
+    )
+    typer.echo(
+        "      Either `ci/test-durations-refresh` is open and unmerged — merge it — or the scheduled "
+        "run is not producing one: check the latest `schedule` run of the CI workflow, and its "
+        "`refresh-durations` job in particular."
+    )
+    return False
+
+
 def check_test_timeout_headroom() -> bool:
     """FAIL when a recorded duration exceeds the ceiling that applies to that test."""
     from teatree.cli.doctor.service import DoctorService  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -109,7 +170,10 @@ def check_test_timeout_headroom() -> bool:
         typer.echo(
             f"FAIL  {len(over)} recorded test(s) exceed the timeout ceiling that applies to them — "
             "recorded, not predicted, so the shard that draws one reds whichever PR is in flight. "
-            "Make each faster, or raise its own `@pytest.mark.timeout` to the measured cost."
+            "Raising a test's own `@pytest.mark.timeout` to the measured cost clears this now (the "
+            "ceiling is read from source); making the test faster is the better fix but leaves this "
+            "standing until the next durations refresh lands, because the seconds are read from the "
+            "committed file."
         )
     else:
         typer.echo(

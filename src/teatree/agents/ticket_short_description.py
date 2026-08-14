@@ -12,7 +12,7 @@ of degrading, so a misrouted base URL surfaces rather than silently truncating
 every row.
 
 It lives in the agents layer because it drives a model turn, and it reaches the
-headless dispatch the same way the headless runner does: registered into
+agent dispatch the same way the agent runner does: registered into
 :mod:`teatree.core.deterministic_phases` at app-ready, so ``core`` never imports
 ``agents``. Both consumers share it — the ``manage.py ticket_short_describe`` CLI
 and the ``short_describe`` phase whose wiring #3570 was missing.

@@ -3,12 +3,12 @@
 The generic core shape a plain-language max-one-MR-per-repo directive resolves
 to: a durable ``UserSettings`` knob read as data at the core PR-creation seams,
 never an overlay-local branch in core. The check runs at every ``host.create_pr``
-call site so no route can bypass it: ``ShipExecutor._open_pr_and_record`` (the
-ship pipeline — the interactive ``pr create`` async worker AND the autonomous
+call site so no route can bypass it: ``ShipExecutor._refusal_before_outward_write``
+(the ship pipeline — the interactive ``pr create`` async worker AND the autonomous
 loop's task-driven ship both converge here) and ``_ensure_pr.create_or_defer_pr``
-(the orphan-branch ``ensure-pr`` path). ``_run_ship_gates`` additionally
-fail-fasts the interactive ``pr create`` before its push, so a refused ship never
-leaves an orphan remote branch.
+(the orphan-branch ``ensure-pr`` path). Both reach their verdict BEFORE the push,
+so a refused ship leaves neither an orphan remote branch nor the PR the pre-push
+``ensure-pr`` hook would have opened for it (#4151).
 
 Constraint-as-data: ``max_open_prs_per_repo_per_ticket`` is read through
 ``get_effective_settings`` so its scope is a per-overlay ``ConfigSetting`` row —

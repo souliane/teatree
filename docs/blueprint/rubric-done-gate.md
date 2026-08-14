@@ -20,14 +20,14 @@ Concretely, `core/merge/execution.py::assert_merge_preconditions` calls `_assert
 - **`RubricCriterion`** — FK to `Rubric`, `ordinal`, `text`, `status` (`pending`/`pass`/`fail`, default `pending`), `grader_identity`, `reviewed_sha`, `rationale`, `graded_at`. A `UniqueConstraint(rubric, ordinal)`. The grade is recorded ONLY through the guarded `record_grade` factory.
 - **`RubricError`** — raised by both `populate` and `record_grade` on a contract violation.
 
-The record follows the durable, compaction-surviving pattern of `ReviewVerdict` / `MergeClear`: the DB row is the truth, and `record_grade` shares `MergeClear`'s validation primitives (`is_commit_sha`, `is_non_reviewer_role`) so the rubric-grade contract and the CLEAR/verdict contract cannot drift apart.
+The record follows the durable, compaction-surviving pattern of `ReviewVerdict` / `MergeClear`: the DB row is the truth, and `record_grade` shares `MergeClear`'s validation primitives (`is_commit_sha`, `is_independent_reviewer_identity`) so the rubric-grade contract and the CLEAR/verdict contract cannot drift apart.
 
 ### The guarded grade factory
 
 `RubricCriterion.record_grade(status, grader_identity, reviewed_sha, rationale)` refuses, before stamping:
 
 - a non-terminal `status` (PENDING is not a grade — only `pass`/`fail`);
-- an empty `grader_identity`, or one that `is_non_reviewer_role` classifies as a maker/coding-agent/loop role (the maker can never self-attest a criterion — the same guard `MergeClear.issue` / `ReviewVerdict.record` apply);
+- an empty `grader_identity`, or one that `is_independent_reviewer_identity` does not admit as an independent verifier (the maker can never self-attest a criterion — the same guard `MergeClear.issue` / `ReviewVerdict.record` apply);
 - a `reviewed_sha` that is not a full 40-char hex commit SHA (the grade binds to the exact reviewed tree, so the done-gate's head-equality check cannot silently fail on a truncated SHA).
 
 ### The fail-closed predicate

@@ -141,6 +141,5 @@ class DirectiveDispatch(models.Model):
             ticket=ticket,
             session=session,
             phase=INTERPRET_PHASE,
-            execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason=contract,
         )

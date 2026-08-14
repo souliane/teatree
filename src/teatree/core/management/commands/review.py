@@ -22,9 +22,10 @@ import json
 from typing import Annotated, TypedDict
 
 import typer
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
 from teatree.core.models import (
@@ -37,6 +38,7 @@ from teatree.core.models import (
     ReviewVerdictError,
     Ticket,
 )
+from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.project import find_project_root
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -118,7 +120,11 @@ def _parse_findings(raw: str) -> list[Finding]:
     return [Finding.from_dict(item) for item in data if isinstance(item, dict)]
 
 
-class Command(TyperCommand):
+# #4234: `record`, `record-evidence` and `lock-acquire` RETURN their refusal so a caller
+# can route on it; the base class is what restores the exit code for the shell.
+class Command(RefusalExitTyperCommand):
+    """Review verdicts, evidence, comments and the per-MR review lock."""
+
     @initialize()
     def init(self) -> None:
         """``t3 <overlay> review`` group root."""
@@ -159,6 +165,15 @@ class Command(TyperCommand):
                 "Naming a DIFFERENT identity releases nothing.",
             ),
         ] = "",
+        merge_result_retake: Annotated[
+            bool,
+            typer.Option(
+                "--merge-result-retake",
+                help="Attest that every finding citing a file outside the PR's changed-file set was "
+                "re-measured on the materialised MERGE RESULT (`t3 review merge-tree`), not the branch "
+                "checkout alone. Without it such a finding cannot carry blocking severity (#4251).",
+            ),
+        ] = False,
     ) -> RecordResult:
         """Persist a cold-review verdict for a PR at an exact reviewed SHA.
 
@@ -166,7 +181,10 @@ class Command(TyperCommand):
         merge, this records the *judgment* so ``review status`` can answer
         "safe to approve at the current head?" without a fresh cold review.
         Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
-        verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
+        verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks),
+        plus the #4251 diff-scope refusal: the PR's changed-file set is read from
+        the forge here, and a blocking finding citing a file outside it needs
+        ``--merge-result-retake``.
         """
         if not _looks_like_owner_repo(slug):
             self.stderr.write(
@@ -208,6 +226,8 @@ class Command(TyperCommand):
                 gh_verify_result=gh_verify_result,
                 ticket=resolved_ticket,
                 lock_holder=lock_holder,
+                changed_files=changed_file_set_for_findings(findings, slug=slug, pr_id=pr_id),
+                merge_result_retake=merge_result_retake,
             )
         except ReviewVerdictError as exc:
             self.stdout.write(f"  record refused: {exc}")

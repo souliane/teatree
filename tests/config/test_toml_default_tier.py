@@ -203,7 +203,7 @@ class TestEveryShippedKeyIsPinned:
 
     def test_cold_keys_ship_their_unset_sentinel(self) -> None:
         # Each cold key's reader treats an absent row / empty string / non-explicit-true as
-        # UNSET and applies its own fallback (e.g. `loop_preset._low_power_preset_name`
+        # UNSET and applies its own fallback (e.g. `loop_preset.low_power_preset_name`
         # returns DEFAULT_LOW_POWER_PRESET for a blank value). So the shipped value is the
         # UNSET SENTINEL, never the fallback the reader materialises from it — writing the
         # fallback in would make the key read as explicitly set.

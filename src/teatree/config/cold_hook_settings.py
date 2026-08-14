@@ -73,6 +73,9 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_goal_stop_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "stop_snapshotter_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "answer_first_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "unbacked_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "verbatim_paste_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "deny_circuit_breaker_threshold": ColdHookSetting(_parse_strict_int, default=3),
     "orchestrator_turn_budget": ColdHookSetting(_parse_strict_int, default=25),

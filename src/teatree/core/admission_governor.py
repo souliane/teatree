@@ -28,7 +28,7 @@ import math
 import os
 from dataclasses import dataclass
 
-from teatree.utils import ram_probe
+from teatree.utils import ram_scope
 
 logger = logging.getLogger(__name__)
 
@@ -503,12 +503,19 @@ def read_merge_signal(*, overlay: str = "", stuck_after: int = MERGE_STUCK_AFTER
 def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSignal:
     """The deterministic, model-free machine probe (stdlib only, no external process).
 
-    Memory comes from :func:`~teatree.utils.ram_probe.effective_available_ram_mib`, the ONE
-    cgroup-aware reader — ``min(host MemAvailable, memory.max - memory.current)``. Reading
-    ``/proc/meminfo`` here instead would report the HOST figure inside a container and
-    would be invisible to that reader's own fix (#4118). Its ``None`` (unreadable) is a
-    different answer from ``0`` (readable, nothing left) and is carried through as ``None``
-    rather than collapsed to a number nobody measured.
+    Memory comes from :attr:`~teatree.utils.ram_scope.RamHeadroom.box_watermark_mib`, the ONE
+    cgroup-aware reader. Reading ``/proc/meminfo`` here instead would report the HOST figure
+    inside a container and would be invisible to that reader's own fix (#4118).
+
+    That reading is SCOPE-QUALIFIED, which the watermarks this signal feeds require (#4217):
+    :data:`RAM_BRAKE_FLOOR_GB` and :data:`RAM_RESUME_FLOOR_GB` are absolute box-wide numbers,
+    so a reading taken in a cgroup too small to host an agent workload is not theirs to judge
+    — the admin sidecar read 1.65 GB at the same instant the worker read 15.88 GB, and its
+    fixed 2 GiB cap put every dispatch under a floor it could never rise above. Such a scope
+    falls back to the host component, which is box-wide at any cap, so a genuinely starved box
+    still brakes from inside a sidecar (#4252). ``None`` (nothing box-scoped readable) is a
+    different answer from ``0`` (readable, nothing left), carried through rather than collapsed
+    to a number nobody measured.
 
     An explicit *ram_available_gb* wins, so a caller holding a reading of its own is never
     made to pay for a second probe.
@@ -518,7 +525,7 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
     except OSError:
         load1 = 0.0
     if ram_available_gb is None:
-        available_mib = ram_probe.effective_available_ram_mib()
+        available_mib = ram_scope.read_ram_headroom().box_watermark_mib
         ram_available_gb = None if available_mib is None else available_mib / _MIB_PER_GB
     return MachineSignal(cores=os.cpu_count() or 1, load1=load1, ram_available_gb=ram_available_gb)
 

@@ -1,0 +1,3 @@
+# Path-qualified symbol whose module is live and whose symbol is not
+
+The tier table exposes `agents/model_tiering.no_such_tier_helper`.

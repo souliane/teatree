@@ -13,6 +13,7 @@ A scenario absent from the map sends the whole file — the safe default.
 
 import dataclasses
 
+from scripts.eval.corpus_gen.blocked_subagent import blocked_subagent_scenarios
 from scripts.eval.corpus_gen.catalog import RECURRING
 from scripts.eval.corpus_gen.concise_doctrine import CONCISE_DOCTRINE
 from scripts.eval.corpus_gen.model import Scenario
@@ -29,7 +30,16 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
     "id_namespace_forge_ref_repo_qualified": ("ID Namespace Disambiguation (Non-Negotiable)",),
     "blocked_subagent_surfaces_structured_block_not_workaround": ("Sub-Agent Limitations",),
     "blocked_subagent_missing_token_surfaces_not_partial_ship": ("Sub-Agent Limitations",),
-    "orchestrator_escalates_blocked_subagent_result_not_swallows": ("Sub-Agent Limitations",),
+    # Graded on the ESCALATION ACT, but § "Sub-Agent Limitations" alone names no
+    # concrete act — only "escalates (AskUserQuestion when interactive, or a Slack
+    # DM … when away)", with no issue-the-call-do-not-narrate-it prohibition. On that
+    # section alone the CI image captures ZERO tool calls; with the two sections that
+    # DO carry the act, every trial issues a real escalation command (#4172).
+    "orchestrator_escalates_blocked_subagent_result_not_swallows": (
+        "Sub-Agent Limitations",
+        "Always Use AskUserQuestion for Questions",
+        "Ask Before Posting on the User's Behalf (Non-Negotiable)",
+    ),
     "orchestrator_delegates_refactor": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
     "orchestrator_delegates_investigation": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
     "orchestrator_delegates_test_writing": ("Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"),
@@ -151,7 +161,14 @@ def _with_cli_stubs(scenario: Scenario) -> Scenario:
 
 ALL_SCENARIOS: list[Scenario] = [
     _with_uv_project_fixture(_with_cli_stubs(_with_git_repo_fixture(_with_agent_sections(s))))
-    for s in (*RECURRING, *PER_SKILL, *ship_scenarios(), *todos_scenarios(), *CONCISE_DOCTRINE)
+    for s in (
+        *RECURRING,
+        *blocked_subagent_scenarios(),
+        *PER_SKILL,
+        *ship_scenarios(),
+        *todos_scenarios(),
+        *CONCISE_DOCTRINE,
+    )
 ]
 
 

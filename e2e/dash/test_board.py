@@ -63,3 +63,20 @@ def test_poll_preserves_board_scroll_and_open_drawer(
         msg = f"board scroll reset to {scroll}, expected {_SCROLL_TARGET} (morph must preserve it)"
         raise AssertionError(msg)
     expect(page.locator("#drawer .drawer")).to_be_visible()
+
+
+def test_review_now_on_a_card_enqueues_without_opening_the_drawer_first(
+    live_server: LiveServer, page: Page, seeded_board: SeededBoard
+) -> None:
+    """#4085: prioritise a PR from the row it is already on, not a raw DB query plus a CLI call."""
+    board = BoardPage(page, live_server.url)
+    board.open()
+    review_now = board.enqueue_buttons_on(seeded_board.reviewing.pk).filter(has_text="Review now")
+    expect(review_now).to_be_enabled()
+
+    page.on("dialog", lambda dialog: dialog.accept())
+    review_now.click()
+
+    # The drawer swaps in carrying the queued task — the card press is its own feedback.
+    expect(page.locator("#drawer .drawer")).to_be_visible()
+    expect(page.locator("#drawer")).to_contain_text("reviewing")

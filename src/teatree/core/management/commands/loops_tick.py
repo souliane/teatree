@@ -7,17 +7,12 @@ firing this command scoped to its own row on its own cadence. Invoking
 ``t3 loops tick`` with NO ``--loop`` is a hard error pointing at the per-loop
 usage, so neither a human nor an agent can start a fat fan-out tick.
 
-Each per-loop tick first reconciles the operating mode (#2544, #61): both drivers
-that fire this command — the ``t3 worker``'s deadlined subprocess timer tick
-(``python -m teatree loops_tick --loop <name>``) and a manual by-hand
-``t3 loops tick --loop <name>`` — converge here, so consulting
-:func:`teatree.core.mode_resolution.resolve_active_mode` in ONE place reconciles both
-drivers identically. When the resolved mode's ``pauses_self_pump`` is true (a
-holiday-away mode only), the tick is skipped silently (parked) before any lease is
-claimed or overlay is preflighted; an autonomous-away mode defers questions but does
-NOT pause here, so an unattended run keeps self-pumping.
+Both drivers that fire this command — the ``t3 worker``'s deadlined subprocess timer
+tick (``python -m teatree loops_tick --loop <name>``) and a manual by-hand
+``t3 loops tick --loop <name>`` — converge here, so the mode mask is applied in ONE
+place for both.
 
-Otherwise the tick scopes the jobs builder to that ONE enabled, due row, claims
+The tick scopes the jobs builder to that ONE enabled, due row, claims
 the disjoint per-loop ``loop:<name>`` lease (so the N per-loop loops run in
 parallel instead of serialising on a single owner) plus the ``loop-tick:<name>``
 mutex, preflights ONLY that loop's overlay (so one overlay's connector outage
@@ -26,14 +21,6 @@ self-update reinstall in this fresh subprocess before scanner imports, installs
 the mini-loop schedules reader so the statusline loop line keeps its per-loop
 countdowns, and runs the shared :func:`teatree.loop.tick.run_tick` pipeline (reap
 + scan + act + render).
-
-A row with ``Loop.colleague_facing`` set is gated a second, finer-grained way
-(#2904), downstream in ``teatree.loops.loop_table._loop_admitted``: it is not
-admitted while ``resolved.defers_questions`` is true — ``autonomous_away``
-included, even though this tick is not parked here for that mode. So an
-``autonomous_away`` per-loop tick of a colleague-facing row still claims its
-lease and preflights its overlay, but the jobs builder yields nothing and the
-row's cadence anchor is preserved untouched (same as a disabled/not-due row).
 
 The reactive infra loops (Slack-answer, self-improve, drain-queue) are NOT driven
 here: each is its own dedicated native Claude ``/loop`` running its own
@@ -54,7 +41,6 @@ from django_typer.management import TyperCommand
 from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
-from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
 from teatree.loop.preset_resolution import active_overlay_scope
@@ -301,22 +287,6 @@ class Command(TyperCommand):
                 "`t3 loop enable <name>` (the reconciler adds its timer); `t3 worker status` shows the worker."
             )
             raise SystemExit(2)
-
-        # Availability reconciliation (#2544): both drivers of a per-loop tick —
-        # the `t3 worker`'s deadlined subprocess timer tick and a manual by-hand
-        # `t3 loops tick --loop <name>` — converge on THIS command (`python -m teatree
-        # loops_tick --loop <name>` vs `t3 loops tick --loop <name>`), so gating
-        # here reconciles both with zero duplicated logic. Only holiday-`away`
-        # pauses the self-pump; `autonomous_away` defers questions but keeps the
-        # factory self-pumping, so it must NOT park here.
-        resolved = resolve_active_mode()
-        if resolved.pauses_self_pump:
-            self._emit_skip(
-                f"mode={resolved.name} ({resolved.source}) — self-pump paused, tick parked",
-                json_output=json_output,
-                statusline_file=statusline_file,
-            )
-            return
 
         # A per-loop tick (#2650) preflights ONLY its own overlay, gated on the
         # loop being enabled + due — so one overlay's connector outage can't

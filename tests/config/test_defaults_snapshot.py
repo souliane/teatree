@@ -25,9 +25,11 @@ from teatree.config.defaults_snapshot import (
     render_toml,
 )
 from teatree.config.feature_flags import dark_flags
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.schema import _DEFAULTS_TOML, Category, setting_meta
 from teatree.config.setting_groups import grouped_key_order
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.mcp.write_tools import refuse_reason
 
 
 def _shipped() -> dict[str, Any]:
@@ -111,7 +113,7 @@ class TestNeverMovedThroughThisPath:
         plan = _plan({"outer_loop_enabled": True})
         assert plan.changes == ()
         assert _emitted(plan.toml)["outer_loop_enabled"] is False
-        assert {d.key: d.reason for d in plan.declined}["outer_loop_enabled"] == "dark-flag"
+        assert {d.key: d.reason for d in plan.declined}["outer_loop_enabled"] == "feature-flag"
 
     def test_every_safety_and_dark_key_is_declined_even_when_the_live_box_moved_it(self) -> None:
         moved = dict.fromkeys(SAFETY_POSTURE_KEYS | frozenset(dark_flags()), "__moved__")
@@ -122,22 +124,50 @@ class TestNeverMovedThroughThisPath:
         for key in moved:
             assert emitted[key] == shipped[key]
 
+    def test_the_master_fail_open_switch_is_declined(self) -> None:
+        # The documented self-rescue (`t3 review gate fail-open enable`) leaves a live
+        # `danger_gate_fail_open = true` row behind. It is Category.DEFAULT and sits in
+        # neither SAFETY_POSTURE_KEYS nor `dark_flags()`, so the planner used to offer the
+        # master fail-open switch as a shipped default — inside a multi-key diff the owner
+        # approves in one answer.
+        plan = _plan({"danger_gate_fail_open": True})
+        assert plan.changes == ()
+        assert _emitted(plan.toml)["danger_gate_fail_open"] is False
+        assert {d.key: d.reason for d in plan.declined}["danger_gate_fail_open"] == "cold-read"
+
+    def test_a_cold_hook_gate_kill_switch_is_declined(self) -> None:
+        plan = _plan({"banned_terms_gate_enabled": False})
+        assert plan.changes == ()
+        assert _emitted(plan.toml)["banned_terms_gate_enabled"] is True
+        assert {d.key: d.reason for d in plan.declined}["banned_terms_gate_enabled"] == "cold-hook-gate"
+
+    def test_a_warm_gate_kill_switch_is_declined(self) -> None:
+        plan = _plan({"e2e_mandatory_gate_enabled": False, "require_human_approval_to_merge": False})
+        assert plan.changes == ()
+        emitted, shipped = _emitted(plan.toml), _shipped()
+        assert emitted["e2e_mandatory_gate_enabled"] == shipped["e2e_mandatory_gate_enabled"]
+        assert emitted["require_human_approval_to_merge"] == shipped["require_human_approval_to_merge"]
+        assert {d.key: d.reason for d in plan.declined}["e2e_mandatory_gate_enabled"] == "safety-gate"
+
+    def test_every_key_the_mcp_surface_refuses_is_unmovable_here_too(self) -> None:
+        # One idea on two surfaces: a key too dangerous for an agent to flip over MCP is
+        # too dangerous to bake into every fresh install. `config` sits below `mcp` and
+        # cannot import it, so the lane lists are held equal HERE rather than by an import
+        # — an MCP refusal lane this set does not cover turns this red.
+        refused = {key for key in ALL_KNOWN_CONFIG_SETTINGS if refuse_reason(key)}
+        assert refused
+        assert refused <= pinned_fail_closed_keys()
+
     def test_workflow_engagement_override_is_declined(self) -> None:
         plan = _plan({"mode": "auto", "wip": "full", "issue_implementer_enabled": True})
         assert plan.changes == ()
         assert {d.key for d in plan.declined} >= {"mode", "wip", "issue_implementer_enabled"}
 
-    def test_conservative_keys_is_the_union_of_safety_dark_and_workflow(self) -> None:
-        assert conservative_keys() == SAFETY_POSTURE_KEYS | frozenset(dark_flags()) | WORKFLOW_ENGAGEMENT_KEYS
-
-    def test_pinned_fail_closed_keys_is_safety_plus_dark_only(self) -> None:
-        # The un-approvable set the gate also refuses — narrower than `conservative_keys`,
-        # which additionally declines the workflow keys a maintainer MAY still ship.
-        assert pinned_fail_closed_keys() == SAFETY_POSTURE_KEYS | frozenset(dark_flags())
-        assert not pinned_fail_closed_keys() & WORKFLOW_ENGAGEMENT_KEYS
+    def test_conservative_keys_is_the_pinned_set_plus_workflow(self) -> None:
+        assert conservative_keys() == pinned_fail_closed_keys() | WORKFLOW_ENGAGEMENT_KEYS
 
     def test_the_five_owner_named_keys_are_all_conservative(self) -> None:
-        assert {"wip", "mode", "autoload", "contribute", "agent_runtime"} <= WORKFLOW_ENGAGEMENT_KEYS
+        assert {"wip", "mode", "autoload", "contribute"} <= WORKFLOW_ENGAGEMENT_KEYS
 
     def test_a_banned_value_is_declined_and_never_reaches_the_file(self) -> None:
         plan = _plan(

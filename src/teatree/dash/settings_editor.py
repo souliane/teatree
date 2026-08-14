@@ -24,8 +24,8 @@ of that, so a page of N scopes costs N settings reads rather than one per render
 **A secret value never reaches the response.** :func:`~teatree.core.config_display.is_secret`
 (the shared value-masking taxonomy) drives masking here AND on the read-only config surface,
 so the two pages apply ONE policy. A secret row's value AND its shipped default are replaced
-with ``***`` HERE, before the row enters the view context. Export withholds secrets and keeps
-personal; import previews via ``import_toml_to_db(dry_run=True)``.
+with ``***`` HERE, before the row enters the view context. Transferring the whole store is a
+page of its own (:mod:`teatree.dash.interchange`) — its scope is wider than this grid's.
 
 Help text and the constrained-value options are both DERIVED, never re-typed:
 :func:`~teatree.config.setting_help.setting_help` is the same sentence ``defaults.toml``
@@ -48,8 +48,6 @@ from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_
 from teatree.config.setting_help import setting_help
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, is_secret, render_value
-from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
-from teatree.core.config_interchange.types import ConfigImport
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigValue
 from teatree.core.overlay_loader import get_all_overlays
@@ -355,30 +353,6 @@ def build_setting_row(key: str) -> EditableSetting:
     return _build_grid([key]).row(key)
 
 
-def export_text(*, default_keys_only: bool = False, include_defaults: bool = False) -> str:
-    """The shareable export dump — secrets withheld, personal kept (Phase-4 semantics).
-
-    The two filters are the page's two checkboxes, both unticked by default so the plain
-    download is the delta dump it has always been. Ticking both yields the ``defaults.toml``
-    shape: a complete, drop-in replacement for the shipped file.
-    """
-    return export_db_to_toml(
-        include_private=False,
-        default_keys_only=default_keys_only,
-        include_defaults=include_defaults,
-    ).toml
-
-
-def import_preview(text: str) -> ConfigImport:
-    """Classify an import WITHOUT writing — the dry-run preview of what would change.
-
-    Classifies as if the safety-posture keys were authorized so the preview can SHOW and flag
-    them; nothing is written, and the apply path re-runs the classification with the operator's
-    actual authorization.
-    """
-    return import_toml_to_db(text, dry_run=True, allow_safety_posture=True)
-
-
 __all__ = [
     "GLOBAL_LABEL",
     "MASKED",
@@ -394,6 +368,4 @@ __all__ = [
     "build_settings_editor",
     "build_settings_group",
     "build_settings_sections",
-    "export_text",
-    "import_preview",
 ]

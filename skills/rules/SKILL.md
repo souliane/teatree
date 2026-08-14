@@ -4,7 +4,6 @@ description: Cross-cutting agent safety rules — clickable refs, temp files, su
 compatibility: any
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # Agent Rules
@@ -19,89 +18,121 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 
 1. [Invoke Skills Before ANY Response](#invoke-skills-before-any-response)
 2. [Verification Before Completion](#verification-before-completion-non-negotiable)
+2b. [A Diagnosis Cites What Was Read](#a-diagnosis-cites-what-was-read-non-negotiable)
 2a. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
-3. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
-4. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
+3. [A Diagnosis Cites What Was Read](#a-diagnosis-cites-what-was-read-non-negotiable)
+4. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
+5. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
+6. [User Instructions Are Priority 1](#user-instructions-are-priority-1)
+7. [On an Ambiguous Directive, Take the Non-Destructive Reading](#on-an-ambiguous-directive-take-the-non-destructive-reading-non-negotiable)
+8. [Classifier Denial Protocol](#classifier-denial-protocol-non-negotiable)
+9. [Anticipate a Predictable Gate: Offer Enable-Setting or Approve-Once, Never Bypass-or-DIY](#anticipate-a-predictable-gate-offer-enable-setting-or-approve-once-never-bypass-or-diy-non-negotiable)
+10. [Re-Derive the Minimal Blocker](#re-derive-the-minimal-blocker)
+11. [External Read Failure Must Fail Loud, Never Silent-Empty](#external-read-failure-must-fail-loud-never-silent-empty-non-negotiable)
+12. [Read the Canonical Source Before Fixing a Conformance Bug](#read-the-canonical-source-before-fixing-a-conformance-bug)
+13. [Re-Verify Cross-Agent State Before Reporting a Dependent Request](#re-verify-cross-agent-state-before-reporting-a-dependent-request)
+14. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
+15. [Keep Turn Output Terse and TTS-Ready](#keep-turn-output-terse-and-tts-ready)
+16. [Context Transparency](#context-transparency)
+17. [Clickable References](#clickable-references)
+18. [Render the Title Inline, Never a Bare/Link-Only Id](#render-the-title-inline-never-a-barelink-only-id-non-negotiable)
+19. [ID Namespace Disambiguation](#id-namespace-disambiguation-non-negotiable)
+20. [Read Secrets From the Secret Store](#read-secrets-from-the-secret-store-non-negotiable)
+21. [Read the Canonical Source Before a Structural Action](#read-the-canonical-source-before-a-structural-action-non-negotiable)
+22. [Overlay Skills Are Scoped to Overlay Repos](#overlay-skills-are-scoped-to-overlay-repos-non-negotiable)
+23. [Token Extraction](#token-extraction)
+24. [Temp File Safety](#temp-file-safety)
+25. [Complex API Payloads: Use curl or Python](#complex-api-payloads-use-curl-or-python)
+26. [Never Pipe, Redirect, or Chain a gh/glab Publish Command](#never-pipe-redirect-or-chain-a-ghglab-publish-command)
+27. [Preserve Existing UX Patterns](#preserve-existing-ux-patterns)
+28. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
+29. [Ask Before Posting on the User's Behalf](#ask-before-posting-on-the-users-behalf-non-negotiable)
+30. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
+31. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
+32. [Never Modify a Remote Database Without Explicit User Approval](#never-modify-a-remote-database-without-explicit-user-approval-non-negotiable)
+33. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
+34. [Self-Apply `needs-triage` on Agent-Filed Issues](#self-apply-needs-triage-on-agent-filed-issues-non-negotiable)
+34a. [A Filed Issue Separates OBSERVED From INFERRED](#a-filed-issue-separates-observed-from-inferred-non-negotiable)
+35. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
+36. [Public-Repo Commit Author Identity](#public-repo-commit-author-identity-non-negotiable)
+37. [Sub-Agent Limitations](#sub-agent-limitations)
+38. [Prefer Native Tool APIs Over Filesystem Heuristics](#prefer-native-tool-apis-over-filesystem-heuristics)
+39. [Symlink Safety](#symlink-safety)
+40. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
+41. [Shell Alias Safety](#shell-alias-safety)
+42. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh--a-probe-without-a-control-is-unfalsifiable)
+43. [Skill File Writes Require a Git Repo](#skill-file-writes-require-a-git-repo)
+44. [Fix TeaTree/Skill Bugs Immediately](#fix-teatreeskill-bugs-immediately)
+45. [Teatree Extension Point Changes Must Update All Registered Overlays](#teatree-extension-point-changes-must-update-all-registered-overlays-non-negotiable)
+46. [Do Work Now, Don't Defer to "Later" Tickets](#do-work-now-dont-defer-to-later-tickets-non-negotiable)
+47. [Contribute Mode: Promote Findings to Skills, Not Personal Memory](#contribute-mode-promote-findings-to-skills-not-personal-memory-non-negotiable)
+48. [Autonomous Directive Adoption](#autonomous-directive-adoption)
+49. [Ask About Auth Before External Service Integrations](#ask-about-auth-before-external-service-integrations)
+50. [Never Change PR Base Branch or Dependencies](#never-change-pr-base-branch-or-dependencies-non-negotiable)
+51. [Fewest PRs for Related Work — Splitting Requires Approval](#fewest-prs-for-related-work--splitting-requires-approval-non-negotiable)
+52. [Always Create Tasks](#always-create-tasks)
+53. [Mid-Task Interrupts](#mid-task-interrupts-non-negotiable)
+54. [Background Long Operations](#background-long-operations-non-negotiable)
+55. [Always Use AskUserQuestion for Questions](#always-use-askuserquestion-for-questions)
+56. [The User Asked a Question — Answer It](#the-user-asked-a-question--answer-it-non-negotiable)
+57. [Never Introduce Tech Debt; Reduce It](#never-introduce-tech-debt-reduce-it-non-negotiable)
+58. [Publishing Actions Are Mode-Conditional](#publishing-actions-are-mode-conditional-non-negotiable)
+59. [Three Orthogonal Repo Axes — Visibility, Ownership, Collaboration](#three-orthogonal-repo-axes--visibility-ownership-collaboration-non-negotiable)
+60. [Run Retro Before Ending Non-Trivial Sessions](#run-retro-before-ending-non-trivial-sessions)
+61. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
 4a. [Read the Canonical Source Before Fixing a Conformance Bug](#read-the-canonical-source-before-fixing-a-conformance-bug)
 4b. [Re-Verify Cross-Agent State Before Reporting a Dependent Request](#re-verify-cross-agent-state-before-reporting-a-dependent-request)
 
 **User intent, interruptions, and asking**
 
-5. [User Instructions Are Priority 1](#user-instructions-are-priority-1)
 5a. [On an Ambiguous Directive, Take the Non-Destructive Reading](#on-an-ambiguous-directive-take-the-non-destructive-reading-non-negotiable)
-6. [Always Use AskUserQuestion for Questions](#always-use-askuserquestion-for-questions)
-7. [Always Create Tasks](#always-create-tasks)
-8. [Mid-Task Interrupts](#mid-task-interrupts-non-negotiable)
+6a. [The User Asked a Question — Answer It](#the-user-asked-a-question--answer-it-non-negotiable)
 8a. [Background Long Operations](#background-long-operations-non-negotiable)
-9. [Context Transparency](#context-transparency)
-10. [Context Longevity](#context-longevity)
+62. [Context Longevity](#context-longevity)
 
 **Permissions, classifier, and authorization**
 
-11. [Classifier Denial Protocol](#classifier-denial-protocol-non-negotiable)
-12. [Ask About Auth Before External Service Integrations](#ask-about-auth-before-external-service-integrations)
-13. [Publishing Actions Are Mode-Conditional](#publishing-actions-are-mode-conditional-non-negotiable)
 13a. [Never Modify a Remote Database Without Explicit User Approval](#never-modify-a-remote-database-without-explicit-user-approval-non-negotiable)
 
 **Communication & references**
 
-14. [Clickable References](#clickable-references)
 14c. [Render the Title Inline, Never a Bare/Link-Only Id](#render-the-title-inline-never-a-barelink-only-id-non-negotiable)
 14b. [ID Namespace Disambiguation](#id-namespace-disambiguation-non-negotiable)
 14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
 14d. [Keep Turn Output Terse and TTS-Ready](#keep-turn-output-terse-and-tts-ready)
-15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
 15a. [Ask Before Posting on the User's Behalf](#ask-before-posting-on-the-users-behalf-non-negotiable)
-16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
 17a. [Evidence Comes From the Deployed Environment](#evidence-comes-from-the-deployed-environment-non-negotiable)
-17. [Verify Repo Visibility Before Filing External Issues](#verify-repo-visibility-before-filing-external-issues-non-negotiable)
-18. [Leak Remediation — Silent Scrubs](#leak-remediation--silent-scrubs-non-negotiable)
-19. [Public-Repo Commit Author Identity](#public-repo-commit-author-identity-non-negotiable)
-20. [GitLab Inline Comments](#gitlab-inline-comments)
+63. [Commit Before Declaring Done](#commit-before-declaring-done-non-negotiable)
+64. [Pre-Commit Hook Failures on Unrelated Tests](#pre-commit-hook-failures-on-unrelated-tests)
+65. [Worktree-First Work](#worktree-first-work-non-negotiable)
+66. [Concurrent Agent Safety](#concurrent-agent-safety-non-negotiable)
+67. [Deprecated Code](#deprecated-code)
+68. [GitLab Inline Comments](#gitlab-inline-comments)
 
 **API & shell recipes**
 
 19a. [Read Secrets From the Secret Store](#read-secrets-from-the-secret-store-non-negotiable)
 19b. [Read the Canonical Source Before a Structural Action](#read-the-canonical-source-before-a-structural-action-non-negotiable)
 19c. [Overlay Skills Are Scoped to Overlay Repos](#overlay-skills-are-scoped-to-overlay-repos-non-negotiable)
-20. [Token Extraction](#token-extraction)
-21. [Temp File Safety](#temp-file-safety)
-22. [Complex API Payloads: Use curl or Python](#complex-api-payloads-use-curl-or-python)
-23. [Preserve Existing UX Patterns](#preserve-existing-ux-patterns)
-24. [Prefer Native Tool APIs Over Filesystem Heuristics](#prefer-native-tool-apis-over-filesystem-heuristics)
-25. [Shell Alias Safety](#shell-alias-safety)
 25a. [Shell Probes Run Under zsh — a Probe Without a Control Is Unfalsifiable](#shell-probes-run-under-zsh--a-probe-without-a-control-is-unfalsifiable)
 
 **Files, agents, and worktrees**
 
-26. [Sub-Agent Limitations](#sub-agent-limitations)
-27. [Symlink Safety](#symlink-safety)
 27a. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
-28. [Skill File Writes Require a Git Repo](#skill-file-writes-require-a-git-repo)
-29. [Worktree-First Work](#worktree-first-work-non-negotiable)
-30. [Concurrent Agent Safety](#concurrent-agent-safety-non-negotiable)
 
 **Workflow discipline**
 
-31. [Fix TeaTree/Skill Bugs Immediately](#fix-teatreeskill-bugs-immediately)
-32. [Teatree Extension Point Changes Must Update All Registered Overlays](#teatree-extension-point-changes-must-update-all-registered-overlays-non-negotiable)
-33. [Do Work Now, Don't Defer to "Later" Tickets](#do-work-now-dont-defer-to-later-tickets-non-negotiable)
-34. [Contribute Mode: Promote Findings to Skills, Not Personal Memory](#contribute-mode-promote-findings-to-skills-not-personal-memory-non-negotiable)
-35. [Never Change PR Base Branch or Dependencies](#never-change-pr-base-branch-or-dependencies-non-negotiable)
-36. [Run Retro Before Ending Non-Trivial Sessions](#run-retro-before-ending-non-trivial-sessions)
-37. [Commit Before Declaring Done](#commit-before-declaring-done-non-negotiable)
-38. [Pre-Commit Hook Failures on Unrelated Tests](#pre-commit-hook-failures-on-unrelated-tests)
 38a. [Re-Derive the Minimal Blocker](#re-derive-the-minimal-blocker)
 38b. [External Read Failure Must Fail Loud, Never Silent-Empty](#external-read-failure-must-fail-loud-never-silent-empty-non-negotiable)
 
 **Design principles**
 
-39. [Prefer Standard Over Clever](#prefer-standard-over-clever)
-40. [Split Long Skills With Progressive Disclosure](#split-long-skills-with-progressive-disclosure)
-41. [Session Scope Management](#session-scope-management)
-42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
-43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
-44. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
+69. [Prefer Standard Over Clever](#prefer-standard-over-clever)
+70. [Split Long Skills With Progressive Disclosure](#split-long-skills-with-progressive-disclosure)
+71. [Session Scope Management](#session-scope-management)
+72. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
+73. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
+74. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
 
 ## Invoke Skills Before ANY Response
 
@@ -135,6 +166,8 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 **Banned language without evidence:** "should pass", "probably works", "seems correct", "looks good", "I'm confident". These words without a command output are lies, not claims.
 
+**Read the state the claim is ABOUT, never a local proxy for it.** Step 3 says read the output; this says read the right thing. A claim about what LANDED is settled by reading the pushed commit, the remote, or the deployed surface — never the working tree, which goes on showing your edit whether or not it travelled. The recurring shape: a correction made after `git add` never reaches the commit, because the pre-commit runner stashes the unstaged change, commits the INDEX, and restores afterwards — so the file on disk still looks right and a local look "confirms" a fix that is absent from the remote history. Reasoning correctly about that mechanism is not the read. Name the read that settles it — `git show origin/<branch>:<path>` — and where you cannot run it yet, say the status is unsettled until you have.
+
 **Multi-deliverable tickets: measure done from the SPEC, not the artifacts you produced (Non-Negotiable).** On a ticket with more than one deliverable, a completeness assertion — "done", "no blockers anywhere", "everything is here", "ready to merge/review" — is measured from **every deliverable the authoritative spec defines (incl. the spec's comments) verified on the actual merge target**, never from the artifacts you happen to have in hand. The recurring, highest-severity failure: claiming "no blockers anywhere" while the crucial deliverable was registered on the wrong surface and its fix was stranded off the merge target — invisible to a check that only inspects what exists. A false completion claim that propagates downstream is not an internal slip. Before any completion claim on a multi-deliverable ticket:
 
 1. **Read the authoritative spec and its comments first.** A claim emitted before the spec source was read leans on proxies (the work item, repo docs, the baseline). If you have not read the spec, you cannot claim done.
@@ -151,6 +184,25 @@ This is enforced, not just prose: the BLOCKING Stop gate `handle_completion_clai
 - Before reporting a defect in your own artifact, **quote the exact text and name the concrete failure**. If the quoted text does not actually exhibit the flaw, there is no finding — drop it.
 - Keep the severity vocabulary honest: a **conflict** contradicts the spec; a **gap** is uncovered scope; an **optional extra** is a side note someone flagged as nice-to-have. Reporting a gap or a side note as a conflict inflates severity and invites a needless retraction.
 - **In a bug report, "Actual Behavior" states the DEFECT, not the target.** Evidence and test plans demonstrate the _Expected Behavior_; never judge them for disagreeing with the Actual section. Misreading those two inverts the entire review.
+
+## A Diagnosis Cites What Was Read (Non-Negotiable)
+
+The rule above demands evidence for a COMPLETION claim. The same requirement applies one step earlier, to the DIAGNOSTIC claim — **a statement about why a system failed, and any escalation of a finding, must cite the artefact you actually read.**
+
+The failure this prevents is fluent, not sloppy: a well-formed cause assembled from check NAMES, stated with the confidence of a diagnosis, by an agent that never opened the log. A colleague opens the log.
+
+- **Quote the line.** "CI failed because X" needs the excerpt, the `file:line`, the rule or exception code, or the job link. One citation is the whole cost.
+- **An unread hypothesis is labelled as one.** "I have not opened the logs; my guess is the ratchet fired" is honest and welcome. The same sentence without the hedge is an invention.
+- **Severity waits for the evidence.** Escalating above a threshold — `SEVERE`, `CRITICAL`, `BLOCKER`, `P0` — requires the artefact that establishes it, not a relayed symptom. If your own brief asked for that evidence, the alarm waits for it to come back; report the symptom at its real confidence until then.
+
+```text
+# do X — the diagnosis carries what settled it:
+#   "#4001 failed on one real violation: `ticket.py: 523 LOC, up from 510 (over the 500 cap)`."
+# never Y — a plausible cause generated from the check names, log unopened:
+#   "#4001 failed because 466 files were meeting the gates for the first time."
+```
+
+Enforced by the BLOCKING Stop gate `handle_unbacked_claim_gate` (`hooks/scripts/unbacked_claim_gate.py`, detector `teatree.hooks.unbacked_claim_scanner`): it refuses turn-end on a causal failure diagnosis, or a severity label, with no citation anywhere in the turn — and on a severity label whose own turn says the settling evidence has not come back. An explicitly-hedged diagnosis never fires. Never-lockout escapes: the `[skip-evidence-gate: <reason>]` token in the turn text and the `[teatree] unbacked_claim_gate_enabled = false` kill-switch (`t3 <overlay> gate unbacked-claim disable`).
 
 ## An Acceptance Criterion That Cannot Fail Is Not a Criterion (Non-Negotiable)
 
@@ -453,29 +505,25 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-**Canonical setting:** `on_behalf_post_mode` (DB-home, default `"draft_or_ask"`, per-overlay overridable) — set with `t3 <overlay> config_setting set on_behalf_post_mode <value>` (add `--overlay <name>` for the per-overlay scope). Three values:
+**Canonical setting:** `on_behalf_post_mode` (DB-home, default `"draft_or_ask"`, per-overlay overridable) — set with `t3 <overlay> config_setting set on_behalf_post_mode <value>` (add `--overlay <name>` for the per-overlay scope). It takes three values.
 
 The gate covers colleague-**VISIBLE** posts only. A **draft** (`post_draft_note`) is colleague-invisible — only the user can submit it — so it is **exempt under every mode** and never needs approval; that exemption is the whole point of the setting.
 
-- `"draft_or_ask"` (default) — the agent produces a **draft** without asking (`post_draft_note` returns AUTO_DRAFT and the gate emits a bot→user DM with idempotency key `on_behalf_autodraft:{target}:{action}` so the user can review and publish). Every colleague-VISIBLE action (publish, comment, approve, reply, react…) is BLOCKED until the user records an approval.
-- `"ask"` — identical to `draft_or_ask` for drafts (a draft still auto-publishes + DMs the user — it is exempt) and for colleague-visible posts (all BLOCKED until the user records an approval). `ask` does **not** block draft-note creation.
-- `"immediate"` — gate is lifted: the agent publishes per the resolved `mode` doctrine without the pre-ask (the user has opted the overlay into trusted unattended posting).
+`teatree.core.on_behalf_egress.OnBehalfSlackEgress` is the single owner of **every colleague-surface Slack post AND react** under the user's identity — review-DONE reactions, the `:merge:` reaction, broadcast outcome reactions, review-nag posts, the `notify post` / `notify react` CLI, and `t3 slack react`. All of them run gate→route→emit→audit in one place, so a colleague reaction can never slip past the gate; a self-DM short-circuits ungated, so a self-ack stays free.
 
-Resolved by `teatree.on_behalf_gate.resolve_on_behalf_verdict(action)` which returns `PASS` / `BLOCK` / `AUTO_DRAFT`. Enforced uniformly inside teatree at three chokepoints: `teatree.core.reply_transport._BaseReplier` (Slack thread reply / Slack channel / GitLab MR comment / GitHub PR comment), `teatree.cli.review.ReviewService` (`post_comment`, `post_draft_note`, `publish_draft_notes`, `reply_to_discussion`, `resolve_discussion`, `update_note`, `delete_discussion`), and `teatree.core.on_behalf_egress.OnBehalfSlackEgress` — the single owner of **every colleague-surface Slack post/react** under the user's identity (review-DONE reactions, the `:merge:` reaction, broadcast outcome reactions, review-nag posts, the `notify post`/`notify react` CLI, `t3 slack react`). `OnBehalfSlackEgress.post/.react` run gate→route→emit→audit in one place; a self-DM (the #1750 `route_token` classifier, fail-closed to colleague on an unknown surface) short-circuits ungated, so a colleague reaction can never bypass the gate while a self-ack stays free. The `PullRequest.approve()` → ✅ reaction signal and the ticket-transition emoji signal route through the same gate (on the separate `slack_reactions` transport).
+The three mode values (`draft_or_ask`, `ask`, `immediate`), the verdict resolver, and the other two chokepoints are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
 
 When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent makes **under the user's identity to a colleague or customer surface** — a GitLab/GitHub PR/MR comment, an issue comment, a PR/MR approve or unapprove, a Slack channel or thread message, a Notion page or comment, an emoji reaction on someone else's message — the agent must obtain the user's explicit approval **first** (via `AskUserQuestion` for ad-hoc agent posts, or by recording an `OnBehalfApproval` for teatree code paths — see below) and publish only after the user confirms.
 
-The gate is **satisfiable, not pure suppression**. The teatree code paths consult `teatree.core.on_behalf_gate_recorded.require_on_behalf_approval`, which mirrors the #953 `DbApproval` / §17.4 `MergeClear` shape: BLOCK verdict + a recorded, unconsumed, exactly-scoped `OnBehalfApproval` row → the post proceeds and the row is consumed single-use (an `OnBehalfAudit` row is written); BLOCK verdict + no recorded approval → the helper raises `OnBehalfPostBlockedError` and the caller surfaces the blocked post to the user — never silently dropped, never posted unattended. **No TTY is required** to satisfy it: a chat-only operator records the approval via `t3 review approve-on-behalf <target> <action> --approver <user-id>` and the next on-behalf attempt publishes. The factory refuses a maker/coding-agent/loop approver id (maker≠checker), so the executing agent can never self-authorize the post it is about to make.
-
-- **Out of scope** (no pre-ask needed): DMs _to the user themselves_ (`Replier.post_dm`), the DailyDigest user thread, the `AskUserQuestion` Slack mirror, the bot→user notify path, and internal-only orchestration writes — our own teatree backlog issues, durable memory, task bookkeeping, the sanctioned `t3 <overlay> ticket clear` / `ticket merge` keystone. The CLI for a bot→user self-DM is **`t3 <overlay> notify send <body> --idempotency-key <key>`** — not `notify post` (which is the gated colleague/channel path that routes via `OnBehalfSlackEgress` and requires `--channel` + `--text`).
-- **Relationship to the notify-_after_ rule:** this is the _pre_-gate; the post-on-behalf notification is the _after_ receipt, now a real default-ON DB-home `UserSettings` field `notify_on_post_on_behalf` (default `true`, per-overlay overridable, **no env var**) — set with `t3 <overlay> config_setting set notify_on_post_on_behalf <true|false>` (`--overlay <name>` for the per-overlay scope). After every colleague-visible on-behalf publish, `teatree.core.on_behalf_post_receipt.notify_user_on_behalf_post` DMs the user the destination, a clickable artifact link, and a one-line summary (recorded in the `BotPing` ledger; record-and-proceed — it never blocks or rolls back the post). This durable enforcement **retires** the per-session memory `notify-user-on-every-post-on-behalf` (souliane/teatree#949). Both ship on. The user widens `on_behalf_post_mode` per-overlay (`"draft_or_ask"` → `"immediate"`) once confident the system posts well via `config_setting set on_behalf_post_mode immediate --overlay <name>`; set `notify_on_post_on_behalf` to `false` per-overlay independently — the notify stays on longer.
-- **Backward compatibility:** the legacy `ask_before_post_on_behalf` boolean is retired — under the #1775 partition its old `[teatree]` TOML key is ignored on read. Use `on_behalf_post_mode` (DB-home): `t3 <overlay> config_setting set on_behalf_post_mode <value>`.
+How the gate is satisfied by a recorded `OnBehalfApproval`, what sits outside it, and the `notify_on_post_on_behalf` receipt are in [`skills/rules/references/on-behalf-posting.md`](references/on-behalf-posting.md).
 
 **Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete.
 
 ```bash
 # colleague channel (or a colleague's DM) — gated, then routed to the user's own identity:
 t3 <overlay> notify post --channel <channel> --text '<message>'
+# an emoji reaction on a colleague's message — the same gated egress:
+t3 slack react --channel <channel> --ts <timestamp> --emoji <name>
 # the user's OWN DM (bot→user self-DM) — exempt from the gate, never on-behalf:
 t3 <overlay> notify send '<body>' --idempotency-key <key>
 ```
@@ -549,6 +597,23 @@ The convention closes that gap: **an agent self-applies `needs-triage` by defaul
 
 When in doubt, apply `needs-triage` — a withheld issue costs the maintainer one label-removal; an un-withheld one risks the factory implementing something the maintainer never decided to build.
 
+The label governs an issue that is going to exist. Whether it should exist at all is decided one step earlier by the backlog-reuse precondition — search the open backlog, extend a suitable host rather than adding a near-duplicate, one issue per root cause — which is canonical in `AGENTS.md` § "Issue Creation" and is not restated here.
+
+## A Filed Issue Separates OBSERVED From INFERRED (Non-Negotiable)
+
+A root-cause claim in a filed issue is load-bearing: the next reader starts from it, so a wrong mechanism sends them down the wrong path and costs more than filing no mechanism at all. Keep the two apart in the body, labelled:
+
+- **Observed** — the commands run, their verbatim output, the states read, the `file:line` inspected. Reproducible: anyone re-running it gets the same thing.
+- **Inferred** — the mechanism you believe connects those observations. A hypothesis until an experiment separates it from the alternatives.
+
+Then:
+
+- **An inference written in the observed voice is a claim you did not make.** "X fails because Y", when all you saw was X, reads to the next person as a measured fact.
+- **When the mechanism rests on a SINGLE observation, say so and name the experiment that would confirm it.** One observation is consistent with several mechanisms; naming the discriminating experiment turns a guess into a next step.
+- Stated uncertainty is cheap; a confidently wrong root cause is not — and it is invisible, because a plausible mechanism is never questioned again.
+
+This is the published-artifact sibling of § "Re-Validate a Reused Guard in a New Destructive Context" and its "mark every load-bearing premise VERIFIED or UNVERIFIED" clause: that rule scopes to a sub-agent BRIEF, this one to anything that leaves the machine.
+
 ## Leak Remediation — Silent Scrubs (Non-Negotiable)
 
 When remediating a privacy leak on a public repo (force-push to drop PII, delete a comment that exposed a credential, rewrite a branch that leaked internal data), **every public artifact produced during the remediation must be neutral**. Do not name what leaked, do not name that a leak occurred, do not describe the scrub. Announcing the remediation on a public surface amplifies the leak (Streisand effect) — the commit subject, the PR comment, and the branch name are all crawled, cached, and indexed.
@@ -557,38 +622,17 @@ When remediating a privacy leak on a public repo (force-push to drop PII, delete
 
 Commits pushed to a PUBLIC repo (`souliane/*`) must have an author **and** committer email that is a GitHub noreply address — `<id>+<login>@users.noreply.github.com` (e.g. `21343492+souliane@users.noreply.github.com`). A real/deliverable address (any customer/personal domain inherited from local `.git/config` or the XDG global) in public history is a permanent PII leak that GitHub's own "block pushes that expose my email" does **not** catch for third-party domains. The accepted shape is the noreply pattern itself — not one hardcoded login — so any GitHub identity passes and any real email blocks. Private overlay repos are exempt. Enforced deterministically by the pre-push gate `scripts/hooks/refuse-public-push-with-leak.sh` (#730): on a violation it blocks and prints the offending identity plus the `git filter-branch --env-filter` rewrite to the repo's GitHub noreply identity; re-push after the metadata-only rewrite.
 
-**Banned words in any public artifact produced during remediation** (commit subject/body, PR or issue description or comment, release note, changelog, public branch name):
-
-`leak` / `leaked` / `scrub` / `redact` / `real` (as in "real phone number") / `private` / `personal` / `sensitive` / `accidental` / `accident` / specific classes of the leaked data (`phone`, `email`, `password`, `token`, `credential`, `secret`, `key`, `address`, `ssn`).
-
-**Required form:**
-
-- **Scrub commit subject:** neutral verb only. Good: `fix(<scope>): update example values`, `refactor(<scope>): replace placeholder`, `docs(<scope>): refresh example`. Bad: `scrub real phone number`, `remove leaked credential`, `redact personal email`.
-- **Remediation branch name:** no signal. Good: `fix/update-examples`, `chore/refresh-docs`. Bad: `fix/scrub-phone-leak`, `hotfix/leaked-token`.
-- **Closing a remediation PR:** prefer no comment at all. If one is required, keep it to the shortest neutral phrasing (`Superseded.` / `Not needed.`). Do not explain _why_.
-- **Public push description:** same rule. No class-of-data words.
-- **Secure explanations** (to GitHub Support, to the user, to incident response) belong only in the corresponding private channel — never in git history or public comments.
-
-**Pre-done grep** (run before claiming the remediation is complete):
-
-```bash
-git log --format='%H %s%n%b' <branch-start>..HEAD | \
-  grep -iE 'leak|scrub|redact|real|private|personal|sensitive|accident|phone|email|password|token|credential|secret|address'
-```
-
-Also grep every PR/issue body or comment authored during remediation. Any hit is Streisand — rewrite the artifact (or delete the comment) before declaring done.
-
-**Why:** A commit subject is as public as the diff, and a PR-close comment is permanent. Describing what was removed tells the next reader exactly what used to be there and where to look in the commit graph. The fix is silent.
+The banned-word list, the required form for each public artifact (commit subject, branch name, PR-close comment, push description), and the pre-done grep that checks them are in [`skills/rules/references/leak-remediation.md`](references/leak-remediation.md).
 
 ## Sub-Agent Limitations
 
 Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell functions**. By default, never dispatch sub-agents for skill-dependent work. Do all skill-dependent work sequentially in the main conversation.
 
-**Exception:** Skills with `subagent_safe: true` in their YAML frontmatter are pure methodology/guidelines that work without shell functions, MCP tools, or cross-skill state.
+**A sub-agent that needs a skill gets the skill, never an exemption:** generate the brief's preamble with `t3 <overlay> skill-preamble` (the Non-Negotiable below) so the dispatched agent carries the SKILL.md bodies it would otherwise lose. MCP access and shell functions do not travel that way — work needing either stays in the main conversation.
 
 **Exception (monitor/work-trigger loop only):** `/t3:wip` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. The singleton constraint is scoped narrowly to the loop that _monitors external systems and triggers work_ — it says nothing about loops in general or sub-agent use in general, and an ordinary session remains free to use loops and sub-agents as usual. The canonical statement (with the full scope boundary) lives in `/t3:wip` § Rules "Singleton delivery sub-agent (canonical statement)"; this is a reference to it, not a second copy.
 
-**Every raw Agent-tool spawn MUST carry the skill preamble (Non-Negotiable).** A sub-agent dispatched through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the SKILL.md bodies the orchestrator has loaded, so it over-provisions for remote e2e, runs raw `playwright`/`glab` instead of `t3`, and ignores overlay rules. Before spawning an e2e / coder / reviewer sub-agent, generate the inline skill preamble with `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` (it concatenates each `SKILL.md` body, resolving framework **and** the active overlay's skills) and **prepend it to the brief**. The dispatched prompt must contain the embedded skill bodies (the `--- SKILL: <name> ---` markers), not a bare task description. A bare brief is the bug this gate exists to catch. (Pinned by `evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`; the headless dispatch path injects the same bodies via `teatree.agents.skill_injection`.)
+**Every raw Agent-tool spawn MUST carry the skill preamble (Non-Negotiable).** A sub-agent dispatched through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the SKILL.md bodies the orchestrator has loaded, so it over-provisions for remote e2e, runs raw `playwright`/`glab` instead of `t3`, and ignores overlay rules. Before spawning an e2e / coder / reviewer sub-agent, generate the inline skill preamble with `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` (it concatenates each `SKILL.md` body, resolving framework **and** the active overlay's skills) and **prepend it to the brief**. The dispatched prompt must contain the embedded skill bodies (the `--- SKILL: <name> ---` markers), not a bare task description. A bare brief is the bug this gate exists to catch. (Pinned by `evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`; the agent dispatch path injects the same bodies via `teatree.agents.skill_injection`.)
 
 **Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, PR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
 
@@ -602,25 +646,22 @@ The safe shape is idempotency by construction, not orchestrator vigilance. Core 
 
 **Dispatch-prompt hygiene — match the target repo's conventions, don't drift to your own defaults (Non-Negotiable).** A sub-agent prompt that scaffolds a branch or opens a PR must carry the **target repo's** convention, not a habitual default carried over from another repo.
 
-- **Branch name = the repo's own scheme.** If the repo uses a flat `<number>-<type>-<short-description>` scheme with NO prefix, scaffold exactly that — never inject an `ac/` / `a-` / `ac-` prefix the repo doesn't use.
-
-```bash
-# do X — flat, repo-native, no prefix (ticket 42, feature add-dark-mode):
-git worktree add ../42-feature-add-dark-mode -b 42-feature-add-dark-mode origin/main
-# never Y — do not prefix a flat-scheme repo's branch:
-git worktree add ../ac/add-dark-mode -b ac/add-dark-mode origin/main   # FORBIDDEN
-```
-
-- **No reflexive `--draft`.** Opening a PR for your OWN finished, pushed feature branch (a non-e2e repo) is a real PR, not a draft. Issue `pr create` without `--draft` unless the user or the repo's policy asks for a draft.
-
-```bash
-# do X — open the real PR for your own finished branch:
-gh pr create --base main --head 42-fix-empty-owner --fill
-# never Y — do not default to draft for your own ready work:
-gh pr create --base main --head 42-fix-empty-owner --fill --draft   # FORBIDDEN by default
-```
+The branch-scheme and no-reflexive-`--draft` rules, with their do-X/never-Y `git`/`gh` examples, are in [`skills/rules/references/worked-dispatch-examples.md`](references/worked-dispatch-examples.md).
 
 Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_draft_default` (`evals/scenarios/subagent_prompt_drift.yaml`).
+
+**A dispatch brief must BOUND the test-worker multiplier (Non-Negotiable).** `-n auto` is in the repo's pytest `addopts` and in the lane runners, so EVERY dispatched agent sizes its own pool from the box's cores regardless of how many agents already run: N agents on a C-core box is N × C workers competing for one machine's RAM. **"Do not run the full suite" is NOT a bound** — it constrains which tests are selected, not how many processes they fork; a narrow node id at `-n auto` still spawns a worker per core. The lane runners' `bound_xdist_workers_to_memory` default is not one either: it reads the container's cgroup cap for **its own** process and cannot see the sibling agents. The only bound is the env var, and it belongs in the brief.
+
+The bound is a **ceiling, not a literal to paste**. Pick a small number, and where the environment already exports `PYTEST_XDIST_AUTO_NUM_WORKERS`, defer to it rather than overwrite it — a headless-dispatched agent already receives a per-agent value the governor computed from the live core count, the active-agent count and free memory (`src/teatree/agents/runner.py` → `with_test_worker_cap` → `src/teatree/core/admission_governor.py::per_agent_test_workers`), and on a loaded box that value is frequently **1**. On 8 cores with 4 agents live and 8 GB available it resolves to exactly 1, so a brief hardcoding `=4` quadruples the parallelism the governor just decided was safe — causing the OOM the rule exists to prevent:
+
+```bash
+# small ceiling, but NEVER above a value the environment already exported:
+PYTEST_XDIST_AUTO_NUM_WORKERS=${PYTEST_XDIST_AUTO_NUM_WORKERS:-4} uv run --no-sync python -m pytest <paths> -q --no-migrations -p no:cacheprovider
+```
+
+**Watch AVAILABLE MEMORY, not load average.** Load 30 with 10 GB free is a healthy box; load 12 with 2 GB free is an OOM about to happen — load says how many runnable processes there are, memory says whether the next one survives. Read free memory before dispatching another test-running agent, and wait rather than stack one more.
+
+A deterministic cross-agent worker cap HAS landed, but only for the **headless** lane — [#4107](https://github.com/souliane/teatree/issues/4107) and [#4157](https://github.com/souliane/teatree/issues/4157) shipped it, and every agent dispatch now exports the governor's computed per-agent value. The harness `Agent`/`Task` sub-agent path is NOT capped: neither `src/teatree/core/dispatch_admission.py` nor `hooks/scripts/dispatch_admission_gate.py` carries any test-worker or `XDIST` term, so what landed there is an agent-COUNT ceiling, not a worker cap. That is why the brief-level bound above still matters — on the harness dispatch path it remains the only thing between N sub-agents and an OOM.
 
 ## Prefer Native Tool APIs Over Filesystem Heuristics
 
@@ -689,44 +730,17 @@ When the user asks for work that is actionable in the current session — a smal
 
 **Do it now means RUN the command — never hand the steps back (do X, never Y).** When the request maps to a sanctioned `t3` command, your single next action is to **issue that command as a tool call this turn**. Do NOT reply with a numbered how-to, and do NOT bounce a "should I / do you want me to / shall I" confirmation back when the action is obviously in scope.
 
-```bash
-# "help me create the worktree for this ticket" → RUN it, do not explain it:
-t3 <overlay> workspace ticket <id>           # or: t3 <overlay> worktree provision <id>
-# never: a prose list of "1. cd …  2. git worktree add …" handed back to the user
-# never: AskUserQuestion("should I create the worktree?") on obviously in-scope work
-```
+The two worked examples — running the sanctioned `t3` command instead of handing back steps, and filling a routine placeholder argument rather than bouncing back for it — are in [`skills/rules/references/do-work-now.md`](references/do-work-now.md).
 
 The same applies to any runnable ask — running tests, opening a PR, fetching a ticket: pick the canonical `t3` command and run it. Asking "should I?" on in-scope work reads as stalling. Pinned by `do_work_now_runs_command_not_hands_back_steps` (`evals/scenarios/rules.yaml`).
 
 **"Run the command" with one routine argument missing → fill a sensible placeholder and RUN it; never bounce back for the argument (do X, never Y).** When an instruction explicitly says to _issue the command_ and the only thing not spelled out is a routine, inferable, fill-in-the-blank argument — a file path, a branch name, a service id — the value does not change the command's SHAPE, so supply the obvious value (or a clear placeholder like `<path/to/test>`) and run it. Do NOT reply "which file/path/branch?" — that stalls on a detail you were asked to demonstrate the command around, and a placeholder communicates the answer better than a question. Bounce back ONLY when the missing piece is a genuine fact you cannot obtain or an authorization gate (the boundary in § "Always Use AskUserQuestion for Questions"), never when it is a routine argument you can placeholder.
 
-```bash
-# "Run the ONE command to list the commits that touched this test recently" (path not spelled out):
-git log --oneline -- <path/to/test>          # do X — a sensible placeholder, command issued
-# never Y: reply "which test file path?" — the instruction said RUN it; the path is a fill-in-the-blank
-```
-
 **Never punt resolvable work back to the user as a "decision/data you must provide."** When a step the user delegated is something you can resolve yourself — derive the value, look it up in a file/config/git, compute it, pick the determinable-best option — **resolve it and proceed**; do not bounce it back as "I need you to tell me X" or "please decide Y." The test is the same sharp one from § "Always Use AskUserQuestion for Questions": _can I reach the best outcome by doing the work?_ If yes → do it, never punt. The only things that legitimately go back to the user are a **fact you genuinely cannot obtain** (a secret, a private URL, a value living only in the user's head) or an **authorization for an irreversible/outward-facing action** — never a decision or datum you could have determined yourself. Punting resolvable work is the inverse failure of deferring it to a ticket: both make the user do the agent's job. This is the named pattern the user calls "successfully failing" — completing the _motion_ of asking while leaving the actual work undone.
 
-**Banned patterns when the work is actionable in this turn:**
-
-- "I'd suggest filing a ticket to…"
-- "Follow-up (not in this PR)…"
-- "Want me to open an issue for …?"
-- "As a separate ticket, we should …"
-- "File tickets for (a) and (b), or one combined…?"
-- "separate bug worth fixing later"
-- "worth filing later"
-- "out of scope for this PR" (when the fix is small enough to bundle)
-- "I'll note this for follow-up"
+The list of banned deferral phrasings and the narrow set of cases where deferral is legitimate are in [`skills/rules/references/do-work-now.md`](references/do-work-now.md).
 
 **Defaulting to "later" without asking is treated as "I discovered a bug but I don't care."** A finding that surfaces during a session must result in **action this turn** — either the fix lands, or the user is asked which lane it goes into. Silent deferral is not a lane.
-
-**When deferral IS legitimate** (narrow set):
-
-- The user explicitly asked for planning only, not execution.
-- The work requires an external dependency that is unavailable right now (missing auth, missing approval from a third party, missing DB snapshot).
-- The work would genuinely balloon this change into scope creep — and even then, ask the user directly, don't announce a ticket.
 
 **When in doubt, do the work.** A tiny PR adding the fix alongside the main change is always preferable to a stand-alone ticket that lives in the backlog for weeks.
 
@@ -734,32 +748,11 @@ git log --oneline -- <path/to/test>          # do X — a sensible placeholder, 
 
 When you encounter a bug, broken behavior, or rough edge during any session — fix it on the spot, in the current PR if at all reasonable. Do not narrate the finding as a deferral, do not propose filing tickets, do not ask "should I fix this in a separate PR?" before doing the obvious work. Work unattended.
 
-Decision rubric (apply silently — don't narrate to the user):
-
-| Fix size | Action |
-|---|---|
-| **Small (≤ ~50 LOC, no architectural decisions)** | Bundle into the current PR. Skip the "Isolate Unrelated Fixes" rule from `t3:ship` — small fixes have lower scope-creep cost than coordination cost. |
-| **Medium (related domain, fits the current ticket's spirit)** | Still bundle if the PR title can fairly cover it (e.g., assorted shipping-flow bug fixes during a CLI refactor). Mention in the PR body so reviewers see it. |
-| **Large (architectural, cross-cutting, or genuinely orthogonal)** | Create a worktree + PR immediately, implement, ship. No new ticket. |
-| **Truly large work that cannot fit a session** | Still ship it — split the run, not the work. A ticket is a record of work in flight, never a place to leave work you already understand (`AGENTS.md` First Principles 8 and 10). |
-
-**Only stop and ask when:**
-
-- The fix has security/destructive blast radius (DB drops, force-push to default, secret rotation).
-- The architectural choice has multiple equally valid options.
-- The work is genuinely big enough to need its own ticket _and_ the user hasn't opted into auto mode for this overlay.
+The fix-size bundling rubric, the stop-and-ask cases, and the three explicit options to present when a bundling call is genuinely borderline are in [`skills/rules/references/do-work-now.md`](references/do-work-now.md).
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
 
-**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment, or an issue the user has approved) rather than touching code another contributor owns; still fix everything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric. This is not a deferral loophole and First Principles 8-10 do not override it: those principles bind the surface THIS change touches, and another contributor's unrelated code is not on it — flagging there is the complete action, not a postponement.
-
-**When genuinely unsure, ASK — never silently defer.** If the fix is borderline (small but truly orthogonal, or medium-sized but the current PR is already large), present three explicit options to the user via `AskUserQuestion`:
-
-1. **Fix right now and bundle into the current PR** (default — pick this unless reason not to)
-2. **Fix it before this PR ships** (same session, same PR — a session TODO entry, never a `TODO` marker left in the code)
-3. **Fix it in its own PR, now** (genuinely orthogonal — worktree + PR immediately, no new ticket)
-
-Options 2 and 3 need a concrete reason against option 1; none of the three is a deferral. If the finding is genuinely outside the surface this change touches, state it in the PR body as a finding and let the user decide whether it becomes an issue — `AGENTS.md` § "Issue Creation" forbids filing one without their approval, and First Principles 8-10 forbid filing one for work you could have done here. Asking is acceptable; silently writing "worth filing later" and moving on is not.
+**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric in the reference above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment, or an issue the user has approved) rather than touching code another contributor owns; still fix everything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric. This is not a deferral loophole and First Principles 8-10 do not override it: those principles bind the surface THIS change touches, and another contributor's unrelated code is not on it — flagging there is the complete action, not a postponement.
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
@@ -835,7 +828,7 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 Any operation expected to run longer than ~15 seconds — CI/pipeline watches, full test suites, heavy analysis or research, multi-step API sweeps — must **not** block the foreground. A blocking foreground call freezes the main agent: it stops reading new user messages until the call returns, so the user is ignored for minutes.
 
-**Scope — this protects a foreground that has a user in it; a dispatched one-shot run has none and waits INLINE instead (do X, never Y).** When you are a headless dispatch or a sub-agent an orchestrator started and is not conversing with, your run ends when your turn ends: there is no next turn, no scheduled wakeup, and nothing re-invokes you. `Monitor` events, `run_in_background` output and a `Task` sub-agent's report are all delivered into a NEXT turn — so arming one and then ending your turn on prose IS the park: the run is over, the watcher fires into nothing, and the result you never wrote is never recorded. **Do X:** run the long command as ONE foreground `Bash` call with a `timeout` generous enough to cover it, wait for it in this turn, and write your result — the JSON result envelope, when your brief asks for one — as the last thing in that same turn. **Never Y:** never arm a `Monitor` (or a background job) on the very work you were dispatched to do and then close the turn on "I'll continue when it fires" / "the scheduled wakeup will re-invoke me" / "waiting for the suite to finish". Nobody reads your intermediate output, so there is no responsiveness to trade away; staying responsive is the dispatching orchestrator's job, which is why it dispatched you. Everything below is written for that orchestrator.
+**Scope — this protects a foreground that has a user in it; a dispatched one-shot run has none and waits INLINE instead (do X, never Y).** When you are a agent dispatch or a sub-agent an orchestrator started and is not conversing with, your run ends when your turn ends: there is no next turn, no scheduled wakeup, and nothing re-invokes you. `Monitor` events, `run_in_background` output and a `Task` sub-agent's report are all delivered into a NEXT turn — so arming one and then ending your turn on prose IS the park: the run is over, the watcher fires into nothing, and the result you never wrote is never recorded. **Do X:** run the long command as ONE foreground `Bash` call with a `timeout` generous enough to cover it, wait for it in this turn, and write your result — the JSON result envelope, when your brief asks for one — as the last thing in that same turn. **Never Y:** never arm a `Monitor` (or a background job) on the very work you were dispatched to do and then close the turn on "I'll continue when it fires" / "the scheduled wakeup will re-invoke me" / "waiting for the suite to finish". Nobody reads your intermediate output, so there is no responsiveness to trade away; staying responsive is the dispatching orchestrator's job, which is why it dispatched you. Everything below is written for that orchestrator.
 
 Background it instead:
 
@@ -892,35 +885,7 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree … fix t
 
 The test: after a dispatch, if your next tool call names or touches the file/module/ticket you just delegated — to read it OR to write it — you have re-entered executor mode. The dispatch was supposed to be the whole action; honour it by stopping.
 
-Worked dispatch — a one-line fix a reviewer found, delegated rather than edited in the foreground:
-
-```text
-# EXAMPLE — `acme` is a stand-in repo, not a teatree module. Nothing here is a work item.
-Task(
-  description="Fix get_active_session",
-  prompt="In a fresh worktree off origin/main of this repo, fix the one-line bug in "
-         "src/acme/checkout/session.py: get_active_session() returns None instead of "
-         "raising SessionNotFound when no active session exists. Add a fail-before/"
-         "pass-after regression test, run the suite, commit, and report the branch + sha.",
-)
-```
-
-Worked dispatch — a long multi-file investigation, delegated rather than grepped in the foreground:
-
-```text
-Task(
-  description="Investigate the subsystem",
-  prompt="Run a deep multi-file investigation across the codebase: trace how the "
-         "overlay resolver is called from every call site, map the data flow, and "
-         "report findings with file:line citations. Do not change code.",
-)
-```
-
-Arm a Monitor to await a dispatched sub-agent instead of foreground-polling its process:
-
-```bash
-t3 monitor watch --label subagent-42 --until-exit   # wakes you on completion; foreground stays free
-```
+The two worked dispatch briefs (a one-line fix, a multi-file investigation) and the `Monitor` recipe that awaits a dispatched sub-agent are in [`skills/rules/references/worked-dispatch-examples.md`](references/worked-dispatch-examples.md).
 
 ## Always Use AskUserQuestion for Questions
 
@@ -930,59 +895,23 @@ t3 monitor watch --label subagent-42 --until-exit   # wakes you on completion; f
 
 **When N decisions are undecided, your single next action is ONE `AskUserQuestion` with ONE question for the FIRST decision — never a batch (do X, never Y).** This holds precisely under load, where the tempting shortcut is to cram all N into one call "to save a round trip". That batch is the exact drift this rule forbids. Surface decision #1 now; the rest come one at a time after each answer.
 
-```python
-# Three things are undecided (target branch, commit type, squash?). do X — one call, one question, the FIRST decision:
-AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", "options": [...]}])
-# never Y — do NOT batch the three undecided items into one multi-question call to "save a round trip":
-# AskUserQuestion(questions=[{"question": "target branch?", ...}, {"question": "commit type?", ...}, {"question": "squash?", ...}])  # FORBIDDEN
-```
+The six do-X/never-Y worked examples for the rules in this section — one-decision-per-call, narrating-is-not-asking, ask-then-stop, do-the-best, the shape ceiling, and the unreachable-tool ask — are in [`skills/rules/references/asking-questions.md`](references/asking-questions.md).
 
 A live session has a hook backstop (the PreToolUse `handle_warn_batched_questions` advisory nudges when a call carries >1 question), but the backstop is a WARN, not a block — splitting the ask one-at-a-time is your behaviour to get right, not the gate's to fix.
 
 **Narrating the ask is not asking (do X, never Y).** When the next action is a user decision, the `AskUserQuestion` tool call IS the action — issue it as a real tool invocation. Never end the turn with a plan-line that merely _announces_ the ask ("**Action:** Ask about the first PR's merge decision", "I'll ask the user which branch", "I'll go ahead and ask about the first PR"), never _print_ `AskUserQuestion(...)` call syntax as text (fenced or inline), and never _draw_ the chat-UI rendering of the call — a standalone `**AskUserQuestion**` line with a "_View tool call_" footnote — in place of invoking the tool: on a loop turn that narration reads as a log line, no question ever reaches the user, and the decision is silently lost.
 
-```python
-# do X — the ask IS the single action; issue the tool call now:
-AskUserQuestion(questions=[{"question": "Merge PR #1 — approve?", "options": [...]}])
-# never Y — do NOT end the turn narrating, printing, or drawing the ask you never issued:
-# "**Action:** Ask about the first PR's merge decision now."   # FORBIDDEN — nothing was asked
-# 'AskUserQuestion(questions=[...])' written out as message text  # FORBIDDEN — printed, not invoked
-# "**AskUserQuestion**" + "*View tool call*" drawn as message text  # FORBIDDEN — a rendered chip, not a call
-```
-
 **Each question carries plain-language detail.** The question text must state, in the user's own vocabulary: what the change or decision is, the specific risk or trade-off that matters, and an honest read of it. The options must be the real decision paths for that one item (e.g. "build the safety test first" / "merge now" / "hold"), not a bare yes/no.
 
 **After you ask a decision via `AskUserQuestion`, STOP and wait for the answer; your turn ends; never re-ask the same decision (do X, never Y).** The `AskUserQuestion` tool call IS the whole action for that decision: issuing it ENDS your turn and you WAIT for the answer. Under load the drift the metered lane caught is the opposite — the agent asks decision #1 (the target branch), does NOT get an answer in the same turn (it never does — the answer arrives on the NEXT turn), and so RE-EMITS the SAME decision turn after turn, looping on #1 and never reaching #2/#3. That re-ask loop is wrong: the answer is not missing, it simply has not arrived yet because your turn is over. So once you have asked one decision, do not ask it again, do not "make sure it landed", do not re-pose it a second time — stop, and let the answer come back. Surface the NEXT decision only after the current one is answered (the one-at-a-time walk-through above). A second `AskUserQuestion` call re-asking a decision you already asked is the failure this pins.
 
-```python
-# do X — ask ONE decision, then your turn is DONE; wait for the answer:
-AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", "options": [...]}])
-# … turn ends here. Do NOT re-ask. The next decision comes AFTER this one is answered.
-# never Y — re-emit the SAME decision because the answer "hasn't landed" (it just arrives next turn):
-# AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", ...}])  # FORBIDDEN re-ask
-```
-
 **Do the best autonomously — never ask a determinable quality/approach/scope decision (do X, never Y).** `AskUserQuestion` exists for things you genuinely cannot decide alone — it is NOT a place to offload a judgment call you can resolve by doing the best work. When a quality / approach / scope choice has a _determinable best answer_ — "fix all the issues or just some?", "which of these approaches?", "make it thorough or just okay?", "should I do the heavy/full version?" — the answer is always **do the best**: pick the best option, do the full/thorough work even when it is a lot more work, and briefly STATE the choice you made. Do not hand that decision back to the user. The user repeats this daily; deferring a determinable-best decision reads as the agent making the user do the agent's job.
-
-```python
-# Determinable-best scope/approach decision — do X: pick the best, do the full work, state it. NO AskUserQuestion.
-# "Fixing all five related issues is the best outcome and fully determinable — done all five; stating it here."
-Edit(file_path="module.py", ...)   # do the thorough fix
-# never Y — do NOT defer a decision you can resolve by doing the best work:
-# AskUserQuestion(questions=[{"question": "Fix all five issues or just the one the ticket names?", ...}])  # FORBIDDEN
-```
 
 **A user-specified SHAPE is a ceiling, not a floor — "do the best" is bounded by it, never a licence to substitute scope (do X, never Y).** The examples above ("fix all or some?", "thorough or okay?", "the heavy/full version?") are all **magnitude** questions, on an axis where more is unambiguously better — and there "do the best" = do the maximum. But when the user constrains the **shape** — "quick wins", "low-hanging fruit", "minimal", "just this file", "no new dependencies" — that is information about the solution space, not the user hedging. It **bounds** the work; it is a constraint, not timidity to override. Reading it as "do the maximum" and shipping a larger, different thing is **scope substitution** — and this very clause is what an agent reaches for to rationalize it, which is exactly why the carve-out lives here.
 
 - **Do the best work INSIDE the shape.** Do-the-best still applies fully — to the space the user drew. The best quick win is a real, thorough deliverable; keep demanding that.
 - **Use each target's EXISTING tooling.** Inside a shape constraint the existing runner / gate / config is the instrument. New shared machinery (a versioned contract, new runner files, new CI gates) is by definition outside a "quick win".
 - **New shared machinery is a separate, NAMED suggestion the user can decline** — never smuggled in as the delivery of a different request. If the migration really is the right answer, say so as a proposal.
-
-```text
-# Asked for "quick wins across N repos" — do X: the small per-repo fix using each repo's current tooling,
-#   plus "a shared contract would also be worth doing — want it?" as a named, declinable suggestion.
-# never Y: ship a multi-repo migration behind a new versioned contract + runners + CI gates as if THAT were the ask.
-```
 
 **The boundary — what you SHOULD still ask (do ask Z).** Asking is correct, not a violation, when the blocker is something you genuinely cannot know or decide alone:
 
@@ -991,34 +920,30 @@ Edit(file_path="module.py", ...)   # do the thorough fix
 
 **A verification tool being unavailable, or the evidence source being un-locatable, is the "fact you cannot obtain" case — ask, don't just state the limitation and stop (do X, never Y).** Trying one autonomous diagnostic step first is fine; but once it confirms you're blocked, the next action is `AskUserQuestion`, not a prose sign-off. A turn that ends "I couldn't verify X, so I won't confirm it" without asking for the missing fact leaves the user unaware there's anything to unblock — silence reads as "handled," not "stuck."
 
-```python
-# do X — the required tool/evidence is unreachable; ask for the missing fact:
-AskUserQuestion(questions=[{"question": "The gh CLI isn't available here, so I can't confirm the dev deploy finished or reach a deployed URL. What's the dev URL, or has the deploy landed?", "options": [...]}])
-# never Y — state the blocker in prose as the final answer, no ask, turn just ends:
-# "The gh CLI isn't available in this environment, so I couldn't complete that
-#  status check... I won't tell you it works on dev until I have that evidence."   # FORBIDDEN
-```
-
 The test is sharp: _can I reach the best outcome by doing the work?_ If yes → do it, don't ask. If the blocker is a missing fact or an authorization gate → ask via `AskUserQuestion`. "I could resolve this by doing the best work" is RED; "I truly cannot know this / am not authorized" is GREEN. Pinned by `do_the_best_without_asking` and `legitimate_missing_fact_question_is_allowed` (`evals/scenarios/do_the_best_no_tech_debt.yaml`).
 
 **Don't abandon an in-progress one-by-one walk-through.** If you have started taking the user through items one at a time, finish the sequence. Do not switch to autonomous work mid-walk-through and leave the remaining items dangling.
 
-**Why this matters beyond UX:** when Slack is configured, the `PreToolUse` hook automatically mirrors every `AskUserQuestion` call to the user's Slack DM. The user can see pending questions on their phone even when away from the terminal. Plain-text questions bypass this mirror and are invisible on Slack.
-
-**This is hook-enforced, not a remembered preference (#807).** A `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, a "let me know if/whether …" soft-ask, an ANNOUNCED-but-unissued ask — "**Action:** Ask about X" / "I'll ask the user which …" with no tool call — or a PRINTED call, `AskUserQuestion(...)` emitted as text instead of invoked; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it, and the legitimate one-ask-then-wait disposition ("once you answer, I'll ask the second decision") is guarded so a compliant walk-through is never re-ask-looped. **Scope:** the gate only enforces on a loop-driven turn (`_session_drives_loop`: this session owns the tick, or there is no live owner) — that is where an inline question is invisible (it reads as a log line, so the decision is lost). In an attended interactive session that a _different_ live owner is driving, a human is reading the prose, so the gate is skipped; an unknown/unreadable ownership signal fails safe and keeps it firing. See `BLUEPRINT.md` §17.1 invariant 9 and its production-hooks eval-lane bullet for the surrounding contract; the heuristic itself lives in `hooks/scripts/question_gates.py`.
-
-**Away-mode (24/7 dual question-mode, #58).** When the active mode's posture defers questions (`t3 loop preset show`), the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:mode` for the configuration surface (`t3 loop preset use offline`, `t3 loop preset use engaged`, `t3 loop preset auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
+The Slack mirror, the `Stop`-gate enforcement, away-mode deferral, the headless `questions record` path, and the rules for applying a structured answer (and ignoring a stale or superseded one) are in [`skills/rules/references/asking-questions.md`](references/asking-questions.md).
 
 **Headless has no interactive tool surface — record the question durably yourself (do X, never Y).** `AskUserQuestion` is the INTERACTIVE implementation of the contract; the contract itself is that the question **reaches the user and an answer comes back**. In a headless run your prose goes to a transcript no human reads, so narrating a blocker loses the decision exactly as an inline question does on a loop turn. When the interactive tool is unavailable — or its call was denied and nothing reached the owner — put the question on the durable Slack path yourself; do not silently pick an answer.
 
-```bash
-# do X — record it durably so the Slack drain delivers it to the owner:
-t3 <overlay> questions record 'Which region should this deploy to?' --options '<verbatim-options-json>'
-# never Y — narrate the blocker into a transcript, or guess the answer and proceed:
-#   "I could not reach the owner for the region, so I picked eu."   # FORBIDDEN — the decision was theirs
+## The User Asked a Question — Answer It (Non-Negotiable)
+
+The mirror image of the rule above. That one governs the agent ASKING; this one governs the agent being ASKED. **When the user's turn is interrogative and answerable, the answer is the deliverable — acting is not answering.** Dispatching a lane and reporting the dispatch tells the asker nothing they wanted to know, so they ask again; and when someone asks _why_, work is not a substitute for an explanation.
+
+- **Lead with the answer, then keep the action.** A yes/no question gets the polarity first ("Yes — merging it now"); a why question gets the cause ("it was blocked by `<X>` — here is the line"). Dispatching afterwards is fine, and usually right.
+- **"I do not know yet" IS an answer.** "I have not read the logs yet — fetching them now" discharges the question honestly. Silence dressed as a status update does not.
+- **Never let a delegation report stand in for the answer.** "Dispatched a lane to merge it" answers neither "are you going to merge it?" nor "why was it not mergeable?".
+
+```text
+# do X — answer, then act:
+#   "Yes — merging it now. Dispatched a lane to run it."
+# never Y — the dispatch report AS the answer:
+#   "Dispatched a lane to merge #4001. It is queued behind the current tick."
 ```
 
-Read the reply back with `t3 <overlay> questions list` and apply it per "Receiving a structured answer" below. Pinned by `evals/scenarios/headless_question_contract.yaml` (the outbound half) and `evals/scenarios/askuserquestion_slack_resolution.yaml` (the inbound half) — the BLOCKING `surface: headless` lane, because a contract graded through the interactive tool call would be pinned to a bundled CLI's rendering instead (`evals/README.md` § `surface`).
+Enforced by the BLOCKING Stop gate `handle_answer_first_gate` (`hooks/scripts/answer_first_gate.py`, detector `teatree.hooks.answer_first_scanner`): it refuses turn-end when the last user message is answer-seeking, the final turn reports a delegation, and that turn carries no polarity opener, no explanation, and no honest unknown. It is the inverse of the `handle_enforce_structured_question` gate above, and unlike its siblings it does NOT skip an attended turn — a waiting human is exactly who this failure costs. Never-lockout escapes: the `[skip-answer-gate: <reason>]` token in the turn text and the `[teatree] answer_first_gate_enabled = false` kill-switch (`t3 <overlay> gate answer-first disable`).
 
 ### Receiving a structured answer (apply X — never apply a stale Y)
 

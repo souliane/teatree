@@ -20,8 +20,9 @@ those would defeat the whole anti-fabrication point.
 from typing import Annotated, TypedDict
 
 import typer
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.models import Ticket
 from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproEvidenceError
 from teatree.core.models.repro_waiver import ReproWaiver, ReproWaiverError
@@ -71,7 +72,11 @@ def _run_repro(command: str, cwd: str, head_sha: str) -> HarnessRun:
     return HarnessRun(head_sha=head_sha, exit_code=result.returncode, output=result.stdout + result.stderr)
 
 
-class Command(TyperCommand):
+# #4234: the three recording verbs RETURN their refusal — the base class is what stops a
+# `set -e` lane treating an unrecorded repro as recorded.
+class Command(RefusalExitTyperCommand):
+    """Forced-repro evidence: the RED reproduction, the GREEN proof, and human waivers."""
+
     @initialize()
     def init(self) -> None:
         """Group root — forces sub-commands to be addressed by name."""

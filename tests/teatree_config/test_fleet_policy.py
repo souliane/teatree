@@ -7,7 +7,7 @@ intake loops — ``directive_loop`` (interprets the owner's captured directives)
 must be pruned from that set, else the owner's intent is never even ingested. The
 unit tests pin :func:`fleet_disable_set`; the integration test proves the end-to-
 end effective verdict through the REAL preset/loop resolution
-(:func:`teatree.loops.preset_status.effective_verdicts`), not a mock of it.
+(:func:`teatree.loops.enable_verdict.effective_verdicts`), not a mock of it.
 """
 
 import django.test
@@ -20,8 +20,8 @@ from teatree.config.fleet_policy import (
     fleet_policy_contradiction,
 )
 from teatree.core.models import Loop, LoopState, ModeOverride
+from teatree.loops.enable_verdict import effective_verdicts
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
-from teatree.loops.preset_status import effective_verdicts
 from teatree.loops.seed import seed_default_loops_and_prompts
 
 
@@ -103,7 +103,7 @@ class TestUnattendedReseedAdmitsIntakeLoops(django.test.TestCase):
         # The operator opted `directive_loop` in (it ships disabled behind its flag);
         # under the unattended posture it must keep interpreting captured directives.
         Loop.objects.filter(name="directive_loop").update(enabled=True)
-        ModeOverride.objects.set_override("unattended")
+        ModeOverride.objects.set_override("away")
 
         # A box that lists the intake loops in its DISABLED config — the prune is
         # what keeps them runnable (anti-vacuous: without it directive_loop/dispatch

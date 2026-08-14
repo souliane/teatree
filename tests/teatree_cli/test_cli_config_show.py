@@ -102,6 +102,6 @@ class TestConfigShowCommand(TestCase):
         assert isinstance(payload["derived"], list)
 
     def test_show_is_read_only_no_config_written(self) -> None:
-        ConfigSetting.objects.set_value("privacy", "strict")
+        ConfigSetting.objects.set_value("dashboard_instance_label", "before-show")
         runner.invoke(app, ["config", "show"])
-        assert ConfigSetting.objects.get_effective("privacy") == "strict"
+        assert ConfigSetting.objects.get_effective("dashboard_instance_label") == "before-show"

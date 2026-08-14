@@ -1,6 +1,6 @@
-"""Shared in-process harness test doubles for the headless runner.
+"""Shared in-process harness test doubles for the agent runner.
 
-``run_headless`` drives an in-process agent session behind the ``Harness`` seam
+``run_agent`` drives an in-process agent session behind the ``Harness`` seam
 (:mod:`teatree.agents.harness`). :class:`FakeHarnessSession` is the session double
 — it IS the session surface (``query`` / ``receive_response`` / ``interrupt``),
 yielding a canned typed-message stream. Two ways to inject it.
@@ -24,13 +24,13 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, Self
 from unittest.mock import patch
 
-from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolUseBlock
 from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
 
 import teatree.agents.harness as harness_mod
-import teatree.agents.headless as headless_mod
+import teatree.agents.runner as runner_mod
 from teatree.agents.harness_registry import HarnessCapabilities
-from teatree.agents.headless import TaskUsage
+from teatree.agents.runner import TaskUsage
 
 
 def result_message(**overrides: Any) -> ResultMessage:
@@ -72,9 +72,21 @@ def rate_limit_event(rate_limit_type: RateLimitType, *, status: RateLimitStatus 
     )
 
 
+def assistant_tool_use(name: str = "Read", *, tool_id: str = "t1") -> AssistantMessage:
+    """A single tool call, in the vocabulary both harness backends yield."""
+    return AssistantMessage(content=[ToolUseBlock(id=tool_id, name=name, input={})], model="claude-opus-4-8[1m]")
+
+
 def success_stream(result: dict[str, Any], **result_kwargs: Any) -> list[Any]:
-    """A canned ``[AssistantMessage(json), ResultMessage(success)]`` stream."""
-    return [assistant_text(json.dumps(result)), result_message(**result_kwargs)]
+    """A canned successful run: one tool call, the JSON result, the terminal message.
+
+    The tool call is not decoration — a run that produced real work necessarily
+    reached for a tool, and :mod:`teatree.agents.action_verification` refuses an
+    acting phase that emitted none. A stream with only text models an agent that
+    answered without looking at anything, which is the shape that gate exists to
+    catch; leaving it here would have made every caller assert success against it.
+    """
+    return [assistant_tool_use(), assistant_text(json.dumps(result)), result_message(**result_kwargs)]
 
 
 class FakeHarnessSession:
@@ -162,8 +174,8 @@ def fake_sdk(
 
     snapshot = task_usage if task_usage is not None else TaskUsage(turns=0, cost_usd=0.0)
     with (
-        patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+        patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
-        patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+        patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
     ):
         yield FakeHarnessSession

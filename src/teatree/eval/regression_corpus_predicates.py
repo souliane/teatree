@@ -434,10 +434,75 @@ def _check_mr_description_first_line_validated() -> bool:
     return any("first line" in err.lower() for err in rejected) and accepted == []
 
 
+#: The production runtime-ceiling reason (``agents.runner``), which interpolates the breach.
+_CEILING_REASON = "stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting"
+
+
+def _check_causeless_failure_does_not_trip_the_stall() -> bool:
+    """#4075: a reporting failure is dropped from the stall check, a real defect is not.
+
+    Pre-fix, ``no_result_envelope`` was a CONSTANT reason, so its fingerprint matched
+    itself and the corrective retry the repair loop schedules supplied the second strike —
+    a manufactured "identical failure twice" halt on phases that were not doomed. The
+    fixed :func:`stall_fingerprints` must:
+    * drop two identical causeless fingerprints for BOTH causeless kinds, not only the constant one (#4276), and
+    * keep two identical NAMED-defect fingerprints, so the stall can still fire.
+    """
+    from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR  # noqa: PLC0415 — deferred: loaded per eval run
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        stall_fingerprints,
+    )
+    from teatree.core.repair_loop import is_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    def _last_two(reason: str) -> list[str]:
+        pair = (classify_failure(reason), terminal_reason_fingerprint(reason))
+        return stall_fingerprints([pair, pair])
+
+    envelope_allowed = is_stalled(_last_two(NO_ENVELOPE_ERROR))
+    ceiling_allowed = is_stalled(_last_two(_CEILING_REASON.format(seconds=3601)))
+    must_block = is_stalled(_last_two("missing required evidence for phase 'coding': files_modified"))
+    return not envelope_allowed and not ceiling_allowed and must_block
+
+
+def _check_causeless_kind_is_dropped_from_the_kind_stall() -> bool:
+    """#4276: the KIND-level drop, the mechanism ``runtime_ceiling`` actually needs.
+
+    The sibling check above pins the FINGERPRINT filter, which ``no_result_envelope``
+    would survive on its own — its reason is a module constant, so it self-collides.
+    ``runtime_ceiling``'s interpolates the breach, so two of them never collide and only
+    :func:`stall_kinds` keeps the corrective retry from manufacturing a stall. Must:
+    * drop two ``runtime_ceiling`` kinds (``is_kind_stalled`` then sees nothing),
+    * keep two identical NAMED-deterministic kinds, so the named-cause stall still fires, and
+    * hold the fact the first leg rests on — the two reasons fingerprint DIFFERENTLY, with a collision control.
+    """
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        stall_kinds,
+    )
+    from teatree.core.repair_loop import is_kind_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    breaches = [_CEILING_REASON.format(seconds=seconds) for seconds in (3601, 3722)]
+    must_allow = is_kind_stalled(stall_kinds(classify_failure(reason) for reason in breaches))
+    named = "missing required evidence for phase 'coding': files_modified"
+    must_block = is_kind_stalled(stall_kinds(classify_failure(named) for _ in range(2)))
+
+    fingerprints = [terminal_reason_fingerprint(reason) for reason in breaches]
+    # ``\b\d+\b`` has no word boundary before the ``s``, so the breach survives
+    # normalization. The control writes the same two counts as bare words, which the mask
+    # DOES collapse — so the discrimination is falsifiable rather than a hash that differs
+    # on every input.
+    bare = "stuck_loop: runtime ceiling exceeded: ran {} seconds without exiting"
+    collapses = terminal_reason_fingerprint(bare.format(3601)) == terminal_reason_fingerprint(bare.format(3722))
+    return not must_allow and must_block and fingerprints[0] != fingerprints[1] and collapses
+
+
 __all__ = [
     "_check_account_switch_detect_and_recover",
     "_check_banned_terms_scanner_fails_closed_on_crash",
     "_check_branch_currency_conflict_only",
+    "_check_causeless_failure_does_not_trip_the_stall",
+    "_check_causeless_kind_is_dropped_from_the_kind_stall",
     "_check_forge_resolves_by_host_not_token",
     "_check_loop_owner_lease_pid_anchored",
     "_check_merge_precondition_maker_is_not_checker",

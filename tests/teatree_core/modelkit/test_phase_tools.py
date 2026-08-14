@@ -103,13 +103,17 @@ class TestDispatchablePhaseTotality:
         # is NOT in the verdict set and keeps the plain read-only grant.
         assert "shell" not in tools_for_phase("requesting_review")
 
-    def test_architectural_review_gets_shell_but_never_writes(self) -> None:
-        # The periodic ac-reviewing-codebase pass is a genuine review-WORK phase:
-        # it walks the tree (Read/Grep), does git archaeology, and runs
-        # `t3 tool verify-gates` — all of which need the shell. Without it the
-        # dispatched review stalled and leaked an "I lack shell + no checkout"
-        # question to the owner. Like the reviewer phases it never mutates source.
+    def test_architectural_review_can_implement_and_commit_its_findings(self) -> None:
+        # The periodic ac-reviewing-codebase pass ends in a pushed PR, not a report,
+        # so it needs write/edit on top of the read+shell a review walk takes. It is
+        # NOT a VERDICT_REVIEW_PHASES member: those record a verdict on someone
+        # else's diff, this one authors its own.
         tools = tools_for_phase("architectural_review")
-        assert {"read_file", "search_files", "shell"} <= tools
-        assert "write_file" not in tools
-        assert "edit_file" not in tools
+        assert {"read_file", "search_files", "shell", "write_file", "edit_file"} <= tools
+
+    def test_architectural_review_cannot_spawn_sub_agents(self) -> None:
+        # Anti-over-correction control: the skill implements its batch serially on
+        # one branch, and a cadence-fired phase fanning out would multiply unattended
+        # agents past the admission governor, which does not meter the sub-agent path.
+        assert "dispatch_subtask" not in tools_for_phase("architectural_review")
+        assert "dispatch_subtask" in disallowed_tools_for_phase("architectural_review")

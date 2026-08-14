@@ -15,8 +15,10 @@ import shutil
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
+from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON as _CLEAR_PRESENT_UNUSABLE_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
@@ -187,16 +189,28 @@ class GhPrApiClient:
         return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
-        argv = [
-            "api",
-            f"repos/{slug}/commits/main/check-runs",
-            "--jq",
-            f'.check_runs | map(select(.name == "{check_name}")) | .[0].conclusion // ""',
-        ]
+        """Whether *check_name* has a completed, non-green conclusion on ``main`` (#4090 sibling).
+
+        Reads across ALL pages via the shared :mod:`teatree.loop.main_check_runs` reader —
+        an unpaginated single-page read sees only GitHub's first 30 check-runs, so a named
+        check landing past page 1 would read as absent and this would report "not failed"
+        even when ``main`` genuinely is red on it. Any read failure (non-zero ``gh`` exit,
+        unparsable pages, the check absent from every page) degrades to ``False`` — the
+        existing fail-toward-"not confirmed failed" direction the uv-audit fallback caller
+        already treats as safe.
+        """
+        argv = check_runs_argv(slug=slug, ref="main")
         rc, out, _ = self._run_gh(argv)
         if rc != 0:
             return False
-        return out.strip().lower() not in {"success", "neutral", "skipped", ""}
+        runs = parse_check_run_pages(out)
+        if runs is None:
+            return False
+        match = next((run for run in runs if str(run.get("name") or "") == check_name), None)
+        if match is None:
+            return False
+        conclusion = str(match.get("conclusion") or "").strip().lower()
+        return conclusion not in {"success", "neutral", "skipped", ""}
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
         """SHA-bound squash merge (#1985) — delegates to the keystone primitive.
@@ -293,16 +307,33 @@ class AutoReviewTaskDispatcher:
         return row is not None
 
 
+#: Flag reasons the owner is DM'd about instead of only logged — a condition no
+#: further tick can clear on its own. The BotPing ledger still caps each at one DM
+#: per ``(repo, PR, reason)``, so escalating cannot reintroduce per-tick spam.
+OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset({_CLEAR_PRESENT_UNUSABLE_REASON})
+
+_FLAG_TEXTS: dict[str, str] = {
+    _MERGEABLE_AWAITING_REVIEW_REASON: "mergeable, ready to request review",
+    _CLEAR_PRESENT_UNUSABLE_REASON: (
+        "a CLEAR exists for this PR but does not authorise its live head — re-issue at the current SHA"
+    ),
+}
+
+
 @dataclass(slots=True)
 class SlackMergeNotifier:
     """Route merge announcements + flag signals through the notify-relevance policy.
 
     :meth:`announce` is an OWNER_DELIVERY (a PR merged) — DM'd exactly once per
     merge via the :class:`~teatree.core.models.BotPing` idempotency ledger keyed
-    on the merged SHA. :meth:`flag` is INTERNAL (the loop re-flags every
+    on the merged SHA. :meth:`flag` is INTERNAL by default (the loop re-flags every
     un-reviewed PR each ~5-minute tick) — logged only, never DM'd, so re-flagging
     the same stuck PR forever can never spam the owner. This replaces the former
     raw ``backend.post_message`` bypass that DM'd on every tick per open PR (F1).
+
+    :data:`OWNER_ESCALATION_FLAG_REASONS` names the flags that must not stay
+    log-only: a condition nothing in the loop can clear on its own needs the owner,
+    and the ledger still caps it at one DM per ``(repo, PR, reason)``.
     """
 
     backend: object
@@ -328,15 +359,14 @@ class SlackMergeNotifier:
         from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
 
         target = url or f"{slug}#{pr_id}"
-        if reason == _MERGEABLE_AWAITING_REVIEW_REASON:
-            text = f"mergeable, ready to request review {target}"
-        else:
-            text = f"flag ({reason}) {target}"
+        text = _FLAG_TEXTS.get(reason, f"flag ({reason})") + f" {target}"
         notify_user(
             text,
             kind=NotifyKind.INFO,
             idempotency_key=f"pr-sweep-flag:{slug}#{pr_id}:{reason}",
-            audience=NotifyAudience.INTERNAL,
+            audience=(
+                NotifyAudience.OWNER_ESCALATION if reason in OWNER_ESCALATION_FLAG_REASONS else NotifyAudience.INTERNAL
+            ),
         )
 
 

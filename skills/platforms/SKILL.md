@@ -5,7 +5,6 @@ eval_exempt: pure API-recipe reference auto-loaded as a dependency; carries no s
 compatibility: any
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # Platform References

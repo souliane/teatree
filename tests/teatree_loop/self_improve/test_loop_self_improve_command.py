@@ -3,6 +3,12 @@
 Drives the full path: seed a smell, ``call_command('loop_self_improve',
 tier='cheap')``, then assert a ``SelfImproveFiring`` row is recorded for
 at least one detector.
+
+The forgotten-merge smell is a *stalled* merge, and since #4250 that means the forge
+reports the PR OPEN — a missing ``MergeAudit`` is not evidence on its own. The reader
+the cheap tier arms is therefore replaced with an OPEN-reading fake: no test may reach
+a forge (the CI test image has no ``gh``), and leaving it unstubbed would make the
+assertion below unsatisfiable rather than merely unverified.
 """
 
 import datetime as dt
@@ -25,6 +31,15 @@ from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.models.pull_request import PullRequest
 from tests._loop_principal_env import pinned_loop_principal
 from tests._t3_master_env import worker_owns_t3_master
+
+_ARMED_READER = "teatree.loop.self_improve.schedule.live_pr_state_reader"
+
+
+def _reads_open() -> object:
+    def read(pr_url: str) -> str:
+        return "open"
+
+    return read
 
 
 class LoopSelfImproveCommandTests(TestCase):
@@ -62,7 +77,8 @@ class LoopSelfImproveCommandTests(TestCase):
         MergeClear.objects.filter(pk=clear.pk).update(issued_at=old)
 
         out = io.StringIO()
-        call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
+        with patch(_ARMED_READER, _reads_open):
+            call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
 
         # The forgotten_merge detector must have written a firing.
         assert SelfImproveFiring.objects.filter(detector="forgotten_merge").count() == 1
@@ -84,7 +100,8 @@ class LoopSelfImproveCommandTests(TestCase):
         MergeClear.objects.filter(pk=clear.pk).update(issued_at=old)
 
         out = io.StringIO()
-        call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
+        with patch(_ARMED_READER, _reads_open):
+            call_command("loop_self_improve", tier="cheap", json_output=True, stdout=out)
 
         payload = json.loads(out.getvalue())
         assert payload["tier"] == "cheap"
@@ -157,7 +174,7 @@ class TestSelfImproveT3MasterGate:
         assert payload["skipped"] is True
         assert payload["skipped_reason"] == T3MasterGate.UNCLAIMED.value
         assert payload["owner_session"] == ""
-        assert "no live owner" in err.getvalue()
+        assert "`t3-master` owner lease is unheld" in err.getvalue()
 
     def test_foreign_live_session_skips_and_names_the_owner(self) -> None:
         LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="sess-other", owner_pid=os.getpid())

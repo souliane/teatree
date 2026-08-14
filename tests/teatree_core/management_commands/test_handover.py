@@ -1,5 +1,6 @@
 """Tests for ``t3 <overlay> handover`` and ``t3 loop whoami`` commands."""
 
+import contextlib
 import json
 import os
 import pathlib
@@ -10,16 +11,30 @@ from unittest import mock
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.fast_push import FastPushOutcome
+from teatree.core.fast_push import FastPushOutcome, LeakFinding
+from teatree.core.handover import claim_handovers, render_claimed_payload
 from teatree.core.handover_orchestration import SubagentPush
-from teatree.core.models import LoopLease, SessionHandover
+from teatree.core.models import LoopLease, SessionHandover, Ticket
+
+_SECTION_HEADER = "## Sub-agent wrap-up"
 
 
 def _call(*args: str, **kwargs) -> str:
     buf = StringIO()
     call_command(*args, stdout=buf, stderr=StringIO(), **kwargs)
     return buf.getvalue()
+
+
+def _delivered() -> str:
+    """The bytes a receiving session is handed — the drain's own renderer, without consuming the row.
+
+    ``claim_handovers`` marks the row claimed, so a test that inspects delivery across
+    two hand-offs would be reading two different rows. The end-to-end claim path is
+    pinned separately by ``test_a_zero_agent_barrier_says_it_ran_and_found_none``.
+    """
+    return render_claimed_payload(list(SessionHandover.objects.order_by("pk")))
 
 
 def _call_human(*args: str, **kwargs) -> str:
@@ -170,6 +185,420 @@ class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
         assert SessionHandover.objects.count() == 1
 
 
+class TestTheBarriersReturnsReachTheReceiver(_PinnedSessionTestCase):
+    """The receiver reads the ROW, so per-agent done/remaining must reach it, not only stdout (#4194)."""
+
+    def test_each_agents_done_and_remaining_are_persisted(self) -> None:
+        pushed = SubagentPush(
+            worktree=pathlib.Path("/wt/agent-x"),
+            branch="feat/x",
+            driven=True,
+            outcome=FastPushOutcome(ok=True, branch="feat/x", committed=True, pushed=True, pr_url="http://pr/1"),
+        )
+        refused = SubagentPush(
+            worktree=pathlib.Path("/wt/agent-y"),
+            branch="feat/y",
+            driven=True,
+            outcome=FastPushOutcome(
+                ok=False, branch="feat/y", findings=[LeakFinding(gate="secrets", path="a.py", detail="token in a.py")]
+            ),
+        )
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push", lambda *a, **k: [pushed, refused]
+        )
+
+        data = json.loads(_call("handover", "create", json_output=True))
+
+        delivered = _delivered()
+        assert _SECTION_HEADER in delivered
+        assert "feat/x" in delivered
+        assert "http://pr/1" in delivered
+        assert "feat/y" in delivered
+        assert "token in a.py" in delivered, "what REMAINS is the half a receiver has to act on"
+        assert data["subagent_count"] == 2
+        assert _SECTION_HEADER not in SessionHandover.objects.get().payload, "rendered onto delivery, not spliced in"
+
+    def test_a_hand_off_nobody_ever_ran_a_barrier_at_carries_no_section(self) -> None:
+        """Silence is the true statement here, and only here: nobody looked."""
+        _call("handover", "create", drive_subagents=False, json_output=True)
+
+        assert _SECTION_HEADER not in _delivered()
+
+    def test_a_zero_agent_barrier_says_it_ran_and_found_none(self) -> None:
+        """End to end through the real claim, so the drain is pinned to carry the section too."""
+        _call("handover", "create", json_output=True)
+
+        delivered, _origin = claim_handovers("some-receiving-session")
+
+        assert f"{_SECTION_HEADER} (0 agents)" in delivered
+        assert "barrier ran at this hand-off and found no in-flight sub-agent worktree" in delivered
+
+
+def _push(worktree: str, branch: str, *, error: str = "", pushed: bool = False) -> SubagentPush:
+    if pushed:
+        outcome = FastPushOutcome(ok=True, branch=branch, committed=True, pushed=True)
+        return SubagentPush(worktree=pathlib.Path(worktree), branch=branch, driven=True, outcome=outcome)
+    return SubagentPush(worktree=pathlib.Path(worktree), branch=branch, driven=False, error=error)
+
+
+class TestOneWrapUpSectionPerRow(_PinnedSessionTestCase):
+    """N hand-offs from one session leave ONE wrap-up block, carrying every agent seen (#4194).
+
+    Ten hand-offs used to leave the receiver ten ``## Sub-agent wrap-up`` sections,
+    each a snapshot of a different moment — the N-partially-contradictory-narratives
+    problem this PR's single row was built to end, reproduced inside that row.
+    """
+
+    def _barrier(self, *rounds: list[SubagentPush]) -> None:
+        """Return a different push set on each successive ``create``."""
+        remaining = list(rounds)
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            lambda *a, **k: remaining.pop(0) if remaining else [],
+        )
+
+    def test_a_second_hand_off_updates_one_wrap_up_section(self) -> None:
+        self._barrier([_push("/wt/a", "feat/a", error="boom")], [_push("/wt/a", "feat/a", error="boom")])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", json_output=True)
+
+        assert _delivered().count(_SECTION_HEADER) == 1
+
+    def test_the_section_is_last_and_the_mirror_carries_the_same_bytes_as_the_claim(self) -> None:
+        """One section, at the END, on BOTH delivery surfaces — structural, not a caller contract."""
+        self._barrier([_push("/wt/a", "feat/a", error="boom")], [], [_push("/wt/a", "feat/a", pushed=True)])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", drive_subagents=False, json_output=True)
+        data = json.loads(_call("handover", "create", body="THIRD", json_output=True))
+
+        mirror = pathlib.Path(data["mirror_path"]).read_text(encoding="utf-8")
+        delivered = _delivered()
+        assert delivered.count(_SECTION_HEADER) == 1
+        assert delivered.index("FIRST") < delivered.index("SECOND") < delivered.index("THIRD")
+        assert delivered.index("THIRD") < delivered.index(_SECTION_HEADER), "the barrier report is read LAST"
+        assert delivered.rstrip().endswith(delivered.rstrip().splitlines()[-1])
+        section = delivered[delivered.index(_SECTION_HEADER) :]
+        assert section in mirror, "the mirror and the DB claim must never disagree about what was delivered"
+
+    def test_an_absorbed_payload_is_never_edited(self) -> None:
+        self._barrier([_push("/wt/a", "feat/a", error="boom")], [_push("/wt/a", "feat/a", pushed=True)])
+
+        _call("handover", "create", body="FIRST BODY", json_output=True)
+        _call("handover", "create", body="SECOND BODY", json_output=True)
+
+        payload = SessionHandover.objects.get().payload
+        assert payload.startswith("FIRST BODY")
+        assert payload.endswith("SECOND BODY")
+        assert _SECTION_HEADER not in payload, "no section is spliced in, so no authored byte can be taken for ours"
+
+    def test_an_agent_dropped_from_the_latest_barrier_is_still_named(self) -> None:
+        """The discriminating test: under a REPLACE strategy A's record vanishes entirely."""
+        self._barrier(
+            [_push("/wt/a", "feat/a", error="refused: unpushed work"), _push("/wt/b", "feat/b", error="boom")],
+            [_push("/wt/b", "feat/b", pushed=True)],
+        )
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", json_output=True)
+
+        delivered = _delivered()
+        assert delivered.count(_SECTION_HEADER) == 1
+        assert "/wt/a" in delivered, "a worktree refused at hand-off #1 and since pruned must still be named"
+        assert "refused: unpushed work" in delivered
+        assert "NOT enumerated at the latest barrier" in delivered
+        assert "/wt/b" in delivered
+        assert "committed, pushed" in delivered, "the surviving agent carries its LATEST status"
+
+    def test_a_hand_off_without_the_barrier_stops_claiming_the_agent_is_current(self) -> None:
+        """Barrier ON, then OFF: the row must not keep asserting a freshness it no longer has.
+
+        The wrap-up carries ``in_latest_barrier``, so carrying it over unchanged leaves
+        every agent flagged as enumerated at a barrier that never ran — a receiver then
+        acts on a status, and possibly a worktree, that nothing re-checked.
+        """
+        self._barrier([_push("/wt/a", "feat/a", error="refused: unpushed work")])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", drive_subagents=False, json_output=True)
+
+        delivered = _delivered()
+        assert delivered.count(_SECTION_HEADER) == 1
+        assert "1 agents seen; NO barrier ran at this hand-off" in delivered
+        assert "NOT enumerated at the latest barrier" in delivered
+        assert "refused: unpushed work" in delivered, "the last known status is kept, only its freshness is dropped"
+
+    def test_a_barrier_less_hand_off_delivers_different_bytes_than_the_barrier_that_preceded_it(self) -> None:
+        """The reported MAJOR: hand-off #2 re-rendered #1's zero-agent line as its own finding."""
+        first = _call("handover", "create", body="FIRST", json_output=True)
+        json.loads(first)  # the barrier RAN here (stubbed to zero agents)
+        delivered_1 = _delivered()
+
+        _call("handover", "create", body="SECOND", drive_subagents=False, json_output=True)
+        delivered_2 = _delivered()
+
+        assert delivered_1 != delivered_2, "a hand-off that ran no barrier must not re-state an earlier finding"
+        assert "barrier ran at this hand-off" in delivered_1
+        assert "NO barrier ran at this hand-off" in delivered_2
+        assert "barrier ran at this hand-off and found no in-flight" not in delivered_2
+        row = SessionHandover.objects.get()
+        assert row.barrier_ran_at_latest_handoff is False
+        assert row.last_barrier_at is not None
+        assert row.last_barrier_at.isoformat() in delivered_2, "it names WHICH barrier the finding belongs to"
+
+    def test_a_changed_agent_status_is_updated_not_duplicated(self) -> None:
+        self._barrier([_push("/wt/a", "feat/a", error="refused: leak")], [_push("/wt/a", "feat/a", pushed=True)])
+
+        _call("handover", "create", body="FIRST", json_output=True)
+        _call("handover", "create", body="SECOND", json_output=True)
+
+        delivered = _delivered()
+        assert delivered.count("/wt/a") == 1
+        assert "refused: leak" not in delivered, "the stale status is UPDATED, not left beside the new one"
+        assert "committed, pushed" in delivered
+
+
+def _record_wrongly(**overrides: object):
+    """A ``record_barrier_returns`` stand-in that persists the row WRONG, in one named way."""
+
+    def _recorder(handover, records, *, at, barrier_ran) -> None:
+        SessionHandover.objects.filter(pk=handover.pk).update(**overrides)
+
+    return _recorder
+
+
+class TestTheRowLevelCompletenessChecksAreNonVacuous(_PinnedSessionTestCase):
+    """Each check must REFUSE the one wrong row it exists to catch (#4194).
+
+    The wrap-up is row state, so the checks read the row rather than counting markers
+    in text — strictly stronger, and no authored body can change either answer.
+    """
+
+    def _refused(self, **kwargs) -> list[str]:
+        out = StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", stdout=out, stderr=StringIO(), json_output=True, **kwargs)
+        assert excinfo.value.code == 1
+        return json.loads(out.getvalue())["completeness_failures"]
+
+    def test_a_union_that_is_not_what_this_hand_off_merged_is_refused(self) -> None:
+        """Every OTHER field is recorded correctly, so only the union check can refuse this row."""
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            lambda *a, **k: [_push("/wt/a", "feat/a", error="boom")],
+        )
+        self._patch(
+            "teatree.core.management.commands.handover.record_barrier_returns",
+            _record_wrongly(subagent_wrapup=[], barrier_ran_at_latest_handoff=True, last_barrier_at=timezone.now()),
+        )
+
+        failures = self._refused(body="BODY")
+
+        assert failures == ["the persisted sub-agent wrap-up is not the union this hand-off merged"]
+
+    def test_a_barrier_that_ran_while_the_row_records_no_instant_is_refused(self) -> None:
+        self._patch(
+            "teatree.core.management.commands.handover.record_barrier_returns",
+            _record_wrongly(last_barrier_at=None, barrier_ran_at_latest_handoff=True),
+        )
+
+        failures = self._refused(body="BODY")
+
+        assert any("a sub-agent barrier ran but the row records none" in failure for failure in failures)
+
+    def test_a_barrier_less_hand_off_recorded_as_having_run_one_is_refused(self) -> None:
+        self._patch(
+            "teatree.core.management.commands.handover.record_barrier_returns",
+            _record_wrongly(barrier_ran_at_latest_handoff=True, last_barrier_at=timezone.now()),
+        )
+
+        failures = self._refused(body="BODY", drive_subagents=False)
+
+        assert any("does not record whether this hand-off ran" in failure for failure in failures)
+
+
+class TestTheReportedFlagsAreDerivedFromTheReRead(_PinnedSessionTestCase):
+    """``empty_payload`` / ``row_written`` were literals, so they could not be wrong (#4194)."""
+
+    def test_a_row_that_vanished_before_the_re_read_is_reported_missing(self) -> None:
+        def _delete_the_row(handover, records, *, at, barrier_ran) -> None:
+            SessionHandover.objects.all().delete()
+
+        self._patch("teatree.core.management.commands.handover.record_barrier_returns", _delete_the_row)
+
+        out = StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", body="BODY", stdout=out, stderr=StringIO(), json_output=True)
+
+        assert excinfo.value.code == 1
+        data = json.loads(out.getvalue())
+        assert data["row_written"] is False
+        assert data["empty_payload"] is True
+        assert any("the row is gone from the DB" in failure for failure in data["completeness_failures"])
+
+    def test_a_healthy_row_reports_the_barrier_fact_it_persisted(self) -> None:
+        data = json.loads(_call("handover", "create", body="BODY", json_output=True))
+
+        assert data["row_written"] is True
+        assert data["empty_payload"] is False
+        assert data["barrier_ran"] is True
+        assert data["last_barrier_at"] == SessionHandover.objects.get().last_barrier_at.isoformat()
+
+
+class TestABarrierThatCrashedIsNeverReportedAsOneThatRan(_PinnedSessionTestCase):
+    """``[]`` from a raised barrier is indistinguishable from a clean sweep — unless it is recorded."""
+
+    def test_a_raising_barrier_records_no_barrier_and_claims_no_finding(self) -> None:
+        def _boom(*_a, **_k) -> list:
+            msg = "git exploded"
+            raise RuntimeError(msg)
+
+        self._patch("teatree.core.management.commands.handover.drive_subagents_to_fast_push", _boom)
+
+        err = StringIO()
+        out = StringIO()
+        call_command("handover", "create", body="BODY", stdout=out, stderr=err, json_output=True)
+
+        assert "WARN  could not drive sub-agents" in err.getvalue()
+        assert json.loads(out.getvalue())["barrier_ran"] is False
+        row = SessionHandover.objects.get()
+        assert row.last_barrier_at is None
+        assert row.barrier_ran_at_latest_handoff is False
+        assert _SECTION_HEADER not in _delivered(), "a crashed barrier found nothing because it never looked"
+
+
+class TestAnAuthoredBodyIsNeverEdited(_PinnedSessionTestCase):
+    """The wrap-up is ROW STATE, so no authored bytes can be matched as "ours" and removed.
+
+    The marker strings below are LITERALS, not an imported constant: the statement is
+    that ARBITRARY text survives a hand-off, and a test built from the same constant
+    the production code uses would still pass against a scheme that only recognises
+    its own bytes.
+    """
+
+    def test_a_body_quoting_a_full_wrap_up_block_survives_byte_identical(self) -> None:
+        body = (
+            "# Reasoning\n\n"
+            "<!-- t3:handover:subagents -->\nexample\n<!-- /t3:handover:subagents -->\n\n"
+            "## CRITICAL: unpushed work in wt-42\n"
+        )
+
+        data = json.loads(_call("handover", "create", body=body, drive_subagents=False, json_output=True))
+
+        assert data["ok"] is True
+        assert SessionHandover.objects.get().payload == body
+        assert _SECTION_HEADER not in _delivered(), "no barrier has ever run, so nothing may claim one did"
+
+    def test_a_body_quoting_only_the_opening_marker_survives_byte_identical(self) -> None:
+        """The default `--drive-subagents` path: a zero-agent barrier used to truncate the tail."""
+        body = (
+            "# Reasoning\n\nThe marker is `<!-- t3:handover:subagents -->`.\n\n"
+            "## CRITICAL: rotate creds at 0900\n- finish the open PR\n"
+        )
+
+        data = json.loads(_call("handover", "create", body=body, json_output=True))
+
+        assert data["ok"] is True
+        payload = SessionHandover.objects.get().payload
+        assert payload == body
+        assert "## CRITICAL: rotate creds at 0900" in payload
+        delivered = _delivered()
+        assert f"{_SECTION_HEADER} (0 agents)" in delivered
+        assert "barrier ran at this hand-off" in delivered
+
+
+class TestTheBarrierNeverFastPushesTheWorktreeItRunsIn(_PinnedSessionTestCase):
+    """W5's jobs-dir widening made an agent's own job worktree enumerable — exclude it whole."""
+
+    def _excluded_from(self, directory: pathlib.Path) -> tuple[pathlib.Path, ...]:
+        """The ``exclude`` the barrier is called with when ``create`` runs in *directory*."""
+        seen: list[dict] = []
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            lambda *_a, **kwargs: seen.append(kwargs) or [],
+        )
+        with contextlib.chdir(directory):
+            _call("handover", "create", body="BODY", json_output=True)
+        return seen[0]["exclude"]
+
+    def test_the_barrier_excludes_the_whole_worktree_the_command_runs_in(self) -> None:
+        """Real ``git rev-parse``, run from a genuine subdirectory of this checkout."""
+        subdirectory = pathlib.Path(__file__).resolve().parent
+
+        exclude = self._excluded_from(subdirectory)
+
+        assert subdirectory in exclude
+        roots = [path for path in exclude if path != subdirectory]
+        assert roots, "running from a SUBDIRECTORY must not fast-push the agent's own worktree"
+        assert subdirectory.is_relative_to(roots[0])
+        assert (roots[0] / ".git").exists(), "the excluded extra path is the containing checkout's root"
+
+    def test_a_non_repo_cwd_degrades_to_excluding_the_cwd_alone(self) -> None:
+        outside_any_repo = self.tmp_path / "not-a-repo"
+        outside_any_repo.mkdir()
+
+        assert self._excluded_from(outside_any_repo) == (outside_any_repo,)
+
+
+class TestHandoverReportsTheIntegerRowId(_PinnedSessionTestCase):
+    def test_json_carries_the_integer_primary_key(self) -> None:
+        data = json.loads(_call("handover", "create", to="target-Z", json_output=True))
+        row = SessionHandover.objects.get()
+        assert data["handover_id"] == row.pk
+        assert isinstance(data["handover_id"], int), "the issue asks for the row id, not a uuid"
+
+    def test_the_human_line_leads_with_the_row_id(self) -> None:
+        out = _call_human("handover", "create", to="target-Z")
+        assert f"hand-off #{SessionHandover.objects.get().pk}" in out
+
+
+class TestASecondCreateReportsWhatItAbsorbed(_PinnedSessionTestCase):
+    def test_updated_existing_and_the_prior_byte_count_are_reported(self) -> None:
+        first = json.loads(_call("handover", "create", body="FIRST STATE", to="target-Z", json_output=True))
+        assert first["updated_existing"] is False
+        assert first["previous_payload_bytes"] == 0
+
+        second = json.loads(_call("handover", "create", body="SECOND STATE", to="target-Z", json_output=True))
+
+        assert second["updated_existing"] is True
+        assert second["previous_payload_bytes"] > 0
+        assert second["handover_id"] == first["handover_id"]
+
+    def test_the_absorb_is_announced_on_the_human_channel(self) -> None:
+        _call("handover", "create", body="FIRST STATE", to="target-Z", json_output=True)
+        out = _call_human("handover", "create", body="SECOND STATE", to="target-Z")
+        assert "one row per session" in out
+        assert "absorbed" in out.lower()
+
+
+class TestCompletenessIsAssertedBeforeAnyOkLine(_PinnedSessionTestCase):
+    """Verify-by-re-read: the row is re-fetched from the DB, never trusted in memory (#4194)."""
+
+    def test_a_persisted_payload_that_lost_the_resolved_bytes_fails_loudly(self) -> None:
+        def _gut_the_row(handover, records, *, at, barrier_ran) -> None:
+            SessionHandover.objects.update(payload="something else entirely")
+
+        self._patch("teatree.core.management.commands.handover.record_barrier_returns", _gut_the_row)
+
+        err = StringIO()
+        out = StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", to="target-Z", stdout=out, stderr=err, json_output=True)
+
+        assert excinfo.value.code == 1
+        data = json.loads(out.getvalue())
+        assert data["ok"] is False
+        assert data["completeness_ok"] is False
+        assert data["completeness_failures"], "the failure must name what is wrong with the row"
+        assert "OK " not in err.getvalue()
+
+    def test_a_healthy_row_reports_completeness_ok(self) -> None:
+        data = json.loads(_call("handover", "create", to="target-Z", json_output=True))
+        assert data["completeness_ok"] is True
+        assert data["payload_bytes"] > 0
+
+
 class TestHandoverWhoami(_PinnedSessionTestCase):
     def test_whoami_prints_session_id(self) -> None:
         assert _call_human("handover", "whoami").strip() == "this-session"
@@ -213,12 +642,140 @@ class TestLoopWhoamiAndOwnerDisplay(_PinnedSessionTestCase):
 
 
 class TestEmptyHandoverIsRefused(_PinnedSessionTestCase):
-    """A hand-off with nothing durable to transfer fails loud, never reports OK (#3551)."""
+    """A hand-off with nothing durable to transfer fails loud, never reports OK (#3551).
 
-    def test_exits_non_zero_when_no_snapshot_and_no_live_state(self) -> None:
+    And it writes NOTHING (#4194): a zero-agent barrier result is a negative fact
+    ABOUT a hand-off, not a hand-off. A row carrying only "no sub-agents had pending
+    work" arrives under the ``SESSION HAND-OFF RECEIVED`` directive while transferring
+    nothing a receiver can act on, and it consumes the author's single unclaimed slot.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
         (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").unlink()
 
+    def _refused(self, *args: str, **kwargs) -> tuple[dict, str]:
+        """Run an EMPTY ``create``, assert it exits 1, and return its JSON + stderr."""
+        out, err = StringIO(), StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", *args, stdout=out, stderr=err, json_output=True, **kwargs)
+        assert excinfo.value.code == 1
+        return json.loads(out.getvalue()), err.getvalue()
+
+    def test_exits_non_zero_when_no_snapshot_and_no_live_state(self) -> None:
         with pytest.raises(SystemExit) as excinfo:
             _call("handover", "create", json_output=True)
 
         assert excinfo.value.code == 1
+
+    def test_an_empty_hand_off_writes_no_row(self) -> None:
+        data, err = self._refused()
+
+        assert SessionHandover.objects.count() == 0, "an empty hand-off is not durable state; nothing is persisted"
+        assert data["ok"] is False
+        assert data["handover_id"] is None
+        assert data["row_written"] is False
+        assert data["mirror_path"] == ""
+        assert list(self.tmp_path.rglob("handover-*.md")) == [], "no row means no mirror either"
+        assert "No row was written" in err
+
+    def test_an_empty_hand_off_delivers_nothing_to_a_receiver(self) -> None:
+        """The end-to-end statement: a receiving session is handed nothing at all."""
+        self._refused()
+
+        assert claim_handovers("some-receiving-session") == ("", "")
+
+    def test_an_empty_hand_off_leaves_an_existing_unclaimed_row_untouched(self) -> None:
+        SessionHandover.objects.create_handover(from_session="this-session", to_session="first", payload="REAL STATE")
+        before = SessionHandover.objects.get()
+
+        self._refused(to="other")
+
+        after = SessionHandover.objects.get()
+        assert after.payload == before.payload
+        assert after.to_session == before.to_session
+        assert after.created_at == before.created_at
+
+    def test_an_empty_hand_off_still_runs_the_barrier_and_reports_it(self) -> None:
+        """Rescuing stranded sub-agent work is orthogonal to whether a payload exists."""
+        outcome = FastPushOutcome(ok=True, branch="feat/x", committed=True, pushed=True, pr_url="http://pr/1")
+        push = SubagentPush(worktree=pathlib.Path("/wt/agent-x"), branch="feat/x", driven=True, outcome=outcome)
+        self._patch("teatree.core.management.commands.handover.drive_subagents_to_fast_push", lambda *a, **k: [push])
+
+        data, _err = self._refused()
+
+        assert data["subagent_count"] == 1
+        assert data["subagent_pushes"][0]["pr_url"] == "http://pr/1"
+        assert SessionHandover.objects.count() == 0
+
+
+class TestOneResolutionDecidesBothTheGateAndTheWrite(_PinnedSessionTestCase):
+    """The gate and the write must agree, across a barrier long enough for state to move (#4194).
+
+    The barrier is the slow part — N worktrees, git pushes, network PR upserts — so a
+    concurrent actor settling the last in-flight ticket lands INSIDE it. The gate was
+    decided on a resolution taken before it and the row was written from a second
+    resolution taken after, so the value that passed the gate was not the value
+    persisted: the row that landed carried nothing but the barrier's own boilerplate,
+    was mirrored, and reached a receiver under the ``SESSION HAND-OFF RECEIVED``
+    directive. Every other empty-path test resolves EMPTY at BOTH instants, so none of
+    them can see this.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").unlink()
+        ticket = Ticket.objects.create(issue_url="https://github.com/o/r/issues/1", short_description="real work")
+
+        def _settle_the_last_in_flight_ticket(*_a, **_k) -> list:
+            Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+            return []
+
+        self._patch(
+            "teatree.core.management.commands.handover.drive_subagents_to_fast_push",
+            _settle_the_last_in_flight_ticket,
+        )
+
+    def _run(self) -> tuple[dict, int]:
+        out, err = StringIO(), StringIO()
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", stdout=out, stderr=err, json_output=True)
+        return json.loads(out.getvalue()), int(excinfo.value.code or 0)
+
+    def test_state_settling_across_the_barrier_writes_no_row(self) -> None:
+        data, code = self._run()
+
+        assert SessionHandover.objects.count() == 0, "the resolution that decided the gate is the one written"
+        assert code == 1
+        assert data["payload_source"] == "empty"
+        assert data["empty_payload"] is True
+        assert data["row_written"] is False, "a row cannot be written for a payload reported as empty"
+
+    def test_state_settling_across_the_barrier_delivers_nothing_to_a_receiver(self) -> None:
+        self._run()
+
+        assert claim_handovers("some-receiving-session") == ("", "")
+
+
+class TestTheJsonAndExitCodesAreOtherwiseUnchanged(_PinnedSessionTestCase):
+    """Control test — GREEN before AND after; a red here means a contract broke."""
+
+    def _code(self, *args: str, **kwargs) -> int:
+        with pytest.raises(SystemExit) as excinfo:
+            call_command("handover", "create", *args, stdout=StringIO(), stderr=StringIO(), **kwargs)
+        return int(excinfo.value.code or 0)
+
+    def test_an_authored_body_exits_zero(self) -> None:
+        assert json.loads(_call("handover", "create", body="AUTHORED", json_output=True))["ok"] is True
+
+    def test_a_live_state_payload_is_unvetted_and_exits_three(self) -> None:
+        (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").unlink()
+        Ticket.objects.create(issue_url="https://github.com/o/r/issues/1", short_description="real work")
+
+        assert self._code(json_output=True) == 3
+
+    def test_a_self_addressed_target_exits_one(self) -> None:
+        assert self._code(to="this-session", json_output=True) == 1
+
+    def test_both_payload_inputs_exit_two(self) -> None:
+        assert self._code(body="B", from_file="/nonexistent", json_output=True) == 2

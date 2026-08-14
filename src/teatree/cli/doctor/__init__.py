@@ -1,7 +1,7 @@
 """``t3 doctor`` — smoke-test hooks, imports, and services (thin package facade).
 
-The ``doctor`` Typer group + the ``check`` orchestrator live in
-:mod:`teatree.cli.doctor.app`; the :class:`DoctorService` / :class:`IntrospectionHelpers`
+The ``doctor`` Typer group lives in :mod:`teatree.cli.doctor.app` and the check RUN
+in :mod:`teatree.cli.doctor.run_checks`; the :class:`DoctorService` / :class:`IntrospectionHelpers`
 services live in :mod:`teatree.cli.doctor.service`; the ``_check_*`` probes live in the
 ``checks_environment`` / ``checks_runtime`` / ``checks_mcp`` / ``checks_session`` /
 ``checks_loop`` / ``checks_mode_override`` modules; plugin-registration repair lives in
@@ -31,6 +31,7 @@ from teatree.cli.doctor.app import (
     _check_mcp_connectivity,
     _check_single_db,
     _check_singletons,
+    _check_skill_pin_freshness,
     _check_skill_source_drift,
     _check_skills,
     _check_slack_socket_mode,
@@ -82,6 +83,7 @@ __all__ = [
     "_check_mcp_connectivity",
     "_check_single_db",
     "_check_singletons",
+    "_check_skill_pin_freshness",
     "_check_skill_source_drift",
     "_check_skills",
     "_check_slack_socket_mode",

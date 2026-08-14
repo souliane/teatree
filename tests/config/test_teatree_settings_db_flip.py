@@ -137,20 +137,21 @@ class TestNonTeatreeSection:
 
 
 class TestDelegatesToColdReader:
-    """Anti-vacuous: patching ``cold_reader.read_setting`` flips the reader's output.
+    """Anti-vacuous: patching ``cold_reader.read_setting_confirmed`` flips the reader's output.
 
     That flip is observable only if ``teatree_settings`` routes through the cold
-    reader — proving the DB read is live.
+    reader — proving the DB read is live. The confirming sibling is the seam, not the
+    value half: the leaf needs the store's readability, which ``read_setting`` discards.
     """
 
     def test_reader_routes_through_cold_reader(self, settings_module, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: list[tuple[str, str]] = []
 
-        def _fake(name: str, *, scope: str = "", **_: object) -> object:
+        def _fake(name: str, *, scope: str = "", **_: object) -> cold_reader.SettingRead:
             seen.append((name, scope))
-            return False
+            return cold_reader.SettingRead(value=False, readable=True)
 
-        monkeypatch.setattr(cold_reader, "read_setting", _fake)
+        monkeypatch.setattr(cold_reader, "read_setting_confirmed", _fake)
         assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is False
         assert ("memory_recall_enabled", "") in seen
 
@@ -159,5 +160,5 @@ class TestDelegatesToColdReader:
             msg = "db layer exploded"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr(cold_reader, "read_setting", _boom)
+        monkeypatch.setattr(cold_reader, "read_setting_confirmed", _boom)
         assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is True

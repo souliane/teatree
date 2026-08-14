@@ -88,9 +88,6 @@ class TriageAssessorScanTests(TestCase):
         assert task is not None
         assert task.phase == TRIAGE_ASSESSOR_PHASE
         assert task.status == Task.Status.PENDING
-        # The scanner requests HEADLESS; the Task model routes a loop-dispatched
-        # phase task per ``agent_runtime`` (interactive by default — the in-session
-        # sub-agent lane, same as scanning_news), so we don't pin the resolved target.
         assert "ASK-GATE" in task.execution_reason
         assert self.URL in task.execution_reason
         assert "Broken login" in task.execution_reason

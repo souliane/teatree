@@ -13,8 +13,9 @@ recent E2E/evidence run touched the worktree, or it is explicitly
 ``reaper_pinned`` — the shared #2227/#2773 active-delivery guards, folded in via
 :func:`teatree.core.gates.idle_stack.active_delivery_keep_reason` so this reaper
 never protects LESS than the reversible idle-stack reaper; (c) ANY live
-process' CWD is inside the worktree dir (an agent is operating inside it) —
-scanned via ``/proc/*/cwd`` on Linux, not just the reaper's own process; (d) a git lock
+process is placed inside the worktree dir (an agent is operating inside it) —
+read from the shared host-aware :mod:`teatree.core.cleanup.process_table`, not
+just the reaper's own process and not this container's namespace; (d) a git lock
 (``index.lock``) is present in the worktree's gitdir — git is mid-operation, so
 removing the worktree would corrupt an in-flight command; (e) its HEAD commit is
 more recent than ``recent_minutes`` — freshly-committed work, likely still in
@@ -46,6 +47,7 @@ from pathlib import Path
 
 from django.utils import timezone as dj_timezone
 
+from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.gates.idle_stack import active_delivery_keep_reason
 from teatree.core.models import Worktree
 from teatree.utils import git
@@ -77,9 +79,6 @@ def _ticket_is_busy(worktree: Worktree) -> bool:
     return ticket is not None and ticket.has_active_work()
 
 
-_PROC_ROOT = Path("/proc")
-
-
 def _within(cwd: Path, resolved_wt: Path) -> bool:
     """True iff ``cwd`` is the worktree dir itself or a directory inside it."""
     return cwd == resolved_wt or resolved_wt in cwd.parents
@@ -102,23 +101,23 @@ def _is_cwd(wt_path: Path) -> bool:
     resolved = wt_path.resolve()
     if own is not None and _within(own, resolved):
         return True
-    return _any_process_cwd_within(resolved)
+    return _any_process_cwd_within(wt_path)
 
 
-def _any_process_cwd_within(resolved_wt: Path) -> bool:
-    """Scan ``/proc/*/cwd`` for a process whose working dir is inside ``resolved_wt``."""
-    if not _PROC_ROOT.is_dir():
-        return False
-    for entry in _PROC_ROOT.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            cwd = (entry / "cwd").resolve()
-        except OSError:
-            continue
-        if _within(cwd, resolved_wt):
-            return True
-    return False
+def _any_process_cwd_within(wt_path: Path) -> bool:
+    """True iff any live process is placed inside ``wt_path``.
+
+    Reads the shared host-aware table (:mod:`teatree.core.cleanup.process_table`)
+    rather than this venue's own ``/proc``, which inside the worker container
+    lists a namespace holding none of the host agents this signal exists to spot.
+    An unreadable table contributes no signal here — unlike the venv reaper, this
+    reaper proves every change redundant before wiping anything, so the CWD check
+    widens its guards rather than being the one that authorises the wipe.
+
+    The path goes in AS WRITTEN: the table matches both spellings itself, and
+    pre-resolving here would throw away the raw one.
+    """
+    return read_process_table().holds(wt_path)
 
 
 def _git_lock_present(wt_path: Path) -> bool:

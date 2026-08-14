@@ -1,4 +1,4 @@
-"""``t3 doctor`` — active Slack round-trip comms verification for headless teatree (#3411).
+"""``t3 doctor`` — active Slack round-trip comms verification for teatree (#3411).
 
 The "reacts-but-never-answers" detector. Headless teatree in Docker RECEIVES a
 Slack DM and REACTS (👀 ack) but never POSTS an answer back — a silent half-broken
@@ -301,11 +301,11 @@ def _probe_answer_pipeline() -> list[RoundtripFinding]:
     forever unanswered — teatree reacts but never answers.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keep import light
-    from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415 — deferred: ORM-backed read
+    from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — deferred: ORM-backed read
     from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held  # noqa: PLC0415 — deferred: keep import light
 
     findings: list[RoundtripFinding] = []
-    if not loop_enabled(_ANSWER_LOOP):
+    if not loop_admits(_ANSWER_LOOP):
         findings.append(
             RoundtripFinding(
                 Level.FAIL,

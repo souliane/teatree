@@ -46,12 +46,12 @@ class SessionAdmin(admin.ModelAdmin):
 
 @admin.register(Task)
 class TaskAdmin(admin.ModelAdmin):
-    list_display = ("id", "ticket", "execution_target", "status", "claimed_by")
+    list_display = ("id", "ticket", "phase", "status", "claimed_by")
 
 
 @admin.register(TaskAttempt)
 class TaskAttemptAdmin(admin.ModelAdmin):
-    list_display = ("id", "task", "execution_target", "exit_code", "ended_at")
+    list_display = ("id", "task", "exit_code", "ended_at")
 
 
 @admin.register(PullRequest)
@@ -232,7 +232,7 @@ class ConfigSettingAdmin(admin.ModelAdmin):
 @admin.register(Mode)
 class ModeAdmin(ShippedDeleteRouting):
     shipped_family = "preset"
-    list_display = ("name", "availability_mode", "entry_count", "description", "updated_at")
+    list_display = ("name", "entry_count", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
 

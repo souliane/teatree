@@ -6,7 +6,6 @@ requires:
   - writing-plans
 metadata:
   version: 0.0.1
-  subagent_safe: true
 ---
 
 # Architecture-Design Companion
@@ -129,7 +128,7 @@ The deterministic validator `teatree.quality.architecture_precheck` fires a warn
 
 ## Anti-pattern catalog
 
-The ten checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
+The ten checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase` — a REQUIRED `apm` install declared in `apm.yml`, not a skill in this repo's `skills/` tree. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
 
 ## Architecture pre-check template
 
@@ -181,7 +180,7 @@ The implementer fills the template BEFORE touching `src/`, drafting it in a work
 - `obra/superpowers/writing-plans` — generic planning methodology (problem framing, alternatives considered, rollback path)
 - `t3:code` — implementation phase, picks up after the pre-check is written
 - `t3:ticket` § "Plan First" — the ticket-intake pre-check that triggers this companion
-- `t3:review` § "North-Star Rubric — Six Quality Attributes" — the clean / robust / maintainable / coherent / reliable / proactive lens the resulting design is reviewed against (coherence covers the cross-repo and dependency-direction checks above)
+- `t3:review` § "North-Star Rubric — Seven Quality Attributes" — the clean / robust / maintainable / coherent / reliable / proactive / scoped lens the resulting design is reviewed against (coherence covers the cross-repo and dependency-direction checks above; scoped is where a design that stages itself into phases, or that answers more than was asked, is caught before it is built)
 
 ## Scope discipline
 

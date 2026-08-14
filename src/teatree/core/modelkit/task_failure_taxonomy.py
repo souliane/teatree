@@ -6,7 +6,7 @@ kanban card saw a cause-less error and could not tell a genuine review defect fr
 lost lease, a bad harness pin, or an exhausted credential — they render identically.
 
 This module is the vocabulary that fixes that, and it deliberately extends the
-existing one rather than inventing a second: :mod:`teatree.agents.headless_failure_taxonomy`
+existing one rather than inventing a second: :mod:`teatree.agents.runner_failure_taxonomy`
 already names a terminal run's outcome instead of emitting a generic string, because a
 GENERIC reason was actively harmful — a capped run matched the transient marker set and
 was auto-requeued straight back into the same ceiling. The same argument applies to a
@@ -25,14 +25,44 @@ or the environment's?" — which is what makes a review defect distinguishable f
 harness fault on the card.
 
 It is NOT the requeue predicate. That remains
-:func:`teatree.agents.outage_classifier.is_transient_failure`, and the two are related by
+:func:`teatree.failure_signatures.is_transient_failure`, and the two are related by
 a one-way invariant this module's tests pin: everything the requeue sweep calls transient
 is also environmental here, never the reverse. The gap between them is intentional —
 :attr:`FailureKind.LEASE_LOST` is environmental (a concurrent re-claim, not a defect in
 the diff) yet must NOT be requeued by that sweep, because a live successor task already
 holds the work and reopening the predecessor would duplicate it (souliane/teatree#3534).
 Collapsing the two axes would silently re-run one of them into a wall.
+
+A third axis: causeless (souliane/teatree#4075)
+-----------------------------------------------
+:func:`is_causeless` answers a third question — "did this failure name a cause at all?".
+A run that emitted no envelope, or that was cut off at its runtime ceiling, reported
+NOTHING about why the work is unfinished, so two of them are one silence repeated rather
+than one defect recurring. Feeding that to the repair loop's two-consecutive-identical
+stall check makes "we learned nothing, twice" indistinguishable from "one defect recurred
+twice" — and the corrective retry the loop itself schedules supplies the second strike, so
+the halt is manufactured rather than observed. :func:`stall_fingerprints` therefore drops
+them from the stall comparison; the attempt still burns iteration budget and still
+escalates at the cap.
+
+Membership is decided by that absence-of-a-cause test, NOT by whether the recorded text
+happens to repeat: ``no_result_envelope`` is a module constant
+(:data:`teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`), so it always self-collides on
+the fingerprint, but ``runtime_ceiling``'s reason interpolates the breach (``ran 3601s``
+vs ``ran 3722s`` fingerprint differently) and so does NOT collide by construction — for it,
+the KIND-level drop in :func:`stall_kinds` is what does the work, and the fingerprint
+side is only sometimes redundant with it.
+
+Deliberately NARROWER than :data:`_UNNAMED`, the other set :func:`stall_kinds` drops: those
+two kinds fail to name a cause because classification could not place a reason that IS
+there, so the text still carries the
+defect and the fingerprint check discriminates it (``UNRECORDED`` is the one exception —
+its text is blank by definition, so its fingerprint is empty and already dropped by the
+existing empty-fingerprint guard). A causeless kind's reason, in contrast, IS the reason —
+there is no defect-specific text underneath it for a check to discriminate.
 """
+
+from collections.abc import Iterable
 
 from django.db import models
 
@@ -86,6 +116,28 @@ _ENVIRONMENTAL: frozenset[str] = frozenset(
         FailureKind.RESULT_ERROR,
         FailureKind.PROVISION_FAILED,
         FailureKind.LANDING_UNVERIFIED,
+    },
+)
+
+#: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
+#: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
+#: ``runtime_ceiling``'s interpolated one does not. See the module docstring: dropped from
+#: the stall comparison, never from the iteration budget.
+_CAUSELESS: frozenset[str] = frozenset(
+    {
+        FailureKind.NO_RESULT_ENVELOPE,
+        FailureKind.RUNTIME_CEILING,
+    },
+)
+
+#: Kinds that are the ABSENCE of a NAME rather than a cause, so two of them are two
+#: unrelated failures rather than one repeating defect. See the module docstring on why
+#: this is deliberately WIDER than :data:`_CAUSELESS`: the defect's own text is still
+#: there underneath, so the fingerprint check discriminates them and is kept.
+_UNNAMED: frozenset[str] = frozenset(
+    {
+        FailureKind.UNCLASSIFIED,
+        FailureKind.UNRECORDED,
     },
 )
 
@@ -158,6 +210,43 @@ def is_environmental(kind: str) -> bool:
     return kind in _ENVIRONMENTAL
 
 
+def is_causeless(kind: str) -> bool:
+    """Whether *kind* is the absence of a cause, so two of them are not one repeating defect.
+
+    The stall axis only — see the module docstring on why this is narrower than the
+    "absence of a NAME" set the kind check drops.
+    """
+    return kind in _CAUSELESS
+
+
+def stall_fingerprints(kind_fingerprints: Iterable[tuple[str, str]]) -> list[str]:
+    """The ``(kind, fingerprint)`` pairs' fingerprints that count toward the stall check.
+
+    The single builder every ``last_two_fingerprints`` caller shares, so a causeless
+    failure can never be dropped on one repair path and counted on another.
+    """
+    return [fingerprint for kind, fingerprint in kind_fingerprints if fingerprint and not is_causeless(kind)]
+
+
+def stall_kinds(kinds: Iterable[str]) -> list[str]:
+    """The failure kinds that count toward the NAMED-DETERMINISTIC stall check (#3957).
+
+    The kind-side sibling of :func:`stall_fingerprints`, and the single builder every
+    ``last_two_deterministic_kinds`` caller shares. This is the mechanism that actually
+    carries ``runtime_ceiling``: its reason interpolates the breach, so two of them
+    fingerprint DIFFERENTLY and the fingerprint filter never sees a collision to drop.
+
+    Dropping rather than substituting a placeholder is load-bearing — one dropped kind
+    between two identical named ones leaves them non-adjacent, so only two CONSECUTIVE
+    named deterministic failures halt.
+    """
+    return [
+        kind
+        for kind in kinds
+        if kind and kind not in _UNNAMED and not is_causeless(kind) and not is_environmental(kind)
+    ]
+
+
 __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
@@ -165,5 +254,8 @@ __all__ = [
     "SUPERSEDED_PREFIX",
     "FailureKind",
     "classify_failure",
+    "is_causeless",
     "is_environmental",
+    "stall_fingerprints",
+    "stall_kinds",
 ]

@@ -13,10 +13,12 @@ from urllib.parse import urlparse
 from teatree.config import discover_overlays
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.head_read_diagnosis import landed_merge_commit, unreadable_head_advisory
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
 from teatree.utils.pr_ref import PrRef
+from teatree.utils.run import SUBPROCESS_UNREACHABLE
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -116,6 +118,16 @@ def _ticket_repo_slug(clear: object) -> str:
     return slug_from_issue_or_pr_url(urlparse(issue_url).path)
 
 
+def fallback_repo_slug(clear: object) -> str:
+    """The repo *clear*'s TICKET — then the running clone — binds it to, or ``""``.
+
+    Steps (2) and (3) of :func:`resolve_pr_repo_slug`, exposed as a seam so a caller
+    that has already judged the CLEAR's own slug unusable as a repo claim resolves
+    the remainder in the same order instead of re-deriving it (#4249).
+    """
+    return _ticket_repo_slug(clear) or _project_repo_slug()
+
+
 def resolve_pr_repo_slug(clear: object) -> str:
     """The GitHub ``owner/repo`` to target ``gh`` at for *clear*'s PR.
 
@@ -138,10 +150,7 @@ def resolve_pr_repo_slug(clear: object) -> str:
     pr_id = getattr(clear, "pr_id", "?")
     if _looks_like_owner_repo(slug):
         return slug
-    from_ticket = _ticket_repo_slug(clear)
-    if from_ticket:
-        return from_ticket
-    resolved = _project_repo_slug()
+    resolved = fallback_repo_slug(clear)
     if resolved:
         return resolved
     msg = (
@@ -267,7 +276,7 @@ def _iter_candidate_repo_slugs() -> list[str]:
         companion repo) was previously unmergeable because the candidate set
         never contained it (#2323).
 
-    Used by :func:`_probe_candidate_repos` to recover from the #1335
+    Used by :func:`_probe_candidate_heads` to recover from the #1335
     cross-repo confusion: a CLEAR issued from the teatree clone for a PR
     in a downstream overlay's repo (e.g. ``downstream-org/downstream-overlay#159``)
     used to resolve to ``souliane/teatree``'s same-numbered (unrelated)
@@ -293,6 +302,28 @@ def _iter_candidate_repo_slugs() -> list[str]:
         _add(slug)
 
     return candidates
+
+
+def known_repo_slugs() -> frozenset[str]:
+    """Every ``owner/repo`` this machine's overlay registry can name — forge-free (#4249).
+
+    The set form of :func:`_iter_candidate_repo_slugs`, promoted as the shared
+    evidence for "does this slug name a repo that EXISTS here?" — the question
+    :func:`_looks_like_owner_repo` can only answer from string shape.
+    """
+    return frozenset(_iter_candidate_repo_slugs())
+
+
+def slug_is_registered_repo(slug: str) -> bool:
+    """True iff *slug* canonicalizes to a repo :func:`known_repo_slugs` names (#4249).
+
+    Positive evidence only: ``False`` covers BOTH "the registry names other repos
+    and not this one" AND "the registry names nothing at all", so a caller that
+    must fail open on an empty registry tests :func:`known_repo_slugs` itself
+    rather than reading a bare ``False`` as a denial.
+    """
+    canonical = normalize_repo_slug(slug)
+    return bool(canonical) and canonical in known_repo_slugs()
 
 
 def _reconcile_slug_against_reviewed_sha(
@@ -326,6 +357,19 @@ def _reconcile_slug_against_reviewed_sha(
     to whichever was probed first would merge an unverified twin. That case
     raises a :class:`MergePreconditionError` naming every ambiguous repo —
     the gate never silently picks one.
+
+    A no-match raise is classified before it is composed (#4239, #4144). A forge
+    read that returns nothing is a NON-answer, so "the head moved" is a claim the
+    gate has no evidence for. When the INITIAL read came back empty, two things
+    follow: the PR may simply have merged already — checked first, whatever
+    emptied the read (#4144; a merged PR's head going unreadable is not shown to
+    be caused by its branch being deleted — GitHub keeps answering ``headRefOid``
+    for merged PRs after their source branch is gone, so a transient forge error
+    is at least as likely) — and, failing that, the refusal says the head could
+    not be READ rather than that it moved, naming the venue's missing credential
+    or (when candidates DID answer) the cross-repo hypothesis those answers
+    actually support. Only a head that RESOLVES to a different SHA keeps the
+    head-moved diagnosis.
     """
     if not reviewed_sha:
         return initial_slug
@@ -333,23 +377,18 @@ def _reconcile_slug_against_reviewed_sha(
     initial_live = query.live_head_sha()
     if initial_live == reviewed_sha:
         return initial_slug
-    # An empty ``initial_live`` is itself a #1335 signal, NOT merely a transient
-    # auth/network failure: a cross-repo CLEAR resolves to the running clone's
-    # ``origin`` (the wrong repo), which has no PR <pr_id> at all, so the forge
-    # returns an empty head for it. Fall through to the cross-repo probe so a
-    # candidate overlay repo whose PR <pr_id> carries ``reviewed_sha`` is
-    # recovered. The genuinely-absent case (no candidate matches) is still
-    # covered by the ``MergePreconditionError`` below, whose message names every
-    # candidate considered — so a real auth/network outage still fails loud.
+    # An empty ``initial_live`` can be a #1335 signal rather than an auth/network
+    # failure: a cross-repo CLEAR resolves to the running clone's ``origin`` (the
+    # wrong repo), which has no PR <pr_id> at all, so the forge returns an empty
+    # head for it. Fall through to the cross-repo probe either way — a candidate
+    # overlay repo whose PR <pr_id> carries ``reviewed_sha`` is recovered, and the
+    # per-candidate heads are what tell the two causes apart when none matches.
     candidates = _iter_candidate_repo_slugs()
     # The initial slug was already probed above — exclude it from the secondary
     # set so the candidates list in the error message reflects what was probed.
     other_candidates = [c for c in candidates if c != initial_slug]
-    matches = _probe_candidate_repos(
-        query=query,
-        reviewed_sha=reviewed_sha,
-        candidates=other_candidates,
-    )
+    probed_heads = _probe_candidate_heads(query=query, candidates=other_candidates)
+    matches = [slug for slug, head in probed_heads.items() if head == reviewed_sha]
     if len(matches) > 1:
         # #2338: a same-SHA multi-match is an ambiguity the merge gate must
         # never resolve silently — binding to ``matches[0]`` could merge an
@@ -377,6 +416,35 @@ def _reconcile_slug_against_reviewed_sha(
         )
         return match
     considered = [initial_slug, *other_candidates]
+    if not initial_live:
+        if landed := landed_merge_commit(query):
+            logger.info(
+                "merge_execution: PR #%s on %r reads MERGED at %s — its unreadable head is the "
+                "expected post-merge state, not drift (#4144)",
+                pr_id,
+                initial_slug,
+                landed[:8],
+            )
+            return initial_slug
+        readable = sorted(slug for slug, head in probed_heads.items() if head)
+        cause = (
+            unreadable_head_advisory(host_kind)
+            if not readable
+            else (
+                f"The forge DID answer for {readable}, so a missing credential is not the cause — "
+                f"the initial repo most likely carries no PR #{pr_id} at all (a CLEAR issued from a "
+                f"clone whose overlay registry doesn't include the target repo). This refusal "
+                f"consumes nothing — the CLEAR stays actionable."
+            )
+        )
+        msg = (
+            f"could not read the live head for PR #{pr_id} on {initial_slug!r}, so it was never "
+            f"compared with the reviewed SHA {reviewed_sha} — this is NOT evidence that the head "
+            f"moved, and no candidate repo's PR #{pr_id} carries that SHA either. Candidates "
+            f"considered: {considered}. {cause} Re-escalate; the loop never self-issues a "
+            f"replacement (§17.4.3 step 2 / #4239)."
+        )
+        raise MergePreconditionError(msg)
     msg = (
         f"PR head moved: live={initial_live or '(unresolved)'} != "
         f"reviewed={reviewed_sha} on the initial repo ({initial_slug!r}), and "
@@ -390,30 +458,69 @@ def _reconcile_slug_against_reviewed_sha(
     raise MergePreconditionError(msg)
 
 
-def _probe_candidate_repos(
+def reconcile_issuance_slug(*, initial_slug: str, pr_id: int, reviewed_sha: str, host_kind: str) -> str:
+    """:func:`_reconcile_slug_against_reviewed_sha` under CLEAR issuance's fail-open (#4249).
+
+    Issuance must never be STRICTER than the merge gate it feeds, so a reconcile that
+    refuses keeps *initial_slug* and lets the merge's own SHA bind refuse a moved head.
+    A forge that cannot be reached at all refuses the same way: an absent transport is
+    a NON-answer, so it is no more evidence for re-keying the verdict than a moved head
+    is. GitLab's transport already degrades to an empty read
+    (``backends.gitlab.merge_rpc._READ_FAILURES``); GitHub's spawns ``gh``, so a venue
+    without that binary raises out of the transport instead. Before #4249 this was
+    latent — an ``owner/repo``-shaped slug skipped the reconcile outright — but the
+    registry-backed predicate now routes a genuine repo the local registry happens not
+    to name through it, putting the hole on the common path.
+
+    The MERGE keystone deliberately does NOT use this wrapper: it calls the reconcile
+    directly, where the raise is load-bearing and failing open would merge unverified
+    work.
+    """
+    try:
+        return _reconcile_slug_against_reviewed_sha(
+            initial_slug=initial_slug,
+            pr_id=pr_id,
+            reviewed_sha=reviewed_sha,
+            host_kind=host_kind,
+        )
+    except MergePreconditionError:
+        return initial_slug
+    except SUBPROCESS_UNREACHABLE:
+        warn_throttled(
+            logger,
+            f"issuance-reconcile-transport-{host_kind}",
+            f"{host_kind} merge transport unreachable during CLEAR issuance for PR "
+            f"#{pr_id}; keeping slug {initial_slug!r}",
+            exc_info=True,
+        )
+        return initial_slug
+
+
+def _probe_candidate_heads(
     *,
     query: CodeHostQuery,
-    reviewed_sha: str,
     candidates: list[str],
-) -> list[str]:
-    """Every candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha* (#2338).
+) -> dict[str, str]:
+    """Each candidate ``owner/repo`` mapped to its live PR <pr_id> head SHA (#2338, #4239).
 
-    Probes **all** candidates and returns the full list of those whose live
-    head SHA matches *reviewed_sha* — the #1335 recovery path enumerates the
-    repos that could own the reviewed work, and the caller requires EXACTLY
-    ONE to match. Returning every match (not just the first) is what lets the
-    caller detect a same-SHA ambiguity: when two distinct candidate repos
-    (a fork/mirror, or an overlay working-repo that aliases another) both
-    expose PR <pr_id> at the same reviewed SHA, binding silently to whichever
-    was probed first would merge an unverified twin. The list lets the caller
-    raise instead, naming every ambiguous repo.
+    Probes **all** candidates in order — the #1335 recovery path enumerates the
+    repos that could own the reviewed work, and the caller requires EXACTLY ONE
+    to carry the reviewed SHA. Reporting every candidate (not stopping at the
+    first match) is what lets the caller detect a same-SHA ambiguity: when two
+    distinct candidate repos (a fork/mirror, or an overlay working-repo that
+    aliases another) both expose PR <pr_id> at the same reviewed SHA, binding
+    silently to whichever was probed first would merge an unverified twin.
+
+    Reporting the HEAD rather than a match verdict is what lets the caller tell a
+    forge that answered "a different SHA" from one that did not answer at all
+    (#4239) — the two need opposite diagnoses and are indistinguishable once
+    collapsed to a boolean.
 
     Reuses *query*'s already-resolved backend (:meth:`CodeHostQuery.rebound_to`),
     re-reading ``pulls/<N>`` per candidate slug without re-resolving the transport.
     The per-candidate swallow-failures contract is preserved: a probe error
     surfaces as an empty head from :meth:`CodeHostQuery.live_head_sha`, which never
-    equals *reviewed_sha*, so a failing candidate is simply absent from the
-    matches — never counted, never raising on its own. Returns ``[]`` when no
-    candidate matches (a real force-push or a truly stale CLEAR).
+    equals a reviewed SHA, so a failing candidate can never be selected — and
+    never raises on its own.
     """
-    return [slug for slug in candidates if query.rebound_to(slug).live_head_sha() == reviewed_sha]
+    return {slug: query.rebound_to(slug).live_head_sha() for slug in candidates}

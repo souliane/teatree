@@ -82,6 +82,10 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     "handle_dispatch_prompt_quote_scanner": (
         "public-egress verbatim-quote leak in an Agent/Task dispatch prompt; fail-closed by design, [quote-ok:] escape"
     ),
+    "handle_block_verbatim_operator_paste": (
+        "public-egress republication of the operator's own messages; fail-closed by design, "
+        "ALLOW_VERBATIM_PASTE=1 escape + gate kill-switch"
+    ),
     # Narrow targeted-command gates — deny one specific command, never arbitrary Bash.
     "handle_block_direct_commands": "denies only specific t3-CLI-bypass commands (_deny_match denylist)",
     "handle_block_raw_review_post": "denies only raw review-post commands that bypass the FSM",
@@ -91,9 +95,8 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     ),
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     # Routing conversion, not a content/enforcement deny.
-    "handle_route_away_mode_question": "converts AskUserQuestion to DeferredQuestion (away-mode); not a Bash deny",
     "handle_mirror_question_to_slack": (
-        "converts loop-driven AskUserQuestion to DeferredQuestion (present-mode deny arm, #1174); "
+        "converts a loop-driven AskUserQuestion to a DeferredQuestion (#1174); "
         "denies only AskUserQuestion, never arbitrary Bash"
     ),
     # NB: the orchestrator-boundary gate (#1692) plus the plan-edit gate

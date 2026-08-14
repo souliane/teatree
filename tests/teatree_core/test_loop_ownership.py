@@ -302,22 +302,8 @@ def _make_alias(tmp_path: Path) -> str:
         "TIME_ZONE": None,
         "TEST": {},
     }
-    with connections[alias].cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE teatree_loop_lease (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name VARCHAR(128) NOT NULL UNIQUE,
-                owner VARCHAR(255) NOT NULL,
-                session_id VARCHAR(255) NOT NULL DEFAULT '',
-                owner_pid INTEGER NULL,
-                acquired_at DATETIME NULL,
-                lease_expires_at DATETIME NULL,
-                generation INTEGER UNSIGNED NOT NULL DEFAULT 0,
-                driver VARCHAR(16) NOT NULL DEFAULT ''
-            )
-            """
-        )
+    with connections[alias].schema_editor() as editor:
+        editor.create_model(LoopLease)
     connections[alias].close()
     return alias
 

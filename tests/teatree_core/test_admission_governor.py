@@ -14,8 +14,8 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents import _headless_env
-from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
+from teatree.agents import _runner_env
+from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
     RAM_BRAKE_FLOOR_GB,
@@ -33,7 +33,8 @@ from teatree.core.admission_governor import (
     weekly_pace,
 )
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
-from teatree.utils import ram_probe
+from teatree.utils import ram_scope
+from teatree.utils.ram_scope import RamHeadroom
 
 _WEEK = 7 * 24 * 3600
 
@@ -50,6 +51,22 @@ def _quota(**kwargs: object) -> QuotaSignal:
         "seconds_to_weekly_reset": _WEEK * 0.5,
     }
     return QuotaSignal(**{**base, **kwargs})
+
+
+def _stub_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    available_mib: int | None,
+    cgroup_limit_mib: int | None = None,
+    host_available_mib: int | None = None,
+) -> None:
+    """Stand the governor's probe in a named scope — uncapped, and on a roomy box, by default."""
+    headroom = RamHeadroom(
+        available_mib=available_mib,
+        cgroup_limit_mib=cgroup_limit_mib,
+        host_available_mib=available_mib if host_available_mib is None else host_available_mib,
+    )
+    monkeypatch.setattr(ram_scope, "read_ram_headroom", lambda: headroom)
 
 
 def _machine(**kwargs: object) -> MachineSignal:
@@ -220,8 +237,8 @@ class TestTestWorkerCapWiring:
 
     def test_kill_switch_removes_the_cap_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(admission_governor, "governor_enabled", lambda: False)
-        assert _headless_env.with_test_worker_cap(None, active_agents=4) is None
-        assert _headless_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
+        assert _runner_env.with_test_worker_cap(None, active_agents=4) is None
+        assert _runner_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
 
 
 class TestTheExportedCapRespondsToMemory:
@@ -234,7 +251,7 @@ class TestTheExportedCapRespondsToMemory:
     """
 
     def _exported_workers(self, monkeypatch: pytest.MonkeyPatch, *, available_gb: float) -> int:
-        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: round(available_gb * 1024))
+        _stub_headroom(monkeypatch, available_mib=round(available_gb * 1024))
         capped = with_test_worker_cap(None, active_agents=1)
         assert capped is not None
         return int(capped[XDIST_WORKERS_VAR])
@@ -331,17 +348,75 @@ class TestReadMachineSignalPopulatesMemory:
     """The field was declared and populated by nothing — every live caller passed no argument."""
 
     def test_the_default_path_reads_the_cgroup_aware_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: 8 * 1024)
+        _stub_headroom(monkeypatch, available_mib=8 * 1024)
         assert read_machine_signal().ram_available_gb == pytest.approx(8.0)
 
     def test_an_unreadable_probe_reports_none_rather_than_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # "Unreadable" and "no headroom left" are different answers and must not collapse.
-        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: None)
+        _stub_headroom(monkeypatch, available_mib=None)
         assert read_machine_signal().ram_available_gb is None
 
     def test_an_explicit_reading_is_never_overwritten(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(ram_probe, "effective_available_ram_mib", lambda: 8 * 1024)
+        _stub_headroom(monkeypatch, available_mib=8 * 1024)
         assert read_machine_signal(ram_available_gb=12.5).ram_available_gb == pytest.approx(12.5)
+
+
+class TestTwoContainersOneBox:
+    """#4217 — the same code, the same instant, two cgroups, one verdict.
+
+    The admin sidecar read 1.65 GB while the worker read 15.88 GB with 22 GB free on the
+    box, so every dispatch made from the container interactive work runs in was denied
+    against an absolute floor its fixed 2 GiB cap could never rise above. The deny text
+    told the operator to wait for hysteresis that can never arrive.
+    """
+
+    _ADMIN_CAP_MIB = 2 * 1024
+    _WORKER_CAP_MIB = 22155
+    _HOST_FREE_MIB = 22557
+
+    def _refusal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        available_mib: int,
+        cgroup_limit_mib: int,
+        host_available_mib: int = _HOST_FREE_MIB,
+    ) -> str:
+        """The reason a dispatch is refused in that cgroup — empty when it is admitted.
+
+        Load is pinned rather than read live so the assertion is about memory scope alone.
+        """
+        _stub_headroom(
+            monkeypatch,
+            available_mib=available_mib,
+            cgroup_limit_mib=cgroup_limit_mib,
+            host_available_mib=host_available_mib,
+        )
+        ram_available_gb = read_machine_signal().ram_available_gb
+        decision = _decide(machine=_machine(load1=1.0, ram_available_gb=ram_available_gb))
+        return "" if decision.admit else decision.reason
+
+    def test_the_sidecars_reading_never_brakes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._refusal(monkeypatch, available_mib=1691, cgroup_limit_mib=self._ADMIN_CAP_MIB) == ""
+
+    def test_the_workers_reading_still_brakes_when_genuinely_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        low = round(RAM_BRAKE_FLOOR_GB * 1024) - 1
+        assert "watermark" in self._refusal(
+            monkeypatch, available_mib=low, cgroup_limit_mib=self._WORKER_CAP_MIB, host_available_mib=low
+        )
+
+    def test_the_two_containers_no_longer_disagree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        admin = self._refusal(monkeypatch, available_mib=1691, cgroup_limit_mib=self._ADMIN_CAP_MIB)
+        worker = self._refusal(monkeypatch, available_mib=16261, cgroup_limit_mib=self._WORKER_CAP_MIB)
+        assert admin == worker == ""
+
+    def test_a_starved_box_brakes_from_the_sidecar_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #4252: the arm the abstention left open. Same 2 GiB sidecar, but the BOX is out
+        # of memory — the reading it holds is box-scoped and must reach the watermark.
+        starved = round(RAM_BRAKE_FLOOR_GB * 1024) - 1
+        assert "watermark" in self._refusal(
+            monkeypatch, available_mib=starved, cgroup_limit_mib=self._ADMIN_CAP_MIB, host_available_mib=starved
+        )
 
 
 class TestUnreadableProbeNeverManufacturesAClamp:
@@ -386,7 +461,7 @@ class TestUnreadableProbeNeverManufacturesAClamp:
 class TestAnUnknownQuotaIsBoundedNotUnlimited:
     """#4097: not knowing the budget must never buy MORE concurrency than knowing it.
 
-    An unknown quota used to leave ``static_ceiling`` verbatim, so the headless lane —
+    An unknown quota used to leave ``static_ceiling`` verbatim, so the agent lane —
     which passes ``static_ceiling=None`` — got no ceiling at all, while a known-healthy
     quota got ``floor(cores * WRITE_CONCURRENCY_PER_CORE)``. The machine-derived base
     needs no quota information whatsoever, so it is available in both cases; only the

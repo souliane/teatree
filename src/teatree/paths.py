@@ -527,6 +527,15 @@ def data_dir_root() -> Path:
     return Path(override) if override else DATA_DIR
 
 
+#: The positions a control database actually occupies under the data dir: beside the
+#: root, and one namespaced level down (the legacy ``data_dir/<name>/`` layout). NOT
+#: a full ``**`` walk — the data dir also roots the backup tree, 62k entries on a
+#: real install, and walking it over a bind mount costs 20-115s for files no live
+#: process holds. Both measured offenders sat at the root; the bound keeps a level
+#: of margin at 0.14s.
+_CONTROL_DB_ARTIFACT_GLOBS = ("{name}*", "*/{name}*")
+
+
 class PathHelpers:
     """Module-level helpers grouped so the module keeps a readable public surface."""
 
@@ -577,8 +586,35 @@ class PathHelpers:
                 continue
             yield candidate
 
+    @staticmethod
+    def find_control_db_artifacts(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
+        """Yield every file under ``data_dir`` that IS, or once was, a control database.
+
+        Wider than :func:`find_stale_dbs` in the two directions a descriptor survives.
+        Matching is by PREFIX because a RENAME does not close the descriptors held on a
+        file: the writer a ``db.sqlite3.precorrupt-<stamp>`` rename was meant to retire
+        keeps writing to the same inode under the new name, which the exact-name sweep
+        cannot see. And the ``-wal``/``-shm`` sidecars are the same database, so a
+        process holding the write-ahead log open for writing is a writer.
+
+        ``canonical`` is excluded. On a migrated install it is not under ``data_dir`` at
+        all — it lives in the control-DB volume, which has no host path — so everything
+        yielded here is a copy the host CAN name, and therefore CAN hold open.
+        """
+        if not data_dir.is_dir():
+            return
+        canonical = canonical.resolve()
+        seen: set[Path] = set()
+        for pattern in _CONTROL_DB_ARTIFACT_GLOBS:
+            for candidate in sorted(data_dir.glob(pattern.format(name=DB_FILENAME))):
+                if candidate in seen or not candidate.is_file() or candidate.resolve() == canonical:
+                    continue
+                seen.add(candidate)
+                yield candidate
+
 
 get_data_dir = PathHelpers.get_data_dir
 expected_db_for_repo = PathHelpers.expected_db_for_repo
 find_overlay_db = PathHelpers.find_overlay_db
 find_stale_dbs = PathHelpers.find_stale_dbs
+find_control_db_artifacts = PathHelpers.find_control_db_artifacts

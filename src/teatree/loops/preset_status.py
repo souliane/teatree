@@ -1,12 +1,9 @@
-"""Effective-verdict surface shared by ``preset show``, ``loops list``, and the statusline (#3159).
+"""Preset/mode observability rendering — the summary and the statusline handles (#3159).
 
-One source of truth for "which preset governs now, why, and what each loop's
-effective verdict is" so the three observability surfaces can never drift. The
-per-loop deciding layer mirrors the resolution order exactly:
-
-* ``hold`` — a ``LoopState`` PAUSE/DISABLE (L4, always wins)
-* ``override`` / ``schedule`` — the active preset holds an opinion for this loop (L3/L2)
-* ``base`` — no preset opinion; ``Loop.enabled`` decides (L1)
+The per-loop effective verdict itself is NOT here: it lives in the one seam every
+membership and admission site shares, :mod:`teatree.loops.enable_verdict`. This module
+renders what that seam decides — the active-preset summary and the ``schedule:`` /
+``mode:`` / ``forced ON/OFF:`` loop-line handles.
 
 Fails open: a resolver error degrades to the base config verdict (no preset), so a
 broken schedule can never blank these read-only surfaces.
@@ -17,10 +14,8 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
-from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
-from teatree.loop.preset_resolution import ActivePreset, preset_state_for, resolve_active_preset
+from teatree.loop.preset_resolution import resolve_active_preset
 from teatree.loop.statusline_loops import PresetLineHandles
-from teatree.request_cache import cached_per_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,17 +26,6 @@ class PresetSummary:
     layer: str  # "override" | "schedule"
     reason: str
     until: dt.datetime | None
-    availability_pin: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class LoopVerdict:
-    """One loop's effective run verdict and the layer that decided it."""
-
-    name: str
-    admitted: bool
-    layer: str  # "hold" | "override" | "schedule" | "base"
-    detail: str
 
 
 def active_summary(now: dt.datetime | None = None) -> PresetSummary | None:
@@ -54,32 +38,16 @@ def active_summary(now: dt.datetime | None = None) -> PresetSummary | None:
         layer=active.layer,
         reason=active.reason,
         until=active.until,
-        availability_pin=active.preset.availability_pin,
     )
-
-
-@cached_per_request
-def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
-    """The effective run verdict + deciding layer for every ``Loop`` row, sorted by name."""
-    from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
-
-    moment = now or timezone.now()
-    active = resolve_active_preset(moment)
-    held, forced = control_planes_in_db()
-    verdicts = [
-        _verdict_for(loop, held=loop.name in held, forced=forced.get(loop.name), active=active)
-        for loop in Loop.objects.all()
-    ]
-    return sorted(verdicts, key=lambda verdict: verdict.name)
 
 
 def statusline_chunk(now: dt.datetime | None = None) -> str:
     """The one-chunk merged ``mode:`` segment (#3494, #61).
 
     Collapses the old ``preset:`` + ``availability:`` handles into ONE ``mode:``
-    handle — the mode name now conveys reachability (``unattended`` / ``offline``
-    read as away; ``engaged`` / ``heads-down`` as present), so the separate
-    availability segment is gone. Spelled out for the loop line: a MANUAL override
+    handle — the mode name is the whole answer (``present`` / ``away`` /
+    ``maintenance`` / ``low-token`` / ``off``), so the separate availability segment
+    is gone. Spelled out for the loop line: a MANUAL override
     renders ``mode: manual`` (the operator's cue that the active schedule is NOT
     governing); a schedule-driven or default mode renders ``mode: <name>``. A
     boundary is appended when the mode expires at a known time (``mode: manual
@@ -115,25 +83,26 @@ def schedule_chunk() -> str:
 
 
 def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, bool]]:
-    """Per-loop manual FORCED overrides that DIVERGE from the preset/base verdict (#3248).
+    """Per-loop manual FORCED overrides that DIVERGE from the mode/base verdict (#3248).
 
     Returns ``(loop_name, forced_on)`` for every loop whose live FORCED value
-    differs from what the preset (else base ``Loop.enabled``) would decide - the
-    ``forced ON:`` / ``forced OFF:`` statusline section. A force that agrees with
-    the underlying verdict is not surfaced (it changes nothing). Sorted by name;
-    fails open to ``[]``.
+    differs from what the active mode's mask (else base ``Loop.enabled``) would
+    decide - the ``forced ON:`` / ``forced OFF:`` statusline section. A force that
+    agrees with the underlying verdict is not surfaced (it changes nothing). The
+    mask comes from :class:`~teatree.loops.enable_verdict.EnablePlanes`, the same
+    seam the tick gates on, so "diverges" means diverges from what actually runs.
+    Sorted by name; fails open to ``[]``.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+    from teatree.loops.enable_verdict import EnablePlanes  # noqa: PLC0415 — deferred: ORM-backed resolver
 
-    moment = now or timezone.now()
-    active = resolve_active_preset(moment)
-    _, forced = control_planes_in_db()
+    planes = EnablePlanes.resolve(now)
     entries: list[tuple[str, bool]] = []
     for loop in Loop.objects.all():
-        value = forced.get(loop.name)
+        value = planes.forced.get(loop.name)
         if value is None:
             continue
-        opinion = preset_state_for(active, loop.name)
+        opinion = planes.resolved.state_for(loop.name)
         base = opinion if opinion is not None else loop.enabled
         if value != base:
             entries.append((loop.name, value))
@@ -205,20 +174,6 @@ def preset_line_chunk(now: dt.datetime | None = None) -> str:
     return " · ".join(parts)
 
 
-def _verdict_for(loop: object, *, held: bool, forced: bool | None, active: ActivePreset | None) -> LoopVerdict:
-    name: str = loop.name  # ty: ignore[unresolved-attribute]
-    configured: bool = loop.enabled  # ty: ignore[unresolved-attribute]
-    opinion = preset_state_for(active, name)
-    admitted = loop_state_admits(configured_enabled=configured, held=held, preset_state=opinion, forced=forced)
-    if held:
-        return LoopVerdict(name=name, admitted=admitted, layer="hold", detail="LoopState hold")
-    if forced is not None:
-        return LoopVerdict(name=name, admitted=admitted, layer="forced", detail=f"override {'on' if forced else 'off'}")
-    if opinion is not None and active is not None:
-        return LoopVerdict(name=name, admitted=admitted, layer=active.layer, detail=active.reason)
-    return LoopVerdict(name=name, admitted=admitted, layer="base", detail="Loop.enabled")
-
-
 def _boundary_hhmm(until: dt.datetime | None) -> str:
     if until is None:
         return ""
@@ -226,10 +181,8 @@ def _boundary_hhmm(until: dt.datetime | None) -> str:
 
 
 __all__ = [
-    "LoopVerdict",
     "PresetSummary",
     "active_summary",
-    "effective_verdicts",
     "manual_override_chunk",
     "manual_override_entries",
     "overridden_loop_names",

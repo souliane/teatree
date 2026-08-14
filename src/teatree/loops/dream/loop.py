@@ -30,6 +30,9 @@ import os
 from typing import TYPE_CHECKING
 
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
+from teatree.loops.dream.pass_config import FALSY as _FALSY
+from teatree.loops.dream.pass_config import TRUTHY as _TRUTHY
+from teatree.loops.dream.pass_config import dream_table
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -51,8 +54,6 @@ DREAM_LEASE_SECONDS = DREAM_PASS_BUDGET_SECONDS + 5 * 60
 #:
 #: Default (no env, no DB key) is ON, so each phase is live out of the box while
 #: a single ``config_setting set`` (or a falsy env var) turns it off.
-_FALSY = frozenset({"0", "false", "no", "off"})
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 #: One phase toggle: the DB ``loops.dream`` key and its ``T3_DREAM_*`` env var.
 _PROPOSE_EVALS = ("propose_evals", "T3_DREAM_PROPOSE_EVALS")
@@ -60,14 +61,6 @@ _CROSS_LINK = ("cross_link", "T3_DREAM_CROSS_LINK")
 _MERGE = ("merge", "T3_DREAM_MERGE")
 _REINDEX = ("reindex", "T3_DREAM_REINDEX")
 _DECAY = ("decay", "T3_DREAM_DECAY")
-
-
-def _dream_table() -> dict:
-    """The ``dream`` sub-table of the DB ``loops`` setting; ``{}`` on absence/failure."""
-    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    dream = cold_reader.mapping_setting("loops").get("dream")
-    return dream if isinstance(dream, dict) else {}
 
 
 def _phase_enabled(key: str, env_var: str) -> bool:
@@ -81,7 +74,7 @@ def _phase_enabled(key: str, env_var: str) -> bool:
         return False
     if raw_env in _TRUTHY:
         return True
-    value = _dream_table().get(key)
+    value = dream_table().get(key)
     return value if isinstance(value, bool) else True
 
 
@@ -159,10 +152,11 @@ def compliance_measure_enabled() -> bool:
 
 
 #: ESCALATION — the other half — FILES enforcement tickets for recurrences, so it is
-#: default OFF and additionally ``--full``-gated (the call site ANDs this toggle with
-#: ``force_all_phases``), mirroring the Pass-2 memory-promotion posture. Opt in with
+#: default OFF, mirroring the Pass-2 memory-promotion posture. Opt in with
 #: ``T3_DREAM_COMPLIANCE_ESCALATE=1`` / the DB ``loops.dream compliance_escalate = true``
-#: key; absent, the dream pass measures but never escalates (no ticket-filing).
+#: key; absent, the dream pass measures but never escalates (no ticket-filing). The
+#: toggle ALONE suffices: it used to be ANDed with ``--full`` at the call site, which the
+#: cron ``tick`` can never set, so the toggle was dead on the nightly path (#4176).
 _COMPLIANCE_ESCALATE = ("compliance_escalate", "T3_DREAM_COMPLIANCE_ESCALATE")
 
 
@@ -199,7 +193,7 @@ def automation_asks_enabled() -> bool:
 
 def _dream_phase_default_off(key: str) -> bool:
     """Read the DB ``loops.dream`` key; default OFF, never raise."""
-    value = _dream_table().get(key)
+    value = dream_table().get(key)
     return value if isinstance(value, bool) else False
 
 

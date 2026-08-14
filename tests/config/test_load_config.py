@@ -88,7 +88,6 @@ class TestDbTierDefaults(TestCase):
         assert settings.issue_implementer_enabled is True
         assert settings.issue_implementer_label == ""
         assert settings.issue_implementer_max_concurrent == 3
-        assert settings.issue_implementer_cadence_hours == 1
 
     def test_e2e_confidence_threshold_default(self) -> None:
         assert get_effective_settings().e2e_confidence_threshold == 90

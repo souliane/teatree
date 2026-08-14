@@ -22,9 +22,14 @@ delivery runs on the per-overlay bot (``xoxb-``) token and Socket Mode on the
 app-level (``xapp-``) token, neither of which expires. A dead app-config token
 therefore blocks manifest edits during ``t3 setup`` and must never redden a box
 whose factory is running fine — Slack is optional and must not become mandatory.
-The exception is a persistence failure: that means teatree rotated successfully
-and then lost the credential Slack had just handed it, which is teatree's own
-fault and a genuine red.
+The exceptions are the two STORE faults, which are teatree's own and not Slack's.
+A persistence failure means teatree rotated successfully and then lost the
+credential Slack had just handed it. A write-ahead failure
+(``STORE_UNWRITABLE``) means the ``pass`` store cannot round-trip at all, so the
+rotation was refused: nothing was spent, but nothing CAN be rotated either, and
+a credential that cannot be rotated is dead within 12 hours and re-mintable only
+by hand. Both are genuine reds — a store teatree cannot write is not the
+"Slack is optional" case, it is teatree's own credential plane being broken.
 """
 
 import typer
@@ -40,7 +45,12 @@ def check_slack_config_token_fresh() -> bool:
     whole point is that it heals on a plain ``t3 doctor``), the mutation lives in
     :func:`~teatree.cli.slack.config_token.ensure_fresh_config_token` rather than
     here, and a rotation announces itself as ``WARN`` because state changed.
-    Returns ``True`` for every outcome except a lost write.
+    Returns ``True`` for every outcome except the two store faults — a lost write
+    (:class:`SlackConfigTokenPersistError`) and a store that failed its
+    write-ahead round-trip (:data:`RotationOutcome.STORE_UNWRITABLE`). The latter
+    reported NOTHING and passed before, which is the worst of the two failure
+    shapes: the pair is intact but frozen, so a silent green here is a green that
+    holds right up to the moment the credential expires for good.
 
     Gated on a Slack-backed overlay actually being registered, the same way the
     rest of the Slack doctor family is: a box with no Slack overlay has no
@@ -58,6 +68,9 @@ def check_slack_config_token_fresh() -> bool:
         typer.echo(f"WARN  Slack app-config token check crashed: {exc.__class__.__name__}: {exc}")
         return True
 
+    if report.outcome is RotationOutcome.STORE_UNWRITABLE:
+        typer.echo(f"FAIL  Slack app-config token CANNOT be rotated — the store is unwritable: {report.detail}")
+        return False
     if report.outcome is RotationOutcome.ROTATED:
         typer.echo(f"WARN  Auto-rotated the Slack app-config token pair — {report.detail}.")
     elif report.outcome is RotationOutcome.UNRECOVERABLE:

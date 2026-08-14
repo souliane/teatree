@@ -41,8 +41,8 @@ class DecidingLayerTestCase(TestCase):
         assert _row("review").deciding_layer.startswith("L1")
 
     def test_preset_layer_when_the_active_preset_masks_the_loop(self) -> None:
-        Mode.objects.update_or_create(name="engaged", defaults={"entries": {"inbox": False}})
-        ModeOverride.objects.set_override("engaged")
+        Mode.objects.update_or_create(name="present", defaults={"entries": {"inbox": False}})
+        ModeOverride.objects.set_override("present")
         row = _row("inbox")
         assert row.deciding_layer.startswith("L3 override")
         assert row.effective is False

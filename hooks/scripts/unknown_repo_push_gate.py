@@ -32,6 +32,9 @@ import sys
 from pathlib import Path
 
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.gate_result import warn_gate_skipped
+from hooks.scripts.managed_repo import teatree_src_on_path
+from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -40,9 +43,14 @@ sys.modules.setdefault("hooks.scripts.unknown_repo_push_gate", sys.modules[__nam
 
 # A real push to a remote — not a local/query form. ``--dry-run`` (and ``-n``)
 # perform no write, so they are exempt. A bare ``git push`` (no remote arg)
-# still pushes the current branch, so the remote token is not required.
-_SCOPE_GIT_PUSH_RE = re.compile(r"\bgit\s+push\b")
-_SCOPE_GIT_PUSH_DRY_RUN_RE = re.compile(r"\bgit\s+push\b[^\n|;&]*?(?:--dry-run|\s-n\b)")
+# still pushes the current branch, so the remote token is not required. The
+# verb is anchored at a COMMAND position (start of the command or after a
+# separator) and git's global flags may sit between ``git`` and ``push`` —
+# ``git -C <dir> push`` is the form every sibling gate already handles, and
+# requiring the two words adjacent let it through unevaluated.
+_PUSH_PREFIX = r"(?:^|[;&|]\s*)(?:sudo\s+)?git\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace)(?:=\S+|\s+\S+)\s+)*"
+_SCOPE_GIT_PUSH_RE = re.compile(_PUSH_PREFIX + r"push\b")
+_SCOPE_GIT_PUSH_DRY_RUN_RE = re.compile(_PUSH_PREFIX + r"push\b[^\n|;&]*?(?:--dry-run|\s-n\b)")
 _SCOPE_PUSH_OK_RE = re.compile(r"\[scope-push-ok:\s*(\S[^\]]*?)\s*\]")
 
 
@@ -87,16 +95,50 @@ def _classify_push_for_cwd(cwd: Path) -> str:
     :func:`teatree.core.gates.owned_repo_guard.classify_active_push`. Any
     import/resolution EXCEPTION (incl. a failed bootstrap) fails OPEN to
     ``allow`` (never-lockout on the internal-exception axis) — distinct from a
-    clean ``require_approval`` verdict, which holds the push.
+    clean ``require_approval`` verdict, which holds the push. Each degraded
+    ``allow`` says so on stderr (:func:`gate_result.warn_gate_skipped`): an
+    unvalidated push and a scoped-and-cleared one are the same silence otherwise.
     """
     if not bootstrap_teatree_django():
+        warn_gate_skipped("unknown-repo push SCOPE", "the hook interpreter cannot import Django")
         return "allow"
     try:
         from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415 — cold-hook import
 
         return str(classify_active_push(cwd))
-    except Exception:  # noqa: BLE001 — fail OPEN; a broken resolver must not wedge a push.
+    except Exception as exc:  # noqa: BLE001 — fail OPEN; a broken resolver must not wedge a push.
+        warn_gate_skipped("unknown-repo push SCOPE", f"the scope resolver failed ({type(exc).__name__}: {exc})")
         return "allow"
+
+
+def _push_target_dir(command: str, cwd: Path | None) -> Path | None:
+    """The dir whose repo this push LANDS in, or ``None`` when it cannot be pinned.
+
+    Resolved by the canonical static resolver
+    :func:`teatree.hooks._commit_repo_dir.resolve_commit_dir`, the same one
+    ``main_clone_guard`` / ``single_branch_repo_guard`` /
+    ``headless_authoring_gate`` use, so ``git -C <dir>``, ``cd <dir> &&`` and
+    ``--git-dir`` all name the repo actually being pushed. Keying on the ambient
+    ``cwd`` instead classified the SESSION's repo, and a session sits in one repo
+    while pushing to another all day.
+
+    ``None`` — the fail-OPEN answer — for an unresolvable target (the
+    sentinel, no cwd, a resolver that cannot be imported): an unknown target is
+    not evidence that a push leaves the operator's scope.
+    """
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks._commit_repo_dir import (  # noqa: PLC0415, PLC2701 — cold-hook import
+                UNRESOLVABLE_REPO_DIR,
+                resolve_commit_dir,
+            )
+
+            landing = resolve_commit_dir(command, cwd)
+        if landing == UNRESOLVABLE_REPO_DIR or not isinstance(landing, Path):
+            return None
+    except Exception:  # noqa: BLE001 — fail OPEN; an unimportable resolver must not wedge a push.
+        return None
+    return landing if landing.is_dir() else None
 
 
 _UNKNOWN_REPO_PUSH_REASON = (
@@ -117,11 +159,18 @@ def _unknown_repo_push_is_in_scope(data: dict) -> bool:
     are exempt), with the gate enabled and no per-call
     ``[scope-push-ok: <reason>]`` token present. A present token is honoured
     here (with a stderr NOTE) so the handler stays a single decision.
+
+    The verb is matched against the quote/heredoc-stripped skeleton, as in every
+    sibling gate: the same words inside a ``-m`` message or a heredoc body are
+    text, not an invocation.
     """
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if not command or not _SCOPE_GIT_PUSH_RE.search(command) or _SCOPE_GIT_PUSH_DRY_RUN_RE.search(command):
+    if not command:
+        return False
+    skeleton = strip_quoted_and_heredoc(command)
+    if not _SCOPE_GIT_PUSH_RE.search(skeleton) or _SCOPE_GIT_PUSH_DRY_RUN_RE.search(skeleton):
         return False
     if not _unknown_repo_push_gate_enabled():
         return False
@@ -142,12 +191,13 @@ def handle_block_unknown_repo_push(data: dict) -> bool:
     2. the gate is enabled (``[teatree] unknown_repo_push_gate_enabled``,
         default True) and no per-call ``[scope-push-ok: <reason>]`` token is
         present;
-    3. the cwd resolves to a directory, and
-    4. the cwd repo is classified ``require_approval`` — i.e. some overlay
+    3. the push's LANDING dir resolves (:func:`_push_target_dir` — ``git -C``,
+        a leading ``cd``, ``--git-dir``, else the ambient cwd), and
+    4. that repo is classified ``require_approval`` — i.e. some overlay
         opted into scope gating yet NO overlay owns its ``(host, namespace)``.
 
     Every other case ALLOWS: a non-push command, a dry-run, an unresolvable
-    cwd, no opted-in overlay, or a repo some overlay owns. The deny routes
+    target, no opted-in overlay, or a repo some overlay owns. The deny routes
     through :func:`_fail_open_or_deny` so the self-rescue allowlist + master
     fail-open switch + circuit breaker all apply (never-lockout).
     """
@@ -155,9 +205,9 @@ def handle_block_unknown_repo_push(data: dict) -> bool:
 
     if not _unknown_repo_push_is_in_scope(data):
         return False
-    cwd = _resolve_cwd_repo(data)
-    if cwd is None:
+    target = _push_target_dir(data.get("tool_input", {}).get("command", ""), _resolve_cwd_repo(data))
+    if target is None:
         return False
-    if _classify_push_for_cwd(cwd) != "require_approval":
+    if _classify_push_for_cwd(target) != "require_approval":
         return False
     return _fail_open_or_deny(data, _UNKNOWN_REPO_PUSH_REASON)

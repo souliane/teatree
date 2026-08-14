@@ -132,6 +132,15 @@ class TestProseSelection:
         )
         assert selection.names == ["other_section"]
 
+    def test_quarantine_defaults_to_the_shipped_registry(self, tmp_path: Path) -> None:
+        # No `quarantined` argument == read `evals/quarantine.yaml`; an empty registry
+        # leaves the selection byte-identical to before the quarantine existed.
+        selection = cs.select_changed_scenarios(
+            ["evals/scenarios/c.yaml"], repo_root=tmp_path, specs=_prose_specs(tmp_path)
+        )
+        assert selection.names == ["other_section"]
+        assert selection.quarantined == ()
+
     def test_section_matches_outrank_whole_file_matches_under_the_cap(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -154,3 +163,89 @@ class TestProseSelection:
         assert selection.names[0] == "z_section"
         assert selection.truncated
         assert selection.total_matched == 3
+
+
+class TestQuarantineSuppression:
+    """A tracked known-red must not block unrelated PRs touching the section it grades (#4173).
+
+    Selection is section-scoped and correct, but that makes a pre-existing behavioural
+    failure a merge blocker for every future edit of the prose it grades. Quarantine drops
+    the tracked red from the BOUNDED PR lane only — the run verdict is untouched, and a
+    scenario nobody quarantined still selects and still blocks.
+    """
+
+    def test_a_quarantined_scenario_is_dropped_from_the_pr_lane(self, tmp_path: Path) -> None:
+        selection = cs.select_changed_scenarios(
+            [SKILL],
+            repo_root=tmp_path,
+            specs=_prose_specs(tmp_path),
+            changed_sections={SKILL: frozenset({"Background Long Operations"})},
+            quarantined=frozenset({"graded_a"}),
+        )
+        assert selection.names == ["graded_b", "whole_file"]
+        assert selection.quarantined == ("graded_a",)
+
+    def test_a_scenario_nobody_quarantined_still_blocks(self, tmp_path: Path) -> None:
+        # The newly-broken half of the ratchet: only NAMED entries are suppressed, so a
+        # scenario this diff newly reds is selected exactly as before.
+        selection = cs.select_changed_scenarios(
+            [SKILL],
+            repo_root=tmp_path,
+            specs=_prose_specs(tmp_path),
+            changed_sections={SKILL: frozenset({"Background Long Operations"})},
+            quarantined=frozenset({"graded_a"}),
+        )
+        assert "graded_b" in selection.names
+
+    def test_quarantining_the_only_failing_scenario_leaves_an_empty_selection(self, tmp_path: Path) -> None:
+        # The #4162 shape: a docs-only PR whose section is graded by exactly one scenario,
+        # and that scenario is the tracked red. Nothing is selected, so nothing reds.
+        catalog = tmp_path / "evals" / "scenarios"
+        specs = [_spec("known_red", catalog / "a.yaml", agent_path=SKILL, agent_sections=("Sub-Agent Limitations",))]
+        selection = cs.select_changed_scenarios(
+            [SKILL],
+            repo_root=tmp_path,
+            specs=specs,
+            changed_sections={SKILL: frozenset({"Sub-Agent Limitations"})},
+            quarantined=frozenset({"known_red"}),
+        )
+        assert selection.names == []
+        assert selection.quarantined == ("known_red",)
+
+    def test_the_broad_fail_safe_band_is_suppressed_too(self, tmp_path: Path) -> None:
+        # A preamble-only or unreadable diff degrades to _BROAD (every scenario on the
+        # file). That amplifier must not smuggle the tracked red back into the lane.
+        selection = cs.select_changed_scenarios(
+            [SKILL], repo_root=tmp_path, specs=_prose_specs(tmp_path), quarantined=frozenset({"graded_a"})
+        )
+        assert selection.names == ["graded_b", "other_section", "whole_file"]
+
+    def test_the_quarantine_note_names_what_was_suppressed(self, tmp_path: Path) -> None:
+        selection = cs.select_changed_scenarios(
+            [SKILL],
+            repo_root=tmp_path,
+            specs=_prose_specs(tmp_path),
+            changed_sections={SKILL: frozenset({"Background Long Operations"})},
+            quarantined=frozenset({"graded_a"}),
+        )
+        note = selection.quarantine_note()
+        assert note is not None
+        assert "graded_a" in note
+
+    def test_no_note_when_nothing_was_suppressed(self, tmp_path: Path) -> None:
+        selection = cs.select_changed_scenarios(
+            [SKILL], repo_root=tmp_path, specs=_prose_specs(tmp_path), quarantined=frozenset({"absent_scenario"})
+        )
+        assert selection.quarantine_note() is None
+
+    def test_suppressed_scenarios_are_outside_the_cap_accounting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `total_matched` drives the truncation note ("deferred to the weekly lane"), which
+        # is a different claim from "suppressed" — a quarantined scenario is not deferred.
+        monkeypatch.setattr(cs, "MAX_SELECTIVE_PR_SCENARIOS", 5)
+        selection = cs.select_changed_scenarios(
+            [SKILL], repo_root=tmp_path, specs=_prose_specs(tmp_path), quarantined=frozenset({"graded_a"})
+        )
+        assert selection.total_matched == 3
+        assert not selection.truncated

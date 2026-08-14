@@ -64,7 +64,6 @@ class RunningRow:
     ticket_number: str
     short_description: str
     phase: str
-    execution_target: str
     lane: str
     model: str
     agent_session_id: str
@@ -85,7 +84,6 @@ class QueuedRow:
     phase: str
     status: str
     claimed_by: str
-    execution_target: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +95,10 @@ class LoopRow:
     next_run_at: dt.datetime | None
     cadence_label: str
     blocked_reason: str
+    #: Admitted, yet carrying no ``loop_timer`` row at all — nothing will ever fire it
+    #: (#4185). A SECOND axis, not a block reason: ``blocked_reason`` explains a refusal
+    #: and a starved loop is genuinely admitted, so collapsing them would misreport it.
+    starved: bool = False
 
     @property
     def dispatching(self) -> bool:
@@ -169,7 +171,6 @@ def _running_row(attempt: TaskAttempt, now: dt.datetime) -> RunningRow:
         ticket_number=ticket.ticket_number if ticket else "",
         short_description=ticket.short_description if ticket else "",
         phase=attempt.task.phase,
-        execution_target=str(attempt.execution_target),
         lane=str(attempt.lane),
         model=attempt.model,
         agent_session_id=attempt.agent_session_id,
@@ -210,7 +211,6 @@ def _queued() -> tuple[QueuedRow, ...]:
             phase=task.phase,
             status=str(task.status),
             claimed_by=task.claimed_by,
-            execution_target=str(task.execution_target),
         )
         for task in tasks
     )
@@ -223,8 +223,11 @@ def _loops(now: dt.datetime) -> tuple[LoopRow, ...]:
     mini-loop is not something the live tick dispatches, and a registered loop with
     no row is a real misconfiguration the reason itself already states.
     """
+    from teatree.loops.chain_membership import starved_loop_names  # noqa: PLC0415 — deferred: ORM-backed read
+
     rows = {row.name: row for row in Loop.objects.all()}
     reasons = loop_block_reasons(now, rows=rows)
+    starved = starved_loop_names()
     return tuple(
         LoopRow(
             name=name,
@@ -232,6 +235,7 @@ def _loops(now: dt.datetime) -> tuple[LoopRow, ...]:
             next_run_at=rows[name].next_run_at() if name in rows else None,
             cadence_label=rows[name].cadence_label if name in rows else "",
             blocked_reason=reason,
+            starved=name in starved,
         )
         for name, reason in sorted(reasons.items())
     )

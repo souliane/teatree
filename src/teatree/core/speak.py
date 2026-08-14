@@ -21,14 +21,13 @@ and delivers spoken agent text. Two distinct deliveries share one config:
     and only when ``local == all`` — in-client turns are never Slack messages,
     so there is no double-play to suppress.
 
-**Availability gate at playback, not at config.** The ``away`` state silences
-LOCAL playback — not the ``slack`` arm, which still reaches the user's phone.
-This gate belongs at the PLAYBACK call site (:func:`_speak_local`), not in
-:func:`resolve_speak`. :func:`resolve_speak` returns the user's configured
-:class:`~teatree.types.SpeakConfig` unchanged regardless of availability;
-:func:`_speak_local` consults :func:`_is_away` and skips the ``say`` call when
-away. The user's configured ``local`` is never mutated or overridden by
-presence — only actual playback is gated.
+**Presence gate at playback, not at config.** A configured presence backend
+reporting ``IN_MEETING`` silences LOCAL playback — not the ``slack`` arm, which
+still reaches the user's phone. This gate belongs at the PLAYBACK call site
+(:func:`_speak_local`), not in :func:`resolve_speak`, which returns the user's
+configured :class:`~teatree.types.SpeakConfig` unchanged. The user's configured
+``local`` is never mutated or overridden by presence — only actual playback is
+gated.
 
 **Cross-process speaker mutual exclusion (#2152).** Local playback fans out
 from two independent sources — each DM's :func:`_maybe_speak_local` leg and
@@ -65,7 +64,6 @@ from typing import IO
 from teatree.config import get_effective_settings
 from teatree.core import presence
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.speak_cleaning import clean_for_speech
 from teatree.paths import get_data_dir
@@ -76,6 +74,7 @@ from teatree.utils.thread_db import close_thread_db_connections
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "SPEAK_THREAD_NAME",
     "clean_for_speech",
     "deliver_user_dm",
     "deliver_user_dm_sidecar",
@@ -85,6 +84,12 @@ __all__ = [
 ]
 
 SAY_BINARY = "say"
+
+#: The name EVERY local-playback daemon thread carries (#4277). CPython's default
+#: (``Thread-N (_speak_local_closing_connections)``) is an implementation detail, so
+#: the test-suite sentinel that fails a test leaking one of these threads — and any
+#: live-process dump — is keyed on this single canonical name instead.
+SPEAK_THREAD_NAME = "t3-speak-local"
 _AFCONVERT_BINARY = "afconvert"
 _SPEAK_SUBPROCESS_TIMEOUT = 120
 
@@ -118,33 +123,15 @@ def resolve_speak() -> SpeakConfig:
     """The user's configured speak settings — binary-presence gate only.
 
     Returns the effective user config when the ``say`` binary is present,
-    otherwise an inert :class:`SpeakConfig` (``local = off``,
-    ``slack = false``). The away gate is NOT applied here: availability
-    affects PLAYBACK, not the config value. Call sites that drive local audio
-    (:func:`_speak_local`, :func:`_maybe_speak_local`) consult
-    :func:`_is_away` themselves so the user's configured ``local`` is always
-    preserved and availability never mutates it.
+    otherwise an inert :class:`SpeakConfig` (``local = off``, ``slack = false``).
+    The presence gate is NOT applied here: presence affects PLAYBACK, not the
+    config value. Call sites that drive local audio (:func:`_speak_local`,
+    :func:`_maybe_speak_local`) consult :func:`_in_meeting` themselves so the
+    user's configured ``local`` is always preserved.
     """
     if not binary_available():
         return SpeakConfig()
     return get_effective_settings().speak
-
-
-def _is_away() -> bool:
-    """Whether availability puts the user away — silences local TTS; never raises.
-
-    True for holiday-``away`` AND ``autonomous_away`` (#2544): both mean the
-    user is not at the keyboard, so playing to an empty room is pointless. Only
-    LOCAL playback is gated — the Slack arm still reaches the user's phone.
-
-    A resolution failure degrades to NOT away (returns ``False``): the
-    away-gate must never suppress local audio on a transient error.
-    """
-    try:
-        return resolve_active_mode().defers_questions
-    except Exception as exc:  # noqa: BLE001 — a resolution failure must never mute local audio
-        logger.debug("mode resolution failed; treating as present: %s", exc)
-        return False
 
 
 def _in_meeting() -> bool:
@@ -200,7 +187,9 @@ def speak(text: str, *, block: bool = False) -> None:
     if block:
         _speak_local(cleaned)
         return
-    thread = threading.Thread(target=_speak_local_closing_connections, args=(cleaned,), daemon=True)
+    thread = threading.Thread(
+        target=_speak_local_closing_connections, args=(cleaned,), daemon=True, name=SPEAK_THREAD_NAME
+    )
     thread.start()
 
 
@@ -383,7 +372,9 @@ def _maybe_speak_local(config: SpeakConfig, text: str) -> None:
     cleaned = clean_for_speech(text)
     if not cleaned:
         return
-    thread = threading.Thread(target=_speak_local_closing_connections, args=(cleaned,), daemon=True)
+    thread = threading.Thread(
+        target=_speak_local_closing_connections, args=(cleaned,), daemon=True, name=SPEAK_THREAD_NAME
+    )
     thread.start()
 
 
@@ -480,7 +471,7 @@ def _speak_local(text: str) -> None:
     (``run_allowed_to_fail`` with ``expected_codes=None``); a transport/timeout
     error is logged and dropped so the speak seam never raises into the caller.
     """
-    if _is_away() or _in_meeting():
+    if _in_meeting():
         return
     say_bin = shutil.which(SAY_BINARY)
     if say_bin is None:

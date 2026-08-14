@@ -126,7 +126,9 @@ class TestCoreMigrationSquash(TransactionTestCase):
         unsquashed = _snapshot()
 
         self._reset_core_to_zero()
-        call_command("migrate", "core", "--no-input", verbosity=0)  # applies the squash
+        # Stop AT the squash, not at head: the claim is prefix-vs-prefix, so a later
+        # migration that legitimately edits a seeded row must not read as a squash defect.
+        call_command("migrate", "core", _SQUASH, "--no-input", verbosity=0)
         squashed = _snapshot()
 
         # Anti-vacuity: the seeds are present, so the equality below compares real data.
@@ -149,7 +151,7 @@ class TestCoreMigrationSquash(TransactionTestCase):
         assert _SQUASH not in applied_before
         before = _snapshot()
 
-        call_command("migrate", "core", "--no-input", verbosity=0)
+        call_command("migrate", "core", _SQUASH, "--no-input", verbosity=0)
 
         applied_after = self._applied_core()
         assert _SQUASH in applied_after  # recorded applied via replaces, ops never ran

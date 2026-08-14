@@ -33,6 +33,10 @@ _TTL_USERNAME = 3600
 _HTTP_OK_LOW = 200
 _HTTP_OK_HIGH = 300
 
+#: Intake's queue order — GitLab's issues endpoint defaults to newest first, which hands
+#: every free intake slot to the most recently filed issue (#4238).
+_OLDEST_FIRST: dict[str, str | int] = {"order_by": "created_at", "sort": "asc"}
+
 
 class _ReviewerEntry(TypedDict, total=False):
     """Subset of the GitLab reviewer payload teatree reads (#1295 cap B)."""
@@ -165,7 +169,12 @@ class GitLabAPI(GitLabHTTPClient):
         the pre-scope behaviour, which returns issues from every accessible project and
         so admits a cross-repo intake the factory must not implement.
         """
-        base: dict[str, str | int] = {"state": "opened", "author_username": author, "per_page": per_page}
+        base: dict[str, str | int] = {
+            "state": "opened",
+            "author_username": author,
+            "per_page": per_page,
+            **_OLDEST_FIRST,
+        }
         if updated_after:
             base["updated_after"] = updated_after
         if not project_slugs:
@@ -188,7 +197,7 @@ class GitLabAPI(GitLabHTTPClient):
         by which an untrusted author's issue reaches the factory, and it requires the
         owner to have applied the admission label by hand.
         """
-        base: dict[str, str | int] = {"state": "opened", "labels": label, "per_page": per_page}
+        base: dict[str, str | int] = {"state": "opened", "labels": label, "per_page": per_page, **_OLDEST_FIRST}
         if not project_slugs:
             return self.get_json_paginated(f"issues?{urlencode({**base, 'scope': 'all'})}")
         issues: list[RawMR] = []

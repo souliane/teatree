@@ -8,7 +8,6 @@ requires:
   - test-driven-development
 metadata:
   version: 0.0.1
-  subagent_safe: false
 ---
 
 # Writing Code (TDD)
@@ -39,7 +38,7 @@ Write the **failing test first**, then the implementation that makes it pass. Th
 
 **A fail-safe-to-empty primitive must not be consumed by a "claim/grant if empty" caller without an explicit dependency-unavailable check.** When a helper degrades to a neutral value (empty set/dict, `None`, `0`) both when the real answer is genuinely empty *and* when the dependency it needs is unavailable (an unimportable module, a down service), that neutral value is ambiguous. A caller that interprets "empty" as "safe to proceed/claim" will take the unsafe action precisely in the can't-tell case — the opposite of fail-safe. In a safety-critical degraded path (a crash-proof Stop hook, a lock acquisition, an idempotency guard) the consumer must probe the dependency's availability itself and fail *closed* (skip/deny) when it cannot be confirmed, rather than infer safety from the ambiguous empty. Reusing a fail-open prune/read primitive inside a claim path is the canonical way this regresses; the guarding test asserts the degraded path takes the *conservative* branch (no claim, no pump, no grant).
 
-**Run the test before claiming it is correct, and never push a regression/golden-master test you have not run (Non-Negotiable).** A freshly-written test is not "correct", "likely correct", or "done" until you have *run it locally and read its output in this same response*. Pushing a test to CI to find out whether it passes — while reporting it as correct/likely-correct — is the banned "seems correct" claim (`/t3:rules` § "Verification Before Completion"): CI is a slow oracle, not a substitute for running the test yourself, and a test authored against a config you assumed produces the right values routinely fails on first run (the assumed golden was wrong). **Where an authoritative reference exists** — a Tilgungsplan/amortization PDF, a spec's worked example, a vendored golden file — the test is a golden-master that must **assert every value the reference fixes** (every row, every monthly figure), not a sampled subset, and you verify the test's output equals the reference *before* pushing. A narrow run on a migration-heavy repo uses `--no-migrations --reuse-db` so "run it first" costs seconds, not a full migration replay — there is no excuse to skip the run. The order is: write the test → run it locally (`--no-migrations --reuse-db` for a narrow node-id) → confirm its output matches the authoritative reference (every value) → only then commit and push. Reporting "likely correct, pushing to CI" before that run is a FAIL.
+**Run the test before claiming it is correct, and never push a regression/golden-master test you have not run (Non-Negotiable).** A freshly-written test is not "correct", "likely correct", or "done" until you have *run it locally and read its output in this same response*. Pushing a test to CI to find out whether it passes — while reporting it as correct/likely-correct — is the banned "seems correct" claim (`/t3:rules` § "Verification Before Completion"): CI is a slow oracle, not a substitute for running the test yourself, and a test authored against a config you assumed produces the right values routinely fails on first run (the assumed golden was wrong). **Where an authoritative reference exists** — a Widgetplan/amortization PDF, a spec's worked example, a vendored golden file — the test is a golden-master that must **assert every value the reference fixes** (every row, every monthly figure), not a sampled subset, and you verify the test's output equals the reference *before* pushing. A narrow run on a migration-heavy repo uses `--no-migrations --reuse-db` so "run it first" costs seconds, not a full migration replay — there is no excuse to skip the run. The order is: write the test → run it locally (`--no-migrations --reuse-db` for a narrow node-id) → confirm its output matches the authoritative reference (every value) → only then commit and push. Reporting "likely correct, pushing to CI" before that run is a FAIL.
 
 Misleading names are bugs — rename the symbol instead of explaining it with a comment.
 
@@ -49,7 +48,8 @@ Misleading names are bugs — rename the symbol instead of explaining it with a 
 
 - **Do not restate the code.** `# divide the cents by one hundred` above `return cents / 100`, `# update the rows with the metadata` above `.update(**metadata)` — delete it. The line below already says it.
 - **No signature-echo docstrings.** `"""Add the feature flag."""` on `def add_feature_flag(...)` adds nothing — drop it. A docstring earns its place only by carrying a non-obvious why the signature does not.
-- **A long comment is a refactor signal, not a license.** When you feel the urge to write a multi-line block explaining a function, the function name / structure is wrong — rename or split it. Multi-line comments are legit when they carry a genuine non-obvious why (and that's rare); they are abuse when they narrate the code. Length is the smell: if it's long, refactor; don't explain.
+- **One line is the ceiling; a longer block is a refactor signal.** A comment that earns its place says its non-obvious why in ONE line. When you feel the urge to write a multi-line block explaining a function, the function name / structure is wrong — rename or split it. A multi-line comment is legitimate only when one line genuinely cannot carry the why (a threat model, a protocol quirk, a measured constant), which is rare — never to narrate the code. Adjacent one-liners are fine when each states a separate point; never collapse several points into one enormous line to satisfy the rule — cut the points that do not earn their place instead.
+- **Compress only the comments THIS change adds.** Rewriting pre-existing comments to fit the ceiling inflates the diff and reads as unrelated churn. Leave them; hold the line on what you write.
 - **Rationale lives in the commit message, not inline.** Why a change was made, which ticket/MR it relates to, what was tried — all of that goes in the commit body. Never an inline `# per review` / `# consolidated into !NNNN` / `# TODO(W20)` tracker note.
 
 The deterministic backstop is the advisory `comment-density` gate (`teatree.hooks.privacy_diff_comment_density` → the pre-push hook, the CI job, and `t3 tool comment-density`). It is content-aware: it flags a comment whose words merely restate the next code line, and a docstring opening that merely echoes the signature — a single such line is enough. Genuine non-obvious-why comments and justified multi-line blocks are NOT flagged. The gate is advisory (it never blocks); the discipline is yours to keep — the gate is the safety net, not the author.
@@ -74,7 +74,9 @@ For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), c
 
 ```bash
 git fetch origin main -q
-git worktree add -b <short-branch> ../<repo>-wt-<slug> origin/main
+# `--no-track` is load-bearing: without it the new branch tracks origin/main, so
+# `git push` on it refuses confusingly — and aims at main under push.default=upstream.
+git worktree add -b <short-branch> --no-track ../<repo>-wt-<slug> origin/main
 cd ../<repo>-wt-<slug>
 # only now: Edit / Write the file
 ```
@@ -120,6 +122,8 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 ### 1. Plan First
 
 **Always make a plan before writing code.** Never jump straight to coding.
+
+An engaged session is re-reminded of this on a cadence rather than expected to recall it — the `standing-golden-rule` directive ([`../interactive/SKILL.md`](../interactive/SKILL.md) § "Standing directives", readable with `t3 loop directives show`). It arrives as context on a turn you were already taking, so it costs nothing. The reminder is advisory; the rule below is the rule.
 
 **"Just fix it fast" is NOT a license to skip the plan — your single next action is the plan, never an edit/commit/push (do X, never Y).** Under urgency, especially across **multiple unrelated tickets** ("both tickets are tiny, just fix them both fast and push"), the drift is to start editing/committing/pushing with no plan. The plan-first step holds precisely when the user is in a hurry — a do-it-now directive changes nothing about ordering: plan first, then code. So when you are told to fix N tickets fast, your single next action is one of: **record the plan as tasks** (`TaskCreate` naming the tickets/scope), or **surface the two-ticket split** as a structured `AskUserQuestion` (which ticket first / keep them separate). It is **never** an `Edit`/`Write` on a ticket's source, and never `git commit` / `git push` / `gh pr create` / `gh pr merge`, before any plan is presented.
 

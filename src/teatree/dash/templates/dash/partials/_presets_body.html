@@ -59,7 +59,7 @@
       {% if preset %}
         <h3>{{ preset.name }}{% if preset.active %} — active{% endif %}</h3>
         <p class="muted">{{ preset.description }}</p>
-        <p class="muted">on {{ preset.on_count }} · off {{ preset.off_count }} · no opinion {{ preset.inherit_count }}{% if preset.availability_pin %} · pins availability {{ preset.availability_pin }}{% endif %}</p>
+        <p class="muted">on {{ preset.on_count }} · off {{ preset.off_count }} · no opinion {{ preset.inherit_count }}</p>
         {% if preset.inherit_loops %}
           <p class="banner-amber">No opinion on {{ preset.inherit_count }} loop{{ preset.inherit_count|pluralize }} —
             <span class="mono">{{ preset.inherit_loops|join:", " }}</span>. Their base setting decides, so this preset's
@@ -70,13 +70,7 @@
           {% csrf_token %}
           <input type="hidden" name="preset" value="{{ preset.name }}">
           <input type="text" name="description" value="{{ preset.description }}" size="60" aria-label="preset description">
-          <select name="availability_pin" aria-label="availability pin">
-            <option value="" {% if not preset.availability_pin %}selected{% endif %}>no availability pin</option>
-            {% for pin in editor.pin_choices %}
-              <option value="{{ pin }}" {% if preset.availability_pin == pin %}selected{% endif %}>{{ pin }}</option>
-            {% endfor %}
-          </select>
-          <button class="dash-btn primary" type="submit">save description &amp; pin</button>
+          <button class="dash-btn primary" type="submit">save description</button>
         </form>
 
         <form class="toolbar" method="post" action="{% url 'dash:preset_rename' %}" hx-post="{% url 'dash:preset_rename' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">

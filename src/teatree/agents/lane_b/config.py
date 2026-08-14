@@ -66,7 +66,7 @@ class LaneBToolConfig:
         the vendor ``ClaudeAgentOptions`` — the tool layer's knobs (cwd, env) are
         provider-agnostic, so the vendor type is confined to the harness ``open`` boundary.
 
-        ``options.cwd`` is the worktree :func:`teatree.agents._headless_options._resolve_task_cwd`
+        ``options.cwd`` is the worktree :func:`teatree.agents._runner_options._resolve_task_cwd`
         resolved for the task, so it is the natural File System jail root; a
         falsy cwd (no on-disk worktree) leaves ``fs_root`` ``None``.
 

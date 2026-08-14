@@ -20,8 +20,6 @@ is precisely the bug class this surface exists to expose.
 
 from typing import TYPE_CHECKING
 
-from teatree.core.models.task import Task
-
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
 
@@ -29,11 +27,8 @@ if TYPE_CHECKING:
 def skill_bundle(attempt: "TaskAttempt") -> tuple[tuple[str, ...], bool]:
     """*attempt*'s recorded bundle, and whether an empty one is a fault.
 
-    A HEADLESS attempt resolves a bundle by construction, so an empty one is a
-    fault worth showing. An INTERACTIVE attempt runs inside the operator's own
-    session and never resolves one, so it is exempt rather than perpetually
-    accusing a surface that was never going to carry a bundle.
+    An attempt resolves a bundle by construction, so an empty one is a fault
+    worth showing.
     """
     names = tuple(str(name) for name in (attempt.skills_loaded or []))
-    headless = str(attempt.execution_target) == Task.ExecutionTarget.HEADLESS
-    return names, headless and not names
+    return names, not names

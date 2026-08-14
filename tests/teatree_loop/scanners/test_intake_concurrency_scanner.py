@@ -17,6 +17,7 @@ from django.utils import timezone
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
+from teatree.utils.ram_scope import RamHeadroom
 
 _MODULE = "teatree.loop.scanners.intake_concurrency"
 
@@ -33,7 +34,12 @@ def _scanner(**overrides: object) -> IntakeConcurrencyScanner:
 
 def _scan(scanner: IntakeConcurrencyScanner, *, available_mib: int | None, cores: int = 8) -> list[ScanSignal]:
     with (
-        patch(f"{_MODULE}.effective_available_ram_mib", return_value=available_mib),
+        patch(
+            f"{_MODULE}.read_ram_headroom",
+            return_value=RamHeadroom(
+                available_mib=available_mib, cgroup_limit_mib=None, host_available_mib=available_mib
+            ),
+        ),
         patch(f"{_MODULE}.available_cpu_count", return_value=cores),
     ):
         return list(scanner.scan())

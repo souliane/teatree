@@ -51,6 +51,7 @@ from teatree.core.models import (
 from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.review_verdict import ReviewVerdict
+from tests._forge_stub import changed_files_stdout
 
 _FORTY_HEX = "a" * 40
 _OTHER_HEX = "b" * 40
@@ -327,7 +328,7 @@ def _gh_green(argv: list[str]) -> tuple[int, str, str]:
             return (0, out, "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "merged0deadbeef"}', "")
-    return (0, "", "")
+    return (0, changed_files_stdout(joined), "")
 
 
 def _keystone_fixtures(ticket: Ticket) -> MergeClear:

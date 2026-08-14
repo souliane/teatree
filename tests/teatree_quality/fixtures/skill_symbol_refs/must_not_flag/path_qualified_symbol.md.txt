@@ -1,0 +1,7 @@
+# Path-qualified module symbol — a directory prefix naming a live symbol
+
+The PreToolUse gate is `hooks/scripts/main_clone_guard.handle_block_main_clone_mutation`,
+and the tier constant it dispatches against is `agents/model_tiering.TIER_MODELS`.
+
+A `src/`-rooted qualifier reads the same way:
+`src/teatree/agents/sdk_tool_map.CAPABILITY_TO_SDK_TOOLS`.

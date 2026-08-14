@@ -25,7 +25,6 @@ import pytest
 from django.db.models import Q
 
 from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS
-from teatree.config import AgentRuntime
 from teatree.core.deterministic_phases import deterministic_phase_runner
 from teatree.core.management.commands import loop_dispatch
 from teatree.core.managers import TaskQuerySet
@@ -38,7 +37,6 @@ from teatree.loop.persistence import _HANDLER_TARGET_PHASES, _ZONE_HANDLERS
 from teatree.loop.phases import orchestrate
 from teatree.loops.registry import iter_loops
 from teatree.loops.seed import DEFAULT_LOOPS
-from tests._agent_runtime_env import pinned_agent_runtime
 
 
 def assert_registry_covers(
@@ -114,44 +112,20 @@ class TestDispatchableFilterSsotParity:
     consumer, so a fix to one copy (the #2217 external-delivery exclusion) never
     reached the other — the live ``claim-next``/``pending-spawn`` double-dispatched
     onto leased tickets while ``orchestrate`` correctly excluded them. Now every
-    consumer builds ON ``Task.dispatchable_q``: ``orchestrate`` returns it
-    verbatim, ``claim-next`` ANDs the INTERACTIVE narrowing, ``pending-spawn``
-    shares ``claim-next``'s helper, and the admit-budget gate counts through the
-    un-narrowed SSOT. A consumer that stops referencing the symbol fails here.
+    consumer builds ON ``Task.dispatchable_q``: ``orchestrate`` returns it verbatim,
+    ``claim-next`` and ``pending-spawn`` filter through it, and the admit-budget gate
+    counts through it. A consumer that stops referencing the symbol fails here.
     """
 
     _SENTINEL = Q(pk__in=[-98765])
-    _INTERACTIVE = Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
     def test_orchestrate_filter_delegates_to_the_ssot(self) -> None:
         with patch.object(Task, "dispatchable_q", return_value=self._SENTINEL):
             assert orchestrate._dispatchable_filter() == self._SENTINEL
 
-    def test_claim_filter_is_the_ssot_narrowed_to_interactive(self) -> None:
-        # The narrowing exists only in the interactive lane, so the lane is named
-        # rather than inherited: the shipped runtime is headless (#3895), under
-        # which the claimer deliberately matches nothing (asserted just below).
-        with (
-            pinned_agent_runtime(AgentRuntime.INTERACTIVE),
-            patch.object(Task, "dispatchable_q", return_value=self._SENTINEL),
-        ):
-            assert loop_dispatch._dispatchable_q() == self._SENTINEL & self._INTERACTIVE
-
-    def test_the_claimer_matches_nothing_under_the_shipped_headless_runtime(self) -> None:
-        # The other half of the same SSOT contract: under headless the headless lane
-        # owns every loop-dispatched phase, so the in-session claimer must not narrow
-        # the SSOT — it must match NOTHING, keeping the two lanes disjoint.
-        with (
-            pinned_agent_runtime(AgentRuntime.HEADLESS),
-            patch.object(Task, "dispatchable_q", return_value=self._SENTINEL),
-        ):
-            assert loop_dispatch._dispatchable_q() == Q(pk__in=[])
-
-    def test_budget_gate_counts_through_the_un_narrowed_ssot(self) -> None:
-        # The boost budget is computed (orchestrate) over the SSOT WITHOUT the
-        # execution_target narrowing, so a HEADLESS in-flight claim consumes it;
-        # the live gate must count with the SAME set — the un-narrowed SSOT, never
-        # ``_dispatchable_q()`` — or it overshoots N with headless workers running.
+    def test_budget_gate_counts_through_the_ssot(self) -> None:
+        # The boost budget is computed (orchestrate) over the SSOT, so the live gate
+        # must count with the SAME set or it overshoots N.
         with (
             patch.object(Task, "dispatchable_q", return_value=self._SENTINEL),
             patch.object(TaskQuerySet, "in_flight_claimed_count", return_value=0) as count,
@@ -162,19 +136,18 @@ class TestDispatchableFilterSsotParity:
 
     def test_pending_spawn_shares_the_claim_filter(self) -> None:
         # Structural: the in-session preview MUST filter through the same
-        # ``_dispatchable_q()`` the atomic claim uses, so it cannot drift back to
+        # ``Task.dispatchable_q()`` the atomic claim uses, so it cannot drift back to
         # a role/phase-only filter that ignores the external-delivery exclusion.
         source = inspect.getsource(loop_dispatch.Command.pending_spawn)
-        assert "_dispatchable_q()" in source
+        assert "dispatchable_q()" in source
 
-    def test_ssot_is_referenced_by_all_three_live_consumers(self) -> None:
-        # The parity claim made explicit: orchestrate, claim-next, and the budget
-        # gate each name ``dispatchable_q`` in their own source (pending-spawn is
-        # covered above via ``_dispatchable_q``), so no consumer can re-hand-roll
-        # the filter and silently diverge.
+    def test_ssot_is_referenced_by_every_live_consumer(self) -> None:
+        # The parity claim made explicit: orchestrate, claim-next and the budget gate
+        # each name ``dispatchable_q`` in their own source (pending-spawn is covered
+        # above), so no consumer can re-hand-roll the filter and silently diverge.
         consumers = (
             orchestrate._dispatchable_filter,
-            loop_dispatch._dispatchable_q,
+            loop_dispatch.Command.claim_next,
             loop_dispatch._admit_budget_exhausted,
         )
         for fn in consumers:
@@ -264,7 +237,7 @@ class TestPhaseToolsTotalityParity:
     dispatchable one — the #10 recurrence dies in CI.
 
     A dispatchable phase is NOT only a ``SUBAGENT_BY_PHASE`` key: a loop scanner
-    can write ``Task.phase`` directly (``execution_target=HEADLESS``) with no
+    can write ``Task.phase`` directly with no
     ``(role, phase)`` dispatch row at all — ``architectural_review`` and
     ``dogfood_smoke`` did exactly that and slipped every registry-parity net,
     silently resolving to read-only (``dogfood_smoke`` needs the shell it was
@@ -309,16 +282,17 @@ class TestPhaseToolsTotalityParity:
         assert "write_file" not in tools
         assert "edit_file" not in tools
 
-    def test_architectural_review_is_an_explicit_shell_review_policy(self) -> None:
-        # A REVIEWED read-mostly-with-shell allowance, the same shape as the reviewer
-        # phases: the periodic ac-reviewing-codebase pass walks the tree, does git
-        # archaeology, and runs `t3 tool verify-gates`, so it needs the shell — a
-        # NO-shell grant is what stalled a dispatched review and leaked an "I lack
-        # shell + no checkout" question to the owner. It never mutates source.
+    def test_architectural_review_is_an_explicit_shell_and_write_policy(self) -> None:
+        # The periodic ac-reviewing-codebase pass walks the tree, does git archaeology
+        # and runs `t3 tool verify-gates`, then IMPLEMENTS what it finds and pushes a
+        # PR — so shell AND write/edit are both load-bearing: a NO-shell grant stalled
+        # a dispatched review, and a no-write grant leaves the phase told to implement
+        # and unable to. ``dispatch_subtask`` stays denied — a cadence-fired phase that
+        # fanned out would multiply unattended agents past the admission governor,
+        # which does not meter the sub-agent path.
         tools = tools_for_phase("architectural_review")
-        assert {"read_file", "search_files", "shell"} <= tools
-        assert "write_file" not in tools
-        assert "edit_file" not in tools
+        assert {"read_file", "search_files", "shell", "write_file", "edit_file"} <= tools
+        assert "dispatch_subtask" not in tools
 
     def test_an_empty_allowance_scanner_phase_is_executed_deterministically(self) -> None:
         # The other half of #3386: an explicit entry is not enough if that entry is the

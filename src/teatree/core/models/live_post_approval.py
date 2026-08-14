@@ -12,8 +12,8 @@ explicit approval phrase. Mirrors the #960 ``OnBehalfApproval`` shape:
     is written — it refuses an empty ``mr_url``/``slack_ts``;
 * ``consumed_at`` makes every approval single-use — one live post per
     approval, never a standing authorization;
-* ``mr_url`` strictly scopes the approval — an approval for !386 never
-    authorizes a live post on !387;
+* ``mr_url`` strictly scopes the approval — an approval for !42 never
+    authorizes a live post on !43;
 * :attr:`LIVE_POST_APPROVAL_TTL_MINUTES` caps how long an unconsumed
     approval is valid (a 30-minute-old "go ahead" is stale).
 

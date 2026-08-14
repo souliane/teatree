@@ -33,12 +33,13 @@ from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
-def _backend(name: str = "acme", overlay: object = None) -> OverlayBackends:
+def _backend(name: str = "acme", overlay: object = None, exclude_labels: tuple[str, ...] = ()) -> OverlayBackends:
     return OverlayBackends(
         name=name,
         hosts=(MagicMock(spec=CodeHostBackend),),
         messaging=None,
         ready_labels=(),
+        exclude_labels=exclude_labels,
         identities=("alice",),
         overlay=overlay,
     )
@@ -124,6 +125,20 @@ class IssueIntakeGateTests(TestCase):
         assert isinstance(scanner, IssueIntakeScanner)
         assert set(scanner.repo_slugs) == {"souliane/teatree", "souliane/teatree-e2e"}
 
+    def test_overlay_exclude_labels_reach_the_scanner(self) -> None:
+        """#4134: the field was plumbed onto the backend and read by nobody on this path."""
+        backend = _backend(exclude_labels=("interactive-implementation", "on-hold"))
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(backend)
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.exclude_labels == ("interactive-implementation", "on-hold")
+
+    def test_an_overlay_with_no_exclude_labels_leaves_the_policy_empty(self) -> None:
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.exclude_labels == ()
+
     def test_no_overlay_leaves_repo_slugs_empty(self) -> None:
         """A backend with no overlay keeps intake unscoped (back-compat, no crash)."""
         with patch(_PATCH_TARGET, return_value=_enabled()):
@@ -131,10 +146,14 @@ class IssueIntakeGateTests(TestCase):
         assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.repo_slugs == ()
 
-    def test_concurrency_at_max_emits_no_scanner(self) -> None:
+    def test_concurrency_at_max_emits_an_observe_only_scanner(self) -> None:
+        # #4238: returning None here is what made starvation invisible — the forge was
+        # never asked, so an issue that never got a slot was never even seen.
         ImplementedIssueMarkerFactory(overlay="acme")
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
-            assert _issue_intake_scanner_for(_backend()) is None
+            scanner = _issue_intake_scanner_for(_backend())
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is False
 
     def test_full_budget_reports_the_reason_it_claimed_nothing(self) -> None:
         # #3978: a tick that claims nothing because the budget is full used to return
@@ -147,7 +166,7 @@ class IssueIntakeGateTests(TestCase):
             patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
             self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as logs,
         ):
-            assert _issue_intake_scanner_for(_backend()) is None
+            assert _issue_intake_scanner_for(_backend()).can_claim is False
         reported = "\n".join(logs.output)
         assert "at budget" in reported
         assert "1/1" in reported
@@ -162,8 +181,8 @@ class IssueIntakeGateTests(TestCase):
         log.warning.assert_not_called()
 
     def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
-        # Fleet-safety Stage 2: at full budget the scanner is STILL emitted when the
-        # kill-switch is on (so the per-tick heartbeat runs), but claims nothing new.
+        # Fleet-safety Stage 2: the per-tick heartbeat must run at a full budget too,
+        # or an in-flight claim expires and is stolen mid-dispatch.
         ImplementedIssueMarkerFactory(overlay="acme")  # budget full
         with (
             patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
@@ -410,7 +429,7 @@ class IssueIntakeAdaptiveConcurrencyTests(TestCase):
         self._record(1)
 
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)):
-            assert _issue_intake_scanner_for(_backend()) is None
+            assert _issue_intake_scanner_for(_backend()).can_claim is False
 
 
 class TestMergeStallGatesNewIntake(TestCase):

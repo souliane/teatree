@@ -93,9 +93,9 @@ class AskUserQuestionReplyScanner:
             reply.unmark_loop_replied()
             return
         if applied.parked_task_id:  # ty: ignore[unresolved-attribute]
-            from teatree.core.models.task_handoff import schedule_headless_resume  # noqa: PLC0415 — lazy ORM import
+            from teatree.core.models.task_handoff import schedule_resume  # noqa: PLC0415 — lazy ORM import
 
-            schedule_headless_resume(applied.parked_task, answer=answer)
+            schedule_resume(applied.parked_task, answer=answer)
 
     def _react_ack(self, reply: PendingChatInjection, egress: OnBehalfSlackEgress) -> bool:
         try:

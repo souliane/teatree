@@ -5,17 +5,29 @@ told why. The ledger counts how many consecutive sweep passes produced the SAME 
 reason for a PR, so persistence — not any single skip — is what surfaces.
 """
 
+import ast
 import datetime as dt
+import pathlib
 
 import django.test
 from django.utils import timezone
 
 from teatree.core.models import SkipObservation, SweepSkipStreak
+from teatree.core.models.sweep_skip_streak import _CI_VERDICT_REASONS
+from teatree.loop.scanners import pr_sweep_decision
 
 
-def _observe(*, pr_id: int = 7, reason: str = "ci_pending", url: str = "", overlay: str = "") -> SweepSkipStreak:
+def _observe(
+    *,
+    pr_id: int = 7,
+    reason: str = "ci_pending",
+    url: str = "",
+    overlay: str = "",
+    now: dt.datetime | None = None,
+) -> SweepSkipStreak:
     return SweepSkipStreak.objects.observe(
         SkipObservation(slug="o/r", pr_id=pr_id, reason=reason, url=url, overlay=overlay),
+        now=now,
     )
 
 
@@ -147,3 +159,70 @@ class TestRendering(django.test.TestCase):
         row = _observe()
 
         assert str(row) == "sweep-skip<o/r#7 ci_pending x1>"
+
+
+class TestCiVerdictGroupContinuity(django.test.TestCase):
+    """One PR whose checks are not clean yet is ONE condition, however its verdict flaps.
+
+    ``classify_sweep_ci`` emits four reasons for that single condition, and a PR's checks
+    legitimately alternate between them on consecutive passes. Restarting the run length on
+    each flip left the flappiest PRs — the ones most worth announcing — permanently below
+    the surface threshold (souliane/teatree#4095).
+    """
+
+    def test_a_flip_within_the_ci_group_continues_the_streak(self) -> None:
+        _observe(reason="ci_pending")
+        _observe(reason="required_checks_indeterminate")
+        row = _observe(reason="ci_red")
+
+        assert row.tick_count == 3
+        assert row.reason == "ci_red"
+
+    def test_the_uv_audit_fallback_shares_the_group(self) -> None:
+        _observe(reason="ci_red")
+        row = _observe(reason="uv_audit_red_but_clean_on_main")
+
+        assert row.tick_count == 2
+
+    def test_the_reported_age_runs_from_the_groups_start(self) -> None:
+        start = timezone.now() - dt.timedelta(hours=4)
+        _observe(reason="ci_pending", now=start)
+        row = _observe(reason="ci_red", now=start + dt.timedelta(hours=4))
+
+        assert row.first_seen_at == start
+        assert row.age_label(now=start + dt.timedelta(hours=4)) == "4h"
+
+    def test_a_flip_within_the_group_does_not_re_arm_a_surfaced_streak(self) -> None:
+        for _ in range(3):
+            _observe(reason="ci_red")
+        SweepSkipStreak.objects.mark_surfaced([SweepSkipStreak.objects.get(slug="o/r", pr_id=7).pk])
+        row = _observe(reason="ci_pending")
+
+        assert row.surfaced_at is not None
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+
+    def test_a_non_ci_reason_still_restarts_the_streak(self) -> None:
+        _observe(reason="ci_pending")
+        _observe(reason="ci_red")
+        row = _observe(reason="changes_requested")
+
+        assert row.tick_count == 1
+        assert row.reason == "changes_requested"
+
+
+def _classifier_skip_reasons() -> set[str]:
+    """Every skip reason ``classify_sweep_ci`` can return, read from its own source."""
+    source = pathlib.Path(pr_sweep_decision.__file__).read_text(encoding="utf-8")
+    classifier = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "classify_sweep_ci"
+    )
+    returned = (node.value for node in ast.walk(classifier) if isinstance(node, ast.Return))
+    verdicts = (value.elts[0] for value in returned if isinstance(value, ast.Tuple) and value.elts)
+    return {node.value for node in verdicts if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+
+
+class TestCiVerdictGroupTracksTheClassifier(django.test.SimpleTestCase):
+    def test_the_group_is_exactly_what_the_ci_classifier_emits(self) -> None:
+        assert _classifier_skip_reasons() == set(_CI_VERDICT_REASONS)

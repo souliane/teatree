@@ -19,11 +19,27 @@ equally worth handing over:
     vetted it, so :mod:`teatree.core.management.commands.handover` reports it as
     UNVETTED rather than ``OK``.
 
-The :class:`SessionHandover` DB row is the source of truth. The XDG file
+The :class:`SessionHandover` DB row is the DELIVERY SURFACE. The XDG file
 mirror (``handover_mirror_path``) is for human-readability and for
-bootstrapping a brand-new session whose process predates any DB read; it is
-never read back as a payload, which is why authoring goes through the command
-rather than through the file.
+bootstrapping a session whose process cannot reach the DB; it is read back as a
+payload ONLY in that case (#4194), which is why authoring goes through the
+command rather than through the file.
+
+An author holds at most one unclaimed row and a later hand-off is ABSORBED into
+it behind a fence, so a receiver is handed one row per author carrying
+everything that author said, rather than N partially-contradictory ones. The
+sub-agent barrier's returns are a separate concern living in
+:mod:`teatree.core.handover_wrapup`: they are ROW STATE, RENDERED onto the
+delivery surface here (:func:`write_mirror`, :func:`render_claimed_payload`) at
+delivery time, so ``payload`` only ever holds the author's or derived bytes and
+no authored byte can be mistaken for the harness's own and removed.
+
+A resolve that finds NOTHING writes nothing — no row, no mirror. Persist-first
+(:func:`create_handover` before the barrier) protects state that exists; an
+empty hand-off has none, and the row it would leave behind is a delivery no
+receiver can act on. That promise holds only while ONE resolve decides both the
+refusal and the write, which is why :func:`create_handover` takes a
+:class:`ResolvedHandover` instead of taking its own.
 
 Target resolution (``create``):
 
@@ -42,7 +58,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
-from teatree.core.session_handover_manager import SelfAddressedHandoverError
+from teatree.core.handover_wrapup import delivered_payload
+from teatree.core.session_handover_manager import SelfAddressedHandoverError, render_fenced_handoffs
+from teatree.core.session_identity import is_loop_runner_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,6 +71,7 @@ __all__ = [
     "CreatedHandover",
     "HandoverPayload",
     "PayloadSource",
+    "ResolvedHandover",
     "ResolvedPayload",
     # Re-exported so the hand-off CLI catches the refusal from the module it already
     # depends on, rather than reaching into the manager package for one exception.
@@ -62,6 +81,7 @@ __all__ = [
     "mirror_path",
     "newest_mirror",
     "render_claimed_payload",
+    "resolve_handover",
     "resolve_target_session",
     "unique_mirror_path",
     "write_mirror",
@@ -163,12 +183,42 @@ class CreatedHandover:
 
     ``source`` is carried out to the caller rather than inferred from the row,
     because no property of a persisted payload distinguishes a session's own
-    reasoning from a machine-derived inventory of the same length.
+    reasoning from a machine-derived inventory of the same length. ``resolved``
+    likewise: it is the bytes THIS call contributed, which the persisted payload
+    carries but no longer equals once an earlier hand-off has been absorbed.
+
+    ``updated_existing`` / ``previous_bytes`` report that absorb. A session's second
+    hand-off lands on its first row, and how much state was already there is the one
+    thing no exit code tells the operator. Both come from the write seam's own
+    :class:`~teatree.core.session_handover_manager.HandoverWrite`, never from a
+    pre-read: a rival insert landing between the read and the write made the absorb
+    report itself as a fresh insert. ``payload_appended`` distinguishes an absorb that
+    ADDED bytes from one whose payload the row already carried, which report identically
+    otherwise.
     """
 
     handover: "SessionHandover"
     mirror: Path
     source: PayloadSource
+    resolved: str = ""
+    updated_existing: bool = False
+    previous_bytes: int = 0
+    payload_appended: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedHandover:
+    """Where a hand-off would go and what it would carry — decided once, before anything is written.
+
+    :func:`create_handover` used to be the only way to learn a payload's source, so
+    the caller could not refuse a hand-off until the row already existed. An
+    :attr:`PayloadSource.EMPTY` resolve must write nothing at all, which needs the
+    answer first — and then the SAME answer must be what is written, so this travels
+    from the refusal check into :func:`create_handover` rather than being re-derived.
+    """
+
+    to_session: str
+    resolved: ResolvedPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,15 +303,28 @@ def resolve_target_session(explicit_to: str) -> str:
     is read via the same :class:`~teatree.core.models.LoopLease`
     ``t3-master`` slot the t3-master CLI uses, so a no-target hand-off
     lands on whichever session is actively driving the loop.
+
+    The ``t3 worker`` holds that slot as its own durable principal
+    (:data:`~teatree.core.session_identity.LOOP_RUNNER_SESSION_ID`, the literal
+    ``"loop-runner"``) rather than as a Claude session id. Addressing a hand-off
+    THERE is addressing it to an id no session can ever have:
+    :meth:`~teatree.core.session_handover_manager.SessionHandoverQuerySet.claimable_for`
+    admits only ``to_session == session_id`` or ``to_session == ""``, so such a row
+    is claimable by nobody and counts as pending forever. Four rows had accumulated
+    that way. The runner principal is therefore PARKED (``""``) — the next session to
+    start claims it — rather than written as a target, and the same normalisation
+    applies to an explicit ``--to loop-runner``.
     """
     if explicit_to:
-        return explicit_to
+        return "" if is_loop_runner_session(explicit_to) else explicit_to
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     # The t3-master owner slot (``T3_MASTER_SLOT``); the tach boundary forbids
     # importing it here, so the literal is repeated at this read site.
     status = LoopLease.objects.ownership_status("t3-master")
-    return status.owner_session if status.is_live else ""
+    if not status.is_live or is_loop_runner_session(status.owner_session):
+        return ""
+    return status.owner_session
 
 
 def mirror_path() -> Path:
@@ -356,7 +419,7 @@ def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
         f"- created: {handover.created_at.isoformat()}\n\n"
         "---\n\n"
     )
-    unique.write_text(header + handover.payload + "\n", encoding="utf-8")
+    unique.write_text(header + delivered_payload(handover) + "\n", encoding="utf-8")
     _update_latest_pointer(pointer, unique)
     return unique
 
@@ -369,12 +432,8 @@ def render_claimed_payload(claimed: "Sequence[SessionHandover]") -> str:
     creation time — otherwise the receiving session reads N authors' state as
     one narrative. A lone hand-off renders as its bare payload, unchanged.
     """
-    if len(claimed) == 1:
-        return claimed[0].payload
-    return "\n\n".join(
-        f"## Hand-off {index} of {len(claimed)} — from `{row.from_session}` at {row.created_at.isoformat()}\n\n"
-        f"{row.payload}"
-        for index, row in enumerate(claimed, start=1)
+    return render_fenced_handoffs(
+        [(row.from_session, row.created_at.isoformat(), delivered_payload(row)) for row in claimed]
     )
 
 
@@ -395,26 +454,50 @@ def claim_handovers(session_id: str) -> tuple[str, str]:
     return render_claimed_payload(claimed), origin
 
 
-def create_handover(*, from_session: str, explicit_to: str, authored: str = "") -> "CreatedHandover":
-    """Persist a hand-off from *from_session* and mirror it to the XDG file.
+def resolve_handover(*, from_session: str, explicit_to: str, authored: str = "") -> ResolvedHandover:
+    """Where this hand-off would go and what it would carry — WITHOUT writing anything.
 
-    *authored* is the payload the handing session supplied; omitted, the payload
-    is derived per :meth:`HandoverPayload.resolve`. The target is resolved per
-    :func:`resolve_target_session`.
+    Split out of :func:`create_handover` so the CLI can refuse an empty hand-off
+    before a row exists. Persist-first is the right ordering when there is state to
+    protect from a crashing barrier; on the empty path there is none, and the row it
+    would leave behind is a delivery nobody can act on.
+    """
+    return ResolvedHandover(
+        to_session=resolve_target_session(explicit_to),
+        resolved=HandoverPayload(from_session, authored=authored).resolve(),
+    )
+
+
+def create_handover(*, from_session: str, resolution: ResolvedHandover) -> "CreatedHandover":
+    """Persist *resolution* as a hand-off from *from_session* and mirror it to the XDG file.
+
+    The resolution is threaded in rather than taken here, so the one the caller
+    GATED on is the one that gets written. Re-resolving made the two different
+    instants with the caller's slow sub-agent barrier between them: live state
+    settling across that barrier resolved non-empty for the gate and EMPTY for the
+    write, and the row that landed carried only the barrier's own boilerplate. It
+    also closed the same window on the PreCompact snapshot, which a rotation across
+    the barrier could downgrade, and halved the ``LoopLease`` reads per create.
 
     Raises :class:`SelfAddressedHandoverError` when the resolved target is the
     handing session itself — including via the no-``--to`` path, where the live
-    ``t3-master`` slot holder can BE the session handing off. Refusing here rather
-    than in the CLI keeps the check on the resolved target, which is the only
-    value that decides claimability.
+    ``t3-master`` slot holder can BE the session handing off. Refusing at the write
+    seam keeps the check on the resolved target, which is the only value that
+    decides claimability.
     """
     from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    to_session = resolve_target_session(explicit_to)
-    resolved = HandoverPayload(from_session, authored=authored).resolve()
-    handover = SessionHandover.objects.create_handover(
+    write = SessionHandover.objects.create_handover(
         from_session=from_session,
-        to_session=to_session,
-        payload=resolved.text,
+        to_session=resolution.to_session,
+        payload=resolution.resolved.text,
     )
-    return CreatedHandover(handover=handover, mirror=write_mirror(handover), source=resolved.source)
+    return CreatedHandover(
+        handover=write.row,
+        mirror=write_mirror(write.row),
+        source=resolution.resolved.source,
+        resolved=resolution.resolved.text,
+        updated_existing=write.absorbed,
+        previous_bytes=write.previous_bytes,
+        payload_appended=write.payload_appended,
+    )

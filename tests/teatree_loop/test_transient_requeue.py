@@ -36,7 +36,6 @@ def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED) ->
 def _add_failed_attempt(task: Task, *, error: str, ended_at: datetime | None = None) -> None:
     TaskAttempt.objects.create(
         task=task,
-        execution_target=task.execution_target,
         ended_at=ended_at or timezone.now(),
         exit_code=1,
         error=error,
@@ -859,3 +858,166 @@ class TestSelfRepairInsteadOfPaging(TestCase):
         requeue_transient_failed()
 
         assert DeferredQuestion.objects.count() == 1
+
+
+class TestDisposalReleasesTheWholeClaim(TestCase):
+    """Every reopen/retire releases EVERY claim column, not the five it happens to name (#4164).
+
+    A dead owner's ``owner_pid`` + ``owner_driving_since`` left on a row it no longer holds is
+    read by ``owner_is_executing`` as "still executing" the moment the OS reuses that pid — so
+    the next sweep withholds the reap of a row whose worker is long gone.
+    """
+
+    _NS = "pid:[4026531836]"
+    _PR_ID = 4242
+    _HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
+
+    @classmethod
+    def _review_task(cls, *, failed_with: str) -> Task:
+        """A FAILED reviewer task — failed through ``fail()`` so its ``failure_kind`` is classified."""
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url=f"https://github.com/souliane/teatree/pull/{cls._PR_ID}",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.fail(reason=failed_with)
+        return task
+
+    @staticmethod
+    def _stamp_owner(task: Task) -> None:
+        Task.objects.filter(pk=task.pk).update(
+            owner_pid=999999,
+            owner_pid_namespace=TestDisposalReleasesTheWholeClaim._NS,
+            owner_driving_since=timezone.now(),
+        )
+
+    def _assert_claim_released(self, task: Task) -> None:
+        task.refresh_from_db()
+        assert task.owner_pid is None
+        assert task.owner_pid_namespace == ""
+        assert task.owner_driving_since is None
+
+    def test_a_transient_reopen_releases_the_owner_columns(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error="outage_death: connection refused")
+        self._stamp_owner(task)
+
+        assert requeue_transient_failed() == 1
+
+        self._assert_claim_released(task)
+
+    def test_a_corrective_reopen_releases_the_owner_columns(self) -> None:
+        task = _failed_task(phase="debugging")
+        _add_failed_attempt(task, error=NO_ENVELOPE_ERROR)
+        self._stamp_owner(task)
+
+        assert requeue_transient_failed() == 1
+
+        self._assert_claim_released(task)
+
+    def test_a_self_repair_reopen_releases_the_owner_columns(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(
+            task,
+            error=(
+                "agent_harness_provider='openai_compatible' is not valid under "
+                "agent_harness='claude_sdk'; valid: api_key, subscription_oauth"
+            ),
+        )
+        self._stamp_owner(task)
+
+        assert requeue_transient_failed() == 1
+
+        self._assert_claim_released(task)
+
+    def test_a_dead_review_retire_releases_the_owner_columns(self) -> None:
+        dead_pr = "outage_death: agent stopped after confirming PR closed"
+        task = self._review_task(failed_with=dead_pr)
+        _add_failed_attempt(task, error=dead_pr)
+        self._stamp_owner(task)
+
+        with mock.patch("teatree.backends.loader.pr_is_merged_or_closed", return_value=True):
+            requeue_transient_failed()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+        self._assert_claim_released(task)
+
+    def test_a_superseded_retire_releases_the_owner_columns(self) -> None:
+        lease_lost = "stuck_loop: lease lost for task 1: re-claimed in-process"
+        task = self._review_task(failed_with=lease_lost)
+        AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=self._PR_ID, head_sha=self._HEAD, task=task)
+        _add_failed_attempt(task, error=lease_lost)
+        ReviewVerdict.record(
+            pr_id=self._PR_ID,
+            slug="souliane/teatree",
+            reviewed_sha=self._HEAD,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer-agent",
+        )
+        self._stamp_owner(task)
+
+        requeue_transient_failed()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+        self._assert_claim_released(task)
+
+
+class TestSpawnFailureEscalation(TestCase):
+    """A halt whose agent never STARTED must not ask the operator about the ticket (#4301).
+
+    An E2BIG spawn death happens before the child reads a byte of the task, so the
+    ticket-adjudication question ("investigate, rework, or ignore") aims the operator at
+    the one thing that cannot be the cause — while the real subject (the environment) is
+    named nowhere in a forty-line SDK traceback.
+    """
+
+    _SPAWN_ERROR = (
+        "agent could not be spawned: a single spawn argument is 181072 bytes, over this "
+        "platform's 131072-byte per-argument limit (E2BIG). The agent never started, so no "
+        "work was attempted and nothing about the ticket's content is implicated."
+    )
+
+    def _question(self) -> str:
+        return DeferredQuestion.objects.filter(answered_at__isnull=True).get().question
+
+    def test_a_spawn_failure_says_the_agent_could_not_start(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=self._SPAWN_ERROR)
+
+        requeue_transient_failed()
+
+        question = self._question()
+        assert "AGENT COULD NOT START" in question
+        assert "not implicated" in question
+        assert "investigate, rework, or ignore" not in question
+
+    def test_a_work_failure_keeps_the_ticket_adjudication_question(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
+
+        requeue_transient_failed()
+
+        question = self._question()
+        assert "investigate, rework, or ignore" in question
+        assert "AGENT COULD NOT START" not in question
+
+    def test_a_spawn_failure_is_never_reopened_for_a_doomed_retry(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=self._SPAWN_ERROR)
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_the_same_spawn_defect_on_two_tickets_files_one_question(self) -> None:
+        # The systemic signature: unrelated tickets halting on one environmental cause
+        # must reach the owner as ONE report, not one decision per ticket.
+        for _ in range(2):
+            _add_failed_attempt(_failed_task(phase="testing"), error=self._SPAWN_ERROR)
+
+        requeue_transient_failed()
+
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

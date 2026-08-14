@@ -808,6 +808,39 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # #4262: FIRST, because the checkout below is what consumes the credential. A rejected
+      # PAT makes checkout die in `could not read Username for 'https://github.com'` — the
+      # same bytes an unset secret produces — and this job's own guard sat in its last step,
+      # unreachable. Inline rather than a `scripts/` file: nothing is checked out yet.
+      - name: Verify TEATREE_GH_TOKEN before the checkout consumes it
+        env:
+          TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_API_URL:-https://api.github.com}"
+          if [ -z "${TEATREE_GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset or rejected — it is UNSET on ${GITHUB_REPOSITORY}. Set or rotate the secret: the checkout below persists it as the git credential, and git with no usable one falls back to an interactive prompt and dies as 'could not read Username for https://github.com', naming nothing." >&2
+            exit 1
+          fi
+          # A heredoc into curl's config keeps the credential out of argv and the process table.
+          cfg="$(mktemp)"
+          trap 'rm -f "$cfg"' EXIT
+          cat > "$cfg" <<CURLRC
+          header = "Authorization: Bearer ${TEATREE_GH_TOKEN}"
+          CURLRC
+          status="$(curl -sS --config "$cfg" -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 -H 'Accept: application/vnd.github+json' "${API}/repos/${GITHUB_REPOSITORY}" || true)"
+          case "${status:-000}" in
+            200)
+              echo "TEATREE_GH_TOKEN accepted for ${GITHUB_REPOSITORY}."
+              ;;
+            401|403|404)
+              echo "::error::TEATREE_GH_TOKEN is unset or rejected — the forge answered HTTP ${status} for ${GITHUB_REPOSITORY}. The secret IS set, so presence is not the failure: rotate the credential. The checkout below would otherwise die as 'could not read Username for https://github.com', naming nothing." >&2
+              exit 1
+              ;;
+            *)
+              echo "::warning::TEATREE_GH_TOKEN is UNVERIFIED — the probe could not reach ${API} (HTTP ${status:-000}). Continuing: read a checkout failure below as unexplained, not as a rejected credential." >&2
+              ;;
+          esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
@@ -816,7 +849,7 @@ jobs:
           # TRIGGERS the required `test (3.13)` check. A push authenticated with
           # GITHUB_TOKEN never fires downstream workflows (GitHub's recursion guard), so
           # the refresh PR would sit forever without its required check and could never
-          # merge. The token guard in the PR step below fails loud if it is unset.
+          # merge. The probe step above has already proved this credential usable.
           token: ${{ secrets.TEATREE_GH_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -882,6 +915,44 @@ jobs:
               --base main \
               --label "ci"
           fi
+
+  # MAINTENANCE HONESTY (#4262): "the scheduled run passed" and "the maintenance job ran"
+  # are different claims, and only the first was ever checked. `refresh-durations` was
+  # skipped on every scheduled run for two weeks — skipped does not red a run — so the lane
+  # reported success while `dev/.test_durations` decayed to 10.8% of the test files. This
+  # job is where the second claim is made, so a job that did not run says so.
+  # `always()` is load-bearing for the same reason it is on `refresh-durations`: both of its
+  # dependencies run via `always()`, and GitHub propagates their skip through to anything
+  # that does not re-establish it — the very bug being reported here.
+  scheduled-maintenance-report:
+    needs: [test-shard, refresh-durations]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report whether the scheduled maintenance job actually ran
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+          REFRESH: ${{ needs.refresh-durations.result }}
+        run: |
+          set -euo pipefail
+          echo "test-shard: ${SHARDS}"
+          echo "refresh-durations: ${REFRESH}"
+          if [ "${SHARDS}" != "success" ]; then
+            echo "::notice::refresh-durations did not run because test-shard was '${SHARDS}' — the shard result is the cause and already reds this run."
+            exit 0
+          fi
+          case "${REFRESH}" in
+            success)
+              echo "refresh-durations ran and passed."
+              ;;
+            failure)
+              echo "::notice::refresh-durations ran and FAILED — this run is already red, which is an honest report."
+              ;;
+            *)
+              echo "::error::refresh-durations was '${REFRESH}' on this scheduled run while every shard passed. A job that did not run does not red a run, so the lane would otherwise report green while dev/.test_durations goes unrefreshed (#4262)." >&2
+              exit 1
+              ;;
+          esac
 
   # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
   # required `test (3.13)` check context (unchanged from the old monolithic job).

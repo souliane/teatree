@@ -6,10 +6,9 @@ keystroke within :data:`PRESENCE_FRESHNESS` beats a scheduled away-class mode) a
 #189 per-turn escape reads :meth:`is_live_user_turn` (within the shorter
 :data:`LIVE_TURN_FRESHNESS`).
 
-A FOUNDATION leaf so the three readers share ONE implementation instead of each
+A FOUNDATION leaf so both readers share ONE implementation instead of each
 re-deriving the file format: the Django resolver
-(:mod:`teatree.core.mode_resolution`), the Django-free cold posture resolver
-(:mod:`teatree.config.cold_mode`) and the bare ``UserPromptSubmit`` hook
+(:mod:`teatree.core.mode_resolution`) and the bare ``UserPromptSubmit`` hook
 (``hooks/scripts/ups_fastpath``). It imports only the standard library plus
 :mod:`teatree.paths`, so a bare system interpreter with no Django can use it.
 

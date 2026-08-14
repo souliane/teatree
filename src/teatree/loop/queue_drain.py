@@ -4,7 +4,7 @@ The DB-backed django-tasks queue (``DBTaskResult``, backend
 ``django_tasks_db.DatabaseBackend``) only advances when *something* drains
 it. ``t3 <overlay> worker`` spawns ``manage.py db_worker`` subprocesses, but
 that is a manual machine-wide singleton nobody keeps alive — so enqueued
-``execute_headless_task`` / ``execute_provision`` / ``execute_ship`` jobs sit
+``execute_task`` / ``execute_provision`` / ``execute_ship`` jobs sit
 in ``READY`` forever (the #786 loop is tick-driven and session-bound; it
 assumes no always-on OS daemon).
 

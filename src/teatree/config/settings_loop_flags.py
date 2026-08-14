@@ -24,7 +24,7 @@ class _LoopFlagAndCredentialSettings:
     # admitted issues without an operator opt-in. Flip OFF to make the loop a hard
     # NO-OP. The per-issue admission decision table still applies.
     issue_implementer_enabled: bool = True
-    # #3634 The owner-applied ADMISSION label — rule 4 of the intake decision
+    # #3634 The owner-applied ADMISSION label — the admit-label rule of the intake decision
     # table, and the label-scoped discovery query. It is the ONLY route by which an
     # UNTRUSTED author's issue reaches the factory; a trusted author needs no label
     # at all. Empty resolves to the shipped ``t3-auto`` convention
@@ -49,8 +49,10 @@ class _LoopFlagAndCredentialSettings:
     # resolve_intake_concurrency, which otherwise derives the live limit from
     # observed headroom and may exceed this number.
     issue_implementer_max_concurrent: int = 3
-    # Internal dispatch-rate floor (hours) between auto-implement pickups.
-    issue_implementer_cadence_hours: int = 1
+    # Marker labels for an UMBRELLA/epic parent intake never claims (#4105) — data, not a
+    # constant, because which marker a deployment uses is its own policy. Emptying it
+    # turns the LABEL half off; the structural half still declines an unlabelled epic.
+    umbrella_issue_labels: list[str] = field(default_factory=lambda: ["epic", "umbrella", "tracking"])
     # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the cross-instance
     # MUTEX (``teatree.core.fleet.claim`` — a GitHub claim ref as a server-side CAS)
     # governs the whole in-flight lifecycle: the issue-implementer dispatch WINS the

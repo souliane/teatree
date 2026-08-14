@@ -37,6 +37,22 @@ class _PhaseRunnerOne(Protocol):
     def __call__(self, d: Path, *, dry_run: bool) -> int: ...
 
 
+def _broken_citation_warnings(archived: "tuple[ArchivedMemory, ...]") -> list[str]:
+    """One WARN clause per archived memory that live documents still cite.
+
+    Budget pressure can force a load-bearing memory out — the tier converges only
+    because a cited file is archived last rather than never. What it must not do is go
+    quietly: each clause names the archived memory and every citation now pointing at
+    nothing, so the pass reports what it broke instead of leaving a dangling reference
+    to be discovered by an audit weeks later.
+    """
+    return [
+        f"; WARN archived {entry.name} still cited by {', '.join(entry.broken_inbound)}"
+        for entry in archived
+        if entry.broken_inbound
+    ]
+
+
 class MemoryPhaseRunner:
     """Runs the file-side dream phases (4 / 4b / 5 / 6) and the §4 acceptance gates.
 
@@ -237,6 +253,7 @@ class MemoryPhaseRunner:
                 continue
             archived_by_dir[d] = result.archived
             total += result.archived_count
+            warnings.extend(_broken_citation_warnings(result.archived))
         clause = f"; archived {total} stale memory(ies)" if total else ""
         return clause + "".join(warnings), archived_by_dir
 

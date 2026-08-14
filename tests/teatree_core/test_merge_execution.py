@@ -34,6 +34,7 @@ from teatree.core.merge import (
 )
 from teatree.core.models import ClearRequest, MergeAudit, MergeClear, PullRequest, Session, Ticket, Worktree
 from teatree.utils.pr_ref import PrRef
+from tests._forge_stub import changed_files_stdout
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"
@@ -102,16 +103,17 @@ def _seed_sibling_verdict(clear: MergeClear) -> None:
     ``execute_bound_merge`` fails closed. Seeding the verdict is NOT a weakening
     — it reproduces exactly what the production ``clear`` path records (a
     non-author ``merge_safe`` at the reviewed SHA). Skipped when the CLEAR's
-    reviewer is a non-reviewer role or its checks are non-green: those CLEARs
+    reviewer is not an independent checker, or its checks are non-green: those CLEARs
     are refused at the authorization step BEFORE the gate, and
     ``ReviewVerdict.record`` would itself reject them.
     """
-    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
+    from teatree.core.models.reviewer_identity import (  # noqa: PLC0415 — deferred: ORM/app-registry
+        is_independent_reviewer_identity,
+    )
 
     if (
-        not clear.reviewer_identity.strip()
-        or is_non_reviewer_role(clear.reviewer_identity)
+        not is_independent_reviewer_identity(clear.reviewer_identity)
         or clear.gh_verify_result != MergeClear.VerifyResult.GREEN
     ):
         return
@@ -180,7 +182,7 @@ class _GhStub:
         if "pulls" in joined and "merge" in joined:
             moved = "Head branch was modified. Review and try the merge again. (409)"
             return (1, "", moved) if self.merge_rc != 0 else (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
 
 def _run(clear: MergeClear, stub: _GhStub, identity: str = "merge-loop") -> MergeOutcome:
@@ -378,19 +380,23 @@ class TestMergeExecutionEdgeCases(TestCase):
             merge_ticket_pr(clear=object(), executing_loop_identity="merge-loop")
 
     def test_missing_live_head_sha_is_refused(self) -> None:
+        """An unreadable head is refused as unreadable, never reported as moved (#4239)."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
 
         def _no_head(argv: list[str]) -> tuple[int, str, str]:
-            if "headRefOid" in " ".join(argv):
+            joined = " ".join(argv)
+            if "headRefOid" in joined:
                 return (1, "", "boom")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_no_head),
-            pytest.raises(MergePreconditionError, match=r"live=\(unresolved\)"),
+            pytest.raises(MergePreconditionError, match="could not read the live head") as exc,
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert "PR head moved" not in str(exc.value)
 
     def test_generic_merge_failure_is_refused_not_head_moved(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -402,7 +408,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return probe
             if "pulls" in joined and "merge" in joined:
                 return (1, "", "500 Internal Server Error")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merge_500),
@@ -506,7 +512,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (1, "", "api error")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_rollup_rc1),
@@ -579,7 +585,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return probe
             if "pulls" in joined and "merge" in joined:
                 return (0, "not-json-at-all", "")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_bad_merge_json):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -648,7 +654,7 @@ class _LostPostHookGhStub:
             return (0, self._merge_state_payload(), "")
         if "pulls" in joined and "merge" in joined:
             return self._do_merge()
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
 
 class TestLostPostHookRecoverable(TestCase):
@@ -719,7 +725,7 @@ class TestLostPostHookRecoverable(TestCase):
                 return (0, _GREEN, "")
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "MERGED", "mergeCommit": {"oid": "othermerge0"}}', "")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merged_other_head),
@@ -744,7 +750,7 @@ class TestLostPostHookRecoverable(TestCase):
                 return probe
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "MERGED", "mergeCommit": null}', "")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merged_no_commit):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -1131,7 +1137,7 @@ class _TransientThenSuccessGhStub:
                 return (1, "", "unexpected end of JSON input")
             self.merged = True
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, "", "")
+        return (0, changed_files_stdout(joined), "")
 
 
 class TestTransientMergeRetry(TestCase):
@@ -1198,7 +1204,7 @@ class TestTransientMergeRetry(TestCase):
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Pull Request is not mergeable (405)")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep") as sleep,
@@ -1225,7 +1231,7 @@ class TestTransientMergeRetry(TestCase):
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Head branch was modified. Review and try the merge again. (409)")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep"),
@@ -1258,7 +1264,7 @@ class TestTransientMergeRetry(TestCase):
                 # The merge lands at GitHub but the response is truncated.
                 state["merged"] = True
                 return (1, "", "unexpected end of JSON input")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep"),
@@ -1296,7 +1302,7 @@ class TestTransientMergeRetry(TestCase):
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "")
-            return (0, "", "")
+            return (0, changed_files_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep"),

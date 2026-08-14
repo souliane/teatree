@@ -45,26 +45,11 @@ from teatree.core.management.commands._workspace.ticket_intake import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
-from teatree.core.worktree.branch_verdict import BranchVerdict, branch_verdict_report
+from teatree.core.worktree.branch_upstream import repair_clones
+from teatree.core.worktree.branch_verdict import branch_verdict_report, render_verdict
 from teatree.core.worktree.dead_row_release import release_dead_rows
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
-
-
-def _render_verdict(verdict: BranchVerdict) -> str:
-    """One human line per branch, with the post-merge delta never omitted.
-
-    A landed branch reads as landed; a forge-merged branch that still owes work says so
-    on the same line, because that is the pair a reader acts on.
-    """
-    landed = "LANDED" if verdict.redundant else "NOT LANDED"
-    line = f"  {verdict.branch}: {landed} vs {verdict.target} ({verdict.source})"
-    if verdict.merged_with_post_merge_work:
-        return (
-            f"{line}\n    forge says merged, but {len(verdict.unique_shas)} commit(s) are NOT on the target: "
-            + ", ".join(sha[:8] for sha in verdict.unique_shas)
-        )
-    return line
 
 
 def _worktree_root() -> Path:
@@ -369,7 +354,7 @@ class Command(TyperCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human="\n".join(_render_verdict(verdict) for verdict in verdicts),
+            human="\n".join(render_verdict(verdict) for verdict in verdicts),
         )
 
     @command(name="reap-stale")
@@ -453,6 +438,24 @@ class Command(TyperCommand):
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
             human=lambda stream: write_dead_row_lines(outcome, stream),
+        )
+
+    @command(name="repair-branch-upstreams")
+    def repair_branch_upstreams(
+        self,
+        *,
+        dry_run: bool = typer.Option(default=False, help="List the repairs without writing any git config."),
+        json_output: Annotated[bool, typer.Option("--json", help="Per-branch outcomes as JSON.")] = False,
+    ) -> None:
+        """Point every branch tracking someone else's ref back at its own, or untrack it (#4225)."""
+        outcomes = repair_clones(dry_run=dry_run) or ["No mistracked branch upstreams."]
+        self.print_result = False
+        emit(
+            outcomes,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(outcomes) + "\n",
         )
 
     @command()

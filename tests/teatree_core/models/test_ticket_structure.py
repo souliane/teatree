@@ -69,7 +69,8 @@ _PUBLIC_API: frozenset[str] = frozenset(
 
 # The full FSM state graph — {transition: (sources, targets)}. The god-object
 # split had to leave it byte-identical; every later edge is a deliberate,
-# reviewed addition pinned here (e.g. reopen_for_followup, #3327).
+# reviewed addition pinned here (e.g. reopen_for_followup, #3327; reopen's
+# delivered source, #4152).
 _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "code": (("planned",), ("coded",)),
     "code_direct": (("not_started", "scoped", "started"), ("coded",)),
@@ -123,7 +124,7 @@ _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("coded", "in_review", "not_started", "planned", "retrospected", "reviewed", "scoped", "started", "tested"),
         ("reviewed",),
     ),
-    "reopen": (("in_review", "merged", "retrospected", "shipped"), ("started",)),
+    "reopen": (("delivered", "in_review", "merged", "retrospected", "shipped"), ("started",)),
     "reopen_for_followup": (("delivered", "merged"), ("reviewed",)),
     "request_review": (("shipped",), ("in_review",)),
     "retrospect": (("merged", "retrospected"), ("retrospected",)),

@@ -1,53 +1,24 @@
 """teatree.core.models.loop_preset — Mode + ModeOverride behaviour.
 
-The tri-state entry map (``state_for``), the availability pin / overlay-scope
-accessors, the single-live-override contract, and the low-power auto-engage
-manager methods (#3159 item 6).
+The tri-state entry map (``state_for``), the overlay-scope accessor, the
+single-live-override contract, and the low-token auto-engage manager methods
+(#3159 item 6).
 """
 
 import datetime as dt
 
 import django.test
-import pytest
-from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from teatree.core.models import PIN_MODES, ConfigSetting, Mode, ModeOverride
+from teatree.core.models import ConfigSetting, Mode, ModeOverride
 
 
-class TestModeBooleans(django.test.SimpleTestCase):
-    """#61 merge: the three intrinsic booleans ARE the availability payload."""
+class TestModeCarriesOnlyTheLoopTable(django.test.SimpleTestCase):
+    """#4202: a mode is its ``entries`` table plus an overlay scope — nothing else."""
 
-    def test_pauses_requires_defers_is_rejected_by_clean(self) -> None:
-        # The nonsensical 4th point (pump paused but questions answered in-band).
-        with pytest.raises(ValidationError):
-            Mode(name="bad", pauses_self_pump=True, defers_questions=False).clean()
-
-    def test_reachable_postures_pass_clean(self) -> None:
-        for defers, pauses in [(False, False), (True, False), (True, True)]:
-            Mode(name="ok", defers_questions=defers, pauses_self_pump=pauses).clean()
-
-    def test_presence_sensitive_defaults_true(self) -> None:
-        assert Mode(name="x").presence_sensitive is True
-
-
-class TestPinModesCanonical(django.test.SimpleTestCase):
-    """LP-5: ONE canonical ``PIN_MODES`` drives pin validation (was triplicated + a dead copy)."""
-
-    def test_pin_modes_are_the_legacy_availability_tokens(self) -> None:
-        # The pin set is the legacy availability-mode token set (the merged mode's
-        # ``availability_mode`` seed field validates against it during the merge).
-        assert frozenset({"present", "away", "autonomous_away"}) == PIN_MODES
-
-    def test_model_pin_validation_accepts_exactly_the_canonical_set(self) -> None:
-        for mode in PIN_MODES:
-            assert Mode(availability_mode=mode).availability_pin == mode
-        assert Mode(availability_mode="not-a-mode").availability_pin is None
-
-    def test_dead_pin_modes_copy_is_removed(self) -> None:
-        from teatree.loops import preset_transitions  # noqa: PLC0415 — test-time module inspection
-
-        assert not hasattr(preset_transitions, "_PIN_MODES")
+    def test_no_posture_boolean_survives_on_the_model(self) -> None:
+        field_names = {field.name for field in Mode._meta.get_fields()}
+        assert {"defers_questions", "pauses_self_pump", "presence_sensitive"} & field_names == set()
 
 
 class TestLoopPresetTriState(django.test.SimpleTestCase):
@@ -60,11 +31,6 @@ class TestLoopPresetTriState(django.test.SimpleTestCase):
     def test_non_bool_value_degrades_to_inherit(self) -> None:
         preset = Mode(entries={"review": "off"})
         assert preset.state_for("review") is None
-
-    def test_availability_pin_validates(self) -> None:
-        assert Mode(availability_mode="autonomous_away").availability_pin == "autonomous_away"
-        assert Mode(availability_mode="").availability_pin is None
-        assert Mode(availability_mode="bogus").availability_pin is None
 
     def test_overlay_scope_names_filters_non_strings(self) -> None:
         assert Mode(overlay_scope=["a", "b", "", 3]).overlay_scope_names == ["a", "b"]
@@ -91,7 +57,7 @@ class TestLoopPresetOverride(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestLowPowerAutoEngage(django.test.TestCase):
     def setUp(self) -> None:
-        Mode.objects.create(name="low-power", entries={"inbox": True})
+        Mode.objects.create(name="low-token", entries={"inbox": True})
         self.reset = timezone.now() + dt.timedelta(hours=2)
 
     def _enable(self) -> None:
@@ -105,14 +71,14 @@ class TestLowPowerAutoEngage(django.test.TestCase):
         self._enable()
         assert ModeOverride.objects.auto_engage_low_power(resets_at=self.reset) is True
         override = ModeOverride.objects.current()
-        assert override.preset_name == "low-power"
+        assert override.preset_name == "low-token"
         assert override.until == self.reset
 
     def test_never_overwrites_a_live_user_override(self) -> None:
         self._enable()
-        ModeOverride.objects.set_override("engaged", reason="user hold")
+        ModeOverride.objects.set_override("present", reason="user hold")
         assert ModeOverride.objects.auto_engage_low_power(resets_at=self.reset) is False
-        assert ModeOverride.objects.current().preset_name == "engaged"
+        assert ModeOverride.objects.current().preset_name == "present"
 
     def test_no_op_when_target_preset_absent(self) -> None:
         self._enable()
@@ -133,6 +99,6 @@ class TestLowPowerAutoEngage(django.test.TestCase):
         assert ModeOverride.objects.current() is None
 
     def test_clear_leaves_a_user_override_intact(self) -> None:
-        ModeOverride.objects.set_override("engaged", reason="user hold")
+        ModeOverride.objects.set_override("present", reason="user hold")
         assert ModeOverride.objects.clear_auto_engaged_low_power() is False
-        assert ModeOverride.objects.current().preset_name == "engaged"
+        assert ModeOverride.objects.current().preset_name == "present"

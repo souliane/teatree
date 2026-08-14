@@ -31,9 +31,9 @@ nothing is removed.
 import logging
 from pathlib import Path
 
+from teatree.core.cleanup.checkout_registry import candidate_clones, raw_worktree_paths
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
-from teatree.core.management.commands._workspace.checkout_registry import candidate_clones, raw_worktree_paths
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import is_squash_merged

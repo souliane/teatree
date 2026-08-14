@@ -2,7 +2,7 @@
   "skills": [
     {
       "name": "ac-reviewing-codebase",
-      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
+      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
     },
     {
       "name": "answerer",
@@ -66,7 +66,7 @@
     },
     {
       "name": "mode",
-      "summary": "The operating mode \u2014 one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run"
+      "summary": "The operating mode \u2014 one of five named presets (present / away / maintenance / low-token / off) deciding which loops run"
     },
     {
       "name": "next",

@@ -43,6 +43,41 @@ class TestBlocksSilentSkips:
         assert _run_on(monkeypatch, source) == 1
 
 
+class TestSelectsTestFilesWhereverTheyLive:
+    """The hook is packaged as portable, so its file selection must be too.
+
+    Keying on a leading ``tests/`` scans nothing in a repo whose suite sits at
+    ``overlay/tests/`` or ``vendor/<dep>/tests/`` — the hook then reports green
+    having read no file, which is worse than not running it.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/test_x.py",
+            "e2e/test_x.py",
+            "overlay/tests/test_x.py",
+            "vendor/teatree/tests/test_x.py",
+            "src/pkg/tests/test_x.py",
+            "apps/web/e2e/test_x.py",
+        ],
+    )
+    def test_a_test_file_is_selected_wherever_it_lives(self, path: str) -> None:
+        assert mod._is_test_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/pkg/latest/module.py",
+            "src/pkg/protests/module.py",
+            "docs/e2eguide.py",
+            "src/pkg/module.py",
+        ],
+    )
+    def test_a_path_that_merely_contains_the_word_is_not_selected(self, path: str) -> None:
+        assert mod._is_test_path(path) is False
+
+
 class TestAllowsConditionalSkips:
     def test_skipif_runtime_condition_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         source = (

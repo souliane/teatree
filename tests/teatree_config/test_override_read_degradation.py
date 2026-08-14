@@ -12,8 +12,11 @@ being useless, so every fail-closed case has an absent-override twin that must s
 resolve to the shipped default.
 """
 
+import json
 import os
+import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -26,18 +29,21 @@ from django.test import TestCase
 from teatree.config import get_effective_settings
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.override_read_health import (
+    MARKER_FILENAME,
     MAX_RECORDED_CALLERS,
     SAFETY_FAIL_CLOSED_STORED_VALUES,
     ConfigOverrideReadError,
     clear_degraded_read,
     degraded_read_report,
+    fallback_marker_path,
     marker_path,
+    marker_paths,
     record_degraded_read,
 )
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.resolution import fail_closed_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
-from teatree.paths import ControlDb
+from teatree.paths import ControlDb, data_dir_root
 
 _GLOBAL = "global"
 
@@ -337,3 +343,202 @@ class TestTheMarkerCanBeAcknowledged(TestCase):
         tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
         self.addCleanup(lambda: tmp.unlink(missing_ok=True))
         return tmp
+
+
+class TestTheMarkerIsRecordedWhereTheFaultWasObserved(TestCase):
+    """The record has to land in the venue that SAW the fault, not only in the canonical one (#4041).
+
+    The canonical marker sits inside the container's control-DB volume. A HOST process hits
+    the very read failure this records, then cannot create ``/var/lib/teatree`` to write it
+    down — so ``record_degraded_read`` fell into its own ``except OSError`` and logged that
+    the fault "is visible only in this log". A health marker that cannot be written where
+    the fault happens cannot do its job, and the degradation stayed invisible by
+    construction while every consumer resolved against a shipped default.
+
+    The unwritable canonical dir here is one whose PARENT is a regular file, so ``mkdir``
+    raises for root as well — a permission-bit foil would go vacuous under a root test run.
+    """
+
+    def _unwritable_canonical(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        (root / "blocking-file").write_text("not a directory")
+        return root / "blocking-file" / "control-db" / MARKER_FILENAME
+
+    def _writable_fallback(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root / MARKER_FILENAME
+
+    def test_the_fallback_resolves_into_this_venues_own_data_dir(self) -> None:
+        # The fallback is only useful if it lands where the venue that observed the fault
+        # can write AND where its operator already looks — the same root the host
+        # projection is published into. A fallback pointing back inside the control-DB
+        # volume would satisfy every other case here while fixing nothing.
+        assert fallback_marker_path() == data_dir_root() / MARKER_FILENAME
+        assert fallback_marker_path() != marker_path()
+
+    def test_the_marker_is_written_when_the_canonical_path_is_unwritable(self) -> None:
+        canonical, fallback = self._unwritable_canonical(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global", caller="hook.py:1 in f")
+            report = degraded_read_report()
+        assert fallback.is_file(), "the fault was observed here and recorded nowhere"
+        assert not canonical.exists()
+        assert report is not None
+        assert report.scopes == ("global",)
+        assert report.path == fallback, "the operator must be told the file that exists"
+
+    def test_recording_a_failure_emits_no_traceback(self) -> None:
+        # C: this runs under the statusline and `t3 loop status`, whose output must stay
+        # quiet. Exhausting every candidate is one WARNING line naming the paths tried.
+        canonical = self._unwritable_canonical()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=canonical),
+            self.assertLogs("teatree.config", level="WARNING") as logs,
+        ):
+            record_degraded_read("global")
+        assert len(logs.records) == 1, logs.output
+        assert logs.records[0].exc_info is None, "a handled OSError dumped its frames into the bar"
+        assert str(canonical) in logs.output[0]
+
+    def test_a_writable_canonical_venue_keeps_exactly_one_marker(self) -> None:
+        # The foil: offering the per-user path unconditionally would let a stale host
+        # marker outvote a healthy container record — the same defect one layer up.
+        canonical, fallback = self._writable_fallback(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global")
+            assert marker_paths() == (canonical,)
+        assert canonical.is_file()
+        assert not fallback.exists()
+
+    def test_clearing_drops_the_fallback_record_too(self) -> None:
+        canonical, fallback = self._unwritable_canonical(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global")
+            assert degraded_read_report() is not None
+            clear_degraded_read()
+            assert degraded_read_report() is None
+        assert not fallback.exists()
+
+
+class TestReadingTheHealthRecordWritesNothing(TestCase):
+    """Asking whether the tier is degraded must not touch the filesystem (#4205).
+
+    ``marker_paths`` decided "can this venue write here?" by ATTEMPTING the directory —
+    ``mkdir(parents=True)`` — so ``degraded_read_report``, ``clear_degraded_read`` and the
+    doctor check each materialised a directory tree on a pure read. A health probe that
+    creates the venue it is inspecting reports on its own side effect.
+    """
+
+    def _absent_tree(self) -> tuple[Path, Path]:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root / "control-db" / "nested" / MARKER_FILENAME, root / MARKER_FILENAME
+
+    def test_a_report_read_creates_no_directory(self) -> None:
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert degraded_read_report() is None
+        assert not canonical.parent.exists(), "a pure read materialised the marker directory"
+
+    def test_clearing_creates_no_directory(self) -> None:
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            clear_degraded_read()
+        assert not canonical.parent.exists(), "acknowledging a fault materialised the marker directory"
+
+    def test_a_creatable_canonical_dir_is_still_the_only_candidate(self) -> None:
+        # Foil: probing without creating must not start reporting a writable venue as
+        # unwritable — that would offer the per-user path unconditionally, the very
+        # stale-marker-outvotes-a-healthy-venue defect `marker_paths` guards against.
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert marker_paths() == (canonical,)
+
+    def test_an_uncreatable_canonical_dir_still_offers_the_fallback(self) -> None:
+        # The other foil: the write path must keep both candidates when the canonical
+        # directory cannot be created here, which is the whole point of the fallback.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        (root / "blocking-file").write_text("not a directory")
+        canonical = root / "blocking-file" / "control-db" / MARKER_FILENAME
+        fallback = root / MARKER_FILENAME
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert marker_paths() == (canonical, fallback)
+
+
+class TestTheFreshestRecordDecides(TestCase):
+    """Recency, not candidate order, answers "is the tier degraded NOW?" (#4205).
+
+    The candidates are venue-local files that never see each other's writes, so a
+    canonical-first read answers "did it ever degrade in this one directory?" instead.
+    That was documented as load-bearing and pinned by nothing: `found[0]` left the whole
+    degradation lane green.
+
+    `marker_paths` is patched rather than reconstructed from an unwritable canonical dir:
+    the ordering inside `_read_marker` is the property under test, and a permission-bit
+    fixture would couple the assertion to a filesystem mechanism it is not about.
+    """
+
+    def _marker(self, *, scope: str, last_seen: float) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        path = root / MARKER_FILENAME
+        path.write_text(
+            json.dumps(
+                {
+                    "scopes": [scope],
+                    "callers": [],
+                    "occurrences": 1,
+                    "first_seen": last_seen,
+                    "last_seen": last_seen,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _both(self) -> tuple[Path, Path]:
+        now = time.time()
+        # Both well inside MARKER_TTL_SECONDS, so this is about ordering, not staleness.
+        return self._marker(scope="stale", last_seen=now - 3600), self._marker(scope="fresh", last_seen=now - 5)
+
+    def _report_over(self, candidates: tuple[Path, ...]) -> Any:
+        with mock.patch("teatree.config.override_read_health.marker_paths", return_value=candidates):
+            return degraded_read_report()
+
+    def test_the_newest_record_wins_when_it_is_last(self) -> None:
+        stale, fresh = self._both()
+        report = self._report_over((stale, fresh))
+        assert report is not None
+        assert (report.scopes, report.path) == (("fresh",), fresh)
+
+    def test_the_newest_record_wins_when_it_is_first(self) -> None:
+        # The paired foil: "always take the last candidate" passes the case above.
+        stale, fresh = self._both()
+        report = self._report_over((fresh, stale))
+        assert report is not None
+        assert (report.scopes, report.path) == (("fresh",), fresh)

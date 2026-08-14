@@ -1,9 +1,9 @@
 """Box-capacity ``_check_*`` probes for `t3 doctor check` — disk + temp headroom + memory cap.
 
 These surface RESOURCE pressure that silently wedges the box: a ROOT FILESYSTEM
-filling toward full, a RAM-backed ``/tmp`` tmpfs filling toward ENOSPC, and a
-container memory cap set below the commit/lint-hook floor (a too-low ``mem_limit``
-OOM-kills ``ty-check``). Kept out of ``checks_environment`` (which owns
+filling toward full, a RAM-backed ``/tmp`` tmpfs filling toward ENOSPC or SIZED to
+claim a large share of RAM, and a container memory cap set below the commit/lint-hook
+floor (a too-low ``mem_limit`` OOM-kills ``ty-check``). Kept out of ``checks_environment`` (which owns
 clone/install/venv hygiene) so each module stays a single concern under the
 module-health LOC cap.
 
@@ -26,12 +26,19 @@ from typing import cast
 
 import typer
 
+from teatree.core.retention.liveness import held_paths
+from teatree.utils.ram_probe import host_total_ram_mib
+from teatree.utils.ram_scope import agent_workload_floor_gib
+
 # A parsed JSON object (``~/.claude`` settings / installed_plugins). Values are
 # arbitrary JSON, so the leaves stay ``object``; the alias names the shape and keeps
 # the module-health dataclass/TypedDict rule satisfied (mirrors cli/setup/claude_settings).
 type JsonObject = dict[str, object]
 
 _DEFAULT_TMPFS_WARN_PERCENT = 80
+# A quarter of RAM is generous for scratch on a box whose whole purpose is agent
+# work; the measured default let /tmp claim 48%.
+_DEFAULT_TMPFS_MAX_RAM_PERCENT = 25
 _PERCENT_MAX = 100
 _MIN_MOUNT_FIELDS = 3
 
@@ -55,7 +62,6 @@ _CLAUDE_PLUGIN_ID = "t3@souliane"
 _PYRIGHT_PLUGIN_ID = "pyright-lsp@claude-plugins-official"
 _PYRIGHT_LANGSERVER = "pyright-langserver"
 _PYRIGHT_INSTALL_CMD = "npm install -g --prefix ~/.local pyright"
-_DEFAULT_WORKER_FLOOR_GIB = 4
 _BYTES_PER_GIB = 1024**3
 # cgroup v1's "unlimited" is a near-2**63 page-aligned sentinel, and cgroup v2 uses
 # the literal "max"; any cap at/above this floor is treated as no real cap.
@@ -64,15 +70,15 @@ _CGROUP_MEMORY_MAX_V2 = Path("/sys/fs/cgroup/memory.max")
 _CGROUP_MEMORY_MAX_V1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
 
 
-def _tmpfs_warn_percent(raw: str | None) -> int:
-    """Parse ``TEATREE_TMPFS_WARN_PERCENT`` into a 1..100 threshold; default on garbage."""
+def _tmpfs_warn_percent(raw: str | None, *, default: int = _DEFAULT_TMPFS_WARN_PERCENT) -> int:
+    """Parse a tmpfs percent override into a 1..100 threshold; *default* on garbage."""
     if raw is None:
-        return _DEFAULT_TMPFS_WARN_PERCENT
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return _DEFAULT_TMPFS_WARN_PERCENT
-    return value if 1 <= value <= _PERCENT_MAX else _DEFAULT_TMPFS_WARN_PERCENT
+        return default
+    return value if 1 <= value <= _PERCENT_MAX else default
 
 
 def _disk_percent_threshold(raw: str | None, *, default: int) -> int:
@@ -153,7 +159,7 @@ def _tmp_mount_fstype(mounts_text: str, mount_point: str) -> str | None:
 def _check_tmp_tmpfs_headroom(
     *,
     mounts_path: Path = Path("/proc/mounts"),
-    tmp_dir: str = "/tmp",  # noqa: S108 — auditing the /tmp mount, not creating a temp file
+    tmp_dir: str | None = None,
 ) -> bool:
     """WARN when a RAM-backed (tmpfs) ``/tmp`` is filling toward ENOSPC.
 
@@ -168,23 +174,28 @@ def _check_tmp_tmpfs_headroom(
     advisory checks. Threshold overridable via ``TEATREE_TMPFS_WARN_PERCENT`` (1..100,
     default 80). Crash-proof — any probe error degrades to a silent pass so this
     diagnostic never aborts the doctor run.
+
+    Probes the SAME target as its sizing sibling (:func:`_tmpfs_probe_target`) —
+    a hard-coded ``/tmp`` is silently inert inside the container this check runs
+    in, where the host's tmpfs is reachable only through the ``/host-tmp`` bind.
     """
     try:
+        target = _tmpfs_probe_target(tmp_dir)
         if not mounts_path.is_file():
             return True
-        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), tmp_dir) != "tmpfs":
+        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), target) != "tmpfs":
             return True
         threshold = _tmpfs_warn_percent(os.environ.get("TEATREE_TMPFS_WARN_PERCENT"))
-        stats = os.statvfs(tmp_dir)
+        stats = os.statvfs(target)
         total = stats.f_blocks * stats.f_frsize
         if total <= 0:
             return True
         used_pct = round((total - stats.f_bavail * stats.f_frsize) / total * 100)
         if used_pct >= threshold:
             typer.echo(
-                f"WARN  {tmp_dir} is a RAM-backed tmpfs at {used_pct}% used (>= {threshold}% threshold) — "
+                f"WARN  {target} is a RAM-backed tmpfs at {used_pct}% used (>= {threshold}% threshold) — "
                 f"agent/pytest/uv scratch can fill it to ENOSPC and wedge the box. Trim it: "
-                f"`find {tmp_dir} -maxdepth 1 -name 'pytest-*' -mmin +120 -exec rm -rf {{}} +`. Runtime "
+                f"`find {target} -maxdepth 1 -name 'pytest-*' -mmin +120 -exec rm -rf {{}} +`. Runtime "
                 "temp is routed to disk via TMPDIR; tune this with TEATREE_TMPFS_WARN_PERCENT."
             )
     except OSError:
@@ -192,16 +203,121 @@ def _check_tmp_tmpfs_headroom(
     return True
 
 
+_HOST_TMP_MOUNT = Path("/host-tmp")
+
+
+def _tmpfs_probe_target(tmp_dir: str | None) -> str:
+    """Which path BOTH tmpfs checks inspect: the caller's choice, else the host bind, else ``/tmp``.
+
+    ``t3 doctor check`` runs INSIDE the container (#4165), where the container's
+    own ``/tmp`` is the image's overlay layer, not the host's tmpfs — so a check
+    hard-coded to ``/tmp`` is silently inert there. ``/host-tmp`` is a BIND mount
+    of the host's real temp root (the scratch sweep's own mount, wired in this
+    same ticket), and a bind mount reports its SOURCE's fstype and size in the
+    mount table — so probing it from inside the container answers the question
+    about the HOST's tmpfs, which is what this check exists to surface.
+    """
+    if tmp_dir is not None:
+        return tmp_dir
+    return str(_HOST_TMP_MOUNT) if _HOST_TMP_MOUNT.is_dir() else "/tmp"  # noqa: S108 — auditing, not creating
+
+
+def _check_tmp_tmpfs_sizing(
+    *,
+    mounts_path: Path = Path("/proc/mounts"),
+    tmp_dir: str | None = None,
+    total_ram_mib: int | None = None,
+) -> bool:
+    """WARN when a RAM-backed ``/tmp`` is SIZED to claim a large share of machine RAM.
+
+    The sibling headroom check above measures how FULL the tmpfs is; this one
+    measures how big it is allowed to get, which is the standing defect. The
+    measured box shipped a 15.1 GB ``/tmp`` on 31 GB of RAM — 48% of the machine
+    claimable by scratch alone, and 8.8 GB of week-old agent scratch was sitting
+    in it. Teatree does NOT move ``/tmp`` to disk to fix that: the root
+    filesystem was 84% full so a 15 GB disk-backed ``/tmp`` trades a degrading
+    failure for a filesystem-full one that breaks the control DB, and tmpfs is
+    wiped on reboot, which is what bounded the observed leak to a week's worth.
+    Capping the mount keeps both properties. Pairs with the
+    ``scratch_retention_days`` sweep, which keeps it from filling even at the cap.
+
+    Threshold overridable via ``TEATREE_TMPFS_MAX_RAM_PERCENT`` (1..100, default
+    25). Surfacing-only, like its sibling. Crash-proof — any probe error degrades
+    to a silent pass so this diagnostic never aborts the doctor run.
+    """
+    try:
+        target = _tmpfs_probe_target(tmp_dir)
+        if not mounts_path.is_file():
+            return True
+        if _tmp_mount_fstype(mounts_path.read_text(encoding="utf-8"), target) != "tmpfs":
+            return True
+        ram_mib = host_total_ram_mib() if total_ram_mib is None else total_ram_mib
+        stats = os.statvfs(target)
+        size_mib = stats.f_blocks * stats.f_frsize // (1024 * 1024)
+        if ram_mib <= 0 or size_mib <= 0:
+            return True
+        threshold = _tmpfs_warn_percent(
+            os.environ.get("TEATREE_TMPFS_MAX_RAM_PERCENT"),
+            default=_DEFAULT_TMPFS_MAX_RAM_PERCENT,
+        )
+        share = round(size_mib / ram_mib * 100)
+        if share >= threshold:
+            typer.echo(
+                f"WARN  {target} is a tmpfs sized {size_mib / 1024:.1f} GB on {ram_mib / 1024:.1f} GB of RAM "
+                f"({share}% >= {threshold}%) — scratch written there is memory, not disk, so it can claim "
+                f"that share of the working pool permanently. Cap it (host, not the container): "
+                f"`systemctl edit tmp.mount` with `[Mount]` / `Options=mode=1777,strictatime,nosuid,nodev,size=4G`, "
+                f"then reboot. Keep it a tmpfs — a disk-backed /tmp trades RAM pressure for a full root "
+                f"filesystem and gives up the reboot wipe. Sweep it with `t3 <overlay> retention scratch --apply`; "
+                f"tune this with TEATREE_TMPFS_MAX_RAM_PERCENT."
+            )
+    except OSError:
+        return True
+    return True
+
+
+def _check_scratch_sweep_probe(*, retention_days: int | None = None, proc_root: Path | None = None) -> bool:
+    """WARN when the scratch sweep is ARMED but its open-file probe cannot see the process table.
+
+    ``scratch_retention_days > 0`` with an unsighted probe is the worst of both
+    states: the lane looks configured, refuses on every tick, and reclaims
+    nothing. Silent otherwise — a disabled lane has nothing to report. Surfacing-
+    only, like its tmpfs siblings, and crash-proof: any probe error degrades to a
+    silent pass rather than aborting the doctor run.
+    """
+    try:
+        if retention_days is None or proc_root is None:
+            from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: DB read at call time
+            from teatree.core.retention.scratch import resolve_scratch_sweep  # noqa: PLC0415 — deferred: ORM import
+
+            settings = get_effective_settings()
+            retention_days = settings.scratch_retention_days if retention_days is None else retention_days
+            if proc_root is None:
+                proc_root = resolve_scratch_sweep(settings.scratch_sweep_root).proc_root
+        if retention_days <= 0:
+            return True
+        view = held_paths(proc_root)
+        if not view.sighted:
+            typer.echo(
+                f"WARN  scratch sweep is armed (scratch_retention_days={retention_days}) but its open-file "
+                f"probe is unsighted at {proc_root}: {view.unknowable_reason} — every sweep REFUSES and "
+                "reclaims nothing. Either arm the probe (a venue that can resolve that table's fds — the "
+                "container reading the host process table with ptrace access, or a host-side run) or set "
+                "`t3 <overlay> config_setting set scratch_retention_days 0`."
+            )
+    except Exception:  # noqa: BLE001 — a doctor check must never crash the run
+        return True
+    return True
+
+
 def _worker_floor_bytes(raw: str | None) -> int:
-    """Parse ``TEATREE_WORKER_MEMORY_FLOOR_GIB`` (a positive int) into a byte floor; default on garbage."""
-    gib = _DEFAULT_WORKER_FLOOR_GIB
-    if raw is not None:
-        try:
-            value = int(raw)
-        except ValueError:
-            value = _DEFAULT_WORKER_FLOOR_GIB
-        gib = value if value > 0 else _DEFAULT_WORKER_FLOOR_GIB
-    return gib * _BYTES_PER_GIB
+    """Parse ``TEATREE_WORKER_MEMORY_FLOOR_GIB`` (a positive int) into a byte floor; default on garbage.
+
+    The GiB figure is :func:`~teatree.utils.ram_scope.agent_workload_floor_gib`, shared with
+    the scope test that decides whether a cgroup's memory reading describes the box at all
+    — this FAIL and that test must name the same floor (#4217).
+    """
+    return agent_workload_floor_gib(raw) * _BYTES_PER_GIB
 
 
 def _read_cgroup_memory_cap(v2: Path, v1: Path) -> int | None:

@@ -34,14 +34,23 @@ logger = logging.getLogger(__name__)
 
 
 class BranchStatus(StrEnum):
-    """Classification of a branch's sync state against the repo's default branch."""
+    """Classification of a branch's sync state against the repo's default branch.
+
+    ``PR_UNKNOWN`` is the can't-tell answer, deliberately NOT folded into either
+    neighbour: the forge could not be read, so the branch is neither provably
+    backed by an open PR nor provably owed one.
+    """
 
     SYNCED = "synced"
     OPEN_PR = "open_pr"
+    PR_UNKNOWN = "pr_unknown"
     UNPUSHED_ORPHAN = "unpushed_orphan"
     PUSHED_ORPHAN = "pushed_orphan"
 
 
+#: ``PR_UNKNOWN`` is absent on purpose — an orphan claim asserts the forge holds no
+#: PR, which an unreadable forge cannot support. The obligation is not dropped: the
+#: pre-push gate owes a ``PendingPullRequest`` for that state instead.
 _ORPHAN_STATUSES = frozenset({BranchStatus.UNPUSHED_ORPHAN, BranchStatus.PUSHED_ORPHAN})
 
 
@@ -60,18 +69,6 @@ class BranchReport:
         return self.status in _ORPHAN_STATUSES
 
 
-def find_open_pr(repo: str, branch: str) -> str:
-    """Return the URL of the open PR for ``branch``, or ``""`` if none.
-
-    A thin :meth:`~teatree.core.forge_pr_probe.PrProbe.url_or_empty` adapter over
-    the shared :func:`find_open_pr_for_branch`: a probe that could not run (no CLI
-    in a sandbox, CI without auth) collapses to ``""`` here, because the orphan
-    scan surfaces the branch as an orphan either way — the distinction the
-    fail-closed teardown gate needs does not change what this caller does.
-    """
-    return find_open_pr_for_branch(repo, branch).url_or_empty()
-
-
 def _origin_default_branch_target(repo: str) -> str:
     """Resolve ``origin/<default-branch>`` for the repo, defaulting to ``origin/main``.
 
@@ -87,7 +84,12 @@ def _origin_default_branch_target(repo: str) -> str:
 
 
 def classify_branch(repo: str, branch: str) -> BranchReport:
-    """Classify ``branch`` in ``repo`` as synced, open PR, or orphan (unpushed / pushed)."""
+    """Classify ``branch`` as synced, open PR, unreadable, or orphan (unpushed / pushed).
+
+    The content layers run BEFORE the unreadable verdict is returned: work already
+    on the base owes nothing whatever the forge says, so an unreachable forge must
+    not turn a settled branch into a pending question.
+    """
     target = _origin_default_branch_target(repo)
     classification = prefilter_branch_commits_by_subject(repo, branch, target=target)
     ahead = len(classification.genuinely_ahead)
@@ -98,14 +100,14 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
     if _branch_tree_matches_squash(repo, branch):
         return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=ahead)
 
-    pr_url = find_open_pr(repo, branch)
-    if pr_url:
+    probe = find_open_pr_for_branch(repo, branch)
+    if probe.is_found:
         return BranchReport(
             repo=repo,
             branch=branch,
             status=BranchStatus.OPEN_PR,
             ahead_count=ahead,
-            open_pr_url=pr_url,
+            open_pr_url=probe.url,
         )
 
     # #3977: the last layer, because it is the only content-level one that is
@@ -114,6 +116,10 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
     # obligation renews on every tick and its remedy opens a reverting PR.
     if branch_content_landed_on_base(repo, branch, target):
         return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=ahead)
+
+    if probe.is_unknown:
+        logger.warning("orphan scan: could not read %s's open-PR state in %s — reporting pr_unknown", branch, repo)
+        return BranchReport(repo=repo, branch=branch, status=BranchStatus.PR_UNKNOWN, ahead_count=ahead)
 
     has_remote = bool(git.run(repo=repo, args=["ls-remote", "--heads", "origin", branch]))
     status = BranchStatus.PUSHED_ORPHAN if has_remote else BranchStatus.UNPUSHED_ORPHAN

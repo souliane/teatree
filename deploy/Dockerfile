@@ -152,6 +152,12 @@ RUN mkdir -p \
     # worktree provisioning ("No git clone found for souliane/teatree") and the
     # issue-implementer intake is silently disabled. This mirrors the host
     # layout (~/workspace/souliane/teatree -> the teatree clone).
+    #
+    # This target is the FALLBACK. ~/teatree is this container's volume and no
+    # other venue's path, so a worktree cut from it carries a `gitdir:` only this
+    # container resolves (#4120) — deploy/entrypoint.sh's retarget_clone_discovery
+    # repoints the link at the path-identity-mounted deploy checkout whenever one
+    # is there, and leaves this link when there is not.
     mkdir -p /home/teatree/workspace/souliane && \
     ln -s /home/teatree/teatree /home/teatree/workspace/souliane/teatree && \
     chown -R teatree:teatree /home/teatree /opt/teatree /var/lib/teatree

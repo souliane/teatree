@@ -19,6 +19,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -36,22 +37,66 @@ _OBSERVED_IDLE_TEARDOWN_SECONDS = 276
 #: Anchors bounding deploy.sh's stranded-gate fail-safe, so the signal probe below runs
 #: the SHIPPED code rather than a re-typed copy of it.
 _FAIL_SAFE_START = "_DRAINED=false"
-_FAIL_SAFE_END = "trap _clear_quiescing_if_stranded EXIT"
+_FAIL_SAFE_END = "trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT"
+
+#: Anchors bounding deploy.sh's `compose` helper, which the fail-safe calls (#4193 wired
+#: the host-identity overlay behind it). Lifted verbatim for the same reason the
+#: fail-safe is: a re-typed copy would keep passing after the shipped code changed.
+_COMPOSE_HELPER_START = "CONTAINER_HOME="
+_COMPOSE_HELPER_END = "compose() {"
+
+
+def _slice(body: str, start_anchor: str, end_anchor: str, what: str) -> str:
+    start, end = body.find(start_anchor), body.find(end_anchor)
+    moved = f"deploy.sh's {what} moved — re-anchor this probe"
+    assert start != -1, moved
+    assert end > start, moved
+    return body[start : end + len(end_anchor)]
+
+
+def _compose_helper_block() -> str:
+    """deploy.sh's `compose` wrapper plus the constants it reads, verbatim.
+
+    The fail-safe calls `compose`, not `docker compose`, so the harness has to carry the
+    real definition — otherwise the probe would prove a function it invented.
+    """
+    body = _DEPLOY_SH.read_text(encoding="utf-8")
+    head = _slice(body, _COMPOSE_HELPER_START, _COMPOSE_HELPER_END, "compose helper")
+    rest = body[body.find(_COMPOSE_HELPER_END) + len(_COMPOSE_HELPER_END) :]
+    closing = rest.find("\n}\n")
+    assert closing != -1, "deploy.sh's compose() helper is not closed as expected — re-anchor this probe"
+    return f"{head}{rest[: closing + len('\n}\n')]}\n"
+
+
+def _staged_swap_block(body: str) -> str:
+    """deploy.sh's `staged_swap()` body — the shipped stage ORDER, not a copy of it."""
+    start = body.find("staged_swap() {")
+    assert start != -1, "deploy.sh's staged swap moved — re-anchor this probe"
+    end = body.find("\n}\n", start)
+    assert end > start, "deploy.sh's staged_swap() is not closed as expected — re-anchor this probe"
+    return body[start:end]
 
 
 def _fail_safe_block() -> str:
     """deploy.sh's stranded-gate fail-safe, verbatim, anchors included."""
-    body = _DEPLOY_SH.read_text(encoding="utf-8")
-    start, end = body.find(_FAIL_SAFE_START), body.find(_FAIL_SAFE_END)
-    moved = "deploy.sh's stranded-gate fail-safe moved — re-anchor this probe"
-    assert start != -1, moved
-    assert end > start, moved
-    return body[start : end + len(_FAIL_SAFE_END)] + "\n"
+    return _slice(_DEPLOY_SH.read_text(encoding="utf-8"), _FAIL_SAFE_START, _FAIL_SAFE_END, "stranded-gate fail-safe")
 
 
-def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> list[str]:
-    """Signal a script carrying *fail_safe* mid-drain; return the `docker` calls it made."""
+class _FailSafeRun(NamedTuple):
+    calls: list[str]
+    stderr: str
+
+
+def _run_fail_safe_under_signal(
+    tmp_path: Path, sig: int, *, fail_safe: str, stage: str = "_DRAINED=true"
+) -> _FailSafeRun:
+    """Signal a script carrying *fail_safe* mid-run; report its `docker` calls and stderr.
+
+    *stage* is the shipped flag assignment naming how far the convergence got, so a test
+    picks the point of death rather than re-implementing the fail-safe's own conditions.
+    """
     docker_log = tmp_path / "docker.log"
+    stderr_log = tmp_path / "stderr.log"
     ready = tmp_path / "ready"
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
@@ -61,24 +106,29 @@ def _run_fail_safe_under_signal(tmp_path: Path, sig: int, *, fail_safe: str) -> 
 
     script = tmp_path / "harness.sh"
     script.write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\n"
-        f"{fail_safe}"
-        f'_DRAINED=true\ntouch "{ready}"\nsleep 5\n',
+        "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\nHOST_IDENTITY_FILE=/dev/null\n"
+        f"{_compose_helper_block()}"
+        f"{fail_safe}\n"
+        f'{stage}\ntouch "{ready}"\nsleep 5\n',
         encoding="utf-8",
     )
 
     env = {**os.environ, "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"}
-    proc = subprocess.Popen(["bash", str(script)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S607 — a fixture-authored script under tmp_path
-    try:
-        deadline = time.monotonic() + 10
-        while not ready.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert ready.exists(), "the harness never reached its drain"
-        proc.send_signal(sig)
-        proc.wait(timeout=10)
-    finally:
-        proc.kill()
-    return docker_log.read_text(encoding="utf-8").splitlines() if docker_log.exists() else []
+    with stderr_log.open("w", encoding="utf-8") as stderr_sink:
+        proc = subprocess.Popen(["bash", str(script)], env=env, stdout=subprocess.DEVNULL, stderr=stderr_sink)  # noqa: S607 — a fixture-authored script under tmp_path
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "the harness never reached its drain"
+            proc.send_signal(sig)
+            proc.wait(timeout=10)
+        finally:
+            proc.kill()
+    return _FailSafeRun(
+        calls=docker_log.read_text(encoding="utf-8").splitlines() if docker_log.exists() else [],
+        stderr=stderr_log.read_text(encoding="utf-8"),
+    )
 
 
 def _deploy_workflow() -> dict:
@@ -143,13 +193,15 @@ class TestDeployDebounce:
 class TestDeployDrain:
     def test_deploy_script_drains_the_running_worker_before_the_swap(self) -> None:
         body = _DEPLOY_SH.read_text(encoding="utf-8")
-        drain_at = body.find("t3 worker drain")
-        swap_at = body.find("up -d --build")
-        assert drain_at != -1, "deploy.sh must drain the worker before swapping the image"
-        assert swap_at != -1
-        assert drain_at < swap_at, "the drain must run BEFORE `docker compose up -d --build`"
+        staged = _staged_swap_block(body)
+        drains = [m.start() for m in re.finditer(r"^\s+drain_worker$", staged, re.MULTILINE)]
+        # init clears worker_quiescing as its last act, so the gate is asserted once
+        # before migrations and re-asserted between init and the worker's recreate.
+        assert len(drains) == 2, f"the staged swap must drain either side of init; found {len(drains)}"
+        assert drains[0] < staged.index("up -d --no-deps teatree-init")
+        assert staged.index("up -d --no-deps teatree-init") < drains[1] < staged.index("up -d --no-deps teatree-worker")
         # Guarded by worker_running (nothing to drain otherwise) and non-fatal on overrun.
-        assert "if worker_running; then" in body
+        assert "worker_running || return 0" in body
         assert "TEATREE_DRAIN_TIMEOUT" in body
 
     def test_fresh_worker_init_clears_the_quiescing_gate(self) -> None:
@@ -164,7 +216,7 @@ class TestDeployDrain:
         # swap must clear the gate on EXIT so the still-live old worker resumes
         # admission instead of staying quiesced forever.
         body = _DEPLOY_SH.read_text(encoding="utf-8")
-        assert "trap _clear_quiescing_if_stranded EXIT" in body
+        assert _FAIL_SAFE_END in body
         assert "config_setting set worker_quiescing false" in body, (
             "the stranded-gate fail-safe must clear worker_quiescing on abnormal exit."
         )
@@ -198,10 +250,10 @@ class TestDrainSurvivesItsTransport:
         # A dropped SSH session kills deploy.sh with one of these, mid-drain and long
         # before the swap. Run deploy.sh's REAL fail-safe under each and prove it
         # clears the gate — otherwise the still-live old worker admits nothing.
-        calls = _run_fail_safe_under_signal(tmp_path, sig, fail_safe=_fail_safe_block())
+        run = _run_fail_safe_under_signal(tmp_path, sig, fail_safe=_fail_safe_block())
 
-        assert any("config_setting set worker_quiescing false" in call for call in calls), (
-            f"a deploy killed by {signal.Signals(sig).name} after its drain must free admission; docker calls={calls}"
+        assert any("config_setting set worker_quiescing false" in call for call in run.calls), (
+            f"a deploy killed by {signal.Signals(sig).name} after its drain must free admission; calls={run.calls}"
         )
 
     @pytest.mark.integration
@@ -209,6 +261,64 @@ class TestDrainSurvivesItsTransport:
         # The control for the parametrised probe above: strip the trap and the same
         # harness must record NO clear, so a green there is evidence and not an artifact.
         without_trap = _fail_safe_block().replace(_FAIL_SAFE_END, "")
-        calls = _run_fail_safe_under_signal(tmp_path, signal.SIGHUP, fail_safe=without_trap)
+        run = _run_fail_safe_under_signal(tmp_path, signal.SIGHUP, fail_safe=without_trap)
 
-        assert calls == []
+        assert run.calls == []
+
+
+class TestAStrandedConvergenceFailsTowardsTheSaferSide:
+    """Which way the fail-safe fails depends on what the still-live worker would run (#4214)."""
+
+    @pytest.mark.integration
+    def test_a_strand_after_init_leaves_admission_closed_rather_than_admitting_on_a_migrated_db(
+        self, tmp_path: Path
+    ) -> None:
+        # init applies migrations at stage 3, so a convergence that dies between it and
+        # the worker swap leaves the OLD worker — pre-migration code — live against the
+        # NEW schema. Re-opening admission there hands it fresh work to run against a
+        # database it does not match; staying quiesced only stalls, which is visible and
+        # recoverable. Fail towards the stall.
+        run = _run_fail_safe_under_signal(
+            tmp_path,
+            signal.SIGTERM,
+            fail_safe=_fail_safe_block(),
+            stage="_DRAINED=true\n_INIT_RAN=true",
+        )
+
+        assert not any("config_setting set worker_quiescing false" in call for call in run.calls), (
+            f"admission must stay closed on the old worker once init has migrated the DB; docker calls={run.calls}"
+        )
+        assert "worker_quiescing" in run.stderr, "the refusal must name the gate it is deliberately leaving ON"
+
+    def test_the_convergence_records_each_stage_the_fail_safe_branches_on(self) -> None:
+        # The trap reads two flags; both are inert unless the shipped stages set them,
+        # and an inert fail-safe silently reverts to always-clear. Pin each assignment
+        # to the stage whose completion it claims.
+        staged = _staged_swap_block(_DEPLOY_SH.read_text(encoding="utf-8"))
+
+        init_ran_at = staged.index("_INIT_RAN=true")
+        assert staged.index("wait_for_init") < init_ran_at < staged.index("up -d --no-deps teatree-worker"), (
+            "_INIT_RAN must be set once init has migrated and while the OLD worker is still the live one"
+        )
+        assert staged.index("up -d --no-deps teatree-worker") < staged.index("_WORKER_SWAPPED=true"), (
+            "_WORKER_SWAPPED must be set only once the fresh worker has actually been created"
+        )
+        assert staged.index("_WORKER_SWAPPED=true") < staged.index("resume_admission"), (
+            "resume_admission's own failure must leave the trap able to retry the clear"
+        )
+
+    @pytest.mark.integration
+    def test_a_strand_after_the_worker_swap_still_retries_the_clear(self, tmp_path: Path) -> None:
+        # Past the swap the live worker is the FRESH one, which matches the migrated
+        # schema — so the trap's retry of a failed `resume_admission` must survive the
+        # refusal above rather than be caught by it.
+        run = _run_fail_safe_under_signal(
+            tmp_path,
+            signal.SIGTERM,
+            fail_safe=_fail_safe_block(),
+            stage="_DRAINED=true\n_INIT_RAN=true\n_WORKER_SWAPPED=true",
+        )
+
+        assert any("config_setting set worker_quiescing false" in call for call in run.calls), (
+            f"a fresh worker must still have admission restored; docker calls={run.calls}"
+        )

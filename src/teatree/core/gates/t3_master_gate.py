@@ -12,8 +12,23 @@ This module makes the DB lease the single authority, so the gate and
 ``t3 loop owner`` can only ever agree, and splits the old single "not the owner"
 verdict into the two conditions that call for opposite operator responses:
 
-- :attr:`T3MasterGate.UNCLAIMED` — nobody is driving the loops (start ``t3 worker``);
-- :attr:`T3MasterGate.FOREIGN_OWNER` — a different live session is (leave it alone).
+- :attr:`T3MasterGate.UNCLAIMED` — the lease is unheld;
+- :attr:`T3MasterGate.FOREIGN_OWNER` — a different live session holds it (leave it alone).
+
+Each verdict names ONLY the lease, and asserts nothing about whether the factory is
+running (#4253). An unheld lease and an idle factory are different facts, and this gate
+establishes just the first: on the box that produced the ticket every loop was ticking
+and the worker flock was held while the slot read unheld, so a verdict phrased as a
+claim about the whole system was false, and its "start a worker" advice would have run a
+second worker against one control DB. The contradiction between the two facts belongs to
+``t3 doctor check``, which reads both.
+
+Exactly two callers consult this gate, and both are reactive ``/loop`` cycles that
+would otherwise run against a factory nobody owns:
+:mod:`teatree.core.management.commands.loop_slack_answer` and
+:mod:`teatree.core.management.commands.loop_self_improve`. The set is pinned by
+``tests/conformance/test_t3_master_gate_consumers.py`` so a third gated cycle is a
+deliberate, visible addition rather than another loop that silently no-ops.
 
 A slot owned by :data:`~teatree.core.session_identity.LOOP_RUNNER_SESSION_ID` runs
 for ANY caller: the loop runner is the machine-wide driver rather than a competing
@@ -39,8 +54,9 @@ class T3MasterGate(StrEnum):
 
 
 _UNCLAIMED_MESSAGE = (
-    "SKIP  t3-master has no live owner — nothing is driving the loops; skipping {cycle} cycle. "
-    "Start `t3 worker` (it claims the slot as it begins driving ticks)."
+    "SKIP  the `t3-master` owner lease is unheld — skipping {cycle} cycle. That lease is the only "
+    "thing read here; whether loops are ticking is a separate fact this says nothing about. "
+    "`t3 doctor check` reads both and reports the contradiction."
 )
 _FOREIGN_MESSAGE = "SKIP  t3-master is owned by another live session ({owner}) — skipping {cycle} cycle."
 

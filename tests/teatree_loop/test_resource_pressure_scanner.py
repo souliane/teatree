@@ -41,6 +41,7 @@ pytestmark = pytest.mark.django_db
 _GIB = 1024 * 1024 * 1024
 _MODULE = "teatree.loop.scanners.resource_pressure"
 _RAM_PROBE = "teatree.utils.ram_probe"
+_RAM_SCOPE = "teatree.utils.ram_scope"
 
 # A representative ``vm_stat`` capture (16 KB pages). free=13407, inactive=288140,
 # purgeable=10000, speculative=5000 → 316547 reclaimable pages * 16384 bytes.
@@ -142,7 +143,7 @@ class MacosRamMeasurementTests(TestCase):
         super().setUp()
         self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Darwin"))
         # A Mac has no cgroup; the real test container does, so pin it away.
-        self.enterContext(patch(f"{_MODULE}.cgroup_v2_memory_mib", return_value=None))
+        self.enterContext(patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None))
 
     def test_vm_stat_absent_returns_none(self) -> None:
         with patch(f"{_MODULE}.shutil.which", return_value=None):
@@ -191,7 +192,7 @@ class LinuxRamMeasurementTests(TestCase):
         self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
         # The real test container HAS a cgroup cap; pin it away so these cases
         # isolate the machine-scope reader (the cgroup floor has its own class).
-        self.enterContext(patch(f"{_MODULE}.cgroup_v2_memory_mib", return_value=None))
+        self.enterContext(patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None))
 
     def _meminfo_file(self, body: str) -> str:
         path = Path(self.enterContext(TemporaryDirectory())) / "meminfo"
@@ -237,9 +238,12 @@ class CgroupHeadroomTests(TestCase):
         super().setUp()
         self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
         self.enterContext(patch(f"{_MODULE}.linux_mem_available_kb", return_value=15 * 1024 * 1024))
+        # The real test container HAS a memory.stat; pin the credit so these cases
+        # isolate the limit/current arithmetic (the correction has its own case below).
+        self.enterContext(patch(f"{_RAM_SCOPE}.cgroup_v2_reclaimable_mib", return_value=0))
 
     def _read_with_cgroup(self, *, limit_mib: int | None, current_mib: int | None) -> float | None:
-        with patch(f"{_MODULE}.cgroup_v2_memory_mib", side_effect=[limit_mib, current_mib]):
+        with patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", side_effect=[limit_mib, current_mib]):
             return read_ram_avail_gb()
 
     def test_cgroup_headroom_floors_a_roomy_host(self) -> None:
@@ -259,7 +263,7 @@ class CgroupHeadroomTests(TestCase):
 
     def test_full_cgroup_on_a_healthy_host_trips_the_ladder(self) -> None:
         with (
-            patch(f"{_MODULE}.cgroup_v2_memory_mib", side_effect=[23000, 22800]),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", side_effect=[23000, 22800]),
             patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
         ):
             signals = ResourcePressureScanner().scan()
@@ -268,13 +272,47 @@ class CgroupHeadroomTests(TestCase):
         assert ram[0].kind == "resource.cleanup_needed"
 
 
+class CgroupReclaimableCacheTests(TestCase):
+    """#4217 — this reader and the admission governor's share one cgroup arithmetic.
+
+    ``memory.current`` charges page cache, so after a day of ``-n auto`` suites a cgroup
+    holding tens of GB of cache read as full and this scanner DMed the owner a CRITICAL
+    on a box with the memory genuinely free.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(patch(f"{_MODULE}.platform.system", return_value="Linux"))
+        self.enterContext(patch(f"{_MODULE}.linux_mem_available_kb", return_value=30 * 1024 * 1024))
+
+    def _read_with_cache(self, *, reclaimable_mib: int) -> float | None:
+        with (
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", side_effect=[23000, 22800]),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_reclaimable_mib", return_value=reclaimable_mib),
+        ):
+            return read_ram_avail_gb()
+
+    def test_cache_charged_to_the_cgroup_is_credited_back(self) -> None:
+        assert self._read_with_cache(reclaimable_mib=0) == pytest.approx(200 / 1024, abs=0.001)
+        assert self._read_with_cache(reclaimable_mib=10240) == pytest.approx(10440 / 1024, abs=0.001)
+
+    def test_a_cache_saturated_cgroup_no_longer_fires_critical(self) -> None:
+        with (
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", side_effect=[23000, 22800]),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_reclaimable_mib", return_value=20 * 1024),
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
+        ):
+            signals = ResourcePressureScanner().scan()
+        assert [s for s in signals if s.payload.get("resource") == "ram"] == []
+
+
 class UnknownPlatformRamMeasurementTests(TestCase):
     """A platform with no reader and no cgroup yields ``None`` — which the scanner must SAY."""
 
     def test_returns_none(self) -> None:
         with (
             patch(f"{_MODULE}.platform.system", return_value="SunOS"),
-            patch(f"{_MODULE}.cgroup_v2_memory_mib", return_value=None),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
         ):
             assert read_ram_avail_gb() is None
 
@@ -352,7 +390,7 @@ class LinuxRamLadderTests(TestCase):
         path.write_text(body, encoding="utf-8")
         with (
             patch(f"{_MODULE}.platform.system", return_value="Linux"),
-            patch(f"{_MODULE}.cgroup_v2_memory_mib", return_value=None),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
             patch(f"{_RAM_PROBE}._MEMINFO_PATH", str(path)),
             patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
         ):
@@ -392,7 +430,7 @@ class RamProbeInertTests(TestCase):
     def _scan_without_ram_reader(self, *, disk_gb: float | None = 100.0) -> list:
         with (
             patch(f"{_MODULE}.platform.system", return_value="SunOS"),
-            patch(f"{_MODULE}.cgroup_v2_memory_mib", return_value=None),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
             patch(f"{_MODULE}.read_disk_free_gb", return_value=disk_gb),
         ):
             return ResourcePressureScanner().scan()
@@ -409,7 +447,7 @@ class RamProbeInertTests(TestCase):
         """An operator must not chase platform support when the file simply failed to read."""
         with (
             patch(f"{_MODULE}.platform.system", return_value="Linux"),
-            patch(f"{_MODULE}.cgroup_v2_memory_mib", return_value=None),
+            patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
             patch(f"{_RAM_PROBE}._MEMINFO_PATH", "/nonexistent/meminfo"),
             patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
         ):

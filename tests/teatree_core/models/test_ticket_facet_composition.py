@@ -53,6 +53,7 @@ class TestStatusFacetCohesionSplit:
     def test_introspection_facet_holds_the_read_only_surface(self) -> None:
         assert _own_public_members(TicketIntrospectionModel) == {
             "has_active_work",
+            "newest_task_was_cancelled",
             "is_terminal",
             "has_completed_phase",
             "phase_producing_state",

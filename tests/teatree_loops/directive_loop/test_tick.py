@@ -145,6 +145,11 @@ class TestExecutionBranches(TestCase):
         _admitted()
         assert _tick().action == "implementing"
 
+    def test_admitted_default_behaviour_implements(self) -> None:
+        # #4181: a setting-less mechanism is still real code — only activation_only skips.
+        _admitted(kind="default_behaviour", setting_key="", activation_scope="", activation_value=None)
+        assert _tick().action == "implementing"
+
     def test_admitted_activation_only_skips_to_configuring(self) -> None:
         _admitted(kind="activation_only", acceptance_tests=[])
         assert _tick().action == "configuring"
