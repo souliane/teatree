@@ -24,6 +24,8 @@ from teatree.quality.dependency_audit import (
     resolve_import_names,
 )
 
+_REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+
 _REPORT = json.dumps(
     {
         "dependencies": [
@@ -111,13 +113,13 @@ class TestReachability:
 
 class TestComponentReachability:
     @staticmethod
-    def _components(index: frozenset[str]) -> tuple:
+    def _components(index: frozenset[str], description: str | None = None) -> tuple:
         advisory = Advisory(
             package="django",
             version="6.0.7",
             vuln_id="X",
             aliases=(),
-            description="Passing a str to django.contrib.gis.gdal.GDALRaster can write a file.",
+            description=description or "Passing a str to django.contrib.gis.gdal.GDALRaster can write a file.",
         )
         (entry,) = annotate([advisory], index=index, distributions={"django": ["Django"]})
         return entry.components
@@ -126,7 +128,17 @@ class TestComponentReachability:
         components = self._components(frozenset({"django.db.models"}))
         assert [(c.module, c.reach) for c in components] == [("django.contrib.gis.gdal.GDALRaster", Reach.NOT_IMPORTED)]
 
-    def test_a_component_actually_imported_is_reachable(self) -> None:
+    def test_a_component_under_an_imported_ancestor_module_is_reachable(self) -> None:
+        # The index only ever holds MODULE paths (what `import` statements name);
+        # a component extracted from advisory text is a SYMBOL path one or more
+        # levels below that. "django.contrib.gis.gdal" is what `build_import_index`
+        # can produce; "django.contrib.gis.gdal.GDALRaster" is what the advisory
+        # names. Reachability must match the symbol against its ancestor module,
+        # never require the symbol itself to appear in the index verbatim.
+        components = self._components(frozenset({"django.contrib.gis.gdal"}))
+        assert components[0].reach is Reach.IMPORTED
+
+    def test_a_component_exactly_equal_to_an_index_entry_is_reachable(self) -> None:
         components = self._components(frozenset({"django.contrib.gis.gdal.GDALRaster"}))
         assert components[0].reach is Reach.IMPORTED
 
@@ -134,6 +146,38 @@ class TestComponentReachability:
         advisory = Advisory(package="django", version="6.0.7", vuln_id="X", aliases=(), description="A DoS.")
         (entry,) = annotate([advisory], index=frozenset({"django"}), distributions={"django": ["Django"]})
         assert entry.components == ()
+
+    def test_component_matching_does_not_over_reach_a_broad_namespace_entry(self, tmp_path: Path) -> None:
+        # `build_import_index` collapses `from django.contrib import admin` to the
+        # bare namespace package "django.contrib" (see TestImportIndex above) —
+        # ancestor-at-any-depth against that entry would make every unrelated
+        # symbol under django.contrib (auth, gis, staticfiles, ...) register as
+        # reachable. Only the DIRECT parent module counts.
+        src = _src(tmp_path, "from django.contrib import admin\n")
+        index = build_import_index(src)
+        assert index == frozenset({"django.contrib"})
+        components = self._components(index)  # default description names GDALRaster under gis
+        assert components[0].reach is Reach.NOT_IMPORTED
+
+    def test_the_real_src_index_resolves_the_django_6_0_8_advisories_as_the_issue_ranked_them(self) -> None:
+        # souliane/teatree#4346's own motivating example, against the actual
+        # repository (not a synthetic tmp_path): the admin CVE the issue says DOES
+        # reach teatree must render differently from the gis CVEs it says do not.
+        index = build_import_index(_REPO_SRC)
+        components = self._components(
+            index,
+            description=(
+                "The admin renders URLField values as clickable links; see "
+                "django.contrib.admin.helpers and django.db.models.URLField. Also "
+                "django.contrib.gis.gdal.GDALRaster and django.contrib.gis.geos.GEOSGeometry."
+            ),
+        )
+        assert {c.module: c.reach for c in components} == {
+            "django.contrib.admin.helpers": Reach.IMPORTED,
+            "django.db.models.URLField": Reach.IMPORTED,
+            "django.contrib.gis.gdal.GDALRaster": Reach.NOT_IMPORTED,
+            "django.contrib.gis.geos.GEOSGeometry": Reach.NOT_IMPORTED,
+        }
 
 
 class TestParseReport:

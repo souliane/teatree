@@ -107,8 +107,41 @@ def resolve_import_names(
 
 
 def _reaches(index: frozenset[str], module: str) -> bool:
+    """Whether *module* (a package/distribution top-level name) is imported anywhere.
+
+    Descendant containment: the index holds concrete `import` targets, which are
+    always AT OR BELOW the package itself (`django.db.models` is a descendant of
+    the package `django`). Used for the package-level verdict only.
+    """
     prefix = f"{module}."
     return any(entry == module or entry.startswith(prefix) for entry in index)
+
+
+def _component_reaches(index: frozenset[str], component: str) -> bool:
+    """Whether *component* (a dotted symbol path named in advisory text) is reachable.
+
+    A component is a SYMBOL (e.g. ``django.db.models.URLField``): its dotted path
+    is the DECLARING MODULE plus one trailing symbol name. `build_import_index`
+    only ever emits module paths, so a component is reachable when its direct
+    parent module (the component with the last segment stripped) was actually
+    imported — or the component itself was, if the advisory happens to name a
+    module rather than a symbol.
+
+    Matching against every ANCESTOR (not just the direct parent) was tried and
+    rejected: `build_import_index` collapses ``from django.contrib import admin``
+    to the bare namespace package ``django.contrib``, which is real in this
+    repo's own index alongside the precise ``django.contrib.admin`` entry.
+    Ancestor-at-any-depth against a broad namespace package like that (or the
+    top-level ``django`` entry a bare ``import django`` leaves behind) makes
+    every symbol under it register as reachable, which defeats the purpose of a
+    component-level verdict — measured against this repo's real index, it
+    reported the GDALRaster/GEOSGeometry gis symbols as reachable even though
+    ``django.contrib.gis`` is imported nowhere in ``src/``.
+    """
+    if component in index:
+        return True
+    parent, _, _leaf = component.rpartition(".")
+    return bool(parent) and parent in index
 
 
 def _components_named(description: str, import_names: "Iterable[str]") -> tuple[str, ...]:
@@ -184,7 +217,7 @@ def annotate(
         components = tuple(
             ComponentReach(
                 module=module,
-                reach=Reach.IMPORTED if _reaches(index, module) else Reach.NOT_IMPORTED,
+                reach=Reach.IMPORTED if _component_reaches(index, module) else Reach.NOT_IMPORTED,
             )
             for module in _components_named(advisory.description, import_names)
         )
