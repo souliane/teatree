@@ -72,6 +72,8 @@ SETTING_HELP: dict[str, str] = {
     "banned_terms_required": "refuse to scan when no banned-term list is configured, instead of warning",
     "billing_cycle_anchor_day": "day of the month the subscription's usage window resets",
     "boost_concurrency": "extra concurrent units allowed while the box is in boost",
+    "brief_anchor_gate_enabled": "lint a sub-agent brief that asserts specifics it anchors to nothing",
+    "brief_anchor_gate_refuse": "refuse an unanchored sub-agent brief outright instead of warning",
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",
     "cheap_phase_admission_ceiling": "how many cheap-class phase agents still run while the box is braked",
     "check_updates": "check for a newer teatree on startup",
