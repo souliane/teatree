@@ -78,6 +78,7 @@ from teatree.cli.doctor.checks_resources import (
     _check_worker_memory_cap,
     _check_worker_skills_present,
 )
+from teatree.cli.doctor.checks_reviewing_ledger import check_reviewing_ledger
 from teatree.cli.doctor.checks_runtime import (
     _check_singletons,
     _check_ttyd_for_dashboard,
@@ -408,13 +409,17 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # as a shard timeout reddening a PR whose diff could not have caused it (#4048). The
     # last one is a clone's git config rather than an artifact: a branch tracking someone
     # else's ref leaves push.default's unchosen default as the only thing aiming a routine
-    # push away from main (#4225). The tuple calls all nine before ``all`` short-circuits,
-    # so no finding masks another.
+    # push away from main (#4225). One more durable-row FAIL sits alongside the first three:
+    # a review phase task that reached ``completed`` carrying no attempt at all ran nothing,
+    # so the PR it "reviewed" keeps whatever stale verdict was binding it (#4308) — found
+    # until now only by hand-querying the control DB. The tuple calls all ten before ``all``
+    # short-circuits, so no finding masks another.
     ok = (
         all(
             (
                 check_worktree_health(),
                 check_pending_pull_requests(),
+                check_reviewing_ledger(),
                 _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
                 check_stranded_prek_patches(),

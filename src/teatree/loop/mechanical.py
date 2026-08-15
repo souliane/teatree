@@ -147,7 +147,10 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
         ticket = ticket_model.objects.get(pk=ticket_id)
     except ticket_model.DoesNotExist:
         return
-    completed = _complete_open_reviewing_tasks(ticket)
+    reason = payload.get("reason", "orphaned")
+    completed = _complete_open_reviewing_tasks(
+        ticket, skip_reason=f"the reviewing task was orphaned ({reason}), so no review ran"
+    )
     if completed:
         logger.info(
             "Auto-completed %d orphaned reviewing task(s) on ticket %s (%s: %s)",
@@ -202,7 +205,10 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
         ticket = ticket_model.objects.get(pk=ticket_id)
     except ticket_model.DoesNotExist:
         return
-    completed = _complete_tasks(_open_reviewing_tasks(ticket).not_auto_review_armed())
+    completed = _complete_tasks(
+        _open_reviewing_tasks(ticket).not_auto_review_armed(),
+        skip_reason="the MR is self-authored, so no self-review ran",
+    )
     if completed:
         logger.info(
             "Auto-completed %d reviewing task(s) on ticket %s (self-authored MR %s — no self-review)",
@@ -219,15 +225,23 @@ def _open_reviewing_tasks(ticket: object) -> "QuerySet":
     return Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
 
 
-def _complete_open_reviewing_tasks(ticket: object) -> int:
+def _complete_open_reviewing_tasks(ticket: object, *, skip_reason: str) -> int:
     """Complete every non-terminal ``phase=reviewing`` task on *ticket*; return the count."""
-    return _complete_tasks(_open_reviewing_tasks(ticket))
+    return _complete_tasks(_open_reviewing_tasks(ticket), skip_reason=skip_reason)
 
 
-def _complete_tasks(tasks: "QuerySet") -> int:
+def _complete_tasks(tasks: "QuerySet", *, skip_reason: str) -> int:
+    """Complete each task, recording the attempt that says no review ran (#4308).
+
+    A bare ``complete()`` leaves a reviewing row with ZERO attempts, which reads exactly
+    like a review that ran and recorded nothing — so a PR held by a stale verdict looked
+    reviewed every time this skip fired. The attempt is exit-0 because the skip is
+    deliberate (the PR is dead, or self-authored on a lane with no self-review): failing it
+    would feed the auto-repair sweep a "re-do this" signal for work nobody owes.
+    """
     completed = 0
     for task in tasks:
-        task.complete()
+        task.complete_with_attempt(result={"summary": f"no verdict reached: {skip_reason}"})
         completed += 1
     return completed
 

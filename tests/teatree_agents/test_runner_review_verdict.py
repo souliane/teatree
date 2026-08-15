@@ -19,7 +19,7 @@ from django.test import TestCase
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
-from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task
+from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Session, Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -62,6 +62,18 @@ def _verdict_envelope(
             "findings": [],
         },
     }
+
+
+def _reviewing_task_on_reviewer_ticket(*, pr_id: int = _PR_ID, reviewed_sha: str = _HEAD) -> Task:
+    """A reviewing task whose PR target is the reviewer ticket itself — no dispatch row."""
+    ticket = Ticket.objects.create(
+        issue_url=f"https://github.com/{_SLUG}/pull/{pr_id}",
+        overlay="teatree",
+        role=Ticket.Role.REVIEWER,
+        extra={"reviewed_sha": reviewed_sha},
+    )
+    session = Session.objects.create(ticket=ticket, agent_id="external-review")
+    return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.PENDING)
 
 
 def _verdict_envelope_without_reviewed_sha() -> dict[str, object]:
@@ -198,6 +210,46 @@ class TestAnUndisclosedHeadIsRefusedLikeADivergentOne(TestCase):
         attempt = record_result_envelope(task, _verdict_envelope_without_reviewed_sha(), phase="reviewing")
 
         assert _HEAD in attempt.error
+
+
+class TestAnEmittedVerdictIsPersistedOrTheTaskFails(TestCase):
+    """#4308: a returned verdict the recorder cannot persist must never complete the task.
+
+    The measured harm: a reviewing task emitted a complete, well-formed envelope, exited 0,
+    and no ``ReviewVerdict`` row was written — so a real HOLD existed only inside a
+    ``TaskAttempt.result`` no merge guard reads, on a PR that was otherwise CLEAN.
+    """
+
+    def test_a_dispatchless_reviewing_task_records_its_verdict_against_its_own_pr(self) -> None:
+        task = _reviewing_task_on_reviewer_ticket()
+
+        attempt = record_result_envelope(task, _verdict_envelope(verdict="hold"), phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_a_verdict_with_no_resolvable_pr_target_fails_instead_of_completing(self) -> None:
+        task = _reviewing_task_on_reviewer_ticket(reviewed_sha="")
+
+        attempt = record_result_envelope(task, _verdict_envelope(), phase="reviewing")
+
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "no pull request" in attempt.error
+
+    def test_a_verdict_the_read_back_cannot_find_fails_instead_of_completing(self) -> None:
+        task, _ = _reviewing_task_via_dispatch()
+        with patch("teatree.agents.attempt_recorder.ReviewVerdict.record", return_value=None):
+            attempt = record_result_envelope(task, _verdict_envelope(), phase="reviewing")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "read-back" in attempt.error
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
 
 
 class TestEveryRequiredFieldIsActuallyRefusedWhenOmitted(TestCase):
