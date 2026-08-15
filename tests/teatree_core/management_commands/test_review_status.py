@@ -183,7 +183,7 @@ class TestRecordDiffScopeGate(TestCase):
 
     def _record_src_finding(self, changed: ChangedFileSet, **overrides: object) -> dict[str, object]:
         with patch(
-            "teatree.core.management.commands.review.changed_file_set_for_findings",
+            "teatree.core.management.commands._review_impl.changed_file_set_for_findings",
             return_value=changed,
         ):
             return _record(verdict="hold", findings_json=self._SRC_FINDING, **overrides)

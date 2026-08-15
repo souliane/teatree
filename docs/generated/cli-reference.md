@@ -11689,6 +11689,8 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │                                       not the branch checkout alone. Without │
 │                                       it such a finding cannot carry         │
 │                                       blocking severity (#4251).             │
+│ --json                                Emit the record result as JSON on      │
+│                                       stdout.                                │
 │ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11717,6 +11719,7 @@ Usage: t3 teatree review record-evidence [OPTIONS] TICKET_ID
 │ --head-sha        TEXT  Full 40-char hex commit id of the reviewed tree.     │
 │ --repos           TEXT  Comma-separated repos covered (≥2 required for       │
 │                         integration_review).                                 │
+│ --json                  Emit the evidence record as JSON.                    │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11729,15 +11732,17 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
  Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
 
  Parses the PR/MR URL, fetches the live head SHA, looks up the latest
- recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
+ recorded verdict, and reports one of: ``safe-to-approve``, ``stale``
  (head moved — re-review needed), or ``no recorded verdict``. The point
  is to avoid re-deriving a full cold review when a fresh verdict already
- vouches for the current tree.
+ vouches for the current tree. The record carries the verdict's
+ ``findings`` so a HOLD can be read and acted on, not just counted.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the full status record as JSON.                         │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

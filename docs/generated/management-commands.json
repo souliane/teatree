@@ -900,8 +900,16 @@
           "name": "status"
         },
         {
+          "help": "Print the recorded findings for *mr_url* \u2014 the surface a HOLD is acted on through",
+          "name": "findings"
+        },
+        {
           "help": "Record a PR-08 review-evidence artifact for a ticket",
           "name": "record-evidence"
+        },
+        {
+          "help": "Post a recorded verdict's findings to its PR, so the author sees them where the work is",
+          "name": "publish-findings"
         },
         {
           "help": "Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405)",

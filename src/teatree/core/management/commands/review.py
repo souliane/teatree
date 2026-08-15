@@ -18,52 +18,25 @@ Forge calls (``CodeHostQuery.live_head_sha`` / ``CodeHostQuery.required_checks_s
 are the only external boundary; the rest is a DB read.
 """
 
-import json
-from typing import Annotated, TypedDict
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
-from teatree.core.management.refusal_exit import RefusalExitTyperCommand
-from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
-from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
-from teatree.core.models import (
-    Finding,
-    MergeClear,
-    MRReviewLock,
-    ReviewEvidence,
-    ReviewEvidenceError,
-    ReviewVerdict,
-    ReviewVerdictError,
-    Ticket,
+from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.management.commands import _review_impl
+from teatree.core.management.commands._review_impl import (
+    FindingsResult,
+    PublishFindingsResult,
+    RecordResult,
+    StatusResult,
 )
-from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
+from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
+from teatree.core.models import MergeClear, MRReviewLock, ReviewEvidence, ReviewEvidenceError, Ticket
 from teatree.project import find_project_root
 from teatree.utils.url_slug import pr_ref_from_url
-
-
-class RecordResult(TypedDict, total=False):
-    recorded: bool
-    verdict_id: int
-    pr_id: int
-    slug: str
-    verdict: str
-    findings_count: int
-    error: str
-
-
-class StatusResult(TypedDict, total=False):
-    state: str
-    slug: str
-    pr_id: int
-    verdict: str
-    reviewed_sha: str
-    current_head_sha: str
-    live_checks: str
-    reviewer_identity: str
-    findings_count: int
-    error: str
 
 
 class RecordEvidenceResult(TypedDict, total=False):
@@ -105,29 +78,25 @@ def _project_root_or_cwd() -> str:
     return str(root) if root is not None else "."
 
 
-def _parse_findings(raw: str) -> list[Finding]:
-    """Parse the ``--findings-json`` payload into structured :class:`Finding` objects.
-
-    Expects a JSON array of ``{"severity", "summary", "file"?, "line"?}``
-    objects. An empty string yields no findings (a clean verdict).
-    """
-    if not raw.strip():
-        return []
-    data = json.loads(raw)
-    if not isinstance(data, list):
-        msg = "--findings-json must be a JSON array of finding objects"
-        raise TypeError(msg)
-    return [Finding.from_dict(item) for item in data if isinstance(item, dict)]
-
-
 # #4234: `record`, `record-evidence` and `lock-acquire` RETURN their refusal so a caller
 # can route on it; the base class is what restores the exit code for the shell.
-class Command(RefusalExitTyperCommand):
+class Command(MachineOutputCommand, RefusalExitTyperCommand):
     """Review verdicts, evidence, comments and the per-MR review lock."""
 
     @initialize()
     def init(self) -> None:
         """``t3 <overlay> review`` group root."""
+
+    def _emit(self, payload: object, human: str, *, json_output: bool) -> None:
+        """Route one handler's output through the machine-output seam (stdout stays pure JSON)."""
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -174,6 +143,7 @@ class Command(RefusalExitTyperCommand):
                 "checkout alone. Without it such a finding cannot carry blocking severity (#4251).",
             ),
         ] = False,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the record result as JSON on stdout.")] = False,
     ) -> RecordResult:
         """Persist a cold-review verdict for a PR at an exact reviewed SHA.
 
@@ -186,67 +156,24 @@ class Command(RefusalExitTyperCommand):
         the forge here, and a blocking finding citing a file outside it needs
         ``--merge-result-retake``.
         """
-        if not _looks_like_owner_repo(slug):
-            self.stderr.write(
-                f"  record refused: slug must be owner/repo (got {slug!r}) — this looks like a branch "
-                f"name; the review-verdict / merge lookup keys by repo slug"
-            )
-            raise SystemExit(1)
-        if not reviewed_sha.strip():
-            self.stderr.write("  record refused: --reviewed-sha is required (full hex commit id of the reviewed tree)")
-            raise SystemExit(1)
-        try:
-            require_current_schema()
-        except SelfDbMigrationError as exc:
-            self.stdout.write(f"  record refused: {exc}")
-            return {"recorded": False, "error": str(exc)}
-
-        resolved_ticket = None
-        if ticket_id:
-            try:
-                resolved_ticket = Ticket.objects.get(pk=ticket_id)
-            except Ticket.DoesNotExist:
-                return {"recorded": False, "error": f"Ticket {ticket_id} not found"}
-
-        try:
-            findings = _parse_findings(findings_json)
-        except (TypeError, ValueError) as exc:
-            self.stdout.write(f"  record refused: {exc}")
-            return {"recorded": False, "error": str(exc)}
-
-        try:
-            recorded = ReviewVerdict.record(
+        result, human = _review_impl.record_result(
+            self,
+            _review_impl.RecordRequest(
                 pr_id=pr_id,
                 slug=slug,
                 reviewed_sha=reviewed_sha,
                 verdict=verdict,
                 reviewer_identity=reviewer_identity,
-                findings=findings,
-                blast_class=blast_class,
                 gh_verify_result=gh_verify_result,
-                ticket=resolved_ticket,
+                blast_class=blast_class,
+                findings_json=findings_json,
+                ticket_id=ticket_id,
                 lock_holder=lock_holder,
-                changed_files=changed_file_set_for_findings(findings, slug=slug, pr_id=pr_id),
                 merge_result_retake=merge_result_retake,
-            )
-        except ReviewVerdictError as exc:
-            self.stdout.write(f"  record refused: {exc}")
-            return {"recorded": False, "error": str(exc)}
-
-        self.stdout.write(
-            f"  recorded {recorded.verdict} verdict {recorded.pk} for "
-            f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(findings)} finding(s))"
+            ),
         )
-        self._emit_review_done_signal(recorded)
-        self._trigger_sweep(recorded)
-        return {
-            "recorded": True,
-            "verdict_id": int(recorded.pk),
-            "pr_id": int(recorded.pr_id),
-            "slug": recorded.slug,
-            "verdict": recorded.verdict,
-            "findings_count": len(findings),
-        }
+        self._emit(result, human, json_output=json_output)
+        return result
 
     @command(name="record-evidence")
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -264,6 +191,7 @@ class Command(RefusalExitTyperCommand):
             str,
             typer.Option("--repos", help="Comma-separated repos covered (≥2 required for integration_review)."),
         ] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the evidence record as JSON.")] = False,
     ) -> RecordEvidenceResult:
         """Record a PR-08 review-evidence artifact for a ticket.
 
@@ -276,7 +204,9 @@ class Command(RefusalExitTyperCommand):
         try:
             require_current_schema()
         except SelfDbMigrationError as exc:
-            self.stdout.write(f"  record-evidence refused: {exc}")
+            self._emit(
+                {"recorded": False, "error": str(exc)}, f"  record-evidence refused: {exc}", json_output=json_output
+            )
             return {"recorded": False, "error": str(exc)}
         try:
             ticket = Ticket.objects.get(pk=ticket_id)
@@ -295,126 +225,85 @@ class Command(RefusalExitTyperCommand):
                 repos=repo_list,
             )
         except ReviewEvidenceError as exc:
-            self.stdout.write(f"  record-evidence refused: {exc}")
+            self._emit(
+                {"recorded": False, "error": str(exc)}, f"  record-evidence refused: {exc}", json_output=json_output
+            )
             return {"recorded": False, "error": str(exc)}
 
-        self.stdout.write(f"  recorded {evidence.kind} evidence {evidence.pk} for ticket {ticket_id}")
-        return {
+        result: RecordEvidenceResult = {
             "recorded": True,
             "evidence_id": int(evidence.pk),
             "ticket_id": ticket_id,
             "kind": evidence.kind,
         }
-
-    def _trigger_sweep(self, recorded: ReviewVerdict) -> None:
-        """Run the pr_sweep merge decision for *recorded* PR now, not next tick (#2026).
-
-        A ``merge_safe`` verdict is the artifact the sweep merges on; recording
-        one for an own PR the sweep is waiting on must not idle a full ~12-min
-        cadence (a parallel human keystone-merge wins that race — the incident
-        this fixes). Only ``merge_safe`` verdicts trigger a merge attempt; a
-        HOLD never merges. Best-effort: a failure logs inside the trigger and
-        never turns verdict recording into a command failure; the periodic sweep
-        is the unchanged backstop.
-        """
-        if not recorded.is_merge_safe():
-            return
-        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-        from teatree.loop.sweep_on_demand import trigger_sweep_for_verdict  # noqa: PLC0415 — lazy command import
-
-        attempt = trigger_sweep_for_verdict(
-            slug=recorded.slug,
-            pr_id=int(recorded.pr_id),
-            overlay=os.environ.get("T3_OVERLAY_NAME", ""),
+        self._emit(
+            result, f"  recorded {evidence.kind} evidence {evidence.pk} for ticket {ticket_id}", json_output=json_output
         )
-        if attempt is not None and attempt.merged:
-            self.stdout.write(f"  pr_sweep merged {attempt.slug}#{attempt.pr_id} @ {attempt.merged_sha[:8]}")
-
-    def _emit_review_done_signal(self, recorded: ReviewVerdict) -> None:
-        """Post the review-DONE Slack reaction set for *recorded* (#113/#88).
-
-        ``:eyes:`` + the verdict emoji (``:white_check_mark:`` clean /
-        ``:question:`` blocking) on the PR's review-broadcast message — the
-        ONLY Slack signal a finished review produces, never an author DM.
-        Best-effort: any failure logs and continues — a Slack outage must not
-        turn a recorded verdict into a command failure.
-        """
-        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: lazy command import
-        from teatree.loop.review_claim import emit_review_done_reactions  # noqa: PLC0415 — lazy command import
-
-        try:
-            posted = emit_review_done_reactions(
-                slug=recorded.slug,
-                pr_id=int(recorded.pr_id),
-                emojis=recorded.done_reaction_emojis(),
-                messaging=messaging_from_overlay(),
-            )
-        except Exception:  # noqa: BLE001 — the Slack signal must never break verdict recording.
-            return
-        if posted:
-            self.stdout.write(f"  posted review-DONE reaction(s) {', '.join(':' + e + ':' for e in posted)}")
+        return result
 
     @command()
-    def status(self, mr_url: str) -> StatusResult:
+    def status(
+        self,
+        mr_url: str,
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the full status record as JSON.")] = False,
+    ) -> StatusResult:
         """Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
 
         Parses the PR/MR URL, fetches the live head SHA, looks up the latest
-        recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
+        recorded verdict, and reports one of: ``safe-to-approve``, ``stale``
         (head moved — re-review needed), or ``no recorded verdict``. The point
         is to avoid re-deriving a full cold review when a fresh verdict already
-        vouches for the current tree.
+        vouches for the current tree. The record carries the verdict's
+        ``findings`` so a HOLD can be read and acted on, not just counted.
         """
-        ref = pr_ref_from_url(mr_url)
-        if ref is None:
-            self.stderr.write(f"  could not parse a PR/MR URL from {mr_url!r}")
-            raise SystemExit(1)
+        result, human = _review_impl.status_result(self, mr_url)
+        self._emit(result, human, json_output=json_output)
+        return result
 
-        recorded = ReviewVerdict.objects.latest_for_pr(ref.slug, ref.pr_id)
-        if recorded is None:
-            self.stdout.write(f"  no recorded verdict for {ref.slug}#{ref.pr_id} — run a cold review first")
-            return {"state": "no_verdict", "slug": ref.slug, "pr_id": ref.pr_id}
+    @command()
+    def findings(
+        self,
+        mr_url: str,
+        *,
+        reviewed_sha: Annotated[
+            str,
+            typer.Option("--sha", help="Read the verdict recorded at this exact SHA (default: the latest verdict)."),
+        ] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the findings record as JSON.")] = False,
+    ) -> FindingsResult:
+        """Print the recorded findings for *mr_url* — the surface a HOLD is acted on through.
 
-        query = CodeHostQuery.for_ref(ref)
-        current_head = query.live_head_sha()
-        if recorded.is_stale_at(current_head):
-            self.stdout.write(
-                f"  stale: verdict reviewed {recorded.reviewed_sha[:8]} but head moved to "
-                f"{(current_head[:8] or '<unknown>')} — re-review needed ({ref.slug}#{ref.pr_id})"
-            )
-            return {
-                "state": "stale",
-                "slug": ref.slug,
-                "pr_id": ref.pr_id,
-                "verdict": recorded.verdict,
-                "reviewed_sha": recorded.reviewed_sha,
-                "current_head_sha": current_head,
-            }
+        A HOLD asserts that N things are wrong; this is where the author, a
+        later reviewer, or an operator reads WHAT they are. A findings payload
+        that cannot be rendered is a loud refusal, never a count with nothing
+        behind it.
+        """
+        result, human = _review_impl.findings_result(self, mr_url, reviewed_sha)
+        self._emit(result, human, json_output=json_output)
+        return result
 
-        live_checks = query.required_checks_status()
-        if recorded.is_safe_to_approve_at(current_head, live_checks_status=live_checks):
-            self.stdout.write(
-                f"  safe-to-approve: {recorded.verdict} at {recorded.reviewed_sha[:8]}, checks green "
-                f"({ref.slug}#{ref.pr_id}, reviewer={recorded.reviewer_identity})"
-            )
-            state = "safe_to_approve"
-        else:
-            reason = "verdict is HOLD" if not recorded.is_merge_safe() else f"live checks {live_checks!r}"
-            self.stdout.write(
-                f"  not safe-to-approve at {recorded.reviewed_sha[:8]}: {reason} ({ref.slug}#{ref.pr_id})"
-            )
-            state = "not_safe"
-        return {
-            "state": state,
-            "slug": ref.slug,
-            "pr_id": ref.pr_id,
-            "verdict": recorded.verdict,
-            "reviewed_sha": recorded.reviewed_sha,
-            "current_head_sha": current_head,
-            "live_checks": live_checks,
-            "reviewer_identity": recorded.reviewer_identity,
-            "findings_count": len(recorded.findings),
-        }
+    @command(name="publish-findings")
+    def publish_findings(
+        self,
+        mr_url: str,
+        *,
+        reviewed_sha: Annotated[
+            str,
+            typer.Option("--sha", help="Publish the verdict recorded at this exact SHA (default: the latest)."),
+        ] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the publish result as JSON.")] = False,
+    ) -> PublishFindingsResult:
+        """Post a recorded verdict's findings to its PR, so the author sees them where the work is.
+
+        ``review record`` already attempts this; run it here to retry after an
+        on-behalf approval lands, or to backfill a verdict recorded before the
+        publish path existed. Idempotent — a re-run finds its own comment and
+        skips rather than posting a duplicate.
+        """
+        result, human = _review_impl.publish_findings_result(self, mr_url, reviewed_sha)
+        self._emit(result, human, json_output=json_output)
+        return result
 
     @command(name="lock-acquire")
     def lock_acquire(

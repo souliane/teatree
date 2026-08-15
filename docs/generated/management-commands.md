@@ -465,7 +465,9 @@ Group root — forces sub-commands to be addressed by name.
 | --- | --- |
 | `record` | Persist a cold-review verdict for a PR at an exact reviewed SHA |
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
+| `findings` | Print the recorded findings for *mr_url* — the surface a HOLD is acted on through |
 | `record-evidence` | Record a PR-08 review-evidence artifact for a ticket |
+| `publish-findings` | Post a recorded verdict's findings to its PR, so the author sees them where the work is |
 | `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
 | `lock-status` | Report the current :class:`MRReviewLock` state for *mr_url* (read-only) |
 | `rebind-clearance` | Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07) |
