@@ -197,6 +197,45 @@ class TestReviewerTaskOrphaned(TestCase):
         assert task.status == Task.Status.COMPLETED
 
 
+class TestAutoCompletedReviewIsDistinguishableInTheLedger(TestCase):
+    """#4308: a reviewing task that completed without reviewing must say so.
+
+    Six of the last sixty completed reviewing tasks carried ZERO ``TaskAttempt`` rows, so
+    "a review ran and found nothing" and "no review ever ran" were the same row. Three of
+    them sat on one PR whose stale HOLD kept binding while it looked reviewed three times.
+    """
+
+    def _reviewer_ticket_with_pending_task(self, url: str) -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        return ticket, task
+
+    def test_the_orphaned_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
+        ticket, task = self._reviewer_ticket_with_pending_task("https://x/-/merge_requests/4308")
+
+        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="merged"))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        attempt = task.attempts.get()
+        assert attempt.exit_code == 0
+        assert "no verdict" in attempt.result["summary"]
+        assert "orphan" in attempt.result["summary"]
+
+    def test_the_self_authored_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/4309"
+        ticket, task = self._reviewer_ticket_with_pending_task(url)
+
+        reviewer_task_self_authored(_payload(ticket_id=ticket.pk, url=url))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        attempt = task.attempts.get()
+        assert "no verdict" in attempt.result["summary"]
+        assert "self-authored" in attempt.result["summary"]
+
+
 class TestReviewerTaskSelfAuthoredAuthorTrust(TestCase):
     """#1773: an untrusted public-repo author never gets the 'no self-review' skip."""
 

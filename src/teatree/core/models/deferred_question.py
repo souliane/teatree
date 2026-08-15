@@ -171,6 +171,11 @@ class DeferredQuestion(models.Model):
         choices=ResolvedVia.choices,
     )
     applied_at = models.DateTimeField(null=True, blank=True)
+    # #4178 age-backstop stamps. An escalation records that a row has sat past the
+    # ceiling WITHOUT resolving it — the row stays pending, so directive #45's "an
+    # unresolved request is never silently dropped" holds.
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    escalation_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = "teatree_deferred_question"
@@ -374,6 +379,32 @@ class DeferredQuestion(models.Model):
             self.dismissed_reason = row.dismissed_reason
             self.resolved_via = row.resolved_via
 
+    def mark_escalated(self, note: str) -> bool:
+        """Stamp an age-backstop escalation on a still-pending row; ``True`` on the transition.
+
+        The transition a row past the age ceiling gets INSTEAD of a resolution: it
+        bumps ``escalation_count`` and writes an ``escalated`` audit row, leaving
+        ``answered_at``/``dismissed_at`` untouched so the question stays queued. The
+        ``select_for_update`` re-read is the verify-by-re-read seam — a row a
+        concurrent answer resolved first returns ``False`` and is not counted.
+        """
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return False
+            row.escalated_at = timezone.now()
+            row.escalation_count += 1
+            row.save(update_fields=["escalated_at", "escalation_count"])
+            DeferredQuestionAudit.objects.create(question=row, action="escalated", note=note)
+            self.escalated_at = row.escalated_at
+            self.escalation_count = row.escalation_count
+            return True
+
     def apply_answer(self, answer: str, *, resolved_via: str) -> "DeferredQuestion | None":
         """Resolve this pending row with *answer*, stamping ``resolved_via``.
 
@@ -485,9 +516,13 @@ class DeferredQuestionAudit(models.Model):
         on_delete=models.CASCADE,
         related_name="audits",
     )
-    action = models.CharField(max_length=16)  # "answered" | "dismissed"
+    action = models.CharField(max_length=16)  # "answered" | "dismissed" | "escalated"
     answer_text = models.TextField(blank=True, default="")
     dismissed_reason = models.TextField(blank=True, default="")
+    # Why a NON-resolving action fired. Separate from ``dismissed_reason`` because an
+    # escalation leaves the row pending — reusing the dismissal column would read as
+    # a resolution that never happened.
+    note = models.TextField(blank=True, default="")
     resolver_id = models.CharField(max_length=255, blank=True, default="")
     resolved_at = models.DateTimeField(default=timezone.now)
 

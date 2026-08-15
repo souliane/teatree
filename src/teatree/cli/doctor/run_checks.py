@@ -14,6 +14,7 @@ pins that.
 
 import typer
 
+from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_cold_hooks import (
@@ -46,6 +47,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_dream_staleness,
     _check_dream_transcript_visibility,
     _check_intake_budget_deadlock,
+    _check_intake_pass_incomplete,
     _check_loop_classification_drift,
     _check_loop_presets,
     _check_loop_schedule_liveness,
@@ -76,6 +78,7 @@ from teatree.cli.doctor.checks_resources import (
     _check_worker_memory_cap,
     _check_worker_skills_present,
 )
+from teatree.cli.doctor.checks_reviewing_ledger import check_reviewing_ledger
 from teatree.cli.doctor.checks_runtime import (
     _check_singletons,
     _check_ttyd_for_dashboard,
@@ -176,12 +179,15 @@ def _run_loop_intent_gates() -> bool:
     ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
     never claimed) joins them: a slow queue is not a fault, an invisible one is.
 
-    FIVE verdicts ARE returned, each a queue or authority that rots while every other
+    SIX verdicts ARE returned, each a queue or authority that rots while every other
     surface reads healthy; all five are evaluated before the ``and`` so none can mask
     another. ``_check_intent_freshness``: a consumable intent queue is non-empty while
     its consumer is not live (the directive-loop silent-freeze, zero signal).
     ``_check_intake_budget_deadlock`` (#3978): a full in-flight budget held entirely by
-    claims going nowhere admits no work. ``_check_loop_schedule_liveness`` (#4140): a
+    claims going nowhere admits no work. ``_check_intake_pass_incomplete`` (#4466) is its
+    upstream twin — the budget is free, but the scan never reaches the frontier where the
+    claimable issues are, so nothing filed is admitted and only a worker-log WARN says so.
+    ``_check_loop_schedule_liveness`` (#4140): a
     loop whose chain was dropped keeps a recent anchor, so it reads healthy while nothing
     will ever fire it again. ``_check_t3_master_unheld_while_loops_tick`` (#4253) inverts
     that — the chains fire, but the ``t3-master`` lease no reactive cycle runs without is
@@ -196,10 +202,11 @@ def _run_loop_intent_gates() -> bool:
     _check_marker_jam()
     _check_starved_intake_candidates()
     intake_ok = _check_intake_budget_deadlock()
+    pass_ok = _check_intake_pass_incomplete()
     scheduled_ok = _check_loop_schedule_liveness()
     master_ok = _check_t3_master_unheld_while_loops_tick()
     clears_ok = _check_unconsumed_merge_clears()
-    return _check_intent_freshness() and intake_ok and scheduled_ok and master_ok and clears_ok
+    return _check_intent_freshness() and intake_ok and pass_ok and scheduled_ok and master_ok and clears_ok
 
 
 def _check_claude_session_posture() -> bool:
@@ -402,13 +409,17 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # as a shard timeout reddening a PR whose diff could not have caused it (#4048). The
     # last one is a clone's git config rather than an artifact: a branch tracking someone
     # else's ref leaves push.default's unchosen default as the only thing aiming a routine
-    # push away from main (#4225). The tuple calls all nine before ``all`` short-circuits,
-    # so no finding masks another.
+    # push away from main (#4225). One more durable-row FAIL sits alongside the first three:
+    # a review phase task that reached ``completed`` carrying no attempt at all ran nothing,
+    # so the PR it "reviewed" keeps whatever stale verdict was binding it (#4308) — found
+    # until now only by hand-querying the control DB. The tuple calls all ten before ``all``
+    # short-circuits, so no finding masks another.
     ok = (
         all(
             (
                 check_worktree_health(),
                 check_pending_pull_requests(),
+                check_reviewing_ledger(),
                 _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
                 check_stranded_prek_patches(),
@@ -473,6 +484,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # box on a trajectory to full is named long before the absolute-GB scanner
     # thresholds fire. CRITICAL hard-FAILs — a full disk stops every other subsystem.
     ok = _check_root_disk_headroom() and ok
+
+    # Agent-spawn headroom (#4301): argv+envp against ARG_MAX, the budget whose
+    # exhaustion kills a dispatch at execve with no partial degradation.
+    ok = _check_agent_spawn_headroom() and ok
 
     # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
     # wiring) — all surfacing-only, never gating the exit code.

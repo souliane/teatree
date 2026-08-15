@@ -74,6 +74,10 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "stop_snapshotter_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "answer_first_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "unbacked_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "brief_anchor_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    # Not a kill-switch: the brief-anchor lint's POSTURE. False (the default) warns and
+    # allows; True refuses an unanchored dispatch brief outright (#4341).
+    "brief_anchor_gate_refuse": ColdHookSetting(_parse_strict_bool, default=False),
     "verbatim_paste_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "deny_circuit_breaker_threshold": ColdHookSetting(_parse_strict_int, default=3),

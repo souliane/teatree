@@ -432,6 +432,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         [
             ("record", "Record a deferred question (used by the PreToolUse away-mode hook)."),
             ("list", "List pending deferred questions, oldest first."),
+            ("reachability", "Report which automated resolvers can decide each pending question."),
             ("answer", "Resolve a pending question with a user answer."),
             ("dismiss", "Dismiss a pending question without answering it."),
             ("resurface", "Re-post the pending backlog to the user's Slack DM (away→present drain)."),

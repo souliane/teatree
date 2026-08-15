@@ -32,10 +32,16 @@ concurrent overlay never double-dispatches.
 Candidates are claimed OLDEST FILED FIRST (#4238). Each discovery query asks its forge
 for that order, and the merged set is re-sorted here — sorting inside one query says
 nothing about the union of several, so the merge is where fairness is actually decided.
-Plain age order needs no aging term to be starvation-free: a candidate's rank can only
-improve, because every issue filed after it sorts behind it. What can push it back is an
-older issue becoming admissible late (an admit label applied, a reopen, an author newly
-trusted) — an operator act, not a stream.
+
+Age order alone is not starvation-free, because a decided candidate never leaves the scan
+set: an issue that already has work is re-fetched and re-judged every tick, so the prefix of
+already-decided issues grows without bound. Under a fixed scan budget the walk was abandoned
+inside that prefix and the frontier — where the only still-claimable issues live — was never
+reached, so nothing filed was admitted (#4466). Two things keep the frontier reachable: the
+per-tick :class:`~teatree.loop.scanners.forge_readback.ReadbackIndex`, which makes re-deciding
+a decided issue a bucket lookup rather than a scan of every PR, and a resume CURSOR, so a pass
+that still runs out of budget continues at the frontier next tick and wraps to the oldest
+after it — never restarting from the oldest and dropping the same tail forever.
 
 Every admissible candidate the budget or the governor stopped us from claiming is
 recorded in :class:`UnclaimedIntakeCandidate`, because intake's own decision is per-tick
@@ -46,6 +52,7 @@ health surface green.
 
 import datetime as dt
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
@@ -62,7 +69,7 @@ from teatree.core.intake.factory_admission import (
     payload_labels,
 )
 from teatree.core.intake.umbrella import umbrella_reason
-from teatree.core.models import ImplementedIssueMarker, UnclaimedIntakeCandidate, WaitingCandidate
+from teatree.core.models import ImplementedIssueMarker, IntakeScanCursor, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.core.review.author_trust import (
     AuthorSubject,
     AutonomyGate,
@@ -73,7 +80,13 @@ from teatree.core.review.author_trust import (
 from teatree.core.work_lease import WorkIdentity, foreign_work_holder
 from teatree.instance_id import instance_id
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.forge_readback import existing_work_for_issue, fetch_merged_prs, fetch_open_prs, issue_number
+from teatree.loop.scanners.forge_readback import (
+    ReadbackIndex,
+    build_readback_index,
+    fetch_merged_prs,
+    fetch_open_prs,
+    issue_number,
+)
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -96,8 +109,7 @@ class _TickContext:
 
     tracked: frozenset[str]
     trusted: frozenset[str]
-    open_prs: list[RawAPIDict]
-    merged_prs: list[RawAPIDict]
+    readback: ReadbackIndex
 
 
 def issue_url(issue: RawAPIDict) -> str:
@@ -230,6 +242,12 @@ class IssueIntakeScanner:
     #: the queue an unclaimable tick is sitting on is recorded rather than unseen —
     #: the full-budget tick is exactly when a starved issue needs a witness (#4238).
     can_claim: bool = True
+    #: The scanner's OWN deadline for the candidate walk. Deliberately below the scan
+    #: phase's pool deadline: past that one the thread is abandoned rather than stopped,
+    #: so it keeps mutating rows after the tick ended and records no resume point.
+    pass_budget_seconds: float = 45.0
+    #: Injected for tests — the real clock is what bounds the walk in production.
+    monotonic: "Callable[[], float]" = time.monotonic
 
     def scan(self) -> list[ScanSignal]:
         wire.heartbeat_inflight_claims(self.overlay_name)
@@ -242,13 +260,19 @@ class IssueIntakeScanner:
         context = _TickContext(
             tracked=self._tracked_issue_urls(),
             trusted=trusted,
-            open_prs=fetch_open_prs(self.host, authors=operators) if self.readback_enabled else [],
-            merged_prs=fetch_merged_prs(self.host, authors=operators) if self.readback_enabled else [],
+            readback=self._readback_index(operators),
         )
         signals: list[ScanSignal] = []
         waiting: list[WaitingCandidate] = []
         claiming = self.can_claim
-        for issue in candidates:
+        walk = self._resume_ordered(candidates)
+        deadline = self.monotonic() + self.pass_budget_seconds
+        examined: RawAPIDict | None = None
+        for position, issue in enumerate(walk):
+            if self.monotonic() >= deadline:
+                self._report_incomplete(walk, position)
+                break
+            examined = issue
             url = issue_url(issue)
             try:
                 verdict = self._admits(issue, url, context=context)
@@ -264,8 +288,58 @@ class IssueIntakeScanner:
             waiting.append(
                 WaitingCandidate(issue_url=url, title=_issue_title(issue), issue_created_at=issue_created_at(issue)),
             )
-        UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting)
+        else:
+            position = len(walk)
+        complete = position >= len(walk)
+        UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting, complete=complete)
+        self._record_pass(examined, complete=complete)
         return signals
+
+    def _readback_index(self, operators: tuple[str, ...]) -> ReadbackIndex:
+        """The tick's PR corpus, bucketed once so a candidate reads only what could cite it."""
+        if not self.readback_enabled:
+            return build_readback_index([], [])
+        return build_readback_index(
+            fetch_open_prs(self.host, authors=operators),
+            fetch_merged_prs(self.host, authors=operators),
+        )
+
+    def _resume_ordered(self, candidates: list[RawAPIDict]) -> list[RawAPIDict]:
+        """*candidates* rotated to start after the last pass's stopping point.
+
+        Age order is preserved WITHIN the rotation, and the wrap is what guarantees the
+        oldest candidates are reached again once the frontier has been: a walk that only
+        ever moved forward would starve the head of the queue instead of its tail.
+        """
+        resume_after = IntakeScanCursor.objects.resume_after(self.overlay_name)
+        if not resume_after:
+            return candidates
+        urls = [issue_url(issue) for issue in candidates]
+        if resume_after not in urls:
+            return candidates
+        start = urls.index(resume_after) + 1
+        return candidates[start:] + candidates[:start]
+
+    @staticmethod
+    def _report_incomplete(walk: list[RawAPIDict], position: int) -> None:
+        unreached = walk[position:]
+        logger.warning(
+            "IssueIntakeScanner ran out of budget after %d/%d candidates; %d unreached, oldest %s",
+            position,
+            len(walk),
+            len(unreached),
+            issue_url(unreached[0]) if unreached else "",
+        )
+
+    def _record_pass(self, examined: RawAPIDict | None, *, complete: bool) -> None:
+        if examined is None:
+            return
+        IntakeScanCursor.objects.record_pass(
+            self.overlay_name,
+            last_issue_url=issue_url(examined),
+            last_issue_created_at=issue_created_at(examined),
+            complete=complete,
+        )
 
     def _label_policy(self) -> IntakeLabelPolicy:
         """The overlay's two configured label sets, as the ONE value the table reads."""
@@ -284,12 +358,7 @@ class IssueIntakeScanner:
         work_exists = bool(url) and url in context.tracked
         detail = ""
         if not work_exists and self.readback_enabled:
-            hit = existing_work_for_issue(
-                issue_url=url,
-                ticket_number=issue_number(url),
-                open_prs=context.open_prs,
-                merged_prs=context.merged_prs,
-            )
+            hit = context.readback.hit_for(issue_url=url, ticket_number=issue_number(url))
             if hit is not None:
                 work_exists = True
                 detail = f"{hit.reason} ({hit.evidence_url})"

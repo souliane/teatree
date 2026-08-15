@@ -50,6 +50,43 @@ class TestBacklogDigestText(TestCase):
         assert "t3 " not in text
 
 
+class TestEscalationIsVisibleInTheDigest(TestCase):
+    """The age backstop's stamp has to CHANGE something the owner reads (#4178).
+
+    ``escalated_at``/``escalation_count`` are written by the drain's backstop stage. A
+    stamp nothing renders is write-only: "a KEEP is not a licence to sit forever" would
+    then be satisfied by doing nothing at all. These are the positive criteria — only a
+    rendered escalation can pass them.
+    """
+
+    def test_an_escalated_row_reads_differently_from_the_same_row_unescalated(self) -> None:
+        row = DeferredQuestion.record("Merge it?")
+        before = format_backlog_digest([row])
+
+        assert row.mark_escalated("pending past the 7d ceiling with no resolution")
+
+        assert format_backlog_digest([row]) != before
+
+    def test_the_header_counts_the_escalated_rows(self) -> None:
+        escalated = DeferredQuestion.record("Merge it?")
+        DeferredQuestion.record("And this one?")
+        assert escalated.mark_escalated("pending past the ceiling")
+
+        text = format_backlog_digest([escalated, DeferredQuestion.objects.exclude(pk=escalated.pk).get()])
+
+        assert "1 past the age ceiling" in text
+
+    def test_an_escalated_row_survives_the_list_cap(self) -> None:
+        # The cap is what makes the stamp worth rendering: in a 14-deep backlog the row
+        # that has waited longest without an answer is exactly the one the cap would drop.
+        rows = [DeferredQuestion.record(f"Question {i}") for i in range(14)]
+        assert rows[-1].mark_escalated("pending past the ceiling")
+
+        text = format_backlog_digest(rows)
+
+        assert f"#{rows[-1].pk}" in text
+
+
 class TestResurfaceQuestionBacklog(TestCase):
     def test_empty_backlog_posts_nothing(self) -> None:
         with patch("teatree.core.notify_question_drains.notify_user") as notify:

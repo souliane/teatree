@@ -242,11 +242,10 @@ def build_system_context(
 
 
 def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill_content: str) -> str:
-    """Bound the assembled append under the argv-element byte limit (E2BIG guard).
+    """Bound the assembled append under the context byte budget.
 
-    The claude-agent-sdk passes the whole append as ONE ``--append-system-prompt``
-    argv element, and Linux caps a single element at 128 KiB — an oversized
-    survey/skills/parent block makes the ``claude`` spawn die with E2BIG. The
+    The append reaches the child as a file rather than an argv element (#4301), so this
+    is a bound on how much context a dispatch carries, not a kernel guard. The
     largest uncapped blocks are truncated with a pointer marker, survey first
     (re-derivable), then skills, then the parent context last (most load-bearing
     for continuity). The survey is re-derived only on the over-budget path, so a

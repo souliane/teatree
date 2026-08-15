@@ -75,6 +75,12 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("loop preset show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree questions reachability",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits each pending question's automated-resolver coverage; empty resolvers = human-only (#4178)",
+    ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree workspace emit",

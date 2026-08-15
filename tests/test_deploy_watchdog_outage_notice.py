@@ -47,8 +47,10 @@ def _write_docker_stub(bin_dir: Path) -> None:
     `STUB_PS_BEFORE` is served until a `compose up` touches `STUB_UP_MARKER`, then
     `STUB_PS_AFTER` is — modelling the restart the watchdog performs mid-pass, which
     is what its post-restart re-read is supposed to observe. `STUB_IDS` drives the
-    container-creation probe (empty → no containers → no deploy in flight). A
-    `notify send` exec APPENDS the piped DM body so multiple DMs in one pass survive.
+    container-creation probe (empty → no containers → no deploy in flight), whose
+    `inspect` row carries the creation time plus the restart count and state that tell
+    a settling swap from a crash loop. A `notify send` exec APPENDS the piped DM body
+    so multiple DMs in one pass survive.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "docker"
@@ -65,7 +67,9 @@ def _write_docker_stub(bin_dir: Path) -> None:
         "         fi ;;\n"
         "    esac\n"
         "  fi\n"
-        '  [ "$1" = inspect ] && printf "%s\\n" "${STUB_CREATED:-}"\n'
+        '  if [ "$1" = inspect ] && [ -n "${STUB_CREATED:-}" ]; then\n'
+        '    printf "%s\\t%s\\t%s\\n" "$STUB_CREATED" "${STUB_RESTARTS:-0}" "${STUB_STATUS:-running}"\n'
+        "  fi\n"
         "  exit 0\n"
         "fi\n"
         "shift\n"

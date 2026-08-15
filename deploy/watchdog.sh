@@ -32,7 +32,10 @@
 #      finding set so an ongoing outage does not re-spam every pass. Three of those
 #      findings — a free worker flock, a down slack-listener, a clone behind
 #      origin — are what a ROLLING DEPLOY looks like mid-swap, so they are gated on
-#      the deploy-awareness block below; every other finding pages as before.
+#      the deploy-awareness block below; every other finding pages as before. A page
+#      the transport cannot carry is PARKED and re-tried, never lost to a log line:
+#      the alerting channel needs a fallback of its own, or a detected outage is a
+#      silent one.
 #
 # Safe by construction: the ONLY mutating docker op is `up -d --no-recreate`
 # (idempotent, never destructive, never recreates a running container). The
@@ -79,6 +82,10 @@ TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
 DEPLOY_LOCK="${TEATREE_WATCHDOG_DEPLOY_LOCK:-${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}}"
 DEPLOY_RECREATE_WINDOW="${TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW:-$INTERVAL}"
 DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-watchdog-deploy-sensitive.state}"
+# How long deploy.sh's own in-progress record (written into the lock FILE, see
+# deploy_marker_fresh) counts as a live holder. A convergence takes minutes; past the
+# ceiling the record is a hard-killed deploy's leftover, not a holder.
+DEPLOY_MARKER_MAX_AGE="${TEATREE_WATCHDOG_DEPLOY_MARKER_MAX_AGE:-1800}"
 
 # Re-surface ledger: "<episode> <digest>" of the LAST observed red finding set. The
 # episode counts green→red transitions, so a finding set that CLEARS and later returns
@@ -89,6 +96,10 @@ RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-/var/tmp/teatree-watchdog-red.state}"
 # since when" is answerable from the DM itself rather than from `docker inspect` after
 # the fact.
 LIVENESS_STATE="${TEATREE_WATCHDOG_LIVENESS_STATE:-/var/tmp/teatree-watchdog-liveness.state}"
+
+# Undelivered-page ledger: "<epoch> <key> <base64-body>" per line, newest last, capped.
+UNDELIVERED_STATE="${TEATREE_WATCHDOG_UNDELIVERED_STATE:-/var/tmp/teatree-watchdog-undelivered.state}"
+UNDELIVERED_MAX="${TEATREE_WATCHDOG_UNDELIVERED_MAX:-50}"
 
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
@@ -130,26 +141,69 @@ restart_down_services() {
   fi
 }
 
-# Run a command inside the first reachable exec service. Echoes its stdout; returns
-# the command's exit status, or 125 when no service could be reached.
-exec_in_stack() {
-  local svc
+# Deliver one owner page through the first exec service that takes it. Its own service
+# loop rather than a shared helper's: the body must be RE-PIPED per attempt, and one
+# shared stdin is drained by the first service that fails.
+_deliver_owner_page() {
+  local key="$1" body="$2" svc
   for svc in $EXEC_SERVICES; do
-    if compose exec -T "$svc" "$@"; then
+    if printf '%s' "$body" | compose exec -T "$svc" t3 "$OVERLAY" notify send - --idempotency-key "$key" >/dev/null; then
       return 0
     fi
   done
-  return 125
+  return 1
 }
 
-# Send the owner DM (body on stdin). Never aborts the watchdog: an unwired Slack
-# box (the default deploy provisions no Slack credential) just logs and continues.
+# Persist a page the transport could not carry, newest-capped. The log line the old
+# code stopped at scrolls away, so the detection was as silent as no detection at all;
+# the body and its idempotency key are kept for _drain_undelivered_pages to re-send.
+_park_undelivered_page() {
+  local key="$1" encoded trimmed
+  encoded="$(printf '%s' "$2" | base64 -w0 2>/dev/null)" || encoded=""
+  if [ -z "$encoded" ]; then
+    log "OWNER PAGE UNDELIVERED (key=$key) and could not be encoded — it is lost"
+    return 0
+  fi
+  if ! printf '%s %s %s\n' "$(date -u +%s 2>/dev/null || printf 0)" "$key" "$encoded" >>"$UNDELIVERED_STATE" 2>/dev/null; then
+    log "OWNER PAGE UNDELIVERED (key=$key) and could not be persisted at $UNDELIVERED_STATE — it is lost"
+    return 0
+  fi
+  trimmed="$(tail -n "$UNDELIVERED_MAX" "$UNDELIVERED_STATE" 2>/dev/null)"
+  [ -z "$trimmed" ] || printf '%s\n' "$trimmed" >"$UNDELIVERED_STATE" 2>/dev/null || true
+  log "OWNER PAGE UNDELIVERED (key=$key) — parked at $UNDELIVERED_STATE for retry; the alerting channel is DOWN"
+}
+
+# Re-send every parked page and keep the ones that still fail, reporting the depth so a
+# standing backlog cannot go unnoticed. Each keeps its original idempotency key, so a
+# re-send that races a recovered channel is deduped rather than doubled.
+_drain_undelivered_pages() {
+  local kept="" stamp key encoded body delivered=0 remaining
+  [ -s "$UNDELIVERED_STATE" ] || return 0
+  while read -r stamp key encoded; do
+    [ -n "${encoded:-}" ] || continue
+    body="$(printf '%s' "$encoded" | base64 -d 2>/dev/null)" || body=""
+    if [ -n "$body" ] && _deliver_owner_page "$key" "$body"; then
+      delivered=$((delivered + 1))
+      continue
+    fi
+    kept="$kept$stamp $key $encoded"$'\n'
+  done <"$UNDELIVERED_STATE"
+  printf '%s' "$kept" >"$UNDELIVERED_STATE" 2>/dev/null ||
+    log "could not rewrite the undelivered-page ledger at $UNDELIVERED_STATE"
+  [ "$delivered" -eq 0 ] || log "delivered $delivered owner page(s) parked by an earlier pass"
+  remaining="$(grep -c . "$UNDELIVERED_STATE" 2>/dev/null || printf 0)"
+  [ "$remaining" -eq 0 ] || log "$remaining owner page(s) STILL UNDELIVERED — see $UNDELIVERED_STATE"
+}
+
+# Send the owner DM (body on stdin). Never aborts the watchdog: an unwired Slack box
+# (the default deploy provisions no Slack credential) parks the page and continues.
 notify_owner() {
-  local key="$1"
-  if exec_in_stack t3 "$OVERLAY" notify send - --idempotency-key "$key" >/dev/null; then
+  local key="$1" body
+  body="$(cat)"
+  if _deliver_owner_page "$key" "$body"; then
     log "owner DMed (key=$key)"
   else
-    log "could not deliver owner DM (Slack may be unwired on this box)"
+    _park_undelivered_page "$key" "$body"
   fi
 }
 
@@ -367,10 +421,21 @@ deploy_lock_held() {
   grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
 }
 
-# True when a stack container was CREATED within the grace window — the fingerprint
-# of the image swap. Created (never started) is the discriminating field: a
-# crash-looping container restarts without being recreated, so a genuine outage is
-# never mistaken for a deploy.
+# The container states a settling image swap produces. `restarting`/`exited`/`dead`
+# are what a crash loop looks like, so they are never evidence of a deploy.
+_is_settling_state() {
+  case "$1" in running | created) return 0 ;; esac
+  return 1
+}
+
+# True when a stack container was CREATED within the grace window AND is not
+# crash-looping — the fingerprint of an image swap still settling.
+#
+# The crash-loop exclusion is load-bearing (#4339). The outage that froze the box
+# renewed a container every ~50s, so "created <window> ago" stayed true indefinitely
+# and the supervisor declined to repair on every pass — the failure suppressing the
+# self-heal meant to end it. A container that has already restarted, or that is not
+# running, is the opposite of a settling deploy.
 #
 # The timestamp comes from `inspect .Created` (RFC3339 UTC, e.g.
 # 2026-07-25T09:01:41.683288764Z), NEVER from `ps --format {{.CreatedAt}}`, whose
@@ -378,7 +443,7 @@ deploy_lock_held() {
 # tzdata-less image — which this one is, so every sample would silently fail to
 # parse and the probe would never fire on the box.
 stack_recently_recreated() {
-  local now created epoch id
+  local now created restarts state epoch id
   local -a ids=()
   now="$(date -u +%s 2>/dev/null)" || return 1
   # A `read` loop, not `mapfile`: the builtin is bash 4+, and this file's shebang
@@ -390,17 +455,39 @@ stack_recently_recreated() {
     [ -n "$id" ] && ids+=("$id")
   done < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}' 2>/dev/null)
   [ "${#ids[@]}" -gt 0 ] || return 1
-  while IFS= read -r created; do
+  while IFS=$'\t' read -r created restarts state; do
     [ -n "$created" ] || continue
     if ! epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
       log "unreadable container creation time ('$created') — not treating the stack as mid-deploy"
       continue
     fi
-    if [ "$((now - epoch))" -lt "$DEPLOY_RECREATE_WINDOW" ]; then
-      return 0
+    [ "$((now - epoch))" -lt "$DEPLOY_RECREATE_WINDOW" ] || continue
+    if [ "${restarts:-0}" != 0 ] || ! _is_settling_state "${state:-}"; then
+      log "a container created <${DEPLOY_RECREATE_WINDOW}s ago is crash-looping (restarts=${restarts:-?}, state=${state:-?}) — an outage, not a deploy"
+      continue
     fi
-  done < <(docker inspect --format '{{.Created}}' "${ids[@]}" 2>/dev/null)
+    return 0
+  done < <(docker inspect --format '{{.Created}}'$'\t''{{.RestartCount}}'$'\t''{{.State.Status}}' "${ids[@]}" 2>/dev/null)
   return 1
+}
+
+# True when deploy.sh's own in-progress record is present and fresh. It writes
+# "<pid> <epoch>" into the lock FILE under the flock and clears it on exit, so an
+# ordinary exit retires it and a crash loop cannot forge it. This is the signal that
+# crosses a pid-namespace boundary the kernel lock does not (see deploy_lock_held).
+# The age ceiling is what makes a record outliving its holder read as NOT held.
+deploy_marker_fresh() {
+  local now pid stamp age
+  now="$(date -u +%s 2>/dev/null)" || return 1
+  read -r pid stamp <<<"$(head -n1 "$DEPLOY_LOCK" 2>/dev/null || true)"
+  case "${stamp:-}" in "" | *[!0-9]*) return 1 ;; esac
+  age=$((now - stamp))
+  if [ "$age" -ge "$DEPLOY_MARKER_MAX_AGE" ]; then
+    log "deploy record in $DEPLOY_LOCK is ${age}s old (pid $pid) — no live holder, not a convergence"
+    return 1
+  fi
+  log "deploy record in $DEPLOY_LOCK is fresh (pid $pid, ${age}s) — a convergence is in flight"
+  return 0
 }
 
 deploy_in_flight() {
@@ -408,8 +495,9 @@ deploy_in_flight() {
     log "deploy lock $DEPLOY_LOCK is held — a convergence is in flight"
     return 0
   fi
+  deploy_marker_fresh && return 0
   if stack_recently_recreated; then
-    log "a stack container was created <${DEPLOY_RECREATE_WINDOW}s ago — the image swap is still settling"
+    log "a stack container was created <${DEPLOY_RECREATE_WINDOW}s ago and is settling — the image swap is in flight"
     return 0
   fi
   return 1
@@ -510,6 +598,10 @@ run_pass() {
   still_down="$(down_app_services)"
   announce_repaired_services "$down" "$still_down" "$now"
   _record_liveness "$now" "$still_down"
+
+  # An outage nobody was told about is a silent one: a page parked while the transport
+  # was down reaches the owner as soon as the just-restarted stack can carry it.
+  _drain_undelivered_pages
 
   # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
   trim_stale_temp

@@ -1498,18 +1498,68 @@ quoted payloads elided, so a matcher scopes to what the shell would actually run
 It is selected per matcher by naming it where the arg goes
 (`no_tool_call_matching: { Bash.command_span: ~ "…" }`); the registry is
 `_ARG_VIEWS` in `teatree.eval.matchers` and the scanner is
-`teatree.eval.command_span.executed_span`.
+`teatree.eval.command_span.executed_span`, over the quote-aware scan and reachability
+window in `teatree.eval.command_window`. A name in `DERIVED_VIEW_NAMES` with no
+`_ARG_VIEWS` transform raises `UnknownArgViewError` — a view whose code is dropped
+can never degrade to a missing arg, which reads as a silent green.
 
-What the span keeps and drops:
+A quoted region is elided only where the scanner can NAME it a payload; anything it
+cannot decide is kept, because eliding an act costs the matcher its teeth silently
+while keeping a payload only ever reds loudly:
 
 | construct | in the span |
 |---|---|
-| single-quoted region | elided (POSIX literal — no expansion) |
-| double-quoted region | elided, **except** `$( … )` / backtick bodies, kept verbatim (a substitution IS executed) |
-| the quoted operand of `-c` (`bash -c '…'`) and of `eval` | kept verbatim — a script, not payload |
-| `<<'EOF'` heredoc body (quoted delimiter) | elided |
+| a quoted region attached to an unquoted word fragment (`-m'…'`, `--body='…'`) | elided — an option's own value |
+| a standalone quoted operand of 4+ words | elided as prose (`'I have not marked the task complete'`) |
+| a shorter standalone quoted operand | kept, quotes removed as the shell removes them — `t3 widget 'ticket clear' 42` is an act, not a report |
+| `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
+| the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
+| `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1`, a `;`/`}`/`)` inside an enclosing group, and a `;`/newline inside `if…fi`, `while`/`until`/`for…done` or `case…esac` all stop hiding a later `\| bash`. The bound is **fail-closed**: it is returned only where every token from the segment start to it was positively recognised, so a construct the scanner does not model — `((…))`, `[[…]]`, `select`, `\|&`, a closer matching no open compound — leaves the window running to end of text and the redirected text KEPT. A process substitution (`> >(bash)`) blocks the proof outright, and so does a redirection inside a function body, whose stdout flows to the call site instead. The whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
 | an unbalanced quote / an unterminated heredoc | **fails closed** — the remainder stays raw, so a stray apostrophe can never silently strip a matcher's teeth |
+
+The redirection rule is stated as a READER proof, not an interpreter list, because the
+complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l; do eval
+"$l"; done` all execute the redirected text while naming no interpreter. Widen
+`_STDIN_READERS` only by name, with the case that forced it. It still leaves a residue
+`origin/main` also drops, so merging costs no teeth: a payload reaching an interpreter
+through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
+class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
+
+The reachability window's default is the same asymmetry one level down, and it is the
+module's load-bearing invariant. `teatree.eval.command_window.Recogniser` walks the text
+against an explicit accept table; `segment_end` returns a bound only where nothing on the
+way to it was unrecognised. So an unmodelled construct costs an over-keep — loud — and can
+never cost an elision. `RECOGNISED_COMPOUNDS` is the tunable and the default is the
+invariant: retire an over-keep by ADDING a production, never by loosening the default. The
+generative sweep in `tests/eval_replay/test_command_span.py` derives its wrapper axis from
+that same set, so teaching one side a construct without the other reds.
+
+Five measured residues, all in the OVER-keeping direction — they cost a loud red, never
+a silent one, and none is a regression against `origin/main`:
+
+- `_STDIN_READERS` is narrow (12 names) and `_stage_command_word` resolves a PREFIXED
+  spelling to the prefix rather than to what it execs, so `md5sum <<<'…'`, `base64 <<<'…'`
+  and `env cat <<<'…'` keep text nothing executes. Measured over 204 provably data-only
+  cases, `origin/main` keeps the same ones. Reader-set completeness is its own defect
+  class needing its own generator and its own negative controls —
+  [#4433](https://github.com/souliane/teatree/issues/4433).
+- A continuation INSIDE a here-string payload an interpreter runs: bash keeps the pair
+  literal and the interpreter splices it only when it runs the text, so the act reaches
+  the span in bash's own pre-splice spelling and a matcher regexing the raw span misses
+  it. `origin/main` elides the whole class.
+- A quoted-delimiter heredoc BODY is literal to bash, and the view splices it anyway — a
+  body line ending in a backslash loses its terminator, so the remainder is kept raw.
+- A redirection inside a FUNCTION body is never proved data-only, even where the call
+  turns out to be a reader. Its stdout flows to the CALL site, textually elsewhere
+  (`f() { cat <<<'…'; }; f \| bash`), so no window over the definition can see the pipe;
+  tracking the call interprocedurally does not terminate (`x=f; $x \| bash`, recursion,
+  a definition in a sourced file), which is why this one is fail-closed rather than
+  windowed.
+- A construct outside the accept table — an arithmetic or double-bracket compound,
+  `select`, `\|&`, an unmatched closer — leaves the window unbounded, so every redirected
+  text inside one is kept. That is the fail-closed default working, not a defect; the
+  fix for any given spelling is to teach `Recogniser` the production.
 
 **Use it when the negative names an ACT.** `t3 … task complete`, `re-dispatch`,
 `ticket clear` are things that must not HAPPEN, and a model that escalates

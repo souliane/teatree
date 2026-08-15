@@ -962,3 +962,62 @@ class TestDisposalReleasesTheWholeClaim(TestCase):
 
         assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
         self._assert_claim_released(task)
+
+
+class TestSpawnFailureEscalation(TestCase):
+    """A halt whose agent never STARTED must not ask the operator about the ticket (#4301).
+
+    An E2BIG spawn death happens before the child reads a byte of the task, so the
+    ticket-adjudication question ("investigate, rework, or ignore") aims the operator at
+    the one thing that cannot be the cause — while the real subject (the environment) is
+    named nowhere in a forty-line SDK traceback.
+    """
+
+    _SPAWN_ERROR = (
+        "agent could not be spawned: a single spawn argument is 181072 bytes, over this "
+        "platform's 131072-byte per-argument limit (E2BIG). The agent never started, so no "
+        "work was attempted and nothing about the ticket's content is implicated."
+    )
+
+    def _question(self) -> str:
+        return DeferredQuestion.objects.filter(answered_at__isnull=True).get().question
+
+    def test_a_spawn_failure_says_the_agent_could_not_start(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=self._SPAWN_ERROR)
+
+        requeue_transient_failed()
+
+        question = self._question()
+        assert "AGENT COULD NOT START" in question
+        assert "not implicated" in question
+        assert "investigate, rework, or ignore" not in question
+
+    def test_a_work_failure_keeps_the_ticket_adjudication_question(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
+
+        requeue_transient_failed()
+
+        question = self._question()
+        assert "investigate, rework, or ignore" in question
+        assert "AGENT COULD NOT START" not in question
+
+    def test_a_spawn_failure_is_never_reopened_for_a_doomed_retry(self) -> None:
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=self._SPAWN_ERROR)
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_the_same_spawn_defect_on_two_tickets_files_one_question(self) -> None:
+        # The systemic signature: unrelated tickets halting on one environmental cause
+        # must reach the owner as ONE report, not one decision per ticket.
+        for _ in range(2):
+            _add_failed_attempt(_failed_task(phase="testing"), error=self._SPAWN_ERROR)
+
+        requeue_transient_failed()
+
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

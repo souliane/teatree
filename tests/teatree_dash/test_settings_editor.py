@@ -1,4 +1,4 @@
-"""The model-driven settings-editor surface — sections, masking, provenance, export (D7).
+"""The model-driven settings-editor surface — sections, masking and provenance (D7).
 
 The page renders ONE section at a time, so the never-drop guarantee moved from "every key
 is on the page" to "every key is in exactly one section, and every section has a pane".
@@ -22,8 +22,6 @@ from teatree.dash.settings_editor import (
     build_settings_editor,
     build_settings_group,
     build_settings_sections,
-    export_text,
-    import_preview,
 )
 
 
@@ -204,32 +202,6 @@ class TestReadFailureDegrades(TestCase):
             view = build_settings_editor()
         assert view.sections == ()
         assert "read failed" in view.error
-
-
-class TestExportAndPreview(TestCase):
-    def test_export_withholds_secret_keeps_personal(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["synthetic"])  # secret
-        ConfigSetting.objects.set_value("workspace_dir", "/tmp/ws")  # personal, non-secret
-        dump = export_text()
-        assert "banned_brands" not in dump
-        assert "synthetic" not in dump
-        assert "/tmp/ws" in dump
-
-    def test_the_two_filters_default_to_off(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto")
-        assert export_text() == export_text(default_keys_only=False, include_defaults=False)
-        assert "merge_wip" not in export_text()
-
-    def test_both_filters_produce_the_defaults_shape(self) -> None:
-        dump = export_text(default_keys_only=True, include_defaults=True)
-        assert "merge_wip" in dump
-        assert dump.startswith("# teatree shipped defaults")
-
-    def test_import_preview_is_a_dry_run(self) -> None:
-        result = import_preview('[teatree]\nmode = "interactive"\n')
-        assert result.dry_run is True
-        assert [(r.scope, r.key) for r in result.written] == [("", "mode")]
-        assert ConfigSetting.objects.count() == 0
 
 
 class TestShippedDefaultComparison(TestCase):

@@ -105,24 +105,45 @@ def _resurface_text(row: DeferredQuestion) -> str:
     return "\n".join(lines)
 
 
-def _digest_line(row: DeferredQuestion) -> str:
+def _escalation_note(row: DeferredQuestion, *, now: dt.datetime) -> str:
+    """How long an escalated row has waited, and how often the backstop has said so.
+
+    The rendering IS the age backstop's only owner-visible effect: the stamp records
+    that a row sat past the ceiling without resolving it, so a digest that read the
+    same before and after would make "escalated" indistinguishable from "ignored".
+    """
+    if row.escalated_at is None:
+        return ""
+    return f"  _(unanswered {(now - row.created_at).days}d, escalated {row.escalation_count}x)_"
+
+
+def _digest_line(row: DeferredQuestion, *, now: dt.datetime) -> str:
     first_line = row.question.strip().splitlines()[0] if row.question.strip() else ""
     if len(first_line) > _DIGEST_QUESTION_CHARS:
         first_line = first_line[: _DIGEST_QUESTION_CHARS - 1].rstrip() + "…"
-    return f"  • #{row.pk} — {first_line}"
+    return f"  • #{row.pk} — {first_line}{_escalation_note(row, now=now)}"
 
 
-def format_backlog_digest(rows: Sequence[DeferredQuestion]) -> str:
+def format_backlog_digest(rows: Sequence[DeferredQuestion], *, now: dt.datetime | None = None) -> str:
     """The single recurring nag message covering *rows*.
 
     One header, up to :data:`_DIGEST_LIST_CAP` question lines, and a remainder
     count — so a 42-deep backlog is one readable message rather than 42 DMs. The
     ``#<id>`` prefix is what the owner echoes back, since a bare reply in a shared
     DM thread cannot say WHICH question it answers.
+
+    Escalated rows are listed FIRST (stably, so the rest keep their order): they are
+    the ones that have waited longest without an answer, and so exactly the ones the
+    cap would otherwise drop out of the message.
     """
+    stamped_at = now or timezone.now()
+    escalated = sum(1 for row in rows if row.escalated_at is not None)
     header = f"*{len(rows)} open question{'s' if len(rows) != 1 else ''} waiting on you.*"
+    if escalated:
+        header += f" *{escalated} past the age ceiling.*"
     lines = [header, "Reply in this thread as `#<id> <your answer>`."]
-    lines.extend(_digest_line(row) for row in rows[:_DIGEST_LIST_CAP])
+    ordered = sorted(rows, key=lambda row: row.escalated_at is None)
+    lines.extend(_digest_line(row, now=stamped_at) for row in ordered[:_DIGEST_LIST_CAP])
     remainder = len(rows) - _DIGEST_LIST_CAP
     if remainder > 0:
         lines.append(f"  +{remainder} more.")
@@ -150,11 +171,12 @@ def resurface_question_backlog(
     if not rows:
         return False, 0
 
-    bucket = int((now or timezone.now()).timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
+    stamped_at = now or timezone.now()
+    bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
     previous_overlay = _scoped_overlay_env(overlay)
     try:
         posted = notify_user(
-            format_backlog_digest(rows),
+            format_backlog_digest(rows, now=stamped_at),
             kind=NotifyKind.QUESTION,
             idempotency_key=f"question-backlog-digest:{bucket}",
             audience=NotifyAudience.OWNER_QUESTION,

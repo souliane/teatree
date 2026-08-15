@@ -53,11 +53,13 @@ import re
 import shutil
 import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors hook_router).
 import sys
+import time
 from pathlib import Path
 from typing import Final
 
 from hooks.scripts.existing_artifact import with_open_pr_note
 from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write, _is_existing_pr_metadata_only_edit
+from hooks.scripts.hook_budget import bounded_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import extract_mr_target_repo, shlex_flag_value, strip_quoted_and_heredoc
 
@@ -131,6 +133,8 @@ _GIT_PROBE_TIMEOUT_S: Final[int] = 5
 
 # The shelled `t3 tool diff-coverage` walks a whole diff, so it gets a wider
 # budget than the ref reads above — still bounded, since a cold hook blocks the user.
+# Asked for, not assumed: `bounded_timeout_s` caps it at what the shared hook
+# ceiling leaves for the artifact probe that follows it (#4305).
 _MEASUREMENT_TIMEOUT_S: Final[int] = 30
 
 
@@ -418,12 +422,22 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
     :func:`existing_artifact.open_pr_note`, so the refusal names a PR that already
     exists rather than reading as "nothing happened" (#4151). A denied ``gh pr
     ready`` asks nothing: it guards the UN-DRAFT, which genuinely did not happen.
+
+    This is where the hook's wall-clock budget starts being spent, so it is where
+    the clock starts: the measurement and the probe that may follow it are both
+    bounded against :data:`hook_budget.HOOK_CEILING_S` from here, rather than each
+    holding a fixed timeout whose sum exceeded it (#4305).
     """
+    started = time.monotonic()
     repo_dir = coverage_gate_repo_dir(command, cwd)
     if not measured_repo_is_publish_target(command, repo_dir):
         return None
     argv = diff_coverage_argv(repo_dir)
     if argv is None:
+        return None
+    timeout = bounded_timeout_s(_MEASUREMENT_TIMEOUT_S, time.monotonic() - started)
+    if timeout is None:
+        note_gate_skipped("the hook's shared ceiling was already spent before the measurement could start")
         return None
     try:
         result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
@@ -431,7 +445,7 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
             capture_output=True,
             text=True,
             check=False,
-            timeout=_MEASUREMENT_TIMEOUT_S,
+            timeout=timeout,
             cwd=str(repo_dir) if repo_dir is not None else None,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
@@ -440,7 +454,7 @@ def coverage_finding_for_command(command: str, cwd: str | None) -> str | None:
     finding = diff_coverage_finding(result.stdout or "")
     if not _is_pr_create_command(command):
         return finding
-    return with_open_pr_note(finding, repo_dir, shipped_branch(command) or "")
+    return with_open_pr_note(finding, repo_dir, shipped_branch(command) or "", elapsed=time.monotonic() - started)
 
 
 def _is_pr_create_command(command: str) -> bool:
