@@ -1,5 +1,6 @@
 import pytest
 
+from teatree.eval import matchers
 from teatree.eval.matchers import (
     assert_final_state_contains,
     assert_final_state_matching,
@@ -161,6 +162,19 @@ class TestCommandSpanView:
         run = _run([EvalToolCall(name="Write", input={"content": "'task complete'"}, turn=1)])
         with pytest.raises(AssertionError):
             assert_no_tool_call_matching(run, "Write", "content", r"task complete")
+
+
+class TestDerivedViewRegistry:
+    """A view named by a matcher must resolve — a missing one is loud, never a silent ``None``."""
+
+    def test_every_declared_view_has_a_transform(self) -> None:
+        assert frozenset(matchers._ARG_VIEWS) == matchers.DERIVED_VIEW_NAMES
+
+    def test_a_declared_view_with_no_transform_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(matchers, "_ARG_VIEWS", {})
+        run = _run([EvalToolCall(name="Bash", input={"command": "t3 widget task complete 42"}, turn=1)])
+        with pytest.raises(matchers.UnknownArgViewError):
+            assert_no_tool_call_matching(run, "Bash", "command_span", r"task .*complete")
 
 
 class TestAssertNoToolCallContains:
