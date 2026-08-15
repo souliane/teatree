@@ -1461,6 +1461,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: "3.13"
+      # A green audit is only evidence if the audit can still SEE. Nothing reds
+      # when the surface reports NOTHING, and an empty OSV response, a parser
+      # regression or a renamed flag all look exactly like "no findings" —
+      # souliane/teatree#4346. The canary feeds the same tool a pin with known
+      # advisories and demands at least one back.
+      - name: Canary — prove the audit surface can see a known advisory
+        run: python scripts/ci/audit_canary.py
       - name: Export shipped runtime surface for audit
         run: uv export --no-default-groups --all-extras --format requirements-txt --no-emit-workspace --no-header --quiet > requirements.audit.txt
       - name: Read CVE allowlist
@@ -1474,12 +1481,27 @@ jobs:
             echo "flags=" >> "$GITHUB_OUTPUT"
           fi
       - name: pip-audit (OSV backend; strict; allowlist applied)
+        id: audit
         env:
           IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
         # shellcheck disable=SC2086 — word-splitting on IGNORE_FLAGS is intentional:
         # it expands to zero or more ``--ignore-vuln GHSA-xxxx`` pairs from the
         # committed requirements.audit.ignore allowlist (never user-supplied input).
         run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt $IGNORE_FLAGS
+      # A raw CVE list makes the reader re-derive the question that decides what
+      # to do. Django 6.0.8's High-severity raster CVE could not be reached from
+      # src/ while its Moderate admin one could, so the severity column ranked
+      # them the wrong way round (souliane/teatree#4346). Failure-only: the
+      # blocking verdict is the step above, this just annotates its findings.
+      - name: Reachability assessment for the advisories found
+        if: failure() && steps.audit.outcome == 'failure'
+        env:
+          IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
+        # shellcheck disable=SC2086 — same intentional word-splitting as above.
+        run: |
+          uvx pip-audit --vulnerability-service osv --disable-pip --format json \
+            -r requirements.audit.txt $IGNORE_FLAGS > audit-report.json || true
+          uv run t3 tool dependency-audit --report audit-report.json
 
   # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
   # also uploads the SBOM as a workflow artifact for supply-chain visibility.
