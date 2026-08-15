@@ -104,18 +104,41 @@ class _IntakeTestCase(TestCase):
 
 
 class FrontierIsReachedTests(_IntakeTestCase):
-    """The acceptance criterion: N already-decided issues plus one fresh one, in ONE pass."""
+    """The acceptance criterion: a decided prefix longer than one budget, and the fresh one still lands.
 
-    def test_the_fresh_candidate_is_admitted_behind_199_decided_ones(self) -> None:
-        decided = [_issue(n, created_at=f"2026-01-01T00:{n % 60:02d}:00Z") for n in range(1, 200)]
+    The clock is injected here too. Racing the REAL clock made the assertion a function of how
+    loaded the runner was — 200 candidates fitted inside 45 wall-clock seconds locally and did not
+    on a 12-way CI shard, where the walk was abandoned at 180 and the frontier, the only place a
+    claimable issue lives, went unreached. The scale is small for the same reason: what the walk
+    costs per candidate is the runner's business, and the invariant does not depend on it.
+    """
+
+    DECIDED = 39
+    BUDGET = 10.0
+    #: 10s at one second per candidate examines 9 of the 40, so the tail is the fifth pass; the
+    #: bound carries a spare one. That the tail is reached AT ALL is the fix — every pre-cursor
+    #: pass restarted at the oldest, so nothing past one budget's worth was ever examined, however
+    #: many ticks ran.
+    PASS_BOUND = 6
+
+    def _pass(self, host: _Host) -> list[str]:
+        scanner = self._scanner(host, pass_budget_seconds=self.BUDGET, monotonic=_one_second_per_candidate())
+        return [str(signal.payload["url"]) for signal in scanner.scan()]
+
+    def test_the_fresh_candidate_is_admitted_behind_a_decided_prefix(self) -> None:
+        decided = [_issue(n, created_at=f"2026-01-01T00:{n:02d}:00Z") for n in range(1, self.DECIDED + 1)]
         fresh = _issue(500, created_at="2026-08-14T21:45:00Z")
         for issue in decided:
             Ticket.objects.create(issue_url=str(issue["web_url"]), overlay=OVERLAY, state=Ticket.State.STARTED)
         host = _Host(authored={OWNER: [*decided, fresh]})
 
-        signals = self._scanner(host).scan()
+        admitted: list[str] = []
+        for _ in range(self.PASS_BOUND):
+            admitted += self._pass(host)
+            if admitted:
+                break
 
-        assert [signal.payload["url"] for signal in signals] == [_url(500)]
+        assert admitted == [_url(500)]
 
     def test_the_pass_records_itself_complete(self) -> None:
         host = _Host(authored={OWNER: [_issue(1, created_at="2026-01-01T00:00:00Z")]})

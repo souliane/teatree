@@ -267,6 +267,9 @@ _NON_CONTENT_PARAMS = frozenset(
         # deliberately absent, so a labelling write still enumerates as content.
         "label",
         "updated_after",
+        # ``enrich`` shapes how much of a READ is fetched (``list_my_prs`` skipping the
+        # per-PR CI lookup); a bool cannot ferry outbound text in either position.
+        "enrich",
         "state",
         "query",
         "expected_head_oid",
