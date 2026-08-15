@@ -96,8 +96,8 @@ ask_before_backlog_sweep_closes = true # bool — ask the operator before a back
 ask_before_creating_news_tickets = true # bool — ask the operator before the news scanner files a ticket
 auto_update_reinstall = false # bool — reinstall the CLI after an update instead of only pulling
 auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
-backlog_sweep_cadence_hours = 168 # int — hours between backlog sweeps
-backlog_sweep_disabled = true # bool — stop scheduling backlog sweeps
+backlog_sweep_cadence_hours = 24 # int — hours between backlog sweeps
+backlog_sweep_disabled = false # bool — stop scheduling backlog sweeps
 backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
 dogfood_smoke_cadence_hours = 24 # int — hours between dogfood smoke runs
 dogfood_smoke_disabled = false # bool — stop scheduling dogfood smoke runs
@@ -472,7 +472,7 @@ description = "Backs up teatree's own control DB daily and prunes past the keep-
 delay_seconds = 86400
 colleague_facing = false
 default_enabled = false
-description = "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes."
+description = "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row is the switch (backlog_sweep_disabled ships open), gated by ask_before_backlog_sweep_closes."
 
 [loops.news]
 delay_seconds = 86400

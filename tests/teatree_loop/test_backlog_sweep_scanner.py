@@ -1,18 +1,17 @@
-"""DB-backed tests for ``BacklogSweepScanner`` (#2419).
+"""DB-backed tests for ``BacklogSweepScanner`` (#2419, #4344).
 
 The scanner periodically queues a ``backlog_sweep`` ``Task`` row for the
 active core overlay on a single trigger: cadence
-(``backlog_sweep_cadence_hours``, default 168h = weekly). It mirrors
+(``backlog_sweep_cadence_hours``, default 24h = daily). It mirrors
 :mod:`teatree.loop.scanners.scanning_news` — a once-per-cadence platform
 behaviour, not coupled to delivery velocity.
 
-The sweep is destructive-capable (it can propose closing issues), so two
-safety properties are baked in from day one (the ``t3:sweeping-tickets``
+Two properties are stamped onto every queued task (the ``t3:sweeping-tickets``
 skill § "Scheduling via the loop"):
 
-* **Default-OFF.** ``backlog_sweep_disabled`` defaults *true* — unlike the
-    always-on news/eval scanners, the kill switch ships ON so the scanner
-    is inert until the user opts in.
+* **Group-first, close nothing for real.** The default path — no extra flags,
+    ask-gate or not — groups related tickets into an existing host and performs
+    zero real closures: every reduction is a fold whose content survives.
 * **Ask-gate in the directive.** The queued task carries an ASK-GATE
     marker so the dispatched sweep records proposals and surfaces the batch
     for approval — it never mass-closes unattended.
@@ -43,7 +42,7 @@ def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
     skill: str = "sweeping-tickets",
-    cadence_hours: int = 168,
+    cadence_hours: int = 24,
     require_approval: bool = True,
 ) -> BacklogSweepScanner:
     return BacklogSweepScanner(
@@ -197,16 +196,66 @@ class BacklogSweepScannerTests(TestCase):
         assert not Task.objects.filter(ticket__overlay="t3-teatree", phase=BACKLOG_SWEEP_PHASE).exists()
 
 
+class BacklogSweepGroupingDefaultTests(TestCase):
+    """A sweep with no extra flags groups, and performs zero real closures (#4344).
+
+    Backlog size multiplies delivery cost, but the ideas in those rows are not
+    the problem — their packaging is. So the DEFAULT directive (no flags, and
+    with the ask-gate opted out) instructs aggressive grouping into an existing
+    host, and every reduction is a fold whose content survives. The failure
+    guarded against is a sweep that quietly starts discarding rows.
+    """
+
+    def test_default_directive_makes_grouping_the_default(self) -> None:
+        _scanner().scan()
+        task = _last_sweep_task()
+        assert task is not None
+        assert "GROUP-FIRST" in task.execution_reason
+        assert "grouping is the DEFAULT, not an opt-in" in task.execution_reason
+
+    def test_default_directive_performs_zero_real_closures(self) -> None:
+        _scanner().scan()
+        task = _last_sweep_task()
+        assert task is not None
+        reason = task.execution_reason
+        assert "CLOSE NOTHING FOR REAL" in reason
+        assert "no verdict discards an idea" in reason
+        # An already-shipped issue used to be the one auto-closable class; it now
+        # folds as content, so no class of issue closes without a preserved fold.
+        assert "including an already-shipped" in reason
+
+    def test_default_directive_routes_every_reduction_through_a_verified_fold(self) -> None:
+        _scanner().scan()
+        task = _last_sweep_task()
+        assert task is not None
+        reason = task.execution_reason
+        assert "ticket fold`" in reason
+        assert "ticket fold-check`" in reason
+        assert "only then retire the standalone row" in reason
+
+    def test_a_host_may_carry_several_unrelated_small_things(self) -> None:
+        _scanner().scan()
+        task = _last_sweep_task()
+        assert task is not None
+        assert "MAY carry several unrelated small things" in task.execution_reason
+
+    def test_grouping_posture_survives_the_ask_gate_opt_out(self) -> None:
+        """The posture is the default path, not part of the ask-gate."""
+        _scanner(require_approval=False).scan()
+        task = _last_sweep_task()
+        assert task is not None
+        assert "GROUP-FIRST" in task.execution_reason
+        assert "CLOSE NOTHING FOR REAL" in task.execution_reason
+
+
 class BacklogSweepAskGateTests(TestCase):
     """The queued task must carry the ask-gate directive by default (#2419).
 
-    Backlog-sweep can close issues — a colleague-visible write under the
-    user's identity. The ask-gate threads ``require_approval`` (default
-    true, from ``ask_before_backlog_sweep_closes``) into the task so the
-    dispatched skill records close proposals and surfaces the batch for
-    explicit approval instead of mass-closing unattended. Only the
-    high-confidence merged-PR-superseded class auto-closes (the skill's
-    own discipline).
+    Retiring a folded row is still a colleague-visible write under the user's
+    identity. The ask-gate threads ``require_approval`` (default true, from
+    ``ask_before_backlog_sweep_closes``) into the task so the dispatched skill
+    records fold proposals and surfaces the batch for explicit approval instead
+    of mass-closing unattended.
     """
 
     def test_default_task_carries_ask_gate_directive(self) -> None:
@@ -224,11 +273,11 @@ class BacklogSweepAskGateTests(TestCase):
         assert "do NOT mass-close" in reason
 
     def test_ask_gate_directive_routes_closes_through_bulk_close(self) -> None:
-        """Auto-closes must go through the gated `ticket bulk-close` command (#1931).
+        """Row retirements must go through the gated `ticket bulk-close` command (#1931).
 
         The no-bulk-close gate only protects the `ticket bulk-close` CLI path;
         a raw per-item `ticket ignore` loop bypasses it. The directive routes
-        the sweep's autonomous close path through the gated command so an
+        the sweep's autonomous retirement path through the gated command so an
         over-threshold autonomous close is refused the same as a manual one.
         """
         _scanner().scan()
@@ -252,20 +301,31 @@ class BacklogSweepAskGateTests(TestCase):
 
 
 class BacklogSweepWiringTests(TestCase):
-    """Confirm the tick-job builder reads core config (#2419).
+    """Confirm the tick-job builder reads core config (#2419, #4344).
 
     The backlog-sweep scanner is a single global scanner (``overlay=""``)
-    keyed off teatree-core platform config. Unlike news/eval, the kill
-    switch ``backlog_sweep_disabled`` defaults ON (default-OFF scanner) —
-    the sweep is destructive-capable, so it stays inert until the user
-    opts in.
+    keyed off teatree-core platform config. ``backlog_sweep_disabled`` ships
+    OPEN, leaving the ``backlog_sweep`` ``Loop`` row (seeded disabled) as the
+    single switch — the ``issue_implementer`` / ``triage_assessor`` /
+    ``directive_loop`` shape. Setting the switch still stops the wiring dead.
     """
 
     def _patched_settings(self, **overrides: object) -> UserSettings:
         return UserSettings(**overrides)
 
-    def test_default_core_config_skips_wiring(self) -> None:
-        """Default core config (disabled=True) → wiring produces NO scanner."""
+    def test_the_kill_switch_still_stops_the_wiring(self) -> None:
+        """``backlog_sweep_disabled = True`` → wiring produces NO scanner."""
+        from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
+
+        with patch(
+            "teatree.loop.global_scanner_factories.load_config",
+            return_value=type("Cfg", (), {"user": self._patched_settings(backlog_sweep_disabled=True)})(),
+        ):
+            scanner = _backlog_sweep_scanner()
+        assert scanner is None
+
+    def test_default_core_config_builds_a_daily_scanner(self) -> None:
+        """Default core config → a scanner on the daily cadence the ticket asks for."""
         from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
 
         with patch(
@@ -273,24 +333,9 @@ class BacklogSweepWiringTests(TestCase):
             return_value=type("Cfg", (), {"user": self._patched_settings()})(),
         ):
             scanner = _backlog_sweep_scanner()
-        assert scanner is None
-
-    def test_enabled_in_core_config_builds_scanner(self) -> None:
-        """Opt-in: ``backlog_sweep_disabled = False`` → wiring produces a scanner."""
-        from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._patched_settings(backlog_sweep_disabled=False)},
-            )(),
-        ):
-            scanner = _backlog_sweep_scanner()
         assert scanner is not None
         assert scanner.skill == "sweeping-tickets"
-        assert scanner.cadence_hours == 168
+        assert scanner.cadence_hours == 24
 
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
         """Tuned core config flows through to the scanner kwargs."""
