@@ -85,6 +85,7 @@ from teatree.cli.doctor.checks_runtime import (
     _check_worker_running,
     _check_worker_singleton_holder,
 )
+from teatree.cli.doctor.checks_scheduled_ci import check_scheduled_ci_run_health
 from teatree.cli.doctor.checks_session import (
     _check_account_switch,
     _check_agent_session_pins,
@@ -412,8 +413,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # push away from main (#4225). One more durable-row FAIL sits alongside the first three:
     # a review phase task that reached ``completed`` carrying no attempt at all ran nothing,
     # so the PR it "reviewed" keeps whatever stale verdict was binding it (#4308) — found
-    # until now only by hand-querying the control DB. The tuple calls all ten before ``all``
-    # short-circuits, so no finding masks another.
+    # until now only by hand-querying the control DB. The newest reads the maintenance JOB
+    # rather than the artifact it maintains: a scheduled run appears on no PR, so its nightly
+    # failure was visible to nobody for eleven days (#4477). The tuple calls all eleven before
+    # ``all`` short-circuits, so no finding masks another.
     ok = (
         all(
             (
@@ -426,6 +429,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
                 check_test_durations_coverage(),
                 check_test_durations_freshness(),
                 check_test_timeout_headroom(),
+                check_scheduled_ci_run_health(),
                 check_branch_upstreams(),
             )
         )

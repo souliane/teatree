@@ -80,6 +80,7 @@ from teatree.cli.doctor.checks_runtime import (
     _check_worker_running,
     _check_worker_singleton_holder,
 )
+from teatree.cli.doctor.checks_scheduled_ci import check_scheduled_ci_run_health
 from teatree.cli.doctor.checks_session import (
     _check_account_switch,
     _check_agent_session_pins,
@@ -207,6 +208,7 @@ __all__ = (
     "_write_dev_sources_marker",
     "agent_skill_dirs",
     "check",
+    "check_scheduled_ci_run_health",
     "check_slack_engagement",
     "check_slack_roundtrip",
     "check_statusline",

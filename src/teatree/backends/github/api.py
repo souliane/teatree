@@ -208,6 +208,32 @@ def _gh_api_patch(endpoint: str, payload: RawAPIDict, *, token: str = "") -> obj
     return _gh_api_write(endpoint, payload, method="PATCH", token=token)
 
 
+def list_workflow_runs(repo: str, *, workflow: str, event: str, limit: int = 1, token: str = "") -> str:
+    """Raw ``gh run list --json`` stdout for *workflow*'s *event*-triggered runs, newest first.
+
+    Returns the payload UNPARSED so the caller can tell a malformed answer from an empty
+    one — collapsing those reports an unreadable forge as a workflow with no runs.
+    """
+    result = _run_gh(
+        "gh",
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--workflow",
+        workflow,
+        "--event",
+        event,
+        "--limit",
+        str(limit),
+        "--json",
+        "databaseId,status,conclusion,createdAt,url",
+        token=token,
+        timeout=_FORGE_READ_TIMEOUT_SECONDS,
+    )
+    return result.stdout
+
+
 def _parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
     """The ``(owner/repo, number)`` of a GitHub issue URL, or ``None`` when unparsable.
 

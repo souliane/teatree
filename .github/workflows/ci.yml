@@ -759,6 +759,17 @@ jobs:
           path: |
             coverage.shard${{ matrix.group }}
             shard-stats.${{ matrix.group }}.json
+      # Each group writes only the tests it ran, so an unchanged file means the recording
+      # never landed — and the upload below would then republish the committed file as a
+      # fresh measurement, leaving the refresh to report a green no-op while durations rot.
+      - name: Refuse to publish a durations file this shard did not rewrite
+        if: (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- dev/.test_durations; then
+            echo "::error::shard ${{ matrix.group }} recorded no durations — dev/.test_durations is byte-identical to the committed file, so the recording did not land. Refusing to upload it as a fresh measurement (#4477)." >&2
+            exit 1
+          fi
       # Refresh runs only: the fresh durations this shard just recorded, so the
       # `refresh-durations` job can merge the twelve groups into one balanced file.
       # Same gate as the recording above — an upload that opens without it would
@@ -769,6 +780,13 @@ jobs:
         with:
           name: durations-shard-${{ matrix.group }}
           path: dev/.test_durations
+          # `.test_durations` is HIDDEN and the action excludes hidden files by DEFAULT, so
+          # this search matched nothing on every shard, warned, and exited success — zero
+          # artifacts, and `refresh-durations` failing two jobs later on an absent file (#4477).
+          include-hidden-files: true
+          # A refresh-SOURCE upload that finds nothing is a failure; the default `warn` is what
+          # moved the symptom two jobs downstream, where it read as a download problem.
+          if-no-files-found: error
 
   # MAINTENANCE (daily cron, or an explicit dispatch): keep `dev/.test_durations`
   # from rotting (#3160).
@@ -797,7 +815,7 @@ jobs:
   # a PR against `main`. A cron always runs on the default branch, so it is a no-op
   # there; a dispatch can name any ref, and one launched from a feature branch would
   # push that branch's commits over the real refresh branch. The gate is byte-identical
-  # at all three sites on this path (the two `test-shard` steps above and here) —
+  # at all four sites on this path (the three `test-shard` steps above and here) —
   # `tests/test_ci_durations_refresh_gate.py` pins that, because a shard that records
   # nothing and a merge job that runs anyway is a refresh that reads as a clean no-op.
   refresh-durations:
