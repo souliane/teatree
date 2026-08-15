@@ -1259,9 +1259,10 @@ class TestHeadlessClaimLease(TestCase):
         # the live task, which then aborts "lease lost: re-claimed by another worker".
         from teatree.agents.runner import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
         from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 — deferred: local
-        from teatree.core.tasks import _CLAIM_LEASE_SECONDS, execute_task  # noqa: PLC0415 — deferred: local
+        from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS  # noqa: PLC0415 — deferred: local
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: local
 
-        assert _CLAIM_LEASE_SECONDS == _LEASE_SECONDS
+        assert HEARTBEAT_MATCHED_LEASE_SECONDS == _LEASE_SECONDS
 
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

@@ -28,6 +28,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: The lease every HEARTBEAT-RENEWED claim takes, in place of :func:`claim`'s 300s default.
+#: The renewal is an asyncio task on the same event loop the agent drives, so a starved box
+#: stretches the nominal 60s sleep: at 300s the first renewal can slip past expiry, the lease
+#: lapses, :func:`~teatree.core.managers_task_sweeps.reclaim_orphaned_claims` re-queues the
+#: still-running task, and the live attempt aborts having discarded whatever it produced — a
+#: self-inflicted reclaim, not a second executor. 15x the heartbeat interval buys ~15min of
+#: continuous starvation before a false lapse. Claim sites that never heartbeat keep the 300s
+#: default, whose whole point is that a dead owner's row frees up quickly. Kept equal to
+#: ``agents.runner._LEASE_SECONDS`` by a drift guard, since core cannot import the agents layer.
+HEARTBEAT_MATCHED_LEASE_SECONDS = 900
+
 
 def window_parked(task: "Task", now: datetime | None = None) -> bool:
     """Whether *task* sits behind an unelapsed usage-window park gate (Directive #3).

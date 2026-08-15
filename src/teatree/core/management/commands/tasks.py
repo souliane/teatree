@@ -17,6 +17,7 @@ from teatree.core.management.commands.tasks_session_view import (
 )
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
@@ -426,10 +427,18 @@ class Command(TyperCommand):
         return self._execute(task)
 
     def _claim_next_task(self, *, claimed_by: str) -> Task | None:
+        """Claim the next claimable task for both the ``claim`` and ``work-next`` leaves (#4464).
+
+        ``work-next`` hands the row straight to the heartbeat-renewing agent runner, so the
+        claim takes the heartbeat-matched lease rather than ``Task.claim``'s 300s default —
+        otherwise a starved first renewal lets the lease lapse under a live run and the sweep
+        re-queues it, discarding whatever the attempt had produced. ``claim`` shares the lease
+        because its caller is the same worker one step later.
+        """
         task = Task.objects.claimable().first()
         if task is None:
             return None
-        task.claim(claimed_by=claimed_by)
+        task.claim(claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
         return task
 
     @staticmethod
