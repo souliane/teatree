@@ -431,6 +431,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         repo_slugs=_owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
         max_concurrent=limit,
+        pass_budget_seconds=settings.issue_intake_pass_budget_seconds,
     )
 
 

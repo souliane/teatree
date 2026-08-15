@@ -47,6 +47,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_dream_staleness,
     _check_dream_transcript_visibility,
     _check_intake_budget_deadlock,
+    _check_intake_pass_incomplete,
     _check_loop_classification_drift,
     _check_loop_presets,
     _check_loop_schedule_liveness,
@@ -177,12 +178,15 @@ def _run_loop_intent_gates() -> bool:
     ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
     never claimed) joins them: a slow queue is not a fault, an invisible one is.
 
-    FIVE verdicts ARE returned, each a queue or authority that rots while every other
+    SIX verdicts ARE returned, each a queue or authority that rots while every other
     surface reads healthy; all five are evaluated before the ``and`` so none can mask
     another. ``_check_intent_freshness``: a consumable intent queue is non-empty while
     its consumer is not live (the directive-loop silent-freeze, zero signal).
     ``_check_intake_budget_deadlock`` (#3978): a full in-flight budget held entirely by
-    claims going nowhere admits no work. ``_check_loop_schedule_liveness`` (#4140): a
+    claims going nowhere admits no work. ``_check_intake_pass_incomplete`` (#4466) is its
+    upstream twin — the budget is free, but the scan never reaches the frontier where the
+    claimable issues are, so nothing filed is admitted and only a worker-log WARN says so.
+    ``_check_loop_schedule_liveness`` (#4140): a
     loop whose chain was dropped keeps a recent anchor, so it reads healthy while nothing
     will ever fire it again. ``_check_t3_master_unheld_while_loops_tick`` (#4253) inverts
     that — the chains fire, but the ``t3-master`` lease no reactive cycle runs without is
@@ -197,10 +201,11 @@ def _run_loop_intent_gates() -> bool:
     _check_marker_jam()
     _check_starved_intake_candidates()
     intake_ok = _check_intake_budget_deadlock()
+    pass_ok = _check_intake_pass_incomplete()
     scheduled_ok = _check_loop_schedule_liveness()
     master_ok = _check_t3_master_unheld_while_loops_tick()
     clears_ok = _check_unconsumed_merge_clears()
-    return _check_intent_freshness() and intake_ok and scheduled_ok and master_ok and clears_ok
+    return _check_intent_freshness() and intake_ok and pass_ok and scheduled_ok and master_ok and clears_ok
 
 
 def _check_claude_session_posture() -> bool:

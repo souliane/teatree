@@ -212,6 +212,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
     "issue_implementer_max_concurrent": _parse_strict_int,
+    "issue_intake_pass_budget_seconds": _parse_strict_float,
     "trusted_issue_authors": _parse_str_list,
     "independent_reviewer_identities": _parse_str_list,
     "umbrella_issue_labels": _parse_str_list,
