@@ -62,6 +62,38 @@ Each section below names a piece of friction the author kept hitting and what
 teatree does about it. None of these are framed as comparisons — other tools
 solve some of the same shapes well, and teatree borrows from them where it can.
 
+### Why it is shaped this way
+
+The question a reader arrives with is usually "why not just use a coding agent,
+or a CI bot?". The honest answer is about the shape of the problem, not about
+anyone else's tool.
+
+A chat-driven coding agent holds the working picture in its context — what is in
+flight, which PR waits on what, which review is half-done. Teatree keeps that
+picture in a database instead, which is what lets a run be interrupted and
+resumed without re-deriving it. A CI bot reacts to events on someone else's
+schedule; teatree runs a tick of its own, so deciding what to start next is
+something it does rather than something it waits for.
+
+Both choices cost something. There is a database to migrate, a worker to keep
+alive, and a good deal of machinery standing between a ticket and a diff. On a
+single repo, for a task that fits in one sitting, a plain agent does the same job
+in one prompt and nothing here earns its keep — that reader is right to stop
+here.
+
+**Three layers do the work**, and two of them are meant to disappear:
+
+- **factory** — runs the lifecycle autonomously: ticket, plan, implement, test, review, merge.
+- **interactive** — a Claude Code session that reviews, merges, diagnoses, and files what the factory cannot yet do for itself.
+- **human** — the owner.
+
+The intent is to remove the human from the loop first, then the interactive
+session. A workaround performed by the interactive layer is a defect in the
+factory layer that has not been fixed yet, so each one should produce a fix
+rather than become a habit ([#4478](https://github.com/souliane/teatree/issues/4478)).
+Neither layer has disappeared; this is the direction of travel, not a description
+of where it currently stands.
+
 ### A merge step that is neither a manual click nor a blind auto-merge
 
 The author kept ending up at one of two extremes: either babysitting every
@@ -142,13 +174,27 @@ The author kept noticing the agent only works while someone is actively
 prompting it. PRs sit waiting for review nudges, CI failures go unreviewed,
 ticket changes pile up in the inbox until someone glances at them.
 
-A long-running `/loop` slot inside the interactive session ticks every ~12
-minutes. Each tick fans out to scanners that watch assigned issues, open PRs,
+A singleton `t3 worker` owns the tick cadence — every ~12 minutes by default,
+with no Claude session needed. Each tick fans out to scanners that watch assigned issues, open PRs,
 PRs assigned for review, Slack mentions, the Notion bridge, and the local
 task queue. Findings render to a statusline file the Claude Code statusline
 hook reads in under 10ms, so live status sits at the top of every session
 without polling. Lease-gated dispatch turns scanner findings into agent
 actions when there is something to do, and keeps quiet when there is not.
+
+### What the machinery actually does
+
+Each line names a mechanism and what it buys, with the code that implements it:
+
+- Tracks the provider's own 5-hour and 7-day quota windows and picks an account with headroom, so an exhausted subscription window does not halt a run (`llm/anthropic_limits.py`, `core/models/usage_window_state.py`, `core/models/anthropic_active_pick.py`).
+- Separates exhaustion causes that look alike — API credit, 5-hour session limit, weekly limit, transient rate limit — because each needs a different remedy (`llm/anthropic_limits.py`).
+- Hands one session's durable state to the next as a database row the next session claims on start, so a handover needs no copy-paste (`core/models/session_handover.py`).
+- Binds a merge verdict to a specific commit SHA and re-checks it against the live head at merge time, so a later push voids the approval rather than inheriting it (`core/models/merge_clear.py`).
+- Reads real machine load and available memory, with hysteresis on both watermarks, before admitting new work, so throughput degrades instead of thrashing (`core/admission_governor.py`).
+- Repairs its own red CI behind an anti-cheat gate that refuses to touch the scenarios or the grader, so a "fix" cannot be a test weakened until it passes (`core/gates/eval_heal_anticheat_gate.py`).
+- Records work left uncommitted in a checkout as a durable row, so an interrupted session strands nothing silently (`core/models/unshipped_work_record.py`).
+- Requires the owner to ratify a typed mechanism sketch before a plain-English directive changes behaviour (`core/models/mechanism_sketch.py`, `core/models/ratification.py`).
+- Gives each ticket its own worktree, ports, and database, so two tickets in flight share no infrastructure.
 
 ## What teatree is NOT
 
@@ -354,7 +400,7 @@ choosing how to test); the CLI owns the *mechanical* work (branching, ports,
 DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
 
 - **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
-- **Loop & Statusline** — a long-running `/loop` slot scans signals,
+- **Loop & Statusline** — the singleton `t3 worker` scans signals,
   dispatches actions, renders a statusline file the Claude Code hook reads
   on every prompt.
 - **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
@@ -569,7 +615,7 @@ fails with an unsatisfiable-requirements error. See
 
 Installing the plugin does **not** force teatree on. By default a fresh Claude
 session does not auto-engage teatree — no skill auto-suggest, no load-block, no
-loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
+loop scheduling — and just shows a one-line how-to. Run `/t3:interactive` (or load any
 `t3:` skill) to engage teatree for that session, or set `autoload` in the teatree
 DB (`t3 <overlay> config_setting set autoload true`; env `T3_AUTOLOAD=1`) to
 auto-engage every session.
