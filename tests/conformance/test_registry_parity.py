@@ -31,6 +31,7 @@ from teatree.core.managers import TaskQuerySet
 from teatree.core.modelkit.phase_tools import _TOOLS_BY_PHASE, tools_for_phase
 from teatree.core.modelkit.phases import SCANNER_DISPATCHED_PHASES, SUBAGENT_BY_PHASE, normalize_phase
 from teatree.core.models import Task
+from teatree.core.review import refix_plan
 from teatree.loop.dispatch_tables import AGENT_ZONES, PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS
 from teatree.loop.persistence import _HANDLER_TARGET_PHASES, _ZONE_HANDLERS
@@ -142,16 +143,24 @@ class TestDispatchableFilterSsotParity:
         assert "dispatchable_q()" in source
 
     def test_ssot_is_referenced_by_every_live_consumer(self) -> None:
-        # The parity claim made explicit: orchestrate, claim-next and the budget gate
-        # each name ``dispatchable_q`` in their own source (pending-spawn is covered
-        # above), so no consumer can re-hand-roll the filter and silently diverge.
+        # The parity claim made explicit: orchestrate, the budget gate and the #4348
+        # narrowing wrapper each name ``dispatchable_q`` in their own source
+        # (pending-spawn is covered above), so no consumer can re-hand-roll the filter
+        # and silently diverge.
         consumers = (
             orchestrate._dispatchable_filter,
-            loop_dispatch.Command.claim_next,
+            refix_plan.claimable_dispatch_q,
             loop_dispatch._admit_budget_exhausted,
         )
         for fn in consumers:
             assert "dispatchable_q" in inspect.getsource(fn), fn.__qualname__
+
+    def test_claim_next_reaches_the_ssot_through_the_sanctioned_narrowing(self) -> None:
+        # ``claim-next`` reaches the SSOT one hop away, through the wrapper asserted
+        # above — the only sanctioned indirection. Naming it here keeps the chain
+        # pinned end to end: a claim site that hand-rolled its own filter would name
+        # neither symbol.
+        assert "claimable_dispatch_q()" in inspect.getsource(loop_dispatch.Command.claim_next)
 
 
 class TestLoopRegistryCoverageParity:

@@ -7,7 +7,9 @@ re-planned one leaves — a surface that always answers "nothing here" would loo
 identical to a healthy factory.
 """
 
+import json
 from datetime import timedelta
+from io import StringIO
 from typing import cast
 
 import pytest
@@ -81,3 +83,29 @@ class TicketRefixPlanStatusCommandTest(TestCase):
 
         assert [row["ticket_id"] for row in cast("list[dict[str, object]]", scoped["awaiting"])] == [ticket.pk]
         assert other["awaiting"] == []
+
+
+class TicketRefixPlanStatusChannelTest(TestCase):
+    """A front-end parses ``--json`` stdout, so it carries JSON or nothing at all."""
+
+    @staticmethod
+    def _channels(*args: str) -> tuple[str, str]:
+        out, err = StringIO(), StringIO()
+        call_command("ticket", "refix-plan-status", *args, stdout=out, stderr=err)
+        return out.getvalue(), err.getvalue()
+
+    def test_human_mode_leaves_stdout_empty(self) -> None:
+        _held_ticket(stale_plan=True)
+
+        out, err = self._channels()
+
+        assert out == ""
+        assert "Tickets awaiting a post-HOLD replan" in err
+
+    def test_json_mode_puts_only_json_on_stdout(self) -> None:
+        _held_ticket(stale_plan=True)
+
+        out, err = self._channels("--json")
+
+        assert json.loads(out)["awaiting"]
+        assert err == ""

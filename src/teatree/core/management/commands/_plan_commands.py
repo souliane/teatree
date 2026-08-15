@@ -11,12 +11,14 @@ CLI surface is unchanged. The pure validate/record/advance logic lives in
 ``stderr`` refusals + structured results).
 """
 
+import io
 import json
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.management.commands._plan_gate_commands import (
     PlanAdvanceError,
     PlanReconcileResult,
@@ -30,7 +32,7 @@ from teatree.core.management.commands._plan_gate_commands import (
 )
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
-from teatree.core.review.refix_plan import RefixPlanRow, tickets_awaiting_refix_plan
+from teatree.core.review.refix_plan import AwaitingRefixPlan, RefixPlanRow, tickets_awaiting_refix_plan
 from teatree.core.table_output import print_table
 
 
@@ -40,7 +42,29 @@ class RefixPlanStatusResult(TypedDict):
     awaiting: list[RefixPlanRow]
 
 
-class PlanCommands(TyperCommand):
+def _render_refix_plan_table(rows: list[AwaitingRefixPlan]) -> str:
+    """The human view of the report, rendered to a string so it can go to stderr."""
+    buffer = io.StringIO()
+    print_table(
+        ["ticket", "state", "held at", "plan at", "coding since plan", "open impl"],
+        [
+            [
+                row.ticket_id,
+                row.state,
+                row.hold_recorded_at.isoformat(timespec="minutes"),
+                row.plan_recorded_at.isoformat(timespec="minutes") if row.plan_recorded_at else "(never)",
+                row.coding_tasks_since_last_plan,
+                row.open_implementing_tasks,
+            ]
+            for row in rows
+        ],
+        title="Tickets awaiting a post-HOLD replan",
+        stream=buffer,
+    )
+    return buffer.getvalue()
+
+
+class PlanCommands(MachineOutputCommand):
     """The plan-gate operator command surface (mixed into the ``ticket`` command)."""
 
     @command()
@@ -297,24 +321,13 @@ class PlanCommands(TyperCommand):
         """
         rows = tickets_awaiting_refix_plan(overlay=overlay)
         payload = RefixPlanStatusResult(awaiting=[row.as_row() for row in rows])
-        if json_output:
-            self.stdout.write(json.dumps(payload))
-            return payload
-        print_table(
-            ["ticket", "state", "held at", "plan at", "coding since plan", "open impl"],
-            [
-                [
-                    row.ticket_id,
-                    row.state,
-                    row.hold_recorded_at.isoformat(timespec="minutes"),
-                    row.plan_recorded_at.isoformat(timespec="minutes") if row.plan_recorded_at else "(never)",
-                    row.coding_tasks_since_last_plan,
-                    row.open_implementing_tasks,
-                ]
-                for row in rows
-            ],
-            title="Tickets awaiting a post-HOLD replan",
-            stream=cast("IO[str]", self.stdout),
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_refix_plan_table(rows),
         )
         return payload
 

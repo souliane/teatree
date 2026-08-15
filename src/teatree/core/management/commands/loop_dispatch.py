@@ -20,6 +20,7 @@ from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.review.refix_plan import claimable_dispatch_q
 from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.dispatch_gates import spawn_display_name
@@ -318,9 +319,6 @@ class Command(TyperCommand):
         if _admit_budget_exhausted():
             task = None
         else:
-            from teatree.core.review.refix_plan import (  # noqa: PLC0415 — deferred: lazy command import
-                claimable_dispatch_q,
-            )
             from teatree.loop.queue_drain import admission_claim_order  # noqa: PLC0415 — deferred: lazy command import
 
             task = Task.objects.claim_next_pending(
