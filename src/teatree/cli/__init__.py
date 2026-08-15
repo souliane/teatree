@@ -34,6 +34,7 @@ import teatree.cli.ui as _ui
 from teatree.cli import (
     affected_tests_tools,
     comment_density_tools,
+    dependency_audit_tools,
     enforcement_tools,
     figma_tools,
     push_gate_tools,
@@ -90,6 +91,7 @@ __all__ = ["app", "main"]
 _TOOL_MODULES = (
     affected_tests_tools,
     comment_density_tools,
+    dependency_audit_tools,
     enforcement_tools,
     figma_tools,
     push_gate_tools,

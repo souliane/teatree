@@ -109,6 +109,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "issue_implementer_label",
         "ci_eval_heal_autofix_enabled",
         "issue_implementer_max_concurrent",
+        "issue_intake_pass_budget_seconds",
         "limit_autorecovery_enabled",
         "local_stack_queue_disabled",
         "local_stack_queue_max_attempts",

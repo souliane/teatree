@@ -30,10 +30,9 @@ from typing import TYPE_CHECKING
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.pull_request import PullRequest
-from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.models.review_target import review_target_for_task, verdict_at
 from teatree.core.models.task_phase_disposition import phase_output_reached
 from teatree.core.models.ticket import Ticket
-from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -100,15 +99,9 @@ def _review_verdict_evidence(task: "Task") -> str:
     """The recorded verdict proving *task*'s review landed, or ``""`` — review phases only.
 
     A verdict binds to the exact tree it judged, so it counts only at the head this review
-    is answerable for. The #68 auto-review contract carries both the PR and that head on
-    the linked :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row —
-    and the envelope writer (``agents.attempt_recorder``) records at that same row's head,
-    refusing a reviewer's divergent self-asserted one, so the two keys cannot drift (#4126).
-    Without one, the PR is the one the reviewer ticket IS (its ``issue_url``) and the head
-    is the ticket's ``reviewed_sha`` — which a later push REWRITES, so after a head move
-    the lookup finds no verdict at the new head and answers "no evidence", or finds the
-    verdict for the revision that superseded this one. Either way the answer is about a
-    head some reviewer actually judged, never a stale one this task left behind.
+    is answerable for — which :func:`~teatree.core.models.review_target.review_target_for_task`
+    resolves, and which the envelope writer (``agents.attempt_recorder``) records at through
+    that same resolver, so the reader's key and the writer's key cannot drift (#4126, #4308).
 
     The verdict is keyed by ``(slug, pr_id, reviewed_sha)`` alone: no path guarantees its
     ``ticket`` FK. The shell ``review record`` defaults it away while the envelope path
@@ -117,22 +110,10 @@ def _review_verdict_evidence(task: "Task") -> str:
     """
     if normalize_phase(task.phase) not in VERDICT_REVIEW_PHASES:
         return ""
-    dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
-    if dispatch is not None:
-        return _verdict_at(slug=dispatch.slug, pr_id=dispatch.pr_id, head=dispatch.head_sha)
-    reviewed_pr = pr_ref_from_url(task.ticket.issue_url)
-    if reviewed_pr is None:
+    target = review_target_for_task(task)
+    if target is None:
         return ""
-    head = str((task.ticket.extra or {}).get("reviewed_sha", ""))
-    return _verdict_at(slug=reviewed_pr.slug, pr_id=reviewed_pr.pr_id, head=head)
-
-
-def _verdict_at(*, slug: str, pr_id: int, head: str) -> str:
-    """The verdict recorded for this PR at *head*, described, or ``""`` — the shared lookup."""
-    reviewed = head.strip().lower()
-    if not reviewed:
-        return ""
-    verdict = ReviewVerdict.objects.filter(slug=slug, pr_id=pr_id, reviewed_sha=reviewed).first()
+    verdict = verdict_at(target)
     if verdict is None:
         return ""
-    return f"the review verdict {str(verdict.verdict)!r} is recorded at the reviewed head {reviewed[:8]}"
+    return f"the review verdict {str(verdict.verdict)!r} is recorded at the reviewed head {target.head_sha.lower()[:8]}"

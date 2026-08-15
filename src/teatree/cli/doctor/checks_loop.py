@@ -151,6 +151,29 @@ def _check_starved_intake_candidates() -> bool:
     return False
 
 
+def _check_intake_pass_incomplete() -> bool:
+    """FAIL when intake keeps running out of budget before finishing a pass (#4466).
+
+    An abandoned pass drops the frontier — the only candidates that can still become work —
+    so nothing filed in that window is admitted. It surfaced only as a WARN in the worker
+    log, which nobody reads: 21 abandoned passes in three hours went unnoticed while five
+    filed issues sat unadmitted. Crash-proof: any error degrades to OK with a WARN.
+    """
+    from teatree.core.models import IntakeScanCursor  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        stalled = list(IntakeScanCursor.objects.stalled())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Intake-pass check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for row in stalled:
+        typer.echo(
+            f"FAIL  Intake pass incomplete: {row.report()} — nothing filed since is being admitted; "
+            "raise `issue_intake_pass_budget_seconds` or cut the candidate set (#4466)."
+        )
+    return not stalled
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 

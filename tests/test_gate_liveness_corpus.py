@@ -655,6 +655,30 @@ def _dispatch_admission_allow(ctx: GateContext) -> dict:
     return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": f"{_ADMISSION_OK} review"}}
 
 
+# brief-anchor lint on dispatch (#4341): a brief asserting a file:line and a
+# count with no SHA anchor and no trust-the-code clause. Arranged in REFUSE
+# posture — the shipped default warns without denying, so only the opt-in
+# posture has a deny arm to prove reachable.
+_BRIEF_ANCHOR_OK = "[brief-anchor-ok: the sha is on the ticket]"
+_UNANCHORED_BRIEF = "The guard is in src/teatree/core/ticket.py:412 and there are 3 callers. Fix each."
+
+
+def _arrange_brief_anchor(ctx: GateContext) -> None:
+    ctx.seed_setting("brief_anchor_gate_refuse", value=True)
+
+
+def _brief_anchor_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": _UNANCHORED_BRIEF}}
+
+
+def _brief_anchor_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Agent",
+        "tool_input": {"prompt": f"{_BRIEF_ANCHOR_OK} {_UNANCHORED_BRIEF}"},
+    }
+
+
 # banned-terms (PreToolUse Bash arm): a publish body carrying a configured
 # banned term denies; a clean body allows. (No Slack-MCP arm exists.)
 
@@ -1129,6 +1153,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_dispatch_admission_deny,
         allow_input=_dispatch_admission_allow,
         arrange=_arrange_dispatch_admission,
+    ),
+    GateRow(
+        gate_id="brief-anchor-lint",
+        handler=router.handle_brief_anchor_lint,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_brief_anchor_deny,
+        allow_input=_brief_anchor_allow,
+        arrange=_arrange_brief_anchor,
     ),
     GateRow(
         gate_id="banned-terms-bash",
