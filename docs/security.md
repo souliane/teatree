@@ -41,16 +41,16 @@ the `args` parameter to `subprocess.run()` or `subprocess.Popen()`
 | Hook | Return type | Consuming command |
 |---|---|---|
 | `OverlayRuntime.run_commands()` | `dict[str, list[str]]` | `run backend`, `run build-frontend`, `run tests`, `worktree start` |
-| `OverlayBase.get_test_command()` | `list[str]` | `run tests` |
-| `OverlayBase.get_lint_command()` | `list[str]` | `run lint` |
+| `OverlayRuntime.test_command()` | `list[str]` | `run tests` |
+| `OverlayRuntime.lint_command()` | `list[str]` | `run lint` |
 | `OverlayProvisioning.services_config()` | `dict[str, ServiceSpec]` | `run backend`, `worktree start` (reads `start_command`) |
 | `OverlayBase.get_provision_steps()` | `list[ProvisionStep]` | `worktree provision` (calls `step.callable()`) |
-| `OverlayBase.get_post_db_steps()` | `list[ProvisionStep]` | `worktree provision` |
-| `OverlayBase.get_pre_run_steps()` | `list[ProvisionStep]` | `worktree start` / `worktree provision` |
-| `OverlayBase.get_cleanup_steps()` | `list[ProvisionStep]` | `workspace clean-all` |
-| `OverlayBase.get_reset_passwords_command()` | `ProvisionStep \| None` | `worktree provision` |
+| `OverlayProvisioning.post_db_steps()` | `list[ProvisionStep]` | `worktree provision` |
+| `OverlayRuntime.pre_run_steps()` | `list[ProvisionStep]` | `worktree start` / `worktree provision` |
+| `OverlayProvisioning.cleanup_steps()` | `list[ProvisionStep]` | `workspace clean-all` |
+| `OverlayProvisioning.reset_passwords_command()` | `ProvisionStep \| None` | `worktree provision` |
 | `OverlayProvisioning.env_extra()` | `dict[str, str]` | Injected into subprocess `env` for run/lifecycle commands |
-| `OverlayBase.get_envrc_lines()` | `list[str]` | Written to `.envrc` in the worktree directory |
+| `OverlayProvisioning.envrc_lines()` | `list[str]` | Written to `.envrc` in the worktree directory |
 
 `ProvisionStep.callable` is an arbitrary `Callable[[], None]` — the
 overlay can do anything it wants inside that callback.
