@@ -43,7 +43,7 @@ def spans_for_tickets(ticket_ids: Sequence[int]) -> dict[int, tuple[PhaseSpan, .
     return _group_by_ticket(TicketTransition.objects.filter(ticket_id__in=ticket_ids))
 
 
-def spans_since(since: datetime, until: datetime | None = None) -> tuple[PhaseSpan, ...]:
+def spans_since(since: datetime, until: datetime | None = None, *, overlay: str = "") -> tuple[PhaseSpan, ...]:
     """Every span that FINISHED in the window, across every ticket that moved in it.
 
     A span is placed by where it ENDED, not where it began: the whale spans are long,
@@ -51,10 +51,16 @@ def spans_since(since: datetime, until: datetime | None = None) -> tuple[PhaseSp
     disappears from the aggregate. Reaching the predecessor of the window's first
     in-window transition is why the candidate set is "tickets that moved", not
     "transitions in the window".
+
+    *overlay* narrows the candidate set to one overlay's tickets; the empty default is a
+    global read. Every aggregate over spans arrives here, so this is the one scope
+    predicate — a second one downstream would be a second answer to one question.
     """
     moved = TicketTransition.objects.filter(created_at__gte=since).values("ticket_id")
     if until is not None:
         moved = moved.filter(created_at__lte=until)
+    if overlay:
+        moved = moved.filter(ticket__overlay=overlay)
     by_ticket = _group_by_ticket(TicketTransition.objects.filter(ticket_id__in=moved))
     return tuple(
         span

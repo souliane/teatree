@@ -37,6 +37,15 @@ Edit the source command, not this file.
 
 Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
+## `cycle_time`
+
+Group root — forces sub-commands to be addressed by name.
+
+| Subcommand | Description |
+| --- | --- |
+| `ticket` | Report one ticket's per-phase durations, split into queue wait and agent work |
+| `distribution` | Report median and p90 per transition edge over the trailing window, slowest first |
+
 ## `db`
 
 | Subcommand | Description |

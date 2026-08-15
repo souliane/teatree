@@ -6772,6 +6772,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
+│ cycle_time      Where intake-to-merge time goes — per-ticket and aggregate   │
+│                 (read-only).                                                 │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -10117,6 +10119,59 @@ Usage: t3 teatree standup stale [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --days        INTEGER  Inactivity threshold in days. [default: 3]            │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree cycle_time`
+
+```
+Usage: t3 teatree cycle_time [OPTIONS] COMMAND [ARGS]...
+
+ Where intake-to-merge time goes — per-ticket and aggregate (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ ticket        Report one ticket's per-phase durations, split into queue wait │
+│               and agent work.                                                │
+│ distribution  Report median and p90 per transition edge over the trailing    │
+│               window.                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree cycle_time ticket`
+
+```
+Usage: t3 teatree cycle_time ticket [OPTIONS] TICKET_ID
+
+ Report one ticket's per-phase durations, split into queue wait and agent work.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  Ticket pk, issue number, issue URL, or repo#N.     │
+│                           [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the structured report as JSON instead of the human      │
+│                 view.                                                        │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree cycle_time distribution`
+
+```
+Usage: t3 teatree cycle_time distribution [OPTIONS]
+
+ Report median and p90 per transition edge over the trailing window, slowest
+ first.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --window-days        INTEGER  Trailing window width in days (default 7).     │
+│                               [default: 7]                                   │
+│ --json                        Emit the structured report as JSON instead of  │
+│                               the human view.                                │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

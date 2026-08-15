@@ -97,3 +97,29 @@ class TransitionTrendTestCase(TestCase):
         series = transition_trend(since=ORIGIN - timedelta(days=1), bucket=timedelta(days=1))
         coding = next(row for row in series if (row.from_state, row.to_state) == (State.PLANNED, State.CODED))
         assert [point.samples for point in coding.points] == [2, 2]
+
+
+class OverlayScopeTestCase(TestCase):
+    """Both aggregates reach the scope through ``spans_since``, so both must honour it (#4480)."""
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.window = ORIGIN - timedelta(days=1)
+        mine = ticket_with_edge(source=State.PLANNED, target=State.CODED, start=0, minutes=10)
+        theirs = ticket_with_edge(source=State.CODED, target=State.TESTED, start=0, minutes=90)
+        Ticket.objects.filter(pk=mine.pk).update(overlay="t3-teatree")
+        Ticket.objects.filter(pk=theirs.pk).update(overlay="other-overlay")
+
+    def test_the_distribution_drops_another_overlays_edge(self) -> None:
+        stats = transition_distribution(since=self.window, overlay="t3-teatree")
+        assert [(stat.from_state, stat.to_state) for stat in stats] == [(State.PLANNED, State.CODED)]
+
+    def test_the_unscoped_distribution_still_spans_every_overlay(self) -> None:
+        assert len(transition_distribution(since=self.window)) == 2
+
+    def test_the_trend_drops_another_overlays_edge(self) -> None:
+        series = transition_trend(since=self.window, bucket=timedelta(days=1), overlay="t3-teatree")
+        assert [(row.from_state, row.to_state) for row in series] == [(State.PLANNED, State.CODED)]
+
+    def test_the_unscoped_trend_still_spans_every_overlay(self) -> None:
+        assert len(transition_trend(since=self.window, bucket=timedelta(days=1))) == 2

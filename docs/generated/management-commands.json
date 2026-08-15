@@ -76,6 +76,20 @@
       "subcommands": []
     },
     {
+      "help": "Group root \u2014 forces sub-commands to be addressed by name.",
+      "name": "cycle_time",
+      "subcommands": [
+        {
+          "help": "Report one ticket's per-phase durations, split into queue wait and agent work",
+          "name": "ticket"
+        },
+        {
+          "help": "Report median and p90 per transition edge over the trailing window, slowest first",
+          "name": "distribution"
+        }
+      ]
+    },
+    {
       "help": "",
       "name": "db",
       "subcommands": [

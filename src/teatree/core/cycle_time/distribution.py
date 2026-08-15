@@ -39,9 +39,14 @@ class TransitionTrend:
     points: tuple[TrendPoint, ...]
 
 
-def transition_distribution(*, since: datetime, until: datetime | None = None) -> tuple[TransitionStat, ...]:
+def transition_distribution(
+    *,
+    since: datetime,
+    until: datetime | None = None,
+    overlay: str = "",
+) -> tuple[TransitionStat, ...]:
     """One row per transition edge, slowest median first — the whale leads the table."""
-    by_edge = _by_edge(spans_since(since, until))
+    by_edge = _by_edge(spans_since(since, until, overlay=overlay))
     stats = [
         TransitionStat(
             from_state=from_state,
@@ -60,6 +65,7 @@ def transition_trend(
     since: datetime,
     bucket: timedelta,
     until: datetime | None = None,
+    overlay: str = "",
 ) -> tuple[TransitionTrend, ...]:
     """Each edge's median per time bucket — the "is the factory getting slower" read.
 
@@ -67,7 +73,7 @@ def transition_trend(
     is always a full one and a window's first point is never a fragment that reads as a
     dip. An empty bucket yields no point rather than a zero.
     """
-    spans = spans_since(since, until)
+    spans = spans_since(since, until, overlay=overlay)
     buckets: dict[tuple[str, str], dict[datetime, list[float]]] = {}
     for span in spans:
         index = int((span.left_at - since) / bucket)

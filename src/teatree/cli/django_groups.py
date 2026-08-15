@@ -263,6 +263,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("stale", "List tickets with no activity past the staleness threshold (read-only)."),
         ],
     ),
+    # The group name is the Django command name (``_bridge_subcommand`` passes it
+    # verbatim to ``managepy_core``), so it carries the underscore rather than a hyphen.
+    "cycle_time": DjangoGroup(
+        "Where intake-to-merge time goes — per-ticket and aggregate (read-only).",
+        [
+            ("ticket", "Report one ticket's per-phase durations, split into queue wait and agent work."),
+            ("distribution", "Report median and p90 per transition edge over the trailing window."),
+        ],
+        core_dispatch=True,
+    ),
     "checking": DjangoGroup(
         "Terse 'what did I miss' report since the last check (read-only).",
         [

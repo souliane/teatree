@@ -10,6 +10,7 @@ import typer
 
 from teatree.cli.loop.preset import register as register_preset
 from teatree.cli.overlay import DJANGO_GROUPS
+from teatree.core.management.commands.cycle_time import Command as CycleTimeCommand
 from teatree.core.management.commands.e2e import Command as E2eCommand
 from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.learnings import Command as LearningsCommand
@@ -112,6 +113,35 @@ def test_honesty_group_dispatches_to_core() -> None:
 def test_honesty_subcommands_map_to_real_command_methods() -> None:
     for name in _honesty_subcommands():
         assert hasattr(HonestyCommand, name.replace("-", "_")), name
+
+
+def _cycle_time_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["cycle_time"].subcommands}
+
+
+def test_cycle_time_group_exposes_both_read_verbs() -> None:
+    # #4480: the measurement modules computed spans/timelines/distributions that no
+    # command could read. Without a bridge entry the overlay CLI has no cycle-time
+    # front door at all and the data stays unreadable.
+    assert _cycle_time_subcommands() == {"ticket", "distribution"}
+
+
+def test_cycle_time_group_dispatches_to_core() -> None:
+    # It reads the teatree-core control DB, so it must route via ``managepy_core``
+    # rather than an overlay manage.py whose settings never register the command.
+    assert DJANGO_GROUPS["cycle_time"].dispatches_to_core("distribution") is True
+
+
+def test_cycle_time_group_name_matches_the_django_command_module() -> None:
+    # ``_bridge_subcommand`` passes the group name verbatim to ``managepy_core``, so a
+    # hyphenated group would dispatch a command name Django cannot resolve.
+    assert "cycle_time" in DJANGO_GROUPS
+    assert "cycle-time" not in DJANGO_GROUPS
+
+
+def test_cycle_time_subcommands_map_to_real_command_methods() -> None:
+    for name in _cycle_time_subcommands():
+        assert hasattr(CycleTimeCommand, name.replace("-", "_")), name
 
 
 def test_loop_preset_group_exposes_every_management_subcommand() -> None:
