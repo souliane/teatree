@@ -64,6 +64,12 @@ _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
 _SECONDS_PER_DAY = 86400
 
+#: The floor under :func:`freeze_cutoff_seconds` — the reconciliation freeze alarm never
+#: fires sooner than this however short the cadence. It is the flat cutoff that alarm used
+#: to apply to EVERY loop, kept as a floor so scaling to cadence can only ever loosen a
+#: fast loop's alarm, never tighten it into a minute-scale hair trigger.
+FREEZE_ALARM_FLOOR_SECONDS = _SECONDS_PER_DAY
+
 
 def format_age(age_seconds: float) -> str:
     """Compact human age — ``45s`` / ``12m`` / ``6h`` / ``3d``."""
@@ -224,6 +230,23 @@ class LoopHealth:
             "anchor, and no control plane explains it. Check "
             "`t3 loop status` and the worker log for a failing tick."
         )
+
+
+def freeze_cutoff_seconds(cadence_seconds: int | None) -> float:
+    """How stale a loop's anchor may get before it is frozen — ``3x`` its OWN cadence.
+
+    The one home for the rule, so the reconciliation alarm and this module's status
+    reading can never hold different opinions of what "stale" means. A flat day applied
+    to every loop made the weekly ``memory_skim`` stale for ~86% of every week, so the
+    line naming a genuinely dead loop arrived beside a permanent false one (#4355).
+
+    ``>=`` this value is stale, matching :data:`STALE_CADENCE_MULTIPLIER`'s own reading —
+    three missed slots IS a stopped loop, not the last moment before one. A cadence-less
+    (every-tick) loop declares no interval to scale, so it keeps the floor.
+    """
+    if cadence_seconds is None:
+        return float(FREEZE_ALARM_FLOOR_SECONDS)
+    return float(max(FREEZE_ALARM_FLOOR_SECONDS, STALE_CADENCE_MULTIPLIER * cadence_seconds))
 
 
 def driverless_loops() -> tuple[str, ...]:
