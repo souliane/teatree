@@ -11,8 +11,6 @@ from typing import cast
 import pytest
 from django.core.management import call_command
 
-from teatree.core.gates.fold_preservation import fold_marker
-
 _MEMBER_BODY = """## The problem
 
 `apply_lane_ceiling` drops force-keep items re-added after the cut.
@@ -23,6 +21,11 @@ _MEMBER_BODY = """## The problem
 """
 
 _HOST_BODY = "## The lane ceiling is applied twice\n\nThe ceiling runs before and after the force-keep pass.\n"
+
+
+def _marker(ref: str) -> str:
+    """The literal ``fold_preservation.fold_marker`` format, pinned in its own test file."""
+    return f"## Folded in: {ref}"
 
 
 @pytest.fixture
@@ -60,7 +63,7 @@ class TestTicketFold:
         assert _fold(host, member, out)["folded"] is True
 
         merged = out.read_text(encoding="utf-8")
-        assert fold_marker("#4247") in merged
+        assert _marker("#4247") in merged
         assert "The ceiling runs before and after the force-keep pass." in merged
         for line in (line.strip() for line in _MEMBER_BODY.splitlines() if line.strip()):
             assert line in merged
@@ -100,7 +103,7 @@ class TestTicketFoldCheck:
     def test_a_host_that_summarised_the_member_exits_nonzero(self, bodies: tuple[Path, Path, Path]) -> None:
         host, member, _ = bodies
         lossy = host.parent / "lossy.md"
-        lossy.write_text(f"{_HOST_BODY}\n{fold_marker('#4247')}\n\nSee #4247.\n", encoding="utf-8")
+        lossy.write_text(f"{_HOST_BODY}\n{_marker('#4247')}\n\nSee #4247.\n", encoding="utf-8")
 
         with pytest.raises(SystemExit) as exc:
             call_command("ticket", "fold-check", "--host-body", str(lossy), "--member-body", str(member))
