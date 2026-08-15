@@ -1191,6 +1191,10 @@
           "name": "plan-reaffirm"
         },
         {
+          "help": "Report every ticket whose next implementing dispatch would run on findings alone",
+          "name": "refix-plan-status"
+        },
+        {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
           "name": "rubric-set"
         },

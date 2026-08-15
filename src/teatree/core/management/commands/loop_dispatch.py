@@ -318,12 +318,15 @@ class Command(TyperCommand):
         if _admit_budget_exhausted():
             task = None
         else:
+            from teatree.core.review.refix_plan import (  # noqa: PLC0415 — deferred: lazy command import
+                claimable_dispatch_q,
+            )
             from teatree.loop.queue_drain import admission_claim_order  # noqa: PLC0415 — deferred: lazy command import
 
             task = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,
                 claimed_by_session=session,
-                extra_filter=Task.dispatchable_q(),
+                extra_filter=claimable_dispatch_q(),
                 ordering=admission_claim_order(),
             )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []

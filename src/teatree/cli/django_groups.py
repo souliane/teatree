@@ -348,6 +348,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("skip-planning", "Mark a trivial ticket to skip planning and advance to PLANNED (--reason, no artifact)."),
             ("plan-reconcile-inflight", "Retroactively advance STARTED tickets to PLANNED after the gate was added."),
             ("plan-reaffirm", "Re-bind a plan to a new base — the plan-currency gate's never-lockout escape."),
+            ("refix-plan-status", "List tickets whose next implementing dispatch would run on findings alone."),
             ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
             (
                 "integration-review-override",

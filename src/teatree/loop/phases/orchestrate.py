@@ -186,12 +186,16 @@ def _admit_lane(
 
     lane = _lane_filter(merge=merge)
     try:
+        # The in-flight count reads the plain lane: a CLAIMED coding task on a ticket
+        # awaiting a post-HOLD replan still holds its slot, so counting it out would
+        # over-admit. Only the ADMISSION side takes the #4348 narrowing.
         cap = max(0, target - Task.objects.in_flight_claimed_count(lane))
         if cap <= 0:
             return
+        claimable = lane & _claimable_narrowing()
         candidates = (
             Task.objects.filter(status=Task.Status.PENDING)
-            .filter(lane)
+            .filter(claimable)
             .annotate(**admission_priority_annotations())
             .select_related("ticket")
             .order_by(*ADMISSION_ORDER)[: cap * _SPREAD_OVERSAMPLE]
@@ -203,7 +207,7 @@ def _admit_lane(
                 continue
             admitted = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,
-                extra_filter=lane & Q(pk=task.pk),
+                extra_filter=claimable & Q(pk=task.pk),
                 ordering=admission_claim_order(),
             )
             if admitted is not None:
@@ -216,6 +220,18 @@ def _lane_filter(*, merge: bool) -> Q:
     """The dispatchable filter narrowed to one lane's phases."""
     merge_phases = Q(phase__in=sorted(_MERGE_PHASES))
     return _dispatchable_filter() & (merge_phases if merge else ~merge_phases)
+
+
+def _claimable_narrowing() -> Q:
+    """The admission-only half of ``claimable_dispatch_q`` — the #4348 replan exclusion.
+
+    Taken from the same symbol ``loop_dispatch``'s claim uses, so the two claim
+    paths cannot disagree about which rows a post-HOLD replan is holding back. Only
+    the exclusion is taken here, because the lane already carries ``dispatchable_q``.
+    """
+    from teatree.core.review.refix_plan import not_awaiting_refix_plan_q  # noqa: PLC0415 — deferred: ORM at tick time
+
+    return not_awaiting_refix_plan_q()
 
 
 def _task_area_key(task: "Task") -> str:

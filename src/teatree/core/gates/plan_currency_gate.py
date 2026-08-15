@@ -19,6 +19,12 @@ It mirrors ``anti_vacuity_gate`` file-for-file:
     the plan's ``base_sha`` equals the live target HEAD (the SHA bind), mirroring
     ``MergeClear.reviewed_sha`` / ``anti_vacuity_gate.is_bound_to``.
 
+``refix_plan_stale_reason`` (``core.review.refix_plan``, #4348)
+    the REVIEW-time currency axis, checked UNCONDITIONALLY: a plan older than the
+    ticket's newest blocking HOLD verdict authorises coding against a findings list.
+    Its escapes are per-ticket and audited (``plan-reaffirm`` / ``skip-planning``),
+    matching the H3 directive teeth rather than the flag-gated axes below.
+
 ``check_plan_current``
     the gate: when ``require_plan_adequacy`` is on, the latest plan must be adequate
     AND current. STALE-IS-ABSENT — a plan whose base moved off the live target HEAD
@@ -48,6 +54,7 @@ from teatree.core.models.plan_adequacy import declared_seam_paths, is_adequate, 
 from teatree.core.models.plan_artifact import PlanArtifact, plan_adequacy_required
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
+from teatree.core.review.refix_plan import refix_plan_stale_reason
 from teatree.core.worktree.branch_currency import commits_between_touching_paths, fetch_target_head
 
 if TYPE_CHECKING:
@@ -102,6 +109,15 @@ def check_plan_current(ticket: "Ticket") -> bool:
     deterministic block.
     """
     get_gate("design_critic")(ticket)
+
+    # #4348 — the REVIEW-time currency axis, unconditional for the same reason the
+    # H3 directive teeth below are: this is not an adequacy question. A plan older
+    # than the newest blocking verdict authorises coding against a findings list,
+    # and the escapes are per-ticket and audited (plan-reaffirm / skip-planning),
+    # not a global flag. A strict no-op for any ticket with no HOLD verdict.
+    refix_block = refix_plan_stale_reason(ticket)
+    if refix_block:
+        raise NoCurrentPlanError(refix_block)
 
     artifact = latest_plan_artifact(ticket)
 

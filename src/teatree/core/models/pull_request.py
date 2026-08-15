@@ -45,6 +45,26 @@ class PullRequestQuerySet(models.QuerySet):
             return row.ticket
         return self._ticket_carrying_pr(slug=slug, pr_id=pr_id, pr_url=pr_url)
 
+    def refs_for_ticket(self, ticket: "Ticket") -> set[tuple[str, int]]:
+        """Every ``(casefolded slug, pr_id)`` *ticket* owns — the inverse of :meth:`owning_ticket`.
+
+        Reads BOTH stores for the same reason that method does: a PR opened outside
+        the pipeline, or before the row write existed, is recorded only in ``extra``,
+        so a resolver reading one store while the writer filled the other resolves
+        nothing. A non-numeric ``iid`` and an unparsable url are skipped rather than
+        guessed at.
+        """
+        refs = {
+            (row.repo.casefold(), int(row.iid))
+            for row in self.filter(ticket=ticket).only("repo", "iid")
+            if row.iid.isdigit()
+        }
+        for url in self._recorded_pr_urls(ticket.extra):
+            parsed = repo_and_iid(url)
+            if parsed is not None:
+                refs.add((parsed[0].casefold(), parsed[1]))
+        return refs
+
     @staticmethod
     def _names_pr(key: str, *, slug: str, pr_id: int, pr_url: str) -> bool:
         """True iff the recorded url *key* is this PR.

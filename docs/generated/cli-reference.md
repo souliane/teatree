@@ -10804,6 +10804,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              PLANNED after the gate was added.               │
 │ plan-reaffirm                Re-bind a plan to a new base — the              │
 │                              plan-currency gate's never-lockout escape.      │
+│ refix-plan-status            List tickets whose next implementing dispatch   │
+│                              would run on findings alone.                    │
 │ e2e-bypass                   Record a single-use user bypass of the          │
 │                              mandatory-E2E gate (#1967).                     │
 │ integration-review-override  Record the audited escape hatch for the         │
@@ -11007,6 +11009,27 @@ Usage: t3 teatree ticket plan-reaffirm [OPTIONS] TICKET_ID
 │    --by                   TEXT  Who is reaffirming (audit trail).            │
 │                                 [default: operator]                          │
 │    --help                       Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket refix-plan-status`
+
+```
+Usage: t3 teatree ticket refix-plan-status [OPTIONS]
+
+ Report every ticket whose next implementing dispatch would run on findings
+ alone.
+
+ The #4348 surface. ``coding_since_plan > 1`` on an open ticket is the cheap
+ detector that re-fixes ran with no intervening plan — the measurement that
+ opened the issue had to be hand-queried out of the control DB because nothing
+ reported it. An empty report is the healthy state, not a missing answer.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Scope the report to one overlay (default: every       │
+│                        overlay).                                             │
+│ --json                 Emit the rows as JSON.                                │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

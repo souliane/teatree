@@ -1,7 +1,7 @@
 """The ``ticket`` plan-gate operator commands, factored out of ``ticket.py``.
 
 Covers ``plan`` / ``plan-bypass`` / ``skip-planning`` / ``plan-reconcile-inflight``
-/ ``plan-reaffirm``. They live here as a :class:`PlanCommands` mixin that the ``ticket``
+/ ``plan-reaffirm`` / ``refix-plan-status``. They live here as a :class:`PlanCommands` mixin that the ``ticket``
 :class:`~django_typer.management.TyperCommand` inherits from, so they mount under
 ``t3 <overlay> ticket plan`` (etc.) while their LOC stays out of the (cap-bound)
 ``ticket.py`` god-module — the same split as :class:`RubricCommands`. django-typer
@@ -12,7 +12,7 @@ CLI surface is unchanged. The pure validate/record/advance logic lives in
 """
 
 import json
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -30,6 +30,14 @@ from teatree.core.management.commands._plan_gate_commands import (
 )
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
+from teatree.core.review.refix_plan import RefixPlanRow, tickets_awaiting_refix_plan
+from teatree.core.table_output import print_table
+
+
+class RefixPlanStatusResult(TypedDict):
+    """The ``refix-plan-status`` payload — one row per ticket awaiting a post-HOLD replan."""
+
+    awaiting: list[RefixPlanRow]
 
 
 class PlanCommands(TyperCommand):
@@ -270,6 +278,45 @@ class PlanCommands(TyperCommand):
             f"  plan reaffirmed for ticket {ticket.pk} (artifact {artifact.pk}) at base {artifact.base_sha[:12]}"
         )
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
+    @command(name="refix-plan-status")
+    def refix_plan_status(
+        self,
+        *,
+        overlay: Annotated[
+            str, typer.Option("--overlay", help="Scope the report to one overlay (default: every overlay).")
+        ] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
+    ) -> RefixPlanStatusResult:
+        """Report every ticket whose next implementing dispatch would run on findings alone.
+
+        The #4348 surface. ``coding_since_plan > 1`` on an open ticket is the cheap
+        detector that re-fixes ran with no intervening plan — the measurement that
+        opened the issue had to be hand-queried out of the control DB because nothing
+        reported it. An empty report is the healthy state, not a missing answer.
+        """
+        rows = tickets_awaiting_refix_plan(overlay=overlay)
+        payload = RefixPlanStatusResult(awaiting=[row.as_row() for row in rows])
+        if json_output:
+            self.stdout.write(json.dumps(payload))
+            return payload
+        print_table(
+            ["ticket", "state", "held at", "plan at", "coding since plan", "open impl"],
+            [
+                [
+                    row.ticket_id,
+                    row.state,
+                    row.hold_recorded_at.isoformat(timespec="minutes"),
+                    row.plan_recorded_at.isoformat(timespec="minutes") if row.plan_recorded_at else "(never)",
+                    row.coding_tasks_since_last_plan,
+                    row.open_implementing_tasks,
+                ]
+                for row in rows
+            ],
+            title="Tickets awaiting a post-HOLD replan",
+            stream=cast("IO[str]", self.stdout),
+        )
+        return payload
 
     @staticmethod
     def _parse_adequacy_json(adequacy_json: str) -> dict | None:
