@@ -25,7 +25,7 @@ from teatree.core.config_interchange.migration import export_db_to_toml, import_
 from teatree.core.config_interchange.secret_guard import is_private_backup
 from teatree.core.config_interchange.types import ConfigImport
 from teatree.core.models import ConfigSetting, Loop
-from teatree.dash.settings_editor import export_text, import_preview
+from teatree.dash.interchange import export_text, import_preview
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
 #: Rows a live box holds in the ``ConfigSetting`` store that are NOT operator configuration —

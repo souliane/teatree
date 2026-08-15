@@ -398,6 +398,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `incoming_event_retention_days` | #3693: retention window (days) for `IncomingEvent` rows (default `30`, `0` disables). `retention prune` deletes only FINISHED events (drained/dead-lettered) received before this window; an un-processed, non-dead-lettered event is never pruned. Per-overlay overridable. |
 | `park_attempt_retention_days` | Retention window (days) for limit-PARK audit rows on `TaskAttempt` (default `7`, `0` disables). A separate lane from `task_attempt_retention_days`, because a park RETURNS its task to the queue PENDING — so a park row's owning task is by construction non-terminal and the terminal-owned guard can never reach one, which is why a park-bloated table reported "would prune 0". This lane keys on the canonical `limit_parked:` marker, NEVER deletes a row carrying billed telemetry (the priced rows are the whole cost ledger), and measures age on `ended_at` (the last observation) so a live coalesced park is not deleted. Deletes in separately-committed batches so no single statement holds the SQLite write lock across the whole set. Per-overlay overridable; enforced by `teatree.core.retention` via `TaskAttempt.objects.prunable_parks`. |
 | `ticket_transition_prune_disabled` | #3871: kill switch for the `TicketTransition` lane (default `false`). The lane has no window — its trigger is the owning ticket CLOSING (`Ticket.marker_release_states()` plus RETROSPECTED), because a closed ticket's operational residue is dead weight the moment it closes and waiting out a window is arbitrary. What it removes is decided per ROW, not per table: only a `from_state == to_state` row, which records no edge and so is not history a reopened ticket (`reopen` / `reopen_for_followup` / `rework`) needs. Every real state edge survives for as long as the ticket does. Each ticket's earliest row (the creation proxy `factory_signal_queries` dates a fix ticket by via `Min(created_at)`) and latest row (the last-activity signal the stale-ticket and stuck-redispatch scanners read) are never touched. Per-overlay overridable; enforced by `teatree.core.models.transition`. |
+| `deferred_question_age_ceiling_days` | #4178: age backstop over the pending `DeferredQuestion` backlog (default `3` days, `0` disables). A pending row older than the ceiling is ESCALATED by the tick sweep `teatree.loop.question_drain.drain_pending_questions` — `escalated_at`/`escalation_count` stamped plus an `escalated` audit row — and NEVER dismissed, so directive #45 (an unresolved request is never silently dropped) still holds. Rate-limited to one escalation per ceiling window, so a long-lived question is re-surfaced rather than re-stamped every tick. Per-overlay overridable. |
 | `task_result_retention_days` | #3871: retention window (days) for `django_tasks`' `DBTaskResult` table (default `1`, `0` disables the lane). The DELETE is the library's OWN shipped `prune_db_task_results` command — teatree configures the dependency rather than writing a second prune over its table — passed `--queue-name '*'` so the `loops` chain rows are in scope. Short because nothing in teatree reads a FINISHED result row (every consumer filters READY or RUNNING) and the table takes ~400k finished rows a day. Consumed by both `t3 <overlay> retention prune` and the daily `prune_task_results` maintenance chain, through one seam (`teatree.core.retention.task_results`). Per-overlay overridable. |
 | `scratch_retention_days` | #4165: retention window (days) for agent scratch under the temp root (default `0` — the lane ships OFF, as every destructive lever does; set a positive window to arm it). On a RAM-backed `/tmp` this is MEMORY, not idle disk — the measured box carried 8.8 GB of week-old sqlite/venv scratch inside a 15 GB tmpfs on 31 GB of RAM, 28% of the working pool. `t3 <overlay> retention scratch` reclaims a top-level entry only when it is older than the window, owned by this uid, held open (fd or cwd) by no live process the probe can see, not a registered worktree checkout nor a parent/child of one, and not protected by name. Every guard that cannot be answered KEEPS the entry with its reason printed; an unreadable process table or worktree read makes the whole plan removable-empty. Dry-run by default (`--apply` reclaims). Per-overlay overridable; enforced by `teatree.core.retention.scratch`. |
 | `scratch_sweep_root` | #4165: temp root the scratch sweep reclaims from (default `""` = auto-resolve). Blank resolves to the HOST view `/host-tmp` when the deployment mounts it paired with the host process table at `/host-proc`, else to this venue's own `/tmp`. The pairing is the point: containers do not share the host temp root, so a container-scoped sweep of the container's own `/tmp` reclaims nothing of what fills the box — and sweeping one namespace's files while reading another's process table is exactly what blinds the open-file guard. An explicitly configured root that is not the host mount is swept against this venue's own `/proc`. Per-overlay overridable. |
@@ -857,10 +858,26 @@ file, with a control proving a single live override moves exactly one line.
 **The one settings page** (`/dash/settings/`). Model-driven and EDITABLE: it walks the
 schema so every key is listable with no hand-kept list, writes each edit through
 `ConfigSetting.set_value` (the same validating seam), restores-to-default by DELETING the
-row, gates a safety-posture key behind an extra confirm phrase, and offers export + a
-dry-run preview of an UPLOADED import file. A SECRET value AND its shipped default are
-masked to `***` before the row enters the response context — pinned by a test asserting a
-configured secret never appears in the response bytes.
+row, and gates a safety-posture key behind an extra confirm phrase. A SECRET value AND its
+shipped default are masked to `***` before the row enters the response context — pinned by a
+test asserting a configured secret never appears in the response bytes.
+
+**The import/export page** (`/dash/import-export/`,
+[#4340](https://github.com/souliane/teatree/issues/4340)). Its own page, because a dump is a
+superset of the settings page: alongside `[teatree]` / `[overlays.*]` / `[e2e_repos.*]` it
+carries the `[loops.*]` / `[modes.*]` / `[schedules.*]` seed families, so importing one from
+the settings page could change loop enablement and the active schedule while reading as
+"restore my settings". The page STATES that scope before the controls, from
+`core/config_interchange/scope.py`'s `EXPORT_SECTIONS` — one entry per top-level table with
+what it holds, declared off the same constants `document_layout` and
+`seed_defaults.SEED_TABLES` hand the writers, so the copy and the file cannot drift.
+`tests/teatree_core/config_interchange/test_scope.py` is the pin: it exports a box tuned in
+every family and asserts the emitted top-level tables against the statement, the `[backup]`
+format marker being the one named exception. The dry-run preview is counted PER section too
+(`dash/interchange.py`'s `changed_sections`, over the single `section_for_row` canonicaliser),
+so a preview reading "12 rows" cannot hide the one that changes a loop. Export and the
+safety-posture confirm phrase are otherwise unchanged; the settings page links here, and
+`/dash/settings/export/` redirects with its filters intact.
 
 **One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
 Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key

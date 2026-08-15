@@ -30,7 +30,7 @@ lives in the sibling module, never inside the harness classes themselves.
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Protocol, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
@@ -38,6 +38,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
 
+from teatree.agents.claude_cli_spawn import assert_spawnable, prepared_spawn, spawn_error
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
@@ -141,8 +142,24 @@ class ClaudeSdkHarness:
     @staticmethod
     @asynccontextmanager
     async def open(options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
-        async with ClaudeSDKClient(options=options) as client:
-            yield client
+        """Spawn the CLI child with the system prompt on a FILE, and name an E2BIG death (#4301).
+
+        Only the CONNECT is wrapped: an exception from the driver's own body must never be
+        re-labelled "the agent could not start" when the agent plainly did.
+        """
+        with prepared_spawn(options) as spawn_options:
+            payload = assert_spawnable(spawn_options)
+            stack = AsyncExitStack()
+            try:
+                client = await stack.enter_async_context(ClaudeSDKClient(options=spawn_options))
+            except Exception as exc:
+                if (named := spawn_error(exc, payload)) is not None:
+                    raise named from exc
+                raise
+            try:
+                yield client
+            finally:
+                await stack.aclose()
 
     def restore_unconsumed_resume_thread(self) -> None:
         """No client-side resume thread to restore — server-side ``--resume`` owns it."""

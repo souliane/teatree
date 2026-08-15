@@ -3,6 +3,7 @@
 import pytest
 
 from teatree.failure_signatures import (
+    is_spawn_failure,
     is_transient_failure,
     outage_signature_in_text,
     quota_exhausted,
@@ -157,3 +158,25 @@ class TestQuotaExhaustedIsScopedToFailedRunStderr:
 
     def test_a_failed_run_whose_stderr_shows_exhaustion_trips(self) -> None:
         assert quota_exhausted(returncode=1, stderr="You have hit your usage limit") == "usage limit"
+
+
+class TestIsSpawnFailure:
+    """An agent that could not START and work that FAILED are different reports (#4301)."""
+
+    def test_matches_the_named_e2big_refusal(self) -> None:
+        assert is_spawn_failure(
+            "agent could not be spawned: a single spawn argument is 181072 bytes, over this "
+            "platform's 131072-byte per-argument limit (E2BIG)."
+        )
+
+    def test_matches_a_pre_fix_raw_traceback(self) -> None:
+        # Attempts recorded before the named error existed carry only the SDK text.
+        assert is_spawn_failure(
+            "claude_agent_sdk._errors.CLIConnectionError: Failed to start Claude Code: "
+            "[Errno 7] Argument list too long: '.../claude'"
+        )
+
+    def test_does_not_match_a_run_that_started_and_failed(self) -> None:
+        assert not is_spawn_failure("AssertionError: expected 3 got 4")
+        assert not is_spawn_failure("stuck_loop: lease lost for task 1: re-claimed in-process")
+        assert not is_spawn_failure("")

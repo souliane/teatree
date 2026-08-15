@@ -3,8 +3,6 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, NamedTuple, cast
 
-from django.apps import apps
-
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
@@ -16,6 +14,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_url_record import record_pr_url
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
@@ -26,7 +25,7 @@ from teatree.utils import git
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.ticket import Ticket
-    from teatree.core.models.types import JSONObject, TicketExtra
+    from teatree.core.models.types import TicketExtra
     from teatree.core.models.worktree import Worktree
 
 logger = logging.getLogger(__name__)
@@ -557,23 +556,6 @@ class ShipExecutor(RunnerBase):
 
     @staticmethod
     def _record_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
-        # #800 N3 + list-append: derive ``pr_urls`` / ``pr_url_by_branch`` INSIDE
-        # the locked merge_extra from the re-read row, not from the run-start
-        # ``extra`` snapshot. Replacing the whole list from the stale snapshot
-        # dropped a concurrent ship's freshly-appended URL; appending only the
-        # new entry lets the other writer's URL survive. #1263: the per-branch
-        # index lets a later workstream tell whether its own PR exists.
-        append_lists: dict[str, list[object]] = {"pr_urls": [url]} if url else {}
-        merge_dicts: dict[str, JSONObject] = {"pr_url_by_branch": {branch: url}} if url and branch else {}
-        ticket.merge_extra(
-            append_to_lists=append_lists,
-            merge_into_dicts=merge_dicts,
-            pop_keys=["pr_title_override", "ship_invoking_branch"],
-        )
-        # #3840: the JSON index above is the ticket's own cache; the arbiter row is
-        # what the merge keystone, the board reconcile and the merge-evidence gate
-        # resolve the PR's owning ticket through. Write it here, where the ticket is
-        # in hand and the PR has just been verify-by-re-read confirmed, so a PR that
-        # merges before the next tick is still attributable to its ticket.
-        if url:
-            apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
+        # The ship's single-run hints are ship-owned, so they are cleared here
+        # rather than in the shared writer the pre-push hook also calls (#4305).
+        record_pr_url(ticket, url, branch, pop_keys=("pr_title_override", "ship_invoking_branch"))

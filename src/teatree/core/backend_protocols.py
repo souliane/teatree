@@ -281,6 +281,7 @@ class CodeHostBackend(Protocol):
         *,
         author: str,
         updated_after: str | None = None,
+        enrich: bool = True,
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def list_my_merged_prs(

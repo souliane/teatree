@@ -186,9 +186,9 @@ def _automated_uv_tool_installs() -> list[tuple[str, str]]:
     return installs
 
 
-def _pip_update_entries() -> list[dict[str, Any]]:
+def _uv_update_entries() -> list[dict[str, Any]]:
     config = yaml.safe_load(_DEPENDABOT.read_text(encoding="utf-8"))
-    return [entry for entry in config["updates"] if entry.get("package-ecosystem") == "pip"]
+    return [entry for entry in config["updates"] if entry.get("package-ecosystem") == "uv"]
 
 
 class TestClaudeAgentSdkPin:
@@ -355,9 +355,9 @@ class TestTheGuardThatReplacedTheQuarantine:
     """Dependabot watches the SDK again — but only because the advisory label holds."""
 
     def test_dependabot_watches_the_sdk_again(self) -> None:
-        pip_entries = _pip_update_entries()
-        assert pip_entries, "expected a pip package-ecosystem entry in .github/dependabot.yml"
-        ignored = {ignore.get("dependency-name") for entry in pip_entries for ignore in entry.get("ignore", [])}
+        uv_entries = _uv_update_entries()
+        assert uv_entries, "expected a uv package-ecosystem entry in .github/dependabot.yml"
+        ignored = {ignore.get("dependency-name") for entry in uv_entries for ignore in entry.get("ignore", [])}
         assert _PACKAGE not in ignored, (
             f"{_PACKAGE} must NOT carry a Dependabot `ignore` entry. The quarantine existed to stop "
             "a bundled-CLI rendering change from reddening the AskUserQuestion scenarios; those are "

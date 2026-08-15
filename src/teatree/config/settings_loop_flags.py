@@ -49,6 +49,11 @@ class _LoopFlagAndCredentialSettings:
     # resolve_intake_concurrency, which otherwise derives the live limit from
     # observed headroom and may exceed this number.
     issue_implementer_max_concurrent: int = 3
+    # The intake scanner's OWN deadline for its candidate walk. Below the scan phase's
+    # 60s pool deadline on purpose: past that one the thread is abandoned rather than
+    # stopped, so it keeps mutating rows after the tick ended and records no resume
+    # point for the next pass (#4466).
+    issue_intake_pass_budget_seconds: float = 45.0
     # Marker labels for an UMBRELLA/epic parent intake never claims (#4105) — data, not a
     # constant, because which marker a deployment uses is its own policy. Emptying it
     # turns the LABEL half off; the structural half still declines an unlabelled epic.

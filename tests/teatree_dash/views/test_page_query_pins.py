@@ -50,6 +50,8 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: setting once per resolve — +1 on every page that resolves a mode. The loops header also
 #: offers the LIVE set of mode names instead of three hard-coded posture tokens, which is
 #: one bounded ``Mode`` name read. Both are O(1) in the population.
+#: #4340's transfer page reads no work at all — its scope statement is code — so its two
+#: queries are the nav's instance label alone, and flat by construction.
 #: #4085 put "Review now" / "Ship now" on every card. Their enabled state is ONE bounded
 #: read of the whole board's unstarted tasks, not one per card — which is precisely what
 #: the two-population assertion below proves, on the page where an N+1 would be
@@ -67,6 +69,7 @@ PAGE_QUERY_PINS: dict[str, int] = {
     "dash:presets": 15,
     "dash:sessions": 3,
     "dash:settings": 7,
+    "dash:interchange": 2,
     "dash:settings_readouts": 3,
 }
 # #4085 added the enqueue-button row: ONE bounded read of the ticket's unstarted tasks,

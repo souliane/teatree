@@ -312,3 +312,33 @@ class TestTheResidualWindowIsStated:
         proc, _ = _run(checkout, tmp_path)
         assert "dashboard unavailable for at most" in proc.stdout
         assert "bound 2s" in proc.stdout
+
+
+class TestTheConvergenceRecordsItsHolder:
+    """#4339: the deploy's own in-progress record, written under the flock and cleared on exit.
+
+    ``/proc/locks`` is filtered by pid namespace, so the flock is invisible from the
+    watchdog CONTAINER and the crash-loop-fakeable container-age heuristic was all that
+    was left. The record crosses that boundary; clearing it is what makes a lock file
+    outliving its holder read as not held.
+    """
+
+    def test_the_record_is_written_while_the_convergence_runs(self, checkout: Path, tmp_path: Path) -> None:
+        snapshot = tmp_path / "lock.snapshot"
+        _write_exec(
+            checkout / "deploy" / "fast-forward-checkout.sh",
+            f'#!/usr/bin/env bash\ncp "$TEATREE_DEPLOY_LOCK" {str(snapshot)!r}\nexit 0\n',
+        )
+
+        _run(checkout, tmp_path)
+
+        pid, stamp = snapshot.read_text(encoding="utf-8").split()
+        assert pid.isdigit()
+        assert stamp.isdigit()
+
+    def test_the_record_is_cleared_on_exit(self, checkout: Path, tmp_path: Path) -> None:
+        _run(checkout, tmp_path)
+
+        assert (tmp_path / "deploy.lock").read_text(encoding="utf-8") == "", (
+            "a lock file outliving its holder must carry no in-progress record"
+        )

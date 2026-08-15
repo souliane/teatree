@@ -36,6 +36,7 @@ from teatree.utils.url_slug import pr_ref_from_url, slug_from_issue_or_pr_url
 logger = logging.getLogger(__name__)
 
 _TRAILING_NUMBER_RE = re.compile(r"(\d+)$")
+_DIGIT_RUN_RE = re.compile(r"\d+")
 
 
 def issue_number(issue_url: str) -> str:
@@ -105,6 +106,15 @@ def _same_repo(pr_url: str, issue_slug: str) -> bool:
     return ref is not None and ref.slug == issue_slug
 
 
+def _body_cites_issue_url(body: str, issue_url: str) -> bool:
+    """Does *body* cite *issue_url* as a whole reference?
+
+    A plain substring test binds ``.../issues/42`` to a body citing ``.../issues/420``,
+    so an unrelated newer issue's URL skips the older issue as already-worked.
+    """
+    return re.search(rf"{re.escape(issue_url)}(?!\d)", body) is not None
+
+
 def _pr_signal(raw: RawAPIDict, *, issue_url: str, ticket_number: str, issue_slug: str) -> str | None:
     """Which signal (if any) proves *raw* is work for the issue, else ``None``.
 
@@ -123,7 +133,7 @@ def _pr_signal(raw: RawAPIDict, *, issue_url: str, ticket_number: str, issue_slu
     if re.search(rf"\b{re.escape(ticket_number)}\b", _pr_head_branch(raw)):
         return "head_branch"
     body = _pr_body(raw)
-    if issue_url and issue_url in body:
+    if issue_url and _body_cites_issue_url(body, issue_url):
         return "body_ref"
     if parse_closes_ticket(body) == ticket_number:
         return "closes_ref"
@@ -172,14 +182,66 @@ def existing_work_for_issue(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class ReadbackIndex:
+    """The tick's PRs bucketed by every ticket number they could possibly cite.
+
+    :func:`existing_work_for_issue` re-reads every PR for every candidate, so intake paid
+    the PRODUCT of two growing sets — measured at 13.52s for 143 candidates against 1000
+    merged PRs, most of a 60s scan budget spent re-deciding already-decided issues (#4466).
+    Each PR is parsed once here instead, and a candidate reads only its own bucket.
+
+    Bucketing is sound because all four signals require the ticket number to appear as a
+    maximal digit run: the head-branch and ``#N`` tests are whole-word, ``Closes #N``
+    captures greedily, and the issue-URL citation ends at a non-digit
+    (:func:`_body_cites_issue_url`). A number absent from a PR's digit runs can therefore
+    never match it, so skipping that PR cannot lose a hit.
+    """
+
+    #: number -> the PRs citing it, open before merged, forge order preserved within each.
+    buckets: dict[str, list[tuple[str, RawAPIDict]]]
+
+    def hit_for(self, *, issue_url: str, ticket_number: str) -> ReadbackHit | None:
+        """The first signal proving the issue is already worked — :func:`existing_work_for_issue`'s verdict."""
+        if not ticket_number:
+            return None
+        issue_slug = slug_from_issue_or_pr_url(urlparse(issue_url).path)
+        if not issue_slug:
+            return None
+        for state, raw in self.buckets.get(ticket_number, ()):
+            signal = _pr_signal(raw, issue_url=issue_url, ticket_number=ticket_number, issue_slug=issue_slug)
+            if signal is not None:
+                return ReadbackHit(f"{state}_pr_{signal}", _pr_url(raw))
+        return None
+
+    def candidates_for(self, ticket_number: str) -> int:
+        """How many PRs a lookup of *ticket_number* reads — the per-candidate cost."""
+        return len(self.buckets.get(ticket_number, ()))
+
+
+def build_readback_index(open_prs: list[RawAPIDict], merged_prs: list[RawAPIDict]) -> ReadbackIndex:
+    """Bucket *open_prs* then *merged_prs* by their digit runs, preserving scan order."""
+    buckets: dict[str, list[tuple[str, RawAPIDict]]] = {}
+    for state, prs in (("open", open_prs), ("merged", merged_prs)):
+        for raw in prs:
+            fields = (_pr_head_branch(raw), _pr_title(raw), _pr_body(raw))
+            for number in {n for field in fields for n in _DIGIT_RUN_RE.findall(field)}:
+                buckets.setdefault(number, []).append((state, raw))
+    return ReadbackIndex(buckets=buckets)
+
+
 def fetch_open_prs(host: CodeHostBackend, *, authors: tuple[str, ...]) -> list[RawAPIDict]:
     """Union each author's OPEN PRs on the forge, deduped by URL — best-effort.
 
     The read-back is a net: a forge hiccup must never block the claim path, so
     a failing ``list_my_prs`` degrades to the PRs gathered so far (``[]`` in the
     worst case) and the caller falls through to claim.
+
+    Asks for the UN-enriched hits: the read-back reads only head branch, title, body and
+    URL, so the per-PR CI-rollup enrichment is a sequential forge round-trip per PR that
+    buys this caller nothing (#4466).
     """
-    return _union_prs(host.list_my_prs, authors=authors, kind="list_my_prs")
+    return _union_prs(host.list_my_prs, authors=authors, kind="list_my_prs", enrich=False)
 
 
 def fetch_merged_prs(host: CodeHostBackend, *, authors: tuple[str, ...]) -> list[RawAPIDict]:
@@ -198,12 +260,13 @@ def _union_prs(
     *,
     authors: tuple[str, ...],
     kind: str,
+    **lister_kwargs: object,
 ) -> list[RawAPIDict]:
     seen: set[str] = set()
     prs: list[RawAPIDict] = []
     for author in authors:
         try:
-            fetched = lister(author=author)
+            fetched = lister(author=author, **lister_kwargs)
         except Exception:
             # F5.10: a per-author forge fetch failure degrades the read-back NET
             # (the claim still proceeds), but it is not routine — surface it at

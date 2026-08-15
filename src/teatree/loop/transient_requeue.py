@@ -74,6 +74,12 @@ ticket IGNORED), never reopened: a verdict can never land on a dead PR, so
 re-dispatching only burns a session that re-confirms the close (3556). Fail-OPEN on an
 UNKNOWN PR state so a transient forge hiccup never retires a live review.
 
+A SPAWN-FAILED task — one whose agent process never STARTED (#4301, classified by
+:func:`~teatree.failure_signatures.is_spawn_failure`) — escalates like any other
+deterministic failure, but with its own question: nothing in the ticket is implicated by a
+child that died at ``execve``, so asking whether to investigate or rework the TICKET aims
+the operator at the one thing that cannot be the cause. See :func:`_halt_question`.
+
 A once-escalated task is stamped (:data:`HALT_STAMP` in ``execution_reason``) and
 excluded from every subsequent scan, so the dead-letter set never grows the per-tick
 work unboundedly. The ``DeferredQuestion`` itself is deduped by a STABLE key —
@@ -107,7 +113,7 @@ from teatree.core.repair_loop import (
     requeue_verdict,
     terminal_reason_fingerprint,
 )
-from teatree.failure_signatures import is_transient_failure
+from teatree.failure_signatures import is_spawn_failure, is_transient_failure
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
 from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, dispose_without_reopen
@@ -398,6 +404,29 @@ def escalation_marker(task: Task) -> str:
     return f"repair-halt:{phase}:{fingerprint}"[:64]
 
 
+def _halt_question(task: Task, *, where: str, phase: str, reason: str) -> str:
+    """The escalation text, split on whether the agent could not START or the WORK failed.
+
+    A spawn death (#4301) implicates nothing in the ticket — the child never read a byte
+    of it — so the ticket-adjudication question ("investigate, rework, or ignore") points
+    the operator at the one thing that cannot be the cause. It gets its own question naming
+    the environment as the subject; every other halt keeps the wording it always had.
+    """
+    head = f"[repair-halt ticket={task.ticket.pk} phase={phase!r}]"
+    if is_spawn_failure(_latest_error(task)):
+        return (
+            f"{head} The AGENT COULD NOT START on {where}: {reason} "
+            "No work was attempted and the ticket's own content is not implicated — this is a "
+            "spawn/environment defect, and re-queueing is stopped because it fails identically "
+            "every time. Fix the spawn environment, or ignore?"
+        )
+    return (
+        f"{head} Auto-retry halted on {where}: {reason} "
+        "Re-queueing is stopped so it does not retry a doomed failure forever. "
+        "How should it proceed — investigate, rework, or ignore?"
+    )
+
+
 def _escalate_once(task: Task, *, reason: str) -> None:
     """Record a durable escalation for a halted task, then park the row. Deduped by condition.
 
@@ -411,11 +440,7 @@ def _escalate_once(task: Task, *, reason: str) -> None:
     _stamp_halt(task)
     where = task.ticket.issue_url or f"ticket {task.ticket.pk}"
     phase = normalize_phase(task.phase)
-    question = (
-        f"[repair-halt ticket={task.ticket.pk} phase={phase!r}] Auto-retry halted on {where}: {reason} "
-        "Re-queueing is stopped so it does not retry a doomed failure forever. "
-        "How should it proceed — investigate, rework, or ignore?"
-    )
+    question = _halt_question(task, where=where, phase=phase, reason=reason)
     DeferredQuestion.record(
         question,
         session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
