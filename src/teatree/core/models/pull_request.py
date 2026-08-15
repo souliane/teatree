@@ -8,7 +8,7 @@ from django_fsm import FSMField, transition
 from teatree.url_classify import repo_and_iid
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import JSONObject
@@ -64,6 +64,26 @@ class PullRequestQuerySet(models.QuerySet):
             if parsed is not None:
                 refs.add((parsed[0].casefold(), parsed[1]))
         return refs
+
+    def refs_for_tickets(self, tickets: "Iterable[Ticket]") -> dict[int, set[tuple[str, int]]]:
+        """:meth:`refs_for_ticket` for many tickets in ONE row query, keyed by ticket pk.
+
+        The per-ticket form costs a query each, which a claim-boundary sweep pays
+        once per candidate on every tick. The ``extra`` half needs no query at all —
+        it is already loaded on each instance.
+        """
+        materialised = list(tickets)
+        by_pk: dict[int, set[tuple[str, int]]] = {int(ticket.pk): set() for ticket in materialised}
+        rows = self.filter(ticket__in=materialised).values_list("ticket_id", "repo", "iid")
+        for ticket_id, repo, iid in rows:
+            if iid.isdigit():
+                by_pk[int(ticket_id)].add((repo.casefold(), int(iid)))
+        for ticket in materialised:
+            for url in self._recorded_pr_urls(ticket.extra):
+                parsed = repo_and_iid(url)
+                if parsed is not None:
+                    by_pk[int(ticket.pk)].add((parsed[0].casefold(), parsed[1]))
+        return by_pk
 
     @staticmethod
     def _names_pr(key: str, *, slug: str, pr_id: int, pr_url: str) -> bool:

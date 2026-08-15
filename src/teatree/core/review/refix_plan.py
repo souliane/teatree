@@ -40,6 +40,7 @@ carve-out, counted only when recorded AFTER the verdict — the carve-out is a
 decision about THIS re-fix, and a months-old skip cannot stand in for one.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, TypedDict
@@ -169,7 +170,8 @@ def refix_plan_stale_reason(ticket: Ticket) -> str:
     a plan) and for any ticket with no HOLD verdict, so ordinary work — the
     overwhelming majority — is never over-blocked.
     """
-    return _stale_reason(ticket, index=_hold_index())
+    block = _hold_block(ticket, index=_hold_index())
+    return block.reason if block is not None else ""
 
 
 def coding_tasks_since_last_plan(ticket: Ticket) -> int:
@@ -189,19 +191,27 @@ def coding_tasks_since_last_plan(ticket: Ticket) -> int:
 def blocked_refix_task_pks() -> list[int]:
     """PKs of PENDING implementing tasks whose ticket must re-plan before coding.
 
-    Bounded by construction: only PENDING implementing tasks on AUTHOR tickets
-    that carry at least one HOLD verdict are ever inspected, so an idle queue
-    costs one indexed count and a busy one a handful of rows.
+    Its candidates are exactly the tickets carrying open implementing work, which
+    :func:`blocked_tickets` unions into the reported set — so what this holds back
+    is always a SUBSET of what the report and the replan routing see, and a task
+    can never be blocked here with no replan ever queued for it. The claim boundary
+    deliberately stops at that half rather than re-deriving the whole union: the
+    other half resolves every PR ever held forward to its owner, a cost that grows
+    with the verdict archive and does not belong on a per-claim path.
     """
     index = _hold_index()
     if not index.by_ticket and not index.by_pr:
         return []
-    candidates = Task.objects.filter(
-        status=Task.Status.PENDING,
-        phase__in=_implementing_phase_spellings(),
-        ticket__role=Ticket.Role.AUTHOR,
-    ).select_related("ticket")
-    return [task.pk for task in candidates if _stale_reason(task.ticket, index=index)]
+    blocked = [held.ticket for held in _hold_blocks(_tickets_with_open_implementing_work(), index=index)]
+    if not blocked:
+        return []
+    return list(
+        Task.objects.filter(
+            status=Task.Status.PENDING,
+            phase__in=_implementing_phase_spellings(),
+            ticket__in=blocked,
+        ).values_list("pk", flat=True)
+    )
 
 
 def not_awaiting_refix_plan_q() -> Q:
@@ -230,19 +240,70 @@ def claimable_dispatch_q() -> Q:
     return Task.dispatchable_q() & not_awaiting_refix_plan_q()
 
 
+@dataclass(frozen=True, slots=True)
+class HeldTicket:
+    """One blocked ticket, the HOLD stamp that blocked it, and why — resolved once."""
+
+    ticket: Ticket
+    hold_at: datetime
+    reason: str
+
+
+def blocked_tickets() -> list[HeldTicket]:
+    """Every AUTHOR ticket a recorded HOLD blocks from implementing, ordered by pk.
+
+    What the report and the replan routing read, and a SUPERSET of what
+    :func:`blocked_refix_task_pks` holds back — so a task blocked at the claim
+    boundary is always a ticket the routing has already seen. A block with no
+    replan queued behind it is a silent stall, the failure this module exists to
+    foreclose.
+
+    The candidate pool is the union of two derivations because neither covers the
+    other. :func:`_held_candidates` resolves each held PR forward to its owner, so
+    it names a held ticket that has minted no task yet; it also resolves each PR to
+    exactly ONE owner, so an author ticket sharing a PR with a reviewer row that
+    outranks it is invisible to that direction and is reached only from its own
+    open implementing task. Bounded by both halves: the held PR population and the
+    open implementing queue, never the board.
+    """
+    index = _hold_index()
+    if not index.by_ticket and not index.by_pr:
+        return []
+    candidates = {int(ticket.pk): ticket for ticket in _held_candidates(index)}
+    for ticket in _tickets_with_open_implementing_work():
+        candidates.setdefault(int(ticket.pk), ticket)
+    return _hold_blocks(candidates.values(), index=index)
+
+
+def _tickets_with_open_implementing_work() -> list[Ticket]:
+    """The AUTHOR tickets carrying a PENDING or CLAIMED implementing task."""
+    return list(
+        Ticket.objects.filter(
+            role=Ticket.Role.AUTHOR,
+            tasks__status__in=Task.Status.active(),
+            tasks__phase__in=_implementing_phase_spellings(),
+        ).distinct()
+    )
+
+
+def _hold_blocks(tickets: Iterable[Ticket], *, index: "_HoldIndex") -> list[HeldTicket]:
+    """Adjudicate *tickets* in pk order, resolving their PR refs in one query."""
+    by_pk = {int(ticket.pk): ticket for ticket in tickets}
+    refs = PullRequest.objects.refs_for_tickets(by_pk.values())
+    blocks = (_hold_block(ticket, index=index, refs=refs.get(pk, set())) for pk, ticket in sorted(by_pk.items()))
+    return [block for block in blocks if block is not None]
+
+
 def tickets_awaiting_refix_plan(overlay: str = "") -> list[AwaitingRefixPlan]:
     """Every AUTHOR ticket whose next implementing dispatch would run on findings alone.
 
     The surface the issue asks for. Ordered by ticket pk so a report is stable
     across runs; scoped to *overlay* when given.
     """
-    index = _hold_index()
     rows: list[AwaitingRefixPlan] = []
-    for ticket in _held_candidates(index):
+    for held in blocked_tickets():
+        ticket = held.ticket
         if overlay and ticket.overlay != overlay:
-            continue
-        hold_at = _newest_hold_at(ticket, index=index)
-        if hold_at is None or not _stale_reason(ticket, index=index):
             continue
         rows.append(
             AwaitingRefixPlan(
@@ -250,7 +311,7 @@ def tickets_awaiting_refix_plan(overlay: str = "") -> list[AwaitingRefixPlan]:
                 issue_url=ticket.issue_url,
                 state=str(ticket.state),
                 overlay=ticket.overlay,
-                hold_recorded_at=hold_at,
+                hold_recorded_at=held.hold_at,
                 plan_recorded_at=governing_plan_at(ticket),
                 coding_tasks_since_last_plan=coding_tasks_since_last_plan(ticket),
                 open_implementing_tasks=Task.objects.filter(
@@ -279,8 +340,14 @@ def _held_candidates(index: _HoldIndex) -> list[Ticket]:
     Walking every author ticket would make the tick sweep O(board); the held
     population is O(PRs under a hold), which the index already names. Each held PR
     resolves through :meth:`PullRequestQuerySet.owning_ticket` — the very method
-    :meth:`~PullRequestQuerySet.refs_for_ticket` inverts — so the two directions
-    agree by construction rather than by two hand-kept lookups.
+    :meth:`~PullRequestQuerySet.refs_for_ticket` inverts — so a held ticket is
+    named here before it has minted any task.
+
+    ONE owner per PR, which is why :func:`blocked_tickets` unions this with the
+    open implementing queue rather than trusting it alone: an author ticket whose
+    PR also carries a reviewer row that outranks it resolves to the reviewer and is
+    dropped by the role filter, and taking this set as the whole answer would leave
+    that ticket blocked at the claim boundary with no replan ever routed.
     """
     by_pk: dict[int, Ticket] = {}
     for slug, pr_id in index.by_pr:
@@ -310,23 +377,37 @@ def _keep_newest[K](index: dict[K, datetime], key: K, moment: datetime) -> None:
     index[key] = moment if seen is None else max(seen, moment)
 
 
-def _newest_hold_at(ticket: Ticket, *, index: _HoldIndex) -> datetime | None:
-    """The newest HOLD bound to *ticket* by EITHER binding, or ``None``."""
+def _newest_hold_at(ticket: Ticket, *, index: _HoldIndex, refs: set[tuple[str, int]] | None = None) -> datetime | None:
+    """The newest HOLD bound to *ticket* by EITHER binding, or ``None``.
+
+    *refs* lets a sweep hand in the pairs it already batch-resolved; omitting it
+    costs one row query for this ticket alone.
+    """
+    if refs is None:
+        refs = _pr_refs_for_ticket(ticket)
     moments = [moment for moment in (index.by_ticket.get(int(ticket.pk)),) if moment is not None]
-    moments.extend(index.by_pr[ref] for ref in _pr_refs_for_ticket(ticket) if ref in index.by_pr)
+    moments.extend(index.by_pr[ref] for ref in refs if ref in index.by_pr)
     return max(moments) if moments else None
 
 
-def _stale_reason(ticket: Ticket, *, index: _HoldIndex) -> str:
+def _hold_block(ticket: Ticket, *, index: _HoldIndex, refs: set[tuple[str, int]] | None = None) -> HeldTicket | None:
+    """*ticket* with the HOLD blocking its next implementation, or ``None`` to admit.
+
+    The single comparison every #4348 surface routes through, so the block reason,
+    the report's stamp and the claim exclusion are one decision rather than three
+    that can drift apart.
+    """
     if ticket.role != Ticket.Role.AUTHOR:
-        return ""
-    hold_at = _newest_hold_at(ticket, index=index)
+        return None
+    hold_at = _newest_hold_at(ticket, index=index, refs=refs)
     if hold_at is None:
-        return ""
+        return None
     planned_at = planning_signal_at(ticket)
     if planned_at is not None and planned_at > hold_at:
-        return ""
-    return _block_message(ticket, hold_at=hold_at, planned_at=planned_at)
+        return None
+    return HeldTicket(
+        ticket=ticket, hold_at=hold_at, reason=_block_message(ticket, hold_at=hold_at, planned_at=planned_at)
+    )
 
 
 def _block_message(ticket: Ticket, *, hold_at: datetime, planned_at: datetime | None) -> str:

@@ -438,6 +438,7 @@ The babysit-tier draft flow — the pre-flight read of existing discussions, the
 - **Push back when:** suggestion breaks functionality (show evidence), violates YAGNI, is based on stale context, or conflicts with user's stated architecture.
 - **Anti-performative:** No "You're absolutely right!" — just state the fix or the technical disagreement.
 - **Technical rigor:** verify reviewer suggestions against the actual codebase before implementing.
+- **A re-fix after a HOLD is RE-PLANNED first — findings are not a work order (#4348).** A plan older than the ticket's newest HOLD verdict is treated as absent: `plan_currency_gate` refuses `code()`/`schedule_coding`, and both claim sites exclude the implementing task, so a findings list can never reach an implementing agent as its brief. The plan must state the defect CLASS independently of any line number and enumerate every site in the touched module that can exhibit it — fixing the line you were handed is what got two PRs held again for the same defect through a different door. Record it with `t3 <overlay> ticket plan-reaffirm <id> --base-sha <40-char-HEAD>` (no FSM transition, so it reaches a `shipped`/`in_review` ticket), or take the audited carve-out for genuinely trivial work with `t3 <overlay> ticket skip-planning <id> --reason <why>`. `t3 <overlay> ticket refix-plan-status` lists what is waiting.
 
 #### Replying to Review Discussions
 

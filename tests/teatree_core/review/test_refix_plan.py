@@ -33,11 +33,11 @@ _PR_URL = f"https://github.com/{_SLUG}/pull/{_PR_ID}"
 _REVIEWER = "cold-reviewer"
 
 
-def _author_ticket(*, state: str = Ticket.State.SHIPPED) -> Ticket:
+def _author_ticket(*, state: str = Ticket.State.SHIPPED, issue: int = 755) -> Ticket:
     return Ticket.objects.create(
         role=Ticket.Role.AUTHOR,
         state=state,
-        issue_url="https://github.com/acme/widgets/issues/755",
+        issue_url=f"https://github.com/{_SLUG}/issues/{issue}",
         overlay="t3-teatree",
     )
 
@@ -285,3 +285,55 @@ class TestAwaitingRefixPlanReport(TestCase):
 
         assert [row.ticket_id for row in tickets_awaiting_refix_plan(overlay="t3-teatree")] == [ticket.pk]
         assert tickets_awaiting_refix_plan(overlay="other-overlay") == []
+
+    def test_a_board_with_no_hold_verdict_reports_nothing(self) -> None:
+        """The healthy state — an empty report, not a missing answer."""
+        ticket = _author_ticket(state=Ticket.State.PLANNED)
+        _record_plan(ticket, minutes_ago=10)
+        _coding_task(ticket)
+
+        assert tickets_awaiting_refix_plan() == []
+
+
+class TestNoSilentStall(TestCase):
+    """Everything the claim boundary blocks is also reported, so the replan routing sees it."""
+
+    def test_an_author_whose_pr_row_resolves_to_the_reviewer_is_still_reported(self) -> None:
+        """A PR resolves to ONE owner, so forward resolution alone drops this author.
+
+        The reviewer row outranks the author's ``extra``-only record, so
+        ``owning_ticket`` answers the reviewer and the role filter discards it. The
+        author's coding task is blocked all the same — reported here too, or it is
+        held back with no replan ever queued.
+        """
+        author = _author_ticket()
+        author.merge_extra(set_keys={"pr_urls": [_PR_URL]})
+        author.refresh_from_db()
+        _record_plan(author, minutes_ago=4000)
+        reviewer = Ticket.objects.create(role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_POSTED, issue_url=_PR_URL)
+        _attach_pr(reviewer)
+        _record_hold()
+        task = _coding_task(author)
+
+        assert task.pk in blocked_refix_task_pks()
+        assert [row.ticket_id for row in tickets_awaiting_refix_plan()] == [author.pk]
+
+    def test_every_blocked_task_belongs_to_a_reported_ticket(self) -> None:
+        """The invariant behind the pair: the two surfaces read one resolution."""
+        author = _author_ticket()
+        author.merge_extra(set_keys={"pr_urls": [_PR_URL]})
+        author.refresh_from_db()
+        reviewer = Ticket.objects.create(role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_POSTED, issue_url=_PR_URL)
+        _attach_pr(reviewer)
+        _record_hold()
+        _coding_task(author)
+        unheld = _author_ticket(state=Ticket.State.PLANNED, issue=760)
+        _record_plan(unheld, minutes_ago=10)
+        _coding_task(unheld)
+
+        reported = {row.ticket_id for row in tickets_awaiting_refix_plan()}
+        blocked_owners = set(Task.objects.filter(pk__in=blocked_refix_task_pks()).values_list("ticket_id", flat=True))
+
+        assert blocked_owners
+        assert blocked_owners <= reported
+        assert unheld.pk not in reported
