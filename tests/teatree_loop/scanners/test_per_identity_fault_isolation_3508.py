@@ -56,8 +56,8 @@ class _RaisingIdentityHost:
             msg = f"simulated forge failure for {identity}"
             raise RuntimeError(msg)
 
-    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
-        _ = updated_after
+    def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
+        _ = (updated_after, enrich)
         self._guard(author)
         return list(self.prs_by_author.get(author, ()))
 

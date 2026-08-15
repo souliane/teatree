@@ -14,6 +14,10 @@ from teatree.eval.command_span import executed_span
 from teatree.eval.models import EvalRun, EvalToolCall, canonicalize_tool
 
 
+class UnknownArgViewError(LookupError):
+    """A matcher named a declared derived view that has no transform registered."""
+
+
 @dataclasses.dataclass(frozen=True)
 class CallPattern:
     """A ``(tool, arg_path, regex)`` triple naming one tool-call shape to look for.
@@ -62,11 +66,22 @@ def _as_text(value: object) -> str | None:
 #: (``git commit -m 'Co-Authored-By: …'``, ``gh issue create --body '…'``).
 _ARG_VIEWS: Mapping[str, tuple[str, Callable[[str], str]]] = {"command_span": ("command", executed_span)}
 
+#: The view vocabulary a matcher may name, declared apart from the transforms above so a
+#: view whose implementation is dropped fails LOUD rather than degrading to a missing arg
+#: — a negative that can never fire, read as a green.
+DERIVED_VIEW_NAMES = frozenset({"command_span"})
+
 
 def _arg_text(call: EvalToolCall, arg_path: str) -> str | None:
     """Matchable text for *arg_path*, through its derived view when one is registered."""
     view = _ARG_VIEWS.get(arg_path)
     if view is None:
+        if arg_path in DERIVED_VIEW_NAMES:
+            msg = (
+                f"{arg_path!r} is a declared derived view with no transform in _ARG_VIEWS: "
+                "a matcher naming it would grade a missing arg and never fire"
+            )
+            raise UnknownArgViewError(msg)
         return _as_text(_get_arg(call, arg_path))
     source_arg, derive = view
     text = _as_text(_get_arg(call, source_arg))

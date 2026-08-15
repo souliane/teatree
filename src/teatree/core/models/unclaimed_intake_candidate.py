@@ -52,18 +52,24 @@ class UnclaimedIntakeCandidateManager(models.Manager["UnclaimedIntakeCandidate"]
         candidates: "list[WaitingCandidate]",
         *,
         now: dt.datetime | None = None,
+        complete: bool = True,
     ) -> int:
         """Replace *overlay*'s waiting set with *candidates*, preserving each first sighting.
 
-        Wholesale rather than incremental because the discovery pass sees the WHOLE
+        Wholesale rather than incremental because a COMPLETE discovery pass sees the WHOLE
         admissible set: an issue absent from *candidates* is no longer waiting, whatever
         the reason, so an incremental upsert would leave rows that outlive their subject.
         Returns the number of rows now waiting.
+
+        ``complete=False`` upserts and evicts NOTHING: a pass that ran out of budget never
+        looked at the rest of the queue, so eviction there would delete the witness for
+        exactly the starved issues the ledger exists to name (#4466).
         """
         moment = now or timezone.now()
         urls = {candidate.issue_url for candidate in candidates}
         with transaction.atomic():
-            self.filter(overlay=overlay).exclude(issue_url__in=urls).delete()
+            if complete:
+                self.filter(overlay=overlay).exclude(issue_url__in=urls).delete()
             for candidate in candidates:
                 self.update_or_create(
                     overlay=overlay,

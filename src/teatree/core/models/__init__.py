@@ -55,6 +55,7 @@ from teatree.core.models.implemented_issue_marker import (
     MarkerReconcileResult,
 )
 from teatree.core.models.incoming_event import IncomingEvent
+from teatree.core.models.intake_scan_cursor import INCOMPLETE_PASS_ALARM, IntakeScanCursor, IntakeScanCursorManager
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.interactive_dispatch import SEAT_WINDOW, InteractiveDispatch, InteractiveDispatchManager
 from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
@@ -145,6 +146,7 @@ from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
     "DEFAULT_LOCK_TTL",
+    "INCOMPLETE_PASS_ALARM",
     "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
@@ -213,6 +215,8 @@ __all__ = [
     "IncomingEvent",
     "InstructionComplianceRecord",
     "InstructionComplianceSnapshot",
+    "IntakeScanCursor",
+    "IntakeScanCursorManager",
     "IntentClassification",
     "InteractiveDispatch",
     "InteractiveDispatchManager",

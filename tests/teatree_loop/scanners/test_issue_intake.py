@@ -56,6 +56,8 @@ class _Host:
     queried_labels: list[str] = field(default_factory=list)
     #: The ``repo_slugs`` passed with each query — the repo-scope surface.
     queried_repo_slugs: list[tuple[str, ...]] = field(default_factory=list)
+    #: Whether each open-PR fetch asked for the per-PR CI enrichment.
+    enrich_requested: list[bool] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
@@ -78,7 +80,8 @@ class _Host:
             issues = [issue for issue in issues if _issue_repo_slug(issue) in repo_slugs]
         return issues
 
-    def list_my_prs(self, *, author: str) -> list[RawAPIDict]:
+    def list_my_prs(self, *, author: str, enrich: bool = True) -> list[RawAPIDict]:
+        self.enrich_requested.append(enrich)
         _ = author
         return self.open_prs
 
