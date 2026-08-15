@@ -83,6 +83,20 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
+        "teatree cycle_time ticket",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits one ticket's per-phase spans with the queue/work split; an "
+        "unmeasurable duration is null (UNKNOWN), never 0, and an unresolvable ticket exits 1 (#4480)",
+    ),
+    Capability(
+        "teatree cycle_time distribution",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits median/p90 per transition edge over the window, slowest first; "
+        "--window-days below 1 is refused rather than clamped and exits 1 (#4480)",
+    ),
+    Capability(
         "teatree workspace emit",
         json_output=True,
         exit_codes=("0",),
