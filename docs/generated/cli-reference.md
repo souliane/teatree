@@ -10804,8 +10804,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              PLANNED after the gate was added.               │
 │ plan-reaffirm                Re-bind a plan to a new base — the              │
 │                              plan-currency gate's never-lockout escape.      │
-│ refix-plan-status            List tickets whose next implementing dispatch   │
-│                              would run on findings alone.                    │
+│ refix-plan-status            List the tickets a post-HOLD replan blocks, and │
+│                              the plan-drift ratio.                           │
 │ e2e-bypass                   Record a single-use user bypass of the          │
 │                              mandatory-E2E gate (#1967).                     │
 │ integration-review-override  Record the audited escape hatch for the         │
@@ -11017,8 +11017,8 @@ Usage: t3 teatree ticket plan-reaffirm [OPTIONS] TICKET_ID
 ```
 Usage: t3 teatree ticket refix-plan-status [OPTIONS]
 
- Report every ticket whose next implementing dispatch would run on findings
- alone.
+ Report what a post-HOLD replan is holding back, and the plan-drift ratio
+ behind it.
 
  The #4348 surface. ``coding_since_plan > 1`` on an open ticket is the cheap
  detector that re-fixes ran with no intervening plan — the measurement that

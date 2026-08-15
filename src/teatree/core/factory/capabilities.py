@@ -134,7 +134,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         "teatree ticket refix-plan-status",
         json_output=True,
         exit_codes=("0",),
-        note="--json emits the tickets whose next implementing dispatch would run on findings alone (#4348)",
+        note="--json emits `awaiting` (blocked by a post-HOLD replan) and `drifted` (the ratio detector) (#4348)",
     ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),

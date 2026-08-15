@@ -25,7 +25,9 @@ owns that one predicate and the surfaces it feeds:
 ``coding_tasks_since_last_plan``
     the cheap detector the issue names. ``> 1`` on an open ticket means re-fixes
     ran with no intervening plan; nothing reported it, which is why the ratio had
-    to be hand-queried out of the control DB.
+    to be hand-queried out of the control DB. The whole-board surface that reports
+    it over every open ticket — held or not — is the sibling ``plan_drift``, which
+    reads this module rather than the reverse.
 
 The ticket→verdict binding is deliberately two-sided. A PR carries two ticket
 rows and the auto-review lane hangs the verdict off the REVIEWER one (#4366)
@@ -59,6 +61,12 @@ from teatree.core.models.types import validated_ticket_extra
 #: task on a held ticket is never blocked — a held PR must stay re-reviewable, which
 #: is the very thing #4366 found broken.
 IMPLEMENTING_PHASES: Final[tuple[str, ...]] = ("coding", "debugging")
+
+#: Every accepted spelling of every implementing phase — the SSOT every seam
+#: filters on, ``core.review.plan_drift`` included.
+IMPLEMENTING_PHASE_SPELLINGS: Final[tuple[str, ...]] = tuple(
+    spelling for phase in IMPLEMENTING_PHASES for spelling in phase_spellings(phase)
+)
 
 _TRIVIAL_SKIP_KEY: Final = "trivial_plan_skip"
 
@@ -101,11 +109,6 @@ class AwaitingRefixPlan:
             coding_tasks_since_last_plan=self.coding_tasks_since_last_plan,
             open_implementing_tasks=self.open_implementing_tasks,
         )
-
-
-def _implementing_phase_spellings() -> tuple[str, ...]:
-    """Every accepted spelling of every implementing phase — the SSOT both seams filter on."""
-    return tuple(spelling for phase in IMPLEMENTING_PHASES for spelling in phase_spellings(phase))
 
 
 def _pr_refs_for_ticket(ticket: Ticket) -> set[tuple[str, int]]:
@@ -181,7 +184,7 @@ def coding_tasks_since_last_plan(ticket: Ticket) -> int:
     no intervening plan. With no plan at all every implementing task counts, which
     is the more severe reading of the same gap.
     """
-    tasks = Task.objects.filter(ticket=ticket, phase__in=_implementing_phase_spellings())
+    tasks = Task.objects.filter(ticket=ticket, phase__in=IMPLEMENTING_PHASE_SPELLINGS)
     planned_at = governing_plan_at(ticket)
     if planned_at is not None:
         tasks = tasks.filter(created_at__gt=planned_at)
@@ -208,7 +211,7 @@ def blocked_refix_task_pks() -> list[int]:
     return list(
         Task.objects.filter(
             status=Task.Status.PENDING,
-            phase__in=_implementing_phase_spellings(),
+            phase__in=IMPLEMENTING_PHASE_SPELLINGS,
             ticket__in=blocked,
         ).values_list("pk", flat=True)
     )
@@ -281,7 +284,7 @@ def _tickets_with_open_implementing_work() -> list[Ticket]:
         Ticket.objects.filter(
             role=Ticket.Role.AUTHOR,
             tasks__status__in=Task.Status.active(),
-            tasks__phase__in=_implementing_phase_spellings(),
+            tasks__phase__in=IMPLEMENTING_PHASE_SPELLINGS,
         ).distinct()
     )
 
@@ -315,7 +318,7 @@ def tickets_awaiting_refix_plan(overlay: str = "") -> list[AwaitingRefixPlan]:
                 plan_recorded_at=governing_plan_at(ticket),
                 coding_tasks_since_last_plan=coding_tasks_since_last_plan(ticket),
                 open_implementing_tasks=Task.objects.filter(
-                    ticket=ticket, phase__in=_implementing_phase_spellings(), status__in=Task.Status.active()
+                    ticket=ticket, phase__in=IMPLEMENTING_PHASE_SPELLINGS, status__in=Task.Status.active()
                 ).count(),
             )
         )

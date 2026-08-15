@@ -17,7 +17,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import PullRequest, Ticket
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.review_verdict import ReviewVerdict
 
@@ -109,3 +109,52 @@ class TicketRefixPlanStatusChannelTest(TestCase):
 
         assert json.loads(out)["awaiting"]
         assert err == ""
+
+
+class TicketPlanDriftReportTest(TestCase):
+    """`drifted` answers the issue's whole-board ratio, which `awaiting` cannot.
+
+    The gate only sees tickets a HOLD is holding back. The measurement counted
+    every ticket that re-implemented off one plan, so a report carrying only the
+    held half would have answered "nothing here" to the query that opened the issue.
+    """
+
+    @staticmethod
+    def _drifted_ticket() -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.CODED)
+        PlanArtifact.objects.filter(
+            pk=PlanArtifact.record(ticket=ticket, plan_text="the original plan", recorded_by="planning").pk
+        ).update(recorded_at=timezone.now() - timedelta(days=3))
+        for _ in range(2):
+            session = Session.objects.create(ticket=ticket, agent_id="coding")
+            Task.objects.create(
+                ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED, execution_reason="re-fix"
+            )
+        return ticket
+
+    def test_reports_an_unheld_ticket_the_gate_never_sees(self) -> None:
+        ticket = self._drifted_ticket()
+
+        result = cast("dict[str, object]", call_command("ticket", "refix-plan-status", "--json"))
+
+        drifted = cast("list[dict[str, object]]", result["drifted"])
+        assert result["awaiting"] == []
+        assert [row["ticket_id"] for row in drifted] == [ticket.pk]
+        assert drifted[0]["coding_tasks_since_last_plan"] == 2
+        assert drifted[0]["blocked"] is False
+
+    def test_the_overlay_filter_scopes_the_detector(self) -> None:
+        self._drifted_ticket()
+
+        other = cast("dict[str, object]", call_command("ticket", "refix-plan-status", "--overlay", "nope", "--json"))
+
+        assert other["drifted"] == []
+
+    def test_the_human_view_renders_the_detector_on_stderr(self) -> None:
+        self._drifted_ticket()
+        out, err = StringIO(), StringIO()
+
+        call_command("ticket", "refix-plan-status", stdout=out, stderr=err)
+
+        assert out.getvalue() == ""
+        assert "Open tickets re-implemented more than once off one plan" in err.getvalue()

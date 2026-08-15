@@ -32,14 +32,21 @@ from teatree.core.management.commands._plan_gate_commands import (
 )
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
+from teatree.core.review.plan_drift import PlanDrift, PlanDriftRow, tickets_with_plan_drift
 from teatree.core.review.refix_plan import AwaitingRefixPlan, RefixPlanRow, tickets_awaiting_refix_plan
 from teatree.core.table_output import print_table
 
 
 class RefixPlanStatusResult(TypedDict):
-    """The ``refix-plan-status`` payload — one row per ticket awaiting a post-HOLD replan."""
+    """The ``refix-plan-status`` payload — what the gate blocks, and what the detector sees.
+
+    Two answers because they are two questions: ``awaiting`` is what a HOLD is holding
+    back right now, ``drifted`` is the issue's whole-board ratio, which counts tickets
+    no HOLD ever touched.
+    """
 
     awaiting: list[RefixPlanRow]
+    drifted: list[PlanDriftRow]
 
 
 def _render_refix_plan_table(rows: list[AwaitingRefixPlan]) -> str:
@@ -59,6 +66,27 @@ def _render_refix_plan_table(rows: list[AwaitingRefixPlan]) -> str:
             for row in rows
         ],
         title="Tickets awaiting a post-HOLD replan",
+        stream=buffer,
+    )
+    return buffer.getvalue()
+
+
+def _render_plan_drift_table(rows: list[PlanDrift]) -> str:
+    """The human view of the detector, rendered to a string so it can go to stderr."""
+    buffer = io.StringIO()
+    print_table(
+        ["ticket", "state", "plan at", "coding since plan", "blocked"],
+        [
+            [
+                row.ticket_id,
+                row.state,
+                row.plan_recorded_at.isoformat(timespec="minutes") if row.plan_recorded_at else "(never)",
+                row.coding_tasks_since_last_plan,
+                "yes" if row.blocked else "no",
+            ]
+            for row in rows
+        ],
+        title="Open tickets re-implemented more than once off one plan",
         stream=buffer,
     )
     return buffer.getvalue()
@@ -312,22 +340,25 @@ class PlanCommands(MachineOutputCommand):
         ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the rows as JSON.")] = False,
     ) -> RefixPlanStatusResult:
-        """Report every ticket whose next implementing dispatch would run on findings alone.
+        """Report what a post-HOLD replan is holding back, and the plan-drift ratio behind it.
 
         The #4348 surface. ``coding_since_plan > 1`` on an open ticket is the cheap
         detector that re-fixes ran with no intervening plan — the measurement that
         opened the issue had to be hand-queried out of the control DB because nothing
         reported it. An empty report is the healthy state, not a missing answer.
         """
-        rows = tickets_awaiting_refix_plan(overlay=overlay)
-        payload = RefixPlanStatusResult(awaiting=[row.as_row() for row in rows])
+        awaiting = tickets_awaiting_refix_plan(overlay=overlay)
+        drifted = tickets_with_plan_drift(overlay=overlay)
+        payload = RefixPlanStatusResult(
+            awaiting=[row.as_row() for row in awaiting], drifted=[row.as_row() for row in drifted]
+        )
         self.print_result = False
         emit(
             payload,
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=_render_refix_plan_table(rows),
+            human=_render_refix_plan_table(awaiting) + _render_plan_drift_table(drifted),
         )
         return payload
 

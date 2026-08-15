@@ -1191,7 +1191,7 @@
           "name": "plan-reaffirm"
         },
         {
-          "help": "Report every ticket whose next implementing dispatch would run on findings alone",
+          "help": "Report what a post-HOLD replan is holding back, and the plan-drift ratio behind it",
           "name": "refix-plan-status"
         },
         {
