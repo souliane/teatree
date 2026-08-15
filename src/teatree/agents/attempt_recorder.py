@@ -123,7 +123,8 @@ def record_result_envelope(
 
     Validation order: schema-key check → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
-    LANDING check (coding/debugging must have committed) —
+    LANDING check (coding/debugging must have committed) → PLAN-ADEQUACY refusal
+    (#4473, planning only, under ``require_plan_adequacy``) —
     a failure on any records a FAILED attempt and fails the task (``exit_code=0``
     so it reads as a clean refusal, not a crash). The action check runs BEFORE the
     evidence gate so a toolless run never reaches the coding salvage below: on a
@@ -165,7 +166,10 @@ def record_result_envelope(
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
 
-    _maybe_record_plan_artifact(task, result, phase=phase)
+    plan_refusal = _maybe_record_plan_artifact(task, result, phase=phase)
+    if plan_refusal:
+        return _record_failure(task, error=plan_refusal, result=result, usage=usage)
+
     record_reactive_envelopes(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
@@ -438,27 +442,41 @@ def _head_binding_error(*, asserted: str, dispatch_head: str) -> str:
     )
 
 
-def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> str | None:
+    """Record the planning envelope's ``PlanArtifact``; return the refusal reason if refused.
+
+    SELFCATCH-3: the planner envelope carries the base SHA it planned against and
+    the four-section adequacy manifest. Under ``require_plan_adequacy``, ``record()``
+    refuses a thin plan missing them — a planner that produced a scope-only spec must
+    not dispatch a coder against nothing.
+
+    That refusal is RETURNED, never allowed to escape. An escaping ``ValueError`` leaves
+    ``record_result_envelope`` before any attempt row is written, so it reaches the
+    blanket handler in ``core/management/commands/tasks.py`` — which overwrites the
+    envelope with ``{"sdk_error": <traceback>}`` at ``exit_code=1``. The plan text is
+    then lost (re-running cannot recover it) and a clean evidence refusal is misfiled as
+    an SDK crash, feeding the auto-repair sweep an environmental-death signal.
+    """
     from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
 
     effective_phase = normalize_phase(phase or task.phase)
     plan_text = result.get("plan_text")
     if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
-        return
+        return None
     recorded_by = (task.session.agent_id or "").strip() or "planning"
-    # SELFCATCH-3: the planner envelope carries the base SHA it planned against and
-    # the four-section adequacy manifest. Under require_plan_adequacy, record()
-    # refuses a thin plan missing them — a planner that produced a scope-only spec
-    # fails loud here rather than dispatching a coder against nothing.
     base_sha = result.get("base_sha")
     adequacy = result.get("adequacy")
-    PlanArtifact.record(
-        ticket=task.ticket,
-        plan_text=plan_text,
-        recorded_by=recorded_by,
-        base_sha=base_sha if isinstance(base_sha, str) else "",
-        adequacy=adequacy if isinstance(adequacy, dict) else None,
-    )
+    try:
+        PlanArtifact.record(
+            ticket=task.ticket,
+            plan_text=plan_text,
+            recorded_by=recorded_by,
+            base_sha=base_sha if isinstance(base_sha, str) else "",
+            adequacy=adequacy if isinstance(adequacy, dict) else None,
+        )
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 #: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.

@@ -82,6 +82,11 @@ class GateEvidence:
 _REFUSAL_ONLY = "refusal-only gate: it blocks or passes and writes no artifact, so nothing can prove it ran"
 _UNDECIDED = "no recorded decision to hold it off; "
 
+#: souliane/teatree#4473's staged rollout holds three gates back: their evidence models have
+#: ZERO rows and no production writer, so enabling one blocks the transition it guards on every
+#: ticket with nothing able to satisfy it. Held OFF until a producer is demonstrated live.
+_PRODUCER_BLOCKED = "souliane/teatree#4473 — held OFF until a producer runs: 0 evidence rows;"
+
 #: Every governed gate that SHIPS OFF, and what would prove it is live. Totality over the
 #: default-OFF half of ``FEATURE_FLAGS | DURABLE_GATE_SETTINGS`` is pinned by
 #: ``tests/conformance/test_gate_evidence_declared.py`` — a new default-OFF gate fails CI here.
@@ -93,8 +98,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         kind=ObservableKind.MODEL,
         target="core.ReproEvidence",
         shipped=dt.date(2026, 7, 6),
-        intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> repro record`",
+        intent=ActivationIntent.STAGED,
+        rationale=f"{_PRODUCER_BLOCKED} producer is `t3 <overlay> repro record`, which nothing calls",
     ),
     GateEvidence(
         setting="require_rubric_verification",
@@ -102,8 +107,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         kind=ObservableKind.MODEL,
         target="core.Rubric",
         shipped=dt.date(2026, 6, 11),
-        intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> ticket rubric-set` / `rubric-grade`",
+        intent=ActivationIntent.STAGED,
+        rationale=f"{_PRODUCER_BLOCKED} producer is `t3 <overlay> ticket rubric-set` / `rubric-grade`",
     ),
     GateEvidence(
         setting="require_review_context",
@@ -130,8 +135,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         kind=ObservableKind.MODEL,
         target="core.CriticVerdict",
         shipped=dt.date(2026, 7, 7),
-        intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}the delivery critic writes the verdict",
+        intent=ActivationIntent.STAGED,
+        rationale=f"{_PRODUCER_BLOCKED} the delivery critic would write the verdict, but it is never armed",
         filters={"transition": "mark_delivered"},
     ),
     GateEvidence(

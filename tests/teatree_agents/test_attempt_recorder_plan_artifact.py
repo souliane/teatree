@@ -140,7 +140,37 @@ class TestPlanAdequacyIsSatisfiableFromTheEnvelope(TestCase):
         assert task.status == Task.Status.COMPLETED
 
     def test_a_thin_envelope_is_still_refused_under_the_flag(self) -> None:
-        # The gate keeps its teeth: an unbound, manifest-less plan still fails loud.
+        # The gate keeps its teeth: an unbound, manifest-less plan records no artifact
+        # and the task does not succeed.
         task = self._planning_task()
-        with _plan_adequacy_required(), pytest.raises(ValueError, match="require_plan_adequacy"):
+        with _plan_adequacy_required():
             record_result_envelope(task, {"plan_text": "scope: X\nacceptance: Y"}, phase="planning")
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert not PlanArtifact.objects.filter(ticket=task.ticket).exists()
+        assert task.status == Task.Status.FAILED
+        assert task.ticket.state == Ticket.State.STARTED
+
+    def test_the_refusal_is_recorded_not_raised(self) -> None:
+        task = self._planning_task()
+        with _plan_adequacy_required():
+            attempt = record_result_envelope(task, {"plan_text": "scope: X"}, phase="planning")
+        assert attempt.exit_code == 0, "a refusal is exit-0, not a crash"
+        assert "require_plan_adequacy" in attempt.error
+
+    def test_the_refused_plan_text_survives_on_the_attempt(self) -> None:
+        # The whole point: an escaping ValueError reaches tasks.py's blanket handler,
+        # which overwrites the envelope with a traceback and loses the plan.
+        task = self._planning_task()
+        with _plan_adequacy_required():
+            attempt = record_result_envelope(task, {"plan_text": "the whole plan"}, phase="planning")
+        assert attempt.result["plan_text"] == "the whole plan"
+
+    def test_the_same_thin_envelope_is_accepted_with_the_flag_off(self) -> None:
+        # The control: without the flag the identical envelope records and completes,
+        # so the refusal above is flag-scoped rather than a blanket rejection.
+        task = self._planning_task()
+        record_result_envelope(task, {"plan_text": "scope: X\nacceptance: Y"}, phase="planning")
+        task.refresh_from_db()
+        assert PlanArtifact.objects.filter(ticket=task.ticket).exists()
+        assert task.status == Task.Status.COMPLETED
