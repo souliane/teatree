@@ -258,6 +258,87 @@ class TestProvisionTicketFlag(TestCase):
             assert not Worktree.objects.exists()
 
 
+class TestTheWorkerClaimOutlivesAStarvedHeartbeat(TestCase):
+    """``work-next``/``claim`` must claim for the heartbeat's renewal window, not 300s (#4464).
+
+    ``_claim_next_task`` served both CLI leaves with ``Task.claim``'s 300s default while the
+    runner's heartbeat only renews from its first ~60s tick. On a saturated box that first
+    renewal slips past 300s, ``reclaim_orphaned_claims`` re-queues the still-running task, and
+    the live attempt aborts having discarded the verdict it had already produced — the
+    mechanism behind souliane/teatree#4308.
+    """
+
+    #: Starvation long enough to lapse the 300s default, short of the 900s renewal window.
+    _STARVED_SECONDS = 600
+
+    def setUp(self) -> None:
+        # The post_save auto-enqueue would run the task to terminal before the explicit claim.
+        from django.db.models.signals import post_save  # noqa: PLC0415 — deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 — deferred: local import
+
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create(overlay="test")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
+
+    def _pending_task(self) -> Task:
+        return Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.PENDING)
+
+    def _starve(self, task: Task) -> None:
+        """Age the claim by ``_STARVED_SECONDS`` with no heartbeat, preserving its lease length."""
+        from datetime import timedelta  # noqa: PLC0415 — deferred: local import
+
+        task.refresh_from_db()
+        starved = timedelta(seconds=self._STARVED_SECONDS)
+        Task.objects.filter(pk=task.pk).update(
+            claimed_at=task.claimed_at - starved,
+            heartbeat_at=task.heartbeat_at - starved,
+            lease_expires_at=task.lease_expires_at - starved,
+        )
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_the_starved_claim_is_not_reclaimed_inside_the_renewal_window(self) -> None:
+        task = self._pending_task()
+
+        call_command("tasks", "claim", claimed_by="worker-1")
+        self._starve(task)
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        task.refresh_from_db()
+        assert reclaimed == 0
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "worker-1"
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_the_control_a_default_lease_claim_is_reclaimed_at_the_same_instant(self) -> None:
+        # Without this the test above cannot tell "the wider lease held" from "the sweep
+        # withheld for some other reason" (#4164's owner_is_executing, #2009's iteration
+        # budget) — both present as a row that stayed CLAIMED.
+        task = self._pending_task()
+
+        task.claim(claimed_by="worker-1")
+        self._starve(task)
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        task.refresh_from_db()
+        assert reclaimed == 1
+        assert task.status == Task.Status.PENDING
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_the_claim_lease_is_the_one_the_heartbeat_renews_to(self) -> None:
+        from teatree.agents.runner import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
+
+        task = self._pending_task()
+
+        call_command("tasks", "claim", claimed_by="worker-1")
+
+        task.refresh_from_db()
+        held = (task.lease_expires_at - task.claimed_at).total_seconds()
+        assert held == pytest.approx(_LEASE_SECONDS, abs=1)
+
+
 class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_claim_and_complete_work(self) -> None:

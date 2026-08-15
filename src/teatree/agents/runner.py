@@ -32,7 +32,6 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 from claude_agent_sdk.types import RateLimitInfo
-from django.utils import timezone
 
 from teatree.agents._runner_env import _overlay_scope, _provider_child_env, with_test_worker_cap
 from teatree.agents._runner_options import SpawnOverrides, _build_options, resolve_agent_max_turns
@@ -52,6 +51,7 @@ from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
 from teatree.agents.runner_budget import TicketBudget
 from teatree.agents.runner_failure_taxonomy import error_result_reason as _error_result_reason
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match
+from teatree.agents.runner_interruption import _record_failure, _record_stuck_outcome
 from teatree.agents.runner_truncation import (
     alert_owner_max_tokens_truncation,
     alert_owner_max_turns_truncation,
@@ -70,9 +70,7 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
-from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
-from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.task_claim import describe_lease_loss, drive_claim
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import AllTokensExhaustedError
@@ -84,8 +82,6 @@ from teatree.utils.thread_db import close_thread_db_connections
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
-
-    from teatree.agents.attempt_recorder import AttemptUsage
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +104,6 @@ _HEARTBEAT_INTERVAL = 60  # seconds
 # false lapse, which absorbs realistic load spikes. A genuinely dead session's task
 # still reclaims — just after the wider window.
 _LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
-
-_STUCK_LOOP_PREFIX = "stuck_loop: "
 
 #: Truncation applied to the agent's raw text when it stands in for an envelope.
 _PROSE_SUMMARY_CHARS = 1000
@@ -568,102 +562,3 @@ def _record_success(
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
     return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))
-
-
-def _record_stuck_outcome(
-    task: Task, outcome: HarnessOutcome, *, stuck_reason: str, usage: "AttemptUsage | None" = None
-) -> TaskAttempt:
-    """Record an interrupted run: the LANDED outcome where its evidence exists, else the failure.
-
-    An interruption noticed AFTER the row reached COMPLETED is a no-op, never a failure
-    (#4100): the run had nothing left to hand over, and writing a failure over a finished
-    row buries a real completion, inflates the environmental-failure rate and feeds the
-    auto-repair sweep a "re-do this" signal for work that is done.
-
-    Short of that, only a LOST LEASE qualifies for the landed outcome (#3982) — it says the
-    lease lapsed, not that the work failed. A watchdog runtime/turns breach is a genuine
-    runaway with no such alibi, so it stays a recorded failure however far the ticket has
-    advanced.
-    """
-    if Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists():
-        return _record_noop_over_completed_row(task, interruption=stuck_reason, usage=usage)
-    evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
-    if evidence:
-        return _record_landed(task, evidence=evidence, lease_loss=stuck_reason, usage=usage)
-    return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}", usage=usage)
-
-
-def _record_noop_over_completed_row(
-    task: Task, *, interruption: str, usage: "AttemptUsage | None" = None
-) -> TaskAttempt:
-    """Record the interruption of a run whose row had already COMPLETED — exit-0, no failure.
-
-    The row is left exactly as it is: this run is the one that has nothing to say about it.
-    """
-    logger.info("Task %s was interrupted after its row completed: %s", task.pk, interruption)
-    return _record_interrupted_attempt(task, summary=f"the row had already completed — {interruption}", usage=usage)
-
-
-def _record_landed(task: Task, *, evidence: str, lease_loss: str, usage: "AttemptUsage | None" = None) -> TaskAttempt:
-    """Record the outcome *task*'s own phase evidence supports, not the lost lease (#3982).
-
-    A lost lease says the LEASE lapsed; it says nothing about the work. When the phase's
-    output demonstrably landed, recording ``failed`` / ``lease_lost`` feeds the auto-repair
-    sweep a "re-do this" signal for completed work and inflates the environmental-failure
-    rate. The attempt is recorded exit-0 carrying both the evidence and the lease loss, so
-    the interruption stays visible without being the verdict.
-
-    The row is landed COMPLETED only while NOTHING holds it — a conditional
-    ``UPDATE ... WHERE status=PENDING``, the same compare-and-swap
-    ``transient_requeue_disposal._retire_superseded`` uses. A live successor's claim is therefore
-    never terminated out from under it, and a row nobody took up after the in-process
-    reclaim stops being re-dispatched for work that already shipped. No FSM side effect is
-    needed: the evidence IS that the ticket already reached this phase's target state.
-    """
-    attempt = _record_interrupted_attempt(
-        task, summary=f"phase landed despite a lost lease — {evidence}; {lease_loss}", usage=usage
-    )
-    Task.objects.filter(pk=task.pk, status=Task.Status.PENDING).update(status=Task.Status.COMPLETED, **RELEASED_CLAIM)
-    logger.warning("Task %s lost its lease but its phase landed: %s", task.pk, evidence)
-    return attempt
-
-
-def _record_interrupted_attempt(task: Task, *, summary: str, usage: "AttemptUsage | None" = None) -> TaskAttempt:
-    """The exit-0 attempt an interruption records when it is not the verdict on the work."""
-    from teatree.agents.attempt_recorder import usage_fields  # noqa: PLC0415 — deferred: call-time import
-
-    return TaskAttempt.objects.create(
-        task=task,
-        ended_at=timezone.now(),
-        exit_code=0,
-        error="",
-        result={"summary": summary},
-        **usage_fields(usage),
-    )
-
-
-def _record_failure(
-    task: Task,
-    *,
-    exit_code: int = 1,
-    error: str = "",
-    result: AgentResultBlob | None = None,
-    usage: "AttemptUsage | None" = None,
-) -> TaskAttempt:
-    """Record a FAILED attempt carrying *error* and whatever spend it billed, and fail the task.
-
-    ``usage`` is ``None`` only where the failure happened BEFORE any turn was billed, which
-    keeps the spend columns NULL rather than zero (#4164) — see :func:`usage_fields`.
-    """
-    from teatree.agents.attempt_recorder import usage_fields  # noqa: PLC0415 — deferred: call-time import
-
-    attempt = TaskAttempt.objects.create(
-        task=task,
-        ended_at=timezone.now(),
-        exit_code=exit_code,
-        error=error,
-        result=result or {},
-        **usage_fields(usage),
-    )
-    task.fail(reason=error)
-    return attempt

@@ -14,6 +14,7 @@ from teatree.core.intake.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
+from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
@@ -32,18 +33,6 @@ logger = logging.getLogger(__name__)
 #: that dead work is live. Shared by the doctor's stranded-headless probe and
 #: :meth:`TeardownDispatch.outstanding_for`.
 STRANDED_JOB_GRACE_SECONDS = 900
-
-# The initial claim lease for a headless task must match the heartbeat's renewal
-# window (``agents.runner._LEASE_SECONDS`` = 900s), NOT ``Task.claim``'s 300s
-# default. The heartbeat only renews to 900s from the first tick (~60s); with the
-# 300s default the pre-first-tick window is just ~5 heartbeats, so under CPU
-# starvation (a loaded box running several coders) the first renewal slips past
-# 300s, the lease lapses, ``reclaim_orphaned_claims`` re-queues the still-running
-# task, and it aborts "lease lost: re-claimed by another worker" — a self-inflicted
-# reclaim. Claiming with 900s from the start closes that window. Kept equal to
-# ``_LEASE_SECONDS`` by ``test_headless_claim_lease_matches_heartbeat`` (core cannot
-# import the agents layer, so the value is duplicated and drift-guarded by test).
-_CLAIM_LEASE_SECONDS = 900
 
 
 def _persist_intake_landscape(ticket: Ticket) -> None:
@@ -126,9 +115,9 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
     # redelivered terminal job, both executing in full). ``claim`` raises
     # ``InvalidTransitionError`` when the row is terminal or held under a live lease.
     # The heartbeat-matched lease means a starved first heartbeat cannot let the initial
-    # 300s window lapse and re-queue this live task (_CLAIM_LEASE_SECONDS).
+    # 300s window lapse and re-queue this live task (HEARTBEAT_MATCHED_LEASE_SECONDS).
     try:
-        task_obj.claim(claimed_by="task-worker", lease_seconds=_CLAIM_LEASE_SECONDS)
+        task_obj.claim(claimed_by="task-worker", lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
     except InvalidTransitionError as exc:
         logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
         return {"skipped": "not claimable (claimed elsewhere or terminal)"}
