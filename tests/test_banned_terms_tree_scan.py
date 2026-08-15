@@ -194,11 +194,14 @@ class TestScanTree:
         repo = _repo_with(tmp_path, "logo.png", f"binary-ish {SYNTH_BRAND}\n")
         assert banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,)) == []
 
-    def test_non_repo_path_is_clean(self, tmp_path: Path) -> None:
+    def test_non_repo_path_refuses_rather_than_reporting_clean(self, tmp_path: Path) -> None:
+        # #4354 §2: enumerating nothing is a NON-ANSWER. Returning [] here made the
+        # brand-leak backstop report "clean (0 findings)" on a tree it never read.
         plain = tmp_path / "plain"
         plain.mkdir()
         (plain / "app.py").write_text(f"x = '{SYNTH_BRAND}'\n", encoding="utf-8")
-        assert banned_terms_tree_scan.scan_tree(plain, (SYNTH_BRAND,)) == []
+        with pytest.raises(banned_terms_tree_scan.TreeEnumerationError):
+            banned_terms_tree_scan.scan_tree(plain, (SYNTH_BRAND,))
 
     def test_undecodable_text_file_is_skipped(self, tmp_path: Path) -> None:
         # A tracked .py with invalid UTF-8 bytes cannot be read — the scan
@@ -558,6 +561,63 @@ class TestScanTreeRequireBrandsHardFail:
         assert "banned_brands = []" in help_text
         assert "regardless" in help_text
         assert "missing TEATREE_BANNED_BRANDS secret reds" not in help_text
+
+
+class TestEnumerationFailureIsLoud:
+    """A scan that enumerated ZERO files is a non-answer, never "clean" (#4354 §2).
+
+    ``git_tracked_files`` mapped every failure — a non-repo cwd, a missing git, a
+    ``safe.directory`` refusal, an ``ls-files`` timeout — onto an empty list, and zero
+    files scanned produced zero findings and a green "clean (0 findings)". The gate
+    exists to stop an operator brand reaching a PUBLIC repo, so its only sound answer
+    to "I could not read the tree" is a loud MISCONFIGURED.
+    """
+
+    def test_enumerating_a_non_repo_raises(self, tmp_path: Path) -> None:
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        with pytest.raises(banned_terms_tree_scan.TreeEnumerationError):
+            banned_terms_tree_scan.git_tracked_files(plain)
+
+    def test_a_repo_with_no_tracked_files_raises(self, tmp_path: Path) -> None:
+        repo = tmp_path / "empty"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        with pytest.raises(banned_terms_tree_scan.TreeEnumerationError):
+            banned_terms_tree_scan.git_tracked_files(repo)
+
+    def test_cli_exits_misconfigured_and_never_prints_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        (plain / "leak.md").write_text(f"{SYNTH_BRAND} leaked\n", encoding="utf-8")
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(plain), "--require-brands"])
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in strip_ansi(result.stdout)
+        assert "clean (0 findings)" not in strip_ansi(result.stdout)
+
+    def test_control_the_same_file_inside_a_repo_is_a_finding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control: the ONLY difference is the enclosing git repo, and it exits 1."""
+        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        repo = _repo_with(tmp_path, "leak.md", f"{SYNTH_BRAND} leaked\n")
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--require-brands"])
+        assert result.exit_code == 1
+        assert "leak.md" in strip_ansi(result.stdout)
+
+    def test_allow_unset_does_not_downgrade_an_unreadable_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--allow-unset`` governs the BRAND-list axis only — a fork can still enumerate."""
+        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(plain), "--allow-unset"])
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in strip_ansi(result.stdout)
 
 
 class TestBannedTermsTreeCiPassesRequireBrands:
