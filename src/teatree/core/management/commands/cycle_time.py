@@ -132,7 +132,7 @@ class Command(MachineOutputCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=lambda stream: _render_timeline(payload, timeline, stream=stream),
+            human=lambda stream: _render_timeline(payload, stream=stream),
         )
         return payload
 
@@ -179,7 +179,7 @@ class Command(MachineOutputCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=lambda stream: _render_distribution(payload, stats, stream=stream),
+            human=lambda stream: _render_distribution(payload, stream=stream),
         )
         return payload
 
@@ -261,7 +261,8 @@ def _duration(seconds: float | None) -> str:
     return UNKNOWN if seconds is None else _humanize_duration(seconds)
 
 
-def _render_timeline(payload: TicketCyclePayload, timeline: "TicketTimeline", *, stream: IO[str]) -> None:
+def _render_timeline(payload: TicketCyclePayload, *, stream: IO[str]) -> None:
+    """Both views render from the same payload, so the table and the JSON cannot disagree."""
     title = f"Ticket {payload['number']} ({payload['overlay'] or 'global'}) — {payload['state']}"
     if not payload["measured"]:
         stream.write(f"{title}\nNo measured span yet — a ticket's first transition measures nothing.\n")
@@ -276,34 +277,34 @@ def _render_timeline(payload: TicketCyclePayload, timeline: "TicketTimeline", *,
         ["Edge", "Phase", "Elapsed", "Waiting", "Working", "Attempts"],
         [
             [
-                f"{segment.from_state} → {segment.to_state}",
-                segment.phase or "—",
-                _humanize_duration(segment.seconds),
+                f"{row['from_state']} → {row['to_state']}",
+                row["phase"] or "—",
+                _humanize_duration(row["seconds"]),
                 _duration(row["queue_seconds"]),
                 _duration(row["work_seconds"]),
-                str(segment.attempts),
+                str(row["attempts"]),
             ]
-            for segment, row in zip(timeline.segments, payload["segments"], strict=True)
+            for row in payload["segments"]
         ],
         stream=stream,
     )
 
 
-def _render_distribution(payload: DistributionPayload, stats: tuple["TransitionStat", ...], *, stream: IO[str]) -> None:
+def _render_distribution(payload: DistributionPayload, *, stream: IO[str]) -> None:
     scope = payload["overlay"] or "global"
-    if not stats:
+    if not payload["edges"]:
         stream.write(f"No measured spans in the last {payload['window_days']}d ({scope}).\n")
         return
     print_table(
         ["Edge", "Samples", "Median", "p90"],
         [
             [
-                f"{stat.from_state} → {stat.to_state}",
-                str(stat.samples),
-                _humanize_duration(stat.median_seconds),
-                _humanize_duration(stat.p90_seconds),
+                f"{row['from_state']} → {row['to_state']}",
+                str(row["samples"]),
+                _humanize_duration(row["median_seconds"]),
+                _humanize_duration(row["p90_seconds"]),
             ]
-            for stat in stats
+            for row in payload["edges"]
         ],
         title=f"Cycle time — last {payload['window_days']}d ({scope}), {payload['samples']} spans",
         stream=stream,
