@@ -1,13 +1,12 @@
 # ============================================================
-# WEEKLY uv.lock REFRESH — closes the Dependabot pip gap
+# WEEKLY uv.lock REFRESH — whole-graph re-resolve
 # ============================================================
 #
-# Dependabot's ``pip`` ecosystem proposes bumps to pyproject.toml version
-# constraints but does NOT regenerate uv.lock.  After a dependabot PR merges,
-# the lockfile still pins the old hashes — the actual installed versions only
-# move when someone runs ``uv lock --upgrade``.
+# Dependabot (``uv`` ecosystem since souliane/teatree#4346) proposes per-package
+# updates. It does not re-resolve the WHOLE graph, so transitive pins drift
+# between the packages it happens to open a PR for.
 #
-# This workflow closes that structural gap: once a week it runs
+# This workflow closes that residual gap: once a week it runs
 # ``uv lock --upgrade``, and if the lockfile changed it opens (or updates) a
 # PR against main so a human can review and merge the hash refresh.
 #
@@ -117,7 +116,7 @@ jobs:
           git push --force-with-lease origin "$BRANCH"
           # Open a PR if one does not already exist for this branch.
           if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
-            PR_BODY="Automated weekly lockfile refresh via \`uv lock --upgrade\`.\n\nDependabot's \`pip\` ecosystem updates \`pyproject.toml\` constraints but does not regenerate \`uv.lock\`. This PR closes that gap by re-resolving all hashes after any constraint bumps that landed during the week.\n\nOpened with a PAT so CI runs; GitHub auto-merge is enabled so it self-merges once green (#3245)."
+            PR_BODY="Automated weekly lockfile refresh via \`uv lock --upgrade\`.\n\nDependabot proposes per-package updates; it does not re-resolve the whole graph. This PR re-resolves every pin so transitive dependencies do not drift between the packages it happens to open a PR for.\n\nOpened with a PAT so CI runs; GitHub auto-merge is enabled so it self-merges once green (#3245)."
             gh pr create \
               --title "chore(deps): weekly uv.lock upgrade" \
               --body "$PR_BODY" \

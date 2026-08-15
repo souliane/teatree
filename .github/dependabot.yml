@@ -1,12 +1,15 @@
 version: 2
 updates:
-  # Watches pyproject.toml and proposes bumps to version constraints.
-  # NOTE: Dependabot's pip ecosystem does NOT regenerate uv.lock — after
-  # merging a dependabot PR you must run `uv lock --upgrade <package>` locally
-  # (or let the weekly `uv-lock-upgrade` workflow open the lock-refresh PR).
-  # The `uv` package-ecosystem is not yet supported by Dependabot; track
-  # https://github.com/dependabot/dependabot-core/issues/10478 for native support.
-  - package-ecosystem: "pip"
+  # Watches pyproject.toml AND uv.lock, the toolchain this project actually uses.
+  # It was `pip` until souliane/teatree#4346: that ecosystem proposes bumps to
+  # pyproject.toml CONSTRAINTS only, so a security release the declared range
+  # already permits offers nothing to change and is never proposed. Django 6.0.8
+  # (2026-08-04) went unnoticed for a week exactly that way — `django>=6,<6.1`
+  # already allowed it, so only the lockfile needed to move. Native uv support
+  # landed in https://github.com/dependabot/dependabot-core/issues/10478 (closed
+  # 2025-04-12, "for both version updates and security updates"), which is what
+  # makes a lockfile-only bump proposable.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

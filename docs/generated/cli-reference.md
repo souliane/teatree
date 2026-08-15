@@ -3248,6 +3248,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      plugin deselects, we force-keep.                        │
 │ comment-density      Warn on added comments that merely restate the code     │
 │                      (comments-as-code rule).                                │
+│ dependency-audit     Annotate each dependency-audit finding with its         │
+│                      reachability from ``src/``.                             │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
@@ -3568,6 +3570,22 @@ Usage: t3 tool comment-density [OPTIONS]
 │                         used by CI).                                         │
 │ --json                  Emit machine-readable JSON.                          │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool dependency-audit`
+
+```
+Usage: t3 tool dependency-audit [OPTIONS]
+
+ Annotate each dependency-audit finding with its reachability from ``src/``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --report        TEXT  pip-audit --format json report ('-' for stdin).     │
+│                          [required]                                          │
+│    --root          PATH  Repo root whose src/ is indexed (default: cwd)      │
+│    --json                Emit machine-readable JSON.                         │
+│    --help                Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
