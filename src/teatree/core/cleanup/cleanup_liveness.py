@@ -255,7 +255,7 @@ def worktree_liveness(
 
     Checked in cheap-to-expensive order: the DB-only signals (busy ticket →
     active-delivery, :func:`_db_liveness_reason`) then the filesystem signals (CWD
-    → git lock → recent HEAD commit, :func:`_fs_liveness_reason`). The first signal
+    → git lock → recent HEAD commit, :func:`_fs_liveness`). The first signal
     short-circuits with its reason. A not-live verdict means none fired, so the
     reaper may proceed to done-detection.
 

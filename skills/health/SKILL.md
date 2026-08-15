@@ -25,6 +25,8 @@ Computed from deterministic durable signals — stale loop ticks, failed tasks, 
 
 The chip is read-only (it never reconciles at render time). The loop tick reconciles the registry each beat, and `health show` reconciles before printing — so an auto-derived issue whose signal has cleared auto-resolves by construction; you never chase a stale entry.
 
+**A tick that could not READ a signal source resolves nothing** ([#4354](https://github.com/souliane/teatree/issues/4354)). A collector whose read failed contributes the same empty slice as one reporting all-clear, and absence is what retires a row — so an unreadable source used to retire the CRITICAL it could no longer see and turn the chip green on an unchanged fault. Each unread source is now recorded as its own critical `health-collector-failed:<source>` row (the tick reads **red**, not green) and the auto-resolve pass is suspended until every source answers again. A `health-collector-failed:*` row on the chip means the verdict beside it is incomplete: fix the read, and it clears itself on the next healthy tick.
+
 ## The single command
 
 ```bash
