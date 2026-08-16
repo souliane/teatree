@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 from typer.testing import CliRunner
 
 import teatree.cli.doctor.run_checks as teatree_cli_doctor
@@ -85,11 +86,12 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # this aggregation smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_dream_consolidation_blocked", lambda: True)
     # The config-tier health gate (#3873) reports whether a ConfigSetting override read
-    # recently FAILED. These CLI-dispatch cases run with no Django DB, so the doctor's own
-    # settings read is blocked by pytest-django and legitimately records a degradation —
-    # the check would then FAIL for a reason that is an artefact of the harness, not of the
-    # dispatch under test. Its real behaviour is exercised in
-    # tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to a pass here.
+    # recently FAILED, reading a marker file beside the box's REAL control DB — a path
+    # outside this test's DB isolation, so a genuine unrelated degradation recorded by
+    # another process on the same runner would FAIL this aggregation test for a reason
+    # that has nothing to do with the dispatch under test. Its real behaviour is
+    # exercised in tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to
+    # a pass here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_config_override_tier_healthy", lambda: True)
     # The general provisioning gate (#3652) resolves the manifest-declared skills
     # against the runner's real skill-install state, where the external apm skills
@@ -111,22 +113,32 @@ def _stage_declared_skills(tmp_path_factory) -> Path:
     return staged
 
 
-class TestDoctorCheckCommand:
+class TestDoctorCheckCommand(TestCase):
     """End-to-end ``t3 doctor check`` dispatch via ``CliRunner``.
 
     The command's sanity check runs live against the DB-home config store
     (``contribute`` defaults to false with no row); ``editable_info`` +
     ``shutil.which`` stay mocked because they touch the real site-packages and PATH.
+    Real DB access (via ``TestCase``, not a bare ``django_db`` marker per this
+    repo's ``ac-django`` lint rule) is load-bearing: souliane/teatree#4357 made a
+    blocked-DB read produce a DIFFERENT, honest UNVERIFIED message rather than a
+    masked default, so a harness that cannot read the store no longer exercises
+    the live-store behaviour this class's docstring already promised.
     """
 
-    def test_entrypoint_guard_runs_before_editable_autorepair(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_entrypoint_guard_runs_before_editable_autorepair(self):
         """The entrypoint guard must fire before editable auto-repair (#1507).
 
         Under ``contribute=true`` the editable-sanity check can auto-make the
         cwd worktree editable — the exact stale anchor the guard catches. If it
         ran first it would create the bad install before the guard fails.
         """
-        _stage_home(tmp_path, monkeypatch)
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         order: list[str] = []
 
@@ -148,8 +160,8 @@ class TestDoctorCheckCommand:
 
         assert order.index("entrypoint") < order.index("editable")
 
-    def test_reports_all_checks_passed(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    def test_reports_all_checks_passed(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         with (
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -162,7 +174,7 @@ class TestDoctorCheckCommand:
         assert result.exit_code == 0
         assert "All checks passed" in result.output
 
-    def test_aggregates_the_shard_durations_checks_against_the_staged_repo(self, tmp_path, monkeypatch):
+    def test_aggregates_the_shard_durations_checks_against_the_staged_repo(self):
         """Both #4048 checks run end to end here, not stubbed (#4113 review).
 
         A measurement stubbed to ``None`` in the shared stager silences its check
@@ -170,7 +182,7 @@ class TestDoctorCheckCommand:
         either check removed. Naming the coverage verdict of the staged tree keeps
         that surface live.
         """
-        _stage_home(tmp_path, monkeypatch)
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         with (
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -183,8 +195,8 @@ class TestDoctorCheckCommand:
         assert result.exit_code == 0, result.output
         assert "OK    Test-shard durations cover 100.0% of the test files" in result.output
 
-    def test_reports_warning_when_editable_state_mismatches(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    def test_reports_warning_when_editable_state_mismatches(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
         # contribute=false but teatree is editable → WARN
 
         with (
@@ -204,8 +216,8 @@ class TestDoctorCheckCommand:
         # the editable/contribute warning removed entirely — it would guard nothing.
         assert "teatree is editable but contribute=false in the DB config" in result.output
 
-    def test_fails_when_required_tool_missing(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    def test_fails_when_required_tool_missing(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         with (
             patch("shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
@@ -222,9 +234,9 @@ class TestDoctorCheckCommand:
         assert "FAIL  Declared dependency not provisioned: binary 'direnv'" in result.output
         assert "pyproject.toml" in result.output
 
-    def test_validates_skills_in_claude_dir(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
-        claude_skills = tmp_path / ".claude" / "skills"
+    def test_validates_skills_in_claude_dir(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        claude_skills = self.tmp_path / ".claude" / "skills"
         (claude_skills / "ok-skill").mkdir(parents=True)
         (claude_skills / "ok-skill" / "SKILL.md").write_text("---\nname: ok-skill\ndescription: d\n---\n")
 
@@ -239,9 +251,9 @@ class TestDoctorCheckCommand:
         assert result.exit_code == 0
         assert "1 skill(s) validated" in result.output
 
-    def test_reports_skill_validation_errors(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
-        bad = tmp_path / ".claude" / "skills" / "bad-skill"
+    def test_reports_skill_validation_errors(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        bad = self.tmp_path / ".claude" / "skills" / "bad-skill"
         bad.mkdir(parents=True)
         (bad / "SKILL.md").write_text("no frontmatter here")
 
@@ -254,9 +266,9 @@ class TestDoctorCheckCommand:
 
         assert "FAIL" in result.output
 
-    def test_reports_skill_validation_warnings(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
-        skill = tmp_path / ".claude" / "skills" / "warn-skill"
+    def test_reports_skill_validation_warnings(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        skill = self.tmp_path / ".claude" / "skills" / "warn-skill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\nname: warn-skill\ndescription: d\nunknown-field: x\n---\n")
 
@@ -269,7 +281,7 @@ class TestDoctorCheckCommand:
 
         assert "WARN" in result.output
 
-    def test_configures_django_before_self_db_inspection(self, tmp_path, monkeypatch):
+    def test_configures_django_before_self_db_inspection(self):
         """``t3 doctor check`` must configure Django before inspecting the self-DB.
 
         Regression (#126): ``check()`` is a plain Typer command in a
@@ -281,7 +293,7 @@ class TestDoctorCheckCommand:
         ``DJANGO_SETTINGS_MODULE``) before reaching the schema guard, so it
         reports the REAL pending-migration state.
         """
-        _stage_home(tmp_path, monkeypatch)
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         order: list[str] = []
 
@@ -310,7 +322,7 @@ class TestDoctorCheckCommand:
         assert order.index("ensure_django") < order.index("self_db_check")
         assert "Could not inspect self-DB migrations: ImproperlyConfigured" not in result.output
 
-    def test_configures_django_before_editable_sanity(self, tmp_path, monkeypatch):
+    def test_configures_django_before_editable_sanity(self):
         """Django must be configured before the editable-vs-contribute check (#3213).
 
         The editable-sanity check reads the DB-home ``contribute`` setting via
@@ -322,7 +334,7 @@ class TestDoctorCheckCommand:
         install saw the spurious "editable but contribute=false" WARN. The
         canonical ``ensure_django`` step must run first.
         """
-        _stage_home(tmp_path, monkeypatch)
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         order: list[str] = []
 
@@ -363,17 +375,24 @@ class TestDoctorCheckCommand:
         assert "FAIL" in result.output
 
 
-class TestBareDoctorRunsChecks:
+class TestBareDoctorRunsChecks(TestCase):
     """Bare ``t3 doctor`` aliases to ``t3 doctor check`` (souliane/teatree#2065).
 
     ``no_args_is_help=True`` made bare ``t3 doctor`` print the usage banner and
     run no verification — a fresh user's verify step silently did nothing. The
     group callback must run ``check`` when no subcommand is given, while leaving
-    the ``check`` and ``authorizations`` subcommands intact.
+    the ``check`` and ``authorizations`` subcommands intact. ``TestCase`` for the
+    same reason as ``TestDoctorCheckCommand`` above — this dispatches through the
+    same live DB-home config store.
     """
 
-    def test_bare_doctor_runs_checks_not_help(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_bare_doctor_runs_checks_not_help(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         with (
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -387,8 +406,8 @@ class TestBareDoctorRunsChecks:
         assert "All checks passed" in result.output
         assert "Usage:" not in result.output
 
-    def test_bare_doctor_propagates_failure_exit_code(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    def test_bare_doctor_propagates_failure_exit_code(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         with (
             patch("shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
@@ -400,8 +419,8 @@ class TestBareDoctorRunsChecks:
         assert result.exit_code == 1
         assert "FAIL  Declared dependency not provisioned: binary 'direnv'" in result.output
 
-    def test_check_subcommand_still_dispatches(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    def test_check_subcommand_still_dispatches(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         with (
             patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -414,8 +433,8 @@ class TestBareDoctorRunsChecks:
         assert result.exit_code == 0, result.output
         assert "All checks passed" in result.output
 
-    def test_authorizations_subcommand_still_dispatches(self, tmp_path, monkeypatch):
-        _stage_home(tmp_path, monkeypatch)
+    def test_authorizations_subcommand_still_dispatches(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
 
         result = runner.invoke(app, ["doctor", "authorizations", "--help"])
 
