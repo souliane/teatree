@@ -25,8 +25,12 @@ import pytest
 from teatree.cli.review.post_impl import post_comment_impl
 from teatree.core.models import OutboundClaim
 
+# Every case here is all-mock and costs ~0.1s; the 53.9s recorded against the first of
+# them is the session-scoped `django_db_setup` template build (tests/conftest.py), which
+# pytest-timeout charges to whichever item first asks for the DB — any item in this file.
+# 180 is the sharded lane's own `-o timeout=`, so CI headroom is unchanged (#4369).
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.timeout(180)]
 
 
 def _make_service() -> MagicMock:
