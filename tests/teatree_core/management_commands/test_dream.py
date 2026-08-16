@@ -1443,6 +1443,63 @@ class DreamTickCadenceTestCase(TestCase):
         assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is None
 
 
+class DreamTickRecordsLivenessSeparatelyTestCase(TestCase):
+    """A withheld cadence anchor must not read as "nothing drove this loop" (#4355).
+
+    Withholding ``last_run_at`` on a non-stamping pass is the #2285 retry-until-success
+    decision and stays. What it may not do is make the loop LOOK dead: the pass ran, and
+    ``last_attempt_at`` is where that fact lives.
+    """
+
+    def test_a_withheld_pass_still_records_the_attempt(self) -> None:
+        _enable_dream_loop(last_run_at=None)  # due
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
+            assert _run_dream("tick") == 1
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is None
+        assert row.last_attempt_at is not None
+
+    def test_the_attempt_is_recorded_even_when_the_engine_raises(self) -> None:
+        _enable_dream_loop(last_run_at=None)
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=RuntimeError("engine boom")):
+            assert _run_dream("tick") == 1
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_attempt_at is not None
+
+    def test_the_attempt_is_already_recorded_when_the_pass_starts(self) -> None:
+        # The ordering IS the guarantee: the observed production shape is a pass SIGKILLed
+        # at its 1800s deadline mid-run, which no in-process test can stage and which
+        # reaches no line after the engine call. Stamping first is what survives it.
+        _enable_dream_loop(last_run_at=None)
+        seen: list[dt.datetime | None] = []
+
+        def _record_then_fail(**_kwargs: object) -> DreamRunResult:
+            seen.append(Loop.objects.get(name=DREAM_LOOP_NAME).last_attempt_at)
+            message = "killed at the deadline"
+            raise RuntimeError(message)
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=_record_then_fail):
+            assert _run_dream("tick") == 1
+        assert len(seen) == 1
+        assert seen[0] is not None
+
+    def test_a_skipped_tick_records_no_attempt(self) -> None:
+        # Not due ⇒ no pass executed ⇒ nothing to claim. An attempt stamped here would
+        # make the driver's own SKIP indistinguishable from work.
+        _enable_dream_loop(last_run_at=timezone.now())
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            assert _run_dream("tick") == 0
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_attempt_at is None
+
+    def test_a_succeeding_pass_moves_both_anchors(self) -> None:
+        _enable_dream_loop(last_run_at=None)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            call_command("dream", "tick", stdout=StringIO())
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is not None
+        assert row.last_attempt_at is not None
+
+
 class DreamZeroMembersFailLoudTestCase(TestCase):
     def test_zero_members_does_not_stamp_succeeded(self) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)

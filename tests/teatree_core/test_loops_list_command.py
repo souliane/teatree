@@ -318,3 +318,45 @@ class TestLoopsListRendersTheVerdictNotTheRawColumn(django.test.TestCase):
             payload = json.loads(_run("--json"))
         audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
         assert audit["starved"] is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListSurfacesAWithheldAnchor(django.test.TestCase):
+    """A loop being driven must not render identically to one nothing drives (#4355).
+
+    ``dream`` read ``last 257h37m`` while its tick command ran every ten minutes and
+    declined to stamp each pass — so the issue filed against it opened "nothing drives
+    it", which the rendering had made the only available reading.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(
+            name="audit",
+            prompt=_prompt(),
+            delay_seconds=1800,
+            enabled=True,
+            last_run_at=timezone.now() - dt.timedelta(days=7),
+        )
+
+    def _line(self) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
+
+    def test_a_withheld_anchor_renders_the_attempt(self) -> None:
+        Loop.objects.filter(name="audit").update(last_attempt_at=timezone.now())
+        assert "attempted" in self._line()
+
+    def test_a_loop_nothing_attempts_renders_no_note(self) -> None:
+        assert "attempted" not in self._line()
+
+    def test_an_attempt_that_only_matches_the_run_renders_no_note(self) -> None:
+        ran = timezone.now()
+        Loop.objects.filter(name="audit").update(last_run_at=ran, last_attempt_at=ran)
+        assert "attempted" not in self._line()
+
+    def test_json_carries_the_attempt_anchor(self) -> None:
+        attempted = timezone.now()
+        Loop.objects.filter(name="audit").update(last_attempt_at=attempted)
+        payload = json.loads(_run("--json"))
+        audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
+        assert audit["last_attempt_at"] == attempted.isoformat()

@@ -215,6 +215,12 @@ class Command(TyperCommand):
         if not verdict.acquired:
             return PassOutcome.SKIPPED
 
+        # BEFORE the pass, not after: the observed failure is a pass SIGKILLed at its
+        # 1800s deadline, which never reaches a line below this one. The liveness anchor
+        # has to survive that or the loop still reads as never driven (#4355).
+        if enforce_cadence:
+            Loop.objects.mark_attempted(MINI_LOOP.name, now)
+
         enabled = propose_evals or _env_propose_evals()
         try:
             outcome = self._consolidate_and_mark(
@@ -223,6 +229,8 @@ class Command(TyperCommand):
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
+        # The cadence anchor stays gated on success — a pass that stamped nothing is retried
+        # on the next driver fire rather than waiting out the full day (#2285).
         if enforce_cadence and outcome is PassOutcome.STAMPED:
             Loop.objects.mark_run(MINI_LOOP.name, now)
 

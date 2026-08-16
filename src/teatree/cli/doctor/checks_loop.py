@@ -4,9 +4,15 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
+import datetime as dt
+from typing import TYPE_CHECKING
+
 import typer
 
 from teatree.loop.preset_resolution import consistency_findings
+
+if TYPE_CHECKING:
+    from teatree.core.models import DreamRunMarker
 
 
 def _check_loop_presets() -> bool:
@@ -229,7 +235,8 @@ def _check_dream_consolidation_blocked() -> bool:
     from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
-        blocked = DreamRunMarker.objects.is_critically_stale(timezone.now())
+        now = timezone.now()
+        blocked = DreamRunMarker.objects.is_critically_stale(now)
         marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first() if blocked else None
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-blocked check crashed: {exc.__class__.__name__}: {exc}")
@@ -238,11 +245,29 @@ def _check_dream_consolidation_blocked() -> bool:
         return True
     succeeded = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "never"
     typer.echo(
-        f"FAIL  Dream consolidation has not stamped success since {succeeded} — every pass is being "
-        "withheld, so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
+        f"FAIL  Dream consolidation has not stamped success since {succeeded} — {_dream_block_cause(marker, now)} "
+        "so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
         "gate verdict it now exits non-zero on (#3993).",
     )
     return False
+
+
+def _dream_block_cause(marker: "DreamRunMarker | None", now: "dt.datetime") -> str:
+    """Which of the two causes the marker's own attempt timestamp establishes (#4355).
+
+    Naming the wrong one is expensive in both directions: "every pass is withheld" sends
+    the reader hunting a gate that is refusing when no pass ran, and the reverse sends
+    them after a driver that is already firing every ten minutes.
+    """
+    from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
+        STALE_THRESHOLD_HOURS,
+    )
+
+    attempted = marker.last_attempted_at if marker else None
+    if attempted is not None and (now - attempted) < dt.timedelta(hours=STALE_THRESHOLD_HOURS):
+        return "every pass is being withheld,"
+    since = f"since {attempted.isoformat()}" if attempted else "ever"
+    return f"and no pass has been attempted {since} — the loop is FROZEN, not withheld —"
 
 
 def _check_dream_transcript_visibility() -> bool:

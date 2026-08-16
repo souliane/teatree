@@ -37,6 +37,7 @@ from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.eval_run import EvalVerdict
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.loops.loop_staleness import freeze_cutoff_seconds
 
 
 def _attempt(
@@ -270,6 +271,107 @@ class EnabledLoopsTickedTestCase(TestCase):
         assert recon._check_enabled_loops_ticked().is_alarm
 
 
+class FreezeCutoffScalesWithCadenceTestCase(TestCase):
+    """The cutoff is the loop's OWN cadence, not a flat day (#4355).
+
+    A weekly loop was "stale" by the flat rule for ~86% of every week, so the alarm
+    naming a genuinely dead daily loop arrived beside a permanent false one.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+
+    def _seed(self, *, cadence_seconds: int, ran_days_ago: int) -> None:
+        Loop.objects.create(
+            name="probe",
+            script="src/teatree/loops/probe/loop.py",
+            delay_seconds=cadence_seconds,
+            enabled=True,
+            last_run_at=timezone.now() - dt.timedelta(days=ran_days_ago),
+        )
+
+    def test_a_weekly_loop_three_days_behind_is_not_stale(self) -> None:
+        self._seed(cadence_seconds=604800, ran_days_ago=3)
+        assert recon._check_enabled_loops_ticked().level == "ok"
+
+    def test_a_daily_loop_three_days_behind_is_stale(self) -> None:
+        self._seed(cadence_seconds=86400, ran_days_ago=3)
+        assert recon._check_enabled_loops_ticked().is_alarm
+
+    def test_a_weekly_loop_a_month_behind_is_still_caught(self) -> None:
+        self._seed(cadence_seconds=604800, ran_days_ago=30)
+        assert recon._check_enabled_loops_ticked().is_alarm
+
+    def test_an_anchor_exactly_at_the_cutoff_is_stale(self) -> None:
+        # Injected clock, so the boundary is the assertion rather than the drift between
+        # seeding and reading: three missed slots IS a stopped loop, per the multiplier.
+        moment = timezone.now()
+        cutoff = dt.timedelta(seconds=freeze_cutoff_seconds(86400))
+        Loop.objects.create(
+            name="probe",
+            script="src/teatree/loops/probe/loop.py",
+            delay_seconds=86400,
+            enabled=True,
+            last_run_at=moment - cutoff,
+        )
+        assert recon._check_enabled_loops_ticked(now=moment).is_alarm
+
+
+class FrozenIsNotWithheldTestCase(TestCase):
+    """Two states, two causes, two remedies — the alarm renders them apart (#4355).
+
+    FROZEN is "no tick happened"; WITHHELD is "ticks happen and every pass declines to
+    advance the cadence anchor". Sending a reader after a driver that is running, or
+    after a gate that is not refusing, is the cost of conflating them.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+
+    def _seed(self, name: str, *, attempted_at: "dt.datetime | None") -> None:
+        Loop.objects.create(
+            name=name,
+            script=f"src/teatree/loops/{name}/loop.py",
+            delay_seconds=86400,
+            enabled=True,
+            last_run_at=timezone.now() - dt.timedelta(days=7),
+            last_attempt_at=attempted_at,
+        )
+
+    def test_a_loop_attempting_on_cadence_reads_withheld_not_frozen(self) -> None:
+        self._seed("withholder", attempted_at=timezone.now())
+        message = recon._check_enabled_loops_ticked().message
+        assert "withheld" in message.lower()
+        assert "`withholder`" in message
+
+    def test_a_loop_nothing_attempts_reads_frozen(self) -> None:
+        self._seed("dead", attempted_at=None)
+        message = recon._check_enabled_loops_ticked().message
+        assert "frozen" in message.lower()
+        assert "`dead`" in message
+
+    def test_the_two_are_named_apart_in_one_message(self) -> None:
+        self._seed("withholder", attempted_at=timezone.now())
+        self._seed("dead", attempted_at=None)
+        message = recon._check_enabled_loops_ticked().message
+        frozen, withheld = message.lower().find("frozen"), message.lower().find("withheld")
+        assert frozen != -1
+        assert withheld != -1
+        assert frozen != withheld
+
+    def test_a_withheld_loop_is_not_sent_after_the_worker(self) -> None:
+        # The frozen remedy (start the worker) is the wrong errand for a loop whose
+        # ticks are landing — it is the misdirection #4355 was filed about.
+        self._seed("withholder", attempted_at=timezone.now())
+        assert "t3 worker ensure" not in recon._check_enabled_loops_ticked().message
+
+    def test_an_attempt_as_stale_as_the_run_is_frozen_not_withheld(self) -> None:
+        self._seed("dead", attempted_at=timezone.now() - dt.timedelta(days=7))
+        message = recon._check_enabled_loops_ticked().message
+        assert "frozen" in message.lower()
+        assert "withheld" not in message.lower()
+
+
 class VacuousEvalGateTestCase(TestCase):
     def test_no_runs_is_ok(self) -> None:
         assert recon._check_vacuous_eval_gates().level == "ok"
@@ -420,7 +522,7 @@ class DoctorHookTestCase(TestCase):
             "park_rows_per_day",
             "cost_per_delivered_ticket",
             "dead_ticket_spend",
-            "enabled_loops_ticked_24h",
+            "enabled_loops_ticked",
             "green_ci_check_ran_a_case",
             "halt_count_24h",
             "open_question_age",

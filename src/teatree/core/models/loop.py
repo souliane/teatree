@@ -41,6 +41,8 @@ from django.utils import timezone
 
 from teatree.core.models.loop_state import LoopState
 
+_SECONDS_PER_DAY = 24 * 3600
+
 
 class LoopManager(models.Manager["Loop"]):
     """Read/transition surface each loop tick uses to drive the autonomous loops."""
@@ -53,9 +55,23 @@ class LoopManager(models.Manager["Loop"]):
         """Stamp ``last_run_at = ts`` for *name* — the cadence bump after a run.
 
         A direct ``update`` so the cadence anchor moves without touching
-        ``updated_at`` (which tracks config edits, not runs).
+        ``updated_at`` (which tracks config edits, not runs). ``last_attempt_at``
+        moves with it: a run IS an attempt, so no caller can advance the cadence
+        anchor while leaving the liveness one behind.
         """
-        self.filter(name=name).update(last_run_at=ts)
+        self.filter(name=name).update(last_run_at=ts, last_attempt_at=ts)
+
+    def mark_attempted(self, name: str, ts: dt.datetime) -> None:
+        """Stamp ``last_attempt_at = ts`` — a tick EXECUTED, whatever it produced.
+
+        The half of the anchor a pass may never withhold. ``dream`` withholds
+        ``last_run_at`` on a pass that did not stamp success (retry-until-success,
+        #2285), which is correct as a cadence decision and a lie to every liveness
+        reader: a loop driven every 10 minutes rendered as frozen for 6.6 days
+        (#4355). Attempts are stamped BEFORE the pass runs, so a pass killed at its
+        deadline still records that it ran.
+        """
+        self.filter(name=name).update(last_attempt_at=ts)
 
     def mark_run_if_unchanged(self, name: str, *, previous_last_run_at: dt.datetime | None, now: dt.datetime) -> bool:
         """Atomically claim the cadence anchor: bump ``last_run_at`` iff still ``previous_last_run_at``.
@@ -71,7 +87,7 @@ class LoopManager(models.Manager["Loop"]):
         handled by the same predicate (``IS NOT DISTINCT FROM``). Returns ``True``
         iff this caller won (updated 1 row).
         """
-        won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now)
+        won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now, last_attempt_at=now)
         return won == 1
 
     def set_enabled(self, name: str, *, enabled: bool) -> int:
@@ -143,6 +159,8 @@ class Loop(models.Model):
     enabled = models.BooleanField(default=True)
     colleague_facing = models.BooleanField(default=False)
     last_run_at = models.DateTimeField(null=True, blank=True)
+    #: When a tick last EXECUTED, whatever it produced — the anchor no pass may withhold.
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -183,6 +201,20 @@ class Loop(models.Model):
         if self.delay_seconds is None:
             return "every tick"
         return f"every {self.delay_seconds}s"
+
+    @property
+    def cadence_seconds(self) -> int | None:
+        """The declared cadence in seconds — ``None`` for an every-tick loop.
+
+        The same precedence :attr:`cadence_label` renders, because it is the same
+        question: every shipped daily row carries a ``delay_seconds`` too (the
+        ``loop_script_requires_delay`` constraint), and the slot is what decides when
+        it fires. Scaling anything to the stored interval instead would read a daily
+        loop's cadence off a column its schedule overrides.
+        """
+        if self.daily_at is not None:
+            return _SECONDS_PER_DAY
+        return self.delay_seconds
 
     def seconds_since_run(self, now: dt.datetime) -> float | None:
         """Seconds since the last run, or ``None`` when the loop never ran."""
