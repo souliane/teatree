@@ -13,11 +13,12 @@ a CI-supplied number keeps the count from drifting out of the workflow's step
 name, which is where "231/231" was previously asserted. The verdict logic lives
 in :mod:`teatree.eval.green_proof`; this is a thin JSON-read shell.
 
-A DEGRADED catalog is refused before the count is taken. A raising overlay shrinks
-the catalog and the expected count together, so the run "covers" a denominator
-derived from the same incomplete read — a completeness gate that cannot see its
-own incompleteness. The ``catalog-discovery`` lane catches it under bare
-``t3 eval``, which the combine job does not run.
+A DEGRADED catalog is refused before the count is taken. An overlay that raised — or
+that succeeded while naming a directory which is not there — shrinks the catalog and
+the expected count together, so the run "covers" a denominator derived from the same
+incomplete read: a completeness gate that cannot see its own incompleteness. The
+``catalog-discovery`` lane catches it under bare ``t3 eval``, which the combine job
+does not run, and additionally floors the core count so a shrink there costs an edit.
 
 An ``advisory`` (``surface: interactive``) row is PRINTED under the headline but
 never withholds the proof — it is one of the verdicts named in
