@@ -25,6 +25,7 @@ from pathlib import Path
 
 from teatree.docker.workflow import is_running_in_container
 from teatree.paths import control_db_dir
+from teatree.utils.mount_points import mount_entry_for, parse_mountinfo
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 _PROC = Path("/proc")
@@ -110,24 +111,12 @@ class ControlDbWriteDomain:
         ``/proc/self/mountinfo`` is Linux-only, which is the right scope: the check
         exists to catch a Docker-Desktop shared folder mounted INSIDE a container.
         """
-        mountinfo = _PROC / "self" / "mountinfo"
         try:
-            lines = mountinfo.read_text(encoding="utf-8").splitlines()
+            table = (_PROC / "self" / "mountinfo").read_text(encoding="utf-8")
         except OSError:
             return ""
-        best_mountpoint, best_fstype = "", ""
-        target = str(self.db_path.parent)
-        for line in lines:
-            head, _, tail = line.partition(" - ")
-            fields, tail_fields = head.split(), tail.split()
-            if len(fields) < 5 or not tail_fields:  # noqa: PLR2004 — mountinfo's mount-point column index
-                continue
-            mountpoint = fields[4]
-            if (target == mountpoint or target.startswith(f"{mountpoint.rstrip('/')}/")) and len(mountpoint) >= len(
-                best_mountpoint
-            ):
-                best_mountpoint, best_fstype = mountpoint, tail_fields[0]
-        return best_fstype
+        entry = mount_entry_for(self.db_path.parent, parse_mountinfo(table))
+        return entry.fstype if entry is not None else ""
 
 
 def read_write_holders_across(paths: Sequence[Path]) -> list[tuple[Path, FdHolder]]:
