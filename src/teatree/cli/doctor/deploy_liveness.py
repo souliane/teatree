@@ -3,7 +3,7 @@
 The stranded-``worker_quiescing`` detector clears a gate no deploy can still explain, and
 that write resumes admission for the whole factory — so it is authorised by DEADNESS, never
 by the gate's age alone. This probe answers in three values on the pattern
-:func:`~teatree.core.worktree.probe_checkout` uses: a verdict it cannot establish is
+:func:`~teatree.core.worktree.worktree_roots.probe_checkout` uses: a verdict it cannot establish is
 ``UNKNOWN``, and the caller reports instead of repairing.
 
 Two signals, and neither is sufficient alone. ``deploy.sh`` holds a host flock for the whole
@@ -31,9 +31,14 @@ _VENUE_TMP = Path("/tmp")  # noqa: S108 — naming the deploy's own lock path, n
 #: ``deploy.sh``'s own override and the file it defaults to.
 _LOCK_ENV = "TEATREE_DEPLOY_LOCK"
 _LOCK_NAME = "teatree-deploy.lock"
-#: What a convergence's command line names. A false match reads LIVE, which only ever
-#: withholds the repair — the safe direction for a substring.
+#: What a convergence's command line names, when it is actually running the script —
+#: never a bare substring test, which a command merely NAMING the path (an agent's own
+#: ``cat``/``grep``/``tail`` on ``deploy/deploy.sh``) would also satisfy.
 _DEPLOY_SCRIPT = "deploy.sh"
+#: Interpreters ``deploy.sh`` (``#!/usr/bin/env bash``) is invoked through, per
+#: ``.github/workflows/deploy.yml``'s ``bash deploy/deploy.sh``. Direct exec via the
+#: shebang has no interpreter argv at all — :func:`_is_deploy_invocation` covers both.
+_SHELL_INTERPRETERS = frozenset({"bash", "sh", "dash", "zsh"})
 _RECORD_FIELDS = 2
 
 
@@ -87,6 +92,21 @@ def _read_deploy_record(lock: Path | None, *, max_age: float) -> _Record:
     return _Record.FRESH if time.time() - int(fields[1]) < max_age else _Record.RETIRED
 
 
+def _is_deploy_invocation(argv: list[str]) -> bool:
+    """True iff *argv* actually EXECUTES ``deploy.sh``, not merely names it as data.
+
+    Anchored to the two shapes a real convergence's cmdline takes — direct (``argv[0]``
+    IS the script, via its shebang) or through an interpreter (``argv[1]`` is the script,
+    right after a recognised shell) — so a command that merely NAMES the path anywhere
+    else in its own arguments never matches.
+    """
+    if not argv or not argv[0]:
+        return False
+    if Path(argv[0]).name == _DEPLOY_SCRIPT:
+        return True
+    return Path(argv[0]).name in _SHELL_INTERPRETERS and len(argv) > 1 and Path(argv[1]).name == _DEPLOY_SCRIPT
+
+
 def _process_table_verdict(proc_root: Path) -> DeployLiveness:
     try:
         pids = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
@@ -99,7 +119,8 @@ def _process_table_verdict(proc_root: Path) -> DeployLiveness:
             cmdline = (pid / "cmdline").read_bytes()
         except OSError:
             continue
-        if _DEPLOY_SCRIPT in cmdline.decode("utf-8", errors="replace"):
+        argv = cmdline.decode("utf-8", errors="replace").split("\x00")
+        if _is_deploy_invocation(argv):
             return DeployLiveness.LIVE
     return DeployLiveness.GONE
 

@@ -32,6 +32,10 @@ import typer
 from teatree.cli.doctor.deploy_liveness import DeployLiveness, probe_deploy_liveness
 from teatree.loop.drain import QUIESCING_SETTING
 
+#: The stage that SETS the gate. Every later one needs ``deploy.sh`` still alive, so once
+#: liveness proves it is not, this is the only stage that could have been legitimately in
+#: flight — which is what makes its own timeout the floor for a proven-dead repair.
+_DRAIN_STAGE: tuple[str, int] = ("TEATREE_DRAIN_TIMEOUT", 1800)
 #: Every BOUNDED stage ``deploy/deploy.sh`` runs between the drain that sets the gate
 #: and the ``resume_admission`` that clears it, as ``(env var, deploy.sh default)``. The
 #: staged convergence (#4214) runs them SERIALLY inside one gate-ON window: the stage-4
@@ -39,10 +43,6 @@ from teatree.loop.drain import QUIESCING_SETTING
 #: measures from stage 2. Budgeting the drain alone reported a convergence still inside
 #: its own init wait as a dead one — and this finding is not deploy-sensitive in
 #: ``deploy/watchdog.sh``, so it paged on sight, mid-update.
-#: The stage that SETS the gate. Every later one needs ``deploy.sh`` still alive, so once
-#: liveness proves it is not, this is the only stage that could have been legitimately in
-#: flight — which is what makes its own timeout the floor for a proven-dead repair.
-_DRAIN_STAGE: tuple[str, int] = ("TEATREE_DRAIN_TIMEOUT", 1800)
 _DEPLOY_STAGE_BUDGETS: tuple[tuple[str, int], ...] = (
     _DRAIN_STAGE,
     ("TEATREE_INIT_WAIT_TIMEOUT", 1800),
@@ -105,11 +105,16 @@ def _is_stranded(age: float | None, liveness: DeployLiveness) -> bool:
     return liveness is DeployLiveness.GONE and age >= quiescing_repair_floor_seconds()
 
 
-def _repair_authorised(age: float | None, liveness: DeployLiveness) -> bool:
-    """Only proven deadness authorises the clear — an unprobeable venue reports instead."""
-    if liveness is not DeployLiveness.GONE:
-        return False
-    return age is None or age >= quiescing_repair_floor_seconds()
+def _repair_authorised(liveness: DeployLiveness) -> bool:
+    """Only proven deadness authorises the clear — an unprobeable venue reports instead.
+
+    Called only once :func:`_is_stranded` already holds, and every path there already
+    satisfies ``age is None or age >= quiescing_repair_floor_seconds()`` (the budget it
+    compares against is bounded below by the floor by construction) — so once liveness
+    proves GONE, authorisation follows immediately; the age argument that check needed is
+    not needed here.
+    """
+    return liveness is DeployLiveness.GONE
 
 
 def _clear_the_gate() -> str:
@@ -153,7 +158,7 @@ def check_stranded_quiescing_gate() -> bool:
         liveness = probe_deploy_liveness(record_max_age=quiescing_deploy_budget_seconds())
         if not _is_stranded(age, liveness):
             return True
-        blocked = _clear_the_gate() if _repair_authorised(age, liveness) else _why_not_cleared(liveness)
+        blocked = _clear_the_gate() if _repair_authorised(liveness) else _why_not_cleared(liveness)
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Stranded-quiescing check crashed: {exc.__class__.__name__}: {exc}")
         return True

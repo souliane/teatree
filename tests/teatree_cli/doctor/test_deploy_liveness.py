@@ -19,6 +19,10 @@ _RECORD_MAX_AGE = 4800.0
 
 _DEPLOY_CMDLINE = "/bin/bash\x00/srv/checkout/deploy/deploy.sh\x00"
 _OTHER_CMDLINE = "/usr/bin/python3\x00-m\x00teatree.worker\x00"
+_DIRECT_DEPLOY_CMDLINE = "/srv/checkout/deploy/deploy.sh\x00"
+#: NAMES the script as plain argv data — never invokes it. The bug this guards: a
+#: bare substring test over the whole cmdline reads this as a live convergence too.
+_DECOY_CMDLINE = "/usr/bin/tail\x00-f\x00/dev/null\x00deploy/deploy.sh\x00"
 
 
 def _lock(tmp_path: Path, body: str) -> Path:
@@ -58,6 +62,27 @@ class TestALiveConvergenceIsNeverCalledGone:
             lock=_lock(tmp_path, _record(age_seconds=_RECORD_MAX_AGE * 2)),
             proc_root=_proc_root(tmp_path, _OTHER_CMDLINE, _DEPLOY_CMDLINE),
         )
+
+        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.LIVE
+
+
+class TestOnlyAnActualInvocationReadsAsLive:
+    def test_a_process_merely_naming_the_script_is_never_live(self, tmp_path: Path) -> None:
+        # `tail -f /dev/null deploy/deploy.sh` — equally `cat`/`grep`/an editor opening
+        # it — is a command that NAMES the path as an argument, not a running
+        # convergence. Only `argv[0]`/the argument right after a shell interpreter
+        # naming the script as THE THING BEING RUN may answer LIVE.
+        view = DeployView(
+            lock=_lock(tmp_path, ""),
+            proc_root=_proc_root(tmp_path, _OTHER_CMDLINE, _DECOY_CMDLINE),
+        )
+
+        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.GONE
+
+    def test_a_directly_executed_script_is_live(self, tmp_path: Path) -> None:
+        # No interpreter argv[0] — the script exec'd via its own shebang, argv[0] IS
+        # the script path.
+        view = DeployView(lock=_lock(tmp_path, ""), proc_root=_proc_root(tmp_path, _DIRECT_DEPLOY_CMDLINE))
 
         assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.LIVE
 
