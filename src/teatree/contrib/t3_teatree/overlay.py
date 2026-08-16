@@ -252,5 +252,6 @@ class TeatreeOverlay(OverlayBase):
 
     @override
     def get_eval_scenarios_dir(self) -> Path | None:
-        scenarios = Path(__file__).resolve().parent / "eval" / "scenarios"
-        return scenarios if scenarios.is_dir() else None
+        # Returned unconditionally: an is_dir() guard here would report a MOVED dir as
+        # the legitimate "I contribute none", which is the silence #4373 was about.
+        return Path(__file__).resolve().parent / "eval" / "scenarios"

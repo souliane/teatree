@@ -1708,6 +1708,13 @@ installed overlay's directory after the core catalog. Discovery is
 isolated: a broken overlay (missing dir, malformed YAML, raising hook)
 is logged and skipped rather than failing the catalog.
 
+Isolated, but never silent. Each of those skips records a reason on
+`ScenarioCatalog.degraded`, which the `catalog-discovery` lane and
+`t3 eval green-proof` both refuse — otherwise the suite would prove a green
+over a denominator it quietly shortened. Returning `None` is the one way to
+contribute nothing without degrading the catalog, so an overlay must never
+collapse a moved directory into `None`: only one of those is legitimate.
+
 ## Layered enforcement
 
 Behavioral rules fall into two layers:

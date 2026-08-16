@@ -31,9 +31,12 @@ def _fake_overlay(return_value: object) -> SimpleNamespace:
 )
 def test_skips_overlay_returning_non_path(bad_value: object) -> None:
     overlay = _fake_overlay(bad_value)
+    degraded: dict[str, str] = {}
     with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-bad": overlay}):
-        specs = _discover_overlay_specs({})
+        specs = _discover_overlay_specs(degraded)
     assert specs == []
+    # Isolated, never silent: a garbage return contributes nothing, so it degrades.
+    assert "t3-bad" in degraded
 
 
 def test_other_overlays_still_load_when_one_returns_bad_type(tmp_path: Path) -> None:

@@ -18,7 +18,7 @@ from teatree.cli.eval.run_modes import RunGuards, with_model
 from teatree.cli.eval.verdict import LaneResult
 from teatree.eval.api_runner import ApiRunnerParams
 from teatree.eval.coverage import CoverageReport, SkillCoverage
-from teatree.eval.discovery import ScenarioCatalog
+from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
@@ -1861,7 +1861,10 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per model-free lane the b
 ) -> "Iterator[None]":
     """Patch every model-free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
-        patch("teatree.cli.eval.all.discover_catalog", return_value=ScenarioCatalog(specs=specs, degraded={})),
+        patch(
+            "teatree.cli.eval.all.discover_catalog",
+            return_value=ScenarioCatalog(specs=specs, degraded={}, core_count=CORE_CATALOG_FLOOR),
+        ),
         patch("teatree.cli.eval.all.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
         patch("teatree.cli.eval.all.run_regression_corpus", return_value=_regression(ok=regression_ok)),
         patch("teatree.cli.eval.all.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
