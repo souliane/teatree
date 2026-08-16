@@ -226,6 +226,7 @@ class TeatreeSettingsSchema(BaseSettings):
     dogfood_smoke_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     dogfood_smoke_overlay: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     dogfood_smoke_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
+    drain_slot_reservation: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     dream_propose_evals: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     e2e_confidence_threshold: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     e2e_mandatory_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

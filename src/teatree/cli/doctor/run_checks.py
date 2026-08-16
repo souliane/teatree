@@ -43,6 +43,7 @@ from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
     _check_compose_output_root_pinned,
+    _check_drain_lane_starved,
     _check_dream_consolidation_blocked,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
@@ -177,7 +178,10 @@ def _run_loop_intent_gates() -> bool:
     (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
     their return values are deliberately discarded so neither can become a gate by accident.
     ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
-    never claimed) joins them: a slow queue is not a fault, an invisible one is.
+    never claimed) joins them: a slow queue is not a fault, an invisible one is. So does
+    ``_check_drain_lane_starved`` (#4374), its downstream twin — the work already admitted
+    is queued and none of it running, the state in which the board stops moving while every
+    other surface reads healthy.
 
     SIX verdicts ARE returned, each a queue or authority that rots while every other
     surface reads healthy; all five are evaluated before the ``and`` so none can mask
@@ -201,6 +205,7 @@ def _run_loop_intent_gates() -> bool:
     _check_aged_sweep_skips()
     _check_marker_jam()
     _check_starved_intake_candidates()
+    _check_drain_lane_starved()
     intake_ok = _check_intake_budget_deadlock()
     pass_ok = _check_intake_pass_incomplete()
     scheduled_ok = _check_loop_schedule_liveness()

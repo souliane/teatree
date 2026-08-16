@@ -94,24 +94,27 @@ def _cheap_phase_q() -> Q:
     return Q(phase__in=cheap_phase_spellings())
 
 
-def _cheap_lane_occupancy_q(now: datetime) -> Q:
-    """The rows holding a seat in the cheap lane at *now*.
+def _lane_occupancy_q(now: datetime, *, cheap: bool) -> Q:
+    """The rows holding a seat in one cost class's lane at *now*.
 
     One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all.
+    bound at all. The two lanes PARTITION the queue — the expensive one is the exact
+    complement of the cheap one — so an unregistered phase lands in the braked class,
+    matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    return _cheap_phase_q() & (
+    membership = _cheap_phase_q() if cheap else ~_cheap_phase_q()
+    return membership & (
         Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
         | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
     )
 
 
-def _cheap_lane_under_ceiling(now: datetime, ceiling: int) -> LessThan:
-    """A ``WHERE`` term true only while the cheap lane has a free seat at *now*.
+def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan:
+    """A ``WHERE`` term true only while that lane has a free seat at *now*.
 
     ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
     ``NULL < ceiling`` is not true — an empty lane would refuse every admission.
@@ -119,7 +122,7 @@ def _cheap_lane_under_ceiling(now: datetime, ceiling: int) -> LessThan:
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
     occupied = (
-        task_model.objects.filter(_cheap_lane_occupancy_q(now))
+        task_model.objects.filter(_lane_occupancy_q(now, cheap=cheap))
         .order_by()
         .values(_lane=models.Value(1))
         .annotate(seats=models.Count("*"))
@@ -475,7 +478,19 @@ class TaskQuerySet(models.QuerySet):
         long an unclaimed admission keeps its seat, so a runner that died holding one
         cannot wedge the lane shut.
         """
-        return self.filter(_cheap_lane_occupancy_q(timezone.now())).count()
+        return self.filter(_lane_occupancy_q(timezone.now(), cheap=True)).count()
+
+    def expensive_lane_occupancy(self) -> int:
+        """How much of the box the EXPENSIVE class holds — the reservation's divisor (#4374).
+
+        Deliberately not :meth:`claimed_agent_count`, which counts every live agent whatever
+        its class: measured against that number the reservation inverts into the opposite
+        starvation, refusing coding work because reviews are running — the reviews that
+        exist to retire it. Same seat-aware shape as its cheap twin, for the same reason:
+        a burst of ``post_save`` admissions is still PENDING, so a count of CLAIMED rows
+        alone cannot see the seats it just handed out.
+        """
+        return self.filter(_lane_occupancy_q(timezone.now(), cheap=False)).count()
 
     def cheap_lane_seats_released(self) -> int:
         """Cheap rows the seat window took back while they were still unclaimed.
@@ -494,19 +509,21 @@ class TaskQuerySet(models.QuerySet):
             admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
         ).count()
 
-    def record_admission(self, task_pk: int, *, cheap_ceiling: int | None = None) -> bool:
-        """Take *task_pk*'s seat in the admission lane — ``True`` when this call got it.
+    def record_admission(self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None) -> bool:
+        """Take *task_pk*'s seat in its cost class's lane — ``True`` when this call got it.
 
         The bound is arbitrated INSIDE this write, not between the caller's probe and it
         (#4125). A probe is stale the moment it returns, so two processes reaching a
         chokepoint in one window each saw room and each admitted, bounding the lane at
         ceiling plus however many raced. Re-checking occupancy in the ``WHERE`` makes the
-        loser match no row and be refused instead.
+        loser match no row and be refused instead. *cheap* picks which lane's occupancy is
+        re-counted, so the expensive lane's reserved-slot bound is held by the same
+        mechanism rather than by a probe two racers can both pass (#4374).
 
         A row still holding a live seat is refused too: it is already in the runner's
-        hand, so a second booking is a duplicate dispatch. ``cheap_ceiling`` of ``None``
-        is UNBOUNDED — the kill-switch, fail-open and zero-ceiling paths, where the
-        governor has no opinion on the lane's width.
+        hand, so a second booking is a duplicate dispatch. ``lane_ceiling`` of ``None``
+        is UNBOUNDED — the kill-switch, fail-open and zero-ceiling/zero-reservation paths,
+        where the governor has no opinion on the lane's width.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
         auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
@@ -516,8 +533,8 @@ class TaskQuerySet(models.QuerySet):
         now = timezone.now()
         unseated = models.Q(admitted_at__isnull=True) | models.Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
         seat = self.filter(unseated, pk=task_pk)
-        if cheap_ceiling is not None:
-            seat = seat.filter(_cheap_lane_under_ceiling(now, cheap_ceiling))
+        if lane_ceiling is not None:
+            seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, cheap=cheap))
         return bool(seat.update(admitted_at=now))
 
     def active_claims(self) -> models.QuerySet:

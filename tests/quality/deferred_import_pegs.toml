@@ -218,6 +218,10 @@
 # module is imported from a bare PreToolUse/TaskCreated hook process, so an
 # app-registry read at module load would break the cold import.
 "src/teatree/core/dispatch_admission.py" = 1
+# #4374: the drain-starvation probe reads `Task` and the cheap-phase vocabulary, both of
+# which resolve only once the app registry is ready, so each stays call-time — the same
+# reason its `core/intake/budget.py` sibling defers its own ORM reads.
+"src/teatree/core/factory/drain_starvation.py" = 2
 "src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three

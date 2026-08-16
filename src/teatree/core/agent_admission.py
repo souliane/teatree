@@ -21,6 +21,16 @@ merges). :func:`agent_admission_verdict` therefore probes ONCE and resolves
 that probe per :class:`~teatree.core.modelkit.phases.PhaseCost`, so a drain costs
 one probe however many rows it walks.
 
+**A ceiling on the cheap class is not a reservation for it (#4374).**
+``cheap_phase_admission_ceiling`` bounds how much of the box the draining class may
+take; nothing kept any of it FOR that class, so the same stall returned by the opposite
+route — expensive work held every slot for over half an hour with five reviewing rows
+queued behind it and zero reviews running. Coding CREATES pull requests where reviewing
+and shipping RETIRE them, so under first-come allocation the producing side can occupy
+100% of the factory and the board can only grow. ``drain_slot_reservation`` carves slots
+off the TOP of the governor's ceiling that only the cheap class may occupy, clamped so
+the expensive class always keeps one.
+
 It lives in ``teatree.core`` (not ``teatree.loop``) so the core chokepoints can
 consult it without a backwards dependency edge; the loop-side ``governor_verdict``
 is the richer interactive variant carrying the brake-hysteresis sidecar. Both
@@ -53,6 +63,35 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class LaneBound:
+    """One cost class's lane width, and what a single pass has already spent of it.
+
+    ``headroom`` is the ceiling minus the lane's occupancy at probe time — what keeps a
+    class from becoming an unbounded lane. Callers book every admission through
+    :meth:`AgentAdmission.admit`, which BOTH takes the row's durable seat
+    (``Task.admitted_at``, so the next probe's occupancy read sees it) and decrements this
+    local headroom (so a caller mid-pass need not re-probe to stay bounded). The two
+    chokepoints have different shapes — the drain is a loop holding one verdict,
+    ``post_save`` is one row with a fresh verdict each time — so the durable seat is what
+    they actually share; the local headroom only covers the span of a single pass, between
+    the probe that computed it and the seats it is taking. ``None`` is UNBOUNDED, reached
+    only where the governor has no opinion at all: the kill-switch, the fail-open path, and
+    the zero-ceiling / zero-reservation rollbacks.
+
+    ``ceiling`` is the same bound the probe measured against, carried so the seat write can
+    re-check it (#4125). Headroom alone is a number computed BEFORE the write and private
+    to one process, which is exactly why it could not stop two of them.
+    """
+
+    ceiling: int | None = None
+    headroom: int | None = None
+    admitted: int = 0
+
+    def spent(self) -> bool:
+        return self.headroom is not None and self.admitted >= self.headroom
+
+
+@dataclass
 class AgentAdmission:
     """One governor probe, resolved per phase cost class (#4098).
 
@@ -61,40 +100,30 @@ class AgentAdmission:
     affordable at all — nothing changes between iterations of that loop, so re-probing
     per row would return the same answer N times at N times the cost.
 
-    ``cheap_headroom`` is the ceiling minus the lane's occupancy at probe time — what
-    keeps the exemption from becoming a second unbounded lane. Callers book every
-    admission through :meth:`admit`, which BOTH takes the row's durable seat
-    (``Task.admitted_at``, so the next probe's occupancy read sees it) and decrements
-    this local headroom (so a caller mid-pass need not re-probe to stay bounded). The
-    two chokepoints have different shapes — the drain is a loop holding one verdict,
-    ``post_save`` is one row with a fresh verdict each time — so the durable seat is
-    what they actually share; the local headroom only covers the span of a single pass,
-    between the probe that computed it and the seats it is taking. ``None`` is
-    UNBOUNDED, reached only where the governor has no opinion at all: the kill-switch,
-    the fail-open path, and the zero-ceiling rollback under which cheap simply follows
-    the expensive verdict.
-
-    ``cheap_ceiling`` is the same bound the probe measured against, carried so the seat
-    write can re-check it (#4125). Headroom alone is a number computed BEFORE the write
-    and private to one process, which is exactly why it could not stop two of them.
+    Each class carries its own :class:`LaneBound`: the cheap one is
+    ``cheap_phase_admission_ceiling``, the expensive one is the governor's ceiling MINUS
+    the slots reserved for the draining class (#4374).
     """
 
     expensive_denied: str | None
     cheap_denied: str | None
-    cheap_headroom: int | None = None
-    cheap_ceiling: int | None = None
+    cheap_lane: LaneBound = field(default_factory=LaneBound)
+    expensive_lane: LaneBound = field(default_factory=LaneBound)
     seats_released: int = 0
-    _cheap_admitted: int = 0
     _announced: set[str] = field(default_factory=set)
+
+    def lane_for(self, cost: PhaseCost) -> LaneBound:
+        """The bound governing *cost*'s lane — the one seam both the check and the seat read."""
+        return self.cheap_lane if cost is PhaseCost.CHEAP else self.expensive_lane
 
     def denied_for(self, cost: PhaseCost) -> str | None:
         """The reason to refuse one more admission of *cost*, or ``None`` to admit."""
-        if cost is not PhaseCost.CHEAP:
-            return self.expensive_denied
-        if self.cheap_denied is not None:
-            return self.cheap_denied
-        if self.cheap_headroom is not None and self._cheap_admitted >= self.cheap_headroom:
-            return f"cheap-phase headroom spent this pass ({self._cheap_admitted} admitted, lane ceiling reached)"
+        denied = self.cheap_denied if cost is PhaseCost.CHEAP else self.expensive_denied
+        if denied is not None:
+            return denied
+        lane = self.lane_for(cost)
+        if lane.spent():
+            return f"{cost} headroom spent this pass ({lane.admitted} admitted, lane ceiling reached)"
         return None
 
     def denied_reason(self, phase: str = "") -> str | None:
@@ -131,17 +160,18 @@ class AgentAdmission:
     def _book(self, task_pk: int, phase: str) -> str | None:
         """Take *task_pk*'s durable seat — ``None`` when granted, else why it was refused.
 
-        The expensive class has no lane width of its own, so only the one-seat-per-row
-        rule can refuse it; the cheap class hands its ceiling to the write, which
-        re-checks occupancy there rather than trusting this verdict's probe (#4125).
+        Each class hands its own width to the write, which re-checks that lane's occupancy
+        there rather than trusting this verdict's probe (#4125). A width of ``None`` leaves
+        only the one-seat-per-row rule, which is what the unbounded paths reduce to.
         """
-        cheap = phase_cost(phase) is PhaseCost.CHEAP
-        if not _task_model().objects.record_admission(task_pk, cheap_ceiling=self.cheap_ceiling if cheap else None):
-            if not cheap:
+        cost = phase_cost(phase)
+        lane = self.lane_for(cost)
+        cheap = cost is PhaseCost.CHEAP
+        if not _task_model().objects.record_admission(task_pk, cheap=cheap, lane_ceiling=lane.ceiling):
+            if lane.ceiling is None:
                 return "already dispatched this window"
-            return "no cheap-phase lane seat: already dispatched this window, or a racer took the last one"
-        if cheap:
-            self._cheap_admitted += 1
+            return f"no {cost}-phase lane seat: already dispatched this window, or a racer took the last one"
+        lane.admitted += 1
         return None
 
     def log_denials(self) -> None:
@@ -198,6 +228,19 @@ def _cheap_lane_ceiling() -> int:
     return max(0, int(get_effective_settings().cheap_phase_admission_ceiling))
 
 
+def _drain_reservation(ceiling: int) -> int:
+    """How many of *ceiling*'s slots only the DRAINING class may occupy (#4374).
+
+    Clamped to at most ``ceiling - 1``, so however large the operator writes it the
+    expensive class always keeps a slot — a reservation that could reach the whole ceiling
+    would trade one starvation for its mirror image and stop the factory writing code at
+    all. ``0`` is the rollback lever: first-come allocation, exactly as before.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
+
+    return min(max(0, int(get_effective_settings().drain_slot_reservation)), max(0, ceiling - 1))
+
+
 def _ceiling_denial(ceiling: int, occupied: int, *, lane: str = "") -> str | None:
     if occupied < ceiling:
         return None
@@ -206,18 +249,40 @@ def _ceiling_denial(ceiling: int, occupied: int, *, lane: str = "") -> str | Non
     return f"live headless agents {occupied} at/over governor ceiling {ceiling}"
 
 
+def _reservation_denial(ceiling: int, reserved: int, occupied: int) -> str | None:
+    """Refuse an expensive admission that would spend the draining class's reserved slots."""
+    unreserved = ceiling - reserved
+    if occupied < unreserved:
+        return None
+    return (
+        f"expensive lane occupancy {occupied} at/over its {unreserved} unreserved slot(s) — "
+        f"{reserved} of the {ceiling} reserved for the draining class"
+    )
+
+
 def agent_admission_verdict() -> AgentAdmission:
     """Probe the governor ONCE and resolve the verdict for both phase cost classes.
 
-    The EXPENSIVE class is the pre-#4098 answer verbatim: the pure decision over the
-    live quota + machine signals, then the live headless-agent count against the
-    governor's ceiling. The CHEAP class re-runs the SAME pure decision with the machine
-    brake lifted — the token brakes still refuse it, because a review burns quota like
-    anything else — bounded by its own small ceiling over the lane's OCCUPANCY: the
-    running cheap agents plus the cheap rows already handed to the runner. Counting the
-    latter is what lets a chokepoint see admissions it (or the other chokepoint) just
-    made, so the bound is one number in the database rather than per-caller state. A
-    ceiling of ``0`` collapses cheap onto expensive: the rollback lever.
+    The EXPENSIVE class is the pure decision over the live quota + machine signals, then
+    the live headless-agent count against the governor's ceiling, then the draining
+    class's RESERVATION (#4374): the slots at the top of that ceiling only cheap work may
+    occupy. A ceiling on the cheap class bounds how much of the box it may take and
+    guarantees nothing about how much is kept for it, so expensive work filled every slot
+    and zero reviews ran — the #4098 outcome by a different route. Because coding CREATES
+    pull requests and reviewing RETIRES them, first-come allocation lets the producing
+    side occupy the whole factory, and the board can then only grow. The reservation is
+    measured against the EXPENSIVE lane's own occupancy, never the live population: against
+    the latter it would invert into the mirror-image starvation, refusing coding work
+    because reviews are running.
+
+    The CHEAP class re-runs the SAME pure decision with the machine brake lifted — the
+    token brakes still refuse it, because a review burns quota like anything else —
+    bounded by its own small ceiling over the lane's OCCUPANCY: the running cheap agents
+    plus the cheap rows already handed to the runner. Counting the latter is what lets a
+    chokepoint see admissions it (or the other chokepoint) just made, so the bound is one
+    number in the database rather than per-caller state. A ceiling of ``0`` collapses
+    cheap onto expensive — the rollback lever, and it lifts the reservation with it, since
+    holding slots for a class that no longer exists would just narrow the whole lane.
 
     ``static_ceiling=None`` says the operator has configured no cap for THIS lane,
     which is not the same as no cap at all: the governor always derives one from the
@@ -237,6 +302,13 @@ def agent_admission_verdict() -> AgentAdmission:
         expensive = decision.reason if not decision.admit else _ceiling_denial(decision.ceiling, live)
         if cheap_ceiling <= 0:
             return AgentAdmission(expensive_denied=expensive, cheap_denied=expensive)
+        expensive_lane = LaneBound()
+        reserved = _drain_reservation(decision.ceiling)
+        if reserved and expensive is None:
+            unreserved = decision.ceiling - reserved
+            occupied = task_model.objects.expensive_lane_occupancy()
+            expensive = _reservation_denial(decision.ceiling, reserved, occupied)
+            expensive_lane = LaneBound(ceiling=unreserved, headroom=max(0, unreserved - occupied))
         exempt = decide_admission(
             quota=quota, machine=machine, static_ceiling=None, load_brake=MachineBrake(applies=False)
         )
@@ -251,8 +323,8 @@ def agent_admission_verdict() -> AgentAdmission:
     return AgentAdmission(
         expensive_denied=expensive,
         cheap_denied=cheap,
-        cheap_headroom=max(0, cheap_ceiling - cheap_occupancy),
-        cheap_ceiling=cheap_ceiling,
+        cheap_lane=LaneBound(ceiling=cheap_ceiling, headroom=max(0, cheap_ceiling - cheap_occupancy)),
+        expensive_lane=expensive_lane,
         seats_released=seats_released,
     )
 
@@ -268,4 +340,4 @@ def agent_admission_denied_reason(phase: str = "") -> str | None:
     return agent_admission_verdict().denied_reason(phase)
 
 
-__all__ = ["AgentAdmission", "agent_admission_denied_reason", "agent_admission_verdict"]
+__all__ = ["AgentAdmission", "LaneBound", "agent_admission_denied_reason", "agent_admission_verdict"]

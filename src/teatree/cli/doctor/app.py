@@ -40,6 +40,7 @@ from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
     _check_compose_output_root_pinned,
+    _check_drain_lane_starved,
     _check_dream_consolidation_blocked,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
@@ -148,6 +149,7 @@ __all__ = (
     "_check_declared_dependencies_provisioned",
     "_check_dispatched_overlay_skills",
     "_check_docker_workflow_wired",
+    "_check_drain_lane_starved",
     "_check_dream_consolidation_blocked",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
