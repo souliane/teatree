@@ -112,7 +112,7 @@ def _pid_dirs(root: Path) -> list[Path]:
         return []
 
 
-def _proc_root() -> tuple[Path | None, str]:
+def host_proc_root() -> tuple[Path | None, str]:
     """The table to read and why — ``(None, reason)`` when no source covers the host."""
     if _pid_dirs(_HOST_PROC_ROOT):
         return _HOST_PROC_ROOT, ""
@@ -129,7 +129,7 @@ def _proc_root() -> tuple[Path | None, str]:
 
 def read_process_table() -> ProcessTable:
     """Read the host-covering process table, or report why there is none."""
-    root, refusal = _proc_root()
+    root, refusal = host_proc_root()
     if root is None:
         return ProcessTable(frozenset(), "", (refusal,))
     pids = _pid_dirs(root)
@@ -161,4 +161,4 @@ def _placements(pid_dir: Path) -> set[Path]:
     return placements
 
 
-__all__ = ["ProcessTable", "read_process_table", "running_in_a_container"]
+__all__ = ["ProcessTable", "host_proc_root", "read_process_table", "running_in_a_container"]
