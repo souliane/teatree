@@ -222,6 +222,19 @@ def _check_t3_shim_receipt(*, repair: bool = False) -> bool:
 
 def _check_editable_sanity() -> bool:
     from teatree.cli.doctor import DoctorService  # noqa: PLC0415 — deferred: breaks checks ↔ doctor cycle
+    from teatree.config.override_reader import config_store_readable  # noqa: PLC0415 — deferred: light import
+
+    # #4357: ``contribute`` resolves to its shipped ``False`` when the store cannot be
+    # opened, so on a venue with no control-DB access the mismatch below is measured
+    # against a value never read — the host reported "editable but contribute=false"
+    # while the stored row said the opposite.
+    if not config_store_readable():
+        typer.echo(
+            "WARN  Editable-vs-`contribute` agreement is UNVERIFIED: this venue cannot open the "
+            "ConfigSetting store, so `contribute` resolves to its shipped default rather than to "
+            "your stored row. Re-run `t3 doctor check` from a venue that reaches the control DB."
+        )
+        return True
 
     # A contribute/editable mismatch is an advisory WARN, not a hard FAIL — it is
     # surfacing-only and must not redden the run (the watchdog DM extracts only
