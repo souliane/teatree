@@ -93,6 +93,17 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # exercised in tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to
     # a pass here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_config_override_tier_healthy", lambda: True)
+    # The loop/intent gates (#3978/#4140/#4253/#4250/#4466 — intent freshness, intake
+    # budget/pass, schedule liveness, the t3-master lease, unconsumed merge clears) read
+    # this runner's REAL loop/ticket state. A pytest-django TestCase's fresh DB carries
+    # the shipped loop-preset SEED rows (created by data migrations) but nothing has ever
+    # ticked them, so schedule-liveness genuinely (and correctly, for that DB) reports
+    # every seeded loop as never-scheduled — an artefact of the harness never having run a
+    # worker, not of the doctor dispatch under test. Each gate is exercised end-to-end
+    # against deliberately-staged state in its own dedicated module (e.g.
+    # tests/teatree_cli/doctor/test_schedule_liveness_check.py); pin the whole group to a
+    # pass here so this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_run_loop_intent_gates", lambda: True)
     # The general provisioning gate (#3652) resolves the manifest-declared skills
     # against the runner's real skill-install state, where the external apm skills
     # are absent — the very gap it exists to catch, and a deterministic off-box FAIL
