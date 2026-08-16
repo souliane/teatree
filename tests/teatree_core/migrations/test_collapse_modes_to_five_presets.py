@@ -41,6 +41,12 @@ _OFFLINE_ADMITS = frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", 
 #: The loops a holiday hold most visibly must NOT re-admit, restated for the reader.
 _OFFLINE_REFUSES = ("tickets", "ship", "dispatch")
 
+#: The pre-collapse ``offline`` mask over the loops these tests assert on. An EMPTY mask
+#: holds no opinion on any loop, so it resolves to base config and reads as
+#: intake-admitting whether or not the hold survived — the seeded mask has to be real for
+#: the resolver-level assertions to mean anything.
+_OFFLINE_MASK = dict.fromkeys(_OFFLINE_ADMITS, True) | dict.fromkeys(_OFFLINE_REFUSES, False)
+
 
 @dataclass(frozen=True, slots=True)
 class StoredRefs:
@@ -72,15 +78,15 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
         *,
         modes: tuple[str, ...] = _LIVE_MODES,
         descriptions: dict[str, str] | None = None,
-        maintenance_entries: dict[str, bool] | None = None,
+        entries: dict[str, dict[str, bool]] | None = None,
         refs: StoredRefs = StoredRefs(),  # noqa: B008 — frozen, so one shared instance is safe
     ) -> None:
         apps = self._old_apps()
         mode = apps.get_model("core", "Mode")
         mode.objects.all().delete()
         for name in modes:
-            entries = dict(maintenance_entries or {}) if name == "maintenance" else {}
-            mode.objects.create(name=name, entries=entries, description=(descriptions or {}).get(name, ""))
+            mask = dict((entries or {}).get(name, {}))
+            mode.objects.create(name=name, entries=mask, description=(descriptions or {}).get(name, ""))
         if refs.schedule_name:
             schedule = apps.get_model("core", "ModeSchedule")
             schedule.objects.all().delete()
@@ -125,13 +131,24 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
 
         assert self._mode_names() == {"off"}
 
+    def test_an_unreferenced_offline_row_is_dropped_even_with_no_off_to_merge_into(self) -> None:
+        """The fresh-install shape: ``0001`` seeds ``offline`` and no ``off``, unreferenced.
+
+        Carrying that row across would leave ``off`` holding ``0001``'s mask, which the
+        ``get_or_create`` seed then never corrects — so the shipped mask would be replaced
+        by a stale one on every new box. Nothing points at it, so nothing can be stranded.
+        """
+        self._seed_before(modes=("offline",), entries={"offline": _OFFLINE_MASK})
+
+        assert self._mode_names() == set()
+
     def test_the_merged_and_cut_rows_leave_nothing_behind(self) -> None:
         self._seed_before()
 
         assert not self._mode_names() & {"offline", "heads-down", "engaged", "low-power", "unattended"}
 
     def test_maintenance_is_redefined_to_drain_rather_than_idle(self) -> None:
-        self._seed_before(maintenance_entries={"ship": False, "review": False, "tickets": True, "dream": True})
+        self._seed_before(entries={"maintenance": {"ship": False, "review": False, "tickets": True, "dream": True}})
 
         entries = self._after().get_model("core", "Mode").objects.get(name="maintenance").entries
 
@@ -227,14 +244,38 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
     def test_a_migrated_holiday_hold_resolves_to_a_mask_that_admits_nothing(self) -> None:
         """The same property one layer out: through the seed and the live resolver.
 
-        A real box reaches the successor's mask only after the idempotent seed recreates
-        the row, so the migration alone proving the reference moved is not the operator's
-        experience — this is.
+        The migration alone proving the reference moved is not the operator's experience —
+        this is, on the path ``t3 setup`` takes (``migrate`` then ``seed_loops``).
         """
-        self._seed_before(modes=("offline",), refs=StoredRefs(override=("offline", "holiday hold")))
+        self._seed_before(
+            modes=("offline",),
+            entries={"offline": _OFFLINE_MASK},
+            refs=StoredRefs(override=("offline", "holiday hold")),
+        )
         self._after()
         seed_default_presets_and_schedules()
 
+        self._assert_hold_admits_no_intake()
+
+    def test_a_holiday_hold_survives_an_upgrade_with_no_off_row_to_merge_into(self) -> None:
+        """The same box WITHOUT the re-seed — a plain ``migrate``, which is reachable.
+
+        ``off`` is absent (an operator renamed it, or deleted it while it was
+        unreferenced) and ``offline`` is their hold. Repointing the override onto a name
+        no row carries makes the resolver fail OPEN to base config, which admits the very
+        intake the hold exists to stop — so the row has to travel, not be dropped and
+        re-supplied by a seed that this path never runs.
+        """
+        self._seed_before(
+            modes=("offline",),
+            entries={"offline": _OFFLINE_MASK},
+            refs=StoredRefs(override=("offline", "holiday hold")),
+        )
+        self._after()
+
+        self._assert_hold_admits_no_intake()
+
+    def _assert_hold_admits_no_intake(self) -> None:
         planes = EnablePlanes.resolve(timezone.now())
 
         assert planes.resolved.source == "override"

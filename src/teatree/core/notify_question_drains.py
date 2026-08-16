@@ -282,9 +282,10 @@ def drain_unmirrored_deferred_questions(
     fallback — and retried next tick. Returns ``(mirrored, total)``.
 
     **The batch is CAPPED per tick.** The backlog grows silently whenever the
-    owner is away (an `unattended` preset defers every question), so draining it
-    unbounded turns the moment they come back into one DM per accumulated
-    question, seconds apart — 52 in one burst is what this fix was written for.
+    owner is away — the lanes keep recording rows and nobody answers them — so
+    draining it unbounded turns the moment they come back into one DM per
+    accumulated question, seconds apart — 52 in one burst is what this fix was
+    written for.
     The owner reads that as spam and mutes the channel, which loses the next
     genuine question too. The remainder is not dropped: `unmirrored_pending()`
     is re-read every tick, so the backlog drains steadily instead of at once,

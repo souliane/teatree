@@ -17,12 +17,15 @@ from django.test import TestCase
 
 from teatree.core.gates.open_questions_gate import (
     OPEN_QUESTIONS_HINT,
+    RATIFICATION_HINT,
+    cited_ratification_artifacts,
     has_open_questions_section,
     warn_if_open_questions_missing,
+    warn_if_owner_ratification_unbacked,
 )
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import PlanArtifact, Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners.ship import ShipExecutor
 from tests.teatree_core.conftest import CommandOverlay
@@ -68,6 +71,58 @@ class TestWarnIfMissing:
             message = warn_if_open_questions_missing("feat: x\n\n## Open questions & assumptions\n- none")
         assert message is None
         assert caplog.records == []
+
+
+class TestCitedRatificationArtifacts:
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("- successor choice (decided-by-user, PlanArtifact 125)", (125,)),
+            ("- x (Decided By User — plan artifact #7)", (7,)),
+            ("- a (decided-by-user, PlanArtifact 3)\n- b (decided-by-user, PlanArtifact 4)", (3, 4)),
+            ("- a (decided-by-user, PlanArtifact 3, PlanArtifact 3)", (3,)),
+            ("- an owner call with no citation (decided-by-user)", ()),
+            ("- assumed: the successor is `off` — see PlanArtifact 125", ()),
+            ("", ()),
+        ],
+    )
+    def test_reads_only_citations_on_a_ratification_line(self, body: str, expected: tuple[int, ...]) -> None:
+        assert cited_ratification_artifacts(body) == expected
+
+
+class TestWarnIfOwnerRatificationUnbacked(TestCase):
+    def _artifact(self, recorded_by: str) -> PlanArtifact:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4371")
+        return PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by=recorded_by)
+
+    def _warn(self, body: str) -> str | None:
+        with patch.object(logging.getLogger("teatree.core.gates.open_questions_gate"), "warning") as warning:
+            message = warn_if_owner_ratification_unbacked(body)
+        assert (warning.call_count == 1) is (message is not None)
+        return message
+
+    def test_warns_when_the_cited_artifact_was_recorded_by_the_loop(self) -> None:
+        artifact = self._artifact("loop")
+
+        message = self._warn(f"- successor choice (decided-by-user, PlanArtifact {artifact.pk})")
+
+        assert message is not None
+        assert RATIFICATION_HINT in message
+        assert f"PlanArtifact {artifact.pk} (recorded_by='loop')" in message
+
+    def test_warns_when_the_citation_names_no_record(self) -> None:
+        message = self._warn("- successor choice (decided-by-user, PlanArtifact 999999)")
+
+        assert message is not None
+        assert "PlanArtifact 999999 (no such record)" in message
+
+    def test_silent_when_the_owner_recorded_the_cited_artifact(self) -> None:
+        artifact = self._artifact("souliane")
+
+        assert self._warn(f"- successor choice (decided-by-user, PlanArtifact {artifact.pk})") is None
+
+    def test_silent_when_nothing_claims_owner_ratification(self) -> None:
+        assert self._warn("## Open questions & assumptions\n- assumed: the successor is `off`") is None
 
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -117,6 +172,13 @@ class TestShipExecutorEmitsWarn(TestCase):
         host.create_pr.assert_called_once()
         mock_warning.assert_not_called()
 
+    def test_warns_when_a_ratification_claim_cites_no_record(self) -> None:
+        body = "## Open questions & assumptions\n\n- successor choice (decided-by-user, PlanArtifact 999999)"
+        with self.assertLogs("teatree.core.gates.open_questions_gate", level="WARNING") as logs:
+            host = self._run_ship(body)
+        host.create_pr.assert_called_once()
+        assert any(RATIFICATION_HINT in line for line in logs.output)
+
 
 class TestOrphanPathEmitsWarn(TestCase):
     def setUp(self) -> None:
@@ -149,3 +211,10 @@ class TestOrphanPathEmitsWarn(TestCase):
             host = self._create_orphan_pr("## Open questions & assumptions\n- none")
         host.create_pr.assert_called_once()
         mock_warning.assert_not_called()
+
+    def test_warns_when_an_orphan_ratification_claim_cites_no_record(self) -> None:
+        body = "## Open questions & assumptions\n- successor choice (decided-by-user, PlanArtifact 999999)"
+        with self.assertLogs("teatree.core.gates.open_questions_gate", level="WARNING") as logs:
+            host = self._create_orphan_pr(body)
+        host.create_pr.assert_called_once()
+        assert any(RATIFICATION_HINT in line for line in logs.output)

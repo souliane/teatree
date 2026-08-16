@@ -464,20 +464,12 @@ is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 double-play to suppress. The config lives in the DB store (read cold via
 `cold_reader` on the Stop path); there is no other per-run state.
 
-**Away-gate.** When availability resolves to `away` (§5.6.3), local playback is
-silenced while the configured `slack` value is preserved — so no audio plays
-through the local speakers while the user is unreachable, but a Slack-attached
-rendition still reaches their phone. The gate lives at the PLAYBACK call site
-(`speak._speak_local` consults `_is_away()`), not in `resolve_speak()`, so the
-user's stored `speak` config is never mutated and every local consumer (`speak()`
-and the local leg of `deliver_user_dm`) is gated by the one check. The away
-check is exception-safe — a resolution failure is treated as **not** away (local
-plays), so it can never spuriously mute audio or turn `slack` off.
-
-**Meeting-mute (#2171).** Beside the away-gate, `_speak_local` also silences
-local playback while a configured presence backend reports the user IN A
-MEETING — same call-site gate, same Slack-arm exemption (a Slack-attached
-rendition still reaches the phone). It is opt-in via `[teatree.speak]
+**Meeting-mute (#2171).** `_speak_local` silences local playback while a
+configured presence backend reports the user IN A MEETING — the gate lives at
+the PLAYBACK call site, not in `resolve_speak()`, so the user's stored `speak`
+config is never mutated and every local consumer (`speak()` and the local leg of
+`deliver_user_dm`) is gated by the one check. The `slack` arm is exempt (a
+Slack-attached rendition still reaches the phone). It is opt-in via `[teatree.speak]
 presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
 token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
 resolves it: it probes the backend (`current_presence()`), caches the result
