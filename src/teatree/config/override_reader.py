@@ -173,6 +173,28 @@ def _read_scope_rows(
     return {}, True  # pragma: no cover — the loop always returns
 
 
+def config_store_readable() -> bool:
+    """Whether THIS process can open the ``ConfigSetting`` store at all (#4357).
+
+    The narrow question a health check needs — does the store open HERE — as opposed to
+    what it holds, which is :func:`load_global_rows`' job. ``False`` is what separates
+    "your stored row says X" from "I resolved the shipped default because I could not
+    reach your row"; a check that cannot tell those apart emits a confident verdict on a
+    database it never read.
+
+    Deliberately free of the retry budget and of :func:`record_degraded_read`: the doctor
+    already FAILs on that record, so a probe that wrote one would manufacture the very
+    degradation it is being used to report honestly.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    try:
+        apps.get_model("core", "ConfigSetting").objects.exists()
+    except Exception:  # noqa: BLE001 — any failure to reach the store IS the answer
+        return False
+    return True
+
+
 def load_global_rows() -> tuple[dict[str, Any], bool]:
     """Read the GLOBAL-scope (``scope=""``) rows as ``(rows, degraded)``.
 
@@ -227,6 +249,7 @@ def load_overlay_rows(overlay_name: str = "") -> tuple[dict[str, Any], bool]:
 __all__ = [
     "GLOBAL_SCOPE_LABEL",
     "OVERLAY_SCOPE_LABEL",
+    "config_store_readable",
     "load_global_rows",
     "load_overlay_rows",
 ]
