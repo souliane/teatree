@@ -4,20 +4,20 @@ The worker WAS the monitor, so when it died the alerting died with it (the
 recorded seven-hour silent freeze). These crash-proof ``_check_*`` detectors
 surface the silent-failure classes as loud findings so the in-daemon watchdog
 (the ``deploy/watchdog.sh`` sidecar, kept alive by the Docker daemon independently
-of the stack it watches) can restart the stack and DM the owner:
+of the stack it watches) can restart the stack and DM the owner. Each says REPAIRS or REPORTS (#4359):
 
 - a compose init container that exited non-zero, or any long-running service —
-    worker, admin, or the watchdog itself — stuck ``Created``/``Exited``,
-- a free worker flock while the loop machinery has queued, overdue work,
-- an ``execute_task`` claimed RUNNING with no live worker to finish it,
-- a READY loop timer stale past 2x its cadence (a wedged drain),
-- a still-live ticket whose NEWEST task FAILED with no successor (the silent-freeze signature),
-- a runtime clone that has drifted off its default branch,
-- a ``worker_quiescing`` gate outliving any deploy that could explain it,
-- a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain``),
+    worker, admin, or the watchdog itself — stuck ``Created``/``Exited`` (REPORTS),
+- a free worker flock while the loop machinery has queued, overdue work (REPORTS),
+- an ``execute_task`` claimed RUNNING with no live worker to finish it (REPORTS),
+- a READY loop timer stale past 2x its cadence (a wedged drain) (REPORTS),
+- a still-live ticket whose NEWEST task FAILED with no successor — the freeze signature (REPORTS),
+- a runtime clone that has drifted off its default branch (REPORTS),
+- a ``worker_quiescing`` gate outliving any deploy that could explain it (REPAIRS when provably dead, else REPORTS),
+- a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain`` — REPORTS),
 - a Slack app-config token pair aging toward its 12-hour expiry, past which it is
-    unrecoverable (``self_heal_slack_config_token`` — this one AUTO-ROTATES),
-- a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (this one AUTO-REPAIRS).
+    unrecoverable (``self_heal_slack_config_token`` — REPAIRS, it auto-rotates),
+- a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (REPAIRS).
 
 Each returns ``bool`` — ``False`` is a hard FAIL that reddens ``t3 doctor`` (and so
 the watchdog's ``t3 doctor --json``). Every check is crash-proof: any error degrades

@@ -6,6 +6,7 @@ present, and degrades to a pass when it cannot read the state — a self-heal
 detector must never itself abort the doctor run.
 """
 
+import ast
 import base64
 import datetime as dt
 import io
@@ -578,3 +579,43 @@ class ParseFindingsTest(TestCase):
         after = self_heal._Probe.parse_findings("FAIL  clone is 18 commit(s) behind origin/main\n")
         assert before[0]["identity"] == after[0]["identity"]
         assert before[0]["message"] != after[0]["message"]
+
+
+def _detector_docstring_bullets() -> list[str]:
+    """The module docstring's detector list, each bullet folded onto one line."""
+    bullets: list[str] = []
+    for line in (self_heal.__doc__ or "").splitlines():
+        if line.startswith("- "):
+            bullets.append(line)
+        elif bullets and line.startswith("    "):
+            bullets[-1] += " " + line.strip()
+    return bullets
+
+
+def _wired_check_expressions() -> list[str]:
+    """The checks ``run_self_heal_checks`` actually runs, read off its own source."""
+    source = Path(str(self_heal.__file__)).read_text(encoding="utf-8")
+    wired = [
+        [ast.unparse(element) for element in node.value.elts]
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "checks"
+    ]
+
+    assert wired, "run_self_heal_checks no longer declares its `checks` tuple"
+    return wired[0]
+
+
+class DetectorRepairAnnotationTest(TestCase):
+    """The asymmetry between repairing and reporting detectors must be readable, not grepped."""
+
+    def test_every_detector_says_whether_it_repairs_or_only_reports(self) -> None:
+        unannotated = [
+            bullet for bullet in _detector_docstring_bullets() if "REPAIRS" not in bullet and "REPORTS" not in bullet
+        ]
+
+        assert not unannotated, f"annotate these detectors REPAIRS/REPORTS: {unannotated}"
+
+    def test_the_annotated_list_covers_every_wired_detector(self) -> None:
+        # A detector added to the sequence but not to the list would leave the asymmetry
+        # invisible again — which is the whole defect the annotation exists to end.
+        assert len(_detector_docstring_bullets()) == len(_wired_check_expressions())

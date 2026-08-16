@@ -5428,12 +5428,21 @@ Usage: t3 worker drain [OPTIONS]
  the deploy's SSH session never idles out mid-drain and takes the deploy with
  it.
 
- THE WORKER IS LEFT QUIESCED: this command stops nothing, and the gate it sets
- is
- cleared only by a fresh container boot (``deploy/entrypoint.sh``). On a bare
- host
- nothing clears it, so the box keeps running while admitting no work until you
- run
+ THE WORKER IS LEFT QUIESCED: this command stops nothing. A fresh container
+ boot
+ (``deploy/entrypoint.sh``) clears the gate; so does the doctor's
+ stranded-quiescing
+ self-heal (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), but only
+ once the
+ gate has stood for longer than a real deploy could still explain (currently
+ ~40
+ minutes with liveness proving the convergence dead, ~80 minutes on age alone)
+ — a
+ drain held deliberately past that window is auto-cleared, not respected.
+ Before
+ then, or on a bare host with the doctor not run, nothing clears it, so the box
+ keeps
+ running while admitting no work until you run
  `t3 <overlay> config_setting set worker_quiescing false` or `t3 worker
  restart`.
  To end the worker rather than merely quiesce it, use `t3 worker stop`.
