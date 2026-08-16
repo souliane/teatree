@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 from django.core.management import call_command
 
-from teatree.core.factory.operational_health import HealthSignal
+from teatree.core.factory.operational_health import HealthSignal, SignalCollection
 from teatree.core.management.commands.health import HealthPayload
 from teatree.core.models.known_issue import KnownIssue
 
@@ -34,7 +34,7 @@ def _call(*args: str) -> str:
 
 class TestShow:
     def test_green_when_no_issues(self) -> None:
-        with patch("teatree.core.factory.operational_health.collect_signals", return_value=[]):
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=SignalCollection()):
             out = _call("health", "show")
         assert "health: green · 0 open" in out
 
@@ -46,7 +46,10 @@ class TestShow:
             overlay="teatree",
             evidence_url="https://example.test/run/9",
         )
-        with patch("teatree.core.factory.operational_health.collect_signals", return_value=[signal]):
+        with patch(
+            "teatree.core.factory.operational_health.collect_signals",
+            return_value=SignalCollection((signal,)),
+        ):
             out = _call("health", "show")
         assert "health: red · 1 open" in out
         assert "loop wedged" in out
@@ -54,7 +57,10 @@ class TestShow:
 
     def test_json_output(self) -> None:
         signal = HealthSignal("f", KnownIssue.Severity.WARNING, "a warning")
-        with patch("teatree.core.factory.operational_health.collect_signals", return_value=[signal]):
+        with patch(
+            "teatree.core.factory.operational_health.collect_signals",
+            return_value=SignalCollection((signal,)),
+        ):
             out = _call("health", "show", "--json")
         payload = json.loads(out)
         assert payload["status"] == "yellow"

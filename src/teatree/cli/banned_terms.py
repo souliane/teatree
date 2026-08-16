@@ -14,7 +14,12 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from teatree.core.banned_terms_tree import BannedTermsUnsetError, migrate_registry, scan_committed_tree
+from teatree.core.banned_terms_tree import (
+    BannedTermsUnsetError,
+    TreeEnumerationError,
+    migrate_registry,
+    scan_committed_tree,
+)
 
 banned_terms_app = typer.Typer(no_args_is_help=True, help="Banned-terms backstop scans.")
 _console = Console()
@@ -73,6 +78,12 @@ def scan_tree(
         # refused LOUD (exit 2) — never a silent inert scan that hides a load
         # bug. An explicit empty list does not raise; it flows to the
         # INERT warning below.
+        _console.print(f"[red]banned-terms scan-tree: MISCONFIGURED — {exc}[/]")
+        raise typer.Exit(_MISCONFIGURED_EXIT_CODE) from exc
+    except TreeEnumerationError as exc:
+        # The second axis of the same invariant: a tree the scan could not
+        # enumerate yields zero findings for a reason that has nothing to do
+        # with the tree being clean (#4354).
         _console.print(f"[red]banned-terms scan-tree: MISCONFIGURED — {exc}[/]")
         raise typer.Exit(_MISCONFIGURED_EXIT_CODE) from exc
 

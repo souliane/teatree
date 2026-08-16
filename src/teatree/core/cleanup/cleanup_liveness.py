@@ -27,6 +27,14 @@ falsely read as recently-modified — the meaningful content-modification signal
 the last COMMIT. The verdict is a fail-safe phrase the reaper logs so a skip is
 never silent.
 
+Guards (c) and (d) can each be structurally unable to look — a venue with no
+host-covering process table, a gitdir that will not resolve — and both used to
+answer that with the same bytes as "I looked and found nothing" (#4354). The
+verdict now carries ``unverifiable`` and the obstacle, and the blindness is
+logged. It does not promote to a keep: this reaper proves every change redundant
+before wiping anything, so an absent defence-in-depth guard is reported rather
+than turned into a reap-stopping signal.
+
 The ``fsm_terminal`` carve-out (#2763 follow-up): the post-merge FSM-immediate
 teardown fires the instant a ticket reaches a terminal state, and the terminal
 transition itself trips two of these signals as STRUCTURAL false positives — the
@@ -51,7 +59,9 @@ from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.gates.idle_stack import active_delivery_keep_reason
 from teatree.core.models import Worktree
 from teatree.utils import git
+from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CommandFailedError
+from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +75,39 @@ class LivenessVerdict:
     """Whether an item is actively worked, and the fail-safe reason it is kept.
 
     ``active`` is ``True`` when any liveness signal fired; ``reason`` is the
-    human-readable phrase the reaper reports (empty only when ``active`` is
-    ``False``).
+    human-readable phrase the reaper reports.
+
+    ``unverifiable`` is the sibling of :attr:`~teatree.core.cleanup.working_tree_dirt.WorkingTreeDirt.proven`
+    (#4354): ``True`` when a guard could not ANSWER — the venue saw no process
+    table, the gitdir would not resolve — and ``reason`` then names the obstacle
+    rather than a signal. A not-live verdict and a could-not-look verdict were the
+    same empty bytes, so a guard that is structurally absent in the deployment the
+    reaper runs in reported exactly like a settled worktree. It does not by itself
+    keep the item: this reaper carries several independent guards and proves every
+    change redundant before wiping, so the blindness is REPORTED, not promoted into
+    a keep (the same split :mod:`teatree.core.cleanup.process_table` records for its
+    two consumers).
     """
 
     active: bool
     reason: str = ""
+    unverifiable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _GuardAnswer:
+    """One guard's answer: it fired, it did not, or it could not look.
+
+    ``fired`` with an empty ``obstacle`` is a real negative; an ``obstacle`` with
+    ``fired`` false is the non-answer the verdict must carry upward.
+    """
+
+    fired: bool = False
+    obstacle: str = ""
+
+    @property
+    def unanswered(self) -> bool:
+        return not self.fired and bool(self.obstacle)
 
 
 def _ticket_is_busy(worktree: Worktree) -> bool:
@@ -84,15 +121,14 @@ def _within(cwd: Path, resolved_wt: Path) -> bool:
     return cwd == resolved_wt or resolved_wt in cwd.parents
 
 
-def _is_cwd(wt_path: Path) -> bool:
-    """True iff ANY live process' CWD is the worktree dir or a child of it.
+def _is_cwd(wt_path: Path) -> _GuardAnswer:
+    """Whether ANY live process' CWD is the worktree dir or a child of it.
 
     An agent operating inside a worktree — a shell, an editor, a dev server — has
     its CWD there. Checking only the reaper's OWN process CWD misses that ad-hoc
-    agent entirely, so on Linux this also scans ``/proc/*/cwd`` for any process
-    working inside the worktree. Best-effort: a process whose ``cwd`` symlink is
-    unreadable (permission, race) is skipped, and a platform without ``/proc``
-    falls back to the own-CWD check.
+    agent entirely, so the shared process table is consulted for any process
+    working inside the worktree. The own-CWD hit is decisive on its own; otherwise
+    the answer (including "I could not look") is the table's.
     """
     try:
         own = Path.cwd().resolve()
@@ -100,32 +136,45 @@ def _is_cwd(wt_path: Path) -> bool:
         own = None
     resolved = wt_path.resolve()
     if own is not None and _within(own, resolved):
-        return True
+        return _GuardAnswer(fired=True)
     return _any_process_cwd_within(wt_path)
 
 
-def _any_process_cwd_within(wt_path: Path) -> bool:
-    """True iff any live process is placed inside ``wt_path``.
+def _any_process_cwd_within(wt_path: Path) -> _GuardAnswer:
+    """Whether any live process is placed inside ``wt_path``.
 
     Reads the shared host-aware table (:mod:`teatree.core.cleanup.process_table`)
     rather than this venue's own ``/proc``, which inside the worker container
     lists a namespace holding none of the host agents this signal exists to spot.
-    An unreadable table contributes no signal here — unlike the venv reaper, this
-    reaper proves every change redundant before wiping anything, so the CWD check
-    widens its guards rather than being the one that authorises the wipe.
+    A table that could not be read is reported as an OBSTACLE rather than a
+    negative: it still contributes no keep — unlike the venv reaper, this reaper
+    proves every change redundant before wiping anything — but the caller can now
+    tell "nobody is inside" from "nobody could be seen from here".
 
     The path goes in AS WRITTEN: the table matches both spellings itself, and
     pre-resolving here would throw away the raw one.
     """
-    return read_process_table().holds(wt_path)
+    table = read_process_table()
+    if not table.usable:
+        return _GuardAnswer(obstacle=f"no process could be seen from this venue ({table.refuse_reason()})")
+    return _GuardAnswer(fired=table.holds(wt_path))
 
 
-def _git_lock_present(wt_path: Path) -> bool:
-    """True iff an ``index.lock`` exists in the worktree's gitdir (git mid-operation)."""
+def _git_lock_present(wt_path: Path) -> _GuardAnswer:
+    """Whether an ``index.lock`` exists in the worktree's gitdir (git mid-operation).
+
+    Runs the status-carrying runner: :func:`teatree.utils.git.run` collapses a failed
+    ``rev-parse`` and an empty answer onto ``""``, so a gitdir that would not resolve
+    — a linked checkout whose admin path this venue cannot reach — read as a
+    confident "no lock is present" over a lock sitting on disk.
+    """
     if not (wt_path / ".git").exists():
-        return False
-    git_dir = git.run(repo=str(wt_path), args=["rev-parse", "--absolute-git-dir"])
-    return bool(git_dir) and (Path(git_dir) / "index.lock").exists()
+        return _GuardAnswer()
+    result = run_with_status(repo=str(wt_path), args=["rev-parse", "--absolute-git-dir"])
+    git_dir = result.stdout.strip()
+    if result.returncode != 0 or not git_dir:
+        return _GuardAnswer(obstacle="the worktree's gitdir would not resolve, so an index.lock is invisible here")
+    return _GuardAnswer(fired=(Path(git_dir) / "index.lock").exists())
 
 
 def _last_commit_at(wt_path: Path) -> datetime | None:
@@ -165,26 +214,33 @@ def _db_liveness_reason(worktree: Worktree, *, now: datetime | None, fsm_termina
     return active_delivery_keep_reason(worktree, now=now)
 
 
-def _fs_liveness_reason(*, wt_path: Path, now: datetime | None, recent_minutes: int, fsm_terminal: bool) -> str | None:
+def _fs_liveness(*, wt_path: Path, now: datetime | None, recent_minutes: int, fsm_terminal: bool) -> LivenessVerdict:
     """The filesystem liveness signals: CWD, git index.lock, recent HEAD commit.
 
-    A missing worktree dir contributes no filesystem signal (``None``). ``recent
-    HEAD commit`` is bypassed on ``fsm_terminal`` (the merge commit is the false
-    positive); CWD and git index.lock fire on every path.
+    A missing worktree dir contributes no filesystem signal. ``recent HEAD commit``
+    is bypassed on ``fsm_terminal`` (the merge commit is the false positive); CWD
+    and git index.lock fire on every path. A guard that could not answer leaves its
+    obstacle on the not-live verdict (``unverifiable``) instead of vanishing into it.
     """
-    if _is_cwd(wt_path):
-        return "the worktree dir is the current process CWD"
-    if not wt_path.is_dir():
-        return None
-    if _git_lock_present(wt_path):
-        return "a git index.lock is present (git mid-operation)"
-    if not fsm_terminal:
-        moment = now or dj_timezone.now()
-        cutoff = moment - timedelta(minutes=recent_minutes)
-        last_commit = _last_commit_at(wt_path)
-        if last_commit is not None and last_commit > cutoff:
-            return f"HEAD commit within the last {recent_minutes}m"
-    return None
+    blind: list[str] = []
+    cwd = _is_cwd(wt_path)
+    if cwd.fired:
+        return LivenessVerdict(active=True, reason="the worktree dir is the current process CWD")
+    if cwd.unanswered:
+        blind.append(cwd.obstacle)
+    if wt_path.is_dir():
+        lock = _git_lock_present(wt_path)
+        if lock.fired:
+            return LivenessVerdict(active=True, reason="a git index.lock is present (git mid-operation)")
+        if lock.unanswered:
+            blind.append(lock.obstacle)
+        if not fsm_terminal:
+            moment = now or dj_timezone.now()
+            cutoff = moment - timedelta(minutes=recent_minutes)
+            last_commit = _last_commit_at(wt_path)
+            if last_commit is not None and last_commit > cutoff:
+                return LivenessVerdict(active=True, reason=f"HEAD commit within the last {recent_minutes}m")
+    return LivenessVerdict(active=False, reason="; ".join(blind), unverifiable=bool(blind))
 
 
 def worktree_liveness(
@@ -199,7 +255,7 @@ def worktree_liveness(
 
     Checked in cheap-to-expensive order: the DB-only signals (busy ticket →
     active-delivery, :func:`_db_liveness_reason`) then the filesystem signals (CWD
-    → git lock → recent HEAD commit, :func:`_fs_liveness_reason`). The first signal
+    → git lock → recent HEAD commit, :func:`_fs_liveness`). The first signal
     short-circuits with its reason. A not-live verdict means none fired, so the
     reaper may proceed to done-detection.
 
@@ -207,8 +263,22 @@ def worktree_liveness(
     and recent-commit) for the post-merge teardown — see the module docstring.
     CWD, git index.lock, and the #2227/#2773 active-delivery guards still fire on
     that path.
+
+    A not-live verdict whose guards could not all LOOK carries ``unverifiable`` and
+    the obstacle, and says so in the log (#4354) — the reaper proceeds on its
+    remaining guards, but a defence-in-depth guard that is structurally absent in
+    this venue no longer reports as one that ran and found nothing.
     """
-    reason = _db_liveness_reason(worktree, now=now, fsm_terminal=fsm_terminal) or _fs_liveness_reason(
-        wt_path=wt_path, now=now, recent_minutes=recent_minutes, fsm_terminal=fsm_terminal
-    )
-    return LivenessVerdict(active=reason is not None, reason=reason or "")
+    db_reason = _db_liveness_reason(worktree, now=now, fsm_terminal=fsm_terminal)
+    if db_reason is not None:
+        return LivenessVerdict(active=True, reason=db_reason)
+    verdict = _fs_liveness(wt_path=wt_path, now=now, recent_minutes=recent_minutes, fsm_terminal=fsm_terminal)
+    if verdict.unverifiable:
+        warn_throttled(
+            logger,
+            f"liveness-blind:{verdict.reason}",
+            "liveness guard could not answer for %s: %s — proceeding on the remaining guards",
+            wt_path,
+            verdict.reason,
+        )
+    return verdict

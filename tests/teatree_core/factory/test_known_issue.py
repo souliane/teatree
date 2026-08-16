@@ -48,7 +48,7 @@ class TestRecordSignal:
 
     def test_resighting_reopens_a_resolved_auto_row(self) -> None:
         KnownIssue.objects.record_signal(_signal("stale-tick:loop-a"))
-        KnownIssue.objects.reconcile(set())  # signal gone -> auto-resolved
+        KnownIssue.objects.reconcile(set(), complete=True)  # signal gone -> auto-resolved
         assert KnownIssue.objects.open().count() == 0
         KnownIssue.objects.record_signal(_signal("stale-tick:loop-a"))
         assert KnownIssue.objects.open().count() == 1
@@ -64,13 +64,20 @@ class TestReconcile:
     def test_auto_resolves_row_whose_signal_cleared(self) -> None:
         KnownIssue.objects.record_signal(_signal("stale-tick:loop-a"))
         KnownIssue.objects.record_signal(_signal("stale-tick:loop-b"))
-        resolved = KnownIssue.objects.reconcile({"stale-tick:loop-a"})
+        resolved = KnownIssue.objects.reconcile({"stale-tick:loop-a"}, complete=True)
         assert resolved == 1
+        assert set(KnownIssue.objects.open().values_list("fingerprint", flat=True)) == {"stale-tick:loop-a"}
+
+    def test_an_incomplete_observation_resolves_nothing(self) -> None:
+        """A source that could not be read reports the same absence as an all-clear (#4354)."""
+        KnownIssue.objects.record_signal(_signal("stale-tick:loop-a"))
+        resolved = KnownIssue.objects.reconcile(set(), complete=False)
+        assert resolved == 0
         assert set(KnownIssue.objects.open().values_list("fingerprint", flat=True)) == {"stale-tick:loop-a"}
 
     def test_never_resolves_a_manual_row(self) -> None:
         KnownIssue.objects.add_manual("operator note")
-        KnownIssue.objects.reconcile(set())
+        KnownIssue.objects.reconcile(set(), complete=True)
         assert KnownIssue.objects.open().count() == 1
 
 
