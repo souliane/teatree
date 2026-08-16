@@ -14,12 +14,19 @@ from pathlib import Path
 
 from teatree.hooks import banned_term_registry
 from teatree.hooks.banned_term_registry import MigrationVerification
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError, TreeFinding, load_brand_terms, scan_tree
+from teatree.hooks.banned_terms_tree_scan import (
+    BannedTermsUnsetError,
+    TreeEnumerationError,
+    TreeFinding,
+    load_brand_terms,
+    scan_tree,
+)
 
 __all__ = [
     "BannedTermsUnsetError",
     "MigrateRegistryResult",
     "MigrationVerification",
+    "TreeEnumerationError",
     "TreeFinding",
     "TreeScanResult",
     "migrate_registry",
@@ -63,7 +70,9 @@ def scan_committed_tree(
     fork cannot read the ``$TEATREE_BANNED_BRANDS`` secret; push/schedule omit it
     so a missing secret on main stays a LOUD refusal. It replaces the dead
     ``T3_BANNED_TERMS_CONFIG`` file fallback (never consumed) with an explicit,
-    named flag.
+    named flag. It governs the BRAND-LIST axis only: a tree that could not be
+    enumerated still raises :class:`TreeEnumerationError` under either setting,
+    because an unreadable tree is a non-answer no flag can turn into a clean scan.
     """
     try:
         terms = load_brand_terms(db_path=config_path)

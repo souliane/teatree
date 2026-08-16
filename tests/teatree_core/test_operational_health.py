@@ -11,17 +11,21 @@ from unittest.mock import patch
 
 import pytest
 from django.apps import apps
+from django.db import OperationalError
 from django.utils import timezone
 
+from teatree.core.factory import operational_health
 from teatree.core.factory.operational_health import (
     HealthSignal,
     HealthStatus,
+    SignalCollection,
     _failed_task_signals,
     _fleet_loop_policy_signals,
     _harness_provider_consistency_signals,
     _overlay_health_signals,
     _stale_tick_signals,
     _status_from_issues,
+    collect_signals,
     read_health,
     reconcile_health,
 )
@@ -34,6 +38,7 @@ from teatree.utils.throttled_log import reset_throttle
 pytestmark = pytest.mark.django_db
 
 _OVERLAY_ON_FIRE = "overlay is on fire"
+_DB_LOCKED = "database is locked"
 
 
 def _issue(severity: str) -> KnownIssue:
@@ -71,16 +76,19 @@ class TestReadHealth:
 
 class TestReconcileHealth:
     def test_reconcile_persists_and_resolves(self) -> None:
-        signals = [
-            HealthSignal("sig-a", KnownIssue.Severity.WARNING, "a"),
-            HealthSignal("sig-b", KnownIssue.Severity.CRITICAL, "b"),
-        ]
+        signals = SignalCollection(
+            (
+                HealthSignal("sig-a", KnownIssue.Severity.WARNING, "a"),
+                HealthSignal("sig-b", KnownIssue.Severity.CRITICAL, "b"),
+            )
+        )
         with patch("teatree.core.factory.operational_health.collect_signals", return_value=signals):
             report = reconcile_health()
         assert report.status is HealthStatus.RED
         assert report.open_count == 2
         # Next reconcile with sig-a gone auto-resolves it, leaves the critical.
-        with patch("teatree.core.factory.operational_health.collect_signals", return_value=signals[1:]):
+        without_a = SignalCollection(signals.signals[1:])
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=without_a):
             report2 = reconcile_health()
         assert report2.open_count == 1
         assert set(KnownIssue.objects.open().values_list("fingerprint", flat=True)) == {"sig-b"}
@@ -103,7 +111,7 @@ class TestStaleTickCollector:
             lease_expires_at=now + timedelta(minutes=5),
         )
         with patch("teatree.config.cadence_seconds", return_value=60):
-            signals = _stale_tick_signals()
+            signals = _stale_tick_signals().signals
         assert [s.fingerprint for s in signals] == ["stale-tick:loop-wedged"]
         assert signals[0].severity == KnownIssue.Severity.WARNING
 
@@ -116,7 +124,7 @@ class TestStaleTickCollector:
             lease_expires_at=now + timedelta(minutes=5),
         )
         with patch("teatree.config.cadence_seconds", return_value=60):
-            assert _stale_tick_signals() == []
+            assert _stale_tick_signals().signals == ()
 
 
 class TestStaleTickExclusions:
@@ -139,7 +147,7 @@ class TestStaleTickExclusions:
         # tick — flagging it would redden the health chip on a healthy factory.
         self._lease("t3-master", acquired_ago=timedelta(minutes=25), owner_pid=os.getpid(), session_id="sess-busy")
         with patch("teatree.config.cadence_seconds", return_value=60):
-            assert _stale_tick_signals() == []
+            assert _stale_tick_signals().signals == ()
 
     def test_exclusion_is_targeted_a_wedged_work_loop_still_signals(self) -> None:
         # Same aged window across three leases: the ownership token and the
@@ -150,7 +158,7 @@ class TestStaleTickExclusions:
         self._lease("loop-tick:dispatch", acquired_ago=timedelta(minutes=25))
         self._lease("loop-tick", acquired_ago=timedelta(hours=3))
         with patch("teatree.config.cadence_seconds", return_value=60):
-            fingerprints = {s.fingerprint for s in _stale_tick_signals()}
+            fingerprints = {s.fingerprint for s in _stale_tick_signals().signals}
         assert fingerprints == {"stale-tick:loop-tick"}
 
     def test_reactive_lease_judged_against_its_own_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,7 +167,7 @@ class TestStaleTickExclusions:
         monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800")
         self._lease("loop-self-improve", acquired_ago=timedelta(minutes=25))
         with patch("teatree.config.cadence_seconds", return_value=720):
-            assert _stale_tick_signals() == []
+            assert _stale_tick_signals().signals == ()
 
 
 class TestFailedTaskCollector:
@@ -170,14 +178,14 @@ class TestFailedTaskCollector:
     def test_failed_task_in_window_yields_signal(self) -> None:
         ticket, session = self._ticket_session("https://example.com/issues/1")
         Task.objects.create(ticket=ticket, session=session, status=Task.Status.FAILED)
-        signals = _failed_task_signals()
+        signals = _failed_task_signals().signals
         assert [s.fingerprint for s in signals] == ["failed-tasks"]
         assert signals[0].severity == KnownIssue.Severity.WARNING
 
     def test_non_failed_task_yields_nothing(self) -> None:
         ticket, session = self._ticket_session("https://example.com/issues/2")
         Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
-        assert _failed_task_signals() == []
+        assert _failed_task_signals().signals == ()
 
 
 class TestOverlaySignalCollector:
@@ -194,7 +202,7 @@ class TestOverlaySignalCollector:
             "teatree.core.factory.operational_health.get_all_overlays",
             return_value={"acme": _Good(), "broken": _Broken()},
         ):
-            signals = _overlay_health_signals()
+            signals = _overlay_health_signals().signals
         assert [s.fingerprint for s in signals] == ["ov:x"]
 
     def test_broken_overlay_surfaces_a_warning_not_a_silent_debug(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -235,12 +243,12 @@ class TestHarnessProviderConsistencyCollector:
 
     def test_consistent_effective_pair_yields_nothing(self) -> None:
         with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
-            assert _harness_provider_consistency_signals() == []
+            assert _harness_provider_consistency_signals().signals == ()
 
     def test_preexisting_inconsistent_pair_yields_a_critical_signal(self) -> None:
         ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
         with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
-            signals = _harness_provider_consistency_signals()
+            signals = _harness_provider_consistency_signals().signals
         assert len(signals) == 1
         assert signals[0].severity == KnownIssue.Severity.CRITICAL
         assert signals[0].kind == "config_pair_drift"
@@ -264,7 +272,7 @@ class TestFleetLoopPolicySignals:
     def test_contradictory_declaration_yields_one_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
         monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "inbox,directive_loop")
-        signals = _fleet_loop_policy_signals()
+        signals = _fleet_loop_policy_signals().signals
         assert len(signals) == 1
         assert signals[0].severity == KnownIssue.Severity.WARNING
         assert signals[0].fingerprint == "fleet-loop-policy-contradiction"
@@ -273,12 +281,12 @@ class TestFleetLoopPolicySignals:
     def test_sound_declaration_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEATREE_ENABLED_LOOPS", "inbox")
         monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "review")
-        assert _fleet_loop_policy_signals() == []
+        assert _fleet_loop_policy_signals().signals == ()
 
     def test_unset_declaration_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
         monkeypatch.delenv("TEATREE_DISABLED_LOOPS", raising=False)
-        assert _fleet_loop_policy_signals() == []
+        assert _fleet_loop_policy_signals().signals == ()
 
     def test_contradiction_yellows_the_chip_via_reconcile(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
@@ -287,3 +295,72 @@ class TestFleetLoopPolicySignals:
             report = reconcile_health()
         assert report.status is HealthStatus.YELLOW
         assert any(issue.fingerprint == "fleet-loop-policy-contradiction" for issue in report.open_issues)
+
+
+class _BrokenOverlay:
+    def get_health_signals(self) -> list[HealthSignal]:
+        raise RuntimeError(_OVERLAY_ON_FIRE)
+
+
+class TestUnreadCollectorNeverAutoResolves:
+    """A collector that could not READ must not retire the issue it can no longer see (#4354).
+
+    An unread collector and a collector reporting "all clear" produced the identical
+    empty slice, so ``reconcile`` read absence as RESOLUTION: a CRITICAL retired itself
+    the first tick its own reader hiccupped, and the chip went green on an unchanged
+    fault.
+    """
+
+    def test_raising_collector_neither_resolves_the_row_nor_greens_the_chip(self) -> None:
+        KnownIssue.objects.record_signal(HealthSignal("failed-tasks", KnownIssue.Severity.CRITICAL, "3 failed"))
+
+        def _cannot_read() -> SignalCollection:
+            raise OperationalError(_DB_LOCKED)
+
+        with patch.object(operational_health, "_COLLECTORS", (_cannot_read,)):
+            report = reconcile_health()
+
+        open_fingerprints = set(KnownIssue.objects.open().values_list("fingerprint", flat=True))
+        assert "failed-tasks" in open_fingerprints
+        assert "health-collector-failed:_cannot_read" in open_fingerprints
+        assert report.status is HealthStatus.RED
+
+    def test_broken_overlay_does_not_retire_the_row_the_working_collectors_kept(self) -> None:
+        KnownIssue.objects.record_signal(HealthSignal("stale-tick:loop-a", KnownIssue.Severity.WARNING, "wedged"))
+
+        with (
+            patch.object(operational_health, "_COLLECTORS", (_overlay_health_signals,)),
+            patch(
+                "teatree.core.factory.operational_health.get_all_overlays",
+                return_value={"broken": _BrokenOverlay()},
+            ),
+        ):
+            report = reconcile_health()
+
+        open_fingerprints = set(KnownIssue.objects.open().values_list("fingerprint", flat=True))
+        assert "stale-tick:loop-a" in open_fingerprints
+        assert "health-collector-failed:overlay:broken" in open_fingerprints
+        assert report.status is HealthStatus.RED
+
+    def test_a_complete_observation_still_auto_resolves(self) -> None:
+        """The control: when every collector ANSWERED, a cleared signal still retires."""
+        KnownIssue.objects.record_signal(HealthSignal("gone", KnownIssue.Severity.WARNING, "cleared"))
+
+        def _all_clear() -> SignalCollection:
+            return SignalCollection()
+
+        with patch.object(operational_health, "_COLLECTORS", (_all_clear,)):
+            report = reconcile_health()
+
+        assert KnownIssue.objects.open().count() == 0
+        assert report.status is HealthStatus.GREEN
+
+    def test_collect_signals_names_the_collector_that_could_not_read(self) -> None:
+        def _cannot_read() -> SignalCollection:
+            raise OperationalError(_DB_LOCKED)
+
+        with patch.object(operational_health, "_COLLECTORS", (_cannot_read,)):
+            collection = collect_signals()
+
+        assert collection.unread == ("_cannot_read",)
+        assert collection.complete is False

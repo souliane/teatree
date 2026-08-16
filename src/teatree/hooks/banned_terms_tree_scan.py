@@ -136,6 +136,26 @@ class BannedTermsUnreadableError(BannedTermsUnsetError):
         )
 
 
+class TreeEnumerationError(RuntimeError):
+    """The tracked-file enumeration could not be made, so NOTHING was scanned (#4354).
+
+    Zero files scanned yields zero findings, which the caller previously rendered as
+    a clean tree — on the one gate that exists to stop an operator brand reaching a
+    PUBLIC repo. A non-repo cwd, a missing ``git``, a ``safe.directory`` refusal and a
+    loaded-box ``ls-files`` timeout all produce it, so the non-answer is raised instead
+    of returned. The sibling :class:`~teatree.quality.changed_set.ChangedSetError` makes
+    the same choice for the same reason.
+    """
+
+    @classmethod
+    def for_root(cls, repo_root: Path, reason: str) -> "TreeEnumerationError":
+        return cls(
+            f"could not enumerate the tracked files under {repo_root} ({reason}) — "
+            f"nothing was scanned, so the result carries no information about the tree. "
+            f"Point --repo-root at a readable git checkout and re-run."
+        )
+
+
 @dataclass(frozen=True)
 class TreeFinding:
     """A single banned-brand hit in a committed file."""
@@ -201,17 +221,21 @@ def git_tracked_files(repo_root: Path) -> list[Path]:
 
     Uses ``git ls-files`` (the same source the shell gate's pre-commit
     invocation feeds from) and keeps only the text suffixes the scanner
-    can read. Returns an empty list if git is unavailable or the path is
-    not a repo — the caller treats that as a clean (no-files) scan.
+    can read. RAISES :class:`TreeEnumerationError` when git could not answer, and
+    when it answered with no tracked files at all — both mean the scan read nothing,
+    which is a non-answer rather than a clean tree. A repo whose tracked files are
+    all binary is a genuine empty RESULT and returns ``[]``.
     """
     try:
         result = run_checked(
             ["git", "-C", str(repo_root), "ls-files", "-z"],
             timeout=_GIT_LS_TIMEOUT_S,
         )
-    except (CommandFailedError, TimeoutExpired, OSError):
-        return []
+    except (CommandFailedError, TimeoutExpired, OSError) as exc:
+        raise TreeEnumerationError.for_root(repo_root, f"{type(exc).__name__}: {exc}") from exc
     names = [n for n in result.stdout.split("\0") if n]
+    if not names:
+        raise TreeEnumerationError.for_root(repo_root, "git reported no tracked files")
     return [repo_root / n for n in names if (repo_root / n).suffix.lower() in _TEXT_SUFFIXES]
 
 
@@ -266,6 +290,9 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
     the built-in terminology gate (``terminology_gate``), which flags
     teatree-internal vocabulary conflations regardless of any operator
     config.
+
+    Propagates :class:`TreeEnumerationError` — a tree that could not be enumerated
+    has no findings for the same reason a tree that was never read has none.
     """
     from teatree.hooks import terminology_gate  # noqa: PLC0415 — deferred: call-time import, kept lazy
 

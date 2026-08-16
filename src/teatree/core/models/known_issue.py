@@ -6,7 +6,9 @@ scanner failing repeatedly, an overlay-declared problem. Rows are AUTO-derived
 each health computation from the deterministic signals
 (:mod:`teatree.core.factory.operational_health`) and reconciled against the live signal
 set: a signal that clears auto-resolves its row by construction, so an operator
-never chases a stale entry. Rows are also manually addable (an operator records
+never chases a stale entry — but only when every signal source ANSWERED, because a
+source that could not be read reports the same absence as one reporting all-clear
+(the ``complete`` argument to :meth:`KnownIssueManager.reconcile`). Rows are also manually addable (an operator records
 something the deterministic signals cannot see) and manually dismissable (an
 operator acknowledges an auto-derived issue they choose to live with).
 
@@ -91,7 +93,7 @@ class KnownIssueManager(models.Manager["KnownIssue"]):
         )
         return row
 
-    def reconcile(self, live_fingerprints: set[str]) -> int:
+    def reconcile(self, live_fingerprints: set[str], *, complete: bool) -> int:
         """Auto-resolve every auto-derived row whose signal is no longer live.
 
         A row with ``source == AUTO`` and ``auto_resolve`` set whose fingerprint
@@ -100,7 +102,16 @@ class KnownIssueManager(models.Manager["KnownIssue"]):
         ``auto_resolve`` predicate the spec names). Manual rows and rows with
         ``auto_resolve`` cleared are never touched here. Returns the count
         resolved so the caller can log it.
+
+        *complete* is the caller's statement that every signal source ANSWERED
+        (#4354). A source that could not be read contributes the same empty slice
+        as one reporting all-clear, so on an incomplete observation an absent
+        fingerprint is UNKNOWN rather than resolved and nothing is retired. It is
+        keyword-ONLY and has no default so a caller cannot omit the question and
+        silently retire an issue nothing has fixed.
         """
+        if not complete:
+            return 0
         stale = self.filter(
             source=KnownIssue.Source.AUTO,
             auto_resolve=True,
