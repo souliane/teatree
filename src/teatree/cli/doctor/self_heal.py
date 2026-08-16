@@ -11,7 +11,7 @@ of the stack it watches) can restart the stack and DM the owner:
 - a free worker flock while the loop machinery has queued, overdue work,
 - an ``execute_task`` claimed RUNNING with no live worker to finish it,
 - a READY loop timer stale past 2x its cadence (a wedged drain),
-- a FAILED task on a still-live ticket (the silent-freeze signature),
+- a still-live ticket whose NEWEST task FAILED with no successor (the silent-freeze signature),
 - a runtime clone that has drifted off its default branch,
 - a ``worker_quiescing`` gate outliving any deploy that could explain it,
 - a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain``),
@@ -395,34 +395,41 @@ def _check_stale_loop_timer() -> bool:
 
 
 def _check_failed_tasks_on_live_tickets() -> bool:
-    """FAIL when FAILED tasks sit on still-live (non-terminal) tickets — the freeze signature.
+    """FAIL when a live ticket's NEWEST task is FAILED — work that died with no successor.
 
-    A FAILED task whose ticket has not reached a terminal/retrospected state is
-    work that died with nothing advancing the ticket: the silent-freeze pattern
-    the incident exhibited. Reports the count and the affected ticket numbers.
+    The decision rule (souliane/teatree#4357): a non-terminal ticket whose newest task
+    FAILED and which nothing re-dispatched is either re-dispatched or explicitly parked,
+    never left in neither state. A ticket that DOES carry a successor is being advanced,
+    so naming it says nothing an operator can act on — and a line of dozens of
+    unactionable names is how a real freeze becomes invisible among them.
+
+    Newest is by ``pk``: an ``AutoField`` is monotonic and never null, where
+    ``Task.created_at`` is nullable and would order legacy rows arbitrarily.
 
     Synthetic rows are excluded (souliane/teatree#3492). A
     ``<scheme>://<overlay>`` loop-cadence anchor is a recurring schedule with no
     terminal state to reach, and a bare-number ``issue_url`` is malformed debris
     whose real, terminal ticket exists separately. Neither is frozen deliverable
     work, yet both render as forge-looking numbers and pin a permanent,
-    unactionable FAIL — which trains operators to ignore the one line that would
-    flag a real freeze. A ticket with no forge issue at all (``""`` /
+    unactionable FAIL. A ticket with no forge issue at all (``""`` /
     ``auto:<branch>``) is ordinary work and still counts.
     """
     try:
+        from django.db.models import OuterRef, Subquery  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
         from teatree.core.forge_url import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
             is_synthetic_ticket_url,
         )
         from teatree.core.models import Task, Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         terminal = set(Ticket._TERMINAL_STATES) | {Ticket.State.RETROSPECTED}  # noqa: SLF001 — the model's SSOT terminal set
+        newest_status = Subquery(Task.objects.filter(ticket=OuterRef("pk")).order_by("-pk").values("status")[:1])
         frozen = (
-            Task.objects.filter(status=Task.Status.FAILED).exclude(ticket__state__in=terminal).select_related("ticket")
+            Ticket.objects.exclude(state__in=terminal)
+            .annotate(newest_task_status=newest_status)
+            .filter(newest_task_status=Task.Status.FAILED)
         )
-        numbers = sorted(
-            {task.ticket.ticket_number for task in frozen if not is_synthetic_ticket_url(task.ticket.issue_url)}
-        )
+        numbers = sorted({ticket.ticket_number for ticket in frozen if not is_synthetic_ticket_url(ticket.issue_url)})
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Failed-task-on-live-ticket check crashed: {exc.__class__.__name__}: {exc}")
         return True
@@ -430,9 +437,9 @@ def _check_failed_tasks_on_live_tickets() -> bool:
         return True
     listed = ", ".join(f"#{number}" for number in numbers)
     typer.echo(
-        f"FAIL  FAILED task(s) sit on {len(numbers)} non-terminal ticket(s) ({listed}) — the "
-        f"silent-freeze signature: work died and nothing is advancing the ticket. Inspect the "
-        f"failed attempts and re-dispatch or close the tickets."
+        f"FAIL  The newest task FAILED with no successor on {len(numbers)} non-terminal ticket(s) "
+        f"({listed}) — the silent-freeze signature: work died and nothing is advancing the ticket. "
+        f"Re-dispatch each, or park it with a reason."
     )
     return False
 

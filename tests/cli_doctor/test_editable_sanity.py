@@ -11,9 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db.utils import OperationalError
 from django.test import TestCase
 
-from teatree.cli.doctor import DoctorService, IntrospectionHelpers
+from teatree.cli.doctor import DoctorService, IntrospectionHelpers, _check_editable_sanity
 from teatree.core.models import ConfigSetting
 
 from ._shared import _editable_map, _fake_entry_point, _stage_home
@@ -202,3 +203,37 @@ class TestCheckEditableSanityWrapperGating(TestCase):
             result = _check_editable_sanity()
         assert result is False
         assert "FAIL" in buf.getvalue()
+
+
+class TestUnreadableStoreIsUnverified(TestCase):
+    """#4357: `contribute` resolves to its shipped default when the store cannot be opened.
+
+    The check then reports a mismatch against a value it never read. On the host venue that
+    produced a definite "editable but contribute=false" WARN while the stored row said the
+    opposite — a specific falsehood where "I could not determine this" was the truth.
+    """
+
+    def test_unreadable_store_reports_unverified_and_asserts_nothing_about_contribute(self):
+        buf = io.StringIO()
+        with (
+            patch.object(ConfigSetting.objects, "exists", side_effect=OperationalError("unable to open database file")),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
+            redirect_stdout(buf),
+        ):
+            result = _check_editable_sanity()
+        out = buf.getvalue()
+        assert result is True
+        assert "UNVERIFIED" in out
+        assert "contribute=false" not in out
+
+    def test_readable_store_still_reports_the_mismatch(self):
+        buf = io.StringIO()
+        with (
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
+            redirect_stdout(buf),
+        ):
+            result = _check_editable_sanity()
+        out = buf.getvalue()
+        assert result is True
+        assert "contribute=false" in out
+        assert "UNVERIFIED" not in out

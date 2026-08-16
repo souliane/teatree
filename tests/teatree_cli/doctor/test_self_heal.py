@@ -322,6 +322,24 @@ class FailedTaskOnLiveTicketCheckTest(TestCase):
         ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
         assert ok is True
 
+    def test_failed_task_with_a_successor_is_ok(self) -> None:
+        # souliane/teatree#4357: a ticket that was re-dispatched after the failure is being
+        # advanced, so naming it forever is what grew the line to 44 unactionable tickets.
+        ticket = TicketFactory(state=Ticket.State.CODED)
+        TaskFactory(ticket=ticket, status="failed")
+        TaskFactory(ticket=ticket, status="pending")
+        ok, _out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is True
+
+    def test_failure_after_a_successful_task_is_still_reported(self) -> None:
+        # The inverse ordering: the newest task IS the failure, so nothing succeeded it.
+        ticket = TicketFactory(state=Ticket.State.CODED)
+        TaskFactory(ticket=ticket, status="completed")
+        TaskFactory(ticket=ticket, status="failed")
+        ok, out = _echoes(self_heal._check_failed_tasks_on_live_tickets)
+        assert ok is False
+        assert f"#{ticket.ticket_number}" in out
+
     def test_failed_task_on_bare_number_row_is_ok(self) -> None:
         # souliane/teatree#3492: a bare-number `issue_url` is malformed debris from
         # a write path closed by #3289. `derive_issue_number` still renders it as a

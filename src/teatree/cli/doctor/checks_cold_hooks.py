@@ -169,10 +169,14 @@ def _check_cold_hook_settings_readable() -> bool:
 
     Crash-proof: an unaskable probe (missing shim, no interpreter, timeout, unparsable
     output) is a WARN, never a hard FAIL — an undiagnosable environment must not turn
-    a doctor run red on this check alone.
+    a doctor run red on this check alone. A venue that cannot open the store ITSELF gets
+    the same treatment for the COMPARISON only (#4357): the CLI side would be a shipped
+    default, so a difference measures database access rather than disagreement. The two
+    hook-side verdicts stand — they rest on the hook's own read, not on the CLI's.
     """
     import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config.override_reader import config_store_readable  # noqa: PLC0415 — deferred: light import
 
     repo_root = Path(teatree.__file__).resolve().parents[2]
     resolution = _hook_interpreter_resolution(repo_root)
@@ -198,6 +202,18 @@ def _check_cold_hook_settings_readable() -> bool:
             "Re-run `t3 setup`, then re-run `t3 doctor check`.",
         )
         return False
+
+    # #4357: the CLI half of the comparison is a shipped default when THIS venue cannot
+    # open the store, so a difference then measures database access rather than a
+    # CLI/hook disagreement. Placed after the hook-side verdicts above, which stand on
+    # the hook's own read and are unaffected by what the CLI can reach.
+    if not config_store_readable():
+        typer.echo(
+            "WARN  CLI-versus-hook `autoload` agreement is UNVERIFIED: this venue cannot open the "
+            "ConfigSetting store, so the CLI side of the comparison is a shipped default rather "
+            "than your stored row. Re-run `t3 doctor check` from a venue that reaches the control DB.",
+        )
+        return True
 
     hook_autoload = resolution.autoload
     cli_autoload = get_effective_settings().autoload
@@ -257,6 +273,27 @@ def _check_config_override_tier_healthy() -> bool:
     return False
 
 
+def _autoload_claim_is_verifiable() -> bool:
+    """Whether an ``autoload`` claim exists here AND this venue could actually read it (#4357).
+
+    False in two ways that must not be conflated. A store that will not open resolves
+    ``autoload`` to its shipped ``False``, so the caller's "nothing was claimed" exit would
+    be a definite green about a flag never read — that one WARNs UNVERIFIED. A genuinely
+    stored ``false`` claims nothing, so it is silent.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config.override_reader import config_store_readable  # noqa: PLC0415 — deferred: light import
+
+    if not config_store_readable():
+        typer.echo(
+            "WARN  Autoload engagement is UNVERIFIED: this venue cannot open the ConfigSetting "
+            "store, so `autoload` resolves to its shipped default rather than to your stored row. "
+            "Re-run `t3 doctor check` from a venue that reaches the control DB.",
+        )
+        return False
+    return get_effective_settings().autoload
+
+
 def _check_autoload_engages_platform_skill() -> bool:
     """FAIL when a stored ``autoload = true`` yields no ENFORCEABLE platform-skill demand.
 
@@ -288,11 +325,13 @@ def _check_autoload_engages_platform_skill() -> bool:
     check alone. A probe that RAN and crashed is a FAIL, not a WARN: the live
     hook path could not compute the demand, which settles the question rather
     than leaving it open.
+
+    Both "nothing was claimed" exits — a stored ``false``, and a venue that cannot
+    read the claim at all (#4357) — are :func:`_autoload_claim_is_verifiable`'s.
     """
     import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    if not get_effective_settings().autoload:
+    if not _autoload_claim_is_verifiable():
         return True
 
     repo_root = Path(teatree.__file__).resolve().parents[2]
