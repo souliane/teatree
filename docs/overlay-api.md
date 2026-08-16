@@ -132,7 +132,7 @@ These have default implementations. Override them as needed.
 | `get_timeouts()` | `{}` | Timeout overrides in seconds keyed by `teatree.timeouts` operation name; `0` disables a timeout. |
 | `get_health_signals()` | `[]` | Overlay operational-health signals for the global aggregator. |
 | `get_checking_sources()` | `[]` | Extra "needs you" source identifiers for `t3 <overlay> checking show`. |
-| `get_eval_scenarios_dir()` | `None` | Package-relative directory of overlay-contributed behavioral eval scenarios. |
+| `get_eval_scenarios_dir()` | `None` | Package-relative directory of overlay-contributed behavioral eval scenarios. `None` contributes none; a returned path must EXIST — discovery marks the catalog degraded when it does not, so never collapse a moved directory into `None`. |
 
 ### Provisioning hooks (`overlay.provisioning`, `OverlayProvisioning`)
 

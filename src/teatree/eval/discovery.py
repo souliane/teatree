@@ -12,7 +12,10 @@ Two surfaces are walked, in order:
     (see :class:`teatree.core.overlay.OverlayBase`). Overlay-specific
     scenarios that reference tenant identities, banned-jargon lists, or
     per-workspace channel ids live in the overlay package so the core
-    catalog remains overlay-agnostic.
+    catalog remains overlay-agnostic. The hook returns ``None`` to contribute
+    nothing, or a directory that EXISTS — an overlay must not launder a moved
+    directory into ``None``, because only one of those two is legitimate and
+    the catalog cannot otherwise tell them apart.
 
 Discovery is best-effort with respect to overlay failures: a broken
 overlay (import error, missing directory) is skipped rather than failing
@@ -46,15 +49,20 @@ logger = logging.getLogger(__name__)
 class ScenarioCatalog:
     """The discovered scenarios plus every overlay surface that failed to contribute.
 
-    ``degraded`` is the reason-per-overlay map for surfaces that raised: an entry
-    means the catalog is SMALLER than the tree defines, which no downstream guard
-    can detect (``--require-executed`` still sees executions, a metered run still
-    meters spend). ``"*"`` keys the whole-registry failure, where not even the
-    overlay names are known.
+    ``degraded`` is the reason-per-overlay map for surfaces that raised OR that
+    succeeded while naming a directory that is not there: an entry means the catalog
+    is SMALLER than the tree defines, which no downstream guard can detect
+    (``--require-executed`` still sees executions, a metered run still meters spend).
+    ``"*"`` keys the whole-registry failure, where not even the overlay names are known.
+
+    ``core_count`` is the shipped-catalog half of the same question. Degradation names
+    a surface that vanished; the count is what :data:`CORE_CATALOG_FLOOR` is measured
+    against, so the core catalog cannot shrink without an edit either.
     """
 
     specs: list[EvalSpec]
     degraded: dict[str, str]
+    core_count: int
 
     @property
     def is_complete(self) -> bool:
@@ -80,6 +88,13 @@ SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
 # coverage gate (``teatree.eval.coverage``) enumerates skills from here.
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
+#: Shrink-only ratchet on the CORE catalog — raise it when scenarios are added,
+#: and edit it deliberately when one is removed. Set at the shipped count rather
+#: than a loose collapse-detector because #4373's denominator shrank by two, which
+#: any slack at all hides. It floors the core surface alone: an overlay only ever
+#: ADDS, so flooring the total would red an install contributing none.
+CORE_CATALOG_FLOOR = 241
+
 
 def discover_core_specs() -> list[EvalSpec]:
     """The shipped core catalog alone — the surface teatree's own structural guards may pin.
@@ -102,10 +117,11 @@ def discover_core_specs() -> list[EvalSpec]:
 def discover_catalog() -> ScenarioCatalog:
     """The full catalog plus the overlay surfaces that failed to contribute to it."""
     specs = discover_core_specs()
+    core_count = len(specs)
     degraded: dict[str, str] = {}
     specs.extend(_discover_overlay_specs(degraded))
     _reject_duplicate_names(specs)
-    return ScenarioCatalog(specs=specs, degraded=degraded)
+    return ScenarioCatalog(specs=specs, degraded=degraded, core_count=core_count)
 
 
 def discover_specs() -> list[EvalSpec]:
@@ -152,6 +168,8 @@ def _discover_overlay_specs(degraded: dict[str, str]) -> list[EvalSpec]:
                 continue
             scenarios_path = Path(scenarios_dir)
             if not scenarios_path.is_dir():
+                logger.warning("eval-discovery: overlay %r named a scenarios dir that is not there", name)
+                degraded[name] = f"get_eval_scenarios_dir() named a directory that is not there: {scenarios_path}"
                 continue
             yaml_paths = sorted(scenarios_path.glob("*.yaml"))
         except Exception as exc:

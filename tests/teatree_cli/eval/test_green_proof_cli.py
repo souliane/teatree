@@ -7,12 +7,13 @@ missing / empty artifact — the JSON is the enforced proof.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.eval.discovery import ScenarioCatalog
+from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -36,7 +37,7 @@ def _green_payload() -> dict[str, object]:
 
 def _catalog_of(size: int, *, degraded: dict[str, str] | None = None):
     """Pin the expected scenario count the CLI derives from the live catalog."""
-    catalog = ScenarioCatalog(specs=[object()] * size, degraded=degraded or {})
+    catalog = ScenarioCatalog(specs=[object()] * size, degraded=degraded or {}, core_count=CORE_CATALOG_FLOOR)
     return patch("teatree.cli.eval.green_proof.discover_catalog", return_value=catalog)
 
 
@@ -83,6 +84,17 @@ class TestGreenProofCli:
         assert result.exit_code == 1, result.output
         assert "NOT A GREEN PROOF" in result.output
         assert "acme: boom" in result.output
+
+    def test_an_overlay_naming_a_missing_dir_refuses_the_proof(self, tmp_path: Path) -> None:
+        # The sibling route, through the LIVE catalog rather than a stub: the hook
+        # succeeded, so nothing raised, and the denominator shrank anyway.
+        path = _write(tmp_path, _green_payload())
+        overlay = SimpleNamespace(get_eval_scenarios_dir=lambda: tmp_path / "moved-away")
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-moved": overlay}):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
+        assert result.exit_code == 1, result.output
+        assert "DEGRADED" in result.output
+        assert "t3-moved" in result.output
 
     def test_a_whole_registry_failure_refuses_the_proof(self, tmp_path: Path) -> None:
         path = _write(tmp_path, _green_payload())

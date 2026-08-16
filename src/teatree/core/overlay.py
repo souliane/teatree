@@ -658,5 +658,10 @@ class OverlayBase(ABC):
         return []
 
     def get_eval_scenarios_dir(self) -> Path | None:
-        """Return the directory holding overlay-contributed behavioral eval scenarios."""
+        """Return the directory holding overlay-contributed behavioral eval scenarios.
+
+        ``None`` means "I contribute none"; a returned path is a claim the directory
+        EXISTS, and discovery degrades the catalog when it does not. Never collapse a
+        missing directory into ``None`` — that reports a defect as the legitimate answer.
+        """
         return None
