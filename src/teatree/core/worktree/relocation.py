@@ -19,6 +19,12 @@ Safety doctrine (unchanged): a worktree is refused when it is git-locked, dirty,
 or live mid-task (its ticket has a live session/active task, or the CWD is inside
 it). A ``git status`` that errors is treated as "might be dirty" and keeps the
 worktree — a flaky probe must never strand a live edit.
+
+A recorded path missing from disk is not automatically stale: when its target
+already exists as a git worktree, a PRIOR relocate moved it and only the DB save
+failed (:func:`half_move_target`). ``workspace relocate`` heals that row by
+reconcile rather than a fresh move, so it must not be counted as a refusal here —
+a doctor that named it un-relocatable would withhold the one command that fixes it.
 """
 
 from dataclasses import dataclass
@@ -97,23 +103,53 @@ def relocation_refusal(candidate: RelocationCandidate, target_root: Path, *, act
     """The reason this worktree must NOT be moved, or ``None`` when it is movable.
 
     Structural refusals come first, so the reported reason is the one that decides
-    whether relocation is possible AT ALL rather than merely blocked today.
+    whether relocation is possible AT ALL rather than merely blocked today. A
+    recorded path already gone from disk short-circuits everything below it: either
+    its target already exists as a git worktree — a prior run moved it on disk and
+    only the DB save failed, which ``workspace relocate`` heals as a reconcile
+    rather than a fresh ``git worktree move`` — or it is a genuinely stale row,
+    refused outright. Neither disposition has anything left at the old path to
+    check for "dirty" or "locked", so both skip the checks below.
     """
-    structural = _structural_refusal(candidate, target_root.resolve())
+    target_root_resolved = target_root.resolve()
+    old_resolved = candidate.old_resolved
+    if target_root_resolved == old_resolved or target_root_resolved in old_resolved.parents:
+        return f"already under {target_root_resolved}"
+    if not candidate.old.exists():
+        if half_move_target(candidate.old, target_root_resolved) is not None:
+            return None
+        return "worktree path missing on disk (stale row)"
+    structural = _structural_refusal(candidate, target_root_resolved)
     if structural is not None:
         return structural
     return _transient_refusal(candidate, active_path=active_path)
 
 
+def half_move_target(old: Path, target_root_resolved: Path) -> Path | None:
+    """Where *old* already landed, or ``None`` when it did not.
+
+    A worktree row records ``<old_ws>/<branch>/<repo>``; its post-move home is
+    ``<target_root>/<branch>/<repo>``. When *old* is gone from disk but that target
+    exists AS a git worktree (a ``.git`` entry), a prior run moved it on disk + git
+    but the DB save threw — the row is reconcilable, not stale, and the caller
+    (``workspace relocate``'s half-move healer, and this module's own
+    :func:`relocation_refusal`) must treat it as such. Pure check: no DB write, no
+    filesystem mutation.
+    """
+    target = relocation_target(old, target_root_resolved)
+    return target if (target / ".git").exists() else None
+
+
 def _structural_refusal(candidate: RelocationCandidate, target_root_resolved: Path) -> str | None:
-    """A refusal no operator action can clear: idempotent-skip, stale row, no clone, boundary."""
-    old_resolved = candidate.old_resolved
-    if target_root_resolved == old_resolved or target_root_resolved in old_resolved.parents:
-        return f"already under {target_root_resolved}"
-    if not candidate.old.exists():
-        return "worktree path missing on disk (stale row)"
+    """A refusal no operator action can clear: no clone, mount-point boundary.
+
+    Only reached once *candidate.old* is confirmed to exist on disk — the
+    already-under and missing-on-disk/half-move dispositions are decided in
+    :func:`relocation_refusal` before this ever runs.
+    """
     if candidate.clone is None:
         return "source clone not found"
+    old_resolved = candidate.old_resolved
     boundary = mount_boundary_between(old_resolved, relocation_target(old_resolved, target_root_resolved))
     if boundary is None:
         return None
@@ -158,6 +194,7 @@ def _dirty_reason(old: Path) -> str | None:
 __all__ = [
     "RelocationCandidate",
     "active_cwd",
+    "half_move_target",
     "relocation_refusal",
     "relocation_target",
     "resolve_source_clone",

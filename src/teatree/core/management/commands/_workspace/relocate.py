@@ -25,7 +25,13 @@ from django.db import DatabaseError
 
 from teatree.config import OverlayEntry
 from teatree.core.models import Worktree
-from teatree.core.worktree.relocation import RelocationCandidate, active_cwd, relocation_refusal, relocation_target
+from teatree.core.worktree.relocation import (
+    RelocationCandidate,
+    active_cwd,
+    half_move_target,
+    relocation_refusal,
+    relocation_target,
+)
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -106,7 +112,7 @@ def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_ru
             # worktree already sits under target_root, a prior run's git move
             # succeeded then its DB save failed (the #regroup half-move). Heal the
             # row instead of skipping it forever.
-            target = _half_move_target(old, target_root_resolved)
+            target = half_move_target(old, target_root_resolved)
             if target is None:
                 _record_skip(result, io, f"{old}: worktree path missing on disk (stale row)")
             else:
@@ -158,19 +164,6 @@ def _move_one(result: RelocateResult, io: RelocateIO, candidate: RelocationCandi
         return
     result.moved.append(line)
     io.write_out(f"  moved {line}")
-
-
-def _half_move_target(old: Path, target_root_resolved: Path) -> Path | None:
-    """The moved location of a half-moved worktree, or ``None`` when there is none.
-
-    A worktree row records ``<old_ws>/<branch>/<repo>``; its post-move home is
-    ``<target_root>/<branch>/<repo>``. When ``old`` is gone from disk but that
-    target exists AS a git worktree (a ``.git`` entry), a prior run moved it on
-    disk + git but failed to save the row — return the target so the caller heals
-    the row. Pure check: no DB write, no filesystem mutation.
-    """
-    target = relocation_target(old, target_root_resolved)
-    return target if (target / ".git").exists() else None
 
 
 def _reconcile_half_move(

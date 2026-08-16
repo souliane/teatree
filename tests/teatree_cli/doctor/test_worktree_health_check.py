@@ -197,6 +197,30 @@ class OneWorktreeRootCheckTest(_TmpTestCase):
         assert "EXDEV" in out
         assert "workspace relocate" not in out
 
+    def test_a_half_moved_row_is_counted_movable_not_refused(self) -> None:
+        # #4368 regression: `run_relocate` HEALS a row whose recorded path is gone
+        # from disk but whose target already sits under the canonical root as a
+        # git worktree (a prior move succeeded, only the DB save threw) — see
+        # `_workspace.relocate._reconcile_half_move`. Naming this row "missing on
+        # disk (stale row)" and withholding the `workspace relocate` remedy would
+        # repeat #4368's own bug class: a finding relocate CAN discharge, reported
+        # as one it cannot.
+        checkout = self._checkout_outside("wt")
+        clone = self.tmp / "elsewhere" / "myrepo"
+        canonical_root = self._pin_canonical()
+        target = canonical_root / "wt" / "myrepo"
+        target.parent.mkdir(parents=True)
+        run_git(clone, "worktree", "move", str(checkout), str(target))
+        # The row still records the OLD (now-gone) path — a half-move, not a fresh row.
+
+        ok, out = _echoes(_check_one_worktree_root)
+
+        assert ok is True
+        assert "1 of 1 registered worktree(s)" in out
+        assert "Fix: t3 <overlay> workspace relocate." in out
+        assert "stale row" not in out
+        assert "missing on disk" not in out
+
     def test_all_worktrees_inside_the_canonical_root_is_silent(self) -> None:
         inside = self.tmp / "canonical" / "wt"
         inside.mkdir(parents=True)

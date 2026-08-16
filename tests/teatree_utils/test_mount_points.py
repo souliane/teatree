@@ -116,6 +116,21 @@ class TestMountBoundaryBetween:
         with _pinned_table(tmp_path, Path("/")):
             assert mount_boundary_between(Path(), Path("..")) is None
 
+    def test_a_symlinked_ancestor_is_resolved_before_the_mount_lookup(self, tmp_path: Path) -> None:
+        # mountinfo lists the KERNEL (real) path, never a symlinked alias — so
+        # `_nearest_existing` must `.resolve()` the existing ancestor it finds, not
+        # just return it. A mutation that drops `.resolve()` entirely (returning the
+        # raw, unresolved path) reports NO mount at all here, because the table only
+        # names the real path and a plain-prefix match against the symlinked one
+        # never matches it.
+        real_root = tmp_path / "real-root"
+        real_root.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real_root)
+
+        with _pinned_table(tmp_path, real_root):
+            assert mount_point_for(link / "branch" / "repo") == real_root
+
     def test_a_path_no_mount_point_covers_is_unknown(self, tmp_path: Path) -> None:
         # A table with no "/" row covers nothing here — unknown, never "same mount".
         with _pinned_table(tmp_path, tmp_path / "elsewhere"):
