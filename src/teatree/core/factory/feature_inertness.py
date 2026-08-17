@@ -33,10 +33,14 @@ KIND_UNOBSERVABLE = "unobservable"
 #: The loud prefix a fault carries in the rendered report — a gate nobody decided to leave off.
 FAULT_BANNER = "NOBODY DECIDED"
 
+#: Separates what is not happening from what would make it happen (#4375).
+SATISFIER_MARKER = " | satisfy it with: "
+
 __all__ = [
     "FAULT_BANNER",
     "KIND_NEVER_FIRED",
     "KIND_UNOBSERVABLE",
+    "SATISFIER_MARKER",
     "InertFeature",
     "feature_inertness",
     "observed_rows",
@@ -93,7 +97,10 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
         return InertFeature(
             setting=entry.setting,
             kind=KIND_UNOBSERVABLE,
-            detail=(f"off for {age}d and nothing can ever prove it ran — {entry.rationale} ({_intent_clause(entry)})"),
+            detail=(
+                f"off for {age}d and nothing can ever prove it ran — {entry.rationale} "
+                f"({_intent_clause(entry)}){_satisfier_clause(entry)}"
+            ),
             is_fault=fault,
         )
     if observed_rows(entry):
@@ -101,9 +108,17 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
     return InertFeature(
         setting=entry.setting,
         kind=KIND_NEVER_FIRED,
-        detail=f"off for {age}d and {_observable_label(entry)} is empty — it has never fired ({_intent_clause(entry)})",
+        detail=(
+            f"off for {age}d and {_observable_label(entry)} is empty — it has never fired "
+            f"({_intent_clause(entry)}){_satisfier_clause(entry)}"
+        ),
         is_fault=fault,
     )
+
+
+def _satisfier_clause(entry: GateEvidence) -> str:
+    """What would make *entry* pass — the next action, without which the line is unactionable."""
+    return f"{SATISFIER_MARKER}{entry.satisfier}" if entry.satisfier.strip() else ""
 
 
 def _intent_clause(entry: GateEvidence) -> str:

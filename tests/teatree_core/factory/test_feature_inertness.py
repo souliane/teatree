@@ -8,6 +8,7 @@ gate even while its flag is off.
 """
 
 import datetime as dt
+from dataclasses import replace
 from io import StringIO
 
 from django.core.management import call_command
@@ -18,6 +19,7 @@ from teatree.core.factory.feature_inertness import (
     FAULT_BANNER,
     KIND_NEVER_FIRED,
     KIND_UNOBSERVABLE,
+    SATISFIER_MARKER,
     InertFeature,
     feature_inertness,
     render_inertness_report,
@@ -62,6 +64,7 @@ def _entry(
         shipped=shipped,
         intent=intent,
         rationale="fixture — souliane/teatree#4189",
+        satisfier="fixture satisfier",
     )
 
 
@@ -83,6 +86,12 @@ class TestItRediscoversTheTwelve(TestCase):
             assert finding.kind in {KIND_NEVER_FIRED, KIND_UNOBSERVABLE}
             assert finding.detail != finding.kind
             assert "off for" in finding.detail
+
+    def test_each_detail_names_the_next_action(self) -> None:
+        """#4375: naming what never fired without naming what would MAKE it fire is unactionable."""
+        for finding in feature_inertness(now=TODAY):
+            head, _, satisfier = finding.detail.partition(SATISFIER_MARKER)
+            assert satisfier.strip(), f"{finding.setting} names no way to satisfy it: {head}"
 
 
 class TestTheNoteVersusFaultSplit(TestCase):
@@ -130,6 +139,7 @@ class TestEvidenceClearsAGateEvenWhileOff(TestCase):
             shipped=dt.date(2026, 1, 1),
             intent=ActivationIntent.UNDECIDED,
             rationale="fixture — souliane/teatree#4189",
+            satisfier="fixture satisfier",
             filters={"variant": "never-set"},
         )
         TicketFactory()
@@ -177,6 +187,33 @@ class TestUnobservableGates(TestCase):
             "require_reviewed_state_for_review_request",
             "require_work_group_batch",
         }
+
+
+class TestTheReportNamesTheNextAction(TestCase):
+    """#4375: ten gates sat undecided for up to 67 days against a report naming no next action.
+
+    Both shapes carry it, and the never-fired one is the regression: its detail was assembled
+    from ``_intent_clause`` alone, so the producer the declaration already recorded in prose was
+    dropped on exactly the ten loudest lines.
+    """
+
+    def test_a_never_fired_line_carries_the_satisfier(self) -> None:
+        entry = replace(_entry("require_executed_repro"), satisfier="`t3 <overlay> repro waive`")
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.kind == KIND_NEVER_FIRED
+        assert finding.detail.endswith(f"{SATISFIER_MARKER}`t3 <overlay> repro waive`")
+
+    def test_an_unobservable_line_carries_it_too(self) -> None:
+        base = _entry("require_debt_delta", kind=ObservableKind.NONE, target="")
+        entry = replace(base, satisfier="a diff with no new suppression")
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.kind == KIND_UNOBSERVABLE
+        assert finding.detail.endswith(f"{SATISFIER_MARKER}a diff with no new suppression")
+
+    def test_a_blank_satisfier_leaves_no_dangling_clause(self) -> None:
+        entry = replace(_entry("require_executed_repro"), satisfier="   ")
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert SATISFIER_MARKER not in finding.detail
 
 
 class TestTheRenderedReport(TestCase):

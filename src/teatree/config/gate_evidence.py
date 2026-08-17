@@ -12,6 +12,15 @@ observable its being live would generate, so :mod:`teatree.core.factory.feature_
 can ask "has this ever fired?" against something other than the flag's own value. Reading the
 flag to decide whether the flag matters is the self-referential defect #3836 names.
 
+Naming the observable answers "has it fired?" and not "what would make it fire?", and the
+second question is the one an arming decision needs. Ten gates sat UNDECIDED for up to 67 days
+against a report that named no next action (#4375), so every entry also declares a
+``satisfier``: the command that writes the observable, or, for a refusal-only gate, the state
+that satisfies the refusal. It is a declared field rather than rationale prose because prose
+drifts silently — the first version of this registry sent operators at ``t3 <overlay> repro
+record``, which is not a command — and ``tests/conformance/test_gate_evidence_declared.py``
+resolves every ``t3 …`` citation in it against the live CLI registry.
+
 ``NONE`` is a real answer, not a placeholder: a refusal-only gate (``require_debt_delta``,
 ``require_merge_evidence``, ``require_work_group_batch``) blocks or passes and writes no
 artifact of its own, so nothing can ever prove it ran. That is worse than inert, and the
@@ -74,13 +83,17 @@ class GateEvidence:
     intent: ActivationIntent
     #: Why it is staged, or why nothing observable exists. Load-bearing for both.
     rationale: str
+    #: What would make this gate PASS — the command that writes the observable, or, for a
+    #: refusal-only gate, the state that satisfies the refusal. Required on every entry: it is
+    #: the input an arming decision needs, and a report without it names no next action.
+    satisfier: str
     #: Narrows a shared table to the rows THIS gate writes — two gates both write
     #: ``CriticVerdict``, and without the narrowing either one firing would clear both.
     filters: Mapping[str, object] = field(default_factory=dict)
 
 
 _REFUSAL_ONLY = "refusal-only gate: it blocks or passes and writes no artifact, so nothing can prove it ran"
-_UNDECIDED = "no recorded decision to hold it off; "
+_UNDECIDED = "no recorded decision to hold it off"
 
 #: Every governed gate that SHIPS OFF, and what would prove it is live. Totality over the
 #: default-OFF half of ``FEATURE_FLAGS | DURABLE_GATE_SETTINGS`` is pinned by
@@ -94,7 +107,11 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.ReproEvidence",
         shipped=dt.date(2026, 7, 6),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> repro record`",
+        rationale=_UNDECIDED,
+        satisfier=(
+            "`t3 <overlay> repro record-red` then `t3 <overlay> repro record-green` on the live worktree "
+            "(both need git for the ancestry proof), or a human-approved `t3 <overlay> repro waive`"
+        ),
     ),
     GateEvidence(
         setting="require_rubric_verification",
@@ -103,7 +120,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.Rubric",
         shipped=dt.date(2026, 6, 11),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> ticket rubric-set` / `rubric-grade`",
+        rationale=_UNDECIDED,
+        satisfier="`t3 <overlay> ticket rubric-set` to define the rubric, then `t3 <overlay> ticket rubric-grade`",
     ),
     GateEvidence(
         setting="require_review_context",
@@ -112,7 +130,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="review_context",
         shipped=dt.date(2026, 6, 3),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> lifecycle record-review-context`",
+        rationale=_UNDECIDED,
+        satisfier="`t3 <overlay> lifecycle record-review-context`",
     ),
     GateEvidence(
         setting="require_merge_quality_verdict",
@@ -121,7 +140,11 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.CriticVerdict",
         shipped=dt.date(2026, 7, 6),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}the merge critic writes the verdict",
+        rationale=_UNDECIDED,
+        satisfier=(
+            "self-arming — the gate dispatches the merge critic when no verdict covers the shipped head, "
+            "and the next merge attempt reads the verdict it recorded"
+        ),
         filters={"transition": "merge"},
     ),
     GateEvidence(
@@ -131,7 +154,11 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.CriticVerdict",
         shipped=dt.date(2026, 7, 7),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}the delivery critic writes the verdict",
+        rationale=_UNDECIDED,
+        satisfier=(
+            "self-arming — the delivery critic is dispatched on its own critic_reviewing phase and its "
+            "verdict is read at the next mark_delivered"
+        ),
         filters={"transition": "mark_delivered"},
     ),
     GateEvidence(
@@ -141,7 +168,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="anti_vacuity_attestation",
         shipped=dt.date(2026, 6, 5),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> lifecycle record-anti-vacuity`",
+        rationale=_UNDECIDED,
+        satisfier="`t3 <overlay> lifecycle record-anti-vacuity`",
     ),
     GateEvidence(
         setting="require_integration_review",
@@ -150,7 +178,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.ReviewEvidence",
         shipped=dt.date(2026, 7, 4),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> review record-evidence`",
+        rationale=_UNDECIDED,
+        satisfier="`t3 <overlay> review record-evidence`",
     ),
     GateEvidence(
         setting="require_debt_delta",
@@ -160,6 +189,10 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 6),
         intent=ActivationIntent.UNDECIDED,
         rationale=_REFUSAL_ONLY,
+        satisfier=(
+            "a ship diff introducing no net-new debt suppression, or an approved_debt waiver covering each "
+            "introduction on the plan manifest `t3 <overlay> ticket plan --adequacy-json` records"
+        ),
     ),
     GateEvidence(
         setting="require_merge_evidence",
@@ -169,6 +202,11 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 5),
         intent=ActivationIntent.UNDECIDED,
         rationale=f"{_REFUSAL_ONLY} — it CONSUMES MergeAudit, which the keystone writes either way",
+        satisfier=(
+            "a MergeAudit row carrying a real merged_sha — the merge keystone writes one before "
+            "reconcile_merged() in the same transaction, so a keystone merge already passes; an "
+            "out-of-band merge falls back to a live forge MERGED probe, and an erroring probe fails closed"
+        ),
     ),
     GateEvidence(
         setting="require_spec_coverage",
@@ -177,7 +215,8 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="spec_coverage",
         shipped=dt.date(2026, 6, 11),
         intent=ActivationIntent.UNDECIDED,
-        rationale=f"{_UNDECIDED}producer is `t3 <overlay> ticket record-spec-coverage`",
+        rationale=_UNDECIDED,
+        satisfier="`t3 <overlay> ticket record-spec-coverage`",
     ),
     GateEvidence(
         setting="require_plan_adequacy",
@@ -187,6 +226,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 5),
         intent=ActivationIntent.UNDECIDED,
         rationale="PlanArtifact rows are written and none carries an adequacy manifest — written, never read",
+        satisfier="`t3 <overlay> ticket plan` with a four-section --adequacy-json manifest and a --base-sha",
         filters={"adequacy__has_key": "design"},
     ),
     GateEvidence(
@@ -197,6 +237,11 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 8, 2),
         intent=ActivationIntent.UNDECIDED,
         rationale=_REFUSAL_ONLY,
+        satisfier=(
+            "every open merge request in the subject's work group is review-ready — a state over the "
+            "operator's global open-MR listing, so there is no artifact to record and every unreadable "
+            "axis answers NOT ready"
+        ),
     ),
     GateEvidence(
         setting="require_reviewed_state_for_review_request",
@@ -206,6 +251,11 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 4),
         intent=ActivationIntent.UNDECIDED,
         rationale=f"{_REFUSAL_ONLY} — the FSM state itself is the satisfier",
+        satisfier=(
+            "the ticket has passed REVIEWED and carries a cold-review artifact: a ReviewEvidence row, or a "
+            "ReviewVerdict bound to it by `t3 <overlay> review record --ticket-id` (a verdict recorded "
+            "without --ticket-id does NOT satisfy it)"
+        ),
     ),
     GateEvidence(
         setting="outer_loop_enabled",
@@ -215,6 +265,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 5),
         intent=ActivationIntent.STAGED,
         rationale="souliane/teatree#4189 — owner kept it 2026-08-04; unblocked by turning factory_score_enabled on",
+        satisfier="the outer-loop tick proposes an experiment once a FactoryScoreSnapshot baseline exists",
     ),
     GateEvidence(
         setting="factory_score_enabled",
@@ -224,6 +275,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 5),
         intent=ActivationIntent.STAGED,
         rationale="souliane/teatree#4189 — owner turned it on 2026-08-04; the shipped default still ships off",
+        satisfier="the outer-loop and directive-loop ticks each record a snapshot of the score they read",
     ),
     GateEvidence(
         setting="send_proxy_mode",
@@ -233,6 +285,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 7),
         intent=ActivationIntent.STAGED,
         rationale="souliane/teatree#117 — ships warn (audit-only) until an overlay seeds the allowlist from a soak",
+        satisfier="every outbound send through the send proxy writes an audit row, warn mode included",
     ),
     GateEvidence(
         setting="ci_eval_heal_autofix_enabled",
@@ -242,6 +295,7 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         shipped=dt.date(2026, 7, 19),
         intent=ActivationIntent.STAGED,
         rationale="souliane/teatree#3201 — autonomous CI mutation stays observe-only until deliberately armed",
+        satisfier="`t3 eval ci-heal open` opens a session for a red PR branch",
     ),
 )
 
@@ -287,6 +341,8 @@ def declaration_faults(registry: Mapping[str, GateEvidence] | None = None) -> tu
     for key, entry in sorted(entries.items()):
         if not entry.rationale.strip():
             faults.append(f"{key}: rationale is empty — say why it is staged, or why nothing is observable")
+        if not entry.satisfier.strip():
+            faults.append(f"{key}: satisfier is empty — name what would make this gate pass, or nobody can arm it")
         if entry.intent is ActivationIntent.STAGED and not _cites_a_decision(entry.rationale):
             faults.append(f"{key}: STAGED needs a decision reference (an issue ref or a dated owner decision)")
         faults.extend(_shape_faults(key, entry))
