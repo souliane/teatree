@@ -49,6 +49,11 @@ Exempt (never flagged):
 - a path carrying an elision — a glob (``src/teatree/loop/scanners/*``) or an
     ellipsis (``src/...py``).
 
+A dotted name resolves only through source. Python reads any bare directory as an
+implicit namespace package, so a retired module's leftover directory — even one
+holding nothing but ``__pycache__`` — would otherwise vouch for the citation that
+outlived it, silently and differently in every clone.
+
 The remedy for a fictional illustration is a placeholder namespace the walk does
 not recognise as teatree-shaped (``src/acme/...``), not a pragma: a name outside
 the tree cannot be misread as a work item in the first place.
@@ -195,12 +200,15 @@ def resolve_dotted(dotted: str) -> str | None:
     """
     parts = dotted.split(".")
     for depth in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:depth])
         try:
-            module = importlib.import_module(".".join(parts[:depth]))
+            module = importlib.import_module(prefix)
         except ImportError:
             continue
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             return f"{type(exc).__name__}: {exc}"
+        if getattr(module, "__file__", None) is None:
+            return f"{prefix} is a directory the tree carries, not a module it ships"
         return _walk_attributes(module, parts, depth)
     return f"no importable module in {dotted!r}"
 
