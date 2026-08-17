@@ -16,6 +16,7 @@ from django.test import TestCase
 
 from teatree.config.gate_evidence import GATE_EVIDENCE, ActivationIntent, GateEvidence, ObservableKind
 from teatree.core.factory.feature_inertness import (
+    DECISION_TRAILER,
     FAULT_BANNER,
     KIND_NEVER_FIRED,
     KIND_UNOBSERVABLE,
@@ -236,3 +237,27 @@ class TestTheRenderedReport(TestCase):
         out = StringIO()
         call_command("config_setting", "inert", stdout=out)
         assert out.getvalue().strip()
+
+
+class TestTheReportNamesHowToRecordTheDecision(TestCase):
+    """#4375: the faults are the decisions nobody made, and nothing said how to make one.
+
+    The satisfier says what would make a gate PASS. This says how the gate leaves UNDECIDED —
+    the state ten of them held for up to 67 days. Both exits are named, because naming only
+    the arming one turns "record it as deliberately off" into an undocumented source edit,
+    which is the friction that let the state be durable in the first place.
+    """
+
+    def test_a_report_carrying_a_fault_names_both_exits(self) -> None:
+        rendered = render_inertness_report((InertFeature("undecided_gate", KIND_NEVER_FIRED, "off …", is_fault=True),))
+        assert rendered.endswith(DECISION_TRAILER)
+        assert "config_setting set" in DECISION_TRAILER
+        assert "STAGED" in DECISION_TRAILER
+
+    def test_a_report_of_notes_alone_stays_quiet(self) -> None:
+        """A staged gate is doing what staging asked for, so there is no decision to prompt for."""
+        rendered = render_inertness_report((InertFeature("staged_gate", KIND_NEVER_FIRED, "off …", is_fault=False),))
+        assert DECISION_TRAILER not in rendered
+
+    def test_an_empty_report_stays_a_single_line(self) -> None:
+        assert DECISION_TRAILER not in render_inertness_report(())
