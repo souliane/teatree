@@ -14,6 +14,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.admission_governor import MachineSignal
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
@@ -32,7 +33,15 @@ def _scanner(**overrides: object) -> IntakeConcurrencyScanner:
     return IntakeConcurrencyScanner(**{**base, **overrides})
 
 
-def _scan(scanner: IntakeConcurrencyScanner, *, available_mib: int | None, cores: int = 8) -> list[ScanSignal]:
+def _scan(
+    scanner: IntakeConcurrencyScanner, *, available_mib: int | None, cores: int = 8, load1: float = 0.0
+) -> list[ScanSignal]:
+    """One window against a stated box.
+
+    Both readings are pinned: the ambient load average is a live property of the host,
+    so leaving it unstubbed would make every memory-shaped case below pass or fail on
+    whatever else the machine happens to be doing.
+    """
     with (
         patch(
             f"{_MODULE}.read_ram_headroom",
@@ -41,6 +50,10 @@ def _scan(scanner: IntakeConcurrencyScanner, *, available_mib: int | None, cores
             ),
         ),
         patch(f"{_MODULE}.available_cpu_count", return_value=cores),
+        patch(
+            f"{_MODULE}.read_machine_signal",
+            return_value=MachineSignal(cores=cores, load1=load1, ram_available_gb=None),
+        ),
     ):
         return list(scanner.scan())
 
@@ -75,6 +88,32 @@ class TestPersistsTheDecision(TestCase):
     def test_a_zero_per_agent_cost_writes_nothing(self) -> None:
         assert _scan(_scanner(per_agent_gb=0.0), available_mib=_idle_mib()) == []
         assert ResourcePressureMarker.load().adaptive_intake_concurrency is None
+
+
+class TestSuppliesTheWholeBoxReading(TestCase):
+    """The scanner's job is both signals, not memory alone (#4407).
+
+    The arithmetic is pinned in ``tests/teatree_core/intake/test_concurrency.py``; what
+    matters here is that the live load average actually REACHES it — a term the decision
+    accepts and nothing ever supplies is the same blindness with more code.
+    """
+
+    def test_the_same_memory_reading_sizes_lower_on_a_saturated_box(self) -> None:
+        _scan(_scanner(static_ceiling=3), available_mib=_idle_mib(), load1=53.0)
+        saturated = ResourcePressureMarker.load().adaptive_intake_concurrency
+
+        ResourcePressureMarker.objects.all().delete()
+        _scan(_scanner(static_ceiling=3), available_mib=_idle_mib(), load1=0.0)
+
+        assert saturated is not None
+        assert saturated < (ResourcePressureMarker.load().adaptive_intake_concurrency or 0)
+
+    def test_the_signal_names_the_load_it_decided_against(self) -> None:
+        signal = _scan(_scanner(), available_mib=_idle_mib(), load1=2.5)[0]
+
+        assert signal.payload["load1"] == pytest.approx(2.5)
+        assert signal.payload["cores"] == 8
+        assert "box load 2.5 on 8 cores" in signal.summary
 
 
 class TestNeverCrashesTheTick(TestCase):
