@@ -37,7 +37,9 @@ NEEDS_TRIAGE_LABEL = "needs-triage"
 #: creates its ticket in the same session, so a marker with no ticket after this
 #: window is a stranded claim (the #3100 dispatch-then-drop class), never a
 #: legitimately in-flight one. Terminal-ticket markers are released regardless
-#: of age — this grace guards only the ticket-gone branch.
+#: of age — this grace guards only the ticket-gone branch, and only its
+#: ``DISPATCHED`` half: a claim that already reached ``TICKET_CREATED`` is
+#: :meth:`ImplementedIssueMarkerManager._hollow`, provable with no grace at all.
 _DEFAULT_ORPHAN_GRACE = timedelta(hours=6)
 
 #: How long a non-terminal marker whose ticket EXISTS but has stopped moving may
@@ -46,8 +48,8 @@ _DEFAULT_ORPHAN_GRACE = timedelta(hours=6)
 #: state freezes short of terminal and the marker is non-terminal forever. Enough
 #: of those and ``issue_implementer_max_concurrent`` is permanently exhausted, the
 #: intake scanner is never built, and the factory reads enabled while implementing
-#: nothing. A live ticket queues or claims a task far more often than daily, so a
-#: whole day of no task activity AND no active task is a dead attempt, not a slow one.
+#: nothing. A live ticket completes or claims a task far more often than daily, so a
+#: whole day of no progress AND no active task is a dead attempt, not a slow one.
 _DEFAULT_STALL_GRACE = timedelta(hours=24)
 
 #: The stall grace above buys time for an attempt that might still be mid-flight — which
@@ -165,7 +167,8 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
 
         TERMINAL — its ticket reached a ``Ticket.marker_release_states()`` state → COMPLETED.
         LANDED — its ticket's PR merged → COMPLETED, on that fact alone and with no grace.
-        GONE — no ticket exists for its issue and it outlived ``orphan_grace`` → ABANDONED.
+        GONE — no ticket exists for its issue and either it is :meth:`_hollow` (proof
+        enough on its own) or it outlived ``orphan_grace`` → ABANDONED.
         CANCELLED — an operator cancelled the attempt → DECLINED, with no grace (#4105).
         STALLED — its ticket exists but died past a grace (:meth:`_ticket_stalled`) → ABANDONED.
 
@@ -216,7 +219,7 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
                 continue
             ticket = Ticket.objects.filter(issue_url=marker.issue_url).only("pk", "state").first()
             if ticket is None:
-                if marker.dispatched_at <= orphan_cutoff:
+                if self._hollow(marker) or marker.dispatched_at <= orphan_cutoff:
                     abandoned.append(marker.pk)
             elif ticket.state in terminal_states or self._pr_landed(ticket):
                 completed.append(marker.pk)
@@ -229,6 +232,18 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
             ):
                 abandoned.append(marker.pk)
         return MarkerReconcileResult(completed=tuple(completed), abandoned=tuple(abandoned), declined=tuple(declined))
+
+    @staticmethod
+    def _hollow(marker: "ImplementedIssueMarker") -> bool:
+        """True when this claim's ticket was created and has since been deleted (#4389).
+
+        ``TICKET_CREATED`` is written only alongside the ticket FK, so a marker in that
+        state whose issue has no ticket proves the dispatch got that far and its ticket
+        is gone. The orphan grace covers a dispatch that has not created its ticket YET,
+        which this class provably is not — waiting it out cost six hours of dead intake
+        budget for every crashed dispatch.
+        """
+        return marker.state == ImplementedIssueMarker.State.TICKET_CREATED
 
     @staticmethod
     def _pr_landed(ticket: "Ticket") -> bool:
@@ -258,28 +273,35 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         return task_model.objects.filter(ticket=ticket, status__in=task_model.Status.active()).exists()
 
     @staticmethod
-    def _ticket_tasks(ticket: "Ticket") -> "models.QuerySet[Task]":
-        """*ticket*'s tasks, reached through the app registry to dodge the import cycle."""
-        return cast("type[Task]", apps.get_model("core", "Task")).objects.filter(ticket=ticket)
+    def _last_progress_at(ticket: "Ticket") -> "datetime | None":
+        """When *ticket* last did something that was not a failure (#4389).
+
+        A FAILED task is the attempt NOT moving, so counting it as recency lets a crash
+        loop renew its own lease: fail, re-queue, fail again inside the grace, and the
+        release cutoff advances forever while nothing lands. One observed claim held a
+        slot for 12.5 hours across five failed coding tasks and produced no PR.
+
+        Read with ``Max``, not ``order_by("-created_at")``: ``Task.created_at`` is
+        nullable, and DESC ordering puts NULLs FIRST on PostgreSQL (last on SQLite), so
+        a single null-stamped row would make the ordering read back ``None`` and drop
+        the recency half entirely. ``Max`` ignores NULLs on every backend.
+        """
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        progressed = task_model.objects.filter(ticket=ticket).exclude(status=task_model.Status.FAILED)
+        return progressed.aggregate(latest=models.Max("created_at"))["latest"]
 
     @staticmethod
     def _ticket_stalled(ticket: "Ticket", marker: "ImplementedIssueMarker", *, cutoff: datetime) -> bool:
         """True when *ticket*'s attempt is DEAD rather than merely slow.
 
-        Dead means the newest thing that happened to it — its last task, or the claim
-        itself when it never got one — predates *cutoff*, with the caller having already
-        established that no task is still being worked. That keeps a long-running attempt
-        safe: a recent task holds the slot no matter how the last one ended.
-
-        The newest task is read with ``Max``, not ``order_by("-created_at")``:
-        ``Task.created_at`` is nullable, and DESC ordering puts NULLs FIRST on
-        PostgreSQL (last on SQLite), so a single null-stamped row would make the
-        ordering read back ``None`` and drop the recency half entirely. ``Max``
-        ignores NULLs on every backend.
+        Dead means the newest thing that MOVED it — its last non-failed task, or the
+        claim itself when it never got one — predates *cutoff*, with the caller having
+        already established that no task is still being worked. That keeps a long-running
+        attempt safe: recent progress holds the slot however slow the attempt is.
         """
-        tasks = ImplementedIssueMarkerManager._ticket_tasks(ticket)
-        last_task_at = tasks.aggregate(latest=models.Max("created_at"))["latest"]
-        return max(marker.dispatched_at, last_task_at or marker.dispatched_at) <= cutoff
+        last_progress_at = ImplementedIssueMarkerManager._last_progress_at(ticket)
+        return max(marker.dispatched_at, last_progress_at or marker.dispatched_at) <= cutoff
 
     def reconcile_stale(
         self,

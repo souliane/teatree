@@ -109,7 +109,7 @@ def _check_intake_budget_deadlock() -> bool:
             # it (#3992), and a doctor reading a different number than the gate is the
             # second opinion this whole surface exists to prevent.
             limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=overlay)
-            budget = read_intake_budget(overlay, limit)
+            budget = read_intake_budget(overlay, limit, static_limit=settings.issue_implementer_max_concurrent)
             if budget.deadlocked:
                 jammed.append(budget)
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run

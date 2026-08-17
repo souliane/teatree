@@ -19,7 +19,7 @@ from teatree.config import (
 )
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.intake.budget import read_intake_budget
+from teatree.core.intake.budget import read_intake_budget, release_deadlocked_holder
 from teatree.core.intake.concurrency import resolve_intake_concurrency
 from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
@@ -396,7 +396,14 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     # so it strands its slot and the budget gate reads false forever.
     ImplementedIssueMarker.objects.reconcile_stale(backend.name)
     limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=backend.name)
-    budget = read_intake_budget(backend.name, limit)
+    static_limit = settings.issue_implementer_max_concurrent
+    budget = read_intake_budget(backend.name, limit, static_limit=static_limit)
+    # #4389: a budget held entirely by claims going nowhere used to be detected, reported
+    # and then waited out — every holder's own grace, with no issue admissible meanwhile.
+    released = release_deadlocked_holder(budget)
+    if released is not None:
+        logger.warning("issue intake broke a deadlocked budget by releasing its longest-held slot: %s", released)
+        budget = read_intake_budget(backend.name, limit, static_limit=static_limit)
     can_claim = not budget.at_budget
     if not can_claim:
         # #3978: without this the tick returns None, does nothing and reports success —
