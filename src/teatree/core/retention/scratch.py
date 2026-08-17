@@ -21,13 +21,15 @@ ad-hoc clone the DB never learned about), and not protected by name. A guard
 that cannot be answered keeps the entry with its reason recorded, so a read
 failure is never laundered into a deletion — including when the open-file probe
 (:mod:`~teatree.core.retention.liveness`) cannot see what some pid holds, whether
-because its ``fd`` directory refuses the listing or because nothing inside it
-resolves: those are one knowledge state, not an empty process table, and either
-blinds the whole sweep rather than reporting nothing held.
+because its ``fd`` directory refuses the listing or because something inside it
+does not resolve: those are one knowledge state, not an empty process table, and
+either blinds the whole sweep rather than reporting nothing held.
 
 A blinded sweep REFUSES rather than reporting a clean no-op. ``reclaimed 0.00
 GB`` from a probe that could not look is indistinguishable from the same line on
-an already-clean box, which is how a lane ships armed but inoperative.
+an already-clean box, which is how a lane ships armed but inoperative. The ROOT's
+own listing is held to that same standard: an unreadable one refuses, while a
+merely absent one reports nothing resident because that is the truth about it.
 
 The process table and the temp root must describe the SAME namespace or the
 open-file guard is blind: ``root`` is what this venue writes through, and
@@ -294,20 +296,24 @@ class ScratchSweep:
 
     def plan(self) -> ScratchSweepPlan:
         """Classify every top-level entry under the root, size-ranked, touching nothing."""
+        children, unlistable = self._children()
         if self.retention_days <= 0:
-            return self._inert_plan(f"retention disabled (scratch_retention_days={self.retention_days})")
+            off = f"retention disabled (scratch_retention_days={self.retention_days})"
+            # The listing failure travels even here: the residency line is a claim
+            # about the root either way, and 0.00 GB from an unseen root is false.
+            return self._inert_plan(f"{off}; {unlistable}" if unlistable else off, children)
+        if unlistable:
+            return self._inert_plan(unlistable, children, refused=True)
         view = held_paths(self.proc_root)  # the only liveness probe; apply() never re-runs it (#4356)
         if not view.sighted:
-            return self._inert_plan(self._unsighted_gap(view), refused=True)
+            return self._inert_plan(self._unsighted_gap(view), children, refused=True)
         reserved = _worktree_paths()
         if reserved is None:
-            return self._inert_plan("registered-worktree read failed — nothing is removable", refused=True)
+            return self._inert_plan("registered-worktree read failed — nothing is removable", children, refused=True)
         cutoff = self._cutoff()
         held = frozenset(normalized_spelling(path) for path in view.held)
         normalized_reserved = frozenset(normalized_spelling(path) for path in reserved)
-        entries = [
-            self._classify(child, cutoff=cutoff, held=held, reserved=normalized_reserved) for child in self._children()
-        ]
+        entries = [self._classify(child, cutoff=cutoff, held=held, reserved=normalized_reserved) for child in children]
         return ScratchSweepPlan(
             root=str(self.root),
             retention_days=self.retention_days,
@@ -362,10 +368,10 @@ class ScratchSweep:
             reclaimed_bytes=reclaimed,
         )
 
-    def _inert_plan(self, gap: str, *, refused: bool = False) -> ScratchSweepPlan:
+    def _inert_plan(self, gap: str, children: list[Path], *, refused: bool = False) -> ScratchSweepPlan:
         """A plan that removes nothing but still reports what is resident and why."""
         entries = []
-        for child in self._children():
+        for child in children:
             stats = _tree_stats(child)
             entries.append(
                 ScratchEntry(
@@ -384,12 +390,22 @@ class ScratchSweep:
             refused=refused,
         )
 
-    def _children(self) -> list[Path]:
+    def _children(self) -> tuple[list[Path], str]:
+        """Top-level entries under the root, plus why the listing FAILED (``""`` when it did not).
+
+        ONLY ``ENOENT`` is an absence: a root that is genuinely not there genuinely
+        holds nothing. Every other errno is a root the sweep could not see INTO, and an
+        empty entry list from one of those renders as ``0.00 GB of 0.00 GB`` — the line
+        an already-clean box prints. So the failure travels with the listing and refuses
+        the sweep, exactly as an unsighted probe one read site down does.
+        """
         try:
-            return sorted(self.root.iterdir())
-        except OSError:
-            logger.warning("scratch sweep: root %s is not listable", self.root)
-            return []
+            return sorted(self.root.iterdir()), ""
+        except FileNotFoundError:
+            return [], ""
+        except OSError as error:
+            logger.warning("scratch sweep: root %s is not listable (%s)", self.root, error)
+            return [], f"sweep root {self.root} is not listable ({error.strerror or error}) — nothing is removable"
 
     def _cutoff(self) -> float:
         return self._clock().timestamp() - self.retention_days * _SECONDS_PER_DAY

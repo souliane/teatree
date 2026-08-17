@@ -9,8 +9,14 @@ by hand.
 
 This module is that surface, and deliberately the ONLY one: the per-tick report and the
 ``t3 doctor check`` alarm both read it, so the tick and the operator can never hold two
-opinions about whether intake is jammed. It reads state and decides nothing — the limit
-is passed in by the caller that resolved the overlay's settings.
+opinions about whether intake is jammed. The limit is passed in by the caller that
+resolved the overlay's settings — the reading decides nothing about how big the budget
+should be, only what is in it.
+
+:func:`release_deadlocked_holder` is the one ACTION drawn from that reading, and lives
+here for the same reason: "the budget is deadlocked" and "so free the longest-held slot"
+are one statement, and splitting them is how a verdict ends up computed and then only
+ever reported (#4389).
 """
 
 from dataclasses import dataclass
@@ -41,6 +47,7 @@ class HeldSlot:
     #: The state of the ticket for this issue, or ``""`` when no ticket exists.
     ticket_state: str
     progressing: bool
+    dispatched_at: datetime
 
     def __str__(self) -> str:
         return f"{self.issue_url} ({self.ticket_state or 'no ticket'})"
@@ -53,6 +60,10 @@ class IntakeBudget:
     overlay: str
     limit: int
     holders: tuple[HeldSlot, ...]
+    #: The operator's ``issue_implementer_max_concurrent``, when the caller knows it and
+    #: the resource loop's adaptive reading (#3992) is what ``limit`` actually became.
+    #: Reported so raising the setting and seeing nothing change is legible for once.
+    static_limit: int = 0
 
     @property
     def in_flight(self) -> int:
@@ -73,24 +84,61 @@ class IntakeBudget:
         """
         return bool(self.holders) and self.at_budget and not any(slot.progressing for slot in self.holders)
 
+    @property
+    def longest_held(self) -> HeldSlot | None:
+        """The slot claimed earliest — the one that has had the most time to show something."""
+        return min(self.holders, key=lambda slot: slot.dispatched_at, default=None)
+
     def report(self) -> str:
         """The one-line reason a tick claimed nothing, naming every slot and its holder."""
         progressing = sum(1 for slot in self.holders if slot.progressing)
         held = ", ".join(str(slot) for slot in self.holders) or "none"
+        override = (
+            f" (adaptive; issue_implementer_max_concurrent is {self.static_limit})"
+            if self.static_limit and self.static_limit != self.limit
+            else ""
+        )
         return (
             f"issue intake at budget for {self.overlay or 'every overlay'}: "
-            f"{self.in_flight}/{self.limit} slots held, {progressing} progressing — {held}"
+            f"{self.in_flight}/{self.limit} slots held{override}, {progressing} progressing — {held}"
         )
 
 
-def read_intake_budget(overlay: str, limit: int, *, settle: timedelta | None = None) -> IntakeBudget:
+def read_intake_budget(
+    overlay: str, limit: int, *, static_limit: int = 0, settle: timedelta | None = None
+) -> IntakeBudget:
     """Read *overlay*'s in-flight budget against *limit*. ``overlay=""`` spans every overlay."""
     cutoff = timezone.now() - (_DEFAULT_SETTLE if settle is None else settle)
     return IntakeBudget(
         overlay=overlay,
         limit=limit,
         holders=tuple(_held_slot(marker, cutoff=cutoff) for marker in _holders(overlay)),
+        static_limit=static_limit,
     )
+
+
+def release_deadlocked_holder(budget: IntakeBudget) -> HeldSlot | None:
+    """Free *budget*'s longest-held slot when it is deadlocked; return it, else ``None``.
+
+    The graces exist to protect an attempt that might still be alive. Under a deadlock
+    there is no such attempt — every holder is already past the settle window with no
+    active task and no open PR — so waiting the rest of them out buys nothing and costs
+    the whole budget, which is how intake sat at 3/3 for most of a day with 64 candidates
+    queued behind it.
+
+    Exactly one slot, so the remaining holders keep the grace their own class is entitled
+    to, and freeing one clears ``at_budget``: the next reading is no longer deadlocked, so
+    this cannot walk the budget down. ABANDONED, matching the give-up semantics
+    ``reconcile_stale`` releases a stalled claim with — an issue whose ticket still exists
+    is not re-admitted anyway (the intake decision table's work-exists rule holds it).
+    """
+    slot = budget.longest_held if budget.deadlocked else None
+    if slot is None:
+        return None
+    held = _holders(budget.overlay).filter(issue_url=slot.issue_url)
+    # The enum off the queryset's own model: this file reaches the ORM once, in ``_holders``.
+    held.update(state=held.model.State.ABANDONED)
+    return slot
 
 
 def reconcile_holder_pr_rows(overlay: str, *, read_state: "Callable[[str], str]") -> int:
@@ -135,6 +183,7 @@ def _held_slot(marker: "ImplementedIssueMarker", *, cutoff: datetime) -> HeldSlo
         issue_url=marker.issue_url,
         ticket_state=ticket.state if ticket is not None else "",
         progressing=_progressing(marker, ticket, cutoff=cutoff),
+        dispatched_at=marker.dispatched_at,
     )
 
 

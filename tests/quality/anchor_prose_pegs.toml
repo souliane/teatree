@@ -5,8 +5,15 @@
 # in file order. An ADDED digest blocks (the failure prints the new window, so a human reads
 # the sentence rather than pattern-matching a hash); a DROPPED digest blocks (remove the peg).
 # Two disjoint PRs never collide: git unions independent file keys; same-file contention
-# surfaces as a textual conflict. Scope is a LIMIT, not coverage -- tracked files outside
-# tests/ only, and a digest proves a sentence UNCHANGED, never TRUE.
+# surfaces as a textual conflict.
+#
+# SCOPE is the operative limit, not coverage: a +/-radius window around a LITERAL
+# occurrence, in tracked files outside tests/ that contain that literal. A digest proves a
+# sentence UNCHANGED, never TRUE. `coverage` pins how many bytes the windows actually reach
+# per file -- it is reserved like `radius` and never read as a peg list. A file that never
+# spells the anchor is invisible here at any radius; that shape is guarded instead by
+# tests/conformance/test_task_created_is_a_task_list_event.py, which derives the surface
+# from the router's registration. Full rationale + rejected alternatives: _anchor_prose.py.
 
 [TaskCreated]
 # 400, not 300: at 300 the `ONE gate rides this event: handle_...` sentence in hooks/CLAUDE.md
@@ -54,9 +61,9 @@ radius = 400
 # 6: PreToolUse/TaskCreated denies are honoured only at exit 2.
 # 7: the same exit-code contract, stated at the emit site.
 "hooks/scripts/hook_router.py" = [
-  "0237b938b83d6d46",
+  "29f75d2d6607a867",
   "743caac207b453c5",
-  "4be8b0761b5fc68a",
+  "ea376e6c61b7ad2a",
   "df0584b2e1507beb",
   "31f41634023b3999",
   "379359cbc3bdb8c3",
@@ -72,3 +79,22 @@ radius = 400
 "skills/checking/SKILL.md" = ["876e9c70a73e280c"]
 # The transcript attachment schema listing hookEvent values.
 "src/teatree/eval/session_transcript.py" = ["707f3e9b837e7517"]
+
+# How many bytes the windows above actually reach, per file. The one number that makes
+# the instrument's real scope re-affirmable instead of assumed: "doc surfaces" read as
+# coverage for five residuals, while the reach of the largest pegged file is under a tenth
+# of it. Only the numerator is pinned -- it moves in lockstep with the digests, whereas the
+# file TOTAL would red on every unrelated edit.
+[TaskCreated.coverage]
+"BLUEPRINT.md" = 811
+"docs/blueprint/configuration.md" = 1622
+"docs/blueprint/factory-architecture.md" = 811
+"docs/claude-code-internals.md" = 3627
+"hooks/CLAUDE.md" = 6193
+"hooks/hooks.json" = 1028
+"hooks/scripts/dispatch_admission_gate.py" = 811
+"hooks/scripts/hook_router.py" = 7951
+"hooks/scripts/run-hook.sh" = 811
+"hooks/scripts/task_created_deny.py" = 3924
+"skills/checking/SKILL.md" = 811
+"src/teatree/eval/session_transcript.py" = 811

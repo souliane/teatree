@@ -6,9 +6,11 @@ are in ``test_scratch.py``; this file pins the probe's three-valued answer direc
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
+from teatree.core.retention import liveness
 from teatree.core.retention.liveness import ProcessTableView, held_paths, normalized_spelling
 from tests._procfs import answering_pid
 
@@ -153,6 +155,107 @@ class FdPermissionLadderTests(SimpleTestCase):
 
         assert view.sighted is True
         assert view.unknowable_pids == 0
+
+
+class CwdResolutionTests(SimpleTestCase):
+    """``cwd`` is ``ptrace``-gated like ``fd``, so a refusal there is blindness, not absence.
+
+    The branch is not hypothetical: of 259 pids on the measured box, ``systemd --user``
+    presents a READABLE ``fd`` directory and ``EACCES`` on ``cwd``. Scoring that as the
+    benign exited-pid case would flip the whole probe to sighted and drop a live cwd
+    from the held set.
+    """
+
+    def setUp(self) -> None:
+        self.proc = Path(self.enterContext(TemporaryDirectory()))
+        self.elsewhere = Path(self.enterContext(TemporaryDirectory()))
+        self.pid = self.proc / "101"
+        (self.pid / "fd").mkdir(parents=True)
+        (self.pid / "fd" / "3").symlink_to(self.elsewhere / "open.db")
+
+    def test_a_resolvable_cwd_answers_and_contributes_its_target(self) -> None:
+        (self.pid / "cwd").symlink_to(self.elsewhere)
+
+        view = held_paths(self.proc)
+
+        assert view.sighted is True
+        assert str(self.elsewhere) in view.held
+
+    def test_an_unresolvable_cwd_blinds_the_pid_its_fd_already_answered_for(self) -> None:
+        # A regular file where the magic symlink belongs: readlink raises EINVAL,
+        # standing in for the EACCES a live `systemd --user` presents.
+        (self.pid / "cwd").write_bytes(b"")
+
+        view = held_paths(self.proc)
+
+        assert view.sighted is False
+        assert view.unknowable_pids == 1
+        assert "not readable by this uid" in view.unknowable_reason
+
+    def test_an_absent_cwd_is_the_exited_pid_case_and_stays_benign(self) -> None:
+        view = held_paths(self.proc)
+
+        assert view.sighted is True
+        assert view.unknowable_pids == 0
+
+
+class PartialResolutionTests(SimpleTestCase):
+    """A source that resolves only SOME of its entries has not answered for its pid.
+
+    ``_lstat_all`` already draws this line one level up in the sweep: only ``ENOENT``
+    is an absence, every other errno is a read that did not complete. Dropping the
+    unresolved entry and scoring the source ANSWERED is the same conflation, one
+    level in — the pid's remaining holders are then invisible to a probe that
+    believes it saw everything.
+    """
+
+    def setUp(self) -> None:
+        self.proc = Path(self.enterContext(TemporaryDirectory()))
+        self.elsewhere = Path(self.enterContext(TemporaryDirectory()))
+        self.resolvable = self.elsewhere / "open.db"
+        self.fd = self.proc / "101" / "fd"
+        self.fd.mkdir(parents=True)
+        (self.fd / "3").symlink_to(self.resolvable)
+
+    def test_every_entry_resolving_is_the_answering_control(self) -> None:
+        second = self.elsewhere / "also-open.db"
+        (self.fd / "4").symlink_to(second)
+
+        view = held_paths(self.proc)
+
+        assert view.sighted is True
+        assert view.held == frozenset({str(self.resolvable), str(second)})
+
+    def test_one_unresolvable_sibling_blinds_the_pid_the_others_answered_for(self) -> None:
+        (self.fd / "4").write_bytes(b"")  # readlink raises EINVAL, which is not an absence
+
+        view = held_paths(self.proc)
+
+        assert view.sighted is False
+        assert view.unknowable_pids == 1
+
+    def test_what_did_resolve_is_still_reported_as_held(self) -> None:
+        (self.fd / "4").write_bytes(b"")
+
+        # A partial read is unknowable, but the entries it DID resolve name real
+        # holders — discarding them would shrink the held set on the blind path.
+        assert str(self.resolvable) in held_paths(self.proc).held
+
+    def test_a_sibling_that_closed_mid_walk_is_an_absence_not_a_blind_spot(self) -> None:
+        (self.fd / "4").symlink_to(self.elsewhere / "raced.db")
+        real_readlink = liveness.Path.readlink
+        closed = FileNotFoundError("the fd closed between the listing and the readlink")
+
+        def raced(path: Path) -> Path:
+            if path.name == "4":
+                raise closed
+            return real_readlink(path)
+
+        with patch.object(liveness.Path, "readlink", raced):
+            view = held_paths(self.proc)
+
+        assert view.sighted is True
+        assert view.held == frozenset({str(self.resolvable)})
 
 
 class NormalizedSpellingTests(SimpleTestCase):

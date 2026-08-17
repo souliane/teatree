@@ -23,7 +23,7 @@ import pytest
 import hooks.scripts.banned_terms.gate as banned_terms_gate
 import hooks.scripts.deny_circuit_breaker as dcb
 import hooks.scripts.hook_router as router
-from teatree.hooks import banned_terms_scanner, quote_scanner
+from teatree.hooks import banned_terms_scanner, quote_gate_messages, quote_scanner
 
 # An AWS-key-shaped literal that matches ``publish_surface._SECRET_PATTERNS`` while
 # spelling out that it is a fixture. The detector keys on shape, so no real
@@ -54,16 +54,26 @@ _LEAK_DENY_MESSAGES: dict[str, str] = {
     "banned_terms_scanner.marker_deny_message": (
         banned_terms_scanner.marker_deny_message(banned_terms_scanner.UNRESOLVABLE_BODY_MARKER) or ""
     ),
-    "quote_scanner.format_block_message": quote_scanner.format_block_message(_high_quote_result()),
-    "quote_scanner.format_dispatch_block_message": quote_scanner.format_dispatch_block_message(_high_quote_result()),
+    "quote_gate_messages.format_block_message": quote_gate_messages.format_block_message(_high_quote_result()),
+    "quote_gate_messages.format_dispatch_block_message": (
+        quote_gate_messages.format_dispatch_block_message(_high_quote_result())
+    ),
+    "quote_gate_messages.format_task_entry_block_message": (
+        quote_gate_messages.format_task_entry_block_message(_high_quote_result())
+    ),
     "gate._BANNED_TERMS_CREDENTIAL_DENY": banned_terms_gate._BANNED_TERMS_CREDENTIAL_DENY,
 }
 
 # Sources in a leak module that render a WARNING, not a deny — they never reach the
 # breaker, so grantability does not apply to them.
-_WARN_ONLY_SOURCES: frozenset[str] = frozenset({"quote_scanner.format_warn_message"})
+_WARN_ONLY_SOURCES: frozenset[str] = frozenset({"quote_gate_messages.format_warn_message"})
 
-_LEAK_MODULES: tuple[ModuleType, ...] = (banned_terms_scanner, quote_scanner, banned_terms_gate)
+_LEAK_MODULES: tuple[ModuleType, ...] = (
+    banned_terms_scanner,
+    quote_scanner,
+    quote_gate_messages,
+    banned_terms_gate,
+)
 
 
 def _renders_a_message(name: str, value: object) -> bool:

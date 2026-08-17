@@ -369,7 +369,7 @@ class ScratchRootResolutionTests(ScratchSweepTestCase):
 class ScratchSweepDegradedReadTests(ScratchSweepTestCase):
     """Every read that can fail keeps the entry rather than removing it."""
 
-    def test_an_unlistable_root_reports_no_entries_rather_than_raising(self) -> None:
+    def test_a_missing_root_reports_no_entries_rather_than_raising(self) -> None:
         missing = ScratchSweep(root=self.root / "absent", retention_days=3, proc_root=self.proc)
 
         assert missing.plan().entries == ()
@@ -1230,6 +1230,77 @@ class UnsightedProbeRefusesTests(ScratchSweepTestCase):
 
         assert plan.refused is False
         assert not self.victim.exists()
+
+
+class UnlistableRootRefusesTests(ScratchSweepTestCase):
+    """A root the sweep cannot see INTO refuses; one that is merely absent does not.
+
+    ``0.00 GB of 0.00 GB across 0/0 entry(ies)`` with ``refused=False`` and an empty
+    ``probe_gap`` is byte-identical to what an already-clean box prints, so an operator
+    — or the resource ladder consuming the payload — reads a root nothing ever looked
+    into as swept clean.
+    """
+
+    def _sweep_of(self, root: Path, *, retention_days: int = 3) -> ScratchSweep:
+        return ScratchSweep(root=root, retention_days=retention_days, proc_root=self.proc)
+
+    def _not_a_directory(self) -> Path:
+        # ENOTDIR rather than EACCES, so the arm still denies the read under the
+        # uid-0 CI image where chmod(0o000) does not.
+        root = self.elsewhere / "not-a-directory"
+        root.write_bytes(b"")
+        return root
+
+    def test_a_root_that_cannot_be_listed_refuses_rather_than_reporting_a_clean_sweep(self) -> None:
+        root = self._not_a_directory()
+
+        plan = self._sweep_of(root).plan()
+
+        assert plan.refused is True
+        assert "not listable" in plan.probe_gap
+        assert str(root) in plan.probe_gap
+
+    def test_the_summary_says_refused_rather_than_reclaimed(self) -> None:
+        plan = self._sweep_of(self._not_a_directory()).apply()
+
+        assert "REFUSED" in plan.summary
+        assert "reclaimed 0.00 GB of" not in plan.summary
+        assert plan.reclaimed_bytes == 0
+
+    @skip_if_root
+    def test_a_root_denied_by_permissions_refuses_too(self) -> None:
+        """The measured reproduction: the sweep root itself at 0o000, with content inside."""
+        root = self.elsewhere / "denied"
+        root.mkdir()
+        _scratch(root, "t3db.sqlite3", days=9, size=2048)
+        root.chmod(0o000)
+        self.addCleanup(root.chmod, 0o755)
+
+        plan = self._sweep_of(root).plan()
+
+        assert plan.refused is True
+        assert "not listable" in plan.probe_gap
+
+    def test_a_missing_root_is_an_absence_rather_than_a_blind_spot(self) -> None:
+        plan = self._sweep_of(self.root / "absent").plan()
+
+        assert plan.refused is False
+        assert plan.probe_gap == ""
+
+    def test_the_disabled_lane_still_names_the_listing_failure(self) -> None:
+        plan = self._sweep_of(self._not_a_directory(), retention_days=0).plan()
+
+        assert plan.refused is False
+        assert "retention disabled" in plan.probe_gap
+        assert "not listable" in plan.probe_gap
+
+    def test_a_listable_root_still_reclaims_the_positive_control(self) -> None:
+        victim = _scratch(self.root, "t3db.sqlite3", days=9, size=2048)
+
+        plan = self._sweep_of(self.root).apply()
+
+        assert plan.refused is False
+        assert not victim.exists()
 
 
 class SymlinkedRootSpellingTests(ScratchSweepTestCase):
