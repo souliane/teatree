@@ -256,7 +256,10 @@ class TestOnTaskCreateGate:
         assert payload["continue"] is False
         assert "stopReason" in payload
         assert "permissionDecision" not in payload
-        assert "pre-dispatch quote-scanner" in payload["stopReason"]
+        # The arm's OWN surface: this event has one producer, so a "pre-dispatch"
+        # reason would name a seam the entry never crossed (#4381).
+        assert "task-entry quote-scanner" in payload["stopReason"]
+        assert "pre-dispatch" not in payload["stopReason"]
         assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
     def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:

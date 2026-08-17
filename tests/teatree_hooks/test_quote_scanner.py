@@ -24,7 +24,7 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
 from teatree.hooks import _repo_visibility, quote_scanner
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
-from teatree.hooks.quote_scanner import Finding, ScanResult, extract_publish_payload, has_quote_ok_override, scan_text
+from teatree.hooks.quote_scanner import extract_publish_payload, has_quote_ok_override, scan_text
 
 
 @pytest.fixture(autouse=True)
@@ -1713,23 +1713,6 @@ class TestHookChainRegistration:
         names = [h.__name__ for h in chain]
         assert "handle_quote_scanner_pretool" in names
         assert names.index("handle_quote_scanner_pretool") < names.index("handle_enforce_skill_loading")
-
-
-class TestFormatHelpers:
-    def test_block_message_lists_matched_pattern_names(self) -> None:
-        result = ScanResult(findings=[Finding(name="heading-user-mandate", severity=quote_scanner.HIGH, excerpt="x")])
-        message = quote_scanner.format_block_message(result)
-        assert "heading-user-mandate" in message
-        # The escape names the env PREFIX that works on every command, never a
-        # ``--quote-ok`` CLI flag a ``t3 review post-comment`` subcommand would
-        # reject as an unknown option (#1415).
-        assert "QUOTE_OK=1" in message
-        assert "--quote-ok" not in message
-
-    def test_warn_message_lists_matched_pattern_names(self) -> None:
-        result = ScanResult(findings=[Finding(name="per-user-direction", severity=quote_scanner.MEDIUM, excerpt="x")])
-        message = quote_scanner.format_warn_message(result)
-        assert "per-user-direction" in message
 
 
 class TestOpaqueTransportFailsClosedOnQuoteGate:

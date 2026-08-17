@@ -25,16 +25,31 @@ name that has died fails the build until a human reads the claim.
 
 LEDGER — the doc-surface prose is content-addressed in
 ``tests/quality/anchor_prose_pegs.toml`` (the gate is
-``tests/quality/test_anchor_prose_pegs.py``). Its scope is a LIMIT, not coverage:
-it forces a human to re-read a CHANGED sentence; it does not verify the sentence
-is true, and it does not cover test-file prose.
+``tests/quality/test_anchor_prose_pegs.py``). Its scope is a LIMIT, not coverage,
+and the limit is a ±400-char window around a LITERAL occurrence — 8.1% of
+``hooks/CLAUDE.md`` when last measured, pinned per file by its ``coverage``
+table, which is where to read the live number rather than this sentence. It
+forces a human to re-read a CHANGED sentence; it does not verify the sentence is
+true, it does not cover test-file prose, and it cannot see a file that never
+spells the event at all.
+
+DENY TEXT — that last blind spot is what the fifth residual lived in (#4381): the
+renderer of a handler's operator-visible refusal contains no occurrence of the
+event, so no radius reaches it. :class:`TestEveryRegisteredHandlersDenyTextIsPinned`
+drives each registered handler's DENY path and content-addresses what the caller
+is actually shown — derived from the registration, so it needs no literal.
 """
 
+import contextlib
+import dataclasses
+import hashlib
 import io
 import json
+import os
 import re
+import sqlite3
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from itertools import product
 from pathlib import Path
@@ -405,6 +420,153 @@ class TestTheAnchorSpanHelper:
 
     def test_an_identifier_inside_a_window_is_reported(self) -> None:
         assert _handler_names_near_the_anchor(f"{_ANCHOR} handle_thing") == {"handle_thing"}
+
+
+@dataclasses.dataclass(frozen=True)
+class DenyDriver:
+    """What it takes to drive ONE registered handler down its DENY path.
+
+    Held per handler NAME so the totality test below derives its own obligation from
+    the live registration rather than from a hand-written list of modules.
+    """
+
+    #: DB-home flags seeded into a hermetic config store — the REAL resolution path,
+    #: not a patch of the handler's private predicate.
+    settings: Mapping[str, bool]
+    #: The event payload that must trip the gate. Synthetic user-voice SHAPES only.
+    payload: Mapping[str, str]
+
+
+_DENY_DRIVERS: Final[dict[str, DenyDriver]] = {
+    "handle_dispatch_prompt_quote_scanner_on_task_create": DenyDriver(
+        settings={"dispatch_quote_gate_on_task_create_enabled": True},
+        payload={
+            "session_id": "sess-deny-driver",
+            "task_id": "task-deny-1",
+            "task_subject": "## User ask (verbatim, 2026-05-20)",
+            "task_description": "Implement the export endpoint and wire it to the dashboard.",
+        },
+    ),
+}
+
+#: The operator-visible deny text each driver produces, content-addressed. A digest
+#: cannot tell TRUE from FALSE; its job is to force a human to READ the reason when it
+#: moves. Unlike the prose ledger it needs no literal anchor in the file that renders
+#: the text, which is why it reaches the shared renderer the ledger is blind to.
+_DENY_TEXT_PEGS: Final[dict[str, str]] = {
+    "handle_dispatch_prompt_quote_scanner_on_task_create": "92b49cdd9eaa8351",
+}
+
+#: Phrases asserting the premise this event's correction retired. The peg above is the
+#: guard; this names the exact shape that fired five times, so a reintroduction fails
+#: with its reason rather than with a moved hash.
+_RETIRED_PREMISE_PHRASES: Final[tuple[str, ...]] = (
+    "pre-dispatch",
+    "Agent/Task prompt",
+    "before dispatching",
+    "sub-agent",
+)
+
+
+@contextlib.contextmanager
+def _gate_live(driver: DenyDriver, tmp_path: Path) -> Iterator[None]:
+    """Seed *driver*'s flags into a hermetic config store, ledger pinned under *tmp_path*."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            [(key, json.dumps(value)) for key, value in driver.settings.items()],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_DATA_DIR": str(tmp_path)}):
+        yield
+
+
+def _drive_the_deny(name: str, driver: DenyDriver, tmp_path: Path) -> tuple[bool | None, str, str]:
+    """Run one registered handler under *driver*; return ``(verdict, stdout, stderr)``."""
+    handler = next(h for h in router._HANDLERS[_ANCHOR] if h.__name__ == name)
+    out, err = io.StringIO(), io.StringIO()
+    with _gate_live(driver, tmp_path), redirect_stdout(out), redirect_stderr(err):
+        verdict = handler(dict(driver.payload))
+    return verdict, out.getvalue(), err.getvalue()
+
+
+def _surfaced_deny_text(stdout: str, stderr: str) -> str:
+    """What the harness would actually show the caller for this deny."""
+    from hooks.scripts.task_created_deny import (  # noqa: PLC0415 — deferred: keep the module top free of the gate under test
+        DENY_EXIT_CODE,
+        harness_surfaced_deny_text,
+    )
+
+    payload = json.loads(stdout) if stdout.strip() else {}
+    return harness_surfaced_deny_text(payload, stderr, exit_code=DENY_EXIT_CODE)
+
+
+class TestEveryRegisteredHandlersDenyTextIsPinned:
+    """The literal-free half: the surface is DERIVED from the registration (#4381).
+
+    The prose ledger keys on a LITERAL occurrence of the anchor, so a file that never
+    spells it is invisible to it however wide the radius grows — and the renderer that
+    produced the fifth residual is such a file. What is reachable without a literal is
+    the OUTPUT of the handlers the router registers, so that is what is pinned here.
+    """
+
+    def test_every_registered_handler_has_a_deny_driver(self) -> None:
+        # The derivation seam: a handler added tomorrow fails the build until a human
+        # supplies the driver that makes its deny text observable.
+        assert set(_DENY_DRIVERS) == set(_REGISTERED_CHAIN), (
+            "the TaskCreated chain and the deny-driver set disagree. Every registered handler "
+            "needs a driver, or its operator-visible deny text is pinned by nothing. "
+            f"drivers={sorted(_DENY_DRIVERS)} registered={sorted(_REGISTERED_CHAIN)}"
+        )
+
+    def test_every_driver_has_a_pegged_deny_text(self) -> None:
+        assert set(_DENY_TEXT_PEGS) == set(_DENY_DRIVERS)
+
+    @pytest.mark.parametrize("name", sorted(_DENY_DRIVERS))
+    def test_the_deny_path_actually_denies(self, name: str, tmp_path: Path) -> None:
+        # Anti-vacuity: emit_task_create_deny fails OPEN on a reason that would not
+        # reach the caller, so "stdout is non-empty" alone reads green on a broken deny.
+        verdict, out, err = _drive_the_deny(name, _DENY_DRIVERS[name], tmp_path)
+        assert verdict is True, f"{name} did not deny its driver payload"
+        assert _surfaced_deny_text(out, err), f"{name} denied with a reason the caller never sees"
+
+    @pytest.mark.parametrize("name", sorted(_DENY_DRIVERS))
+    def test_the_driver_is_what_makes_the_deny_happen(self, name: str, tmp_path: Path) -> None:
+        # Control: strip the settings and the same payload is inert, so the pins above
+        # are decided by the driver rather than by an ambient default.
+        inert = dataclasses.replace(_DENY_DRIVERS[name], settings={})
+        verdict, out, err = _drive_the_deny(name, inert, tmp_path)
+        assert verdict is not True
+        assert _surfaced_deny_text(out, err) == ""
+
+    @pytest.mark.parametrize("name", sorted(_DENY_DRIVERS))
+    def test_the_operator_visible_deny_text_is_pegged(self, name: str, tmp_path: Path) -> None:
+        _verdict, out, err = _drive_the_deny(name, _DENY_DRIVERS[name], tmp_path)
+        text = _surfaced_deny_text(out, err)
+        assert hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] == _DENY_TEXT_PEGS[name], (
+            f"{name}'s deny text moved. READ it below, confirm it describes the surface this "
+            f"handler actually governs, then re-peg _DENY_TEXT_PEGS.\n{text}\n"
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "phrase"),
+        [(name, phrase) for name in sorted(_DENY_DRIVERS) for phrase in _RETIRED_PREMISE_PHRASES],
+    )
+    def test_no_deny_text_asserts_the_retired_dispatch_premise(self, name: str, phrase: str, tmp_path: Path) -> None:
+        _verdict, out, err = _drive_the_deny(name, _DENY_DRIVERS[name], tmp_path)
+        text = _surfaced_deny_text(out, err)
+        assert phrase not in text, (
+            f"{name} tells the operator their task-list entry was a {phrase!r}. This event has ONE "
+            f"producer, so the remedy that reason names does not exist here.\n{text}\n"
+        )
 
 
 class TestTheRetiredSymbolsAreGone:
