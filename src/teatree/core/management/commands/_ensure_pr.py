@@ -30,7 +30,7 @@ from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
-from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
@@ -280,6 +280,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         section_defaults=overlay.metadata.get_description_section_defaults(),
     )
     warn_if_open_questions_missing(description)
+    warn_if_owner_ratification_unbacked(description)
     warn_if_precheck_incomplete(description)
 
     remote = git.remote_url(repo=repo_path)

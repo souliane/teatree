@@ -365,7 +365,7 @@ Any open question (solved or not) and any assumption that is not 100% explicit f
 
 Format: one bullet per item, each tagged with a status:
 
-- `decided-by-user` — was an open question; the user made the call. State the decision.
+- `decided-by-user` — was an open question; the user made the call. State the decision, and cite the record that carries it. An agent decision written up as owner ratification is worse than no attribution: a later reader auditing why the shipped change contradicts its issue trusts the trailer and never re-derives the evidence. When no such record exists the status is `assumed`.
 - `assumed` — an assumption the implementer made because the spec was silent. State what was assumed and why.
 - `open` — still unresolved. State the question and the chosen default (if any).
 
@@ -379,6 +379,8 @@ Open questions & assumptions:
 When there is genuinely nothing to surface, the section carries a single `- none` bullet — the section is never silently omitted, so a reviewer can tell "nothing to flag" apart from "the author forgot".
 
 `t3 <overlay> pr create` WARNS (exit 0, never blocks) when the PR body has no `Open questions` heading, with a hint to add the section. The warn is the prompt, not a gate — a reliable bad/legit separation is impossible (the section can be worded many ways), so it warns per the "gate without a reliable heuristic warns" rule. The detector + warn live in `teatree.core.gates.open_questions_gate` and fire from both PR-creation chokepoints (`ShipExecutor._build_pr_spec` and the orphan-branch `create_or_defer_pr`).
+
+A second warn from the same module covers the `decided-by-user` STATUS: an entry citing a `PlanArtifact` recorded by the maker/loop side (the shared `is_non_reviewer_role` predicate), or citing a pk no row carries, is reported as an attribution the cited record does not back. Only the citation is checked, so an entry that cites nothing is silent — the warn tells you the receipt is wrong, never that you needed one.
 
 ### 5b. Multi-Phase PRs Must Name Every Phase in the Title (Non-Negotiable)
 

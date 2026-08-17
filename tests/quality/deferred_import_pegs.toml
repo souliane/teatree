@@ -50,6 +50,11 @@
 "src/teatree/core/gates/fix_dod_gate.py" = 1
 "src/teatree/core/gates/live_post_gate.py" = 1
 "src/teatree/core/gates/local_stack_gate.py" = 3
+# 2: the owner-ratification citation check needs `PlanArtifact` (an ORM read) and
+# `reviewer_identity.is_non_reviewer_role` (imports the model module), both of which
+# must resolve after the app registry is ready, so `_citations_the_owner_did_not_make`
+# keeps both deferred rather than moving one to module scope and leaving the other.
+"src/teatree/core/gates/open_questions_gate.py" = 2
 "src/teatree/core/gates/owned_repo_guard.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1

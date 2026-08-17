@@ -9,7 +9,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PullRequestSp
 from teatree.core.forge_push import push_branch
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
-from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
@@ -542,6 +542,7 @@ class ShipExecutor(RunnerBase):
             patterns=get_overlay_publish_gates(),
         )
         warn_if_open_questions_missing(description)
+        warn_if_owner_ratification_unbacked(description)
         warn_if_precheck_incomplete(description)
         assignee = resolve_pr_assignee(host, repo=repo_path)
         return PullRequestSpec(

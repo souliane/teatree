@@ -34,7 +34,13 @@ _RENAMES = (("engaged", "present"), ("low-power", "low-token"), ("unattended", "
 #: byte-identical ``entries`` mask and differed ONLY in the three posture booleans this
 #: migration drops, so once those columns are gone they are the same mode and the merge is
 #: a true dedupe. A successor that re-admits ``tickets``/``ship``/``dispatch`` would take
-#: new intake under a hold the operator set precisely to stop it.
+#: new intake under a hold the operator set precisely to stop it — which is what dropping
+#: the row leaves behind on a box with no ``off`` to merge into (an operator renamed it,
+#: or deleted it while it was unreferenced), because every repointed reference then names
+#: a preset no row carries and ``preset_resolution`` fails OPEN to base config. So a
+#: REFERENCED row with no successor is RENAMED onto it, exactly as ``_RENAMES`` does; an
+#: unreferenced one is still dropped, which is the fresh-install shape — ``0001`` seeds
+#: ``offline`` and no ``off``, and the idempotent seed is what supplies the shipped mask.
 _MERGED = (("offline", "off"),)
 _DROPPED = ("heads-down",)
 
@@ -102,7 +108,16 @@ def _rename_modes(apps, schema_editor) -> None:
             row.save(update_fields=["name"])
         renamed[old] = new
     for old, new in _MERGED:
-        mode.objects.filter(name=old).delete()
+        row = mode.objects.filter(name=old).first()
+        if row is not None:
+            if mode.objects.filter(name=new).exists() or not _is_referenced(apps, old):
+                row.delete()
+            else:
+                # Something points AT this row and there is nothing to merge it into, so
+                # the repoint below would name an absent preset and fail OPEN to base
+                # config — full intake under the hold. Carry the row across instead.
+                row.name = new
+                row.save(update_fields=["name"])
         renamed[old] = new
     mode.objects.filter(name__in=_DROPPED).delete()
 
@@ -116,6 +131,15 @@ def _rename_modes(apps, schema_editor) -> None:
         row.save(update_fields=["entries"])
 
     _repoint_references(apps, renamed)
+
+
+def _is_referenced(apps, name: str) -> bool:
+    """Whether any stored row names *name* — a slot, the manual override, or a setting."""
+    return (
+        apps.get_model("core", "ModeScheduleSlot").objects.filter(preset_name=name).exists()
+        or apps.get_model("core", "ModeOverride").objects.filter(preset_name=name).exists()
+        or apps.get_model("core", "ConfigSetting").objects.filter(key__in=_MODE_VALUED_SETTINGS, value=name).exists()
+    )
 
 
 def _repoint_references(apps, renamed: dict[str, str]) -> None:
