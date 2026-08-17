@@ -19,7 +19,7 @@ from teatree.core.admission_governor import read_merge_signal
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
-from teatree.core.models import PullRequest, SweepSkipStreak, Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, PullRequest, SweepSkipStreak, Task, Ticket
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
@@ -28,7 +28,7 @@ from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanner_factories import _issue_intake_scanner_for
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
-from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
+from tests.factories import ImplementedIssueMarkerFactory, TaskFactory, TicketFactory
 
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
@@ -285,6 +285,48 @@ class IssueIntakeGateTests(TestCase):
             jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, _backend())
         assert [job.scanner.name for job in jobs] == ["issue_intake"]
         assert jobs[0].overlay == "acme"
+
+
+class IntakeDeadlockIsBrokenTests(TestCase):
+    """The tick ACTS on a deadlocked budget instead of waiting out every grace (#4389).
+
+    Observed: 3/3 slots held, ``deadlocked=True``, 64 candidates waiting, 2 claims in
+    24 hours. The verdict existed and only a doctor check read it, so the condition was
+    detected, reported, and waited out.
+    """
+
+    def _stuck(self, number: int, *, hours: float) -> ImplementedIssueMarker:
+        """A holder past the settle window but still inside its own release grace."""
+        url = f"https://github.com/o/r/issues/{number}"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
+            dispatched_at=timezone.now() - timedelta(hours=hours)
+        )
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_the_tick_frees_a_slot_and_claims_again(self) -> None:
+        marker = self._stuck(950, hours=0.75)
+
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is True
+
+    def test_a_progressing_budget_keeps_every_slot(self) -> None:
+        marker = self._stuck(951, hours=0.75)
+        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+
+        with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert isinstance(scanner, IssueIntakeScanner)
+        assert scanner.can_claim is False
 
 
 class IssueIntakeMiniLoopTests(TestCase):
