@@ -18,6 +18,17 @@ Refusals are visible by construction: every :class:`AdmissionDecision` carries a
 ``reason``, and the loop-side caller logs it. A governor that refuses silently
 recreates the exact class of bug that hid a dead merge loop for weeks.
 
+**Which signals are whole-box, and which are lane-local (#4407).** Load and memory are
+whole-box: an orchestrating session's harness sub-agents never claim a ``Task``, so they
+are invisible to every count the factory keeps, but they consume the same cores. Counts
+— ``claimed_agent_count``, the intake in-flight budget — are lane-local by construction
+and named so at each call site. The deliberate split is that foreign occupancy BRAKES the
+producer and only REPORTS on the rest: :func:`box_load_headroom` bounds intake, because
+slowing the producer cannot deadlock a factory whose review and ship lanes still drain the
+pile, while the agent lanes keep only the binary watermark brake below — scaling their
+already-small ``floor(cores * WRITE_CONCURRENCY_PER_CORE)`` ceiling by the same headroom
+would leave a 4-core box ONE expensive slot and starve the drain.
+
 Ships behind the default-ON ``admission_governor_enabled`` setting; setting it false is
 the kill-switch and the rollback lever (see :func:`governor_enabled`).
 """
@@ -334,6 +345,29 @@ def _machine_ceiling(machine: MachineSignal) -> int:
     return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
 
 
+def box_load_headroom(*, load1: float | None, cores: int) -> float:
+    """The fraction of the box's load budget still free — ``1.0`` idle, ``0.0`` saturated.
+
+    The ONE whole-box occupancy reading, so every surface that asks "how much of this box
+    is already busy?" gets the same answer against the same :data:`BRAKE_LOAD_PER_CORE`
+    watermark the brake denies at. Two unsynchronised readers of one quantity drift
+    (#4125), and this quantity has two consumers: :func:`resume_agent_ceiling` and the
+    intake sizing in :mod:`teatree.core.intake.concurrency`.
+
+    Load is whole-box by construction, which is the point of consuming it: a harness
+    sub-agent an orchestrating session dispatched claims no ``Task`` and appears in no
+    factory count, yet it runs a test suite on the same cores. A bound derived only from
+    what the factory itself is running reads healthy on a box at load 53 (#4407).
+
+    ``None`` (nothing readable) is ``1.0`` for the reason every unknown here is: a probe
+    that cannot answer must not be able to lower a ceiling.
+    """
+    if load1 is None:
+        return 1.0
+    watermark = BRAKE_LOAD_PER_CORE * max(1, cores)
+    return min(1.0, max(0.0, watermark - load1) / watermark)
+
+
 def _ram_headroom(ram_available_gb: float | None) -> float:
     """The fraction of the agent population the live memory reading still supports.
 
@@ -424,11 +458,12 @@ def resume_agent_ceiling(machine: MachineSignal) -> int:
     The floor of 1 keeps this an admission ceiling rather than a kill switch: a wedged box
     still gets to carry the one agent that might unwedge it.
     """
-    cores = max(1, machine.cores)
-    watermark = BRAKE_LOAD_PER_CORE * cores
-    load_headroom = max(0.0, watermark - machine.load1) / watermark
-    base = max(1, math.floor(cores * HOST_AGENT_POPULATION_PER_CORE))
-    return max(1, math.floor(base * min(load_headroom, _ram_headroom(machine.ram_available_gb))))
+    base = max(1, math.floor(max(1, machine.cores) * HOST_AGENT_POPULATION_PER_CORE))
+    headroom = min(
+        box_load_headroom(load1=machine.load1, cores=machine.cores),
+        _ram_headroom(machine.ram_available_gb),
+    )
+    return max(1, math.floor(base * headroom))
 
 
 def resume_shed_directive(*, restored: int, machine: MachineSignal) -> str:
@@ -518,7 +553,10 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
     to a number nobody measured.
 
     An explicit *ram_available_gb* wins, so a caller holding a reading of its own is never
-    made to pay for a second probe.
+    made to pay for a second probe — which is also how a caller wanting only the load
+    average gets it without a second ``/proc`` read, since this is its one reader. A
+    platform with no load average reads ``0.0``: an unknown load is inert wherever it is
+    consumed (no brake, full :func:`box_load_headroom`), never a manufactured clamp.
     """
     try:
         load1 = os.getloadavg()[0]
@@ -590,6 +628,7 @@ __all__ = [
     "MachineSignal",
     "QuotaSignal",
     "YieldSignal",
+    "box_load_headroom",
     "decide_admission",
     "governor_enabled",
     "per_agent_test_workers",

@@ -7,9 +7,10 @@ the resource loop's measurement cadence so the ramp advances once per window rat
 once per tick.
 
 The arithmetic lives in :mod:`teatree.core.intake.concurrency`; this scanner only
-supplies the signals (cgroup-aware RAM headroom, the live in-flight count, the core
-count), persists the answer on the resource loop's own ledger, and emits when the number
-MOVES — an adjustment nobody can see is indistinguishable from a knob nobody turned.
+supplies the signals (cgroup-aware RAM headroom, whole-box load occupancy, the factory's
+live in-flight count, the core count), persists the answer on the resource loop's own
+ledger, and emits when the number MOVES — an adjustment nobody can see is
+indistinguishable from a knob nobody turned.
 """
 
 import logging
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.core.admission_governor import box_load_headroom, read_machine_signal
 from teatree.core.intake.budget import read_intake_budget
 from teatree.core.intake.concurrency import BoxSizing, adapt_concurrency
 from teatree.loop.scanners.base import ScanSignal
@@ -34,11 +36,13 @@ _MIB_PER_GB = 1024.0
 
 @dataclass(frozen=True, slots=True)
 class _Decision:
-    """One window's answer, plus the reading and the value it moved from."""
+    """One window's answer, plus both readings and the value it moved from."""
 
     concurrency: int
     previous: int
     available_gb: float
+    load1: float
+    cores: int
 
 
 @dataclass(slots=True)
@@ -81,12 +85,17 @@ class IntakeConcurrencyScanner:
             return None
         previous = marker.adaptive_intake_concurrency or self.static_ceiling
         available_gb = available_mib / _MIB_PER_GB
+        # The load watermark rides the SAME core count the sizing does, so one box cannot
+        # be judged saturated against a core count its own hard cap was not derived from.
+        cores = available_cpu_count()
+        load1 = read_machine_signal(ram_available_gb=available_gb).load1
         adapted = adapt_concurrency(
             available_gb=available_gb,
-            in_flight=read_intake_budget("", self.static_ceiling).in_flight,
+            factory_in_flight=read_intake_budget("", self.static_ceiling).in_flight,
+            box_load_headroom=box_load_headroom(load1=load1, cores=cores),
             previous=previous,
             sizing=BoxSizing(
-                cores=available_cpu_count(),
+                cores=cores,
                 reserve_gb=self.reserve_gb,
                 per_agent_gb=self.per_agent_gb,
             ),
@@ -96,7 +105,7 @@ class IntakeConcurrencyScanner:
                 "intake_concurrency: per-agent RAM cost is %s — intake keeps the static ceiling", self.per_agent_gb
             )
             return None
-        return _Decision(concurrency=adapted, previous=previous, available_gb=available_gb)
+        return _Decision(concurrency=adapted, previous=previous, available_gb=available_gb, load1=load1, cores=cores)
 
     def _cadence_blocks(self, marker: "ResourcePressureMarker") -> bool:
         """True iff this window's adaptation already ran — the ramp is per window, not per tick."""
@@ -114,7 +123,8 @@ class IntakeConcurrencyScanner:
                 kind="resource.intake_concurrency_adapted",
                 summary=(
                     f"intake concurrency {direction} {decision.previous} → {decision.concurrency} "
-                    f"({decision.available_gb:.1f} GB free, {self.reserve_gb:.0f} GB reserved)"
+                    f"({decision.available_gb:.1f} GB free, {self.reserve_gb:.0f} GB reserved, "
+                    f"box load {decision.load1:.1f} on {decision.cores} cores)"
                 ),
                 payload={
                     "concurrency": decision.concurrency,
@@ -122,6 +132,8 @@ class IntakeConcurrencyScanner:
                     "available_gb": decision.available_gb,
                     "reserve_gb": self.reserve_gb,
                     "per_agent_gb": self.per_agent_gb,
+                    "load1": decision.load1,
+                    "cores": decision.cores,
                 },
             )
         ]

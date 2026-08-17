@@ -9,6 +9,7 @@ merge loop for weeks.
 
 import datetime as dt
 import math
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -18,6 +19,7 @@ from teatree.agents import _runner_env
 from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission_governor import (
+    BRAKE_LOAD_PER_CORE,
     RAM_BRAKE_FLOOR_GB,
     RAM_RESUME_FLOOR_GB,
     MachineBrake,
@@ -25,6 +27,7 @@ from teatree.core.admission_governor import (
     MergeSignal,
     QuotaSignal,
     YieldSignal,
+    box_load_headroom,
     decide_admission,
     per_agent_test_workers,
     read_machine_signal,
@@ -700,6 +703,40 @@ class TestWriteConcurrencyRaise:
     def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
         """The melt driver the old 0.25 was calibrated against, now bounded independently."""
         assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+
+
+class TestBoxLoadHeadroom:
+    """The ONE whole-box occupancy reading, shared by the resume bound and intake (#4407).
+
+    Load is the signal that sees what the factory's own counts cannot: a harness
+    sub-agent claims no task and holds no intake marker, yet runs a test suite on the
+    same cores. Two consumers read this, so it has to be one function — two
+    unsynchronised readers of one quantity drift (#4125).
+    """
+
+    def test_an_idle_box_has_its_whole_budget(self) -> None:
+        assert box_load_headroom(load1=0.0, cores=8) == pytest.approx(1.0)
+
+    def test_the_budget_runs_out_exactly_at_the_brake_watermark(self) -> None:
+        assert box_load_headroom(load1=BRAKE_LOAD_PER_CORE * 8, cores=8) == pytest.approx(0.0)
+
+    def test_load_past_the_watermark_never_goes_negative(self) -> None:
+        assert box_load_headroom(load1=999.0, cores=8) == pytest.approx(0.0)
+
+    def test_the_budget_shrinks_monotonically_as_load_rises(self) -> None:
+        readings = [box_load_headroom(load1=load, cores=8) for load in (0.0, 10.0, 20.0, 30.0)]
+        assert readings == sorted(readings, reverse=True)
+        assert len(set(readings)) == len(readings)
+
+    def test_the_same_load_leaves_more_budget_on_a_bigger_box(self) -> None:
+        assert box_load_headroom(load1=16.0, cores=16) > box_load_headroom(load1=16.0, cores=8)
+
+    def test_an_unreadable_load_never_lowers_a_ceiling(self) -> None:
+        assert box_load_headroom(load1=None, cores=8) == pytest.approx(1.0)
+
+    def test_a_platform_with_no_load_average_reads_idle_rather_than_saturated(self) -> None:
+        with patch.object(admission_governor.os, "getloadavg", side_effect=OSError):
+            assert read_machine_signal(ram_available_gb=20.0).load1 == pytest.approx(0.0)
 
 
 class TestResumeAgentPopulation:
