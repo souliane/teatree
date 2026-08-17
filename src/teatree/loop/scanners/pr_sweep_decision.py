@@ -17,9 +17,10 @@ from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, MergeAttempt, PrSummary
+from teatree.loop.scanners.pr_sweep_types import UV_AUDIT_CHECK_NAME, HeadReview, MergeAttempt, PrSummary
 
 if TYPE_CHECKING:
+    from teatree.core.models.review_verdict import ReviewVerdict
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,53 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
 
     state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
     return state is HeadVerdictState.MERGE_SAFE
+
+
+def head_review_state(*, slug: str, pr_id: int, head_sha: str) -> HeadReview:
+    """What the recorded verdicts say about *head_sha* — the holds, and the authorisation (#4380).
+
+    The extra precondition on the autonomous, no-CLEAR solo-overlay merge, plus the
+    record that merge names as its authorisation. A standing hold is NOT the effective
+    verdict: a later ``merge_safe`` from a DIFFERENT reviewer wins under newest-wins and
+    still leaves the hold standing, which is exactly the contested head that merged
+    itself. Only the holding reviewer lifting their own hold, a human CLEAR, or a new
+    push clears it.
+
+    Both held shapes refuse and both escalate to the owner; :attr:`HeadReview.hold_reason`
+    names them apart because they are different events to the reader. A ``merge_safe``
+    standing beside the hold is a real two-reviewer disagreement — necessarily two
+    DISTINCT identities, since :meth:`ReviewVerdict.record` is an ``update_or_create`` on
+    ``(slug, pr_id, reviewed_sha, reviewer_identity_normalized)``. A hold with none beside
+    it is the ordinary outcome of a cold review that holds, and reporting that as a
+    disagreement names a second reviewer who does not exist.
+
+    Three lookups, and the middle one is why: ``standing_merge_safe_at`` asks who stands
+    beside the hold, ``authorizing_verdict_at`` asks what a merge may rest on, and only
+    the second is gated on newest-wins. Asking one question for both made the wording of
+    a refusal depend on recording order. It costs ONE extra queryset scan per held-head
+    evaluation, on a path that already runs once per open PR per tick.
+
+    No ``try/except`` on purpose — unlike :func:`record_mergeable_notified`,
+    where degrading to empty means "stay quiet", here it would mean "no hold,
+    go ahead and merge", so a DB hiccup would merge over a hold. The caller's
+    existing handler logs and skips the PR for the tick, and the next tick
+    retries — the safe direction. :func:`has_independent_cold_review` above
+    behaves the same way.
+    """
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — lazy ORM import
+
+    holds = ReviewVerdict.objects.unreconciled_holds_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    standing = ReviewVerdict.objects.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    authorizing = ReviewVerdict.objects.authorizing_verdict_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    return HeadReview(
+        held_verdicts=tuple(_verdict_ref(hold) for hold in holds),
+        authorizing_verdict=None if authorizing is None else _verdict_ref(authorizing),
+        standing_merge_safe=None if standing is None else _verdict_ref(standing),
+    )
+
+
+def _verdict_ref(verdict: "ReviewVerdict") -> tuple[int, str]:
+    return int(verdict.pk), verdict.reviewer_identity_normalized or verdict.reviewer_identity
 
 
 def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:

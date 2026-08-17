@@ -40,6 +40,23 @@ MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 # ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
 CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
 
+# The reason a PR carries when a HOLD stands at its live head that nobody took back
+# AND a non-stale ``merge_safe`` from a DIFFERENT reviewer stands beside it — in either
+# recording order, since which row is newer decides what a merge may rest on, not whether
+# two reviewers disagree. Two reviewers disagreeing at one unchanged tree is not a verdict
+# the loop may resolve by timestamp, so the autonomous no-CLEAR merge refuses and reports
+# instead (#4380). Owner-audience — see ``OWNER_ESCALATION_FLAG_REASONS`` in
+# ``pr_sweep_adapters``.
+CONTESTED_HOLD_REASON = "contested_hold_at_head"
+
+# The same refusal where NO merge_safe stands beside the hold — the ordinary outcome
+# of every cold review that holds, and the far more common shape (68 hold-only vs 15
+# contested head-groups over the last 400 recorded verdicts). Nothing is in dispute:
+# the auto-merge simply has no authorisation. Reported under its own reason so the
+# owner DM cannot claim two reviewers disagreed where there is one verdict. Escalates
+# to the owner exactly like the contested case — only the wording differs.
+HOLD_AT_HEAD_REASON = "hold_at_head"
+
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:
@@ -74,6 +91,38 @@ class PrSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class HeadReview:
+    """What the recorded cold-review verdicts say about one PR head (#4380).
+
+    ``held_verdicts`` are the non-stale HOLDs nobody took back, as
+    ``(row id, normalised reviewer identity)`` pairs — a non-empty tuple is what
+    refuses the autonomous no-CLEAR merge. ``authorizing_verdict`` is what a merge
+    records as its authorisation, so it is gated on newest-wins. ``standing_merge_safe``
+    is the PASS standing beside a hold: the same row when the PASS is newer, and the row
+    newest-wins discards when the HOLD is. They are separate fields because naming a
+    two-reviewer disagreement must not depend on which reviewer recorded last.
+    """
+
+    held_verdicts: tuple[tuple[int, str], ...] = ()
+    authorizing_verdict: tuple[int, str] | None = None
+    standing_merge_safe: tuple[int, str] | None = None
+
+    @property
+    def hold_reason(self) -> str:
+        """The flag reason for a held head — read only when something is holding."""
+        return CONTESTED_HOLD_REASON if self.standing_merge_safe else HOLD_AT_HEAD_REASON
+
+    @property
+    def hold_detail(self) -> str:
+        """The verdicts behind the flag, named so the owner DM need not assert them."""
+        holding = ", ".join(f"#{row_id} {reviewer}" for row_id, reviewer in self.held_verdicts)
+        if self.standing_merge_safe is None:
+            return f"holding: {holding}"
+        row_id, reviewer = self.standing_merge_safe
+        return f"holding: {holding}; merge_safe: #{row_id} {reviewer}"
+
+
+@dataclass(frozen=True, slots=True)
 class MergeAttempt:
     """The scanner's per-PR decision plus any merge outcome.
 
@@ -81,6 +130,12 @@ class MergeAttempt:
     made on, carried out to the emitted signal so a CROSS-PR comparison (#4090)
     can ask a question about the SET without re-listing and re-classifying every
     PR. Empty / ``True`` on any path that never reached the CI gate.
+
+    ``held_verdicts`` / ``authorizing_verdict`` are the ``(row id, reviewer)`` pairs
+    behind a held refusal and the verdict a merge actually relied on (#4380 AC3): a
+    bare ``solo_overlay_no_clear`` records that no CLEAR existed but not what was
+    relied on instead, which is unanswerable after the fact from the signal alone. A
+    HELD attempt merged nothing, so there it carries the PASS standing beside the hold.
     """
 
     slug: str
@@ -93,3 +148,5 @@ class MergeAttempt:
     review_dispatched: bool = False
     failing_required: tuple[str, ...] = ()
     base_current: bool = True
+    held_verdicts: tuple[tuple[int, str], ...] = ()
+    authorizing_verdict: tuple[int, str] | None = None
