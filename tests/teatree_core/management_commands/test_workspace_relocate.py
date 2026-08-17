@@ -9,6 +9,8 @@ idempotent and dry-run-safe, and that one failed move never aborts the rest.
 
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -134,7 +136,7 @@ class TestSkips(_RelocateCase):
     def test_skips_when_cwd_inside_worktree(self) -> None:
         self._make_row()
         with patch(
-            "teatree.core.management.commands._workspace.relocate._active_cwd",
+            "teatree.core.management.commands._workspace.relocate.active_cwd",
             return_value=self.old_wt.resolve(),
         ):
             result = run_relocate("test", self.new_ws, _io(), dry_run=False)
@@ -164,7 +166,88 @@ class TestIdempotentAndDryRun(_RelocateCase):
         assert wt.worktree_path == str(self.old_wt)
 
 
+class TestMountBoundaryRefusal(_RelocateCase):
+    """A move across a mount-point boundary is refused BY NAME, never attempted (#4368).
+
+    ``git worktree move`` is a ``rename(2)``, which returns ``EXDEV`` between mount
+    points even when both sides report the same ``st_dev`` — two bind mounts of one
+    filesystem. A bind mount cannot be created without root, so the mount table is
+    synthetic while both paths are real: this asserts their ``st_dev`` AGREES, which
+    is what makes the refusal keyed on the mount point rather than the device.
+
+    Anti-vacuity: without the boundary check this worktree MOVES (both dirs are on
+    one real mount here), so ``not result.moved`` is falsifiable.
+    """
+
+    @contextmanager
+    def _pinned_table(self, *mount_points: Path) -> Iterator[None]:
+        rows = [f"36 28 252:0 / {point} rw,relatime - ext4 /dev/mapper/hk-root rw" for point in mount_points]
+        mountinfo = self._tmp() / "mountinfo"
+        mountinfo.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        with patch("teatree.utils.mount_points._MOUNTINFO", mountinfo):
+            yield
+
+    def test_a_cross_mount_relocate_is_skipped_naming_the_boundary(self) -> None:
+        wt = self._make_row()
+        assert Path(self.old_ws).stat().st_dev == Path(self._tmp()).stat().st_dev
+        self.new_ws.mkdir(parents=True)
+
+        with self._pinned_table(Path("/"), self.old_ws, self.new_ws):
+            result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert not result.moved
+        assert not result.failed  # a named refusal, never an unexplained rc=128
+        assert any("mount-point boundary" in line and "EXDEV" in line for line in result.skipped)
+        assert any(str(self.old_ws) in line and str(self.new_ws) in line for line in result.skipped)
+        assert self.old_wt.exists()
+        wt.refresh_from_db()
+        assert wt.worktree_path == str(self.old_wt)
+
+    def test_the_boundary_is_reported_ahead_of_a_transient_reason(self) -> None:
+        # Dirty AND across a boundary: reporting "uncommitted changes" invites a
+        # commit-and-retry that cannot succeed, so the structural reason wins.
+        self._make_row()
+        (self.old_wt / "scratch.txt").write_text("uncommitted", encoding="utf-8")
+        self.new_ws.mkdir(parents=True)
+
+        with self._pinned_table(Path("/"), self.old_ws, self.new_ws):
+            result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert any("mount-point boundary" in line for line in result.skipped)
+        assert not any("uncommitted changes" in line for line in result.skipped)
+
+    def test_one_shared_mount_point_still_moves(self) -> None:
+        # The control: same table, one mount covering both — the refusal is keyed on
+        # the boundary, not on the mere presence of a mount table.
+        self._make_row()
+
+        with self._pinned_table(Path("/")):
+            result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert result.moved
+        assert not result.skipped
+
+    def test_an_unreadable_mount_table_still_attempts_the_move(self) -> None:
+        # Unknown is not a refusal: the move goes ahead and git's own stderr speaks.
+        self._make_row()
+
+        with patch("teatree.utils.mount_points._MOUNTINFO", self._tmp() / "absent"):
+            result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert result.moved
+
+
 class TestContinuesPastFailure(_RelocateCase):
+    def test_a_failed_move_reports_gits_own_stderr(self) -> None:
+        # The `fatal:` line is what made #4368 diagnosable at all — never swallowed.
+        bad_clone = self._tmp() / "not-a-repo"
+        bad_clone.mkdir()
+        self._make_row(clone_path=bad_clone)
+
+        result = run_relocate("test", self.new_ws, _io(), dry_run=False)
+
+        assert any("fatal:" in line for line in result.failed)
+
     def test_one_failed_move_does_not_abort_the_run(self) -> None:
         # A second repo+worktree that WILL move; the first has a bogus clone_path so
         # `git worktree move` fails — the run must report it and still move the second.

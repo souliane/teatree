@@ -10,6 +10,10 @@ scan, so broken checkouts accumulate in the half nothing sweeps.
 A dir this venue merely cannot resolve is neither: it WARNs as unverified and
 names no destructive remedy, because the same evidence is produced by a healthy
 checkout whose admin dir was recorded in another execution context.
+
+Neither finding names a remedy that cannot run: the split-namespace WARN asks the
+relocate policy which rows ``workspace relocate`` would actually move, and
+prescribes it only for those (#4368).
 """
 
 from pathlib import Path
@@ -74,7 +78,18 @@ def _check_one_worktree_root() -> bool:
     Advisory, not a gate: an operator may deliberately keep a worktree elsewhere
     mid-migration. The point is that the split is NAMED, so the accumulation in
     the unscanned half stops being invisible.
+
+    The remedy is prescribed only for the rows ``workspace relocate`` would
+    actually move (#4368). A row it refuses — one across a mount-point boundary,
+    a live mid-task checkout, a dirty one — is NAMED with that reason instead of
+    counted, because a count that includes it prescribes a command that provably
+    cannot discharge the finding, and the WARN then recurs forever at that number.
     """
+    from teatree.core.worktree.relocation import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        RelocationCandidate,
+        active_cwd,
+        relocation_refusal,
+    )
     from teatree.core.worktree.worktree_roots import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
         canonical_worktree_root,
         worktrees_outside_the_canonical_root,
@@ -83,11 +98,27 @@ def _check_one_worktree_root() -> bool:
     outside = worktrees_outside_the_canonical_root()
     if not outside:
         return True
-    typer.echo(
-        f"WARN  {len(outside)} registered worktree(s) live outside the canonical root "
-        f"{canonical_worktree_root()} — the reaper and doctor then scan a split namespace. "
-        "Fix: t3 <overlay> workspace relocate."
-    )
+    canonical = canonical_worktree_root()
+    active_path = active_cwd()
+    refused: list[tuple[str, str]] = []
+    for worktree in outside:
+        candidate = RelocationCandidate.of(worktree, Path(worktree.worktree_path))
+        reason = relocation_refusal(candidate, canonical, active_path=active_path)
+        if reason is not None:
+            refused.append((str(worktree.worktree_path), reason))
+    movable = len(outside) - len(refused)
+    if movable:
+        typer.echo(
+            f"WARN  {movable} of {len(outside)} registered worktree(s) live outside the canonical root "
+            f"{canonical} and CAN be relocated — until they are, the reaper and doctor scan a split "
+            "namespace. Fix: t3 <overlay> workspace relocate."
+        )
+    if refused:
+        detail = "; ".join(f"{path}: {reason}" for path, reason in refused)
+        typer.echo(
+            f"WARN  {len(refused)} registered worktree(s) live outside the canonical root {canonical} that "
+            f"relocate refuses to move, so it can never discharge them: {detail}."
+        )
     return True
 
 

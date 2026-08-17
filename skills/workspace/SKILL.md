@@ -138,7 +138,11 @@ t3 <overlay> workspace relocate            # move existing worktrees under the r
 t3 <overlay> workspace relocate --dry-run  # list the moves without touching anything
 ```
 
-It uses `git worktree move` (never a raw `mv` — git's worktree admin must update so the moved worktree stays linked to its clone), then rewrites each `Worktree` row's stored path. It **SKIPS and reports** any worktree that is git-locked, has uncommitted changes, or is a live mid-task one (its ticket has a live session/active task, or the process CWD is inside it); it is **idempotent** (a worktree already there is a no-op) and **continues past a single failed move** (reports it, never aborts the run).
+It uses `git worktree move` (never a raw `mv` — git's worktree admin must update so the moved worktree stays linked to its clone), then rewrites each `Worktree` row's stored path. It **SKIPS and reports** any worktree that is git-locked, has uncommitted changes, or is a live mid-task one (its ticket has a live session/active task, or the process CWD is inside it); it is **idempotent** (a worktree already there is a no-op) and **continues past a single failed move** (reporting git's own stderr, never aborting the run).
+
+**A move across a MOUNT-POINT boundary is refused by name, not attempted (#4368).** `git worktree move` is a `rename(2)`, which returns `EXDEV` between distinct mount points — including two bind mounts of ONE filesystem, which report the same `st_dev`. So a guard keyed on the device concludes the move is safe and it fails anyway with a bare `rc=128`; `core/worktree/relocation.py` therefore keys on the mount table (`utils/mount_points.py`, `/proc/self/mountinfo`) and refuses with both mount points named. A venue that cannot read that table gets UNKNOWN and the move goes ahead, so git's stderr still speaks. The boundary is reported ahead of the transient refusals (dirty, busy, locked) because it is the only one no operator action can clear — "uncommitted changes" on a cross-boundary worktree invites a commit-and-retry that cannot succeed.
+
+That policy is the SAME one `t3 doctor check`'s split-namespace WARN consults: it prescribes `workspace relocate` only for the rows relocate would actually move, and NAMES each refused row with its reason instead of counting it. A count that includes an un-relocatable row prescribes a remedy that provably cannot discharge the finding, so the WARN recurs at that number on every run forever.
 
 ## Cleanup Patterns
 
