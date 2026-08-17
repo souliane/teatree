@@ -296,3 +296,51 @@ class ScratchSweepRefusalCommandTests(TestCase):
         rendered = err.getvalue()
         assert "REFUSED" in rendered
         assert "ptrace" in rendered
+
+
+class UnlistableScratchRootCommandTests(TestCase):
+    """A root the sweep could not read into exits NON-ZERO on --apply, like an unsighted probe.
+
+    The venue probe is PINNED to an answering table throughout: the autouse fixture
+    leaves it unsighted, whose gap also says "not listable" — about the process table
+    rather than the root — so an unpinned arm would pass on the wrong refusal.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(TemporaryDirectory())) / "not-a-directory"
+        self.root.write_bytes(b"")
+        self.enterContext(pinned_venue_proc())
+
+    def _run(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "scratch", "--root", str(self.root), "--days", "3", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_apply_exits_non_zero_and_still_writes_the_payload(self) -> None:
+        out = StringIO()
+
+        with pytest.raises(SystemExit) as exit_info:
+            call_command(
+                "retention", "scratch", "--root", str(self.root), "--days", "3", "--apply", "--json", stdout=out
+            )
+
+        assert exit_info.value.code == 1
+        payload = json.loads(out.getvalue())
+        assert payload["refused"] is True
+        assert str(self.root) in payload["probe_gap"]
+
+    def test_a_dry_run_reports_the_refusal_without_failing(self) -> None:
+        payload = self._run()
+
+        assert payload["refused"] is True
+        assert payload["resident_bytes"] == 0
+        assert str(self.root) in payload["probe_gap"]
+
+    def test_a_listable_root_is_the_sighted_positive_control(self) -> None:
+        listable = self.root.parent / "listable"
+        listable.mkdir()
+
+        payload = self._run("--root", str(listable))
+
+        assert payload["refused"] is False
+        assert payload["probe_gap"] == ""
