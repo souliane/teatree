@@ -91,12 +91,17 @@ def phantom_subpackage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     namespace package, so this is enough for ``import teatree.teams`` to succeed
     with no source behind it.
     """
-    (tmp_path / _PHANTOM_REF.rpartition(".")[2] / "__pycache__").mkdir(parents=True)
+    leaf = _PHANTOM_REF.rpartition(".")[2]
+    (tmp_path / leaf / "__pycache__").mkdir(parents=True)
     monkeypatch.setattr(teatree, "__path__", [*teatree.__path__, str(tmp_path)])
     monkeypatch.delitem(sys.modules, _PHANTOM_REF, raising=False)
     importlib.invalidate_caches()
     yield
     sys.modules.pop(_PHANTOM_REF, None)
+    # import binds the child onto the parent package too; popping sys.modules alone
+    # leaves that attribute, which later resolves the phantom for every other test.
+    if hasattr(teatree, leaf):
+        delattr(teatree, leaf)
 
 
 class TestLiveTree:
