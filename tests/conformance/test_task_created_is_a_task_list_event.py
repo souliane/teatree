@@ -25,9 +25,19 @@ name that has died fails the build until a human reads the claim.
 
 LEDGER — the doc-surface prose is content-addressed in
 ``tests/quality/anchor_prose_pegs.toml`` (the gate is
-``tests/quality/test_anchor_prose_pegs.py``). Its scope is a LIMIT, not coverage:
-it forces a human to re-read a CHANGED sentence; it does not verify the sentence
-is true, and it does not cover test-file prose.
+``tests/quality/test_anchor_prose_pegs.py``). Its scope is a LIMIT, not coverage,
+and the limit is a ±400-char window around a LITERAL occurrence — 8.1% of
+``hooks/CLAUDE.md`` when last measured, pinned per file by its ``coverage``
+table, which is where to read the live number rather than this sentence. It
+forces a human to re-read a CHANGED sentence; it does not verify the sentence is
+true, it does not cover test-file prose, and it cannot see a file that never
+spells the event at all.
+
+DENY TEXT — that last blind spot is what the fifth residual lived in (#4381): the
+renderer of a handler's operator-visible refusal contains no occurrence of the
+event, so no radius reaches it. :class:`TestEveryRegisteredHandlersDenyTextIsPinned`
+drives each registered handler's DENY path and content-addresses what the caller
+is actually shown — derived from the registration, so it needs no literal.
 """
 
 import contextlib
