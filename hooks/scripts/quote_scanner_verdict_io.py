@@ -27,7 +27,11 @@ if TYPE_CHECKING:
 
 
 def quote_scanner_high_block_message(
-    quote_scanner: "ModuleType", tool_name: str, result: object, verdict: "QuoteVerdict"
+    quote_scanner: "ModuleType",
+    messages: "ModuleType",
+    tool_name: str,
+    result: object,
+    verdict: "QuoteVerdict",
 ) -> str | None:
     """Apply a resolved quote ``QuoteVerdict`` and return the deny message, or ``None``.
 
@@ -35,10 +39,14 @@ def quote_scanner_high_block_message(
     ledger write); the block MESSAGE on a deny (after the ledger deny), which the
     caller hands to the router's ``emit_pretooluse_deny`` chokepoint. Mirrors
     ``_banned_term_marker_blocks``.
+
+    Detector and renderer are injected separately because they are separate modules
+    (``teatree.hooks.quote_scanner`` / ``.quote_gate_messages``) and this one imports
+    neither — the caller owns the ``sys.path`` bootstrap that makes them importable.
     """
     if verdict.warning is not None:
         sys.stderr.write(verdict.warning)
         quote_scanner.log_decision(tool_name=tool_name, decision=verdict.decision, result=result, override=False)
         return None
     quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
-    return quote_scanner.format_block_message(result)
+    return messages.format_block_message(result)

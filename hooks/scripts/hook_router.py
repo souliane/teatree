@@ -164,7 +164,7 @@ from hooks.scripts.question_gates import (
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
-from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_scanner_high_block_message
+from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_high_block_message
 from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from hooks.scripts.raw_pid_kill_guard import handle_block_raw_pid_kill
 from hooks.scripts.raw_review_post_guard import (
@@ -1835,7 +1835,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    from teatree.hooks import quote_gate_messages, quote_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1862,11 +1862,11 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     if result.has_high:
         command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
-        block_message = _quote_scanner_high_block_message(quote_scanner, tool_name, result, verdict)
+        block_message = _quote_high_block_message(quote_scanner, quote_gate_messages, tool_name, result, verdict)
         return emit_pretooluse_deny(block_message) if block_message is not None else False
 
     if result.has_medium:
-        sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
+        sys.stderr.write(quote_gate_messages.format_warn_message(result) + "\n")
         quote_scanner.log_decision(
             tool_name=tool_name,
             decision="warn",
@@ -2048,7 +2048,7 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    from teatree.hooks import quote_gate_messages, quote_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2078,7 +2078,7 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
             result=result,
             override=False,
         )
-        return emit_pretooluse_deny(quote_scanner.format_dispatch_block_message(result))
+        return emit_pretooluse_deny(quote_gate_messages.format_dispatch_block_message(result))
 
     # MEDIUM-only or clean: allow silently (no stderr warning on dispatch —
     # the fleet dispatches constantly; only HIGH is actionable here).
@@ -2170,7 +2170,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
     (mirrors the #1213/#1401 split). A HIGH match emits the ``TaskCreated``
     teammate-stop deny envelope (NOT the PreToolUse ``hookSpecificOutput`` deny).
     """
-    from teatree.hooks import quote_scanner  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+    from teatree.hooks import quote_gate_messages, quote_scanner  # noqa: PLC0415 — deferred: cold-hook import
 
     subject = data.get("task_subject", "") or ""
     description = data.get("task_description", "") or ""
@@ -2193,7 +2193,7 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
             result=result,
             override=False,
         )
-        return emit_task_create_deny(quote_scanner.format_dispatch_block_message(result))
+        return emit_task_create_deny(quote_gate_messages.format_task_entry_block_message(result))
 
     quote_scanner.log_decision(
         tool_name="TaskCreated:quote",

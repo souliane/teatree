@@ -14,7 +14,10 @@ Design notes:
 The module is pure detection. The Bash/t3 command surfaces are parsed
 into a payload, then the payload runs through :func:`scan_text`. The
 PreToolUse hook in ``hooks/scripts/hook_router.py`` is the only place
-that knows about ``stdout``/``permissionDecision`` JSON.
+that knows about ``stdout``/``permissionDecision`` JSON, and the
+operator-facing reasons live in ``teatree.hooks.quote_gate_messages``
+because rendering one requires knowing WHICH surface produced the
+verdict, which detection does not.
 
 Patterns are split into ``HIGH`` (refuse publish) and ``MEDIUM`` (warn
 but allow). Both severities log to a JSONL ledger so cold review can
@@ -594,46 +597,3 @@ def log_decision(
     except OSError:
         # The ledger is best-effort — never block on a write failure.
         return
-
-
-def format_block_message(result: ScanResult) -> str:
-    """Render the PreToolUse deny reason for a HIGH match.
-
-    The false-positive escape names the leading ``QUOTE_OK=1`` env PREFIX, not a
-    ``--quote-ok`` CLI flag: the flag is consumed by the gate's parser, never by
-    the posting command, so a ``t3 review post-comment`` (or any other
-    subcommand) would reject it as an unknown option. The env prefix is a real
-    shell construct every command accepts and is the spelling that actually
-    works at the prompt.
-    """
-    names = ", ".join(sorted({f.name for f in result.high}))
-    return (
-        "BLOCKED: pre-publish quote-scanner gate (#1213). "
-        f"Matched patterns: {names}. "
-        "Paraphrase any user-attributed content; do not quote verbatim. "
-        "If the match is a false positive, re-issue the command with a leading "
-        "QUOTE_OK=1 env prefix (e.g. `QUOTE_OK=1 <command>`)."
-    )
-
-
-def format_dispatch_block_message(result: ScanResult) -> str:
-    """Render the PreToolUse deny reason for a HIGH match in a dispatch prompt (#1401)."""
-    names = ", ".join(sorted({f.name for f in result.high}))
-    excerpt = next((f.excerpt for f in result.high if f.excerpt), "")
-    matched = f' (e.g. "{excerpt}")' if excerpt else ""
-    return (
-        "BLOCKED: pre-dispatch quote-scanner gate (#1401). The Agent/Task prompt "
-        f"carries verbatim user-voice/PII content{matched} — matched patterns: {names}. "
-        "Paraphrase it into author-voice description before dispatching (the sub-agent "
-        "would otherwise echo it into a published output, defeating the #1213 publish gate). "
-        "If the match is a false positive, add `[quote-ok: <reason>]` near the start of the prompt."
-    )
-
-
-def format_warn_message(result: ScanResult) -> str:
-    """Render the stderr warning for a MEDIUM-only match."""
-    names = ", ".join(sorted({f.name for f in result.medium}))
-    return (
-        f"WARNING: pre-publish quote-scanner gate (#1213) — attribution patterns matched ({names}). "
-        "Verify the content is paraphrased, not lifted from user speech."
-    )
