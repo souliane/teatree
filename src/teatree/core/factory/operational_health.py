@@ -356,6 +356,47 @@ def _fleet_loop_policy_signals() -> SignalCollection:
     )
 
 
+def _admission_pressure_signals() -> SignalCollection:
+    """At most ONE signal, fingerprinted on the admission scalar's dominant cause (#4508).
+
+    Telemetry volume is not incident volume: a braked factory refuses on every admission
+    decision, which is hundreds of identical observations an hour. Routing them through
+    the fingerprint the registry already dedupes on collapses them to one row per CAUSE,
+    with ``first_seen``/``last_seen`` carrying the duration — and it auto-resolves by
+    construction when the pressure falls, so no operator chases a stale entry.
+
+    Nothing is emitted below the shed band: a factory merely under load is not an
+    incident, and a chip that lit up at 0.7 would be ignored by the time it mattered.
+    """
+    from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: reads the ORM-backed quota cache at call time
+        pressure_for,
+        read_machine_signal,
+        read_quota_signal,
+    )
+    from teatree.core.admission_pressure import PressureBand  # noqa: PLC0415 — deferred with its reader
+
+    try:
+        pressure = pressure_for(quota=read_quota_signal(), machine=read_machine_signal())
+    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-admission-pressure", "admission-pressure health read failed", exc_info=True)
+        return SignalCollection(unread=("_admission_pressure_signals",))
+    dominant = pressure.dominant
+    if dominant is None or pressure.band in {PressureBand.FULL, PressureBand.DEGRADED}:
+        return SignalCollection()
+    critical = pressure.band is PressureBand.HALT
+    verb = "refusing every admission" if critical else "shedding expensive work"
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint=f"admission-pressure:{dominant.name}",
+                severity=KnownIssue.Severity.CRITICAL if critical else KnownIssue.Severity.WARNING,
+                kind="admission_pressure",
+                summary=f"admission pressure {pressure.value:.2f} — {verb}: {dominant.detail}",
+            ),
+        )
+    )
+
+
 # The deterministic signal collectors, run in order. Each is fail-open on its
 # own so one broken read never suppresses the others; adding a new signal family
 # (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
@@ -365,6 +406,7 @@ _COLLECTORS = (
     _failed_task_signals,
     _harness_provider_consistency_signals,
     _fleet_loop_policy_signals,
+    _admission_pressure_signals,
 )
 
 

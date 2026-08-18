@@ -247,6 +247,55 @@ class TestPhaseAwareVerdict(TestCase):
         assert not any("cheap" in line for line in logs.output)
 
 
+class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
+    """#4508 — between "healthy" and "halt" there is now a band, and it sheds ONE class.
+
+    Before the scalar these inputs admitted everything: the weekly window was under the
+    0.99 brake, so nothing refused, and the box went on starting 272-turn coding agents
+    against a budget that was nearly gone. Shedding the expensive class alone is what
+    keeps the review/ship lanes — the ones that RETIRE work — draining into the reset.
+    """
+
+    def _verdict(self, *, weekly: float, shed_at: float = 0.9) -> AgentAdmission:
+        quota = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=weekly,
+            short_utilization=0.1,
+            # An imminent reset keeps PACE healthy, so the SPEND is the dimension under test.
+            seconds_to_weekly_reset=_WEEK * 0.02,
+        )
+        ConfigSetting.objects.set_value("admission_pressure_shed_at", str(shed_at), scope="")
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_quota_signal", return_value=quota),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "claimed_agent_count", return_value=0),
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=0),
+        ):
+            return agent_admission_verdict()
+
+    def test_shed_denies_expensive_and_keeps_the_cheap_drain_running(self) -> None:
+        verdict = self._verdict(weekly=0.92)
+        assert "weekly window" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_below_the_band_nothing_is_shed(self) -> None:
+        verdict = self._verdict(weekly=0.5)
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_raising_the_threshold_to_one_is_the_rollback_lever(self) -> None:
+        """At 1.0 SHED collapses into HALT — admission is the pre-#4508 behaviour."""
+        verdict = self._verdict(weekly=0.92, shed_at=1.0)
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_halt_still_refuses_both_classes(self) -> None:
+        verdict = self._verdict(weekly=1.0)
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
+        assert verdict.denied_for(PhaseCost.CHEAP) is not None
+
+
 class TestDrainConsultsTheGovernor(TestCase):
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import

@@ -20,11 +20,16 @@ factory reads. Three properties are deliberate:
     adjustment. That keeps the system away from oscillation and errs toward the cheaper
     mistake.
 *   **Two capacity estimates, the smaller wins.** Memory answers "how many more agents
-    fit"; whole-box load answers "how much of this box is already busy". The second is
-    not optional (#4407): ``factory_in_flight`` counts the factory's OWN claims, so an
-    orchestrating session's harness sub-agents — which claim no ``Task`` and hold no
-    intake marker — are invisible to it while running test suites on the same cores. Sized
-    on memory alone this number stayed put through a box going from load 14 to 53.
+    fit"; the admission scalar answers "how much of everything that bounds this factory
+    is already spent". The second is not optional (#4407): ``factory_in_flight`` counts
+    the factory's OWN claims, so an orchestrating session's harness sub-agents — which
+    claim no ``Task`` and hold no intake marker — are invisible to it while running test
+    suites on the same cores. Sized on memory alone this number stayed put through a box
+    going from load 14 to 53. And the scalar is what carries the TOKEN dimension here
+    (#4508): the term used to be load headroom alone, so a box with idle cores and free
+    RAM kept claiming issues against a weekly window that was nearly gone. Because
+    ``1 - `` the load component IS that old headroom, a CPU-bound box is unchanged and
+    the number moves only when quota or memory is the worse dimension.
 
 Every uncertain input yields ``None`` — *no opinion* — and the reader then keeps the
 operator's static ``issue_implementer_max_concurrent`` verbatim. A governor that cannot
@@ -72,7 +77,7 @@ def adapt_concurrency(
     *,
     available_gb: float | None,
     factory_in_flight: int,
-    box_load_headroom: float | None,
+    admission_headroom: float | None,
     previous: int,
     sizing: BoxSizing,
 ) -> int | None:
@@ -82,31 +87,32 @@ def adapt_concurrency(
     ``None`` means the probe could not read it. *factory_in_flight* is the FACTORY's own
     claim count — named for what it counts, because "in flight" reads as the whole box and
     is not (#4407) — so ``factory_in_flight + additional`` is the memory-derived estimate
-    alone. *box_load_headroom* is the whole-box occupancy fraction
-    (:func:`~teatree.core.admission_governor.box_load_headroom`), which is what sees the
-    load the factory did not create; ``None`` leaves the memory estimate to stand, since a
-    probe that cannot answer must never lower a ceiling. *previous* is the last adopted
-    value and supplies the ramp.
+    alone. *admission_headroom* is ``1 - `` the admission-pressure scalar
+    (:func:`~teatree.core.admission_pressure.admission_pressure`) — the fraction of
+    everything that bounds this factory still free, which is what sees both the load the
+    factory did not create and the token runway no machine reading can show; ``None``
+    leaves the memory estimate to stand, since a probe that cannot answer must never
+    lower a ceiling. *previous* is the last adopted value and supplies the ramp.
     """
     if available_gb is None or sizing.per_agent_gb <= 0:
         return None
     additional = math.floor((available_gb - sizing.reserve_gb) / sizing.per_agent_gb)
-    fits = min(factory_in_flight + additional, _occupancy_cap(box_load_headroom, sizing.hard_cap))
+    fits = min(factory_in_flight + additional, _pressure_cap(admission_headroom, sizing.hard_cap))
     target = _clamp(fits, sizing.hard_cap)
     if target < previous:
         return target
     return _clamp(min(target, previous + 1), sizing.hard_cap)
 
 
-def _occupancy_cap(box_load_headroom: float | None, hard_cap: int) -> int:
-    """The share of *hard_cap* the box's remaining load budget still supports.
+def _pressure_cap(admission_headroom: float | None, hard_cap: int) -> int:
+    """The share of *hard_cap* the factory's remaining headroom still supports.
 
-    No floor of its own — :func:`_clamp` owns :data:`MIN_CONCURRENCY`, so foreign load
+    No floor of its own — :func:`_clamp` owns :data:`MIN_CONCURRENCY`, so pressure
     tightens intake toward one slot and can never wedge it to zero.
     """
-    if box_load_headroom is None:
+    if admission_headroom is None:
         return hard_cap
-    return math.floor(hard_cap * min(1.0, max(0.0, box_load_headroom)))
+    return math.floor(hard_cap * min(1.0, max(0.0, admission_headroom)))
 
 
 def _clamp(value: int, hard_cap: int) -> int:
