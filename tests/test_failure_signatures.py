@@ -180,3 +180,38 @@ class TestIsSpawnFailure:
         assert not is_spawn_failure("AssertionError: expected 3 got 4")
         assert not is_spawn_failure("stuck_loop: lease lost for task 1: re-claimed in-process")
         assert not is_spawn_failure("")
+
+
+class TestAHarnessCrashIsRequeued:
+    """A crash of the agent PROCESS is environmental, so it must not stay terminal (#4439).
+
+    ``FailureKind.HARNESS_CRASH`` sits in the taxonomy's ``_ENVIRONMENTAL`` set — "caused by
+    the environment rather than by a defect in the work" — yet the requeue predicate did not
+    recognise it, so the sweep never reopened one. Measured cost: eleven tasks dropped in a
+    single day, and PR #4485 reached the owner unreviewed because its reviewing task died
+    this way and nothing retried it.
+
+    Requeue is safe here because it is bounded twice over: the #2009 repair-loop budget caps
+    iterations, and two consecutive identical failures are escalated LOUDLY rather than
+    reopened — so a deterministic crash halts and surfaces instead of looping.
+    """
+
+    def test_a_raw_process_traceback_is_transient(self) -> None:
+        assert is_transient_failure("Traceback (most recent call last):\n  File ...\nException: boom")
+
+    def test_the_sdk_control_request_timeout_is_transient(self) -> None:
+        error = "Traceback (most recent call last):\nException: Control request timeout: initialize"
+        assert is_transient_failure(error)
+
+    def test_a_processerror_is_transient(self) -> None:
+        assert is_transient_failure("ProcessError: the agent process exited with code 1")
+
+    def test_a_deterministic_refusal_is_still_not_transient(self) -> None:
+        """The widening must not swallow real defects — these stay terminal."""
+        for deterministic in (
+            "missing required evidence for phase 'reviewing'",
+            "review verdict recording refused: head mismatch",
+            "assert 1 == 2",
+            "stuck_loop: runtime ceiling exceeded",
+        ):
+            assert not is_transient_failure(deterministic), deterministic
