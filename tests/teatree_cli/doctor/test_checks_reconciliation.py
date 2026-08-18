@@ -853,6 +853,14 @@ class MergedWithoutVerdictTestCase(TestCase):
 
         assert external._check_merged_without_verdict().level == "degraded"
 
+    def test_a_crashing_read_is_degraded_never_a_crash(self) -> None:
+        with patch("teatree.core.models.ReviewVerdict.objects.for_pr", side_effect=RuntimeError("boom")):
+            _seed_snapshot(refs=self._refs(1))
+            finding = external._check_merged_without_verdict()
+
+        assert finding.level == "degraded"
+        assert not finding.is_alarm
+
 
 class ExternalChecksAreRegisteredTestCase(TestCase):
     def test_both_external_checks_run_in_the_ledger(self) -> None:

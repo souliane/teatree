@@ -7,18 +7,21 @@ zero-merges answer that downstream reads as "the factory shipped nothing".
 """
 
 import datetime as dt
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.factory.external_outcomes import (
+    DEFAULT_EXTERNAL_WINDOW_DAYS,
     EXTERNAL_OUTCOME_TTL,
     ExternalOutcomeReadError,
     ExternalOutcomeStatus,
     Forge,
     read_external_outcomes,
     refresh_if_stale,
+    resolve_forge,
 )
 from teatree.core.models import ExternalOutcomeSnapshot
 from teatree.types import RawAPIDict
@@ -79,6 +82,20 @@ class ReadExternalOutcomesTestCase(TestCase):
 
         assert [ref.number for ref in outcomes.merged_prs] == [7]
 
+    def test_a_non_numeric_number_string_is_dropped_not_guessed(self) -> None:
+        host = _StubHost(hits=[{"number": "not-a-number"}, _hit(7)])
+
+        outcomes = read_external_outcomes(Forge(host=host, repo_slugs=_SLUGS))
+
+        assert [ref.number for ref in outcomes.merged_prs] == [7]
+
+    def test_a_non_mapping_hit_is_dropped_not_guessed(self) -> None:
+        host = _StubHost(hits=["not-a-dict", _hit(7)])
+
+        outcomes = read_external_outcomes(Forge(host=host, repo_slugs=_SLUGS))
+
+        assert [ref.number for ref in outcomes.merged_prs] == [7]
+
     def test_no_host_is_unmeasured_never_zero_merges(self) -> None:
         outcomes = read_external_outcomes(Forge(host=None, repo_slugs=_SLUGS))
 
@@ -98,6 +115,25 @@ class ReadExternalOutcomesTestCase(TestCase):
 
         assert "acme/app" in str(caught.value)
         assert "rate limited" in str(caught.value)
+
+
+class ResolveForgeTestCase(TestCase):
+    """The un-injected default path: derive the host + repo scope from the overlay."""
+
+    def test_resolves_the_overlays_own_host_and_declared_repos(self) -> None:
+        overlay = object()
+        host = _StubHost()
+        with (
+            patch("teatree.core.factory.external_outcomes.get_overlay", return_value=overlay) as get_overlay,
+            patch("teatree.core.factory.external_outcomes.code_host_from_overlay", return_value=host) as code_host,
+            patch("teatree.core.factory.external_outcomes.owned_repo_slugs", return_value=_SLUGS) as slugs,
+        ):
+            forge = resolve_forge(overlay="mine")
+
+        assert forge == Forge(host=host, repo_slugs=_SLUGS)
+        code_host.assert_called_once_with("mine")
+        get_overlay.assert_called_once_with("mine")
+        slugs.assert_called_once_with(overlay)
 
 
 class RefreshIfStaleTestCase(TestCase):
@@ -150,3 +186,16 @@ class RefreshIfStaleTestCase(TestCase):
         refresh_if_stale(forge=Forge(host=host, repo_slugs=_SLUGS), overlay="mine", now=now)
 
         assert len(host.calls) == 2
+
+
+class ExternalOutcomeSnapshotModelTestCase(TestCase):
+    def test_str_names_the_status_count_and_window(self) -> None:
+        snapshot = ExternalOutcomeSnapshot.objects.record(
+            read_external_outcomes(Forge(host=_StubHost(hits=[_hit(1)]), repo_slugs=_SLUGS)),
+        )
+
+        text = str(snapshot)
+
+        assert "ok" in text
+        assert "merged=1" in text
+        assert f"window={DEFAULT_EXTERNAL_WINDOW_DAYS}d" in text
