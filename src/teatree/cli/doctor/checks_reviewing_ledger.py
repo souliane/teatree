@@ -23,6 +23,13 @@ from teatree.utils.url_slug import pr_ref_from_url
 #: How far back a zero-attempt review is still worth acting on.
 _WINDOW_DAYS = 14
 
+#: Pull requests named inline before the finding switches to a count. One finding per
+#: affected ROW turns a single incident into hundreds of lines: the operator surface that
+#: consumes this batches red findings into notifications, so a backlog of historic rows
+#: arrives as dozens of messages describing ONE condition. Volume is not incident count —
+#: the aggregate says how bad it is, and the listed command enumerates it on demand.
+_REFS_SHOWN = 8
+
 
 def _reviewed_ref(issue_url: str) -> str:
     """``<slug>#<n>`` for the PR under review, else the raw url — never a bare id."""
@@ -48,14 +55,19 @@ def check_reviewing_ledger() -> bool:
             f"WARN  Reviewing ledger UNVERIFIED: the task ledger could not be read ({exc.__class__.__name__}: {exc})."
         )
         return True
-    for task in empty:
-        url = task.ticket.issue_url
-        typer.echo(
-            f"FAIL  Task {task.pk} ({task.phase}) on {_reviewed_ref(url)} completed with no attempt recorded — "
-            f"nothing ran, yet the row reads as a finished review, so a stale or missing verdict keeps binding. "
-            f"Check what the PR actually has: t3 <overlay> review status {url}, and re-arm a review if it holds none."
-        )
-    return not empty
+    if not empty:
+        return True
+    refs = sorted({_reviewed_ref(task.ticket.issue_url) for task in empty})
+    shown = ", ".join(refs[:_REFS_SHOWN])
+    more = f", and {len(refs) - _REFS_SHOWN} more" if len(refs) > _REFS_SHOWN else ""
+    typer.echo(
+        f"FAIL  {len(empty)} completed review task(s) across {len(refs)} pull request(s) recorded no attempt — "
+        f"nothing ran, yet each row reads as a finished review, so a stale or missing verdict keeps binding. "
+        f"Affected: {shown}{more}. "
+        f"List them with `t3 <overlay> tasks list --phase reviewing --status completed`, then check each with "
+        f"`t3 <overlay> review status <pr-url>` and re-arm a review where it holds none."
+    )
+    return False
 
 
 __all__ = ["check_reviewing_ledger"]

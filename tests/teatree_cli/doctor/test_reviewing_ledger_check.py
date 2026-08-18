@@ -45,14 +45,30 @@ class ReviewingLedgerDoctorCheckTestCase(django.test.TestCase):
         assert check_reviewing_ledger() is True
 
     def test_a_completed_review_with_no_attempt_fails_loud(self) -> None:
-        task = self._completed_task()
+        self._completed_task()
 
         assert check_reviewing_ledger() is False
 
         out = self._capsys.readouterr().out
         assert "FAIL" in out
-        assert str(task.pk) in out
         assert "souliane/teatree#4308" in out
+
+    def test_many_empty_rows_report_one_finding_not_one_per_row(self) -> None:
+        """A backlog is one condition, not N incidents.
+
+        The operator surface that consumes doctor output batches red findings into
+        notifications, so a line per row turns a single condition into dozens of
+        messages. The count belongs in the finding; the enumeration belongs behind a
+        command.
+        """
+        for offset in range(25):
+            self._completed_task(pr_id=5000 + offset)
+
+        assert check_reviewing_ledger() is False
+
+        out = self._capsys.readouterr().out
+        assert out.count("FAIL") == 1, f"expected one aggregate finding, got {out.count('FAIL')}"
+        assert "25 completed review task(s)" in out
 
     def test_a_completed_task_in_another_phase_is_not_a_finding(self) -> None:
         self._completed_task(phase="coding")
