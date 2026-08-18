@@ -18,7 +18,6 @@ import typer
 from django.utils import timezone
 
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
-from teatree.core.models.ticket import Ticket
 from teatree.utils.url_slug import pr_ref_from_url
 
 #: How far back a zero-attempt review is still worth acting on.
@@ -30,9 +29,21 @@ _WINDOW_DAYS = 14
 #: the window bounds how OLD a row may be, not whether its work is still open, so a fortnight
 #: of landed reviews reported as live findings every run. Read from the local ticket rather
 #: than the forge, because a doctor check must stay a fast local read.
-_SPENT_TICKET_STATES = frozenset(
-    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED},
-)
+_SPENT_TICKET_STATE_NAMES = ("MERGED", "DELIVERED", "IGNORED")
+
+
+def _spent_ticket_states() -> set[str]:
+    """The spent states, imported inside the call like this module's other ORM import.
+
+    A module-level ORM import crashes every venue that loads the doctor without Django set
+    up — the pre-push hook among them, which died on `ImproperlyConfigured: Requested
+    setting INSTALLED_APPS`. Naming the members rather than hardcoding their values keeps
+    the binding: a renamed member raises here instead of silently matching nothing.
+    """
+    from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return {getattr(Ticket.State, name) for name in _SPENT_TICKET_STATE_NAMES}
+
 
 #: Pull requests named inline before the finding switches to a count. One finding per
 #: affected ROW turns a single incident into hundreds of lines: the operator surface that
@@ -60,7 +71,7 @@ def check_reviewing_ledger() -> bool:
                 attempts__isnull=True,
                 created_at__gte=timezone.now() - timedelta(days=_WINDOW_DAYS),
             )
-            .exclude(ticket__state__in=sorted(_SPENT_TICKET_STATES))
+            .exclude(ticket__state__in=sorted(_spent_ticket_states()))
             .select_related("ticket")
         )
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
