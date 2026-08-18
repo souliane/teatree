@@ -31,6 +31,10 @@
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
+# 2: the health signal reads the ORM-backed admission quota cache at call time
+# (#4508) — `admission_governor.pressure_for` and `admission_pressure.PressureBand`
+# must resolve after the app registry is ready, so both stay call-time.
+"src/teatree/core/factory/operational_health.py" = 2
 # Fleet-safety Stage 2 mutex (teatree.core.fleet.claim / .wire). The Django-aware
 # wire layer defers `from teatree.core.models import ImplementedIssueMarker` in its
 # three claim-lifecycle functions (ticket_claim_is_lost / heartbeat_inflight_claims
