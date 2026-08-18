@@ -130,3 +130,42 @@ class PrescribedCommandIsRealTestCase(django.test.TestCase):
     def test_the_finding_stays_enumerable(self) -> None:
         """A count with no route back to the rows is a dead end for whoever must act on it."""
         assert "tasks list" in self._finding_text()
+
+
+class ASpentFindingIsNotReportedTestCase(django.test.TestCase):
+    """Once the pull request has landed there is nothing left to re-arm.
+
+    The remedy this check prescribes is "re-arm a review". A merged ticket's missing verdict
+    binds no tree and gates no merge, so reporting it is noise that cannot be acted on — and
+    it drowns the findings that can be. Age alone did not express this: the window bounds how
+    OLD a row may be, not whether its work is still open, so a fortnight of landed reviews
+    was reported as live findings on every run.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys
+
+    @staticmethod
+    def _zero_attempt_review(*, state: str, pr_id: int) -> None:
+        ticket = Ticket.objects.create(
+            issue_url=f"https://github.com/souliane/teatree/pull/{pr_id}",
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+            state=state,
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+    def test_a_landed_ticket_is_not_a_finding(self) -> None:
+        self._zero_attempt_review(state=Ticket.State.MERGED, pr_id=4128)
+
+        assert check_reviewing_ledger() is True
+        assert "FAIL" not in self._capsys.readouterr().out
+
+    def test_a_live_ticket_is_still_a_finding(self) -> None:
+        """The control: the filter must not silence the signal it was narrowed to protect."""
+        self._zero_attempt_review(state=Ticket.State.IN_REVIEW, pr_id=4457)
+
+        assert check_reviewing_ledger() is False
+        assert "souliane/teatree#4457" in self._capsys.readouterr().out

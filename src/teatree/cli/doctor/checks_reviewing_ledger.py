@@ -18,10 +18,21 @@ import typer
 from django.utils import timezone
 
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
+from teatree.core.models.ticket import Ticket
 from teatree.utils.url_slug import pr_ref_from_url
 
 #: How far back a zero-attempt review is still worth acting on.
 _WINDOW_DAYS = 14
+
+#: Ticket states in which a missing verdict can no longer be acted on. The remedy this check
+#: prescribes is "re-arm a review", and once the pull request has landed there is nothing left
+#: to re-arm — the verdict binds no tree and gates no merge. Age alone did not express that:
+#: the window bounds how OLD a row may be, not whether its work is still open, so a fortnight
+#: of landed reviews reported as live findings every run. Read from the local ticket rather
+#: than the forge, because a doctor check must stay a fast local read.
+_SPENT_TICKET_STATES = frozenset(
+    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED},
+)
 
 #: Pull requests named inline before the finding switches to a count. One finding per
 #: affected ROW turns a single incident into hundreds of lines: the operator surface that
@@ -48,7 +59,9 @@ def check_reviewing_ledger() -> bool:
                 phase__in=sorted(VERDICT_REVIEW_PHASES),
                 attempts__isnull=True,
                 created_at__gte=timezone.now() - timedelta(days=_WINDOW_DAYS),
-            ).select_related("ticket")
+            )
+            .exclude(ticket__state__in=sorted(_SPENT_TICKET_STATES))
+            .select_related("ticket")
         )
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(
