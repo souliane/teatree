@@ -163,6 +163,16 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         query = quote_plus(" ".join(terms))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
+        """PRs on *repo* merged at or after ISO-8601 *since* — the external-outcome read.
+
+        Every failure RE-RAISES. An empty result is read downstream as "the factory
+        shipped nothing", which is the alarm this measure exists to raise — so a
+        rate-limited or unauthenticated read must never degrade into that answer.
+        """
+        query = quote_plus(f"repo:{repo} is:pr is:merged merged:>={since}")
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return the PR's changed files (path + per-file additions/deletions/patch).
 

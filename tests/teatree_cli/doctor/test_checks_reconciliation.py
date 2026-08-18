@@ -16,18 +16,22 @@ from django.test import TestCase
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree.cli.doctor import checks_external_outcomes as external
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
+from teatree.core.factory.external_outcomes import DEFAULT_EXTERNAL_WINDOW_DAYS, Forge
 from teatree.core.models import (
     AutoReviewDispatch,
     CodexReviewMarker,
     DeferredQuestion,
     EvalRunRecord,
+    ExternalOutcomeSnapshot,
     IncomingEvent,
     Loop,
     LoopState,
     Mode,
     ModeOverride,
+    ReviewVerdict,
     Session,
     Task,
     TaskAttempt,
@@ -35,6 +39,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.eval_run import EvalVerdict
+from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.loops.loop_staleness import freeze_cutoff_seconds
@@ -529,6 +534,8 @@ class DoctorHookTestCase(TestCase):
             "duplicate_execution_count",
             "high_churn_table_size",
             "review_dispatch_saturation",
+            "external_output_vs_internal_success",
+            "merged_without_verdict",
         }
 
 
@@ -711,3 +718,191 @@ class AdmittedLoopFreezeTestCase(TestCase):
         Loop.objects.create(name="probe", script="src/teatree/loops/probe/loop.py", delay_seconds=60, enabled=True)
         LoopState.objects.pause("probe")
         assert recon._check_enabled_loops_ticked().level == "ok"
+
+
+class _RaisingForgeHost:
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[dict[str, object]]:
+        message = f"HTTP 403 for {repo} since {since}"
+        raise RuntimeError(message)
+
+
+def _seed_snapshot(
+    *,
+    merged: int = 0,
+    refs: list[dict[str, object]] | None = None,
+    status: str = "ok",
+    at: dt.datetime | None = None,
+) -> ExternalOutcomeSnapshot:
+    """A snapshot inside the TTL, so the checks read it instead of the network."""
+    return ExternalOutcomeSnapshot.objects.create(
+        generated_at=at or timezone.now(),
+        window_days=DEFAULT_EXTERNAL_WINDOW_DAYS,
+        status=status,
+        repo_slugs=["acme/app"],
+        merged_pr_count=merged if refs is None else len(refs),
+        merged_pr_refs=refs or [],
+    )
+
+
+def _successes(count: int) -> None:
+    ticket = Ticket.objects.create()
+    session = Session.objects.create(ticket=ticket)
+    for _ in range(count):
+        task = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(task=task, exit_code=0)
+
+
+class ExternalOutputVsInternalSuccessTestCase(TestCase):
+    """The one measure internal bookkeeping cannot satisfy: what the forge says landed."""
+
+    def test_sustained_internal_success_with_zero_forge_merges_alarms_naming_both(self) -> None:
+        _successes(external.MIN_INTERNAL_SUCCESSES_FOR_OUTCOME + 5)
+        _seed_snapshot(merged=0)
+
+        finding = external._check_external_output_vs_internal_success()
+
+        assert finding.is_alarm
+        assert f"`{external.MIN_INTERNAL_SUCCESSES_FOR_OUTCOME + 5}`" in finding.message
+        assert "`0` pull requests merged" in finding.message
+
+    def test_forge_merges_in_the_window_is_ok(self) -> None:
+        _successes(external.MIN_INTERNAL_SUCCESSES_FOR_OUTCOME + 5)
+        _seed_snapshot(merged=4)
+
+        assert external._check_external_output_vs_internal_success().level == "ok"
+
+    def test_idle_window_is_ok_not_an_alarm(self) -> None:
+        _seed_snapshot(merged=0)
+
+        finding = external._check_external_output_vs_internal_success()
+
+        assert finding.level == "ok"
+        assert not finding.is_alarm
+
+    def test_no_forge_is_degraded_never_ok_and_never_the_alarm(self) -> None:
+        _successes(external.MIN_INTERNAL_SUCCESSES_FOR_OUTCOME + 5)
+        _seed_snapshot(merged=0, status="no_forge")
+
+        finding = external._check_external_output_vs_internal_success()
+
+        assert finding.level == "degraded"
+        assert not finding.is_alarm
+        assert "could not measure external output" in finding.message
+
+    def test_failed_forge_read_is_degraded_never_a_fabricated_zero(self) -> None:
+        _successes(external.MIN_INTERNAL_SUCCESSES_FOR_OUTCOME + 5)
+        forge = Forge(host=_RaisingForgeHost(), repo_slugs=("acme/app",))
+
+        with patch("teatree.core.factory.external_outcomes.resolve_forge", return_value=forge):
+            finding = external._check_external_output_vs_internal_success()
+
+        assert finding.level == "degraded"
+        assert not finding.is_alarm
+        assert ExternalOutcomeSnapshot.objects.count() == 0
+
+
+class MergedWithoutVerdictTestCase(TestCase):
+    """The denominator is forge-side, so internal success alone can never satisfy it."""
+
+    @staticmethod
+    def _refs(count: int) -> list[dict[str, object]]:
+        return [{"slug": "acme/app", "number": n, "url": ""} for n in range(1, count + 1)]
+
+    @staticmethod
+    def _verdict(number: int) -> None:
+        ReviewVerdict.objects.create(
+            pr_id=number,
+            slug="acme/app",
+            reviewed_sha="a" * 40,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer",
+            blast_class=MergeClear.BlastClass.LOGIC,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+        )
+
+    def test_merges_without_verdicts_alarm_naming_both_numbers(self) -> None:
+        _seed_snapshot(refs=self._refs(5))
+        self._verdict(1)
+
+        finding = external._check_merged_without_verdict()
+
+        assert finding.is_alarm
+        assert "`5` pull request(s) merged" in finding.message
+        assert "only `1` carry a recorded ReviewVerdict" in finding.message
+        assert "`acme/app#2`" in finding.message
+
+    def test_below_the_floor_is_ok(self) -> None:
+        _seed_snapshot(refs=self._refs(5))
+        for number in range(1, 5):
+            self._verdict(number)
+
+        finding = external._check_merged_without_verdict()
+
+        assert finding.level == "ok"
+        assert "4/5" in finding.message
+
+    def test_every_merge_vouched_is_ok(self) -> None:
+        _seed_snapshot(refs=self._refs(3))
+        for number in range(1, 4):
+            self._verdict(number)
+
+        assert external._check_merged_without_verdict().level == "ok"
+
+    def test_no_forge_is_degraded_never_ok(self) -> None:
+        _seed_snapshot(merged=0, status="no_forge")
+
+        assert external._check_merged_without_verdict().level == "degraded"
+
+
+class ExternalChecksAreRegisteredTestCase(TestCase):
+    def test_both_external_checks_run_in_the_ledger(self) -> None:
+        _seed_snapshot(merged=1)
+
+        ids = {finding.check_id for finding in run_reconciliation_checks()}
+
+        assert "external_output_vs_internal_success" in ids
+        assert "merged_without_verdict" in ids
+
+    def test_the_two_checks_share_one_forge_read_per_cadence(self) -> None:
+        host = _CountingForgeHost()
+        forge = Forge(host=host, repo_slugs=("acme/app",))
+
+        with patch("teatree.core.factory.external_outcomes.resolve_forge", return_value=forge):
+            run_reconciliation_checks()
+
+        assert len(host.calls) == 1
+        assert ExternalOutcomeSnapshot.objects.count() == 1
+
+
+class _CountingForgeHost:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[dict[str, object]]:
+        self.calls.append(repo)
+        return [{"number": 1, "html_url": "https://example.test/pr/1"}]
+
+
+class PersistedRefParsingTestCase(TestCase):
+    """A malformed persisted ref is dropped, never coerced into a bogus `slug#0` merge."""
+
+    def test_malformed_entries_are_dropped_not_guessed(self) -> None:
+        refs = [
+            {"slug": "acme/app", "number": 1},
+            {"slug": "acme/app", "number": "not-a-number"},
+            {"slug": None, "number": 2},
+            "not-a-mapping",
+        ]
+
+        assert external._pr_ref_pairs(refs) == [("acme/app", 1)]
+
+    def test_a_non_list_payload_yields_no_refs(self) -> None:
+        assert external._pr_ref_pairs({"slug": "acme/app"}) == []
+
+    def test_a_malformed_ref_is_not_counted_as_an_unvouched_merge(self) -> None:
+        _seed_snapshot(refs=[{"slug": "acme/app", "number": "?"}] * 4)
+
+        finding = external._check_merged_without_verdict()
+
+        assert finding.level == "ok"
+        assert not finding.is_alarm

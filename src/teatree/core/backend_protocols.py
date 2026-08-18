@@ -306,6 +306,8 @@ class CodeHostBackend(Protocol):
         author: str = "",
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch

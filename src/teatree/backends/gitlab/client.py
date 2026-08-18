@@ -151,6 +151,15 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
         return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
 
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
+        """MRs on *repo* merged at or after ISO-8601 *since* — raises rather than degrading."""
+        return _pr_reads.list_project_merged_prs_since(
+            self._client,
+            self._resolve_project(repo),
+            repo=repo,
+            since=since,
+        )
+
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 
