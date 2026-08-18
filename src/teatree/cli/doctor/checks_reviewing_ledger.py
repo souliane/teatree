@@ -64,8 +64,9 @@ def check_reviewing_ledger() -> bool:
         f"FAIL  {len(empty)} completed review task(s) across {len(refs)} pull request(s) recorded no attempt — "
         f"nothing ran, yet each row reads as a finished review, so a stale or missing verdict keeps binding. "
         f"Affected: {shown}{more}. "
-        f"List them with `t3 <overlay> tasks list --phase reviewing --status completed`, then check each with "
-        f"`t3 <overlay> review status <pr-url>` and re-arm a review where it holds none."
+        f"Enumerate them with "
+        f"`t3 <overlay> tasks list --status completed --json | jq '.[] | select(.phase == \"reviewing\")'`, "
+        f"then check each PR with `t3 <overlay> review status <pr-url>` and re-arm a review where it holds none."
     )
     return False
 

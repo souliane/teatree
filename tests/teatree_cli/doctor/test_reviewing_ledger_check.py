@@ -5,10 +5,12 @@ zero-attempt reviewing tasks accumulated unnoticed while the PRs they "reviewed"
 held.
 """
 
+import re
 from datetime import timedelta
 
 import django.test
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 
 from teatree.cli.doctor.checks_reviewing_ledger import check_reviewing_ledger
@@ -80,3 +82,51 @@ class ReviewingLedgerDoctorCheckTestCase(django.test.TestCase):
         Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=90))
 
         assert check_reviewing_ledger() is True
+
+
+class PrescribedCommandIsRealTestCase(django.test.TestCase):
+    """A finding that prescribes a remedy must prescribe one that RUNS.
+
+    The first cut of the aggregate finding told the operator to run
+    `tasks list --phase reviewing`. There is no `--phase` option — the command exits
+    `No such option: '--phase'` — and the same change had removed the per-task ids, so the
+    rows it reports became unenumerable by any route. A wrong remedy is worse than a bare
+    count: it costs the reader a round trip before they learn the finding cannot be acted on.
+
+    Nothing else catches this. The repo's CLI-literal resolver keys on `t3 <lowercase>`, so
+    every `t3 <overlay> ...` literal — the form every overlay-scoped command takes — is
+    invisible to it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys
+
+    def _finding_text(self) -> str:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/pull/4308",
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        check_reviewing_ledger()
+        return self._capsys.readouterr().out
+
+    def test_the_prescribed_command_actually_runs(self) -> None:
+        """Execute the remedy the finding prints. A flag the command rejects raises here.
+
+        Introspecting typer's option metadata was tried first and reported nothing for any
+        parameter, so it would have passed over the very defect it was written to catch.
+        Running the command is the only check that cannot be green for the wrong reason.
+        """
+        text = self._finding_text()
+        invocation = re.search(r"tasks list ([^`|]*)", text)
+        assert invocation, f"the finding no longer prescribes a `tasks list` command:\n{text}"
+
+        argv = invocation.group(1).split()
+        call_command("tasks", "list", *argv)
+
+    def test_the_finding_stays_enumerable(self) -> None:
+        """A count with no route back to the rows is a dead end for whoever must act on it."""
+        assert "tasks list" in self._finding_text()
