@@ -18,20 +18,22 @@ for yet).
 Both functions are pure functions of the recorded reason string, so the vocabulary is
 testable without a task, a harness, or a database.
 
-Two axes, deliberately NOT the same axis
-----------------------------------------
-:func:`is_environmental` answers the OPERATOR's question — "was this the work's fault,
-or the environment's?" — which is what makes a review defect distinguishable from a
-harness fault on the card.
+One table, two columns (souliane/teatree#4505)
+----------------------------------------------
+:data:`RECOVERY` maps every kind to a :class:`Recovery` — what to DO about the failure
+(:class:`RecoveryStrategy`) and whose fault it was (:func:`is_environmental`, the operator's
+diagnostic axis that makes a review defect distinguishable from a harness fault on the card).
+Both used to be hand-maintained lists that never consulted each other: the requeue decision
+lived in ``failure_signatures`` keyed on error TEXT, so a kind could be classified
+environmental here and still never be retried. ``harness_crash`` was exactly that, and it
+dropped eleven tasks in one day. Text markers now feed CLASSIFICATION only
+(:func:`classify_failure`); the strategy is a property of the kind.
 
-It is NOT the requeue predicate. That remains
-:func:`teatree.failure_signatures.is_transient_failure`, and the two are related by
-a one-way invariant this module's tests pin: everything the requeue sweep calls transient
-is also environmental here, never the reverse. The gap between them is intentional —
-:attr:`FailureKind.LEASE_LOST` is environmental (a concurrent re-claim, not a defect in
-the diff) yet must NOT be requeued by that sweep, because a live successor task already
-holds the work and reopening the predecessor would duplicate it (souliane/teatree#3534).
-Collapsing the two axes would silently re-run one of them into a wall.
+The two columns stay distinct, and the invariant is one-way: everything the sweep retries is
+environmental, never the reverse. :attr:`FailureKind.LEASE_LOST` is environmental (a concurrent
+re-claim, not a defect in the diff) yet is HALTed, because a live successor task already holds
+the work and reopening the predecessor would duplicate it (souliane/teatree#3534). Collapsing
+the columns would silently re-run one of them into a wall.
 
 A third axis: causeless (souliane/teatree#4075)
 -----------------------------------------------
@@ -62,9 +64,13 @@ existing empty-fingerprint guard). A causeless kind's reason, in contrast, IS th
 there is no defect-specific text underneath it for a check to discriminate.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from enum import StrEnum
 
 from django.db import models
+
+from teatree.failure_signatures import outage_signature_in_text
 
 #: Prefix a lease-reaper failure carries, so the reaped row names its own cause.
 LEASE_EXPIRED_PREFIX = "lease_expired: "
@@ -103,21 +109,56 @@ class FailureKind(models.TextChoices):
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
 
 
-#: Kinds caused by the environment rather than by a defect in the work. See the module
-#: docstring: this is the operator's diagnostic axis, NOT the requeue predicate.
-_ENVIRONMENTAL: frozenset[str] = frozenset(
-    {
-        FailureKind.LEASE_LOST,
-        FailureKind.LEASE_EXPIRED,
-        FailureKind.USAGE_LIMIT_PARKED,
-        FailureKind.CREDENTIAL_EXHAUSTED,
-        FailureKind.HARNESS_CRASH,
-        FailureKind.OUTAGE,
-        FailureKind.RESULT_ERROR,
-        FailureKind.PROVISION_FAILED,
-        FailureKind.LANDING_UNVERIFIED,
-    },
-)
+class RecoveryStrategy(StrEnum):
+    """What a FAILED task of a given kind has earned — the recovery half of :data:`RECOVERY`."""
+
+    RETRY = "retry"
+    CORRECTIVE_RETRY = "corrective_retry"
+    HALT = "halt_and_escalate"
+
+
+@dataclass(frozen=True)
+class Recovery:
+    """One kind's row: what to do about it, and whose fault it was."""
+
+    strategy: RecoveryStrategy
+    environmental: bool
+
+
+_RETRY = RecoveryStrategy.RETRY
+_CORRECT = RecoveryStrategy.CORRECTIVE_RETRY
+_HALT = RecoveryStrategy.HALT
+
+#: The one table both axes read (souliane/teatree#4505). Total over :class:`FailureKind` — a kind
+#: added without a row fails ``tests/teatree_core/modelkit/test_task_failure_taxonomy.py``, so the
+#: gap that dropped every ``harness_crash`` cannot recur silently.
+RECOVERY: Mapping[str, Recovery] = {
+    # An infrastructure interruption: the work never got its chance, so reopen it. Safe because the
+    # sweep is bounded twice — the #2009 iteration cap, and a loud halt on two identical failures.
+    FailureKind.OUTAGE: Recovery(_RETRY, environmental=True),
+    FailureKind.RESULT_ERROR: Recovery(_RETRY, environmental=True),
+    FailureKind.PROVISION_FAILED: Recovery(_RETRY, environmental=True),
+    FailureKind.LANDING_UNVERIFIED: Recovery(_RETRY, environmental=True),
+    FailureKind.HARNESS_CRASH: Recovery(_RETRY, environmental=True),
+    # A bounded correction exists; whether THIS task earns it is the sweep's own one-shot decision.
+    FailureKind.NO_RESULT_ENVELOPE: Recovery(_CORRECT, environmental=False),
+    FailureKind.EVIDENCE_MISSING: Recovery(_CORRECT, environmental=False),
+    FailureKind.RECORDING_REFUSED: Recovery(_CORRECT, environmental=False),
+    FailureKind.HARNESS_CONFIG_INVALID: Recovery(_CORRECT, environmental=False),
+    # Environmental, yet reopening races whoever already owns the work, or a window that has not
+    # reset — so these page a human instead.
+    FailureKind.LEASE_LOST: Recovery(_HALT, environmental=True),
+    FailureKind.LEASE_EXPIRED: Recovery(_HALT, environmental=True),
+    FailureKind.USAGE_LIMIT_PARKED: Recovery(_HALT, environmental=True),
+    FailureKind.CREDENTIAL_EXHAUSTED: Recovery(_HALT, environmental=True),
+    # A defect, a deliberate stop, or a failure this vocabulary cannot name: never auto-reopened.
+    FailureKind.UNRECORDED: Recovery(_HALT, environmental=False),
+    FailureKind.UNCLASSIFIED: Recovery(_HALT, environmental=False),
+    FailureKind.RUNTIME_CEILING: Recovery(_HALT, environmental=False),
+    FailureKind.CANCELLED: Recovery(_HALT, environmental=False),
+    FailureKind.SUPERSEDED: Recovery(_HALT, environmental=False),
+    FailureKind.AGENT_ABANDONED: Recovery(_HALT, environmental=False),
+}
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
 #: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
@@ -161,23 +202,13 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.CREDENTIAL_EXHAUSTED, ("accounts are exhausted", "credit balance is too low")),
     (FailureKind.HARNESS_CONFIG_INVALID, ("is not valid for agent_harness", "agent_harness_provider=")),
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),
-    (FailureKind.RECORDING_REFUSED, ("recording refused",)),
-    (FailureKind.HARNESS_CRASH, ("traceback (most recent call last)", "processerror")),
-    # A raw connection signature whose envelope was never stamped with a marker. These
-    # mirror ``teatree.agents.outage_classifier``; this module is a pure leaf (it may not
-    # import the agents layer), so a test pins the two against each other rather than a
-    # runtime call doing it.
+    # The recorder's other three refusals of a parsed-but-unusable envelope were unnamed until
+    # #4505; leaving them ``unclassified`` denied them the correction their sibling earns.
     (
-        FailureKind.OUTAGE,
-        (
-            "unable to connect to api",
-            "connectionrefused",
-            "connection refused",
-            "failedtoopensocket",
-            "failed to open socket",
-            "safety classifier unavailable",
-        ),
+        FailureKind.RECORDING_REFUSED,
+        ("recording refused", "unexpected keys", "result is not valid json", "result must be a json object"),
     ),
+    (FailureKind.HARNESS_CRASH, ("traceback (most recent call last)", "processerror")),
 )
 
 
@@ -198,16 +229,25 @@ def classify_failure(error: str) -> str:
     for kind, needles in _MATCHERS:
         if any(needle.casefold() in haystack for needle in needles):
             return kind
+    if outage_signature_in_text(error):
+        return FailureKind.OUTAGE
     return FailureKind.UNCLASSIFIED
+
+
+def recovery_strategy(kind: str) -> RecoveryStrategy:
+    """What *kind* has earned. A kind this build cannot place HALTs — never auto-reopened."""
+    recovery = RECOVERY.get(kind)
+    return recovery.strategy if recovery is not None else RecoveryStrategy.HALT
 
 
 def is_environmental(kind: str) -> bool:
     """Whether *kind* is an environment/infrastructure fault rather than a defect.
 
     The operator axis only — see the module docstring on why this is deliberately a
-    superset of the requeue sweep's transient set and must not be substituted for it.
+    superset of the retried set and must not be substituted for it.
     """
-    return kind in _ENVIRONMENTAL
+    recovery = RECOVERY.get(kind)
+    return recovery is not None and recovery.environmental
 
 
 def is_causeless(kind: str) -> bool:
@@ -251,11 +291,15 @@ __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
     "LEASE_EXPIRED_PREFIX",
+    "RECOVERY",
     "SUPERSEDED_PREFIX",
     "FailureKind",
+    "Recovery",
+    "RecoveryStrategy",
     "classify_failure",
     "is_causeless",
     "is_environmental",
+    "recovery_strategy",
     "stall_fingerprints",
     "stall_kinds",
 ]

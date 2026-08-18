@@ -4,11 +4,16 @@ The evidence is always text — a dead sub-agent's result envelope, a review
 backend's stderr, a FAILED attempt's stored ``error`` — and its readers sit on
 opposite sides of the module graph: the recorder chokepoint in
 :mod:`teatree.agents.attempt_recorder`, the cooldown seam in
-:mod:`teatree.core.review.backend_cooldown`, the requeue sweep in
-:mod:`teatree.loop.transient_requeue`. ``teatree.agents`` and ``teatree.core``
-share the ``domain`` layer and so cannot import each other; the tables and the
-predicates over them therefore live in this dependency-free foundation leaf,
-which every reader depends on downward.
+:mod:`teatree.core.review.backend_cooldown`, the classifier in
+:mod:`teatree.core.modelkit.task_failure_taxonomy`. ``teatree.agents`` and
+``teatree.core`` share the ``domain`` layer and so cannot import each other; the
+tables and the predicates over them therefore live in this dependency-free
+foundation leaf, which every reader depends on downward.
+
+Every predicate here answers "what does this text SAY?" and nothing more. What to
+DO about a failure is a property of its named kind, not of a marker that happens to
+be in the string, so it lives in one table in the taxonomy above
+(:data:`~teatree.core.modelkit.task_failure_taxonomy.RECOVERY`, souliane/teatree#4505).
 
 Precision over recall: an outage death is rare relative to legit completions, so
 a false positive (failing a genuine completion that merely *mentions* an API
@@ -112,47 +117,6 @@ def quota_exhausted(*, returncode: int, stderr: str) -> str:
     if returncode == 0:
         return ""
     return quota_signature(stderr)
-
-
-# Namespaced markers a FAILED attempt's ``error`` carries when the death was an
-# infrastructure interruption rather than a deterministic defect. Each is emitted
-# by exactly one recording seam: ``outage_death:`` by the recorder (#1764),
-# ``result_error:`` by the headless driver for the #1764 "genuine FAILED run"
-# class (a missing terminal ResultMessage OR an ``is_error`` result — both
-# transient), ``provision_failed:`` by a worktree/provisioning step, and
-# ``landing_unverified:`` by the completion chokepoint when a coder yielded
-# without committing. A deterministic refusal (evidence gate, schema, review
-# verdict, a real assertion/test failure, a ``stuck_loop`` runaway) matches none.
-_TRANSIENT_MARKERS = (
-    "outage_death:",
-    "result_error:",
-    "provision_failed:",
-    "landing_unverified:",
-)
-
-
-def transient_failure_signature(error: str) -> str:
-    """Return the transient signature of a FAILED attempt's *error*, or ``""``.
-
-    A non-empty return means the failure was an infrastructure interruption the
-    bounded auto-requeue sweep MAY reopen; ``""`` means a deterministic failure
-    that must stay terminal FAILED. Keys on the namespaced markers above, plus a
-    raw connection / "API Error + connection" signature in the error text (an
-    outage death whose envelope was never stamped with the ``outage_death:``
-    prefix). Case-insensitive.
-    """
-    haystack = error.casefold()
-    if not haystack.strip():
-        return ""
-    for marker in _TRANSIENT_MARKERS:
-        if marker in haystack:
-            return marker.rstrip(": ")
-    return outage_signature_in_text(error)
-
-
-def is_transient_failure(error: str) -> bool:
-    """Whether a FAILED attempt's *error* classifies as a transient interruption."""
-    return bool(transient_failure_signature(error))
 
 
 #: Phrases a FAILED attempt carries when the agent PROCESS never started — the named
