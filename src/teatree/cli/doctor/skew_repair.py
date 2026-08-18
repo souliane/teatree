@@ -26,12 +26,22 @@ so fresh drift is still repaired once while the same unrepaired drift reports it
 import hashlib
 import json
 import time
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.utils.dep_skew import VersionSkew
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    # TYPE-ONLY, and load-bearing: :mod:`teatree.utils.dep_skew` imports ``packaging``
+    # at module scope, and THIS module is reached eagerly from
+    # ``checks_mcp._check_version_skew``. An eager import here meant a tool env without
+    # ``packaging`` could not even run the doctor — the whole run died on import and the
+    # ``--json`` surface emitted zero bytes. ``VersionSkew`` appears only in annotations,
+    # so nothing here needs the module at runtime; the quoted annotations below keep that
+    # true (this file has no ``from __future__ import annotations``).
+    from teatree.utils.dep_skew import VersionSkew
 
 RECEIPT_FILENAME = "mcp-skew-repair.json"
 
@@ -47,7 +57,7 @@ def receipt_path() -> Path:
     return data_dir_root() / RECEIPT_FILENAME
 
 
-def skew_fingerprint(skews: Iterable[VersionSkew]) -> str:
+def skew_fingerprint(skews: "Iterable[VersionSkew]") -> str:
     """A stable key for one skew SET, so a different drift is a different receipt."""
     digest = hashlib.sha256("\n".join(sorted(skew.summary for skew in skews)).encode("utf-8"))
     return digest.hexdigest()
@@ -85,7 +95,7 @@ def clear_repair_receipt() -> None:
     receipt_path().unlink(missing_ok=True)
 
 
-def _remedy(skews: list[VersionSkew]) -> str | None:
+def _remedy(skews: "list[VersionSkew]") -> str | None:
     """The command that clears *skews* in the running env, or ``None`` when there is none."""
     from teatree.cli.dep_drift_repair import (  # noqa: PLC0415 — deferred: repair path only
         RepairPlan,
@@ -96,7 +106,7 @@ def _remedy(skews: list[VersionSkew]) -> str | None:
     return plan.label if isinstance(plan, RepairPlan) else None
 
 
-def report_version_skew(skews: list[VersionSkew]) -> None:
+def report_version_skew(skews: "list[VersionSkew]") -> None:
     """Print the exact remedy for *skews* and run nothing — the read-only default."""
     remedy = _remedy(skews)
     if remedy is None:
@@ -106,7 +116,7 @@ def report_version_skew(skews: list[VersionSkew]) -> None:
     typer.echo("      Or re-run as `t3 doctor check --repair` to have the doctor run that for you.")
 
 
-def repair_version_skew(source: Path, skews: list[VersionSkew]) -> bool:
+def repair_version_skew(source: Path, skews: "list[VersionSkew]") -> bool:
     """Reinstall the running env to clear *skews*; return whether they are gone.
 
     A stale env is a MECHANICAL cause with a deterministic fix, so under ``--repair`` it

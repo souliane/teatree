@@ -163,7 +163,8 @@ RECOMMENDED_AUTHORIZATIONS: tuple[RecommendedAuthorization, ...] = (
         sentence=(
             "Allow `docker exec` into teatree deployment containers and installing the "
             "teatree editable package with extras via uv (e.g. "
-            "`uv tool install --editable '<clone>[slack]' --overrides <clone>/uv-overrides.txt`) "
+            "`uv tool install --editable '<clone>[slack]' --overrides <clone>/uv-overrides.txt "
+            "--constraints <clone>/uv-constraints.txt`) "
             "as part of Slack/deploy setup and runtime provisioning in Docker."
         ),
         keyphrases=("docker exec", "uv tool install"),
