@@ -12,7 +12,17 @@ is commit metadata a diff never shows, so that fourth gate refuses a non-noreply
 identity on a PUBLIC GitHub remote exactly as the ``refuse-public-push-with-leak``
 pre-push hook does.
 
-Any finding is a hard refusal: nothing is committed, nothing is pushed.
+The gates run over the PUSH RANGE, not the staged delta. ``git push`` here bypasses the
+hook chain, so it delivers every committed-but-unpushed commit on the branch — and three
+of the four gates used to read ``git diff --cached`` alone. A secret committed in an
+earlier turn, with nothing staged now, was pushed with ``ok: True`` and ``findings: []``
+while all four gates reported executed. :mod:`teatree.core.push_range` computes the same
+set the bash hook does, including its merge-forward handling, so closing that hole does
+not turn every merge-forward push into a refusal.
+
+Any finding is a hard refusal: nothing is committed, nothing is pushed. So is a range
+nothing can bound — fail closed, exactly as ``_branch_guard_finding`` already does for an
+unresolvable default branch.
 """
 
 import json
@@ -26,6 +36,7 @@ from typing import Final, Protocol
 
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
+from teatree.core.push_range import PushRange
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
@@ -44,6 +55,7 @@ LEAK_GATES: Final[tuple[str, str, str, str]] = (
 
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
+_RANGE_MESSAGE_PATH = "<unpushed-commit-messages>"
 _OVERLAY_TERMS_ENV = "TEATREE_OVERLAY_LEAK_TERMS"
 _DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
@@ -155,41 +167,43 @@ def _public_github_slug(repo: Path) -> str | None:
     return slug if result.stdout.strip().upper() == "PUBLIC" else None
 
 
-def _push_identities(repo: Path) -> list[str]:
+def _push_identities(repo: Path, push_range: PushRange) -> list[str]:
     """Author + committer emails that WILL reach the remote on the next push.
 
     The pending commit's identity (``GIT_AUTHOR_EMAIL`` / ``GIT_COMMITTER_EMAIL``
-    override, else ``user.email``) plus every already-committed-but-unpushed
-    commit on the branch (``origin/<default>..HEAD``). Reading the pending
-    identity from config keeps the gate PRE-commit, so a bad identity refuses
-    before anything is committed.
+    override, else ``user.email``) plus every identity in *push_range* — the
+    already-committed-but-unpushed commits. Reading the pending identity from
+    config keeps the gate PRE-commit, so a bad identity refuses before anything
+    is committed.
+
+    The range identities used to be read here behind ``if result.returncode == 0``,
+    which silently dropped every unpushed commit's identity whenever the range
+    could not be resolved. The read now happens once, in :meth:`PushRange.resolve`,
+    and an unresolvable range refuses the push outright instead.
     """
     config_email = git.config_value(repo=str(repo), key="user.email")
     idents = {
         os.environ.get("GIT_AUTHOR_EMAIL", "") or config_email,
         os.environ.get("GIT_COMMITTER_EMAIL", "") or config_email,
+        *push_range.identities,
     }
-    try:
-        default = git.default_branch(repo=str(repo))
-    except (RuntimeError, ValueError):
-        default = "main"
-    result = run_allowed_to_fail(
-        ["git", "log", "--format=%ae%n%ce", f"origin/{default}..HEAD"],
-        expected_codes=None,
-        cwd=repo,
-    )
-    if result.returncode == 0:
-        idents.update(line for line in result.stdout.splitlines() if line)
     return sorted(email for email in idents if email)
 
 
 class LeakGateScan:
-    """The four leak gates, run in-process over the staged diff, message, and commit identity."""
+    """The four leak gates, over the whole PUSH RANGE plus the staged diff and message.
 
-    def __init__(self, repo: Path, staged_files: list[str], message_text: str) -> None:
+    The range is what ``git push`` will actually deliver; the staged diff and the
+    pending message are what this invocation is about to add to it. Both are in scope
+    because either alone leaves a hole: staged-only misses a secret committed in an
+    earlier turn, range-only misses the commit this call has not made yet.
+    """
+
+    def __init__(self, repo: Path, staged_files: list[str], message_text: str, push_range: PushRange) -> None:
         self._repo = repo
         self._files = staged_files
         self._message_text = message_text
+        self._range = push_range
 
     def run(self) -> list[LeakFinding]:
         lines_by_path = self._added_lines_by_path()
@@ -210,7 +224,7 @@ class LeakGateScan:
                 path="<commit-identity>",
                 detail=f"non-noreply commit identity '{email}' would leak to public repo {slug}",
             )
-            for email in _push_identities(self._repo)
+            for email in _push_identities(self._repo, self._range)
             if not is_noreply_email(email)
         ]
 
@@ -221,7 +235,10 @@ class LeakGateScan:
             if added is None:
                 added = self._full_file_lines(file)
             by_path[file] = added
+        for path, lines in _added_lines_from_diff(self._range.diff_text).items():
+            by_path.setdefault(path, []).extend(lines)
         by_path[_MESSAGE_PATH] = self._message_text.splitlines()
+        by_path[_RANGE_MESSAGE_PATH] = self._range.commit_messages.splitlines()
         return by_path
 
     def _full_file_lines(self, file: str) -> list[str]:
@@ -252,8 +269,8 @@ class LeakGateScan:
         script = _privacy_scan_script()
         if script is None:
             return [LeakFinding(gate="secret-scan", path="", detail="scripts/privacy_scan.py not found — fail closed")]
-        diff_text = run_checked(["git", "diff", "--cached"], cwd=self._repo).stdout.rstrip("\n")
-        scan_text = f"{diff_text}\n{self._message_text}"
+        scanned = self._scan_lines()
+        scan_text = "\n".join(line for line, _ in scanned)
         with tempfile.NamedTemporaryFile("w", suffix=".diff", delete=False, encoding="utf-8") as handle:
             handle.write(scan_text)
             scan_path = Path(handle.name)
@@ -269,16 +286,30 @@ class LeakGateScan:
         if result.returncode != _PRIVACY_FINDINGS_EXIT_CODE:
             detail = f"privacy scanner could not run (exit {result.returncode}) — fail closed"
             return [LeakFinding(gate="secret-scan", path="", detail=detail)]
-        line_paths = _line_paths(diff_text, self._message_text)
         findings = json.loads(result.stdout)
         return [
             LeakFinding(
                 gate="secret-scan",
-                path=_path_for_line(line_paths, int(item["line"])),
+                path=_path_for_line(scanned, int(item["line"])),
                 detail=f"{item['category']}: {item['match']}",
             )
             for item in findings
         ]
+
+    def _scan_lines(self) -> list[tuple[str, str]]:
+        """``(line, owning path)`` for every line the scanner sees, in scan order.
+
+        The scanner reports findings by LINE NUMBER into the concatenated blob, so the
+        path column has to be built from the same concatenation — one pass, never two
+        that can drift apart.
+        """
+        staged_diff = run_checked(["git", "diff", "--cached"], cwd=self._repo).stdout.rstrip("\n")
+        pairs: list[tuple[str, str]] = []
+        for diff_text in (self._range.diff_text, staged_diff):
+            pairs.extend(zip(diff_text.splitlines(), _diff_line_paths(diff_text), strict=True))
+        pairs.extend((line, _MESSAGE_PATH) for line in self._message_text.splitlines())
+        pairs.extend((line, _RANGE_MESSAGE_PATH) for line in self._range.commit_messages.splitlines())
+        return pairs
 
     @staticmethod
     def _overlay_leak(lines_by_path: dict[str, list[str]]) -> list[LeakFinding]:
@@ -306,19 +337,41 @@ def _privacy_scan_script() -> Path | None:
     return script if script.is_file() else None
 
 
-def _line_paths(diff_text: str, message_text: str) -> list[str]:
+def _diff_line_paths(diff_text: str) -> list[str]:
     paths: list[str] = []
     current = ""
     for line in diff_text.splitlines():
         if line.startswith("+++ b/"):
             current = line[len("+++ b/") :]
         paths.append(current)
-    paths.extend(_MESSAGE_PATH for _ in message_text.splitlines())
     return paths
 
 
-def _path_for_line(line_paths: list[str], line: int) -> str:
-    return line_paths[line - 1] if 0 < line <= len(line_paths) else ""
+def _path_for_line(scanned: list[tuple[str, str]], line: int) -> str:
+    return scanned[line - 1][1] if 0 < line <= len(scanned) else ""
+
+
+def _added_lines_from_diff(diff_text: str) -> dict[str, list[str]]:
+    """``{path: added line bodies}`` from a unified diff.
+
+    HUNK-AWARE, for the reason :func:`staged_added_lines` is: git renders an added line
+    whose own text starts with ``++`` as ``+++text``, so a naive
+    ``not line.startswith("+++")`` filter drops it — and a banned term on such a line
+    would slip the gate. File headers only ever appear BEFORE the first ``@@``.
+    """
+    by_path: dict[str, list[str]] = {}
+    path = ""
+    in_hunk = False
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            path, in_hunk = "", False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif not in_hunk and line.startswith("+++ b/"):
+            path = line[len("+++ b/") :]
+        elif in_hunk and line.startswith("+") and path:
+            by_path.setdefault(path, []).append(line[1:])
+    return by_path
 
 
 class FastPusher:
@@ -335,6 +388,13 @@ class FastPusher:
         guard = self._branch_guard_finding(branch)
         if guard is not None:
             return FastPushOutcome(ok=False, branch=branch, findings=[guard])
+        push_range = PushRange.resolve(self._repo, branch=branch, default_branch=self._default_branch())
+        if push_range is None:
+            detail = (
+                "refusing to fast-push: could not resolve what this push would newly expose "
+                f"(no reachable origin/{self._default_branch()} tip) — fail closed"
+            )
+            return FastPushOutcome(ok=False, branch=branch, findings=[LeakFinding("push-range", "", detail)])
         run_checked(["git", "add", "-A"], cwd=self._repo)
         staged = run_checked(
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
@@ -342,7 +402,7 @@ class FastPusher:
         ).stdout.splitlines()
         message = self._message or f"chore(wip): fast-push checkpoint ({branch})"
         message_text = f"{message}\n{self._remaining}" if self._remaining else message
-        findings = LeakGateScan(self._repo, staged, message_text).run()
+        findings = LeakGateScan(self._repo, staged, message_text, push_range).run()
         if findings:
             return FastPushOutcome(ok=False, branch=branch, executed_gates=LEAK_GATES, findings=findings)
         outcome = FastPushOutcome(ok=True, branch=branch, executed_gates=LEAK_GATES, message=message)

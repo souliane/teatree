@@ -391,3 +391,144 @@ class TestCoreGateClassRouting:
         assert [f.detail for f in LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]})] == [
             "banned term 'acme'"
         ]
+
+
+def _commit(repo: Path, filename: str, content: str, message: str, *, email: str = "") -> None:
+    (repo / filename).write_text(content)
+    run_checked(["git", "add", "-A"], cwd=repo)
+    cmd = ["git", "-c", f"user.email={email}"] if email else ["git"]
+    run_checked([*cmd, "commit", "-m", message], cwd=repo)
+
+
+def _merge_forward(repo: Path, *, main_content: str, main_email: str = "") -> None:
+    """Advance ``main`` with *main_content*, publish it, and merge it into ``feature``.
+
+    The #3523 shape: everything the merge carries in is ALREADY public, so a range that
+    re-judges it turns every ordinary merge-forward into a refusal.
+    """
+    run_checked(["git", "checkout", "main"], cwd=repo)
+    _commit(repo, "prior.txt", main_content, "prior PR merged on main", email=main_email)
+    run_checked(["git", "push", "origin", "main"], cwd=repo)
+    run_checked(["git", "checkout", "feature"], cwd=repo)
+    run_checked(["git", "merge", "origin/main", "-m", "merge origin/main into feature"], cwd=repo)
+
+
+class TestTheGatesScanThePushRangeNotJustTheStagedDelta:
+    """``git push --no-verify`` delivers every committed-but-unpushed commit.
+
+    Three of the four gates read only ``git diff --cached``, so a secret committed in
+    an earlier turn — with nothing staged now — was pushed with ``ok: True`` and
+    ``findings: []``, all four gates reporting executed. The bash hook this engine
+    replaces (``scripts/hooks/refuse-public-push-with-leak.sh``) has always scanned
+    the whole push range.
+    """
+
+    def test_a_secret_in_a_committed_unpushed_commit_is_refused(self, repo: Path, leak_env: None) -> None:
+        planted = "ghp" + "_" + "a1b2c3d4e5f6a7b8c9d0"
+        _commit(repo, "config.py", f'TOKEN = "{planted}"\n', "chore: wip checkpoint")
+        forge = FakeForge()
+
+        outcome = run_fast_push(repo, forge)
+
+        assert not outcome.ok
+        assert any(f.gate == "secret-scan" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+        assert (
+            "refs/heads/feature"
+            not in run_checked(["git", "ls-remote", "--heads", "origin", "feature"], cwd=repo).stdout
+        )
+
+    def test_a_banned_term_in_an_unpushed_commit_message_is_refused(self, repo: Path, leak_env: None) -> None:
+        # The hook judges commit MESSAGES in the range too — they reach public history
+        # exactly like file content. `_banned_terms` saw only the pending message.
+        _commit(repo, "clean.py", "x = 1\n", "feat: wire up forbiddenbrand support")
+        forge = FakeForge()
+
+        outcome = run_fast_push(repo, forge)
+
+        assert not outcome.ok
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_banned_term_in_an_unpushed_commit_diff_is_refused(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+        forge = FakeForge()
+
+        outcome = run_fast_push(repo, forge)
+
+        assert not outcome.ok
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_non_noreply_identity_on_an_unpushed_commit_is_refused(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "clean.py", "x = 1\n", "feat: clean", email="dev@example.com")
+
+        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+            outcome = run_fast_push(repo, FakeForge())
+
+        assert not outcome.ok
+        assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
+        assert not outcome.pushed
+
+    def test_an_unresolvable_push_range_is_a_hard_refusal(self, repo: Path, leak_env: None) -> None:
+        # The default branch NAME resolves but its remote tip does not (a partial fetch).
+        # `_branch_guard_finding` already fails closed on an unresolvable default branch;
+        # a range nothing can bound gets the same posture rather than a silent skip.
+        (repo / "feature.py").write_text("x = 1\n")
+
+        with patch("teatree.core.fast_push.git.default_branch", return_value="development"):
+            outcome = run_fast_push(repo, FakeForge())
+
+        assert not outcome.ok
+        assert any(f.gate == "push-range" for f in outcome.findings), outcome.findings
+        assert not outcome.committed
+        assert not outcome.pushed
+
+
+class TestThePushRangeDoesNotReJudgeAlreadyPublicHistory:
+    """The port of ``_remote_sha_is_trusted_base`` + the hook's merge-forward handling.
+
+    Naive range scanning re-judges ``main``'s own history, so every merge-forward push
+    refuses. The range is HEAD minus every already-public tip — ``origin/<default>`` and,
+    when the branch exists on the remote, its own tip — never a linear span (#3523).
+    """
+
+    def test_a_merge_forward_carrying_a_finding_on_main_is_allowed(self, repo: Path, leak_env: None) -> None:
+        _merge_forward(repo, main_content="a prior PR mentioning forbiddenbrand\n")
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
+
+    def test_a_merge_forward_does_not_re_judge_mains_commit_identities(self, repo: Path, leak_env: None) -> None:
+        _merge_forward(repo, main_content="a clean prior line\n", main_email="squash@example.com")
+        (repo / "feature.py").write_text("x = 1\n")
+
+        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+            outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+        assert not any("squash@example.com" in f.detail for f in outcome.findings)
+
+    def test_a_branch_finding_on_top_of_a_merge_forward_still_refuses(self, repo: Path, leak_env: None) -> None:
+        _merge_forward(repo, main_content="a clean prior line\n")
+        _commit(repo, "leak.md", "mentions forbiddenbrand here\n", "docs: add notes")
+
+        outcome = run_fast_push(repo, FakeForge())
+
+        assert not outcome.ok
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+
+    def test_an_already_pushed_branch_commit_is_not_re_judged(self, repo: Path, leak_env: None) -> None:
+        # The branch's own remote tip is a public tip too: a commit already on
+        # `origin/feature` is not newly exposed by this push, so it is out of range.
+        _commit(repo, "old.md", "mentions forbiddenbrand here\n", "docs: forbiddenbrand notes")
+        run_checked(["git", "push", "-u", "origin", "feature"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
