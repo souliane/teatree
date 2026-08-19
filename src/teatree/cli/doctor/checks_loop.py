@@ -432,30 +432,28 @@ def _check_shipped_seed_inertness() -> bool:
 
 
 def _check_aged_sweep_skips() -> bool:
-    """Warn on each PR the merge sweep has skipped for the same reason N ticks running.
+    """One standing finding for the PRs the merge sweep keeps skipping (#4523).
 
     A sweep skip is log-only, so a PR held by ``ci_red`` / ``no_clear_for_head`` /
-    a fork provenance hold sits indefinitely with nobody told. The DM fires once
-    when the streak ages; this is the standing view — every aged streak, announced
-    or not, with the PR, the reason and how long it has been stuck. Crash-proof:
-    any error degrades to OK.
+    a fork provenance hold sits indefinitely with nobody told. Reporting a line per
+    row made 41 rows read as 41 incidents; the count is the finding. A deliberate
+    park is counted, never a fault. Crash-proof: any error degrades to OK.
     """
     from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS  # noqa: PLC0415 — deferred: lazy CLI import
+    from teatree.loop.pr_sweep_skip_surface import (  # noqa: PLC0415 — deferred: lazy CLI import
+        SURFACE_AFTER_TICKS,
+        render_standing_skips,
+    )
 
     try:
-        aged = list(SweepSkipStreak.objects.aged(threshold=SURFACE_AFTER_TICKS))
+        summary = SweepSkipStreak.objects.standing(threshold=SURFACE_AFTER_TICKS)
+        lines = render_standing_skips(summary, threshold=SURFACE_AFTER_TICKS)
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Aged-sweep-skip check crashed: {exc.__class__.__name__}: {exc}")
         return True
-    if not aged:
-        return True
-    for row in aged:
-        typer.echo(
-            f"WARN  PR {row.ref} skipped by the merge sweep {row.tick_count}x "
-            f"({row.age_label()}) — reason `{row.reason}`. {row.link}",
-        )
-    return False
+    for line in lines:
+        typer.echo(line)
+    return summary.stalls == 0
 
 
 def _check_unconsumed_merge_clears() -> bool:
