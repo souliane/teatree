@@ -35,8 +35,11 @@ module graph stays acyclic — ``teatree.core.management`` may not depend
 on the top-level ``teatree.core.notify``.
 """
 
+import datetime as dt
+import io
 import os
 import sys
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated
@@ -46,12 +49,28 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
+from teatree.core.notify_types import NotifyReason
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
 
 _MISSING_SCOPE_ERRORS = frozenset({"missing_scope", "no_permission"})
+
+#: Non-deliveries that are a routing DECISION, not a transport failure — the caller got
+#: what it asked for, so the shell must see exit 0.
+_WITHHELD_BY_DESIGN: frozenset[NotifyReason] = frozenset({NotifyReason.INTERNAL_AUDIENCE, NotifyReason.ROUTED_TO_PULL})
+
+
+#: Column budget for the digest's "most recent" cell — the rest is on the row itself.
+_DIGEST_EXCERPT_CHARS = 90
+
+
+def _first_line(text: str) -> str:
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    return line if len(line) <= _DIGEST_EXCERPT_CHARS else f"{line[: _DIGEST_EXCERPT_CHARS - 3]}..."
 
 
 @contextmanager
@@ -147,6 +166,13 @@ class Command(TyperCommand):
                 options=NotifyOptions(user_id=user_id or None),
             )
 
+        if outcome.reason in _WITHHELD_BY_DESIGN:
+            # Exit 0: the signal was recorded exactly where it belongs. A non-zero exit
+            # here reads as a transport failure to every shell caller — ``deploy/watchdog.sh``
+            # parks such a page and re-sends it every pass — so a withheld status signal
+            # would retry forever against a decision that will never change.
+            self.stderr.write(f"withheld from the DM channel for key={idempotency_key}: {outcome.detail}")
+            return f"recorded, not DM'd ({idempotency_key})."
         if not outcome.sent:
             # Surface *why* delivery failed instead of a bare rc=1 (#1181). The
             # egress names its own reason, so the branches that leave no audit row
@@ -157,6 +183,56 @@ class Command(TyperCommand):
             )
             raise SystemExit(1)
         return f"sent ({idempotency_key})."
+
+    @command()
+    def digest(
+        self,
+        since_hours: Annotated[
+            int,
+            typer.Option("--since-hours", help="How far back to read the pulled status signals."),
+        ] = 24,
+        overlay: Annotated[
+            str,
+            typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay bot routing)."),
+        ] = "",
+    ) -> str:
+        """Read the status signals the classifier kept off the DM channel (#4524)."""
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+        from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        if since_hours <= 0:
+            self.stderr.write("--since-hours must be positive")
+            raise SystemExit(2)
+
+        cutoff = timezone.now() - dt.timedelta(hours=since_hours)
+        with _overlay_env(overlay):
+            rows = list(
+                BotPing.objects.filter(status=BotPing.Status.PULLED, posted_at__gte=cutoff).order_by("-posted_at")
+            )
+
+        if not rows:
+            return f"no status signals in the last {since_hours}h."
+
+        grouped: dict[str, list[BotPing]] = defaultdict(list)
+        for row in rows:
+            grouped[signal_of(row.idempotency_key)].append(row)
+
+        table = [
+            [signal, str(len(pings)), _first_line(pings[0].text)]
+            for signal, pings in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+        ]
+        # Rendered into a buffer because Django's ``OutputWrapper`` is not an ``IO[str]``;
+        # going through ``self.stdout`` is what keeps ``call_command(stdout=...)`` capturing.
+        rendered = io.StringIO()
+        print_table(
+            ["Signal", "Count", "Most recent"],
+            table,
+            title=f"Status signals, last {since_hours}h (not DM'd)",
+            stream=rendered,
+        )
+        self.stdout.write(rendered.getvalue())
+        return f"{len(rows)} signal(s) across {len(grouped)} kind(s)."
 
     @command()
     def post(

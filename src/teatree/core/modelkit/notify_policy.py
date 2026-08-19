@@ -10,6 +10,14 @@ flag signals, substrate holds, waiting digests, provision/scope/preset internals
 — is :attr:`~NotifyAudience.INTERNAL`: it is logged and terminally recorded, but
 never DM'd.
 
+Audience answers WHO a notification is for; it does not answer whether that person
+should be INTERRUPTED for it. Since #4524 that second question has its own classifier,
+:mod:`teatree.core.modelkit.dm_channel_policy`, which the egress consults after this
+one: an :attr:`~NotifyAudience.OWNER_DELIVERY` or
+:attr:`~NotifyAudience.OWNER_ESCALATION` notification reaches Slack only if its signal
+is registered as worth a push, and is otherwise recorded for the pulled surface. So the
+four owner audiences below name the owner's four concerns, not four guaranteed DMs.
+
 The taxonomy is deliberately closed and coupling-light (only :mod:`enum`) so the
 ``BotPing`` model can import it to filter its re-delivery backlog without a cycle.
 """
