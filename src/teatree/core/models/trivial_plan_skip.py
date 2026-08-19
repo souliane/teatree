@@ -19,7 +19,10 @@ uses, mirroring that precedent. ``check_plan_artifact`` (the single ``plan()``
 gate) accepts the recorded marker as a satisfying signal, so a trivial-marked
 ticket advances STARTED → PLANNED with no ``PlanArtifact`` and no
 ``--human-authorize``. ``execute_provision`` skips ``schedule_planning`` so the
-auto-planner is never scheduled for a trivial-marked AUTHOR ticket.
+auto-planner is never scheduled for a trivial-marked AUTHOR ticket. A third
+consumer, ``plan_dispatch_gate.unplanned_dispatch_refusal`` (#4409), accepts it so
+the implementing dispatch itself proceeds — this marker IS the cheap recorded
+escape that gate refuses an unrecorded skip in favour of.
 
 A malformed or empty-reason marker is treated as absent (fail-safe to "planning
 still required"), so a garbled row can never silently skip the gate.

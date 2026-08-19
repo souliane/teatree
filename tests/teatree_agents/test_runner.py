@@ -48,6 +48,7 @@ from teatree.core.models import (
 )
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import assistant_tool_use as _assistant_tool_use
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
@@ -60,7 +61,7 @@ from tests.teatree_core.models._shared import _init_repo_with_branch
 class TestRunHeadless(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_captures_structured_result(self) -> None:
         result = {
@@ -242,7 +243,7 @@ class TestNoResultEnvelopeGuard(TestCase):
     """
 
     def _task(self, *, phase: str) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
@@ -331,7 +332,7 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
         self._tmp_path = tmp_path
 
     def test_coding_prose_only_with_a_landed_commit_is_still_salvaged(self) -> None:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         repo_dir = self._tmp_path / f"repo-{ticket.pk}"
@@ -371,7 +372,7 @@ class TestRunHeadlessStageSkillResolution(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_stage_skills_resolved_once_per_dispatch(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
@@ -407,7 +408,7 @@ class TestRunHeadlessUsageLimit(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def setUp(self) -> None:
         # These pin the terminal-FAILED CLASSIFICATION path; with autorecovery now
@@ -574,7 +575,7 @@ class TestRunHeadlessMaxTokensTruncationAlert(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def _run_with_terminal(self, terminal: Any) -> tuple[TaskAttempt, Task, Any]:
         with (
@@ -630,7 +631,7 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def setUp(self) -> None:
         # Exercises the terminal-FAILED classification of a TYPED weekly window; with
@@ -675,7 +676,7 @@ class TestRunHeadlessAllAccountsExhausted(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def _seed_exhausted(self, pass_path: str, *, reset: Any) -> None:
         from teatree.core.models import AnthropicTokenUsage  # noqa: PLC0415 — test-local
@@ -829,7 +830,7 @@ FAKE_SESSION_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 class TestGetResumeSessionId(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_from_parent_attempt(self) -> None:
         """Parent task's attempt has an agent_session_id — headless should resume it."""
@@ -881,7 +882,7 @@ class TestBuildOptionsFailLoudGate(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_askuserquestion_is_disallowed(self) -> None:
         session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
@@ -895,7 +896,7 @@ class TestRunHeadlessResumesParentSession(TestCase):
         """A child of a session-carrying parent gets ``resume=<id>`` on the SDK options."""
         result = {"summary": "Continued work", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         with _fake_sdk(_success_stream(result)) as client_cls:
-            ticket = Ticket.objects.create()
+            ticket = planned_ticket()
             parent_session = Session.objects.create(ticket=ticket, agent_id=FAKE_SESSION_UUID)
             parent_task = Task.objects.create(ticket=ticket, session=parent_session)
 
@@ -910,7 +911,7 @@ class TestRunHeadlessResumesParentSession(TestCase):
     def test_no_parent_session_leaves_resume_unset(self) -> None:
         result = {"summary": "Fresh", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         with _fake_sdk(_success_stream(result)) as client_cls:
-            ticket = Ticket.objects.create()
+            ticket = planned_ticket()
             session = Session.objects.create(ticket=ticket, agent_id="coding")
             task = Task.objects.create(ticket=ticket, session=session)
 
@@ -927,7 +928,7 @@ class TestResolveTaskCwd(TestCase):
         from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         with tempfile.TemporaryDirectory() as repo_dir:
@@ -938,7 +939,7 @@ class TestResolveTaskCwd(TestCase):
         from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         Worktree.objects.create(ticket=ticket, repo_path="/nonexistent/repo/path")
@@ -953,7 +954,7 @@ class TestResolveTaskCwd(TestCase):
 
         from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
 
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
         with tempfile.TemporaryDirectory() as clone_dir:
@@ -964,7 +965,7 @@ class TestResolveTaskCwd(TestCase):
     def test_architectural_review_falls_back_to_clone_root_scan_without_t3_repo(self) -> None:
         from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
 
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
         with (
@@ -978,7 +979,7 @@ class TestResolveTaskCwd(TestCase):
         # other phase keeps the historical ``None`` when it has no ticket worktree.
         from teatree.agents._runner_options import _resolve_task_cwd  # noqa: PLC0415 — deferred: private helper
 
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         with patch.dict(os.environ, {"T3_REPO": "/does/not/matter"}):
@@ -1043,7 +1044,7 @@ class TestLoopWatchdog(TestCase):
     """Watchdog evaluation against real Task / TaskAttempt rows."""
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
 
@@ -1120,7 +1121,7 @@ class TestDriveWithHeartbeat(TestCase):
     """The SDK driver renews the lease and honours the watchdog (#882, #997)."""
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
         # Threaded ORM access under TestCase's wrapping transaction is a
@@ -1279,7 +1280,7 @@ class TestWatchdogResamplesUsageMidRun(TestCase):
     """The heartbeat re-samples usage each tick so a mid-run cost spike is caught (F9.3)."""
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
         self.task.renew_lease = lambda **_kw: None
@@ -1370,7 +1371,7 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
     """run_agent records a stuck_loop TaskAttempt failure when the watchdog fires."""
 
     def test_records_stuck_loop_failure_with_observed_deltas(self) -> None:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session)
         TaskAttempt.objects.create(task=task, num_turns=500)
@@ -1408,7 +1409,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
     """run_agent refuses dispatch and records a budget_exceeded failure."""
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
 
     def test_over_budget_ticket_is_not_dispatched(self) -> None:
@@ -1487,7 +1488,7 @@ class TestBuildOptions(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def _options_for_phase(self, phase: str) -> Any:
         # No seeded ``T3_CONFIG_DB`` (the autouse env isolation clears it), so the
@@ -1572,7 +1573,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def _options(self, phase: str, *, skills: list[str], config: dict[str, object]) -> Any:
         db = Path(tempfile.mkdtemp()) / "config.sqlite3"
@@ -1744,7 +1745,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
 
@@ -1782,7 +1783,7 @@ class TestGenuinelyInvalidHarnessProviderPairStillFailsDispatch(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
 
     def _dispatch(self, phase: str, *, harness: str, provider: str) -> TaskAttempt:
         env = {"T3_AGENT_HARNESS": harness, "T3_AGENT_HARNESS_PROVIDER": provider}
@@ -1834,7 +1835,7 @@ class TestRunHeadlessRecordsLane(TestCase):
 
     def test_explicit_subscription_pin_is_recorded(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
@@ -1848,7 +1849,7 @@ class TestRunHeadlessRecordsLane(TestCase):
 
     def test_no_pin_leaves_lane_unattributed(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         with _fake_sdk(_success_stream(result)):
@@ -1869,7 +1870,7 @@ class TestDriveClaimMarker(TestCase):
 
     @staticmethod
     def _task() -> Task:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         return Task.objects.create(ticket=ticket, session=session)
 

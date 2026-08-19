@@ -34,7 +34,8 @@ from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.pydantic_ai_session import _turns_made
 from teatree.agents.runner import TaskUsage, run_agent
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
+from tests.factories import planned_ticket
 
 _MODEL = "claude-opus-4-8"
 
@@ -319,7 +320,7 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
