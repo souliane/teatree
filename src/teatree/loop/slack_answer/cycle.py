@@ -19,10 +19,15 @@ agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
 no-LLM :eyes: receipt reaction, exactly once (``mark_eyes_reacted`` CAS)
-even across cycle re-runs. Then the unit is READ
-(:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap model
-turn, keyword fallback) and routed on what it means, not on which keywords
-it contains:
+even across cycle re-runs. Then, BEFORE any read, the unit is offered to
+:func:`~teatree.loop.question_binding.bind_reply`: a reply that answers a
+queued ``DeferredQuestion`` resolves it and stops there — an option pick with
+no model turn at all, free text on the single reading the routing would have
+cost anyway. That rung is the whole reason this cycle may drain the queue at
+all: it shares the reply scanner's binder instead of racing it. Otherwise the
+unit is READ (:func:`~teatree.loop.inbound_reading.read_inbound` — one cheap
+model turn, keyword fallback) and routed on what it means, not on which
+keywords it contains:
 
 - **nothing to do** (an FYI, a bare thanks) → react 🙏 NOTED,
     ``mark_loop_replied("ack")``, NO thread post.
@@ -59,6 +64,7 @@ from dataclasses import dataclass, field
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
+from teatree.loop.question_binding import apply_bound_answer, bind_reply
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
 from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
@@ -113,12 +119,13 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
     """Group consecutive same-user/channel rows into logical turns.
 
     A new unit starts when the next row is from a different
-    ``(overlay, channel, user_id)`` OR its ``received_at`` is more than
-    :data:`_COALESCE_WINDOW_SECONDS` after the previous row's. Rows arrive
-    oldest-first (``loop_unreplied()`` ordering). The loop is the only bot
-    that replies and it stamps ``loop_replied_at`` on a whole unit at
-    once, so every row reaching this function is pre-reply — "no bot message
-    between" reduces to the same-user/within-window adjacency test.
+    ``(overlay, channel, user_id)``, sits in a different Slack thread, OR its
+    ``received_at`` is more than :data:`_COALESCE_WINDOW_SECONDS` after the
+    previous row's. Rows arrive oldest-first (``loop_unreplied()`` ordering).
+    The loop is the only bot that replies and it stamps ``loop_replied_at`` on
+    a whole unit at once, so every row reaching this function is pre-reply —
+    "no bot message between" reduces to the same-actor/same-thread/within-window
+    adjacency test.
     """
     units: list[_Unit] = []
     for row in rows:
@@ -130,8 +137,12 @@ def _coalesce(rows: list[PendingChatInjection]) -> list[_Unit]:
 
 
 def _continues(prev: PendingChatInjection, nxt: PendingChatInjection) -> bool:
-    """True iff *nxt* is a follow-up of *prev* (same actor, within window)."""
+    """True iff *nxt* is a follow-up of *prev* (same actor, same thread, within window)."""
     if (prev.overlay, prev.channel, prev.user_id) != (nxt.overlay, nxt.channel, nxt.user_id):
+        return False
+    if prev.thread_ts != nxt.thread_ts:
+        # Two threads are two conversations: a unit binds on its LEAD's thread,
+        # so coalescing across them feeds one question the other's answer.
         return False
     if not nxt.user_id:
         # No user attribution → cannot prove same author; never coalesce.
@@ -156,6 +167,7 @@ class SlackAnswerReport:
     answered_simple: int = 0
     dispatched: int = 0
     covered: int = 0
+    answered_question: int = 0
     errors: int = 0
     skipped_no_backend: int = 0
 
@@ -377,6 +389,46 @@ def _report_coverage(backend: MessagingBackend, unit: _Unit, coverage: Coverage)
     return True
 
 
+def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: InboundReader) -> bool:
+    """Apply the unit to the queued question it answers; ``True`` when it resolved one.
+
+    The FIRST rung, ahead of the routing read. This cycle wakes ~1s after an
+    inbound event while the reply scanner runs on the slower tick, so it reaches
+    nearly every owner reply first — and while it knew nothing about
+    :class:`DeferredQuestion` it stamped ``loop_replied_at`` on the way past,
+    leaving the binder a queue that no longer held the row. Sharing
+    :func:`~teatree.loop.question_binding.bind_reply` ends that race by making
+    the fast consumer question-aware, rather than by trying to order two
+    independent loops.
+
+    Claim -> apply -> ✅, mirroring the scanner: the unit's CAS is the
+    idempotency boundary, and a lost apply (a concurrent answer won) releases it
+    so nothing carries a receipt for a question it did not resolve.
+    """
+    bound = bind_reply(unit.lead, reader=reader, text=unit.text)
+    if bound is None:
+        return False
+    if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
+        return False
+    if not apply_bound_answer(bound):
+        _unmark_unit_loop_replied(unit)
+        return False
+    _react_done(backend, unit)
+    return True
+
+
+def _memoized(reader: InboundReader) -> InboundReader:
+    """One reading per text — the binder's question-guard and the router share it."""
+    cache: dict[str, InboundReading] = {}
+
+    def read(text: str) -> InboundReading:
+        if text not in cache:
+            cache[text] = reader(text)
+        return cache[text]
+
+    return read
+
+
 def _process_unit(
     backend: MessagingBackend,
     unit: _Unit,
@@ -386,7 +438,12 @@ def _process_unit(
     if _react_eyes_once(backend, unit):
         report.eyes_reacted += 1
 
-    reading = reader(unit.text)
+    read = _memoized(reader)
+    if _answer_bound_question(backend, unit, read):
+        report.answered_question += 1
+        return
+
+    reading = read(unit.text)
     if reading.needs_nothing:
         if _handle_noted(backend, unit):
             report.acked += 1

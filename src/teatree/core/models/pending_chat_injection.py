@@ -24,6 +24,7 @@ so the model is the single source of truth for "this row needs a reply".
 """
 
 import re
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import ClassVar
 
@@ -68,6 +69,22 @@ _LEADING_NOISE = re.compile(r"^[\s*_\->`#0-9.()]+")
 _FIRST_WORD = re.compile(r"^([A-Za-z]+)")
 
 
+@dataclass(frozen=True, slots=True)
+class DmContext:
+    """Who wrote an inbound DM and which thread it replies under.
+
+    One value because they are used as one: together with ``(overlay, channel)``
+    these are exactly the discriminators that decide which logical turn a
+    message belongs to and which queued question a reply answers.
+    """
+
+    user_id: str = ""
+    thread_ts: str = ""
+
+
+NO_DM_CONTEXT = DmContext()
+
+
 class PendingChatInjection(models.Model):
     """One Slack DM from the user waiting to be injected into the next prompt.
 
@@ -77,7 +94,10 @@ class PendingChatInjection(models.Model):
     of the hook is a clean no-op. ``answered_at`` is the orthogonal gate:
     set when the agent actually replies to the user (via
     :meth:`agent_answered_question` or the ``notify_user`` integration in
-    :mod:`teatree.core.notify`).
+    :mod:`teatree.core.notify`). ``thread_ts`` is the Slack thread root a reply
+    sits under, blank for a top-level DM — a reply's only binding identity,
+    which :mod:`teatree.loop.question_binding` joins against a queued
+    question's Slack mirror ts to answer the row the owner meant.
     """
 
     class AnswerKind(models.TextChoices):
@@ -90,6 +110,7 @@ class PendingChatInjection(models.Model):
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
     slack_ts = models.CharField(max_length=64)
+    thread_ts = models.CharField(max_length=64, blank=True, default="")
     user_id = models.CharField(max_length=64, blank=True, default="")
     text = models.TextField()
     received_at = models.DateTimeField(default=timezone.now)
@@ -172,7 +193,7 @@ class PendingChatInjection(models.Model):
         slack_ts: str,
         text: str,
         overlay: str = "",
-        user_id: str = "",
+        context: DmContext = NO_DM_CONTEXT,
     ) -> "PendingChatInjection | None":
         """Insert one row idempotently on ``(overlay, slack_ts)``.
 
@@ -188,8 +209,9 @@ class PendingChatInjection(models.Model):
             slack_ts=slack_ts,
             defaults={
                 "channel": channel,
-                "user_id": user_id,
+                "user_id": context.user_id,
                 "text": text,
+                "thread_ts": context.thread_ts,
             },
         )
         return row if created else None
@@ -422,4 +444,4 @@ def _classify_is_question(text: str) -> bool:
     return match.group(1).lower() in _QUESTION_WORDS
 
 
-__all__ = ["PendingChatInjection"]
+__all__ = ["NO_DM_CONTEXT", "DmContext", "PendingChatInjection"]
