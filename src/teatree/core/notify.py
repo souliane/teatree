@@ -178,6 +178,7 @@ def notify_user_outcome(
         user_id=resolved_user_id,
         text=format_notification(payload_text, kind_value),
         blocks=options.blocks,
+        as_thread_root=options.as_thread_root,
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -308,8 +309,13 @@ def _deliver_dm(
     user_id: str,
     text: str,
     blocks: list[RawAPIDict] | None = None,
+    as_thread_root: bool = False,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
+
+    ``as_thread_root`` skips the active-DM-thread lookup so the post lands at
+    root. A caller stores the returned ``ts`` as a reply-binding identity only
+    when it can be a thread root — see :class:`NotifyOptions`.
 
     ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
     ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
@@ -347,7 +353,7 @@ def _deliver_dm(
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        thread_ts = _active_dm_thread(channel)
+        thread_ts = "" if as_thread_root else _active_dm_thread(channel)
         # Pass ``blocks`` only when a table is actually present — the common
         # text-only path stays a 3-arg call, so any backend (or test double)
         # that predates the ``blocks`` kwarg keeps working unchanged.

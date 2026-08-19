@@ -90,6 +90,14 @@ class NotifyOptions:
     caller injects only the fields it overrides — a test ``backend``, a pinned
     ``user_id``, ``linkify=False`` for pre-linkified text, the ``answering_slack_ts``
     of a question this DM answers, or opaque Block Kit ``blocks``.
+
+    ``as_thread_root`` opts OUT of nesting the DM under the owner's active DM
+    thread. A DM whose ``ts`` is later stored as a reply-binding identity — the
+    ``DeferredQuestion.slack_ts`` a Slack reply's ``thread_ts`` is joined against
+    — MUST be its own thread root: Slack stamps a reply with the ROOT's ts, never
+    the replied-to message's, so a mirror nested one level down is unreachable by
+    that join. Every other notification keeps nesting; the conversation context is
+    worth more than a ts nobody binds on.
     """
 
     backend: MessagingBackend | None = None
@@ -97,6 +105,7 @@ class NotifyOptions:
     linkify: bool = True
     answering_slack_ts: str = ""
     blocks: list[RawAPIDict] | None = None
+    as_thread_root: bool = False
 
 
 #: Delivered outcome — the single shared success record.

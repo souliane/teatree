@@ -9,8 +9,9 @@ of ``teatree.core.notify`` (at its module-health LOC cap). Both post pending
     pending backlog (manual ``questions resurface`` + the auto away→present
     transition);
 * :func:`drain_unmirrored_deferred_questions` — the headless ask-loop poster:
-    posts rows with no Slack mirror yet and stamps the mirror coordinates so a
-    reply can later bind;
+    posts rows with no Slack mirror yet AT THE DM ROOT (never nested under the
+    owner's active thread, so the stamped ts is one a reply can name) and stamps
+    the mirror coordinates so a reply can later bind;
 * :func:`resurface_question_backlog` — the RECURRING nag (directive #36). The
     two drains above are single-shot per question (each keys its idempotency on
     the row's ``stable_notify_ref``), so a question the owner never answers is
@@ -34,7 +35,8 @@ from django.utils import timezone
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, DeferredQuestion
-from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome
+from teatree.core.notify_types import NotifyOptions
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
 # while the owner is away, so an unbounded drain delivers it all in one burst the
@@ -300,14 +302,19 @@ def drain_unmirrored_deferred_questions(
     try:
         for row in rows:
             key = f"mirror-deferred-question:{row.stable_notify_ref}"
-            if not notify_user(
+            # AT ROOT, never nested. This ``posted_ts`` becomes the row's
+            # ``slack_ts`` two lines down — the identity a Slack reply's
+            # ``thread_ts`` is joined against by ``teatree.loop.question_binding``.
+            # Slack stamps a thread reply with the ROOT's ts, so a mirror nested
+            # under the owner's active DM thread is a ts no reply can ever carry:
+            # the join misses every time and the answer falls through unbound.
+            if not notify_user_outcome(
                 _resurface_text(row),
                 kind=NotifyKind.QUESTION,
                 idempotency_key=key,
                 audience=NotifyAudience.OWNER_QUESTION,
-                backend=backend,
-                user_id=user_id or None,
-            ):
+                options=NotifyOptions(backend=backend, user_id=user_id or None, as_thread_root=True),
+            ).sent:
                 continue
             ping = BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).first()
             if ping and ping.posted_ts and row.mark_mirrored(channel=ping.channel_ref, slack_ts=ping.posted_ts):

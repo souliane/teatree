@@ -13,13 +13,17 @@ answered, not which row a helper returns.
 """
 
 import hashlib
+import itertools
 import json
 from dataclasses import dataclass, field
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import DmContext, PendingChatInjection
+from teatree.core import notify as notify_module
+from teatree.core.models import DmContext, IncomingEvent, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
@@ -212,3 +216,96 @@ class TestOptionDigitStillResolves:
 
         older.refresh_from_db()
         assert older.answer_text == "No"
+
+
+def _threading_slack() -> tuple[MagicMock, dict[str, str]]:
+    """A Slack DM that models thread RE-PARENTING, and the ``ts -> thread root`` map it builds.
+
+    Slack stamps every reply in a thread with the ROOT message's ``ts``, never
+    the ts of the message being replied to. A fake that just hands back a ts
+    cannot show that, so a mirror nested one level down looks bindable when it
+    is not. ``roots`` records, per posted message, the ts a reply to it would
+    carry — which is what makes the at-root posting rule falsifiable here.
+    """
+    roots: dict[str, str] = {}
+    counter = itertools.count(1000)
+
+    def _post(*, channel: str, text: str, thread_ts: str = "", **_kw: object) -> RawAPIDict:
+        _ = (channel, text)
+        ts = f"{next(counter)}.0"
+        roots[ts] = thread_ts or ts
+        return {"ok": True, "ts": ts}
+
+    backend = MagicMock()
+    backend.open_dm.return_value = _CHANNEL
+    backend.post_message.side_effect = _post
+    backend.get_permalink.return_value = "https://slack/permalink"
+    return backend, roots
+
+
+def _owner_is_mid_conversation(thread_root: str = "900.0") -> None:
+    """Record the inbound event that makes ``_active_dm_thread`` report an open DM thread."""
+    IncomingEvent.objects.create(
+        source=IncomingEvent.Source.SLACK,
+        channel_ref=_CHANNEL,
+        thread_ref=thread_root,
+        idempotency_key=f"slack:Ev-{thread_root}",
+    )
+
+
+def _mirror_two_questions() -> tuple[DeferredQuestion, DeferredQuestion, dict[str, str]]:
+    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1)
+    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2)
+    backend, roots = _threading_slack()
+    with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+        drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+    older.refresh_from_db()
+    newer.refresh_from_db()
+    return older, newer, roots
+
+
+class TestMirroredQuestionOwnsItsThread:
+    """The owner answering a mirrored question in its Slack thread — the common path.
+
+    A mirror nested under whatever DM thread the owner is already in carries a
+    mid-thread ``slack_ts``, and Slack stamps the owner's reply with the thread
+    ROOT instead. The exact ``thread_ts`` -> mirror-ts join then matches no
+    question at all, and with a second one live the sole-question fallback
+    refuses as well — so the reply is acknowledged and its answer dropped. The
+    mirror therefore posts at the DM root and owns the thread the answer lands in.
+    """
+
+    def test_mirror_is_its_own_thread_root(self) -> None:
+        _owner_is_mid_conversation()
+        older, newer, roots = _mirror_two_questions()
+
+        assert roots[older.slack_ts] == older.slack_ts
+        assert roots[newer.slack_ts] == newer.slack_ts
+
+    def test_reply_in_the_questions_thread_answers_that_question(self) -> None:
+        _owner_is_mid_conversation()
+        older, newer, roots = _mirror_two_questions()
+        assert older.slack_ts < newer.slack_ts, "the older mirror must not also be the newest row"
+
+        _reply("use postgres-1", slack_ts="2000.0", thread_ts=roots[older.slack_ts])
+        _scan()
+
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        assert older.answer_text == "use postgres-1", "a reply in the question's own Slack thread bound nothing"
+        assert newer.is_pending, "the newest mirrored question absorbed a reply threaded under an older one"
+
+    def test_reply_in_the_owners_own_thread_binds_nothing(self) -> None:
+        _owner_is_mid_conversation()
+        older, newer, _roots = _mirror_two_questions()
+
+        reply = _reply("use postgres-1", slack_ts="2000.0", thread_ts="900.0")
+        backend = _scan()
+
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        reply.refresh_from_db()
+        assert older.is_pending, "a reply in a thread hosting no question was guessed onto one"
+        assert newer.is_pending, "a reply in a thread hosting no question was guessed onto one"
+        assert reply.loop_replied_at is None, "the reply was ✅-acked for an answer nobody recorded"
+        assert backend.react_calls == []
