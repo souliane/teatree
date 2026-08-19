@@ -46,6 +46,22 @@ def _merged(*, pr_id: int = 7, slug: str = "o/r") -> ScanSignal:
     )
 
 
+def _blocked(*, pr_id: int = 7, reason: str = "keystone_refused", slug: str = "o/r") -> ScanSignal:
+    return ScanSignal(
+        kind="pr_sweep.blocked",
+        summary=f"{slug}#{pr_id} blocked ({reason})",
+        payload={
+            "slug": slug,
+            "pr_id": pr_id,
+            "decision": "blocked",
+            "reason": reason,
+            "merged": False,
+            "overlay": "t3",
+            "url": f"https://example.test/{slug}/pull/{pr_id}",
+        },
+    )
+
+
 class _Recorder:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
@@ -113,6 +129,18 @@ class TestSurfacesOnPersistence(django.test.TestCase):
         assert len(notifier.sent) == 1
         assert f"{SURFACE_AFTER_TICKS} consecutive" in notifier.sent[0][0]
 
+    def test_a_pr_blocked_every_pass_ages_into_an_announcement(self) -> None:
+        # A persistent refusal rides ``decision="blocked"``, not ``skip`` — the
+        # shape ``keystone_refused`` always takes. Treating it as a resolution
+        # erased the streak every pass, so the PR could never age into a DM.
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_blocked()], notify=notifier)
+
+        assert len(notifier.sent) == 1
+        assert "keystone_refused" in notifier.sent[0][0]
+        assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == SURFACE_AFTER_TICKS
+
     def test_the_idempotency_key_pins_the_pr_and_the_cooldown_window(self) -> None:
         notifier = _Recorder()
         moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
@@ -157,7 +185,7 @@ class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
         assert notifier.sent[0][1] == notifier.sent[1][1]
 
 
-class TestNonSkipOutcomesClear(django.test.TestCase):
+class TestOnlyAMergeClearsAStreak(django.test.TestCase):
     def test_a_merge_clears_the_streak(self) -> None:
         notifier = _Recorder()
         record_sweep_outcomes([_skip()], notify=notifier)
@@ -173,6 +201,17 @@ class TestNonSkipOutcomesClear(django.test.TestCase):
         record_sweep_outcomes([_skip()], notify=notifier)
 
         assert notifier.sent == []
+
+    def test_a_merged_pr_clears_its_streak(self) -> None:
+        # The guard against over-correcting M1 into a streak that never resolves:
+        # a long refusal run that finally LANDS must leave no row behind, or the
+        # owner is DM'd about a healthy PR and the merge brake counts it forever.
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS + 2):
+            record_sweep_outcomes([_blocked()], notify=notifier)
+        record_sweep_outcomes([_merged()], notify=notifier)
+
+        assert not SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
 
     def test_signals_from_other_scanners_are_ignored(self) -> None:
         record_sweep_outcomes([ScanSignal(kind="workstate.drift", summary="x", payload={})], notify=_Recorder())
