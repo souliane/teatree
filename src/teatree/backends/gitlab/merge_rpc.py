@@ -25,6 +25,7 @@ import httpx
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
+    HEAD_SHA_UNREADABLE,
     ROLLUP_QUERY_FAILED,
     BackendResolutionError,
     ForgeMergeResult,
@@ -110,8 +111,15 @@ class GitLabApiMergeRpc:
             return None
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        """The MR's head sha, or :data:`HEAD_SHA_UNREADABLE` when the MR could not be read.
+
+        The twin of the ``gh`` path, and for the same reason: an unreadable MR
+        payload is the forge declining to answer, and a caller told ``""`` cannot
+        distinguish that from "the head moved" — so it reports a re-review nobody
+        needs. A READABLE MR carrying no ``sha`` still yields ``""``.
+        """
         mr = self._fetch_mr(slug=slug, pr_id=pr_id)
-        return str(mr.get("sha") or "") if mr is not None else ""
+        return str(mr.get("sha") or "") if mr is not None else HEAD_SHA_UNREADABLE
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
         """State + merge commit + the CONFLICT axis, in parity with the ``gh`` twin.

@@ -22,7 +22,7 @@ from django.db import connections
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from teatree.core.backend_protocols import DraftState
+from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, DraftState
 from teatree.core.models import ConfigSetting, ReviewRequestPost
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.review_request_resume import (
@@ -214,6 +214,23 @@ class TestReviewRequestResumeScanner(TestCase):
         slack = _Slack()
 
         signals = self._scan(slack, _Host(rollup_error=RuntimeError("gh 502")))
+
+        assert signals == []
+        assert slack.posted == []
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+
+    def test_a_sentinel_rollup_classified_unreadable_holds_the_resume(self) -> None:
+        """The read SUCCEEDS and reports "could not be read" — the new verdict, held.
+
+        Distinct from the sibling above, which raises: here the classifier really
+        returns ``"unreadable"``, and the resume gate holds because it tests for
+        GREEN rather than listing the reds it knows about.
+        """
+        self._arm()
+        slack = _Slack()
+
+        signals = self._scan(slack, _Host(rollup=[ROLLUP_QUERY_FAILED]))
 
         assert signals == []
         assert slack.posted == []

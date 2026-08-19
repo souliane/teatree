@@ -11739,9 +11739,10 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
 
  Parses the PR/MR URL, fetches the live head SHA, looks up the latest
  recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
- (head moved — re-review needed), or ``no recorded verdict``. The point
- is to avoid re-deriving a full cold review when a fresh verdict already
- vouches for the current tree.
+ (head moved — re-review needed), ``head unreadable`` / ``checks
+ unreadable`` (the forge did not answer; the recorded verdict stands,
+ so retry the READ), or ``no recorded verdict``. The point is to avoid
+ re-deriving a cold review when a fresh verdict already vouches for it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │
