@@ -98,6 +98,13 @@ class NotifyOptions:
     the replied-to message's, so a mirror nested one level down is unreachable by
     that join. Every other notification keeps nesting; the conversation context is
     worth more than a ts nobody binds on.
+
+    ``thread_ts`` names the thread to post INTO — the other half of the same
+    concern. A follow-up about an already-mirrored question (a re-ask bump) must
+    land in that question's own thread: Slack stamps every reply there with that
+    same root ts, which is exactly the identity
+    :func:`teatree.loop.question_binding.bind_reply` joins a reply against. A bump
+    posted anywhere else is a re-ask no reply can bind to.
     """
 
     backend: MessagingBackend | None = None
@@ -106,6 +113,19 @@ class NotifyOptions:
     answering_slack_ts: str = ""
     blocks: list[RawAPIDict] | None = None
     as_thread_root: bool = False
+    thread_ts: str = ""
+
+    @property
+    def dm_thread(self) -> str | None:
+        """Where in the DM this notification lands, as the egress's tri-state.
+
+        A named thread wins; ``""`` is the DM root (``as_thread_root``); ``None``
+        means "resolve the owner's active DM thread", which needs the channel and
+        so can only be answered inside the egress.
+        """
+        if self.thread_ts:
+            return self.thread_ts
+        return "" if self.as_thread_root else None
 
 
 #: Delivered outcome — the single shared success record.

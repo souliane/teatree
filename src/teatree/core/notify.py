@@ -178,7 +178,7 @@ def notify_user_outcome(
         user_id=resolved_user_id,
         text=format_notification(payload_text, kind_value),
         blocks=options.blocks,
-        as_thread_root=options.as_thread_root,
+        thread_ts=options.dm_thread,
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -309,13 +309,15 @@ def _deliver_dm(
     user_id: str,
     text: str,
     blocks: list[RawAPIDict] | None = None,
-    as_thread_root: bool = False,
+    thread_ts: str | None = None,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
 
-    ``as_thread_root`` skips the active-DM-thread lookup so the post lands at
-    root. A caller stores the returned ``ts`` as a reply-binding identity only
-    when it can be a thread root — see :class:`NotifyOptions`.
+    ``thread_ts`` is :attr:`NotifyOptions.dm_thread`: a named thread to post into,
+    ``""`` for the DM root (skipping the active-DM-thread lookup), or ``None`` to
+    nest under whatever DM thread the owner is currently in. A caller stores the
+    returned ``ts`` as a reply-binding identity only when it posted at root — see
+    :class:`NotifyOptions`.
 
     ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
     ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
@@ -353,14 +355,14 @@ def _deliver_dm(
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        thread_ts = "" if as_thread_root else _active_dm_thread(channel)
+        thread = _active_dm_thread(channel) if thread_ts is None else thread_ts
         # Pass ``blocks`` only when a table is actually present — the common
         # text-only path stays a 3-arg call, so any backend (or test double)
         # that predates the ``blocks`` kwarg keeps working unchanged.
         if blocks is None:
-            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread)
         else:
-            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread, blocks=blocks)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 
