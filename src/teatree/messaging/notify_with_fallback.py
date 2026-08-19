@@ -29,22 +29,18 @@ from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.dm_channel_policy import DmChannel, classify
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, DeliveryClaim
-from teatree.core.notify import (
-    NotifyKind,
-    NotifyOptions,
-    format_notification,
-    maybe_linkify,
-    notify_user_outcome,
-    resolve_user_id,
-)
-from teatree.core.notify_types import NotifyReason
+from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, notify_user, resolve_user_id
 
-#: Non-deliveries that are a DECISION, not a failure: the audience was internal, or the
-#: push/pull classifier routed a status signal to the pulled surface (#4524). A fallback
-#: transport would undo that decision rather than recover from a broken one.
-_TERMINAL_BY_DESIGN: frozenset[NotifyReason] = frozenset({NotifyReason.INTERNAL_AUDIENCE, NotifyReason.ROUTED_TO_PULL})
+
+def _withheld_by_design(*, audience: NotifyAudience, idempotency_key: str) -> bool:
+    """Whether the primary withheld this DM as a routing DECISION, not a transport failure."""
+    if audience == NotifyAudience.INTERNAL:
+        return True
+    return classify(audience=audience, idempotency_key=idempotency_key) is DmChannel.PULL
+
 
 logger = logging.getLogger(__name__)
 
@@ -115,27 +111,29 @@ def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress mirrorin
     :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL` notification
     is logged-only (the primary returns ``False`` with a terminal LOGGED row)
     and the fallback transport is NOT attempted — a log-only DM has nothing to
-    verify-deliver.
+    verify-deliver. A status signal the push/pull classifier withheld (#4524) stands
+    down for the same reason.
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
-    primary = notify_user_outcome(
+    primary_delivered = notify_user(
         text,
         kind=kind_value,
         idempotency_key=idempotency_key,
         audience=audience,
-        options=NotifyOptions(user_id=user_id, linkify=linkify),
+        user_id=user_id,
+        linkify=linkify,
     )
-    if primary.sent:
+    if primary_delivered:
         _stamp_transport(idempotency_key, NotifyTransport.PRIMARY)
         return NotifyResult(delivered=True, transport=NotifyTransport.PRIMARY)
 
-    if primary.reason in _TERMINAL_BY_DESIGN:
-        # These did not "fail" — they were never meant to leave the machine, so a
-        # second transport is not a recovery but a bypass of the decision that
-        # withheld them. Read from the OUTCOME, never from the audit row: a lost
-        # ledger write would otherwise read as "no row, fall back conservatively"
-        # and put the withheld signal on the DM channel after all.
+    if _withheld_by_design(audience=audience, idempotency_key=idempotency_key):
+        # Not a failure — never meant to leave the machine, so a second transport is
+        # not a recovery but a bypass of the decision that withheld it. Re-asked of
+        # the CLASSIFIER, never inferred from the audit row: a lost ledger write
+        # would read as "no row, fall back conservatively" and put the withheld
+        # signal on the DM channel after all.
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
 
     if not _primary_failure_is_recoverable(idempotency_key):
