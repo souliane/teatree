@@ -894,15 +894,21 @@ ensure_clone() {
 # `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
 # could not boot Django looked identical to a healthy one and nobody ever saw it.
 #
-# `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
-# queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
-# is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
-# STDOUT (a Django boot traceback, a DB error). STDERR is captured SEPARATELY:
-# every t3 invocation emits a benign WARNING there (an overlay's skills-root
-# notice), so folding it into the emptiness test (2>&1) would misread every
-# empty-queue poll as a failure. Real failures increment a consecutive-failure
+# `t3 slack check` exits 0 when it drained messages and 2 with NO output when the
+# queue was empty (the common, healthy case on a quiet box) — so healthy is
+# EXACTLY rc==0 or rc==2. Everything else (including rc=1, regardless of
+# stdout) is a failure: rc=1 used to double as "empty queue" too, but a
+# crashing drain (Django boot failure, a DB error after a migration) ALSO
+# exits 1 with EMPTY stdout and a traceback on stderr — byte-identical to the
+# old "empty queue" signal — so that collision is now the crash signature,
+# not a healthy read. The Socket Mode singleton stand-down (another drain
+# already holds the lock) still exits 0 and stays healthy under this rule —
+# "0 = drained messages" is about to be false, it also covers "stood down".
+# STDERR is captured SEPARATELY: every t3 invocation emits a benign WARNING
+# there (an overlay's skills-root notice), which must not by itself flip a
+# healthy rc into a failure. Real failures increment a consecutive-failure
 # counter and log BOTH streams to stderr (visible in `docker compose logs
-# teatree-slack-listener`); an empty-queue exit never does.
+# teatree-slack-listener`); a healthy exit never does.
 #
 # Each pass rewrites a heartbeat file that `t3 doctor` reads from another
 # container to surface a stuck/failed drain (`self_heal_slack_drain.check_slack_drain_alive`).
@@ -918,7 +924,7 @@ slack_drain_loop() {
     while true; do
         now="$(date +%s)"
         out="$(t3 slack check 2>"$errfile")" && rc=0 || rc=$?
-        if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
+        if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
             consecutive=0
             last_ok="$now"
         else

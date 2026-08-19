@@ -155,11 +155,14 @@ class TestStatusCommand:
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestCheckCommand:
-    def test_exits_1_when_queue_empty(self) -> None:
+    def test_an_empty_queue_exits_two(self) -> None:
+        # Exit 2 (not 1) is deliberate: a crashing drain (Django boot failure,
+        # a DB error) also exits 1 with empty stdout, byte-identical to the old
+        # "empty queue" signal — see deploy/entrypoint.sh's slack_drain_loop.
         with patch("teatree.backends.slack.receiver.drain_event_queue", return_value=[]):
             result = runner.invoke(slack_app, ["check"])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
 
     def test_stands_down_when_another_drain_holds_the_lock(self) -> None:
         # The 30s cron can double-fire; a concurrent drain would double-ack the
@@ -284,7 +287,7 @@ class TestCheckCommand:
 
         result = runner.invoke(slack_app, ["check"])
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert not queue.with_suffix(".draining").is_file()
 
 
