@@ -48,6 +48,8 @@ class GhPrJson(TypedDict, total=False):
     mergeStateStatus: str
     author: "GhAuthorJson"
     isCrossRepository: bool
+    baseRefName: str
+    baseRefOid: str
 
 
 class GhAuthorJson(TypedDict, total=False):
@@ -74,7 +76,13 @@ def _author_login(raw: GhPrJson) -> str:
     return ""
 
 
-def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
+def _decode_pr(*, slug: str, raw: GhPrJson, base_head_sha: str) -> PrSummary:
+    """Decode one ``gh pr list --json`` entry.
+
+    *base_head_sha* is the live head of this PR's base branch, resolved once per
+    ``(repo, base branch)`` by :meth:`GhPrApiClient._decode_all`. It is the second
+    of the two commits behind-ness is a property of — see :func:`_gh_is_behind_main`.
+    """
     number_raw = raw.get("number")
     number = number_raw if isinstance(number_raw, int) else 0
     head_sha = _as_str(raw.get("headRefOid"))
@@ -97,21 +105,48 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         url=url,
         title=title,
         is_conflicted=_gh_is_conflicted(raw),
-        behind_main=_gh_is_behind_main(raw),
+        behind_main=_gh_is_behind_main(raw, base_head_sha=base_head_sha),
         author=_author_login(raw),
         same_repo=same_repo,
     )
 
 
-def _gh_is_behind_main(raw: GhPrJson) -> bool:
-    """True iff GitHub reports the branch as behind its base (#2045).
+def _gh_is_behind_main(raw: GhPrJson, *, base_head_sha: str) -> bool:
+    """True iff the base branch has advanced past this PR's merge base (#4526).
 
-    ``mergeStateStatus == "BEHIND"`` is a clean branch whose base advanced —
-    distinct from ``DIRTY`` (a hard conflict). A repo-state check red on a
-    behind branch is the rerun-can't-fix case the sweep surfaces as
-    ``needs_branch_update``.
+    Behind-ness is a property of TWO COMMITS — the base branch's live head and the
+    merge base the PR is built on — so it is read from those, never inferred from
+    ``mergeStateStatus``. That field carries a SINGLE value chosen by precedence
+    (``DIRTY`` > ``BLOCKED`` > ``BEHIND``), not a set of flags: a PR that is behind
+    AND has failing required checks reports ``BLOCKED``, and one that is behind AND
+    conflicted reports ``DIRTY``. It reports ``BEHIND`` only when the branch is
+    behind with nothing else wrong.
+
+    Testing ``== "BEHIND"`` therefore answered ``False`` for precisely the PR the
+    stale-base remedy exists to repair — one whose required checks went red because
+    its base moved, which always reports ``BLOCKED``. The precondition was mutually
+    exclusive with the condition being repaired, and
+    :func:`~teatree.loop.scanners.pr_sweep_branch_update.remedy_stale_base` never
+    ran once (zero ``BranchUpdateAttempt`` rows since #4063 shipped).
+
+    ``baseRefOid`` is the PR's MERGE BASE — verified against
+    ``/repos/{slug}/compare/{base}...{head}``, where it equals
+    ``merge_base_commit.sha`` and NOT the base head — so behind-ness needs no
+    per-PR round trip: it rides in the ``gh pr list --json`` payload the sweep
+    already fetches, against one base-head read per ``(repo, base branch)`` tick.
+
+    An UNKNOWN comparison — either SHA missing, or the base-head read having
+    failed — is never reported as "not behind". Reporting an unknown as a verdict
+    is what silently skips the remedy; this fails closed to ``True``, so the PR is
+    repaired or flagged, never dropped. A conflicted PR is behind like any other;
+    refusing to merge-update it is the separate ``is_conflicted`` bound the
+    scanner ladder and ``remedy_stale_base`` both enforce.
     """
-    return _as_str(raw.get("mergeStateStatus")).upper() == "BEHIND"
+    merge_base = _as_str(raw.get("baseRefOid")).strip().lower()
+    base_head = base_head_sha.strip().lower()
+    if not merge_base or not base_head:
+        return True
+    return merge_base != base_head
 
 
 def _gh_is_conflicted(raw: GhPrJson) -> bool:
@@ -163,7 +198,10 @@ class GhPrApiClient:
             "--limit",
             "100",
             "--json",
-            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author,isCrossRepository",
+            (
+                "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author,"
+                "isCrossRepository,baseRefName,baseRefOid"
+            ),
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:
@@ -188,7 +226,51 @@ class GhPrApiClient:
             return []
         if not isinstance(data, list):
             return []
-        return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
+        return self._decode_all(slug=slug, entries=[cast("GhPrJson", item) for item in data if isinstance(item, dict)])
+
+    def _decode_all(self, *, slug: str, entries: list[GhPrJson]) -> list[PrSummary]:
+        """Decode every listed PR, resolving each distinct base branch's head ONCE.
+
+        Behind-ness compares the PR's merge base (free, in the payload) against its
+        base branch's live head. The head is memoised per ``baseRefName``, so a repo
+        whose open PRs all target ``main`` costs ONE extra call per tick — not one
+        per PR per tick, which is what a ``/compare`` call per PR would have cost.
+        """
+        heads: dict[str, str] = {}
+        decoded: list[PrSummary] = []
+        for raw in entries:
+            base_ref = _as_str(raw.get("baseRefName"))
+            if base_ref not in heads:
+                heads[base_ref] = self._branch_head_sha(slug=slug, ref=base_ref)
+            decoded.append(_decode_pr(slug=slug, raw=raw, base_head_sha=heads[base_ref]))
+        return decoded
+
+    def _branch_head_sha(self, *, slug: str, ref: str) -> str:
+        """The live head SHA of ``refs/heads/{ref}``, or ``""`` when it cannot be read.
+
+        Every failure mode — an absent ``baseRefName``, a non-zero ``gh`` exit, an
+        unparsable or unexpected body — returns ``""``, which :func:`_gh_is_behind_main`
+        reads as UNKNOWN and fails closed to "behind". A read failure must never be
+        reported as "not behind": that is the silent-skip this whole fix removes.
+        A missing head is logged, never raised, so one unreadable branch cannot abort
+        the tick for the PRs the sweep CAN judge.
+        """
+        if not ref:
+            return ""
+        rc, out, err = self._run_gh(["api", f"repos/{slug}/git/ref/heads/{ref}"])
+        if rc != 0:
+            logger.warning("pr_sweep could not read %s head of %r rc=%d: %s", ref, slug, rc, err.strip()[:200])
+            return ""
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError:
+            logger.warning("pr_sweep got an unparsable %s head payload for %r", ref, slug)
+            return ""
+        obj = payload.get("object") if isinstance(payload, dict) else None
+        sha = _as_str(obj.get("sha")) if isinstance(obj, dict) else ""
+        if not sha:
+            logger.warning("pr_sweep got no head sha for %s of %r", ref, slug)
+        return sha
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         """Whether *check_name* has a completed, non-green conclusion on ``main`` (#4090 sibling).

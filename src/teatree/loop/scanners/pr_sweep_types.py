@@ -71,6 +71,24 @@ class PrSummary:
     PRs the user authored so a colleague's open PR in a watched repo is never
     auto-scheduled for review (#2210). Empty when the payload omits the author —
     treated as "not ours".
+
+    ``behind_main`` is "the base branch has advanced past this PR's merge base" - a
+    fact about TWO COMMITS, decided by
+    :func:`~teatree.loop.scanners.pr_sweep_adapters._gh_is_behind_main` from the
+    payload's ``baseRefOid`` against the base branch's live head. It is deliberately
+    NOT read from ``mergeStateStatus``, which reports only the highest-precedence
+    blocker and so says ``BLOCKED`` (never ``BEHIND``) for the behind-AND-red PR the
+    stale-base remedy exists to repair (#4526). It is independent of
+    ``is_conflicted``: a conflicted PR is normally behind as well, and refusing to
+    merge-update that one is the separate conflict bound's job, not this field's.
+
+    Both readers take the same widened meaning. The stale-base remedy repairs or
+    flags the PR; the ``mergeable_awaiting_review`` DM withholds a readiness claim it
+    can no longer make - which is what its "up-to-date" precondition always said and
+    the old predicate silently under-delivered. An UNREADABLE comparison reads as
+    ``True`` at both: repairing-or-flagging beats dropping the remedy, and withholding
+    one tick's DM costs nothing, because ``MergeableNotified`` records only a DM that
+    was actually sent, so the next tick re-offers it.
     """
 
     slug: str

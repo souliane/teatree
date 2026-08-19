@@ -20,9 +20,11 @@ pre-conditions. These tests pin every branch of the decision ladder:
 """
 
 import datetime as dt
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -35,11 +37,18 @@ from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
     AutoReviewTaskDispatcher,
+    GhPrApiClient,
+    GhPrJson,
     NullMergeNotifier,
     SlackMergeNotifier,
     _decode_pr,
 )
-from teatree.loop.scanners.pr_sweep_branch_update import MAX_BRANCH_UPDATES_PER_TICK
+from teatree.loop.scanners.pr_sweep_branch_update import (
+    MAX_BRANCH_UPDATES_PER_TICK,
+    RemedyContext,
+    TickBudget,
+    remedy_stale_base,
+)
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.types import RawAPIDict
 
@@ -98,6 +107,15 @@ _T1 = "2026-06-19T10:05:00Z"
 # Pinned so newest-wins resolves the same way on every run.
 _HOLD_AT = dt.datetime(2026, 6, 19, 1, 34, 32, tzinfo=dt.UTC)
 _LATER_MERGE_SAFE_AT = dt.datetime(2026, 6, 19, 2, 5, 36, tzinfo=dt.UTC)
+
+
+@dataclass(slots=True)
+class _FakeGhResult:
+    """Stand-in for ``run_allowed_to_fail``'s CompletedProcess (adapter-level cases)."""
+
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
 
 
 def _check(name: str, *, conclusion: str = "SUCCESS", status: str = "COMPLETED") -> RawAPIDict:
@@ -1557,15 +1575,21 @@ class TestDecodeAuthor:
     """``_decode_pr`` reads the PR author login from ``gh pr list --json author`` (#2210)."""
 
     def test_author_login_decoded(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "author": {"login": "souliane"}})
+        pr = _decode_pr(
+            slug=SLUG,
+            raw={"number": 1, "headRefOid": HEAD, "author": {"login": "souliane"}},
+            base_head_sha=MAIN_SHA,
+        )
         assert pr.author == "souliane"
 
     def test_missing_author_decodes_to_empty(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD})
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD}, base_head_sha=MAIN_SHA)
         assert pr.author == ""
 
     def test_malformed_author_decodes_to_empty(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "author": "not-a-dict"})
+        pr = _decode_pr(
+            slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "author": "not-a-dict"}, base_head_sha=MAIN_SHA
+        )
         assert pr.author == ""
 
 
@@ -1728,28 +1752,239 @@ class TestGhConflictDecode:
     """The ``gh`` adapter maps GitHub's mergeable / mergeStateStatus to is_conflicted."""
 
     def test_decode_marks_conflicting_mergeable_as_conflicted(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "mergeable": "CONFLICTING"})
+        pr = _decode_pr(
+            slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "mergeable": "CONFLICTING"}, base_head_sha=MAIN_SHA
+        )
 
         assert pr.is_conflicted is True
 
     def test_decode_marks_dirty_merge_state_as_conflicted(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "mergeStateStatus": "DIRTY"})
+        pr = _decode_pr(
+            slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "mergeStateStatus": "DIRTY"}, base_head_sha=MAIN_SHA
+        )
 
         assert pr.is_conflicted is True
 
     def test_decode_does_not_flag_behind_or_unknown_states(self) -> None:
-        behind = _decode_pr(slug=SLUG, raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"})
-        unknown = _decode_pr(slug=SLUG, raw={"number": 2, "mergeable": "UNKNOWN", "mergeStateStatus": ""})
+        behind = _decode_pr(
+            slug=SLUG,
+            raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"},
+            base_head_sha=MAIN_SHA,
+        )
+        unknown = _decode_pr(
+            slug=SLUG, raw={"number": 2, "mergeable": "UNKNOWN", "mergeStateStatus": ""}, base_head_sha=MAIN_SHA
+        )
 
         assert behind.is_conflicted is False
         assert unknown.is_conflicted is False
 
-    def test_decode_marks_behind_merge_state_as_behind_main(self) -> None:
-        behind = _decode_pr(slug=SLUG, raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"})
-        clean = _decode_pr(slug=SLUG, raw={"number": 2, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
+    def test_decode_reads_behind_main_from_the_merge_base_not_the_merge_state(self) -> None:
+        """#4526: ``mergeStateStatus`` is one blocker by precedence, never a behind-ness flag.
+
+        Both PRs here report ``BEHIND``; only the merge base separates them, and the
+        merge base is what decides. The old predicate read the status word and got
+        the second one wrong in the other direction on every ``BLOCKED`` PR.
+        """
+        behind = _decode_pr(
+            slug=SLUG,
+            raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND", "baseRefOid": STALE},
+            base_head_sha=MAIN_SHA,
+        )
+        current = _decode_pr(
+            slug=SLUG,
+            raw={"number": 2, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND", "baseRefOid": MAIN_SHA},
+            base_head_sha=MAIN_SHA,
+        )
 
         assert behind.behind_main is True
-        assert clean.behind_main is False
+        assert current.behind_main is False
+
+
+class TestBehindMainIsReadFromTheMergeBase:
+    """#4526: behind-ness is two commits, not ``mergeStateStatus``'s top blocker.
+
+    ``mergeStateStatus`` carries a SINGLE value chosen by precedence
+    (``DIRTY`` > ``BLOCKED`` > ``BEHIND``), so a PR that is behind AND red on a
+    required check reports ``BLOCKED``, and one that is behind AND conflicted
+    reports ``DIRTY``. The stale-base remedy exists for exactly the first shape —
+    a required check that went red because the base moved — so the old
+    ``== "BEHIND"`` precondition was mutually exclusive with the condition it
+    gated, and no ``BranchUpdateAttempt`` row had ever been written.
+    """
+
+    @staticmethod
+    def _raw(**overrides: object) -> GhPrJson:
+        """One ``gh pr list --json`` entry, shaped as the live forge returns it.
+
+        Takes overrides rather than named fields (matching ``_settings``/``_seed``
+        elsewhere in this suite) — each payload field is optional and a case varies
+        only the ones it cares about.
+        """
+        pr_id = cast("int", overrides.get("pr_id", 6230))
+        checks = cast("tuple[RawAPIDict, ...]", overrides.get("checks", ()))
+        return {
+            "number": pr_id,
+            "headRefOid": HEAD,
+            "isDraft": False,
+            "url": f"https://github.com/{SLUG}/pull/{pr_id}",
+            "title": f"PR {pr_id}",
+            "reviews": [],
+            "statusCheckRollup": list(checks or (_green_required(),)),
+            "mergeable": cast("str", overrides.get("mergeable", "MERGEABLE")),
+            "mergeStateStatus": cast("str", overrides.get("merge_state", "BLOCKED")),
+            "author": {"login": cast("str", overrides.get("author", SELF_LOGIN))},
+            "isCrossRepository": False,
+            "baseRefName": "main",
+            "baseRefOid": cast("str", overrides.get("merge_base", STALE)),
+        }
+
+    @classmethod
+    def _decoded(cls, *, base_head_sha: str = MAIN_SHA, **payload: object) -> PrSummary:
+        """Decode through PRODUCTION's decoder — never a hand-built ``PrSummary``.
+
+        The defect lives in the decoder, so a case that constructed
+        ``PrSummary(behind_main=True)`` directly would pass with the defect live.
+        """
+        return _decode_pr(slug=SLUG, raw=cls._raw(**payload), base_head_sha=base_head_sha)
+
+    def test_a_pr_behind_and_red_is_recognised_as_behind(self) -> None:
+        """The exact live shape of PRs #4513 / #4501: behind, red, reported ``BLOCKED``."""
+        red = _check("test (3.13)", conclusion="FAILURE")
+
+        behind = self._decoded(merge_state="BLOCKED", merge_base=STALE, checks=(red,))
+
+        assert behind.behind_main is True
+        assert behind.is_conflicted is False
+        # Control: identical ``BLOCKED`` status, merge base AT the base head.
+        assert self._decoded(merge_state="BLOCKED", merge_base=MAIN_SHA, checks=(red,)).behind_main is False
+
+    def test_the_stale_base_remedy_fires_for_a_blocked_red_pr(self) -> None:
+        """``uv_audit_red_but_clean_on_main`` on a BLOCKED-but-behind PR reaches the remedy."""
+        _issue_clear()
+        checks = (_green_required(), _red_uv_audit())
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [self._decoded(merge_state="BLOCKED", merge_base=STALE, checks=checks)]},
+            main_uv_audit_red=False,
+        )
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.update_branch_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].kind == "pr_sweep.branch_updated"
+        assert signals[0].payload["reason"] == "stale_base_merge_updated"
+        assert BranchUpdateAttempt.objects.count() == 1
+        assert notifier.flag_calls == []
+
+    def test_the_same_pr_at_a_current_base_keeps_its_own_uv_audit_verdict(self) -> None:
+        """The anti-vacuity control: only the merge base separates this from the case above."""
+        _issue_clear()
+        checks = (_green_required(), _red_uv_audit())
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [self._decoded(merge_state="BLOCKED", merge_base=MAIN_SHA, checks=checks)]},
+            main_uv_audit_red=False,
+        )
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].payload["reason"] == "uv_audit_red_but_clean_on_main"
+        assert BranchUpdateAttempt.objects.count() == 0
+
+    def test_a_conflicted_pr_is_not_auto_updated(self) -> None:
+        """A ``DIRTY`` PR is behind too — and must be resolved by a human, never pushed to."""
+        _issue_clear()
+        red = _check("test (3.13)", conclusion="FAILURE")
+        pr = self._decoded(merge_state="DIRTY", mergeable="CONFLICTING", merge_base=STALE, checks=(red,))
+
+        # Behind-ness and conflictedness are independent facts about the same PR.
+        assert pr.is_conflicted is True
+        assert pr.behind_main is True
+
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert api.update_branch_calls == []
+        assert signals[0].payload["decision"] == "flag_conflict"
+
+        # ...and the remedy refuses on its own rule, not merely by ladder order.
+        remedy_api = FakePrApiClient()
+        remedy_notifier = NullMergeNotifier()
+        attempt = remedy_stale_base(
+            pr,
+            ctx=RemedyContext(
+                api=remedy_api,
+                flag=remedy_notifier.flag,
+                self_identities=(SELF_LOGIN,),
+                overlay="teatree",
+            ),
+            budget=TickBudget(),
+        )
+
+        assert remedy_api.update_branch_calls == []
+        assert attempt.decision == "needs_branch_update"
+        assert remedy_notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", pr.url)]
+        assert BranchUpdateAttempt.objects.count() == 0
+
+    def test_an_unreadable_comparison_does_not_claim_not_behind(self) -> None:
+        """UNKNOWN is not a verdict: an unreadable comparison leaves the PR flagged."""
+        # The base-head read failed.
+        assert self._decoded(base_head_sha="").behind_main is True
+        # The payload carried no merge base.
+        assert self._decoded(merge_base="", base_head_sha=MAIN_SHA).behind_main is True
+
+        _issue_clear()
+        red = _check("test (3.13)", conclusion="FAILURE")
+        pr = self._decoded(checks=(red,), base_head_sha="")
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]}, update_branch_succeeds=False)
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        # Flagged for a human — never a silent ``ci_red`` skip.
+        assert signals[0].kind == "pr_sweep.needs_branch_update"
+        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", pr.url)]
+
+    def test_a_failed_base_head_read_leaves_every_pr_behind(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The whole live adapter path: ``gh pr list`` succeeds, the base-head read 404s."""
+        listing = json.dumps([self._raw(pr_id=4513, merge_base=STALE)])
+
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeGhResult:
+            _ = kwargs
+            if cmd[1] == "pr":
+                return _FakeGhResult(returncode=0, stdout=listing)
+            return _FakeGhResult(returncode=1, stderr="Not Found (HTTP 404)")
+
+        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
+
+        prs = GhPrApiClient(token="").list_open_prs(slug=SLUG)
+
+        assert [pr.behind_main for pr in prs] == [True]
+
+    def test_the_base_head_is_read_once_per_tick_not_once_per_pr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The cost bound: N open PRs on one base branch cost ONE extra API call."""
+        listing = json.dumps([self._raw(pr_id=n, merge_base=STALE) for n in (1, 2, 3, 4)])
+        head_reads: list[list[str]] = []
+
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeGhResult:
+            _ = kwargs
+            if cmd[1] == "pr":
+                return _FakeGhResult(returncode=0, stdout=listing)
+            head_reads.append(cmd)
+            return _FakeGhResult(returncode=0, stdout=json.dumps({"object": {"sha": MAIN_SHA}}))
+
+        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
+
+        prs = GhPrApiClient(token="").list_open_prs(slug=SLUG)
+
+        assert len(head_reads) == 1
+        assert head_reads[0][1:] == ["api", f"repos/{SLUG}/git/ref/heads/main"]
+        assert [pr.behind_main for pr in prs] == [True, True, True, True]
 
 
 class TestSlackMergeNotifier:
