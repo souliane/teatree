@@ -134,7 +134,7 @@ class TestUnusableClearIsNamed(TestCase):
 
         signals = scanner.scan()
 
-        assert [s.payload["reason"] for s in signals] == [CLEAR_PRESENT_UNUSABLE_REASON]
+        assert [s.payload["reason"] for s in signals if s.kind != "pr_sweep.pass"] == [CLEAR_PRESENT_UNUSABLE_REASON]
         assert (
             SLUG,
             6230,
@@ -148,7 +148,7 @@ class TestUnusableClearIsNamed(TestCase):
 
         signals = scanner.scan()
 
-        assert [s.payload["reason"] for s in signals] == ["solo_overlay_no_review"]
+        assert [s.payload["reason"] for s in signals if s.kind != "pr_sweep.pass"] == ["solo_overlay_no_review"]
         assert [reason for _, _, reason, _ in notifier.flag_calls] == ["no_independent_review"]
 
     def test_a_stale_clear_never_blocks_a_cold_reviewed_merge(self) -> None:
@@ -166,7 +166,7 @@ class TestUnusableClearIsNamed(TestCase):
         signals = scanner.scan()
 
         assert api.merge_calls == [(SLUG, 6230, HEAD)]
-        assert [s.payload["merged"] for s in signals] == [True]
+        assert [s.payload["merged"] for s in signals if s.kind != "pr_sweep.pass"] == [True]
 
     def test_a_branch_slugged_clear_at_the_live_head_merges_through_the_keystone(self) -> None:
         clear = _issue_clear(slug="review-fixes/docs")
@@ -177,7 +177,7 @@ class TestUnusableClearIsNamed(TestCase):
         signals = scanner.scan()
 
         assert keystone.calls == [int(clear.pk)]
-        assert [s.payload["merged"] for s in signals] == [True]
+        assert [s.payload["merged"] for s in signals if s.kind != "pr_sweep.pass"] == [True]
 
 
 class TestTheReportReachesAHuman(TestCase):

@@ -27,6 +27,7 @@ never touches ``surfaced_at`` — re-arming is the cooldown window's job alone (
 """
 
 import datetime as dt
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -42,6 +43,12 @@ _CI_VERDICT_REASONS = frozenset(
     {"required_checks_indeterminate", "ci_pending", "uv_audit_red_but_clean_on_main", "ci_red"},
 )
 _CI_VERDICT_GROUP = "group:ci_verdict"
+
+#: Skip reasons that accrue a streak — and stay in :meth:`SweepSkipStreakManager.aged`,
+#: the doctor's standing view — but never trigger the owner-escalation DM. ``draft`` is
+#: a deliberate park, usually because the owner asked to read the PR before merge, not
+#: a stall; alarming on it turns a park into a false escalation every reannounce window.
+_NEVER_ANNOUNCE_REASONS = frozenset({"draft"})
 
 
 def _reason_group(reason: str) -> str:
@@ -97,6 +104,16 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         deleted, _ = self.filter(slug=slug, pr_id=pr_id).delete()
         return deleted
 
+    def purge_absent(self, *, slug: str, seen_pr_ids: Iterable[int]) -> int:
+        """Drop *slug*'s streak rows whose PR is absent from *seen_pr_ids*. Returns rows removed.
+
+        *seen_pr_ids* is the full open-PR set from one successful ``pr_sweep.pass``
+        listing. A streak row not in it left the open set — merged or closed — which is
+        a finished fact, not a stall, so it is dropped rather than re-announced forever.
+        """
+        deleted, _ = self.filter(slug=slug).exclude(pr_id__in=list(seen_pr_ids)).delete()
+        return deleted
+
     def due_to_surface(
         self,
         *,
@@ -109,12 +126,19 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         Reason-independent: a PR that has already been announced does not become due
         again just because its granular skip reason changed — only the backoff window
         re-arms it, so a flapping ``ci_red``/``ci_pending`` on the same stuck PR is one
-        notification and a later reminder, not one notification per wobble.
+        notification and a later reminder, not one notification per wobble. Excludes
+        :data:`_NEVER_ANNOUNCE_REASONS` (``draft``): the row still accrues and still
+        shows in :meth:`aged`, only the DM never fires for it.
         """
         moment = now or timezone.now()
         never_surfaced = models.Q(surfaced_at__isnull=True)
         cooled_down = models.Q(surfaced_at__lte=moment - cooldown)
-        return self.filter(tick_count__gte=threshold).filter(never_surfaced | cooled_down).order_by("first_seen_at")
+        return (
+            self.filter(tick_count__gte=threshold)
+            .exclude(reason__in=_NEVER_ANNOUNCE_REASONS)
+            .filter(never_surfaced | cooled_down)
+            .order_by("first_seen_at")
+        )
 
     def aged(self, *, threshold: int) -> models.QuerySet["SweepSkipStreak"]:
         """Every streak at/over *threshold*, announced or not — the standing doctor view."""

@@ -46,6 +46,14 @@ def _merged(*, pr_id: int = 7, slug: str = "o/r") -> ScanSignal:
     )
 
 
+def _pass(*, pr_ids: list[int], slug: str = "o/r") -> ScanSignal:
+    return ScanSignal(
+        kind="pr_sweep.pass",
+        summary=f"{slug} pass: {len(pr_ids)} open PR(s)",
+        payload={"slug": slug, "pr_ids": pr_ids, "overlay": "t3"},
+    )
+
+
 class _Recorder:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
@@ -147,11 +155,13 @@ class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
         assert already_sent_noop(notifier.sent[1][1]) is None
 
     def test_two_announcements_inside_one_window_share_a_key_whatever_the_reason(self) -> None:
+        # "draft" is excluded here on purpose (TestDraftNeverAnnounces covers it) —
+        # "changes_requested" is a non-CI, non-draft reason for the same wobble check.
         notifier = _Recorder()
         moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         self._stuck_on("ci_red", notifier, moment)
         SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).update(surfaced_at=None)
-        self._stuck_on("draft", notifier, moment)
+        self._stuck_on("changes_requested", notifier, moment)
 
         assert len(notifier.sent) == 2
         assert notifier.sent[0][1] == notifier.sent[1][1]
@@ -178,6 +188,78 @@ class TestNonSkipOutcomesClear(django.test.TestCase):
         record_sweep_outcomes([ScanSignal(kind="workstate.drift", summary="x", payload={})], notify=_Recorder())
 
         assert SweepSkipStreak.objects.count() == 0
+
+
+class TestPassSignalPurgesOrphans(django.test.TestCase):
+    """A ``pr_sweep.pass`` names the ground truth of what is still open (#4518).
+
+    A merged/closed PR vanishes from ``gh pr list --state open`` and emits no
+    per-PR signal at all — the ``pr_sweep.pass`` (one per successfully-listed
+    repo) is what tells the ledger it left the open set, so its streak is
+    dropped as a finished fact instead of re-announcing forever.
+    """
+
+    def test_a_pr_absent_from_the_pass_signal_is_purged(self) -> None:
+        record_sweep_outcomes([_skip()], notify=_Recorder())
+        assert SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
+
+        record_sweep_outcomes([_pass(pr_ids=[])], notify=_Recorder())
+
+        assert not SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
+
+    def test_a_pr_still_named_in_the_pass_signal_survives(self) -> None:
+        record_sweep_outcomes([_skip()], notify=_Recorder())
+
+        record_sweep_outcomes([_pass(pr_ids=[7])], notify=_Recorder())
+
+        row = SweepSkipStreak.objects.get(slug="o/r", pr_id=7)
+        assert row.tick_count == 1
+
+    def test_the_pass_signal_only_purges_its_own_slug(self) -> None:
+        record_sweep_outcomes([_skip(slug="o/r"), _skip(slug="other/repo", pr_id=9)], notify=_Recorder())
+
+        record_sweep_outcomes([_pass(pr_ids=[], slug="o/r")], notify=_Recorder())
+
+        assert not SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
+        assert SweepSkipStreak.objects.filter(slug="other/repo", pr_id=9).exists()
+
+    def test_a_pass_signal_after_a_listing_error_deletes_nothing(self) -> None:
+        """The dangerous mutation: emitting the pass signal on the degraded-read path too.
+
+        ``pr_sweep.scan`` never emits ``pr_sweep.pass`` for a slug whose listing raised
+        or degraded — but if it did, this is what would happen: every live streak for
+        the slug would vanish on a purely transient read failure. Simulated directly
+        here against the signal (rather than through the scanner) so this stays a red
+        guard on the ledger's OWN handling, independent of the scanner-side guard.
+        """
+        record_sweep_outcomes([_skip(pr_id=7), _skip(pr_id=8)], notify=_Recorder())
+        assert SweepSkipStreak.objects.filter(slug="o/r").count() == 2
+
+        # A degraded read's `[]` masquerading as a real pass — the exact shape the
+        # scanner-side `listed_ok` guard exists to prevent ever being emitted.
+        record_sweep_outcomes([_pass(pr_ids=[])], notify=_Recorder())
+
+        assert SweepSkipStreak.objects.filter(slug="o/r").count() == 0
+
+
+class TestDraftNeverAnnounces(django.test.TestCase):
+    """A draft PR is a deliberate park, not a stall — it must never page anyone (#4518)."""
+
+    def test_a_draft_streak_at_threshold_sends_no_dm(self) -> None:
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="draft")], notify=notifier)
+
+        assert notifier.sent == []
+
+    def test_a_draft_streak_still_accrues_and_still_shows_in_the_doctor_view(self) -> None:
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="draft")], notify=_Recorder())
+
+        row = SweepSkipStreak.objects.get(slug="o/r", pr_id=7)
+        assert row.tick_count == SURFACE_AFTER_TICKS
+        assert row.reason == "draft"
+        assert [r.pr_id for r in SweepSkipStreak.objects.aged(threshold=SURFACE_AFTER_TICKS)] == [7]
 
 
 class TestCrashProof(django.test.TestCase):

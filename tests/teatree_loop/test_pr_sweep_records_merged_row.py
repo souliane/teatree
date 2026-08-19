@@ -191,7 +191,7 @@ class TestSoloOverlayBypassRecordsTheMerge:
 
         kinds = _sweep(api, _RefusingKeystone(), gh=_GhStub(checks=json.dumps([{"conclusion": "SUCCESS"}])))
 
-        assert kinds == ["pr_sweep.merged"]
+        assert kinds == ["pr_sweep.merged", "pr_sweep.pass"]
         assert api.merge_calls == [(SLUG, PR_ID, HEAD)]
         row.refresh_from_db()
         assert row.state == PullRequest.State.MERGED
@@ -241,6 +241,6 @@ class TestUvAuditFallbackRecordsTheMerge:
             kinds = _sweep(api, keystone, gh=_GhStub(checks=json.dumps([{"conclusion": "SUCCESS"}])))
 
         assert keystone.calls != []
-        assert kinds == ["pr_sweep.merged"]
+        assert kinds == ["pr_sweep.merged", "pr_sweep.pass"]
         row.refresh_from_db()
         assert row.state == PullRequest.State.MERGED

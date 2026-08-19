@@ -350,7 +350,7 @@ class TestGreenAndClean:
         signals = scanner.scan()
 
         assert keystone.calls == [int(clear.pk)]
-        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert [s.kind for s in signals] == ["pr_sweep.merged", "pr_sweep.pass"]
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
         payload = signals[0].payload
         assert payload["merged"] is True
@@ -487,7 +487,7 @@ class TestForkAlwaysHolds:
         signals = scanner.scan()
 
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
-        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert [s.kind for s in signals] == ["pr_sweep.merged", "pr_sweep.pass"]
         assert signals[0].payload["reason"] == "solo_overlay_no_clear"
 
 
@@ -502,8 +502,9 @@ class TestSkipPaths:
 
         assert keystone.calls == []
         assert notifier.calls == []
-        assert [s.kind for s in signals] == ["pr_sweep.skip"]
+        assert [s.kind for s in signals] == ["pr_sweep.skip", "pr_sweep.pass"]
         assert signals[0].payload["reason"] == "draft"
+        assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
 
     def test_changes_requested_review_blocks_merge(self) -> None:
         _issue_clear()
@@ -855,7 +856,7 @@ class TestStaleBaseMergeUpdateBounds:
 
         signals = scanner.scan()
 
-        decisions = [s.payload["decision"] for s in signals]
+        decisions = [s.payload["decision"] for s in signals if s.kind != "pr_sweep.pass"]
         assert decisions == ["branch_updated"] * MAX_BRANCH_UPDATES_PER_TICK + ["needs_branch_update"]
         assert len(api.update_branch_calls) == MAX_BRANCH_UPDATES_PER_TICK
 
@@ -920,10 +921,12 @@ class TestMultiRepo:
 
         signals = scanner.scan()
 
-        kinds = [s.kind for s in signals]
-        assert kinds == ["pr_sweep.merged", "pr_sweep.skip"]
-        assert signals[1].payload["slug"] == other
-        assert signals[1].payload["reason"] == "draft"
+        decisions = [s for s in signals if s.kind != "pr_sweep.pass"]
+        assert [s.kind for s in decisions] == ["pr_sweep.merged", "pr_sweep.skip"]
+        assert decisions[1].payload["slug"] == other
+        assert decisions[1].payload["reason"] == "draft"
+        pass_pr_ids = {s.payload["slug"]: s.payload["pr_ids"] for s in signals if s.kind == "pr_sweep.pass"}
+        assert pass_pr_ids == {SLUG: [pr_a.number], other: [pr_b.number]}
 
     def test_scanner_error_mid_pass_preserves_earlier_merge_signals(self) -> None:
         # F5.8: repo A merges a PR (producing a signal with a real side effect),
@@ -940,7 +943,7 @@ class TestMultiRepo:
 
         signals = scanner.scan()
 
-        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert [s.kind for s in signals] == ["pr_sweep.merged", "pr_sweep.pass"]
         assert keystone.calls  # the merge for repo A actually ran
 
     def test_scanner_error_with_no_signals_still_raises_for_dispatcher(self) -> None:
@@ -952,6 +955,57 @@ class TestMultiRepo:
 
         with pytest.raises(ScannerError):
             scanner.scan()
+
+
+class TestPassSignal:
+    """The listing-truth signal the aged-skip streak ledger purges orphans against (#4518)."""
+
+    def test_successful_listing_emits_one_pass_signal_naming_the_open_prs(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        pass_signals = [s for s in signals if s.kind == "pr_sweep.pass"]
+        assert len(pass_signals) == 1
+        assert pass_signals[0].payload == {"slug": SLUG, "pr_ids": [6230], "overlay": "teatree"}
+
+    def test_a_degraded_listing_never_emits_a_pass_signal(self) -> None:
+        """The dangerous line: a swallowed listing failure must never read as "no open PRs".
+
+        ``_safe_list``'s generic-``Exception`` branch returns ``[]`` for a listing that
+        genuinely broke (not a recoverable ``ScannerError``) — treating that ``[]`` as
+        "nothing is open" here would purge every live streak for the slug on a purely
+        transient read failure.
+        """
+
+        @dataclass(slots=True)
+        class _BoomApi:
+            def list_open_prs(self, *, slug: str) -> list[PrSummary]:
+                _ = slug
+                msg = "gh broke"
+                raise RuntimeError(msg)
+
+            def main_check_failed(self, *, slug: str, check_name: str) -> bool:  # pragma: no cover
+                return False
+
+            def merge_pr_squash_bound(  # pragma: no cover
+                self, *, slug: str, pr_id: int, expected_head_oid: str
+            ) -> tuple[bool, str]:
+                return False, ""
+
+        scanner = PrSweepScanner(
+            repos=(SLUG,),
+            api=_BoomApi(),
+            keystone=FakeKeystone(),
+            notifier=NullMergeNotifier(),
+            overlay="teatree",
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
 
 
 class TestSoloOverlayBypassesClearGate:
@@ -979,7 +1033,7 @@ class TestSoloOverlayBypassesClearGate:
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # direct gh fallback fired
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
         assert notifier.flag_calls == []
-        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert [s.kind for s in signals] == ["pr_sweep.merged", "pr_sweep.pass"]
         assert signals[0].payload["reason"] == "solo_overlay_no_clear"
 
     def test_solo_overlay_still_skips_draft_prs(self) -> None:
@@ -1086,7 +1140,7 @@ class TestSoloOverlayRequiresIndependentColdReview:
         assert api.merge_pr_calls == []  # the auto-merge was refused
         assert notifier.calls == []  # no merge DM
         assert notifier.flag_calls == [(SLUG, 6230, "no_independent_review", f"https://github.com/{SLUG}/pull/6230")]
-        assert [s.kind for s in signals] == ["pr_sweep.flag_no_review"]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_no_review", "pr_sweep.pass"]
         assert signals[0].payload["reason"] == "solo_overlay_no_review"
         assert signals[0].payload["merged"] is False
         assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
@@ -1585,7 +1639,7 @@ class TestConflictFlag:
         assert api.merge_pr_calls == []  # never rebased / squash-merged
         assert notifier.calls == []
         assert notifier.flag_calls == [(SLUG, 6230, "conflict", f"https://github.com/{SLUG}/pull/6230")]
-        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict"]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict", "pr_sweep.pass"]
         assert signals[0].payload["reason"] == "conflict"
         assert signals[0].payload["merged"] is False
         assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
@@ -1614,7 +1668,7 @@ class TestConflictFlag:
         signals = scanner.scan()
 
         assert notifier.flag_calls == []
-        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert [s.kind for s in signals] == ["pr_sweep.merged", "pr_sweep.pass"]
 
 
 class TestMergeableAwaitingReviewFlag:
@@ -1641,7 +1695,7 @@ class TestMergeableAwaitingReviewFlag:
         assert notifier.flag_calls == [
             (SLUG, 6230, "mergeable_awaiting_review", f"https://github.com/{SLUG}/pull/6230")
         ]
-        assert [s.kind for s in signals] == ["pr_sweep.flag_mergeable"]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_mergeable", "pr_sweep.pass"]
         assert signals[0].payload["reason"] == "mergeable_awaiting_review"
         assert signals[0].payload["merged"] is False
         assert MergeableNotified.objects.filter(slug=SLUG, pr_id=6230, head_sha=HEAD).count() == 1
@@ -1871,10 +1925,12 @@ class TestErrorIsolation:
 
         signals = scanner.scan()
 
-        # PR A failed — its signal must be absent; PR B succeeded.
-        assert len(signals) == 1
+        # PR A failed — its signal must be absent; PR B succeeded; the listing
+        # still names both PRs, so the pass signal still fires for the slug.
+        assert len(signals) == 2
         assert signals[0].payload["pr_id"] == int(clear_b.pr_id)
         assert signals[0].kind == "pr_sweep.merged"
+        assert signals[1].kind == "pr_sweep.pass"
 
     def test_scanner_error_from_evaluate_propagates_out_of_scan(self) -> None:
         """A ScannerError raised inside _evaluate must not be swallowed (#1596)."""
@@ -1918,7 +1974,7 @@ class TestErrorIsolation:
 
         signals = scanner.scan()
 
-        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict"]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict", "pr_sweep.pass"]
 
 
 class TestEvaluateOne:

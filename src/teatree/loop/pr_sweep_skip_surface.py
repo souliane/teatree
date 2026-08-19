@@ -6,8 +6,14 @@ merges and nobody is told why. Silence is the defect, not the skip.
 
 This reads the sweep's own emitted signals rather than reaching into the scanner, so
 ``pr_sweep`` needs no hook: a ``pr_sweep.skip`` extends that PR's streak, any other
-``pr_sweep.*`` outcome resolves it, and a streak reaching :data:`SURFACE_AFTER_TICKS`
-is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
+per-PR ``pr_sweep.*`` outcome resolves it, and a streak reaching
+:data:`SURFACE_AFTER_TICKS` is announced — then again only after backing off for
+:data:`REANNOUNCE_COOLDOWN`. A ``pr_sweep.pass`` — one per successfully-listed repo,
+naming every PR still open — purges any streak row for that repo whose PR is absent:
+gone from the open set (merged or closed) is a finished fact, not a stall. A ``draft``
+skip is the one reason that never announces (a deliberate park, not a stall) though it
+still accrues and still shows in ``t3 doctor check`` — see
+:meth:`teatree.core.models.SweepSkipStreak.objects.due_to_surface`.
 A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
 stuck PR) is not a new problem, and the ledger reads it as one condition on both sides:
 the streak keeps counting through it (the CI-verdict reasons are one group, so the
@@ -46,6 +52,7 @@ SURFACE_AFTER_TICKS = 3
 REANNOUNCE_COOLDOWN = dt.timedelta(hours=24)
 
 _SKIP_KIND = "pr_sweep.skip"
+_PASS_KIND = "pr_sweep.pass"  # noqa: S105 — a signal-kind name, not a credential
 _SWEEP_PREFIX = "pr_sweep."
 
 type SkipNotifier = Callable[..., None]
@@ -76,6 +83,11 @@ def _observe(signal: ScanSignal, moment: dt.datetime) -> None:
 
     payload = signal.payload
     slug = str(payload.get("slug") or "")
+    if signal.kind == _PASS_KIND:
+        if slug:
+            seen = [pr_id for pr_id in payload.get("pr_ids") or [] if isinstance(pr_id, int)]
+            SweepSkipStreak.objects.purge_absent(slug=slug, seen_pr_ids=seen)
+        return
     pr_id = payload.get("pr_id")
     if not slug or not isinstance(pr_id, int):
         return

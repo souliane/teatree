@@ -213,7 +213,7 @@ def _sweep_merges(*, standing_authorizer: str = "") -> bool:
         substrate_standing_authorizer=standing_authorizer,
     )
     signals = scanner.scan()
-    merged = [signal for signal in signals if signal.payload["merged"]]
+    merged = [signal for signal in signals if signal.payload.get("merged")]
     return bool(api.merge_pr_calls) and bool(merged)
 
 

@@ -45,6 +45,12 @@ per-tick cap, own PRs only). Any refusal degrades to a flag-level
 The scanner posts a Slack DM only on actual merges (acceptance gate) and
 on a flag-level signal; ordinary skips log to the periodic-task log but
 never DM, to keep the DM channel quiet.
+
+``scan`` emits one ``pr_sweep.pass`` signal per successfully-listed repo, naming
+every PR the listing found open — the ground truth
+:mod:`teatree.loop.pr_sweep_skip_surface` uses to purge a stale skip-streak row for
+a PR that merged or closed since the last pass, rather than re-announcing it
+forever. A degraded listing withholds this signal (see :meth:`_safe_list`).
 """
 
 import logging
@@ -68,6 +74,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
+from teatree.loop.scanners.pr_sweep_signals import pass_signal, signal_from_attempt
 from teatree.loop.scanners.pr_sweep_types import (
     CLEAR_PRESENT_UNUSABLE_REASON,
     CONTESTED_HOLD_REASON,
@@ -192,10 +199,11 @@ class PrSweepScanner:
     def scan(self) -> list[ScanSignal]:
         self.branch_update_budget.reset()
         signals: list[ScanSignal] = []
+        decisions_made = False
         errors: list[ScannerError] = []
         for slug in self.repos:
             try:
-                prs = self._safe_list(slug)
+                prs, listed_ok = self._safe_list(slug)
             except ScannerError as exc:
                 # F5.8: record-and-continue rather than re-raise mid-pass. A
                 # later repo's auth/rate-limit failure must not discard the
@@ -213,8 +221,19 @@ class PrSweepScanner:
                     logger.exception("pr_sweep failed to evaluate %s#%s", slug, getattr(pr, "number", "?"))
                     continue
                 self._log_attempt(attempt)
-                signals.append(_signal_from_attempt(attempt, overlay=self.overlay))
-        if errors and not signals:
+                signals.append(signal_from_attempt(attempt, overlay=self.overlay))
+                decisions_made = True
+            if listed_ok:
+                # A clean listing names every PR still open for *slug* — the aged-skip
+                # streak ledger (teatree.loop.pr_sweep_skip_surface) purges any row for
+                # a PR absent from this set (merged/closed = a finished fact, not a
+                # stall). A degraded listing (``listed_ok=False``) must NEVER emit this:
+                # its ``[]`` would read as "nothing open" and mass-delete every live
+                # streak for the slug. This bookkeeping signal does NOT count toward
+                # ``decisions_made`` below — a tick where every PR's evaluation failed
+                # must still raise, even though the listing itself succeeded.
+                signals.append(pass_signal(slug=slug, pr_ids=[pr.number for pr in prs], overlay=self.overlay))
+        if errors and not decisions_made:
             # Nothing was produced this pass — surface the first recoverable error
             # to the dispatcher (#1287) so a sustained auth/rate-limit failure is
             # recorded and DM'd, exactly as before. When signals DID accumulate we
@@ -241,7 +260,8 @@ class PrSweepScanner:
         :class:`MergeAttempt` (``None`` when the PR is no longer open, so a
         merged / closed PR is a quiet no-op rather than an error).
         """
-        pr = next((candidate for candidate in self._safe_list(slug) if candidate.number == pr_id), None)
+        prs, _listed_ok = self._safe_list(slug)
+        pr = next((candidate for candidate in prs if candidate.number == pr_id), None)
         if pr is None:
             return None
         attempt = self._evaluate(pr)
@@ -259,9 +279,15 @@ class PrSweepScanner:
             attempt.merged,
         )
 
-    def _safe_list(self, slug: str) -> list[PrSummary]:
+    def _safe_list(self, slug: str) -> tuple[list[PrSummary], bool]:
+        """Fetch open PRs for *slug*; the second element is False iff the read degraded.
+
+        A degraded read (an unexpected non-``ScannerError`` exception, swallowed rather
+        than raised) must never be mistaken for "no PRs are open" — callers use this
+        flag to withhold the ``pr_sweep.pass`` listing signal for the slug on that tick.
+        """
         try:
-            return self.api.list_open_prs(slug=slug)
+            return self.api.list_open_prs(slug=slug), True
         except ScannerError:
             # Auth / rate-limit / missing-scope: propagate to the dispatcher
             # so this scanner is recorded in ``report.errors`` and skipped for
@@ -269,7 +295,7 @@ class PrSweepScanner:
             raise
         except Exception:
             logger.exception("pr_sweep failed to list PRs for %s", slug)
-            return []
+            return [], False
 
     def _evaluate(self, pr: PrSummary) -> MergeAttempt:
         if pr.is_conflicted:
@@ -573,7 +599,7 @@ class PrSweepScanner:
 
 
 def _skip(pr: PrSummary, *, reason: str) -> MergeAttempt:
-    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason)
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason, url=pr.url)
 
 
 def _precondition_skip_reason(pr: PrSummary) -> str | None:
@@ -589,25 +615,3 @@ def _precondition_skip_reason(pr: PrSummary) -> str | None:
     if untrusted_merge_provenance(pr):
         return "fork_requires_human_approval" if pr.same_repo is False else "untrusted_author_public_repo"
     return None
-
-
-def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
-    return ScanSignal(
-        kind="pr_sweep.merged" if attempt.merged else f"pr_sweep.{attempt.decision}",
-        summary=f"{attempt.slug}#{attempt.pr_id} {attempt.decision} ({attempt.reason})",
-        payload={
-            "slug": attempt.slug,
-            "pr_id": attempt.pr_id,
-            "decision": attempt.decision,
-            "reason": attempt.reason,
-            "merged": attempt.merged,
-            "merged_sha": attempt.merged_sha,
-            "overlay": overlay,
-            "url": attempt.url,
-            "review_dispatched": attempt.review_dispatched,
-            "failing_required": list(attempt.failing_required),
-            "base_current": attempt.base_current,
-            "held_verdicts": [list(ref) for ref in attempt.held_verdicts],
-            "authorizing_verdict": None if attempt.authorizing_verdict is None else list(attempt.authorizing_verdict),
-        },
-    )

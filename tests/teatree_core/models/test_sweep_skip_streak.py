@@ -83,6 +83,31 @@ class TestResolve(django.test.TestCase):
         assert SweepSkipStreak.objects.resolve(slug="o/r", pr_id=99) == 0
 
 
+class TestPurgeAbsent(django.test.TestCase):
+    """A PR absent from a ``pr_sweep.pass`` listing left the open set — a finished fact."""
+
+    def test_a_pr_not_in_seen_ids_is_dropped(self) -> None:
+        _observe(pr_id=7)
+
+        assert SweepSkipStreak.objects.purge_absent(slug="o/r", seen_pr_ids=[]) == 1
+        assert not SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
+
+    def test_a_pr_still_in_seen_ids_survives(self) -> None:
+        _observe(pr_id=7)
+
+        assert SweepSkipStreak.objects.purge_absent(slug="o/r", seen_pr_ids=[7]) == 0
+        assert SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
+
+    def test_only_the_named_slug_is_purged(self) -> None:
+        _observe(pr_id=7)
+        SweepSkipStreak.objects.create(slug="other/repo", pr_id=9, reason="ci_pending")
+
+        SweepSkipStreak.objects.purge_absent(slug="o/r", seen_pr_ids=[])
+
+        assert not SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).exists()
+        assert SweepSkipStreak.objects.filter(slug="other/repo", pr_id=9).exists()
+
+
 _COOLDOWN = dt.timedelta(hours=24)
 
 
@@ -134,6 +159,22 @@ class TestDueToSurface(django.test.TestCase):
         SweepSkipStreak.objects.filter(pk=row.pk).update(surfaced_at=recent_surface)
 
         assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+
+
+class TestDraftIsNeverDue(django.test.TestCase):
+    """``draft`` is a deliberate park, not a stall — it must never page anyone (#4518)."""
+
+    def test_a_fresh_never_surfaced_draft_streak_at_threshold_is_not_due(self) -> None:
+        for _ in range(3):
+            _observe(reason="draft")
+
+        assert list(SweepSkipStreak.objects.due_to_surface(threshold=3, cooldown=_COOLDOWN)) == []
+
+    def test_a_draft_streak_still_appears_in_aged(self) -> None:
+        for _ in range(3):
+            _observe(reason="draft")
+
+        assert [row.pr_id for row in SweepSkipStreak.objects.aged(threshold=3)] == [7]
 
 
 class TestAged(django.test.TestCase):

@@ -1,11 +1,12 @@
 """Decision predicates + model queries for :mod:`teatree.loop.scanners.pr_sweep`.
 
-The scanner core (:class:`PrSweepScanner`, the signal builders) lives in
-``pr_sweep``; this module holds the pure check-classification predicates and the
-``ReviewVerdict`` / external-delivery lookups the decision ladder consults (the
-CLEAR lookup is its own concern, in ``pr_sweep_clear_lookup``). Splitting them out
-keeps the scanner module focused on orchestration and under the module-health LOC
-cap (same split rationale as ``pr_sweep_adapters``).
+The scanner core (:class:`PrSweepScanner`) lives in ``pr_sweep``; the signal
+builders live in ``pr_sweep_signals``; this module holds the pure
+check-classification predicates and the ``ReviewVerdict`` / external-delivery
+lookups the decision ladder consults (the CLEAR lookup is its own concern, in
+``pr_sweep_clear_lookup``). Splitting them out keeps the scanner module focused on
+orchestration and under the module-health LOC cap (same split rationale as
+``pr_sweep_adapters``).
 """
 
 import logging
