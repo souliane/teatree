@@ -180,10 +180,10 @@ def doctor_check_process_code_freshness() -> bool:
     finished runs — the actively-misleading probe #4390 measured. The stale process is
     the only witness there is, so the check reads its record instead.
 
-    Fail-open in every direction but the proven one: no records at all and a record too
-    old to trust both ``WARN`` and pass. A role writes its first record on its first claim
-    after start, so an empty data dir means "nobody has reported yet", which is a question
-    mark rather than a finding.
+    Fail-open in every direction but the proven one: no records at all, a record too old to
+    trust, and a role whose own reading is ``UNKNOWN`` each ``WARN`` and pass. A role writes
+    its first record on its first claim after start, so an empty data dir means "nobody has
+    reported yet", which is a question mark rather than a finding.
     """
     readings = published_readings()
     if not readings:
@@ -205,6 +205,12 @@ def doctor_check_process_code_freshness() -> bool:
             )
             ok = False
             continue
+        if reading.is_unknown:
+            typer.echo(
+                f"WARN  {role} (pid {reading.pid}) could not measure its own freshness: "
+                f"{reading.detail or 'no detail recorded'}. It is admitting work — an unmeasured role "
+                f"is a question mark, not evidence that its code is current."
+            )
         age = reading.age_seconds(now)
         if age is None or age > _FRESHNESS_RECORD_MAX_AGE_SECONDS:
             typer.echo(

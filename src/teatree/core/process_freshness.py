@@ -134,6 +134,7 @@ class PublishedReading:
     applied_at: str
     process_started_at: str
     at: str
+    detail: str = ""
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> "PublishedReading":
@@ -146,11 +147,16 @@ class PublishedReading:
             applied_at=str(payload.get("applied_at", "")),
             process_started_at=str(payload.get("process_started_at", "")),
             at=str(payload.get("at", "")),
+            detail=str(payload.get("detail", "")),
         )
 
     @property
     def is_behind(self) -> bool:
         return self.verdict == FreshnessVerdict.BEHIND
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.verdict == FreshnessVerdict.UNKNOWN
 
     def age_seconds(self, now: datetime) -> float | None:
         try:
@@ -215,6 +221,18 @@ def _sequence(migration_name: str) -> int | None:
 
 
 def _compare(snapshot: LoadedSnapshot, alias: str) -> FreshnessReading:
+    if not snapshot.heads:
+        # The frozen half is missing entirely, so nothing was measured. Falling through to the
+        # CURRENT seed below would publish that as the healthiest possible answer.
+        warn_throttled(
+            logger,
+            "process-freshness:no-heads",
+            "process-freshness froze no max_migration.txt from any app — reporting unknown, not current",
+        )
+        return FreshnessReading(
+            verdict=FreshnessVerdict.UNKNOWN,
+            detail="no app declared a readable max_migration.txt, so no head was frozen to compare",
+        )
     recorder = MigrationRecorder(connections[alias])
     current = FreshnessReading(verdict=FreshnessVerdict.CURRENT)
     highest_applied = -1
