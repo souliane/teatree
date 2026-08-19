@@ -31,7 +31,7 @@ from teatree.core.models import AutoReviewDispatch, BotPing, BranchUpdateAttempt
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
     AutoReviewTaskDispatcher,
@@ -489,6 +489,49 @@ class TestForkAlwaysHolds:
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert [s.kind for s in signals] == ["pr_sweep.merged"]
         assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+
+
+class TestEverySkipCarriesThePrUrl:
+    """A skip signal without the url makes the aged-skip DM unactionable (#4518).
+
+    ``with_ci_context`` stamped the url on the CI-verdict skips only, so a PR held on
+    ``draft`` / ``changes_requested`` / fork provenance / ``no_clear_for_head`` reached
+    the owner as ``no URL recorded`` — a page the reader has to resolve by hand.
+    """
+
+    def _skip_signal(self, pr: PrSummary) -> ScanSignal:
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone())
+        signal = scanner.scan()[0]
+        assert signal.kind == "pr_sweep.skip"
+        return signal
+
+    def test_a_draft_skip_carries_the_url(self) -> None:
+        _issue_clear()
+        signal = self._skip_signal(_open_pr(is_draft=True))
+
+        assert signal.payload["reason"] == "draft"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_changes_requested_skip_carries_the_url(self) -> None:
+        _issue_clear()
+        signal = self._skip_signal(_open_pr(changes_requested=True))
+
+        assert signal.payload["reason"] == "changes_requested"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_fork_provenance_skip_carries_the_url(self) -> None:
+        _issue_clear()
+        signal = self._skip_signal(_open_pr(same_repo=False))
+
+        assert signal.payload["reason"] == "fork_requires_human_approval"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_a_no_clear_for_head_skip_carries_the_url(self) -> None:
+        signal = self._skip_signal(_open_pr(author=COLLEAGUE_LOGIN))
+
+        assert signal.payload["reason"] == "no_clear_for_head"
+        assert signal.payload["url"] == f"https://github.com/{SLUG}/pull/6230"
 
 
 class TestSkipPaths:

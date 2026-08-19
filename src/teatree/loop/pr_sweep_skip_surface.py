@@ -45,6 +45,11 @@ SURFACE_AFTER_TICKS = 3
 #: PR is genuinely still stuck.
 REANNOUNCE_COOLDOWN = dt.timedelta(hours=24)
 
+#: How long a tracked PR may go unobserved before the pass reads it as gone from the open
+#: set. ``PrSweepScanner.scan`` emits no signal for a PR whose evaluation raised, so one
+#: missed pass is not a departure; at the ~5-min sweep cadence this is ~12 passes of slack.
+DEPARTURE_GRACE = dt.timedelta(hours=1)
+
 _SKIP_KIND = "pr_sweep.skip"
 _SWEEP_PREFIX = "pr_sweep."
 
@@ -67,7 +72,7 @@ def _default_notify(*, text: str, idempotency_key: str) -> None:
 def _surface_text(row: "SweepSkipStreak") -> str:
     return (
         f"PR {row.ref} has been skipped by the merge sweep {row.tick_count} consecutive times "
-        f"({row.age_label()}) — reason `{row.reason}`. {row.url or 'no URL recorded'}"
+        f"({row.age_label()}) — reason `{row.reason}`. {row.link}"
     )
 
 
@@ -91,6 +96,44 @@ def _observe(signal: ScanSignal, moment: dt.datetime) -> None:
             overlay=str(payload.get("overlay") or ""),
         ),
         now=moment,
+    )
+
+
+def _settled_refs() -> set[tuple[str, int]]:
+    """Every tracked PR a local row proves MERGED or CLOSED — one query, no forge call.
+
+    Absence of a row is UNKNOWN, never dead: most tracked PRs are opened outside the
+    pipeline and carry no row at all, so requiring one to announce would mute the
+    majority of real alarms. Newest row wins per PR, the rule
+    :meth:`~teatree.core.models.pull_request.PullRequestQuerySet.owning_ticket` states.
+    """
+    from teatree.core.models import PullRequest, SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    tracked = {str(pr_id) for pr_id in SweepSkipStreak.objects.values_list("pr_id", flat=True)}
+    if not tracked:
+        return set()
+    rows = PullRequest.objects.filter(iid__in=tracked).order_by("id").values_list("repo", "iid", "state")
+    newest = {(repo.casefold(), int(iid)): state for repo, iid, state in rows if iid.isdigit()}
+    terminal = {PullRequest.State.MERGED, PullRequest.State.CLOSED}
+    return {ref for ref, state in newest.items() if state in terminal}
+
+
+def _swept_slugs(signals: list[ScanSignal]) -> set[str]:
+    return {slug for signal in signals if (slug := str(signal.payload.get("slug") or ""))}
+
+
+def _discard_fossils(signals: list[ScanSignal], moment: dt.datetime) -> None:
+    """Drop the streaks of PRs the sweep can no longer merge, by either local proof (#4518).
+
+    A closed PR leaves ``list_open_prs``, so ``resolve`` — which fires only on a live
+    ``pr_sweep.*`` signal — never runs and the row outlives the PR it describes.
+    """
+    from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    SweepSkipStreak.objects.drop_terminal(terminal_refs=_settled_refs())
+    SweepSkipStreak.objects.drop_departed(
+        slugs=_swept_slugs(signals),
+        stale_before=moment - DEPARTURE_GRACE,
     )
 
 
@@ -119,7 +162,14 @@ def _announce_due(
     from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     announced: list[str] = []
-    due = list(SweepSkipStreak.objects.due_to_surface(threshold=threshold, cooldown=cooldown, now=moment))
+    due = list(
+        SweepSkipStreak.objects.due_to_surface(
+            threshold=threshold,
+            cooldown=cooldown,
+            now=moment,
+            observed_since=moment,
+        ),
+    )
     for row in due:
         try:
             notify(text=_surface_text(row), idempotency_key=_announcement_key(row, moment=moment, cooldown=cooldown))
@@ -151,6 +201,7 @@ def record_sweep_outcomes(
         moment = now or timezone.now()
         for signal in sweep_signals:
             _observe(signal, moment)
+        _discard_fossils(sweep_signals, moment)
         return _announce_due(notify or _default_notify, threshold, cooldown, moment)
     except Exception:
         logger.exception("pr_sweep aged-skip surfacing failed")
