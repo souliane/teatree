@@ -330,7 +330,7 @@ class TestTransientRequeue(TestCase):
         assert task.status != Task.Status.COMPLETED
 
     def test_a_stray_pr_is_still_trusted_for_a_genuine_lease_loss(self) -> None:
-        # The #3982 case itself, reached through the sweep rather than through headless.py
+        # The #3982 case itself, reached through the sweep rather than through runner.py
         # directly: a REVIEWED ticket with an attached OPEN pull request, and THIS row's
         # own failure genuinely was a lost lease. The artifact is trusted here — the
         # asymmetry from the sibling test above is exactly the failure_kind gate.

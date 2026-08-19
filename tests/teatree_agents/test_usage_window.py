@@ -455,7 +455,7 @@ class TestParkTaskOnAllExhausted(django.test.TestCase):
         assert not UsageWindowState.objects.exists()
 
     def test_usage_defaults_to_null_for_the_pre_dispatch_caller(self) -> None:
-        """headless.py's own call site is a CredentialError before any turn ran — no usage passed."""
+        """runner.py's own call site is a CredentialError before any turn ran — no usage passed."""
         _set_autorecovery(on=True)
         task = _claimed_task()
         parked = park_task_on_all_exhausted(

@@ -1,6 +1,6 @@
 """Parse the structured result JSON out of a headless agent's text output.
 
-Split out of ``headless.py``: turning the agent's final text into a structured
+Split out of ``runner.py``: turning the agent's final text into a structured
 result is a self-contained concern, distinct from the run/heartbeat
 orchestration the runner owns. Schema validation is the recorder's job —
 :func:`teatree.agents.attempt_recorder.validate_result_keys`.
