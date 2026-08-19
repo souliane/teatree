@@ -56,6 +56,10 @@
 # keeps both deferred rather than moving one to module scope and leaving the other.
 "src/teatree/core/gates/open_questions_gate.py" = 2
 "src/teatree/core/gates/owned_repo_guard.py" = 2
+# 2: mirrors plan_gate.py's own pair — `PlanArtifact` (an ORM read) and
+# `is_trivial_plan_skip` (imports the model module) both must resolve after the
+# app registry is ready, so `unplanned_dispatch_refusal` keeps both deferred.
+"src/teatree/core/gates/plan_dispatch_gate.py" = 2
 "src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
 "src/teatree/core/gates/review_request_guard.py" = 6

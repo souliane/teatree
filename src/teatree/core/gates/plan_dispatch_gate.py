@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 #: the plan this gate wants.
 IMPLEMENTING_SUBAGENTS: frozenset[str] = frozenset({"t3:coder", "t3:debugger", "t3:tester", "t3:e2e"})
 
-#: Derived from the dispatch map rather than hand-listed, so a future phase routed
-#: to an implementing agent is covered with no edit here — and the two cannot drift.
+#: Derived from the dispatch map rather than hand-listed, so any newly-routed
+#: implementing phase is covered with no edit here — and the two cannot drift.
 SUBAGENT_BY_IMPLEMENTING_PHASE: dict[str, str] = {
     phase: subagent for (_role, phase), subagent in SUBAGENT_BY_PHASE.items() if subagent in IMPLEMENTING_SUBAGENTS
 }
