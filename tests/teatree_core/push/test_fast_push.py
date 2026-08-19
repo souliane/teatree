@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.fast_push import (
+from teatree.core.push.fast_push import (
     LEAK_GATES,
     FastPusher,
     FastPushOutcome,
@@ -184,7 +184,7 @@ class TestCleanPush:
     def test_refuses_when_default_branch_unresolvable(self, repo: Path, leak_env: None) -> None:
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.fast_push.git.default_branch", side_effect=RuntimeError("boom")):
+        with patch("teatree.core.push.fast_push.git.default_branch", side_effect=RuntimeError("boom")):
             outcome = run_fast_push(repo, FakeForge())
 
         assert not outcome.ok
@@ -198,7 +198,7 @@ class TestAuthorIdentityGate:
         run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert not outcome.ok
@@ -210,7 +210,7 @@ class TestAuthorIdentityGate:
     def test_allows_noreply_identity_on_public_repo(self, repo: Path, leak_env: None) -> None:
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.ok
@@ -220,7 +220,7 @@ class TestAuthorIdentityGate:
         run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.fast_push._public_github_slug", return_value=None):
+        with patch("teatree.core.push.fast_push._public_github_slug", return_value=None):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.ok
@@ -289,7 +289,7 @@ class TestForgeCliCommands:
             assert forge.find_pr_url(branch="b") == "https://x/pr/4"
         with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed("", returncode=1)):
             assert forge.find_pr_url(branch="b") == ""
-        with patch("teatree.core.fast_push.run_checked", return_value=self._completed("https://x/pr/5\n")) as run:
+        with patch("teatree.core.push.fast_push.run_checked", return_value=self._completed("https://x/pr/5\n")) as run:
             assert forge.create_pr(branch="b", title="t", body="d") == "https://x/pr/5"
             forge.update_pr(url="https://x/pr/5", body="d2")
         created_cmd, updated_cmd = run.call_args_list[0].args[0], run.call_args_list[1].args[0]
@@ -305,7 +305,7 @@ class TestForgeCliCommands:
         with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed("not-json")):
             assert forge.find_pr_url(branch="b") == ""
         with patch(
-            "teatree.core.fast_push.run_checked", return_value=self._completed("created https://gl/mr/8\n")
+            "teatree.core.push.fast_push.run_checked", return_value=self._completed("created https://gl/mr/8\n")
         ) as run:
             assert forge.create_pr(branch="b", title="t", body="d") == "https://gl/mr/8"
             forge.update_pr(url="https://gl/mr/8", body="d2")
@@ -463,7 +463,7 @@ class TestTheGatesScanThePushRangeNotJustTheStagedDelta:
     def test_a_non_noreply_identity_on_an_unpushed_commit_is_refused(self, repo: Path, leak_env: None) -> None:
         _commit(repo, "clean.py", "x = 1\n", "feat: clean", email="dev@example.com")
 
-        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
             outcome = run_fast_push(repo, FakeForge())
 
         assert not outcome.ok
@@ -476,7 +476,7 @@ class TestTheGatesScanThePushRangeNotJustTheStagedDelta:
         # a range nothing can bound gets the same posture rather than a silent skip.
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.fast_push.git.default_branch", return_value="development"):
+        with patch("teatree.core.push.fast_push.git.default_branch", return_value="development"):
             outcome = run_fast_push(repo, FakeForge())
 
         assert not outcome.ok
@@ -506,7 +506,7 @@ class TestThePushRangeDoesNotReJudgeAlreadyPublicHistory:
         _merge_forward(repo, main_content="a clean prior line\n", main_email="squash@example.com")
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.ok, outcome.findings

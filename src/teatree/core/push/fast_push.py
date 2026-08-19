@@ -16,7 +16,7 @@ The gates run over the PUSH RANGE, not the staged delta. ``git push`` here bypas
 hook chain, so it delivers every committed-but-unpushed commit on the branch — and three
 of the four gates used to read ``git diff --cached`` alone. A secret committed in an
 earlier turn, with nothing staged now, was pushed with ``ok: True`` and ``findings: []``
-while all four gates reported executed. :mod:`teatree.core.push_range` computes the same
+while all four gates reported executed. :mod:`teatree.core.push.push_range` computes the same
 set the bash hook does, including its merge-forward handling, so closing that hole does
 not turn every merge-forward push into a refusal.
 
@@ -36,7 +36,7 @@ from typing import Final, Protocol
 
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
-from teatree.core.push_range import PushRange
+from teatree.core.push.push_range import PushRange
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
@@ -333,7 +333,7 @@ class LeakGateScan:
 
 
 def _privacy_scan_script() -> Path | None:
-    script = Path(__file__).resolve().parents[3] / "scripts" / "privacy_scan.py"
+    script = Path(__file__).resolve().parents[4] / "scripts" / "privacy_scan.py"
     return script if script.is_file() else None
 
 

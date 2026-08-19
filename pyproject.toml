@@ -71,7 +71,12 @@ dependencies = [
   # the container picked up the shedding release and the doctor plane died on import
   # for 72 consecutive watchdog passes. Same class as the ``coverage`` / ``pyyaml``
   # runtime-dep declarations above: a transitive arrival is not a declaration.
-  "packaging>=24",
+  # Bounded to the major whose module layout ``dep_skew`` imports, same posture as the
+  # ``mcp>=2,<3`` pin above: ``uv tool install`` re-resolves this declaration with no
+  # lockfile, so an unbounded floor lets the container run a major the test suite never
+  # saw. ``<27`` admits the resolved 26.x line (uv.lock pins 26.2; the container has
+  # independently resolved 26.3) with one full major of headroom.
+  "packaging>=24,<27",
   # ``teatree.core.evidence.test_plan_validation`` opens evidence PNGs with Pillow to
   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only

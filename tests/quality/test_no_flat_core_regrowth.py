@@ -226,7 +226,15 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # core/apps AND core/gates with no cycle. It must also stay ORM-light enough to run in
 # ``AppConfig.ready()``, which rules out models/; no cleanup/factory/intake/... subpackage
 # owns "what did this interpreter load".
-PINNED_FLAT_CORE_MODULES = 111
+# 110: -fast_push.py (C1 leak-gate fix follow-up) — fast_push.py (the leak-gated fast
+# delivery lane hub, #67 above) gained a second module, push_range.py (the range the leak
+# gates now scan — the whole push range, not just the staged delta), and the pair collapsed
+# into the subpackage core/push/ instead of landing push_range.py flat at the root beside
+# it. Mirrors retention/'s own history (#102 above): a flat hub becomes a subpackage once it
+# grows a second module, rather than each one separately arguing for a root slot. One root
+# leaf leaves (fast_push.py) and the new helper never lands at the root, netting -1 against
+# the pre-existing baseline of 111.
+PINNED_FLAT_CORE_MODULES = 110
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

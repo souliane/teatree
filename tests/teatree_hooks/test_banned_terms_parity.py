@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.fast_push import LeakGateScan
+from teatree.core.push.fast_push import LeakGateScan
 from teatree.hooks import banned_terms_scanner, banned_terms_tree_scan
 from teatree.hooks.term_match import matched_term
 

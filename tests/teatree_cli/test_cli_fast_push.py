@@ -6,7 +6,7 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.fast_push import fast_push
-from teatree.core.fast_push import LEAK_GATES, FastPushOutcome, LeakFinding
+from teatree.core.push.fast_push import LEAK_GATES, FastPushOutcome, LeakFinding
 
 runner = CliRunner()
 
