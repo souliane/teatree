@@ -130,6 +130,24 @@ _TRANSIENT_MARKERS = (
     "landing_unverified:",
 )
 
+#: Phrases a FAILED attempt carries when the agent PROCESS itself died rather than the work
+#: failing — a raw Python traceback that reached the recorder, or an SDK ``ProcessError``.
+#: The taxonomy classifies this shape ``HARNESS_CRASH`` and places it in its ENVIRONMENTAL
+#: set ("caused by the environment rather than by a defect in the work"), so leaving it out
+#: of the requeue predicate dropped work for a reason unrelated to the work: eleven tasks in
+#: one day, and a PR that reached the owner unreviewed because its reviewing task died this
+#: way and nothing reopened it (#4439).
+#:
+#: Widening the predicate is safe because the sweep is bounded TWICE: the #2009 repair-loop
+#: budget caps iterations per ticket-phase, and two consecutive identical failures are
+#: escalated LOUDLY instead of reopened — so a crash that is really deterministic halts and
+#: surfaces rather than looping. :mod:`teatree.core.modelkit.task_failure_taxonomy` imports
+#: these rather than restating them, so the classifier and the requeue predicate cannot drift.
+HARNESS_CRASH_MARKERS = (
+    "traceback (most recent call last)",
+    "processerror",
+)
+
 
 def transient_failure_signature(error: str) -> str:
     """Return the transient signature of a FAILED attempt's *error*, or ``""``.
@@ -147,6 +165,9 @@ def transient_failure_signature(error: str) -> str:
     for marker in _TRANSIENT_MARKERS:
         if marker in haystack:
             return marker.rstrip(": ")
+    for marker in HARNESS_CRASH_MARKERS:
+        if marker in haystack:
+            return "harness_crash"
     return outage_signature_in_text(error)
 
 

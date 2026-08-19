@@ -66,6 +66,8 @@ from collections.abc import Iterable
 
 from django.db import models
 
+from teatree.failure_signatures import HARNESS_CRASH_MARKERS
+
 #: Prefix a lease-reaper failure carries, so the reaped row names its own cause.
 LEASE_EXPIRED_PREFIX = "lease_expired: "
 
@@ -162,7 +164,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.HARNESS_CONFIG_INVALID, ("is not valid for agent_harness", "agent_harness_provider=")),
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),
     (FailureKind.RECORDING_REFUSED, ("recording refused",)),
-    (FailureKind.HARNESS_CRASH, ("traceback (most recent call last)", "processerror")),
+    (FailureKind.HARNESS_CRASH, HARNESS_CRASH_MARKERS),
     # A raw connection signature whose envelope was never stamped with a marker. These
     # mirror ``teatree.agents.outage_classifier``; this module is a pure leaf (it may not
     # import the agents layer), so a test pins the two against each other rather than a
