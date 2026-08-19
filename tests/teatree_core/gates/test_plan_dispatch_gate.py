@@ -4,6 +4,9 @@ Symmetric must-refuse / must-allow, mirroring ``test_plan_gate.py``: the gate is
 useless if it only ever passes, and harmful if it refuses a reviewer or a planner.
 """
 
+from typing import cast
+
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.gates.plan_dispatch_gate import (
@@ -89,3 +92,43 @@ class TestNeverRefusesANonImplementingDispatch(TestCase):
 
     def test_an_unknown_phase_passes(self) -> None:
         assert unplanned_dispatch_refusal(_ticket(), phase="scanning_news") is None
+
+
+class TestOriginalBugEndToEndThroughTheOperatorRemedies(TestCase):
+    """Reproduce PR #4521's HOLD end-to-end, then prove the fix (#4409).
+
+    Both named remedies drove `ticket.plan()`, whose FSM source is ONLY
+    STARTED — so on the 91/92 surveyed dispatch targets that are NOT in
+    STARTED, the remedy itself raised inside the same atomic() block and
+    rolled back, leaving the dispatch refused with no working path forward
+    (the #4449 class). The fix records the signal off STARTED too, so the
+    SAME dispatch that was refused before now proceeds.
+    """
+
+    def test_skip_planning_on_a_non_started_ticket_unblocks_a_refused_dispatch(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.CODED)
+        assert unplanned_dispatch_refusal(ticket, phase="coding") is not None
+
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "skip-planning", str(ticket.pk), "--reason", "trivial mechanical edit"),
+        )
+        assert not result.get("error")
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED  # no illegal transition was attempted
+
+        assert unplanned_dispatch_refusal(ticket, phase="coding") is None
+
+    def test_plan_on_a_non_started_ticket_unblocks_a_refused_dispatch(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        assert unplanned_dispatch_refusal(ticket, phase="debugging") is not None
+
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "plan", str(ticket.pk), "the plan text recorded after the fact"),
+        )
+        assert not result.get("error")
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED  # no illegal transition was attempted
+
+        assert unplanned_dispatch_refusal(ticket, phase="debugging") is None

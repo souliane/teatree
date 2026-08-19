@@ -58,12 +58,19 @@ class TicketSkipPlanningCommandTest(TestCase):
         with pytest.raises(SystemExit):
             call_command("ticket", "skip-planning", "999999", "--reason", "trivial")
 
-    def test_skip_planning_on_non_started_ticket_returns_error_not_crash(self) -> None:
+    def test_skip_planning_on_non_started_ticket_still_records_the_signal(self) -> None:
+        # plan() (STARTED -> PLANNED) is sourced only from STARTED; for an
+        # already-in-flight ticket (#4449 class), the gate's satisfying signal
+        # is the trivial-skip marker's EXISTENCE, not the transition -- so the
+        # marker is still recorded, with no transition attempted and no error
+        # surfaced, and the ticket's state is left untouched.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
         result = cast(
             "dict[str, object]",
             call_command("ticket", "skip-planning", str(ticket.pk), "--reason", "trivial"),
         )
-        assert result.get("error")
+        assert not result.get("error")
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.CODED
+        assert is_trivial_plan_skip(ticket) is True
+        assert trivial_plan_skip_reason(ticket) == "trivial"
