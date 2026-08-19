@@ -7,11 +7,14 @@ is never silently dropped") failing in the slow direction.
 
 The sweep runs in two stages, and the split is the whole design:
 
-* **subject stage** — resolvers that can name the question's SUBJECT and read its state.
-    ``DRAIN`` only when every subject ticket is terminal (the answer could then only ever
-    be "ignore"); ``KEEP`` when one is still live; no decision at all when no subject is
-    derivable. The conservatism guard #3692 established is unchanged — a live or
-    undeterminable subject is never dropped.
+* **subject stage** — resolvers that can name the question's SUBJECT and read its
+    state. ``DRAIN`` only when every subject ticket is terminal (the answer could then
+    only ever be "ignore"); ``KEEP`` when one is still live; no decision at all when no
+    subject is derivable. The conservatism guard #3692 established is unchanged — a live
+    or undeterminable subject is never dropped. Two later resolvers read facts the FSM
+    state cannot carry — a subject whose pull requests have all settled, and a parked
+    lane that has since re-run to completion — and both are POSITIVE-ONLY: short of
+    proof they answer nothing at all, so they add drains without ever suppressing one.
 * **backstop stage** — runs on every row the subject stage did NOT drain, including one
     it explicitly kept, so a KEEP is not a licence to sit forever. Past the age ceiling it
     records an escalation, which is a state transition and never a resolution. The stamp
@@ -36,9 +39,14 @@ from enum import StrEnum
 from django.utils import timezone
 
 from teatree.config.resolution import get_effective_settings
-from teatree.core.models import Ticket
+from teatree.core.models import PullRequest, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_subjects import SubjectIndex
+
+#: The pull-request states that are DONE either way — the same partition
+#: ``PullRequestQuerySet.live()`` excludes. A merge succeeded and a close was given
+#: up on; both mean nothing further will be asked of the question that guarded it.
+_SETTLED_PR_STATES: frozenset[str] = frozenset({PullRequest.State.MERGED, PullRequest.State.CLOSED})
 
 
 class Verdict(StrEnum):
@@ -80,6 +88,8 @@ class SweepContext:
     index: SubjectIndex
     now: datetime
     ceiling_days: int
+    #: pks of the parked rows whose lane has since re-run to completion without them.
+    superseded_parked: frozenset[int]
 
     @classmethod
     def build(cls, questions: Sequence[DeferredQuestion]) -> "SweepContext":
@@ -87,6 +97,7 @@ class SweepContext:
             index=SubjectIndex.build(questions),
             now=timezone.now(),
             ceiling_days=int(get_effective_settings().deferred_question_age_ceiling_days),
+            superseded_parked=_superseded_parked_questions(questions),
         )
 
 
@@ -113,8 +124,113 @@ def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision 
     return Decision(Verdict.ESCALATE, f"pending past the {context.ceiling_days}d ceiling with no resolution")
 
 
+def _parked_task_superseded(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+    """The parked lane has since re-run to completion WITHOUT this answer — DRAIN.
+
+    ``parked_task`` is the task whose ``needs_user_input`` stop raised the question,
+    and its own status proves nothing: the park runs inside ``Task._advance_ticket``,
+    which is reached only AFTER the task is stamped ``COMPLETED``, so every parked
+    task is already completed the moment its question is written. A resolver keyed on
+    that alone would drain the entire parked backlog on its first tick — which is why
+    this one reads supersession instead (see :func:`_superseded_parked_questions` for
+    the four guards it has to clear).
+
+    Positive-only: it can only ever ADD a drain, never veto one, so its position ahead
+    of :func:`_subject_terminal` cannot change an existing verdict.
+    """
+    if question.pk not in context.superseded_parked:
+        return None
+    return Decision(Verdict.DRAIN, "the parked phase has since completed a newer run without this answer")
+
+
+def _pr_terminal(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+    """Every pull request the subject produced is settled — DRAIN; anything else, no decision.
+
+    A narrower fact than :func:`_subject_terminal` and a strictly later one: a ticket
+    can sit at ``reviewed`` for weeks with its PR already merged, so the FSM state says
+    "live" about work that has landed. Where the PRs are all merged or closed, the
+    question that guarded them can no longer change anything.
+
+    Positive-only, deliberately. A subject with no PR row at all, or one PR still open,
+    returns ``None`` — the #3692 guard: uncertainty is KEEP, and this resolver may add
+    a drain the ticket state cannot prove but must never suppress one it can.
+    """
+    states = context.index.pr_states_for(question)
+    if not states or not all(state in _SETTLED_PR_STATES for state in states):
+        return None
+    settled = ", ".join(sorted(set(states)))
+    return Decision(Verdict.DRAIN, f"every pull request recorded for the subject is settled ({settled})")
+
+
+def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> frozenset[int]:
+    """The parked rows whose ``(ticket, phase)`` lane has since completed a NEWER run.
+
+    Resolved once per sweep, in three queries, because the per-row answer needs the
+    LATEST completed task of each lane rather than any of them. Four guards, each of
+    which fails toward keeping the question:
+
+    * there IS a later completed run of the same ``(ticket, phase)`` — no newer run
+        means the lane is still where the question left it;
+    * it is not a resume chained off the parked task itself, which only exists once
+        the question has been answered;
+    * it carries no pending question of its own — a newer run that ALSO parked is the
+        lane repeating itself, not moving past it;
+    * it was created after the question, so an in-flight sibling that happened to
+        finish later cannot stand in for a re-run.
+    """
+    parked = {q.pk: q for q in questions if q.parked_task_id is not None}  # ty: ignore[unresolved-attribute]
+    if not parked:
+        return frozenset()
+
+    tasks = {
+        task.pk: task
+        for task in Task.objects.filter(pk__in={q.parked_task_id for q in parked.values()})  # ty: ignore[unresolved-attribute]
+    }
+    still_parked = set(
+        DeferredQuestion.objects.filter(
+            answered_at__isnull=True, dismissed_at__isnull=True, parked_task__isnull=False
+        ).values_list("parked_task_id", flat=True)
+    )
+    latest_run: dict[tuple[int, str], Task] = {}
+    for task in Task.objects.filter(
+        ticket_id__in={t.ticket_id for t in tasks.values()},
+        status=Task.Status.COMPLETED,
+    ):
+        lane = (task.ticket_id, task.phase)
+        if lane not in latest_run or task.pk > latest_run[lane].pk:
+            latest_run[lane] = task
+
+    return frozenset(
+        pk
+        for pk, question in parked.items()
+        if _lane_moved_on(question, tasks.get(question.parked_task_id), latest_run, still_parked)  # ty: ignore[unresolved-attribute]
+    )
+
+
+def _lane_moved_on(
+    question: DeferredQuestion,
+    parked: Task | None,
+    latest_run: dict[tuple[int, str], Task],
+    still_parked: set[int],
+) -> bool:
+    if parked is None:
+        return False
+    newest = latest_run.get((parked.ticket_id, parked.phase))  # ty: ignore[unresolved-attribute]
+    if newest is None or newest.pk <= parked.pk or newest.pk in still_parked:
+        return False
+    if newest.parent_task_id == parked.pk:  # ty: ignore[unresolved-attribute]
+        return False
+    return newest.created_at is not None and newest.created_at > question.created_at
+
+
 #: Resolvers that decide from the question's SUBJECT — the only stage that may drain.
-SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (("subject_terminal", _subject_terminal),)
+#: The two positive-only resolvers run FIRST: each answers ``None`` on anything short
+#: of proof, so they can only add a drain to what ``subject_terminal`` already decides.
+SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
+    ("parked_task_superseded", _parked_task_superseded),
+    ("pr_terminal", _pr_terminal),
+    ("subject_terminal", _subject_terminal),
+)
 #: Resolvers that guarantee a state transition on a row the subject stage left pending.
 BACKSTOP_RESOLVERS: tuple[tuple[str, Resolver], ...] = (("age_ceiling", _age_ceiling),)
 
