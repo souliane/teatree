@@ -27,3 +27,19 @@ ENVELOPE_FINDINGS_RULE: Final[str] = (
     'with an empty "findings" asserts you looked and found nothing worth recording, so emit that only '
     "when it is true."
 )
+
+#: Stamped beside :data:`ENVELOPE_FINDINGS_RULE` into every reviewer-facing brief that
+#: returns a verdict envelope. ``ReviewVerdict.record`` refuses a ``merge_safe`` verdict
+#: whose ``gh_verify_result`` is ``failed`` (§17.8 clause 3) and that refusal is correct,
+#: but it is unsatisfiable by re-reviewing the SAME head — the checks stay red — so the
+#: contradiction has to be prevented where the reviewer writes it rather than caught after.
+#: Prompt-side and unfalsifiable on its own; the enforcing halves are the refusal itself and
+#: :meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.mark_refused`.
+VERDICT_CHECKS_RULE: Final[str] = (
+    'A RED required check is a "hold", never a "merge_safe". When the pull request\'s required checks are '
+    'failing, that is a complete and recordable review: set "verdict" to "hold", report '
+    '"gh_verify_result" as "failed", and name the failing check in "findings". A "merge_safe" carrying '
+    '"gh_verify_result": "failed" contradicts itself and is REFUSED — nothing is recorded, your whole run '
+    "is discarded, and review of this head stops until a human intervenes. Report the checks as you found "
+    "them; the verdict follows from them, never the other way round."
+)
