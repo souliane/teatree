@@ -24,6 +24,7 @@ from teatree.core.admission_governor import (
     read_machine_signal,
     read_quota_signal,
 )
+from teatree.loop.admit_budget import load_meta, meta_path
 
 logger = logging.getLogger(__name__)
 
@@ -34,38 +35,25 @@ BRAKED_KEY = "admission_governor_braked"
 YIELD_WINDOW = dt.timedelta(hours=6)
 
 
-def _meta_path(statusline_path: Path) -> Path:
-    return statusline_path.with_name("tick-meta.json")
-
-
 def read_braked(*, statusline_path: Path) -> bool:
     """The previous decision's brake state; ``False`` on any unreadable sidecar.
 
     Losing the brake state costs one extra evaluation at the high watermark, never a
     wrong denial — so the uncertain answer is the un-braked one.
     """
-    try:
-        payload = json.loads(_meta_path(statusline_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return bool(payload.get(BRAKED_KEY)) if isinstance(payload, dict) else False
+    return bool(load_meta(meta_path(statusline_path)).get(BRAKED_KEY))
 
 
 def write_braked(*, braked: bool, statusline_path: Path) -> None:
     """Persist the brake state, merging into the tick-meta sidecar (never clobbering it)."""
-    meta_path = _meta_path(statusline_path)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        payload = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+    path = meta_path(statusline_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = load_meta(path)
     payload[BRAKED_KEY] = bool(braked)
     try:
-        meta_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     except OSError:
-        logger.exception("admission governor could not persist its brake state to %s", meta_path)
+        logger.exception("admission governor could not persist its brake state to %s", path)
 
 
 def read_yield_signal(now: dt.datetime | None = None) -> YieldSignal:
