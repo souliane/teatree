@@ -641,7 +641,7 @@ class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
     ``(slug, pr_id, head_sha)`` and both re-arm an un-verdicted head once the deadline
     lapses. #4522 latched only the first, which left the path that armed the majority of
     the contradiction refusals free to keep sending reviewers at the same red CI — up to
-    ``MAX_DISPATCH_ATTEMPTS`` whole review sessions per head. One roster now retires both.
+    ``MAX_DISPATCH_ATTEMPTS`` whole review sessions per head. One shared list retires both.
     """
 
     def test_a_refusal_latches_the_marker_and_no_later_claim_takes_the_same_head(self) -> None:
