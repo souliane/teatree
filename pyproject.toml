@@ -33,7 +33,7 @@ dependencies = [
   # ``[tool.uv] override-dependencies`` entry below narrows it back to what it
   # actually uses so this pin and the ``mcp>=2,<3`` bound resolve together.
   # ``tests/test_claude_agent_sdk_pin.py`` keeps that override honest.
-  "claude-agent-sdk==0.2.128",
+  "claude-agent-sdk==0.2.139",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -41,7 +41,7 @@ dependencies = [
   # PreToolUse hook used to treat that crash as a coverage finding (#122).
   "coverage>=7",
   "croniter>=6.2.2",
-  "django>=6,<6.1",
+  "django>=6,<6.2",
   "django-fsm-2>=4,<5",
   "django-linear-migrations>=2.19",
   "django-rich>=2.2",
@@ -127,7 +127,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.4.11",
+  "prek==0.4.13",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
