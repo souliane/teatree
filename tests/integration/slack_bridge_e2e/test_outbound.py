@@ -58,7 +58,7 @@ class TestOutboundBridgeEndToEnd:
         sent = notify_user(
             "tests green",
             kind=NotifyKind.INFO,
-            idempotency_key="sess=1;turn=1",
+            idempotency_key="watchdog:doctor-unreachable:sess=1;turn=1",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
@@ -75,7 +75,10 @@ class TestOutboundBridgeEndToEnd:
                 "text": ":information_source: *info*\ntests green",
             }
         )
-        assert BotPing.objects.get(idempotency_key="sess=1;turn=1").status == BotPing.Status.SENT
+        assert (
+            BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:sess=1;turn=1").status
+            == BotPing.Status.SENT
+        )
 
     def test_per_overlay_routing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """RED if ``messaging_from_overlay`` stops honouring its ``overlay_name`` arg.
@@ -177,7 +180,7 @@ class TestOutboundBridgeEndToEnd:
         notify_user(
             "first",
             kind=NotifyKind.INFO,
-            idempotency_key="dup-key",
+            idempotency_key="watchdog:doctor-unreachable:dup-key",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
@@ -186,7 +189,7 @@ class TestOutboundBridgeEndToEnd:
         sent2 = notify_user(
             "second-skip-me",
             kind=NotifyKind.INFO,
-            idempotency_key="dup-key",
+            idempotency_key="watchdog:doctor-unreachable:dup-key",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
@@ -194,7 +197,7 @@ class TestOutboundBridgeEndToEnd:
 
         assert sent2 is True
         assert len(transport.calls_to("chat.postMessage")) == first_count == snapshot(1)
-        assert BotPing.objects.filter(idempotency_key="dup-key").count() == 1
+        assert BotPing.objects.filter(idempotency_key="watchdog:doctor-unreachable:dup-key").count() == 1
 
 
 class TestNotifyUserThroughOverlayFactory:
@@ -227,7 +230,7 @@ class TestNotifyUserThroughOverlayFactory:
             sent = notify_user(
                 "fallback path",
                 kind=NotifyKind.INFO,
-                idempotency_key="fallback-1",
+                idempotency_key="watchdog:doctor-unreachable:fallback-1",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 backend=None,
                 user_id="U_HUMAN",
