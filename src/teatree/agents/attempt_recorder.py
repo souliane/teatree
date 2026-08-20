@@ -30,7 +30,6 @@ from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import (
-    AutoReviewDispatch,
     ChecksContradictionError,
     DeferredQuestion,
     Finding,
@@ -41,6 +40,7 @@ from teatree.core.models import (
     Worktree,
 )
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
+from teatree.core.models.review_verdict import refuse_head_claims
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -419,19 +419,22 @@ def _refusal_marker(target: ReviewTarget) -> str:
 def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str) -> None:
     """Stop re-arming this head and page a human ONCE instead (#4522).
 
-    The refusal is correct and stays; what changes is that it now costs one agent run
-    rather than one per dispatch TTL forever. Two halves, both keyed on the reviewed head:
-    the dispatch claim latches REFUSED so the sweep's post-deadline re-acquire finds a
-    terminal row, and a :class:`DeferredQuestion` carries the fact to the owner — deduped
-    on :func:`_refusal_marker`, so a second reviewer that reached the same contradiction
+    The refusal is correct and stays; what changes is that it costs ONE agent run instead
+    of one per dispatch TTL until the claim saturates at ``MAX_DISPATCH_ATTEMPTS``. Two
+    halves, both keyed on the reviewed head: EVERY per-head claim latches REFUSED
+    (:func:`refuse_head_claims` — the codex / self-PR marker as well as the #68 dispatch
+    ledger, because that marker armed most of the refusals actually measured) so the next
+    post-deadline re-acquire finds a terminal row whichever path armed this run, and a
+    :class:`DeferredQuestion` carries the fact to the owner — deduped on
+    :func:`_refusal_marker`, so a second reviewer that reached the same contradiction
     before the latch landed adds no second page. A push mints a new head, which has no
     claim and no marker, and re-arms review normally.
 
-    The question is recorded even when no dispatch row latched: a reviewing task keyed by
-    its own reviewer ticket has no claim to close, but the contradiction it hit is the
-    same durable fact and the human is owed it either way.
+    The question is recorded even when no claim latched: a reviewing task keyed by its own
+    reviewer ticket may hold none, but the contradiction it hit is the same durable fact
+    and the human is owed it either way.
     """
-    AutoReviewDispatch.mark_refused(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    refuse_head_claims(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
     DeferredQuestion.record(
         _refusal_question(target, reason=reason),
         session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
