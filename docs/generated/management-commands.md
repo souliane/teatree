@@ -578,6 +578,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | --- | --- |
 | `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
 | `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
+| `fold` | Merge a member ticket's body into its host's, verbatim (#4344) |
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
@@ -591,6 +592,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
+| `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |

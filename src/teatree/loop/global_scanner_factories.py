@@ -379,12 +379,12 @@ def _eval_local_scanner() -> EvalLocalScanner | None:
 
 
 def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
-    """Build a global backlog-sweep scanner from teatree-core config (#2419).
+    """Build a global backlog-sweep scanner from teatree-core config (#2419, #4344).
 
-    DEFAULT-OFF: ``backlog_sweep_disabled`` defaults *true*, so this
-    builder returns ``None`` until the user opts in. The sweep is
-    destructive-capable (it can propose closing issues), so unlike the
-    always-on news/eval scanners the kill switch ships ON.
+    ``backlog_sweep_disabled`` ships *open*, so the ``backlog_sweep``
+    ``Loop`` row is the single switch the operator flips — the shape
+    ``issue_implementer`` / ``triage_assessor`` / ``directive_loop`` already
+    use. Setting it stops scheduling sweeps without touching the row.
 
     The overlay-anchor identity is resolved via
     :func:`teatree.config.discover_active_overlay`, falling back to the
@@ -393,7 +393,7 @@ def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
 
     ``ask_before_backlog_sweep_closes`` (default true) is the ask-gate
     flag threaded into the scanner so the queued task instructs the
-    skill to record close proposals for approval instead of mass-closing.
+    skill to record fold proposals for approval instead of mass-closing.
     """
     settings = load_config().user
     if settings.backlog_sweep_disabled:

@@ -122,7 +122,7 @@
     },
     {
       "name": "sweeping-tickets",
-      "summary": "Evidence-gated ticket/issue consolidation and triage \u2014 classify every open issue against current `main`, then consolidate by merging related tickets INTO AN EXISTING ticket \u2014 never by minting a new umbrella row and never by discarding ideas \u2014 and close only what is demonstrably shipped or now folded into its host. Always asks the operator for the maximum number of tickets to keep before triaging \u2014 never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence \"shipped by merged PR #X\" class), posting a one-line reason on every close"
+      "summary": "Evidence-gated ticket/issue grouping \u2014 classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism: a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging \u2014 never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first"
     },
     {
       "name": "sweeping-worktrees",

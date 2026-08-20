@@ -99,8 +99,8 @@ prevents the next assessor tick from re-queuing the same issue.
 
 ## Related skills
 
-- `t3:sweeping-tickets` — the broader evidence-gated consolidation/triage
-  flow; this skill is the per-issue approval surface for the automated
+- `t3:sweeping-tickets` — the broader evidence-gated grouping sweep;
+  this skill is the per-issue approval surface for the automated
   assessor's recommendations.
 - `t3:mode` — the `DeferredQuestion` this skill answers is queued by
   the away-mode question surface.
