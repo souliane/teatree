@@ -27,6 +27,7 @@ never touches ``surfaced_at`` — re-arming is the cooldown window's job alone (
 """
 
 import datetime as dt
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -97,12 +98,50 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         deleted, _ = self.filter(slug=slug, pr_id=pr_id).delete()
         return deleted
 
+    def _delete_pks(self, pks: list[int]) -> int:
+        if not pks:
+            return 0
+        deleted, _ = self.filter(pk__in=pks).delete()
+        return deleted
+
+    def drop_terminal(self, *, terminal_refs: Iterable[tuple[str, int]]) -> int:
+        """Discard the streaks of PRs *terminal_refs* proves settled. Returns rows removed.
+
+        The count goes with the row: a reopened PR is a fresh condition, not the
+        continuation of the one that closed. Slugs fold to lower case, the rule
+        :meth:`~teatree.core.models.pull_request.PullRequestQuerySet.for_pr` states —
+        matching ``Owner/Repo`` exactly against ``owner/repo`` drops every such row from
+        consideration and the fossil survives.
+        """
+        settled = {(slug.casefold(), pr_id) for slug, pr_id in terminal_refs}
+        if not settled:
+            return 0
+        tracked = self.values_list("pk", "slug", "pr_id")
+        return self._delete_pks([pk for pk, slug, pr_id in tracked if (slug.casefold(), pr_id) in settled])
+
+    def drop_departed(self, *, slugs: Iterable[str], stale_before: dt.datetime) -> int:
+        """Discard the streaks of PRs that left a swept slug's open set. Returns rows removed.
+
+        The sweep enumerates OPEN PRs, so that enumeration IS the liveness oracle — and
+        the only one with full coverage, since a PR opened outside the pipeline has no
+        local row to read a state from. *stale_before* is the grace: ``scan()`` emits no
+        signal for a PR whose evaluation raised, and one missed pass is not a departure.
+        *slugs* bounds the sweep to what this pass actually enumerated, so a slug held by
+        an unswept overlay — or by a forge read that failed — keeps its rows.
+        """
+        swept = {slug.casefold() for slug in slugs}
+        if not swept:
+            return 0
+        unseen = self.filter(last_seen_at__lt=stale_before).values_list("pk", "slug")
+        return self._delete_pks([pk for pk, slug in unseen if slug.casefold() in swept])
+
     def due_to_surface(
         self,
         *,
         threshold: int,
         cooldown: dt.timedelta,
         now: dt.datetime | None = None,
+        observed_since: dt.datetime | None = None,
     ) -> models.QuerySet["SweepSkipStreak"]:
         """Streaks at/over *threshold* that have never surfaced, or last surfaced ≥ *cooldown* ago.
 
@@ -110,11 +149,20 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         again just because its granular skip reason changed — only the backoff window
         re-arms it, so a flapping ``ci_red``/``ci_pending`` on the same stuck PR is one
         notification and a later reminder, not one notification per wobble.
+
+        *observed_since* bounds the answer to the rows the caller's own pass folded in.
+        The announcement's claim — skipped N times running — is about the CURRENT pass,
+        so a row that pass never touched cannot support it: PR #4055 closed and froze at
+        57 while its age label kept growing, and the cooldown re-armed that dead finding
+        daily for fifteen days (#4518).
         """
         moment = now or timezone.now()
         never_surfaced = models.Q(surfaced_at__isnull=True)
         cooled_down = models.Q(surfaced_at__lte=moment - cooldown)
-        return self.filter(tick_count__gte=threshold).filter(never_surfaced | cooled_down).order_by("first_seen_at")
+        due = self.filter(tick_count__gte=threshold).filter(never_surfaced | cooled_down)
+        if observed_since is not None:
+            due = due.filter(last_seen_at__gte=observed_since)
+        return due.order_by("first_seen_at")
 
     def aged(self, *, threshold: int) -> models.QuerySet["SweepSkipStreak"]:
         """Every streak at/over *threshold*, announced or not — the standing doctor view."""
@@ -152,6 +200,15 @@ class SweepSkipStreak(models.Model):
     @property
     def ref(self) -> str:
         return f"{self.slug}#{self.pr_id}"
+
+    @property
+    def link(self) -> str:
+        """What every surface renders for this PR — the url, else the ref (#4518).
+
+        A row predating the sweep stamping its skips carries no url, and the literal
+        that stood in for one told the reader nothing they could act on.
+        """
+        return self.url or self.ref
 
     def age(self, *, now: dt.datetime | None = None) -> dt.timedelta:
         return (now or timezone.now()) - self.first_seen_at

@@ -453,7 +453,7 @@ def _check_aged_sweep_skips() -> bool:
     for row in aged:
         typer.echo(
             f"WARN  PR {row.ref} skipped by the merge sweep {row.tick_count}x "
-            f"({row.age_label()}) — reason `{row.reason}`. {row.url}",
+            f"({row.age_label()}) — reason `{row.reason}`. {row.link}",
         )
     return False
 

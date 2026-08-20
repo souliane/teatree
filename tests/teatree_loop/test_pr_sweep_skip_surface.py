@@ -15,7 +15,7 @@ import django.test
 from django.utils import timezone
 
 from teatree.cli.doctor.app import _check_aged_sweep_skips
-from teatree.core.models import BotPing, SweepSkipStreak
+from teatree.core.models import BotPing, PullRequest, SweepSkipStreak, Ticket
 from teatree.core.notify_ledger import already_sent_noop
 from teatree.loop import pr_sweep_skip_surface
 from teatree.loop.pr_sweep_skip_surface import REANNOUNCE_COOLDOWN, SURFACE_AFTER_TICKS, record_sweep_outcomes
@@ -253,3 +253,157 @@ class TestDoctorCrashProof(django.test.TestCase):
 
         assert ok is True
         assert "crashed" in out.getvalue()
+
+
+def _fossil(*, slug: str = "o/r", pr_id: int = 4055, seen_ago: dt.timedelta, now: dt.datetime) -> SweepSkipStreak:
+    """A streak frozen mid-flight — the shape a PR leaves behind when it stops being open."""
+    return SweepSkipStreak.objects.create(
+        overlay="t3",
+        slug=slug,
+        pr_id=pr_id,
+        reason="ci_pending",
+        url=f"https://example.test/{slug}/pull/{pr_id}",
+        first_seen_at=now - seen_ago,
+        last_seen_at=now - seen_ago,
+        tick_count=57,
+        surfaced_at=now - REANNOUNCE_COOLDOWN - dt.timedelta(minutes=1),
+    )
+
+
+def _announced(notifier: _Recorder) -> set[str]:
+    return {text.split()[1] for text, _key in notifier.sent}
+
+
+class TestATerminalPrIsDroppedNotAnnounced(django.test.TestCase):
+    """A closed or merged PR cannot merge, so `ci_pending` on it describes nothing (#4518).
+
+    Every assertion here is absence-satisfied on its own, so each pairs the silence with
+    a live PR announced in the SAME call — a harness that announced nothing would pass
+    the first half and fail the control.
+    """
+
+    def setUp(self) -> None:
+        self.now = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        self.notifier = _Recorder()
+
+    def _sweep_with_a_live_control(self) -> None:
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(pr_id=99)], notify=self.notifier, now=self.now)
+
+    def _local_pr(self, state: PullRequest.State, *, pr_id: int = 4055, repo: str = "o/r") -> None:
+        ticket = Ticket.objects.create(issue_url=f"https://example.test/i/{pr_id}", overlay="t3")
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3",
+            url=f"https://example.test/{repo}/pull/{pr_id}",
+            repo=repo,
+            iid=str(pr_id),
+            state=state,
+        )
+
+    def test_a_closed_prs_aged_streak_is_dropped_while_a_live_pr_still_announces(self) -> None:
+        _fossil(seen_ago=dt.timedelta(minutes=1), now=self.now)
+        self._local_pr(PullRequest.State.CLOSED)
+
+        self._sweep_with_a_live_control()
+
+        assert _announced(self.notifier) == {"o/r#99"}
+        assert not SweepSkipStreak.objects.filter(pr_id=4055).exists()
+
+    def test_a_merged_prs_aged_streak_is_dropped(self) -> None:
+        _fossil(seen_ago=dt.timedelta(minutes=1), now=self.now)
+        self._local_pr(PullRequest.State.MERGED)
+
+        self._sweep_with_a_live_control()
+
+        assert _announced(self.notifier) == {"o/r#99"}
+        assert not SweepSkipStreak.objects.filter(pr_id=4055).exists()
+
+    def test_an_open_local_row_never_drops_the_streak(self) -> None:
+        _fossil(seen_ago=dt.timedelta(minutes=1), now=self.now)
+        self._local_pr(PullRequest.State.OPEN)
+
+        self._sweep_with_a_live_control()
+
+        assert SweepSkipStreak.objects.filter(pr_id=4055).exists()
+
+    def test_the_terminal_match_folds_slug_case_like_the_pr_row_rule(self) -> None:
+        _fossil(slug="Owner/Repo", seen_ago=dt.timedelta(minutes=1), now=self.now)
+        self._local_pr(PullRequest.State.CLOSED, repo="owner/repo")
+
+        self._sweep_with_a_live_control()
+
+        assert not SweepSkipStreak.objects.filter(slug="Owner/Repo").exists()
+
+
+class TestAPrThatLeftTheOpenSetIsDropped(django.test.TestCase):
+    """The sweep enumerates OPEN PRs only, so a PR it stops seeing can no longer merge.
+
+    This is the reported #4518 shape: PR 4055 closed with NO local ``PullRequest`` row at
+    all, so its streak froze at 57 while ``age_label`` kept growing and the 24h cooldown
+    re-armed the same dead finding for fifteen days.
+    """
+
+    def setUp(self) -> None:
+        self.now = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        self.notifier = _Recorder()
+
+    def _sweep_with_a_live_control(self) -> None:
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(pr_id=99)], notify=self.notifier, now=self.now)
+
+    def test_a_fossil_with_no_local_row_is_dropped_while_a_live_pr_still_announces(self) -> None:
+        _fossil(seen_ago=dt.timedelta(days=15), now=self.now)
+
+        self._sweep_with_a_live_control()
+
+        assert _announced(self.notifier) == {"o/r#99"}
+        assert not SweepSkipStreak.objects.filter(pr_id=4055).exists()
+
+    def test_a_row_missed_by_one_errored_evaluation_survives_and_stays_quiet(self) -> None:
+        """`scan()` emits no signal for a PR whose evaluation raised — that is not a departure."""
+        _fossil(seen_ago=dt.timedelta(minutes=1), now=self.now)
+
+        self._sweep_with_a_live_control()
+
+        assert _announced(self.notifier) == {"o/r#99"}
+        assert SweepSkipStreak.objects.filter(pr_id=4055).exists()
+
+    def test_a_fossil_in_a_slug_this_pass_never_swept_survives(self) -> None:
+        _fossil(slug="other/repo", seen_ago=dt.timedelta(days=15), now=self.now)
+
+        self._sweep_with_a_live_control()
+
+        assert SweepSkipStreak.objects.filter(slug="other/repo").exists()
+
+    def test_an_unobserved_row_is_never_announced_even_before_the_grace_elapses(self) -> None:
+        _fossil(seen_ago=dt.timedelta(minutes=1), now=self.now)
+
+        self._sweep_with_a_live_control()
+
+        assert _announced(self.notifier) == {"o/r#99"}
+
+
+class TestTheAlarmCarriesThePrUrl(django.test.TestCase):
+    def test_the_dm_links_the_pr_it_pages_about(self) -> None:
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip()], notify=notifier)
+
+        text, _key = notifier.sent[0]
+        assert "https://example.test/o/r/pull/7" in text
+        assert "no URL recorded" not in text
+
+    def test_a_url_less_legacy_row_falls_back_to_the_ref_never_to_a_dead_literal(self) -> None:
+        urlless = ScanSignal(
+            kind="pr_sweep.skip",
+            summary="o/r#7 skip (draft)",
+            payload={"slug": "o/r", "pr_id": 7, "decision": "skip", "reason": "draft", "overlay": "t3"},
+        )
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([urlless], notify=notifier)
+
+        text, _key = notifier.sent[0]
+        assert "no URL recorded" not in text
+        assert text.rstrip().endswith("o/r#7")
