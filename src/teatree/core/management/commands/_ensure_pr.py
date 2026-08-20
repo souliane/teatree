@@ -266,12 +266,18 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
     overlay = get_overlay()
+    owning_ticket = _ticket_for_branch(branch_name)
     close_ticket = should_close_ticket(
         _ticket_extra_for_branch(branch_name),
         setting_enabled=overlay.config.mr_close_ticket,
     )
     description = sanitize_close_keywords(
-        auto_created_description(title, commit_body),
+        auto_created_description(
+            title,
+            commit_body,
+            branch=branch_name,
+            issue_url=(owning_ticket.issue_url or "") if owning_ticket is not None else "",
+        ),
         close_ticket=close_ticket,
     )
     description = ensure_standard_body(
@@ -291,7 +297,6 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     # per-repo open-PR budget, or when the branch introduces unwaived net-new tech
     # debt. Both inert at their DARK/neutral defaults; a genuinely orphan branch (no
     # owning ticket) has no budget/plan scope, so the checks are skipped.
-    owning_ticket = _ticket_for_branch(branch_name)
     gate_error = _owning_ticket_pre_create_gate(owning_ticket, repo_slug, repo_path, branch_name, host)
     if gate_error is not None:
         return gate_error
