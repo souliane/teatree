@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from teatree.agents._runner_options import _get_resume_session_id
-from teatree.core.models import PendingChatInjection, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
@@ -77,7 +77,7 @@ def _record_question(*, generation: int, slack_ts: str, session_id: str = "s", r
 
 
 def _record_reply(text: str, *, slack_ts: str) -> PendingChatInjection:
-    row = PendingChatInjection.record(channel=_CHANNEL, slack_ts=slack_ts, text=text, user_id="U1")
+    row = PendingChatInjection.record(channel=_CHANNEL, slack_ts=slack_ts, text=text, context=DmContext(user_id="U1"))
     assert row is not None
     return row
 

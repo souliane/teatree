@@ -85,7 +85,7 @@ class Command(TyperCommand):
             err=err,
             human=(
                 f"OK    processed={report.processed} acked={report.acked} "
-                f"simple={report.answered_simple} dispatched={report.dispatched} "
-                f"covered={report.covered} errors={report.errors}"
+                f"simple={report.answered_simple} questions={report.answered_question} "
+                f"dispatched={report.dispatched} covered={report.covered} errors={report.errors}"
             ),
         )

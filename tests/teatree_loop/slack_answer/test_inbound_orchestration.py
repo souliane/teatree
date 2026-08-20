@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.models import PendingChatInjection, Task
+from teatree.core.models import DmContext, PendingChatInjection, Task
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.vocabulary import InboundReaction
@@ -93,7 +93,7 @@ class RecordingBackend:
 
 
 def _row(text: str, *, ts: str, user_id: str = "U-owner") -> PendingChatInjection:
-    row = PendingChatInjection.record(channel=_CHANNEL, slack_ts=ts, text=text, user_id=user_id)
+    row = PendingChatInjection.record(channel=_CHANNEL, slack_ts=ts, text=text, context=DmContext(user_id=user_id))
     assert row is not None
     return row
 
