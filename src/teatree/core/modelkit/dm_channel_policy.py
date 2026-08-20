@@ -53,6 +53,9 @@ PUSH_SIGNALS: frozenset[str] = frozenset(
         # The box is unreachable, or its doctor is crashing — both need a human on it.
         "watchdog:doctor-unreachable",
         "watchdog:doctor-no-verdict",
+        # The claim path is refusing new work until a human runs the pending
+        # migrations — the factory is parked, not merely degraded (#4524 review).
+        "schema_behind_code",
     }
 )
 

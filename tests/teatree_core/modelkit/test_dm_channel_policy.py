@@ -59,10 +59,22 @@ def test_internal_is_pull() -> None:
         "watchdog:compose-up-failed:20260819",
         "watchdog:doctor-unreachable:20260819",
         "watchdog:doctor-no-verdict:20260819",
+        "schema_behind_code:t3-teatree:0d8e47228d1b",
     ],
 )
 def test_a_registered_outage_page_pushes(key: str) -> None:
-    assert classify(audience=NotifyAudience.OWNER_DELIVERY, idempotency_key=key) is DmChannel.PUSH
+    assert classify(audience=NotifyAudience.OWNER_ESCALATION, idempotency_key=key) is DmChannel.PUSH
+
+
+def test_a_parked_factory_page_pushes() -> None:
+    """The claim path refuses new work until a human acts on schema_behind_code.
+
+    Nothing the owner can discover by reading a pulled digest at their leisure.
+    """
+    assert (
+        classify(audience=NotifyAudience.OWNER_ESCALATION, idempotency_key="schema_behind_code:t3-teatree:abc123")
+        is DmChannel.PUSH
+    )
 
 
 def test_push_signals_membership_is_pinned_exactly() -> None:
@@ -73,6 +85,7 @@ def test_push_signals_membership_is_pinned_exactly() -> None:
                 "watchdog:compose-up-failed",
                 "watchdog:doctor-unreachable",
                 "watchdog:doctor-no-verdict",
+                "schema_behind_code",
             }
         )
         == PUSH_SIGNALS
