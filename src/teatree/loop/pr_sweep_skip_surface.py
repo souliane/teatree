@@ -8,6 +8,8 @@ This reads the sweep's own emitted signals rather than reaching into the scanner
 ``pr_sweep`` needs no hook: every outcome on which the PR did NOT land extends that
 PR's streak, only a :data:`_PROGRESS_KINDS` outcome resolves it, and a streak reaching
 :data:`SURFACE_AFTER_TICKS` is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
+A deliberately-parked reason (a draft PR) never announces however long it runs, and the
+doctor's standing view is ONE finding naming the count rather than a line per row (#4523).
 A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
 stuck PR) is not a new problem, and the ledger reads it as one condition on both sides:
 the streak keeps counting through it (the CI-verdict reasons are one group, so the
@@ -32,6 +34,7 @@ from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
     from teatree.core.models import SweepSkipStreak
+    from teatree.core.models.sweep_skip_streak import StandingSkips
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,11 @@ SURFACE_AFTER_TICKS = 3
 #: re-arming a fresh DM every few ticks while still reminding the owner daily that a
 #: PR is genuinely still stuck.
 REANNOUNCE_COOLDOWN = dt.timedelta(hours=24)
+
+#: How long a tracked PR may go unobserved before the pass reads it as gone from the open
+#: set. ``PrSweepScanner.scan`` emits no signal for a PR whose evaluation raised, so one
+#: missed pass is not a departure; at the ~5-min sweep cadence this is ~12 passes of slack.
+DEPARTURE_GRACE = dt.timedelta(hours=1)
 
 _SWEEP_PREFIX = "pr_sweep."
 
@@ -70,10 +78,62 @@ def _default_notify(*, text: str, idempotency_key: str) -> None:
     )
 
 
+def _code_host(overlay: str) -> str:
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: entry-point discovery
+
+    try:
+        return get_overlay(overlay or None).config.code_host or ""
+    except Exception:  # noqa: BLE001 — a config read must never wedge a tick
+        return ""
+
+
+def link_for(row: "SweepSkipStreak") -> str:
+    """The PR's web URL: the one the sweep recorded, else derived from the slug and id.
+
+    A row can carry no url at all (an early skip rung built its attempt without one), and
+    an alarm the reader cannot click is not an alarm. Derivation returns "" for a slug that
+    is not a real ``owner/repo`` — a wrong-host link is worse than none (#1559).
+    """
+    if row.url:
+        return row.url
+    from teatree.core.checking import build_pr_url  # noqa: PLC0415 — deferred: keeps the tick import light
+
+    try:
+        return build_pr_url(slug=row.slug, pr_id=row.pr_id, code_host=_code_host(row.overlay))
+    except Exception:
+        logger.exception("pr_sweep aged-skip surfacing failed to build a link for %s", row.ref)
+        return ""
+
+
+def render_standing_skips(summary: "StandingSkips", *, threshold: int) -> list[str]:
+    """The aged ledger as ONE finding plus a capped detail — never one line per row (#4523).
+
+    Parks are counted, never detailed and never a fault: the verdict line reads ``OK`` when
+    nothing but deliberate parks stand, so a PR held on purpose cannot degrade the report.
+    """
+    if not summary.total:
+        return []
+    head = "WARN  " if summary.stalls else "OK    "
+    finding = (
+        f"{head}{summary.total} PR(s) standing at {threshold}+ consecutive merge-sweep skips "
+        f"({summary.oldest_age_label} oldest) — {summary.stalls} stall(s), "
+        f"{summary.parks} deliberate park(s)."
+    )
+    lines = [finding]
+    lines += [
+        f"WARN    {row.ref} `{row.reason}` {row.age_label()} x{row.tick_count} {link_for(row)}".rstrip()
+        for row in summary.worst
+    ]
+    hidden = summary.stalls - len(summary.worst)
+    if hidden:
+        lines.append(f"WARN    +{hidden} more stall(s) not shown.")
+    return lines
+
+
 def _surface_text(row: "SweepSkipStreak") -> str:
     return (
         f"PR {row.ref} has been refused by the merge sweep {row.tick_count} consecutive times "
-        f"({row.age_label()}) — reason `{row.reason}`. {row.url or 'no URL recorded'}"
+        f"({row.age_label()}) — reason `{row.reason}`. {link_for(row) or row.ref}"
     )
 
 
@@ -97,6 +157,44 @@ def _observe(signal: ScanSignal, moment: dt.datetime) -> None:
             overlay=str(payload.get("overlay") or ""),
         ),
         now=moment,
+    )
+
+
+def _settled_refs() -> set[tuple[str, int]]:
+    """Every tracked PR a local row proves MERGED or CLOSED — one query, no forge call.
+
+    Absence of a row is UNKNOWN, never dead: most tracked PRs are opened outside the
+    pipeline and carry no row at all, so requiring one to announce would mute the
+    majority of real alarms. Newest row wins per PR, the rule
+    :meth:`~teatree.core.models.pull_request.PullRequestQuerySet.owning_ticket` states.
+    """
+    from teatree.core.models import PullRequest, SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    tracked = {str(pr_id) for pr_id in SweepSkipStreak.objects.values_list("pr_id", flat=True)}
+    if not tracked:
+        return set()
+    rows = PullRequest.objects.filter(iid__in=tracked).order_by("id").values_list("repo", "iid", "state")
+    newest = {(repo.casefold(), int(iid)): state for repo, iid, state in rows if iid.isdigit()}
+    terminal = {PullRequest.State.MERGED, PullRequest.State.CLOSED}
+    return {ref for ref, state in newest.items() if state in terminal}
+
+
+def _swept_slugs(signals: list[ScanSignal]) -> set[str]:
+    return {slug for signal in signals if (slug := str(signal.payload.get("slug") or ""))}
+
+
+def _discard_fossils(signals: list[ScanSignal], moment: dt.datetime) -> None:
+    """Drop the streaks of PRs the sweep can no longer merge, by either local proof (#4518).
+
+    A closed PR leaves ``list_open_prs``, so ``resolve`` — which fires only on a live
+    ``pr_sweep.*`` signal — never runs and the row outlives the PR it describes.
+    """
+    from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM app registry
+
+    SweepSkipStreak.objects.drop_terminal(terminal_refs=_settled_refs())
+    SweepSkipStreak.objects.drop_departed(
+        slugs=_swept_slugs(signals),
+        stale_before=moment - DEPARTURE_GRACE,
     )
 
 
@@ -125,7 +223,14 @@ def _announce_due(
     from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     announced: list[str] = []
-    due = list(SweepSkipStreak.objects.due_to_surface(threshold=threshold, cooldown=cooldown, now=moment))
+    due = list(
+        SweepSkipStreak.objects.due_to_surface(
+            threshold=threshold,
+            cooldown=cooldown,
+            now=moment,
+            observed_since=moment,
+        ),
+    )
     for row in due:
         try:
             notify(text=_surface_text(row), idempotency_key=_announcement_key(row, moment=moment, cooldown=cooldown))
@@ -157,6 +262,7 @@ def record_sweep_outcomes(
         moment = now or timezone.now()
         for signal in sweep_signals:
             _observe(signal, moment)
+        _discard_fossils(sweep_signals, moment)
         return _announce_due(notify or _default_notify, threshold, cooldown, moment)
     except Exception:
         logger.exception("pr_sweep aged-skip surfacing failed")

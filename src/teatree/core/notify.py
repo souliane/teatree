@@ -35,6 +35,7 @@ from django.db import DatabaseError
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import OwnerMessagingTransport, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.dm_channel_policy import DmChannel, classify
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify_ledger import (
     already_sent_noop,
@@ -44,6 +45,7 @@ from teatree.core.notify_ledger import (
     maybe_stamp_answered,
     record_noop,
     record_outbound_claim,
+    record_pulled,
 )
 from teatree.core.notify_targets import resolve_user_channel, resolve_user_id
 from teatree.core.notify_types import (
@@ -286,6 +288,9 @@ def _preflight_result(
         logger.info("notify_user INTERNAL (log-only, not DM'd) key=%s: %s", idempotency_key, text[:120])
         BotPing.record_logged(idempotency_key, kind=kind.value, text=text, audience=audience.value)
         return blocked(NotifyReason.INTERNAL_AUDIENCE)
+    if classify(audience=audience, idempotency_key=idempotency_key) is DmChannel.PULL:
+        record_pulled(idempotency_key=idempotency_key, kind=kind, text=text, audience=audience)
+        return blocked(NotifyReason.ROUTED_TO_PULL)
     if not _feature_enabled():
         logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
         return blocked(NotifyReason.FEATURE_DISABLED)

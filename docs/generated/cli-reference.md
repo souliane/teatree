@@ -12614,12 +12614,14 @@ Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ send   DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct        │
-│        notify).                                                              │
-│ post   Post, token routed by destination (self-DM→bot,                       │
-│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
-│ react  React, token routed by destination (self-DM→bot,                      │
-│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
+│ send    DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct       │
+│         notify).                                                             │
+│ digest  Read the status signals the push/pull classifier kept off the DM     │
+│         channel.                                                             │
+│ post    Post, token routed by destination (self-DM→bot,                      │
+│         colleague/channel→xoxp); exit 0 on ``ok``.                           │
+│ react   React, token routed by destination (self-DM→bot,                     │
+│         colleague/channel→xoxp); exit 0 on ``ok``.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12644,6 +12646,23 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
 │                                bot routing).                                 │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify digest`
+
+```
+Usage: t3 teatree notify digest [OPTIONS]
+
+ Read the status signals the classifier kept off the DM channel (#4524).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --since-hours        INTEGER  How far back to read the pulled status         │
+│                               signals.                                       │
+│                               [default: 24]                                  │
+│ --overlay            TEXT     Set T3_OVERLAY_NAME for the call (per-overlay  │
+│                               bot routing).                                  │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
