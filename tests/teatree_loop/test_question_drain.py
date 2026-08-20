@@ -19,7 +19,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, PullRequest, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.loop.question_drain import DrainReport, Verdict, drain_pending_questions, question_reachability
 from teatree.loop.tick_recovery import _reap_stale_task_claims
@@ -280,3 +280,144 @@ class TestTickWiring(TestCase):
 
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+
+def _completed(ticket: Ticket, *, phase: str, parent: Task | None = None) -> Task:
+    session = Session.objects.create(ticket=ticket, agent_id=phase)
+    return Task.objects.create(
+        ticket=ticket,
+        session=session,
+        phase=phase,
+        status=Task.Status.COMPLETED,
+        parent_task=parent,
+    )
+
+
+def _parked_on_a_completed_task(*, ticket_state: str = Ticket.State.STARTED) -> tuple[DeferredQuestion, Task]:
+    """The real shape of a headless park: the task is ALREADY completed when it asks.
+
+    ``Task._advance_ticket`` — where ``park_for_user_input`` runs — is reached only
+    after ``complete()`` has stamped the task COMPLETED, so a resolver that read
+    "parked task is completed" as staleness would drain every parked question on its
+    first tick.
+    """
+    ticket = _ticket(ticket_state)
+    task = _completed(ticket, phase="coding")
+    return DeferredQuestion.record("How should this park proceed?", parked_task=task), task
+
+
+def _pull_request(ticket: Ticket, *, state: str, iid: str = "1") -> None:
+    PullRequest.objects.create(
+        ticket=ticket,
+        url=f"https://github.com/acme/repo/pull/{ticket.pk}{iid}",
+        repo="acme/repo",
+        iid=iid,
+        state=state,
+    )
+
+
+class TestParkedLaneSupersession(TestCase):
+    """A parked question the same lane has since re-run to completion is stale.
+
+    Not "its task is completed" — every parked task is, by construction (see
+    :func:`_parked_on_a_completed_task`). What makes the question moot is a LATER
+    completed run of the same ``(ticket, phase)`` that did not itself park: the lane
+    reached the end of that phase without ever needing the decision.
+    """
+
+    def test_a_relaunched_phase_that_completed_drains_the_park_with_an_audit(self) -> None:
+        question, parked = _parked_on_a_completed_task()
+        _completed(parked.ticket, phase="coding")
+
+        assert drain_pending_questions().drained == 1
+
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
+        audit = DeferredQuestionAudit.objects.get(question=question)
+        assert audit.action == "dismissed"
+        assert "newer run" in audit.dismissed_reason
+
+    def test_a_park_whose_lane_never_re_ran_is_kept(self) -> None:
+        # The parked task IS the latest completed run of its lane: nothing has moved.
+        question, _parked = _parked_on_a_completed_task()
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING
+
+    def test_a_newer_run_that_parked_too_is_the_lane_repeating_itself(self) -> None:
+        question, parked = _parked_on_a_completed_task()
+        later = _completed(parked.ticket, phase="coding")
+        DeferredQuestion.record("And this one?", parked_task=later)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING
+
+    def test_the_answers_own_resume_does_not_supersede_the_question(self) -> None:
+        # ``schedule_resume`` chains the continuation off the parked task. Counting it
+        # as a re-run would let the drain race the very answer it is waiting for.
+        question, parked = _parked_on_a_completed_task()
+        _completed(parked.ticket, phase="coding", parent=parked)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING
+
+    def test_a_completed_run_of_a_different_phase_is_not_a_re_run(self) -> None:
+        question, parked = _parked_on_a_completed_task()
+        _completed(parked.ticket, phase="reviewing")
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING
+
+
+class TestSettledPullRequestsDrain(TestCase):
+    """A subject whose pull requests have all settled, on a ticket still reading live.
+
+    A ticket sits at ``reviewed`` for weeks with its PR already merged, so the FSM
+    state cannot prove what the PR can. This reads the narrower fact — and only ever
+    adds a drain: an open PR, or no PR at all, decides nothing.
+    """
+
+    def test_a_merged_pr_on_a_non_terminal_ticket_drains_the_question(self) -> None:
+        ticket = _ticket(Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
+        _pull_request(ticket, state=PullRequest.State.MERGED)
+
+        assert drain_pending_questions().drained == 1
+
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_DISMISSED
+        assert "settled" in DeferredQuestionAudit.objects.get(question=question).dismissed_reason
+
+    def test_one_open_pull_request_keeps_the_question(self) -> None:
+        ticket = _ticket(Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
+        _pull_request(ticket, state=PullRequest.State.MERGED, iid="1")
+        _pull_request(ticket, state=PullRequest.State.OPEN, iid="2")
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING
+
+    def test_a_subject_with_no_pull_request_decides_nothing(self) -> None:
+        # No PR row proves nothing about whether the work landed — the #3692 guard.
+        ticket = _ticket(Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING
+
+    def test_a_row_with_no_derivable_subject_is_untouched(self) -> None:
+        question = DeferredQuestion.record("Which merge target?")
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.status == DeferredQuestion.STATUS_PENDING

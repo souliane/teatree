@@ -10,7 +10,7 @@ lets it own the number.
 
 The decision is PURE and lives here; the resource loop's scanner supplies the signals
 and persists the answer, and :func:`resolve_intake_concurrency` is what the intake
-factory reads. Two properties are deliberate:
+factory reads. Three properties are deliberate:
 
 *   **A reserve, not the last gigabyte.** ``reserve_gb`` is held back, so ``additional``
     goes NEGATIVE while memory still remains — tightening therefore reduces the limit
@@ -19,6 +19,12 @@ factory reads. Two properties are deliberate:
 *   **Down fast, up slowly.** A drop is adopted whole; a rise advances one step per
     adjustment. That keeps the system away from oscillation and errs toward the cheaper
     mistake.
+*   **Two capacity estimates, the smaller wins.** Memory answers "how many more agents
+    fit"; whole-box load answers "how much of this box is already busy". The second is
+    not optional (#4407): ``factory_in_flight`` counts the factory's OWN claims, so an
+    orchestrating session's harness sub-agents — which claim no ``Task`` and hold no
+    intake marker — are invisible to it while running test suites on the same cores. Sized
+    on memory alone this number stayed put through a box going from load 14 to 53.
 
 Every uncertain input yields ``None`` — *no opinion* — and the reader then keeps the
 operator's static ``issue_implementer_max_concurrent`` verbatim. A governor that cannot
@@ -65,24 +71,42 @@ class BoxSizing:
 def adapt_concurrency(
     *,
     available_gb: float | None,
-    in_flight: int,
+    factory_in_flight: int,
+    box_load_headroom: float | None,
     previous: int,
     sizing: BoxSizing,
 ) -> int | None:
     """The concurrency *observed headroom* supports now, or ``None`` for no opinion.
 
     *available_gb* is what this process may actually still allocate (cgroup-aware);
-    ``None`` means the probe could not read it. *in_flight* is what is already running,
-    so ``in_flight + additional`` is a statement about the whole box rather than about
-    free memory alone. *previous* is the last adopted value and supplies the ramp.
+    ``None`` means the probe could not read it. *factory_in_flight* is the FACTORY's own
+    claim count — named for what it counts, because "in flight" reads as the whole box and
+    is not (#4407) — so ``factory_in_flight + additional`` is the memory-derived estimate
+    alone. *box_load_headroom* is the whole-box occupancy fraction
+    (:func:`~teatree.core.admission_governor.box_load_headroom`), which is what sees the
+    load the factory did not create; ``None`` leaves the memory estimate to stand, since a
+    probe that cannot answer must never lower a ceiling. *previous* is the last adopted
+    value and supplies the ramp.
     """
     if available_gb is None or sizing.per_agent_gb <= 0:
         return None
     additional = math.floor((available_gb - sizing.reserve_gb) / sizing.per_agent_gb)
-    target = _clamp(in_flight + additional, sizing.hard_cap)
+    fits = min(factory_in_flight + additional, _occupancy_cap(box_load_headroom, sizing.hard_cap))
+    target = _clamp(fits, sizing.hard_cap)
     if target < previous:
         return target
     return _clamp(min(target, previous + 1), sizing.hard_cap)
+
+
+def _occupancy_cap(box_load_headroom: float | None, hard_cap: int) -> int:
+    """The share of *hard_cap* the box's remaining load budget still supports.
+
+    No floor of its own — :func:`_clamp` owns :data:`MIN_CONCURRENCY`, so foreign load
+    tightens intake toward one slot and can never wedge it to zero.
+    """
+    if box_load_headroom is None:
+        return hard_cap
+    return math.floor(hard_cap * min(1.0, max(0.0, box_load_headroom)))
 
 
 def _clamp(value: int, hard_cap: int) -> int:

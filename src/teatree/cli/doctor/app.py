@@ -39,6 +39,7 @@ from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
+    _check_box_occupancy,
     _check_compose_output_root_pinned,
     _check_dream_consolidation_blocked,
     _check_dream_staleness,
@@ -135,6 +136,7 @@ __all__ = (
     "_check_account_switch",
     "_check_aged_sweep_skips",
     "_check_agent_session_pins",
+    "_check_box_occupancy",
     "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
     "_check_cold_hook_settings_readable",

@@ -33,10 +33,25 @@ KIND_UNOBSERVABLE = "unobservable"
 #: The loud prefix a fault carries in the rendered report — a gate nobody decided to leave off.
 FAULT_BANNER = "NOBODY DECIDED"
 
+#: Separates what is not happening from what would make it happen (#4375).
+SATISFIER_MARKER = " | satisfy it with: "
+
+#: How a gate LEAVES the undecided state, named where the faults are read (#4375). The
+#: staging exit is a source edit, so an operator who is not told about it has only the
+#: arming one — which is how "nobody decided" outlived ten gates for up to 67 days.
+DECISION_TRAILER = (
+    "  Each line above is a decision nobody has made. Arm one with `t3 <overlay> config_setting set "
+    "<setting> <on-value>`, or record it as deliberately off by moving its `teatree.config.gate_evidence` "
+    "entry to intent=STAGED with a rationale citing the issue or date the call was made — a STAGED entry "
+    "citing neither is refused."
+)
+
 __all__ = [
+    "DECISION_TRAILER",
     "FAULT_BANNER",
     "KIND_NEVER_FIRED",
     "KIND_UNOBSERVABLE",
+    "SATISFIER_MARKER",
     "InertFeature",
     "feature_inertness",
     "observed_rows",
@@ -93,7 +108,10 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
         return InertFeature(
             setting=entry.setting,
             kind=KIND_UNOBSERVABLE,
-            detail=(f"off for {age}d and nothing can ever prove it ran — {entry.rationale} ({_intent_clause(entry)})"),
+            detail=(
+                f"off for {age}d and nothing can ever prove it ran — {entry.rationale} "
+                f"({_intent_clause(entry)}){_satisfier_clause(entry)}"
+            ),
             is_fault=fault,
         )
     if observed_rows(entry):
@@ -101,9 +119,17 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
     return InertFeature(
         setting=entry.setting,
         kind=KIND_NEVER_FIRED,
-        detail=f"off for {age}d and {_observable_label(entry)} is empty — it has never fired ({_intent_clause(entry)})",
+        detail=(
+            f"off for {age}d and {_observable_label(entry)} is empty — it has never fired "
+            f"({_intent_clause(entry)}){_satisfier_clause(entry)}"
+        ),
         is_fault=fault,
     )
+
+
+def _satisfier_clause(entry: GateEvidence) -> str:
+    """What would make *entry* pass — the next action, without which the line is unactionable."""
+    return f"{SATISFIER_MARKER}{entry.satisfier}" if entry.satisfier.strip() else ""
 
 
 def _intent_clause(entry: GateEvidence) -> str:
@@ -138,13 +164,19 @@ def render_inertness_report(findings: tuple[InertFeature, ...]) -> str:
 
     Pure over its argument, like :func:`~teatree.config.feature_flags.render_flags_audit`, so
     both halves of the split are proven from a fixture rather than from the live registry.
+
+    :data:`DECISION_TRAILER` follows the FAULTS only: a staged gate is doing what staging
+    asked for, so a report carrying nothing else has no decision to prompt for.
     """
     if not findings:
         return "  (no gated feature is inert)"
-    return "\n".join(
+    lines = [
         f"  {f.setting}: {f.detail}" + (f"  <<< {FAULT_BANNER} >>>" if f.is_fault else "")
         for f in sorted(findings, key=lambda f: (not f.is_fault, f.setting))
-    )
+    ]
+    if any(f.is_fault for f in findings):
+        lines.append(DECISION_TRAILER)
+    return "\n".join(lines)
 
 
 def observed_rows(entry: GateEvidence) -> int:

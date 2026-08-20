@@ -59,19 +59,22 @@ from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
 from teatree.loop.scanners.pr_sweep_decision import (
     classify_sweep_ci,
     has_independent_cold_review,
+    head_review_state,
     own_or_same_repo,
-    pr_ticket_under_external_delivery,
     record_mergeable_notified,
     red_required_at_stale_base,
     untrusted_merge_provenance,
     with_ci_context,
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
+from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
 from teatree.loop.scanners.pr_sweep_types import (
     CLEAR_PRESENT_UNUSABLE_REASON,
+    CONTESTED_HOLD_REASON,
     GH_CONFLICT_MERGE_STATE,
     GH_CONFLICT_MERGEABLE,
     GREEN_TERMINAL_CONCLUSIONS,
+    HOLD_AT_HEAD_REASON,
     MERGEABLE_AWAITING_REVIEW_REASON,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
@@ -82,9 +85,11 @@ from teatree.utils.pr_ref import PrRef
 
 __all__ = [
     "CLEAR_PRESENT_UNUSABLE_REASON",
+    "CONTESTED_HOLD_REASON",
     "GH_CONFLICT_MERGEABLE",
     "GH_CONFLICT_MERGE_STATE",
     "GREEN_TERMINAL_CONCLUSIONS",
+    "HOLD_AT_HEAD_REASON",
     "MERGEABLE_AWAITING_REVIEW_REASON",
     "REQUIRED_CHECK_NAME",
     "UV_AUDIT_CHECK_NAME",
@@ -361,6 +366,10 @@ class PrSweepScanner:
         ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
             return self._ci_block(pr, reason=ci_skip, failing=failing)
+        review = head_review_state(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        if review.held_verdicts:
+            self._flag(slug=pr.slug, pr_id=pr.number, reason=review.hold_reason, url=pr.url, detail=review.hold_detail)
+            return held_head_attempt(pr, review=review)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr, unusable_clear=unusable_clear)
         if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
@@ -369,6 +378,7 @@ class PrSweepScanner:
             presented_authorizer=self.substrate_standing_authorizer,
         ):
             return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
+        authorizing = review.authorizing_verdict
         ok, merged_sha = self.api.merge_pr_squash_bound(
             slug=pr.slug,
             pr_id=pr.number,
@@ -383,6 +393,7 @@ class PrSweepScanner:
             )
         self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
         reason = "solo_overlay_no_clear_uv_audit" if fallback else "solo_overlay_no_clear"
+        logger.info("pr_sweep merged %s#%d at %s on verdict %s", pr.slug, pr.number, merged_sha, authorizing)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
@@ -390,6 +401,7 @@ class PrSweepScanner:
             merged=True,
             merged_sha=merged_sha,
             reason=reason,
+            authorizing_verdict=authorizing,
         )
 
     def _evaluate_no_clear_collaborative(self, pr: PrSummary) -> MergeAttempt:
@@ -446,55 +458,35 @@ class PrSweepScanner:
         ``solo_overlay_no_review`` is a definite verdict about review, and emitting it
         for a PR whose CLEAR merely missed the live head pointed readers at the wrong
         cause. The review is armed either way — a fresh verdict unblocks both.
+
+        A head carrying a standing HOLD never reaches here — :func:`head_review_state`
+        refuses first (#4380). A reviewer who looked and said no is not "no independent
+        review", and arming another over a held head is how the newer verdict came to be.
         """
         self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
-        dispatched = self._enqueue_review(pr)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
             decision="flag_no_review",
             reason=CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review",
             url=pr.url,
-            review_dispatched=dispatched,
+            review_dispatched=self._enqueue_review(pr),
         )
 
     def _enqueue_review(self, pr: PrSummary) -> bool:
-        """Enqueue the claimable review task for *pr*; return whether one was armed.
-
-        Best-effort: a missing dispatcher, the flag being off, any enqueue error,
-        or a PR not authored by us all degrade to ``False`` (the flag-level signal
-        still fires) so a DB hiccup never aborts the sweep.
-
-        #2210: scoped to PRs the operator authored. ``list_open_prs`` returns
-        every open PR in a watched repo, colleagues' included; auto-scheduling a
-        colleague's PR for review wastes a dispatch and risks an unattended
-        review note on their work. A non-self / unconfirmable author is not armed.
-
-        #2104: skips the review-arm when the PR's ticket is under active EXTERNAL
-        delivery — a hand-dispatched reviewer is already on it. The loop's own FSM
-        never stamps that lease, so a genuinely unowned own green PR still arms.
-        """
-        if not self.auto_review_dispatch or self.review_dispatcher is None:
-            return False
-        if not own_or_same_repo(pr, self_identities=self.self_identities):
-            return False
-        if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
-            return False
-        try:
-            return self.review_dispatcher.enqueue(
-                slug=pr.slug,
-                pr_id=pr.number,
-                head_sha=pr.head_sha,
-                pr_url=pr.url,
+        return arm_cold_review(
+            pr,
+            ctx=ReviewArmContext(
+                dispatcher=self.review_dispatcher,
+                enabled=self.auto_review_dispatch,
+                self_identities=self.self_identities,
                 overlay=self.overlay,
-            )
-        except Exception:
-            logger.exception("pr_sweep failed to enqueue auto-review task for %s#%d", pr.slug, pr.number)
-            return False
+            ),
+        )
 
-    def _flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def _flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
         try:
-            self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url)
+            self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url, detail=detail)
         except Exception:
             logger.exception("pr_sweep failed to post flag notification for %s#%d", slug, pr_id)
 
@@ -581,7 +573,7 @@ class PrSweepScanner:
 
 
 def _skip(pr: PrSummary, *, reason: str) -> MergeAttempt:
-    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason)
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason, url=pr.url)
 
 
 def _precondition_skip_reason(pr: PrSummary) -> str | None:
@@ -615,5 +607,7 @@ def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
             "review_dispatched": attempt.review_dispatched,
             "failing_required": list(attempt.failing_required),
             "base_current": attempt.base_current,
+            "held_verdicts": [list(ref) for ref in attempt.held_verdicts],
+            "authorizing_verdict": None if attempt.authorizing_verdict is None else list(attempt.authorizing_verdict),
         },
     )

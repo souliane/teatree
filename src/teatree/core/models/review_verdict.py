@@ -234,6 +234,68 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
             return HeadVerdictState.HOLD
         return HeadVerdictState.MERGE_SAFE
 
+    def standing_merge_safe_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
+        """The newest non-stale ``merge_safe`` at *head_sha*, whatever newest-wins says.
+
+        Answers "does a PASS stand beside the hold" — a different question from
+        :meth:`authorizing_verdict_at`'s "what may a merge rest on", and deliberately NOT
+        gated on :meth:`effective_state_at`. That method resolves a disagreement by
+        timestamp for the merge keystone, so gating on it made the WORDING of a held
+        refusal depend on which reviewer happened to record last: a third of contested
+        heads recorded the HOLD second and were reported as an ordinary lone hold.
+
+        No ``try``/``except``, matching :meth:`unreconciled_holds_at` — degrading to
+        ``None`` here would report a genuine two-reviewer disagreement as a lone hold.
+        """
+        head = head_sha.strip().lower()
+        passes = [v for v in self.for_pr(slug, pr_id) if v.is_merge_safe() and not v.is_stale_at(head)]
+        return max(passes, key=lambda verdict: verdict.recorded_at, default=None)
+
+    def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
+        """The non-stale ``merge_safe`` row the newest-wins verdict rests on, else ``None``.
+
+        Answers "WHICH verdict authorised this merge" — the record #4380 asks the
+        solo-overlay merge path to name, since ``reason=solo_overlay_no_clear`` states
+        that no CLEAR existed but not what was relied on instead.
+
+        Gated on :meth:`effective_state_at` rather than re-deriving newest-wins, because
+        that method is shared with the merge keystone's ``assert_review_verdict_gate``
+        and a second copy of the tie-breaking rules would drift from it. Past the gate it
+        delegates the selection to :meth:`standing_merge_safe_at` so the newest-non-stale
+        rule exists once.
+        """
+        if self.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha) is not HeadVerdictState.MERGE_SAFE:
+            return None
+        return self.standing_merge_safe_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+
+    def unreconciled_holds_at(self, *, slug: str, pr_id: int, head_sha: str) -> list["ReviewVerdict"]:
+        """Every non-stale HOLD standing at *head_sha*, IGNORING newest-wins supersession (#4380).
+
+        Deliberately not :meth:`effective_state_at`. That method answers "what is
+        the verdict" and resolves a disagreement by timestamp; this one answers
+        "did anyone say no and never take it back", which a later PASS from a
+        DIFFERENT reviewer does not settle. Two reviewers ran concurrently on one
+        unchanged tree, disagreed, and the autonomous no-CLEAR merge took the
+        newer row — so a hold nobody reconciled read as consent.
+
+        A same-identity re-record is NOT a leftover hold: :meth:`ReviewVerdict.record`
+        is an ``update_or_create`` on
+        ``(slug, pr_id, reviewed_sha, reviewer_identity_normalized)``, so a reviewer
+        correcting their own judgment at the same head overwrites their own row and
+        leaves nothing here. That is the escape hatch, and it costs no new machinery.
+
+        Matched through :meth:`for_pr` (``slug__iexact``) on purpose — a hand-rolled
+        exact-match filter is what once made a verdict invisible to the merge gate,
+        and re-introducing it here would hide a hold from the guard that exists to
+        honour it.
+        """
+        head = head_sha.strip().lower()
+        return [
+            verdict
+            for verdict in self.for_pr(slug, pr_id)
+            if not verdict.is_merge_safe() and not verdict.is_stale_at(head)
+        ]
+
 
 class ReviewVerdict(models.Model):
     """One recorded cold-review judgment for a PR at an exact reviewed tree.

@@ -172,6 +172,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # a completed action, not a request, so it stays in the diagnostic family.
     "pr_sweep.flag_conflict": "action_needed",
     "pr_sweep.flag_no_review": "action_needed",
+    "pr_sweep.flag_held": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
     "pr_sweep.flag_mergeable": "action_needed",
     # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
@@ -236,6 +237,7 @@ PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset(
     {
         "pr_sweep.flag_conflict",
         "pr_sweep.flag_no_review",
+        "pr_sweep.flag_held",
         "pr_sweep.needs_branch_update",
         "pr_sweep.flag_mergeable",
     }

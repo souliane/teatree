@@ -22,7 +22,7 @@ def _backend() -> MagicMock:
 class TestRecoverableInfo(TestCase):
     def test_noop_info_row_is_recoverable(self) -> None:
         BotPing.objects.create(
-            idempotency_key="subagent-dm-1",
+            idempotency_key="watchdog:doctor-unreachable:subagent-dm-1",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -30,21 +30,21 @@ class TestRecoverableInfo(TestCase):
             error_message="no messaging backend or user_id configured",
         )
         rows = list(BotPing.recoverable_info())
-        assert [r.idempotency_key for r in rows] == ["subagent-dm-1"]
+        assert [r.idempotency_key for r in rows] == ["watchdog:doctor-unreachable:subagent-dm-1"]
 
     def test_sent_info_row_is_not_recoverable(self) -> None:
         BotPing.objects.create(
-            idempotency_key="already-sent",
+            idempotency_key="watchdog:doctor-unreachable:already-sent",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENT,
-            text="delivered",
+            text="watchdog:doctor-unreachable:delivered",
         )
         assert list(BotPing.recoverable_info()) == []
 
     def test_question_kind_is_not_recovered_here(self) -> None:
         BotPing.objects.create(
-            idempotency_key="deferred-q",
+            idempotency_key="watchdog:doctor-unreachable:deferred-q",
             kind=BotPing.Kind.QUESTION,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -54,7 +54,7 @@ class TestRecoverableInfo(TestCase):
 
     def test_fresh_sending_is_not_recoverable(self) -> None:
         BotPing.objects.create(
-            idempotency_key="in-flight",
+            idempotency_key="watchdog:doctor-unreachable:in-flight",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENDING,
@@ -64,7 +64,7 @@ class TestRecoverableInfo(TestCase):
 
     def test_stale_sending_is_recoverable(self) -> None:
         row = BotPing.objects.create(
-            idempotency_key="crashed-claim",
+            idempotency_key="watchdog:doctor-unreachable:crashed-claim",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENDING,
@@ -73,11 +73,11 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.filter(pk=row.pk).update(
             posted_at=timezone.now() - BotPing.SENDING_STALE_AFTER - timedelta(seconds=1),
         )
-        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["crashed-claim"]
+        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["watchdog:doctor-unreachable:crashed-claim"]
 
     def test_row_older_than_age_cutoff_is_not_recoverable(self) -> None:
         row = BotPing.objects.create(
-            idempotency_key="weeks-stale",
+            idempotency_key="watchdog:doctor-unreachable:weeks-stale",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -90,7 +90,7 @@ class TestRecoverableInfo(TestCase):
 
     def test_attempt_exhausted_row_is_not_recoverable(self) -> None:
         BotPing.objects.create(
-            idempotency_key="exhausted",
+            idempotency_key="watchdog:doctor-unreachable:exhausted",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -101,7 +101,7 @@ class TestRecoverableInfo(TestCase):
 
     def test_expired_row_is_not_recoverable(self) -> None:
         BotPing.objects.create(
-            idempotency_key="abandoned",
+            idempotency_key="watchdog:doctor-unreachable:abandoned",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.EXPIRED,
@@ -113,7 +113,7 @@ class TestRecoverableInfo(TestCase):
 class TestExpireStaleInfo(TestCase):
     def test_aged_row_is_expired_terminally(self) -> None:
         row = BotPing.objects.create(
-            idempotency_key="aged",
+            idempotency_key="watchdog:doctor-unreachable:aged",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -127,7 +127,7 @@ class TestExpireStaleInfo(TestCase):
 
     def test_attempt_exhausted_row_is_expired_terminally(self) -> None:
         row = BotPing.objects.create(
-            idempotency_key="capped",
+            idempotency_key="watchdog:doctor-unreachable:capped",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -139,7 +139,7 @@ class TestExpireStaleInfo(TestCase):
 
     def test_fresh_under_cap_row_is_left_recoverable(self) -> None:
         BotPing.objects.create(
-            idempotency_key="fresh",
+            idempotency_key="watchdog:doctor-unreachable:fresh",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -147,11 +147,11 @@ class TestExpireStaleInfo(TestCase):
             attempts=1,
         )
         assert BotPing.expire_stale_info() == 0
-        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["fresh"]
+        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["watchdog:doctor-unreachable:fresh"]
 
     def test_sent_row_is_never_expired(self) -> None:
         row = BotPing.objects.create(
-            idempotency_key="delivered",
+            idempotency_key="watchdog:doctor-unreachable:delivered",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENT,
@@ -167,7 +167,7 @@ class TestExpireStaleInfo(TestCase):
 class TestDrainUndeliveredNotifies(TestCase):
     def test_redelivers_stranded_info_dm_when_backend_now_available(self) -> None:
         BotPing.objects.create(
-            idempotency_key="subagent-dm-2",
+            idempotency_key="watchdog:doctor-unreachable:subagent-dm-2",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -181,7 +181,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         assert (delivered, total) == (1, 1)
         backend.post_message.assert_called_once()
         assert "sub-agent finished its on-behalf post" in backend.post_message.call_args.kwargs["text"]
-        row = BotPing.objects.get(idempotency_key="subagent-dm-2")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:subagent-dm-2")
         assert row.status == BotPing.Status.SENT
 
     def test_no_op_when_nothing_stranded(self) -> None:
@@ -192,7 +192,7 @@ class TestDrainUndeliveredNotifies(TestCase):
 
     def test_still_no_backend_bumps_attempt_and_keeps_row_recoverable_under_cap(self) -> None:
         BotPing.objects.create(
-            idempotency_key="subagent-dm-3",
+            idempotency_key="watchdog:doctor-unreachable:subagent-dm-3",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -202,14 +202,14 @@ class TestDrainUndeliveredNotifies(TestCase):
             delivered, total = drain_undelivered_notifies(user_id="U_ME")
 
         assert (delivered, total) == (0, 1)
-        row = BotPing.objects.get(idempotency_key="subagent-dm-3")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:subagent-dm-3")
         assert row.status == BotPing.Status.NOOP
         assert row.attempts == 1
-        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["subagent-dm-3"]
+        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["watchdog:doctor-unreachable:subagent-dm-3"]
 
     def test_repeated_no_backend_drains_eventually_expire_the_row(self) -> None:
         BotPing.objects.create(
-            idempotency_key="never-deliverable",
+            idempotency_key="watchdog:doctor-unreachable:never-deliverable",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -219,7 +219,7 @@ class TestDrainUndeliveredNotifies(TestCase):
             for _ in range(BotPing.MAX_REDELIVERY_ATTEMPTS + 1):
                 drain_undelivered_notifies(user_id="U_ME")
 
-        row = BotPing.objects.get(idempotency_key="never-deliverable")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:never-deliverable")
         assert row.status == BotPing.Status.EXPIRED
         assert list(BotPing.recoverable_info()) == []
 
@@ -230,7 +230,7 @@ class TestDrainUndeliveredNotifies(TestCase):
 
     def test_aged_row_is_expired_without_any_delivery_attempt(self) -> None:
         row = BotPing.objects.create(
-            idempotency_key="weeks-old",
+            idempotency_key="watchdog:doctor-unreachable:weeks-old",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -248,7 +248,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         assert BotPing.objects.get(pk=row.pk).status == BotPing.Status.EXPIRED
 
     def test_one_failure_does_not_abort_the_drain(self) -> None:
-        for key in ("strand-a", "strand-b"):
+        for key in ("watchdog:doctor-unreachable:strand-a", "watchdog:doctor-unreachable:strand-b"):
             BotPing.objects.create(
                 idempotency_key=key,
                 kind=BotPing.Kind.INFO,
@@ -269,7 +269,7 @@ class TestDrainUndeliveredNotifies(TestCase):
 
     def test_failed_delivery_preserves_prior_attempt_count(self) -> None:
         BotPing.objects.create(
-            idempotency_key="backend-up-send-fails",
+            idempotency_key="watchdog:doctor-unreachable:backend-up-send-fails",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -282,13 +282,13 @@ class TestDrainUndeliveredNotifies(TestCase):
             delivered, total = drain_undelivered_notifies(user_id="U_ME")
 
         assert (delivered, total) == (0, 1)
-        row = BotPing.objects.get(idempotency_key="backend-up-send-fails")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:backend-up-send-fails")
         assert row.status == BotPing.Status.FAILED
         assert row.attempts == 4
 
     def test_failed_delivery_path_eventually_expires_at_the_cap(self) -> None:
         BotPing.objects.create(
-            idempotency_key="backend-up-always-fails",
+            idempotency_key="watchdog:doctor-unreachable:backend-up-always-fails",
             kind=BotPing.Kind.INFO,
             audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
@@ -300,6 +300,6 @@ class TestDrainUndeliveredNotifies(TestCase):
             for _ in range(BotPing.MAX_REDELIVERY_ATTEMPTS + 1):
                 drain_undelivered_notifies(user_id="U_ME")
 
-        row = BotPing.objects.get(idempotency_key="backend-up-always-fails")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:backend-up-always-fails")
         assert row.status == BotPing.Status.EXPIRED
         assert list(BotPing.recoverable_info()) == []

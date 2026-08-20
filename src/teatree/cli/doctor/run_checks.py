@@ -42,6 +42,7 @@ from teatree.cli.doctor.checks_gate_inertness import _check_gates_shipped_inert
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
+    _check_box_occupancy,
     _check_compose_output_root_pinned,
     _check_dream_consolidation_blocked,
     _check_dream_staleness,
@@ -177,7 +178,10 @@ def _run_loop_intent_gates() -> bool:
     (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
     their return values are deliberately discarded so neither can become a gate by accident.
     ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
-    never claimed) joins them: a slow queue is not a fault, an invisible one is.
+    never claimed) joins them: a slow queue is not a fault, an invisible one is. So does
+    ``_check_box_occupancy`` (#4407), which prints the factory's own agent count beside the
+    whole box's load — every other surface here counts only what the factory started, so a
+    box saturated by anything else reads healthy on all of them at once.
 
     SIX verdicts ARE returned, each a queue or authority that rots while every other
     surface reads healthy; all five are evaluated before the ``and`` so none can mask
@@ -200,6 +204,7 @@ def _run_loop_intent_gates() -> bool:
     _check_shipped_seed_inertness()
     _check_aged_sweep_skips()
     _check_marker_jam()
+    _check_box_occupancy()
     _check_starved_intake_candidates()
     intake_ok = _check_intake_budget_deadlock()
     pass_ok = _check_intake_pass_incomplete()

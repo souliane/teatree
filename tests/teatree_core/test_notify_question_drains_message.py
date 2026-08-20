@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _resurface_text, drain_deferred_questions
+from teatree.core.notify_types import DELIVERED
 
 
 class TestResurfaceMessageHasNoHostCli(TestCase):
@@ -53,9 +54,9 @@ class TestDrainExcludesInternalAudience(TestCase):
             "This session lacks any shell/write tool to run record_candidate.",
             audience=DeferredQuestion.Audience.INTERNAL,
         )
-        with patch("teatree.core.notify_question_drains.notify_user") as notify:
+        with patch("teatree.core.notify_question_drains.notify_user_outcome") as notify:
             delivered, total = drain_deferred_questions()
-        # The INTERNAL row is filtered before any egress — notify_user is never called.
+        # The INTERNAL row is filtered before any egress — the egress is never called.
         notify.assert_not_called()
         assert (delivered, total) == (0, 0)
 
@@ -65,7 +66,7 @@ class TestDrainExcludesInternalAudience(TestCase):
             "I run shell-denied and cannot file the issue.",
             audience=DeferredQuestion.Audience.INTERNAL,
         )
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
             delivered, total = drain_deferred_questions()
         # Exactly one egress — the owner row — and the total counts only it.
         assert notify.call_count == 1
@@ -97,7 +98,7 @@ class TestDrainAdvancesPastAlreadyDeliveredRows(TestCase):
         for row in rows[:3]:
             self._delivered(row)
 
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
             delivered, _total = drain_deferred_questions()
 
         posted = " ".join(str(call.args[0]) for call in notify.call_args_list)
@@ -110,7 +111,7 @@ class TestDrainAdvancesPastAlreadyDeliveredRows(TestCase):
         for i in range(5):
             DeferredQuestion.record(f"Q{i}")
 
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True):
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED):
             _delivered, total = drain_deferred_questions()
 
         assert total == 5, "reporting the slice as the denominator hides the backlog"
@@ -136,7 +137,7 @@ class TestOnlyASentPingCountsAsDelivered(TestCase):
         row = DeferredQuestion.record("Should I merge PR #7?")
         self._ping(row, BotPing.Status.FAILED)
 
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
             delivered, total = drain_deferred_questions()
 
         assert delivered == 1
@@ -147,7 +148,7 @@ class TestOnlyASentPingCountsAsDelivered(TestCase):
         row = DeferredQuestion.record("Pick a rollout")
         self._ping(row, BotPing.Status.NOOP)
 
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
             delivered, _total = drain_deferred_questions()
 
         assert delivered == 1
@@ -183,7 +184,7 @@ class TestARowTheSendPathWillNotRedeliverFreesItsCapSlot(TestCase):
                 rows = [DeferredQuestion.record(f"Q{i}") for i in range(5)]
                 self._ping(rows[0], status)
 
-                with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+                with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
                     delivered, total = drain_deferred_questions()
 
                 posted = " ".join(str(call.args[0]) for call in notify.call_args_list)
@@ -195,7 +196,7 @@ class TestARowTheSendPathWillNotRedeliverFreesItsCapSlot(TestCase):
         row = DeferredQuestion.record("Should I merge PR #7?")
         self._ping(row, BotPing.Status.SENDING, age=BotPing.SENDING_STALE_AFTER + timedelta(seconds=1))
 
-        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+        with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
             delivered, total = drain_deferred_questions()
 
         # A crashed claim is recoverable — claim_delivery replaces it and the DM goes out.

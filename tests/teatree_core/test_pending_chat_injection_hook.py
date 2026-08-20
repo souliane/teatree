@@ -23,7 +23,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_inject_pending_chat
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import DmContext, PendingChatInjection
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -58,7 +58,7 @@ class TestDrain:
             channel="D0DEMOTEAM1",
             slack_ts="1700000000.0001",
             text="Please review PR #42",
-            user_id="U0DEMOUSER1",
+            context=DmContext(user_id="U0DEMOUSER1"),
         )
 
         handle_inject_pending_chat({"session_id": "owner-1"})
@@ -151,7 +151,7 @@ class TestAnySessionDrains:
             channel="D0DEMOTEAM1",
             slack_ts="1700000000.0001",
             text="merge PR #42",
-            user_id="U0DEMOUSER1",
+            context=DmContext(user_id="U0DEMOUSER1"),
         )
 
         handle_inject_pending_chat({"session_id": "interactive-session-not-owner"})
@@ -246,7 +246,7 @@ class TestFormat:
             channel="D",
             slack_ts="1700000000.0001",
             text="merge PR #42",
-            user_id="U0DEMOUSER1",
+            context=DmContext(user_id="U0DEMOUSER1"),
         )
 
         handle_inject_pending_chat({"session_id": "owner"})

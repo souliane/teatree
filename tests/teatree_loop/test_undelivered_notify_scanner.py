@@ -43,7 +43,7 @@ class TestUndeliveredNotifyScanner(TestCase):
 
     def test_redelivers_parked_info_row_end_to_end(self) -> None:
         BotPing.objects.create(
-            idempotency_key="subagent-strand",
+            idempotency_key="watchdog:doctor-unreachable:subagent-strand",
             kind=BotPing.Kind.INFO,
             status=BotPing.Status.NOOP,
             text="sub-agent finished",
@@ -69,4 +69,7 @@ class TestUndeliveredNotifyScanner(TestCase):
             signals = UndeliveredNotifyScanner().scan()
 
         assert [s.kind for s in signals] == ["notify.redelivered"]
-        assert BotPing.objects.get(idempotency_key="subagent-strand").status == BotPing.Status.SENT
+        assert (
+            BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:subagent-strand").status
+            == BotPing.Status.SENT
+        )

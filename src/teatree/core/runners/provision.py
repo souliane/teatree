@@ -20,11 +20,11 @@ from teatree.core.worktree.checkout_disposal import disposal_refusal
 from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
 from teatree.core.worktree.clone_provision import ensure_clone
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
+from teatree.core.worktree.venue_safe_registry import WorkPresence, prune_worktrees, unsalvageable_work_state
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
-from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -98,39 +98,16 @@ def _registered_worktrees(clone: str) -> list[_RegisteredWorktree]:
     return entries
 
 
-def _holds_unsalvageable_work(wt_path: str) -> bool:
-    """Whether tearing down *wt_path* would destroy the only copy of some work.
-
-    The #706 data-loss guard, mirroring
-    :func:`teatree.core.worktree.reconcile._unpushed_work_for_worktree` and the
-    ``recover`` sweeps: a worktree is protected when it holds uncommitted changes,
-    or when its HEAD carries commits reachable from NO remote. ``--not --remotes``
-    is empty as soon as the tip was pushed anywhere, so a pushed-but-unmerged branch
-    is correctly reapable while a genuinely-local tip is not.
-
-    **Fails closed.** An inconclusive probe (``CommandFailedError`` — corrupt repo,
-    dangling ref, no commits yet) is treated as "carries work": for a destructive
-    decision, "we could not prove this is safe to delete" must protect the worktree,
-    never sacrifice it.
-    """
-    if not Path(wt_path).is_dir():
-        return False
-    if git.status_porcelain(wt_path).strip():
-        return True
-    try:
-        return bool(git.commits_absent_from_all_remotes(wt_path, "HEAD"))
-    except CommandFailedError:
-        return True
-
-
 def _tear_down_worktree(clone: str, wt_path: str, branch: str) -> None:
     """Force-remove a work-free worktree, prune the registration, drop a dangling branch.
 
     Only ever reached once the checkout has been PROVEN free of unpushed work (see
-    :func:`_holds_unsalvageable_work`) or its directory is already gone, so nothing
-    recoverable is lost. ``git worktree prune`` is what actually frees the branch —
-    a registration whose dir was deleted still makes git refuse the branch as
-    "already checked out".
+    :func:`~teatree.core.worktree.venue_safe_registry.unsalvageable_work_state`) or
+    its directory is provably gone, so nothing recoverable is lost. The prune is what
+    actually frees the branch — a registration whose dir was deleted still makes git
+    refuse the branch as "already checked out" — and it is venue-gated (#4287), so a
+    clone holding a registration this context cannot vouch for keeps its branch held
+    rather than stranding somebody else's checkout.
 
     The branch ref is dropped with ``git branch -d`` (never ``-D``): git's own
     unmerged-branch guard is the unmerged-and-unreferenced check, so a branch still
@@ -140,9 +117,46 @@ def _tear_down_worktree(clone: str, wt_path: str, branch: str) -> None:
     """
     if Path(wt_path).is_dir():
         git.worktree_remove(clone, wt_path)
-    git.run(repo=clone, args=["worktree", "prune"])
+    prune_worktrees(clone)
     if branch:
         git.check(repo=clone, args=["branch", "-d", branch])
+
+
+def _unclearable_leftover(leftover: _RegisteredWorktree, work: WorkPresence, *, branch: str, wt_str: str) -> str | None:
+    """Adopt a leftover that cannot be cleared, or refuse the provision — never destroy it.
+
+    Reached only for a leftover whose teardown could cost work: one carrying commits
+    that exist on no remote, and one this context cannot READ, which is the same risk
+    with the evidence missing (#4287). The unreadable case is never adopted either —
+    nothing here can provision into a directory it cannot resolve.
+    """
+    if work is WorkPresence.UNKNOWN:
+        logger.error(
+            "Cannot provision %s at %s: the leftover worktree at %s is unreadable in this execution "
+            "context, so whether it holds unpushed work is unknowable here. Refusing to touch it — act "
+            "from the context that resolves it.",
+            branch,
+            wt_str,
+            leftover.path,
+        )
+        return None
+    if leftover.branch == branch:
+        logger.warning(
+            "Leftover worktree for %s at %s carries work that exists on no remote — adopting it in place "
+            "instead of recreating at %s. Push or salvage it to move the worktree.",
+            branch,
+            leftover.path,
+            wt_str,
+        )
+        return leftover.path
+    logger.error(
+        "Cannot provision %s at %s: a worktree on branch %s is in the way and carries work that exists on "
+        "no remote. Refusing to destroy it — push or salvage that work, then retry.",
+        branch,
+        wt_str,
+        leftover.branch,
+    )
+    return None
 
 
 def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, ticket_id: int | None) -> str | None:
@@ -165,6 +179,8 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
     - a leftover carrying work absent from every remote → NEVER destroyed: adopted in
         place when it is on the scope's branch, and otherwise refused so nothing
         silently deletes the only copy of that work;
+    - a leftover this context cannot READ — so whether it carries work is unknowable
+        here — → refused, never adopted and never torn down (#4287);
     - anything standing in the slot that this context cannot prove disposable →
         refused (#3967).
 
@@ -178,7 +194,7 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
     # A registration whose dir was deleted still holds its branch hostage. Prune
     # first so the survey below sees only registrations git will really enforce.
     if any(not entry.on_disk for entry in _registered_worktrees(clone_str)):
-        git.run(repo=clone_str, args=["worktree", "prune"])
+        prune_worktrees(clone_str)
 
     leftovers = [entry for entry in _registered_worktrees(clone_str) if not paths_match(entry.path, clone_str)]
     at_path = next((entry for entry in leftovers if paths_match(entry.path, wt_str)), None)
@@ -191,24 +207,9 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
     for leftover in (at_path, on_branch):
         if leftover is None:
             continue
-        if _holds_unsalvageable_work(leftover.path):
-            if leftover.branch == branch:
-                logger.warning(
-                    "Leftover worktree for %s at %s carries work that exists on no remote — adopting it "
-                    "in place instead of recreating at %s. Push or salvage it to move the worktree.",
-                    branch,
-                    leftover.path,
-                    wt_str,
-                )
-                return leftover.path
-            logger.error(
-                "Cannot provision %s at %s: a worktree on branch %s is in the way and carries work that "
-                "exists on no remote. Refusing to destroy it — push or salvage that work, then retry.",
-                branch,
-                wt_str,
-                leftover.branch,
-            )
-            return None
+        work = unsalvageable_work_state(leftover.path)
+        if work is not WorkPresence.NONE:
+            return _unclearable_leftover(leftover, work, branch=branch, wt_str=wt_str)
         logger.warning(
             "Cleaning up a broken leftover worktree at %s (branch %s) before provisioning %s at %s",
             leftover.path,
