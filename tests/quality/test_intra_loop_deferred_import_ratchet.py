@@ -480,6 +480,7 @@ class TestLoopSlackAnswerNode:
         assert loop_deps == {
             "teatree.loop.inbound_classifier",
             "teatree.loop.inbound_reading",
+            "teatree.loop.question_binding",
             "teatree.loop.self_improve",
             "teatree.loop.statusline",
         }

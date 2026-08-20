@@ -3,7 +3,9 @@
 The Slack ↔ Claude-Code bidirectional bridge (WS1). Each tick this
 scanner polls the overlay's :class:`MessagingBackend.fetch_dms` for new
 user messages and records one :class:`PendingChatInjection` row per
-unique Slack ``ts``. The matching ``UserPromptSubmit`` handler
+unique Slack ``ts``, carrying the event's ``thread_ts`` — a reply's only piece
+of binding identity, and what :mod:`teatree.loop.question_binding` joins on to
+find the question it answers. The matching ``UserPromptSubmit`` handler
 (``hook_router.handle_inject_pending_chat``) drains unconsumed rows into
 the agent's next ``additionalContext`` block — so a Slack DM reaches the
 agent as if the user had typed it in Claude Code chat (BLUEPRINT §17.1
@@ -47,7 +49,7 @@ import logging
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_self_filter import (
     OwnSlackIdentity,
@@ -78,6 +80,19 @@ def _event_channel(event: RawAPIDict) -> str:
 def _event_user(event: RawAPIDict) -> str:
     user = event.get("user")
     return user if isinstance(user, str) else ""
+
+
+def _event_thread_ts(event: RawAPIDict) -> str:
+    """The thread root this message replies to; ``""`` for a top-level message.
+
+    Slack stamps ``thread_ts == ts`` on a thread's own root, which is not a
+    reply to anything — recorded as empty so the binder never treats a root as
+    carrying a question reference.
+    """
+    thread_ts = event.get("thread_ts")
+    if not isinstance(thread_ts, str) or thread_ts == _event_ts(event):
+        return ""
+    return thread_ts
 
 
 @dataclass(slots=True)
@@ -125,12 +140,13 @@ class SlackDmInboundScanner:
                     continue
                 channel = _event_channel(event)
                 user_id = _event_user(event)
+                thread_ts = _event_thread_ts(event)
                 row = PendingChatInjection.record(
                     channel=channel,
                     slack_ts=ts,
                     text=text,
                     overlay=self.overlay,
-                    user_id=user_id,
+                    context=DmContext(user_id=user_id, thread_ts=thread_ts),
                 )
                 if row is None:
                     # Duplicate ``ts`` — the scanner over-polled. Skip the
@@ -147,6 +163,7 @@ class SlackDmInboundScanner:
                             "user_id": user_id,
                             "text": text,
                             "overlay": self.overlay,
+                            "thread_ts": thread_ts,
                         },
                     )
                 )
