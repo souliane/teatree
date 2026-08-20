@@ -351,6 +351,25 @@ class TestAutoCreatedDescription:
         assert "Tracks" not in why
         assert "the branch is not pushed without a tracking PR" in why
 
+    def test_a_commit_body_with_its_own_why_is_not_called_rationale_free(self) -> None:
+        """A rescued commit that already documents its own '## Why' is not 'no rationale' (#4542 review finding).
+
+        The hook nests the commit body under a generated ``## What``, so a commit
+        following this repo's own What/Why convention leaves the hook's ``## Why``
+        asserting "no rationale exists" directly beneath one that plainly does.
+        """
+        commit_body = "## What\n- did the thing\n\n## Why\n- because the old thing was broken"
+        out = auto_created_description(self._TITLE, commit_body)
+        why = out.rsplit("## Why\n", 1)[-1]
+        assert "No author-written rationale exists" not in why
+
+    def test_a_commit_body_with_an_empty_why_is_still_called_rationale_free(self) -> None:
+        """Control: a header with nothing under it is not a rationale — the old behaviour holds."""
+        commit_body = "## What\n- did the thing\n\n## Why\n"
+        out = auto_created_description(self._TITLE, commit_body)
+        why = out.rsplit("## Why\n", 1)[-1]
+        assert "No author-written rationale exists" in why
+
 
 class TestLacksRationale:
     """Which bodies an adopting ship step may overwrite (#3991).

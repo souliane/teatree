@@ -66,27 +66,34 @@ def auto_created_description(title: str, commit_body: str, *, branch: str = "", 
     """The What/Why body for a PR opened with no author-written description.
 
     The no-orphan invariant opens the PR from the commit alone, so the rationale
-    has no source. ``## Why`` therefore states PROVENANCE — never a plausible-sounding
-    invention, and never (#4424) an ask-the-author ``TODO``: the hook opens the PR
-    precisely because no author did, so that instruction is addressed to nobody and
-    every reviewer rediscovers it unfollowed.
+    has no source OF ITS OWN. ``## Why`` therefore states PROVENANCE — never a
+    plausible-sounding invention, and never (#4424) an ask-the-author ``TODO``: the
+    hook opens the PR precisely because no author did, so that instruction is
+    addressed to nobody and every reviewer rediscovers it unfollowed.
     """
-    why = _auto_created_why(branch, issue_url)
+    why = _auto_created_why(branch, issue_url, commit_body)
     return f"{title}\n\n## What\n{commit_body.strip() or title}\n\n## Why\n{why}"
 
 
-def _auto_created_why(branch: str, issue_url: str) -> str:
+def _auto_created_why(branch: str, issue_url: str, commit_body: str) -> str:
     """Provenance plus whatever the hook can derive TRUTHFULLY — the branch, the owning ticket.
+
+    The "no rationale" line is only true when the nested ``## What`` (the commit
+    body) does not already carry one: the hook nests the WHOLE commit message under
+    a generated ``## What``, so a commit already following this repo's own What/Why
+    convention would otherwise leave the hook's own ``## Why`` asserting "no
+    rationale exists" directly beneath one that plainly does (found live on #4542,
+    the PR this exact change shipped through).
 
     The tracked issue is referenced with no closing keyword on purpose: a rescue PR
     is not necessarily the whole fix, so auto-closing its ticket on merge would claim
     more than the hook knows.
     """
     rescued = f"branch `{branch.strip()}`" if branch.strip() else "the branch"
-    lines = [
-        f"- This PR was {AUTO_CREATED_MARKER}, so {rescued} is not pushed without a tracking PR.",
-        _NO_RATIONALE_LINE,
-    ]
+    lines = [f"- This PR was {AUTO_CREATED_MARKER}, so {rescued} is not pushed without a tracking PR."]
+    commit_why = _section_body(commit_body, "Why")
+    if commit_why is None or not commit_why.strip():
+        lines.append(_NO_RATIONALE_LINE)
     if issue_url.strip():
         lines.append(f"- Tracks {issue_url.strip()}.")
     return "\n".join(lines)
