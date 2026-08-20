@@ -29,7 +29,7 @@ here via ``call_command``.
 """
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated
 
@@ -39,7 +39,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.management.commands._dream_report import _ResultFragments
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.loops.dream.pass_config import PromotionBudget
+from teatree.loops.dream.pass_config import PassBudget, PromotionBudget
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -50,12 +50,16 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class PipelineMode:
-    """The full-pipeline mode toggles for one dream pass.
+    """The pipeline toggles for one dream pass.
 
     ``force_all_phases`` runs the WHOLE pipeline (core-gap tickets + LLM-derived
     eval staging); ``validate_live`` gates eval-promotion on a METERED live-model
     pass@k. Both are ``--full``-implied opt-ins, so they travel as ONE cohesive
-    value rather than two loose flags threaded through every pass helper.
+    value rather than loose flags threaded through every pass helper.
+    ``propose_evals`` — whether the pass derives inert eval candidates at all — is
+    resolved differently per entry point (a flag on ``run``, the default-ON env/DB
+    kill-switch on ``tick``) but is the same kind of thing once resolved, so it rides
+    here too rather than as a sixth loose parameter.
 
     ``force_all_phases`` is a CONVENIENCE alias for one manual pass, never a phase's
     only way in: ``tick`` cannot set it, so a phase gated on it AND its own toggle is
@@ -65,6 +69,7 @@ class PipelineMode:
 
     force_all_phases: bool = False
     validate_live: bool = False
+    propose_evals: bool = False
 
 
 _DEFAULT_MODE = PipelineMode()
@@ -133,8 +138,11 @@ class Command(TyperCommand):
                 since=_parse_since(since),
                 dry_run=dry_run,
                 enforce_cadence=False,
-                propose_evals=propose_evals or full,
-                mode=PipelineMode(force_all_phases=full, validate_live=validate_live or full),
+                mode=PipelineMode(
+                    force_all_phases=full,
+                    validate_live=validate_live or full,
+                    propose_evals=propose_evals or full,
+                ),
             )
         )
 
@@ -159,8 +167,7 @@ class Command(TyperCommand):
                 since=None,
                 dry_run=False,
                 enforce_cadence=True,
-                propose_evals=propose_evals_enabled(),
-                mode=PipelineMode(validate_live=validate_live_enabled()),
+                mode=PipelineMode(validate_live=validate_live_enabled(), propose_evals=propose_evals_enabled()),
             )
         )
 
@@ -178,7 +185,6 @@ class Command(TyperCommand):
         since: dt.datetime | None,
         dry_run: bool,
         enforce_cadence: bool,
-        propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
     ) -> PassOutcome:
         import os  # noqa: PLC0415 — deferred: loaded only when this command runs
@@ -190,6 +196,9 @@ class Command(TyperCommand):
         from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: keeps command import light
             DREAM_LEASE_NAME,
             DREAM_LEASE_SECONDS,
+            DREAM_PASS_BUDGET_SECONDS,
+            DREAM_RETRY_BACKOFF_SECONDS,
+            DREAM_TAIL_RESERVE_SECONDS,
             MINI_LOOP,
         )
         from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — deferred: keeps command import light
@@ -207,6 +216,19 @@ class Command(TyperCommand):
             if not row.is_due(now):
                 self.stdout.write("SKIP  dream cadence not elapsed.")
                 return PassOutcome.SKIPPED
+            # Cadence alone cannot bound the RETRY rate. `is_due` reads `last_run_at`,
+            # which only a STAMPED pass bumps (#2285 keeps a failed pass retrying rather
+            # than waiting out the full day) — so a pass that ends without stamping
+            # leaves the loop due and the 600s driver chain relaunches it on its very
+            # next fire, forever. `last_attempt_at` is the anchor no pass may withhold:
+            # it is stamped below BEFORE the pass, so a SIGKILLed pass still moves it.
+            backoff_left = _retry_backoff_remaining(row.last_attempt_at, now, DREAM_RETRY_BACKOFF_SECONDS)
+            if backoff_left > 0:
+                self.stdout.write(
+                    f"SKIP  dream retry backoff — {backoff_left / 60:.0f} min left of the "
+                    f"{DREAM_RETRY_BACKOFF_SECONDS / 3600:.0f}h floor since the last attempt.",
+                )
+                return PassOutcome.SKIPPED
 
         owner = lease.lease_owner(os.getpid())
         verdict = lease.acquire(owner=owner, lease_seconds=DREAM_LEASE_SECONDS)
@@ -221,11 +243,13 @@ class Command(TyperCommand):
         if enforce_cadence:
             Loop.objects.mark_attempted(MINI_LOOP.name, now)
 
-        enabled = propose_evals or _env_propose_evals()
+        # The pass's wall clock opens AFTER the lease is won, because a pass that
+        # SKIPped never spent any of it. Everything metered inside the pass is measured
+        # against this, and `tail_reserve` is what it may not spend.
+        budget = PassBudget.start(total=DREAM_PASS_BUDGET_SECONDS, tail_reserve=DREAM_TAIL_RESERVE_SECONDS)
+        resolved = replace(mode, propose_evals=mode.propose_evals or _env_propose_evals())
         try:
-            outcome = self._consolidate_and_mark(
-                since=since, dry_run=dry_run, now=now, propose_evals=enabled, mode=mode
-            )
+            outcome = self._consolidate_and_mark(since=since, dry_run=dry_run, now=now, mode=resolved, budget=budget)
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
@@ -248,16 +272,22 @@ class Command(TyperCommand):
         since: dt.datetime | None,
         dry_run: bool,
         now: dt.datetime,
-        propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
+        budget: PassBudget | None = None,
     ) -> PassOutcome:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
         from teatree.loops.dream import engine  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415 — lazy command import
 
-        request = EvalProposalRequest() if propose_evals else None
+        request = EvalProposalRequest() if mode.propose_evals else None
         try:
-            result = engine.run_consolidation(overlay="", since=since, dry_run=dry_run, eval_proposals=request)
+            result = engine.run_consolidation(
+                overlay="",
+                since=since,
+                dry_run=dry_run,
+                eval_proposals=request,
+                distill=engine.DistillPolicy(budget=budget),
+            )
         except Exception as exc:  # noqa: BLE001 — a dream pass failure is marked attempted + reported, never crashes the command
             if not dry_run:
                 DreamRunMarker.objects.mark_attempted(now)
@@ -280,7 +310,7 @@ class Command(TyperCommand):
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
                 f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"
-                f"{clauses.empty}{clauses.rejected}{clauses.deferred}{clauses.broken}; "
+                f"{clauses.empty}{clauses.rejected}{clauses.deferred}{clauses.budget_stopped}{clauses.broken}; "
                 "no rows or marker written.",
             )
             # A preview wrote nothing, so there are no rows to reconcile — the carry-on
@@ -303,11 +333,12 @@ class Command(TyperCommand):
             return PassOutcome.FAILED
 
         # ONE budget for the whole pass, shared by every promoting phase — three phases
-        # each granted the full cap would triple it (#4176).
-        budget = PromotionBudget.from_config()
+        # each granted the full cap would triple it (#4176). Named apart from the pass's
+        # WALL-CLOCK budget above: two different bounds on the same pass.
+        promotion = PromotionBudget.from_config()
         phases = self._gap_phases()
         promoted = self._promote_candidates(
-            propose_evals=propose_evals,
+            propose_evals=mode.propose_evals,
             dry_run=dry_run,
             force_all_phases=mode.force_all_phases,
             validate_live=mode.validate_live,
@@ -316,19 +347,19 @@ class Command(TyperCommand):
         # compliance records (a recurrence remediated with a memory FAILS the pass).
         # Measurement is the root KPI — it runs on EVERY pass (default ON) and reuses the
         # extract the engine already built; escalation is the default-OFF other half.
-        compliance = phases.run_compliance(extract=result.extract, dry_run=dry_run, budget=budget)
+        compliance = phases.run_compliance(extract=result.extract, dry_run=dry_run, budget=promotion)
         # Phase 3d (#2663) — the "improve-with-new-stuff" sibling: promote recurring
         # automatable user asks to a fix-and-merge under the same standing umbrella.
         automation_asks = phases.run_automation_asks(
-            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=budget
+            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
         )
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
         )
         memory_promote = phases.run_memory_promotion(
-            dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=budget
+            dry_run=dry_run, force_all_phases=mode.force_all_phases, budget=promotion
         )
-        deferred = budget.summary
+        deferred = promotion.summary
 
         # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
         # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
@@ -344,7 +375,8 @@ class Command(TyperCommand):
                 f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"
                 f"{clauses.empty}{clauses.rejected}"
                 f"{promoted}{compliance}{automation_asks}"
-                f"{memory_phases}{memory_promote}{deferred}{gates_summary}{clauses.deferred}{clauses.broken}; "
+                f"{memory_phases}{memory_promote}{deferred}{gates_summary}{clauses.deferred}"
+                f"{clauses.budget_stopped}{clauses.broken}; "
                 f"{reason} — marker NOT stamped succeeded.",
             )
             return PassOutcome.FAILED
@@ -355,7 +387,7 @@ class Command(TyperCommand):
             f"from {result.members_replayed} member(s){clauses.distilled}{clauses.evals}"
             f"{clauses.empty}{clauses.rejected}"
             f"{promoted}{compliance}{automation_asks}"
-            f"{memory_phases}{memory_promote}{deferred}{gates_summary}{clauses.deferred}.",
+            f"{memory_phases}{memory_promote}{deferred}{gates_summary}{clauses.deferred}{clauses.budget_stopped}.",
         )
         return PassOutcome.STAMPED
 
@@ -469,6 +501,16 @@ class Command(TyperCommand):
     def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
         """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545)."""
         return self._phase_runner().run_memory_phases_and_gates(clusters_recorded=clusters_recorded, dry_run=dry_run)
+
+
+def _retry_backoff_remaining(last_attempt_at: dt.datetime | None, now: dt.datetime, backoff: float) -> float:
+    """Seconds still owed to the retry backoff — ``0`` (or less) when a retry may run.
+
+    A loop that has never attempted has nothing to back off from, so it runs.
+    """
+    if last_attempt_at is None:
+        return 0.0
+    return backoff - (now - last_attempt_at).total_seconds()
 
 
 def _surface_exit_code(outcome: PassOutcome) -> None:

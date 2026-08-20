@@ -23,7 +23,16 @@ from django.utils import timezone
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
 from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
-from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+from teatree.loops.dream.loop import (
+    DREAM_LEASE_NAME,
+    DREAM_LEASE_SECONDS,
+    DREAM_LOOP_NAME,
+    DREAM_OFF_TICK_DEADLINE_SECONDS,
+    DREAM_PASS_BUDGET_SECONDS,
+    DREAM_RETRY_BACKOFF_SECONDS,
+    DREAM_TAIL_RESERVE_SECONDS,
+)
+from teatree.loops.dream.pass_config import PassBudget
 from teatree.loops.dream.replay import ConsolidationExtract, TranscriptMember, WeightedSnippet
 
 _COMMAND = "teatree.core.management.commands.dream.Command"
@@ -127,7 +136,9 @@ class DreamDryRunTestCase(TestCase):
     def test_dry_run_writes_no_marker_and_no_rows(self) -> None:
         called: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             called["dry_run"] = dry_run
             called["eval_proposals"] = eval_proposals
             return _ok_result(dry_run=dry_run)
@@ -156,7 +167,9 @@ class DreamDryRunTestCase(TestCase):
 class DreamProposeEvalsFlagTestCase(TestCase):
     @staticmethod
     def _capture(seen: dict[str, object]):
-        def _run(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _run(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["eval_proposals"] = eval_proposals
             return _ok_result()
 
@@ -206,7 +219,9 @@ class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase
 
     @staticmethod
     def _capture(seen: dict[str, object]):
-        def _run(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _run(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["eval_proposals"] = eval_proposals
             return _ok_result()
 
@@ -1253,7 +1268,9 @@ class DreamFullFlagTestCase(TestCase):
     def test_full_requests_eval_proposals(self) -> None:
         seen: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["eval_proposals"] = eval_proposals
             return _ok_result()
 
@@ -1307,7 +1324,9 @@ class DreamFullFlagTestCase(TestCase):
     def test_full_dry_run_previews_but_writes_nothing(self) -> None:
         seen: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: object, dry_run: bool, eval_proposals: object = None, distill: object = None
+        ) -> DreamRunResult:
             seen["dry_run"] = dry_run
             seen["eval_proposals"] = eval_proposals
             return _ok_result(dry_run=dry_run)
@@ -1715,7 +1734,12 @@ class DreamSinceTestCase(TestCase):
         captured: dict[str, object] = {}
 
         def _capture(
-            *, overlay: str, since: dt.datetime | None, dry_run: bool, eval_proposals: object = None
+            *,
+            overlay: str,
+            since: dt.datetime | None,
+            dry_run: bool,
+            eval_proposals: object = None,
+            distill: object = None,
         ) -> DreamRunResult:
             captured["since"] = since
             return _ok_result()
@@ -1733,7 +1757,12 @@ class DreamSinceTestCase(TestCase):
         captured: dict[str, object] = {}
 
         def _capture(
-            *, overlay: str, since: dt.datetime | None, dry_run: bool, eval_proposals: object = None
+            *,
+            overlay: str,
+            since: dt.datetime | None,
+            dry_run: bool,
+            eval_proposals: object = None,
+            distill: object = None,
         ) -> DreamRunResult:
             captured["since"] = since
             return _ok_result()
@@ -1752,3 +1781,231 @@ class DreamSinceTestCase(TestCase):
         ):
             call_command("dream", "run", "--since", "not-a-date", stdout=StringIO())
         engine.assert_not_called()
+
+
+class _FakeClock:
+    """A monotonic clock the test advances by hand — no pass here sleeps for minutes."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _burning_members(tmp: Path, count: int) -> list[TranscriptMember]:
+    """A memory corpus large enough to need many distiller batches."""
+    members: list[TranscriptMember] = []
+    for i in range(count):
+        path = tmp / f"feedback_{i:04d}.md"
+        path.write_text(f"BINDING: lesson {i} — the agent lost the branch " + "x" * 4000, encoding="utf-8")
+        members.append(TranscriptMember(path=path, kind="memory"))
+    return members
+
+
+class _SimulatedSigkillError(BaseException):
+    """Stands in for the driver's SIGKILL at the external deadline.
+
+    A ``BaseException``, deliberately: ``_distil_one`` catches ``Exception`` so one bad
+    batch cannot discard the others' paid work, and the command catches ``Exception``
+    around the engine. A real SIGKILL is caught by neither, so modelling it as an
+    ordinary exception would let the pass carry on to a tail the real kill never reaches
+    — the test would pass for the wrong reason.
+    """
+
+
+class DreamPassReachesItsTailUnderAnOverrunningDistillerTestCase(TestCase):
+    """THE proof: a distil phase that would overrun stops, and the TAIL runs.
+
+    Before this, the pass had no in-pass clock at all and the driver's SIGKILL landed at
+    a deadline EQUAL to the pass budget (both 1800s). Every pass therefore died mid-
+    distil, and everything after ``run_consolidation`` — compliance, the automatable-ask
+    and Pass-2 promoters, phases 4-6, the §4 acceptance gates, ``mark_succeeded`` — was
+    code that could not be reached on the cron path. Measured on the live deploy
+    2026-08-20: 17 consecutive ticks killed at 1800s, ``Loop.last_run_at`` 15 days stale,
+    and the tail's own ``DreamRunMarker.last_attempted_at`` 6 days stale behind them.
+
+    The assertion that matters is not "it stopped" but "having stopped, it ARRIVED":
+    the acceptance gates ran and the marker was stamped.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.corpus = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        self.clock = _FakeClock()
+        self.gate_report = DreamQaReport(gate_results=(GateResult(name="retention", passed=True, detail="ok"),))
+
+    def _run_pass(self, *, per_call_seconds: float, batches: int = 12) -> tuple[int, str, list[int]]:
+        """One real ``run_consolidation`` whose only fake is a clock-burning distiller."""
+        launched: list[int] = []
+
+        def _burn(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            launched.append(len(batch.snippets))
+            self.clock.advance(per_call_seconds)
+            return []
+
+        budget = PassBudget.start(
+            total=DREAM_PASS_BUDGET_SECONDS, tail_reserve=DREAM_TAIL_RESERVE_SECONDS, clock=self.clock
+        )
+        members = _burning_members(self.corpus, batches * ConsolidationExtract.CHAR_CEILING // 4000)
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.enumerate_members", return_value=members),
+            patch("teatree.loops.dream.sdk_distiller.sdk_distill", side_effect=_burn),
+            patch.object(PassBudget, "start", return_value=budget),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=self.gate_report),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            code = _run_dream("run", stdout=stdout)
+        return code, stdout.getvalue(), launched
+
+    def test_an_overrunning_distiller_still_reaches_the_gates_and_stamps_the_marker(self) -> None:
+        code, out, launched = self._run_pass(per_call_seconds=200.0)
+
+        assert launched, "the pass never launched a batch at all"
+        assert "STOPPED distilling on the pass budget" in out, out
+        # The tail — the whole point. Reaching it is what every downstream phase waits on.
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None, (
+            "the pass stopped distilling but never reached mark_succeeded — the tail is still unreachable"
+        )
+        assert code == 0
+
+    def test_the_pass_stops_itself_before_the_drivers_kill_can_land(self) -> None:
+        """The whole defect in one assertion: WHO ends the pass decides whether it arrives.
+
+        The distiller here dies uncatchably once the clock reaches the driver's external
+        deadline — exactly what the deploy does 48 times a day. The pass must stop on its
+        OWN budget first and reach ``mark_succeeded``; if it does not, the kill lands
+        mid-distil and every phase after the distiller is unreachable.
+        """
+        killed: list[float] = []
+
+        def _burn_until_killed(_batch: ConsolidationExtract) -> list[DistilledCluster]:
+            if self.clock.now >= DREAM_OFF_TICK_DEADLINE_SECONDS:
+                killed.append(self.clock.now)
+                raise _SimulatedSigkillError
+            self.clock.advance(200.0)
+            return []
+
+        budget = PassBudget.start(
+            total=DREAM_PASS_BUDGET_SECONDS, tail_reserve=DREAM_TAIL_RESERVE_SECONDS, clock=self.clock
+        )
+        members = _burning_members(self.corpus, 40 * ConsolidationExtract.CHAR_CEILING // 4000)
+        with (
+            patch("teatree.loops.dream.engine.enumerate_members", return_value=members),
+            patch("teatree.loops.dream.sdk_distiller.sdk_distill", side_effect=_burn_until_killed),
+            patch.object(PassBudget, "start", return_value=budget),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=self.gate_report),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            code = _run_dream("run", stdout=StringIO())
+
+        assert not killed, f"the driver's kill landed at {killed}s — the pass never stopped itself"
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None, "the pass was killed before its tail"
+        assert code == 0
+
+    def test_the_stop_leaves_the_tail_its_reserve_of_wall_clock(self) -> None:
+        self._run_pass(per_call_seconds=200.0)
+        spent = self.clock.now
+        assert spent <= DREAM_PASS_BUDGET_SECONDS - DREAM_TAIL_RESERVE_SECONDS, (
+            f"distil spent {spent}s of a {DREAM_PASS_BUDGET_SECONDS}s budget, "
+            f"leaving less than the {DREAM_TAIL_RESERVE_SECONDS}s the tail is owed"
+        )
+
+    def test_a_cheap_pass_finishes_its_corpus_and_still_stamps(self) -> None:
+        """The over-correction guard: the budget must bind on the CLOCK, never always."""
+        code, out, launched = self._run_pass(per_call_seconds=0.0)
+
+        assert "STOPPED distilling on the pass budget" not in out, out
+        assert "DEFERRED to the next pass" not in out, out
+        assert len(launched) > 1, "this corpus must need more than one batch or it proves nothing"
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert code == 0
+
+
+class DreamRetryBackoffTestCase(_DreamTickEnabledMixin, TestCase):
+    """A pass that ends without stamping must not relaunch on the very next driver fire.
+
+    ``Loop.is_due`` reads ``last_run_at`` and only a STAMPED pass bumps it (#2285 keeps a
+    failed pass retrying rather than waiting out the full day), so a pass that ends
+    unstamped leaves the loop due and the 600s driver chain relaunches it ~immediately.
+    Measured on the live deploy 2026-08-20: dream ticks killed at 08:29, 08:59, 09:29,
+    09:59 … — exactly two an hour, 48 a day, each re-spending metered distiller calls.
+    ``last_attempt_at`` is the anchor that survives a SIGKILL, which is why the floor
+    keys on it.
+    """
+
+    def test_a_failed_pass_does_not_relaunch_inside_the_backoff(self) -> None:
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=RuntimeError("killed")):
+            assert _run_dream("tick") == 1
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is None, "an unstamped pass must leave the cadence anchor alone (#2285)"
+        assert row.last_attempt_at is not None, "the backoff has no anchor to key on"
+
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation") as engine:
+            _run_dream("tick", stdout=stdout)
+        engine.assert_not_called()
+        assert "retry backoff" in stdout.getvalue(), stdout.getvalue()
+
+    def test_the_retry_runs_once_the_backoff_has_elapsed(self) -> None:
+        """Retry-until-success (#2285) survives — the floor bounds the RATE, not the retry."""
+        stale = timezone.now() - dt.timedelta(seconds=DREAM_RETRY_BACKOFF_SECONDS + 60)
+        Loop.objects.filter(name=DREAM_LOOP_NAME).update(last_attempt_at=stale, last_run_at=None)
+
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
+            assert _run_dream("tick") == 0
+        engine.assert_called_once()
+
+    def test_a_never_attempted_loop_is_not_held_by_the_backoff(self) -> None:
+        Loop.objects.filter(name=DREAM_LOOP_NAME).update(last_attempt_at=None, last_run_at=None)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
+            assert _run_dream("tick") == 0
+        engine.assert_called_once()
+
+    def test_a_stamped_pass_still_advances_the_cadence_anchor(self) -> None:
+        """The backoff sits BEFORE the pass, so it can never withhold a success's anchor."""
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            assert _run_dream("tick") == 0
+        row = Loop.objects.get(name=DREAM_LOOP_NAME)
+        assert row.last_run_at is not None
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_the_manual_run_ignores_the_backoff(self) -> None:
+        """``run`` is the escape hatch: it ignores cadence, so it must ignore the floor too."""
+        Loop.objects.filter(name=DREAM_LOOP_NAME).update(last_attempt_at=timezone.now())
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()) as engine:
+            assert _run_dream("run") == 0
+        engine.assert_called_once()

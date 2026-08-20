@@ -48,23 +48,38 @@ logger = logging.getLogger(__name__)
 #: returns SKIP without doing work.
 DRIVE_INTERVAL_SECONDS = 600
 
-#: The per-command ceiling for one off-live-tick tick subprocess. These are the heaviest
-#: passes in the codebase, so they get the daily-tick allowance rather than
+#: The DEFAULT per-command ceiling for one off-live-tick tick subprocess. These are the
+#: heaviest passes in the codebase, so they get the daily-tick allowance rather than
 #: :func:`~teatree.loops.timer_chains.compute_tick_deadline`'s ``3 x cadence`` — which for
 #: the hourly ``directive_loop`` would pin a scarce ``loops`` executor slot for three hours.
+#:
+#: A loop may override it with ``MiniLoop.off_tick_deadline_seconds``, and ``dream`` does:
+#: a shared value forced its 1800s IN-PASS budget and this 1800s external SIGKILL to be
+#: EQUAL, leaving the pass no headroom to finish anything after its distiller. ``dream``
+#: declares its own ceiling above its budget so the kill is a backstop; the other two
+#: off-live-tick loops declare none and are unchanged (neither has ever reached this
+#: deadline — every kill in the deploy's logs is ``dream``).
 DEADLINE_SECONDS = DAILY_TICK_DEADLINE_SECONDS
 
 
-def off_live_tick_commands() -> list[tuple[str, tuple[str, ...]]]:
-    """``(loop name, tick argv tail)`` for every off-live-tick loop that declares a driver.
+def off_live_tick_commands() -> list[tuple[str, tuple[str, ...], float]]:
+    """``(loop name, tick argv tail, deadline)`` for every off-live-tick loop with a driver.
 
     A loop that is ``off_live_tick`` and declares no ``off_tick_command`` is absent from
     this list AND from every other driver, so it can never tick — the driverless state
     :func:`teatree.loops.loop_staleness.driverless_loops` alarms on.
+
+    The deadline is the loop's own ``off_tick_deadline_seconds`` when it declares one and
+    :data:`DEADLINE_SECONDS` otherwise, resolved here so the driver body reads one list
+    rather than walking the registry twice.
     """
     from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: the walk imports every loop module
 
-    return [(loop.name, loop.off_tick_command) for loop in iter_loops() if loop.off_live_tick and loop.off_tick_command]
+    return [
+        (loop.name, loop.off_tick_command, float(loop.off_tick_deadline_seconds or DEADLINE_SECONDS))
+        for loop in iter_loops()
+        if loop.off_live_tick and loop.off_tick_command
+    ]
 
 
 def _pending_drive() -> bool:
@@ -94,12 +109,12 @@ def drive_off_live_tick_loops() -> dict[str, int]:
     drive_off_live_tick_loops.using(run_after=timezone.now() + dt.timedelta(seconds=DRIVE_INTERVAL_SECONDS)).enqueue()
 
     counts = {"driven": 0, "timed_out": 0}
-    for name, argv_tail in off_live_tick_commands():
+    for name, argv_tail, deadline in off_live_tick_commands():
         try:
             outcome = run_deadlined_argv(
                 [sys.executable, "-m", "teatree", *argv_tail],
                 label=f"off-live-tick loop {name!r}",
-                deadline=DEADLINE_SECONDS,
+                deadline=deadline,
             )
         except Exception:
             logger.exception("off-live-tick driver: %r failed to run; the chain and the other loops survive", name)
