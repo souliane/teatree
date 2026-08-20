@@ -202,11 +202,12 @@ def resolve_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
 def refuse_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
     """Latch every per-head claim against a verdict that can never be recorded (#4530).
 
-    The twin of :func:`resolve_head_claims` over the same roster, and over the ROSTER
-    rather than one named table for the reason #4530 found: the codex / self-PR marker
-    armed the majority of the measured contradiction refusals, so a latch written against
-    the #68 dispatch ledger alone stopped the minority while the other table kept
-    re-arming the same doomed review.
+    The twin of :func:`resolve_head_claims` over the same
+    :data:`_PER_HEAD_REVIEW_CLAIMS`, and over that shared list rather than one named table
+    for the reason #4530 found: the codex / self-PR marker armed the majority of the
+    measured contradiction refusals, so a latch written against the #68 dispatch ledger
+    alone stopped the minority while the other table kept re-arming the same doomed
+    review.
 
     Silent about how many claims moved, exactly like its twin. A reviewing task keyed by
     its own ticket may hold no claim at all, and the caller owes the owner a page either
