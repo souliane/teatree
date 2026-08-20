@@ -8,6 +8,8 @@ This reads the sweep's own emitted signals rather than reaching into the scanner
 ``pr_sweep`` needs no hook: a ``pr_sweep.skip`` extends that PR's streak, any other
 ``pr_sweep.*`` outcome resolves it, and a streak reaching :data:`SURFACE_AFTER_TICKS`
 is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
+A deliberately-parked reason (a draft PR) never announces however long it runs, and the
+doctor's standing view is ONE finding naming the count rather than a line per row (#4523).
 A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
 stuck PR) is not a new problem, and the ledger reads it as one condition on both sides:
 the streak keeps counting through it (the CI-verdict reasons are one group, so the
@@ -32,6 +34,7 @@ from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
     from teatree.core.models import SweepSkipStreak
+    from teatree.core.models.sweep_skip_streak import StandingSkips
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +72,62 @@ def _default_notify(*, text: str, idempotency_key: str) -> None:
     )
 
 
+def _code_host(overlay: str) -> str:
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: entry-point discovery
+
+    try:
+        return get_overlay(overlay or None).config.code_host or ""
+    except Exception:  # noqa: BLE001 — a config read must never wedge a tick
+        return ""
+
+
+def link_for(row: "SweepSkipStreak") -> str:
+    """The PR's web URL: the one the sweep recorded, else derived from the slug and id.
+
+    A row can carry no url at all (an early skip rung built its attempt without one), and
+    an alarm the reader cannot click is not an alarm. Derivation returns "" for a slug that
+    is not a real ``owner/repo`` — a wrong-host link is worse than none (#1559).
+    """
+    if row.url:
+        return row.url
+    from teatree.core.checking import build_pr_url  # noqa: PLC0415 — deferred: keeps the tick import light
+
+    try:
+        return build_pr_url(slug=row.slug, pr_id=row.pr_id, code_host=_code_host(row.overlay))
+    except Exception:
+        logger.exception("pr_sweep aged-skip surfacing failed to build a link for %s", row.ref)
+        return ""
+
+
+def render_standing_skips(summary: "StandingSkips", *, threshold: int) -> list[str]:
+    """The aged ledger as ONE finding plus a capped detail — never one line per row (#4523).
+
+    Parks are counted, never detailed and never a fault: the verdict line reads ``OK`` when
+    nothing but deliberate parks stand, so a PR held on purpose cannot degrade the report.
+    """
+    if not summary.total:
+        return []
+    head = "WARN  " if summary.stalls else "OK    "
+    finding = (
+        f"{head}{summary.total} PR(s) standing at {threshold}+ consecutive merge-sweep skips "
+        f"({summary.oldest_age_label} oldest) — {summary.stalls} stall(s), "
+        f"{summary.parks} deliberate park(s)."
+    )
+    lines = [finding]
+    lines += [
+        f"WARN    {row.ref} `{row.reason}` {row.age_label()} x{row.tick_count} {link_for(row)}".rstrip()
+        for row in summary.worst
+    ]
+    hidden = summary.stalls - len(summary.worst)
+    if hidden:
+        lines.append(f"WARN    +{hidden} more stall(s) not shown.")
+    return lines
+
+
 def _surface_text(row: "SweepSkipStreak") -> str:
     return (
         f"PR {row.ref} has been skipped by the merge sweep {row.tick_count} consecutive times "
-        f"({row.age_label()}) — reason `{row.reason}`. {row.link}"
+        f"({row.age_label()}) — reason `{row.reason}`. {link_for(row) or row.ref}"
     )
 
 

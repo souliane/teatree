@@ -15,14 +15,14 @@ import django.test
 from django.utils import timezone
 
 from teatree.cli.doctor.app import _check_aged_sweep_skips
-from teatree.core.models import BotPing, PullRequest, SweepSkipStreak, Ticket
+from teatree.core.models import BotPing, PullRequest, SkipObservation, SweepSkipStreak, Ticket
 from teatree.core.notify_ledger import already_sent_noop
 from teatree.loop import pr_sweep_skip_surface
 from teatree.loop.pr_sweep_skip_surface import REANNOUNCE_COOLDOWN, SURFACE_AFTER_TICKS, record_sweep_outcomes
 from teatree.loop.scanners.base import ScanSignal
 
 
-def _skip(*, pr_id: int = 7, reason: str = "ci_pending", slug: str = "o/r") -> ScanSignal:
+def _skip(*, pr_id: int = 7, reason: str = "ci_pending", slug: str = "o/r", url: str | None = None) -> ScanSignal:
     return ScanSignal(
         kind="pr_sweep.skip",
         summary=f"{slug}#{pr_id} skip ({reason})",
@@ -33,7 +33,7 @@ def _skip(*, pr_id: int = 7, reason: str = "ci_pending", slug: str = "o/r") -> S
             "reason": reason,
             "merged": False,
             "overlay": "t3",
-            "url": f"https://example.test/{slug}/pull/{pr_id}",
+            "url": f"https://example.test/{slug}/pull/{pr_id}" if url is None else url,
         },
     )
 
@@ -147,11 +147,13 @@ class TestReminderSurvivesTheNotifyLedger(django.test.TestCase):
         assert already_sent_noop(notifier.sent[1][1]) is None
 
     def test_two_announcements_inside_one_window_share_a_key_whatever_the_reason(self) -> None:
+        # The second reason must be one that announces at all — a park is covered by
+        # TestADraftNeverPages; this pins the KEY being reason-independent.
         notifier = _Recorder()
         moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
         self._stuck_on("ci_red", notifier, moment)
         SweepSkipStreak.objects.filter(slug="o/r", pr_id=7).update(surfaced_at=None)
-        self._stuck_on("draft", notifier, moment)
+        self._stuck_on("changes_requested", notifier, moment)
 
         assert len(notifier.sent) == 2
         assert notifier.sent[0][1] == notifier.sent[1][1]
@@ -240,6 +242,64 @@ class TestProductionNotifyPath(django.test.TestCase):
     def test_an_erroring_ledger_write_never_aborts_the_tick(self) -> None:
         with mock.patch.object(pr_sweep_skip_surface, "_observe", side_effect=RuntimeError("db down")):
             assert pr_sweep_skip_surface.record_sweep_outcomes([_skip()], notify=_Recorder()) == []
+
+
+class TestADraftNeverPages(django.test.TestCase):
+    """A draft PR is parked on purpose — no run length turns that into an owner alarm (#4523)."""
+
+    def test_a_thousand_ticks_of_draft_send_nothing(self) -> None:
+        notifier = _Recorder()
+        moment = dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
+        for tick in range(1000):
+            record_sweep_outcomes(
+                [_skip(reason="draft")],
+                notify=notifier,
+                now=moment + dt.timedelta(minutes=tick),
+            )
+
+        assert notifier.sent == []
+
+    def test_the_park_still_stands_in_the_doctor_view(self) -> None:
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="draft")], notify=_Recorder())
+
+        row = SweepSkipStreak.objects.get(slug="o/r", pr_id=7)
+        assert (row.tick_count, row.reason) == (SURFACE_AFTER_TICKS, "draft")
+        assert SweepSkipStreak.objects.standing(threshold=SURFACE_AFTER_TICKS).parks == 1
+
+
+class TestEveryAlarmCarriesALink(django.test.TestCase):
+    """`no URL recorded` is a defect in its own right — the reader cannot act on it (#4523)."""
+
+    def _row(self, *, url: str = "", slug: str = "o/r") -> SweepSkipStreak:
+        return SweepSkipStreak.objects.observe(SkipObservation(slug=slug, pr_id=7, reason="ci_red", url=url))
+
+    def test_a_blank_url_is_derived_from_the_slug_and_id(self) -> None:
+        assert pr_sweep_skip_surface.link_for(self._row()) == "https://github.com/o/r/pull/7"
+
+    def test_a_recorded_url_wins_over_the_derived_one(self) -> None:
+        assert pr_sweep_skip_surface.link_for(self._row(url="https://example.test/x")) == "https://example.test/x"
+
+    def test_a_slug_that_is_not_a_repo_derives_nothing(self) -> None:
+        assert pr_sweep_skip_surface.link_for(self._row(slug="fix/some-branch")) == ""
+
+    def test_the_dm_text_never_says_no_url_recorded(self) -> None:
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="ci_red", url="")], notify=notifier)
+
+        text = notifier.sent[0][0]
+        assert "no URL recorded" not in text
+        assert "https://github.com/o/r/pull/7" in text
+
+    def test_an_underivable_link_falls_back_to_the_ref(self) -> None:
+        notifier = _Recorder()
+        for _ in range(SURFACE_AFTER_TICKS):
+            record_sweep_outcomes([_skip(reason="ci_red", slug="fix/branch", url="")], notify=notifier)
+
+        text = notifier.sent[0][0]
+        assert "no URL recorded" not in text
+        assert text.endswith("fix/branch#7")
 
 
 class TestDoctorCrashProof(django.test.TestCase):
@@ -394,11 +454,16 @@ class TestTheAlarmCarriesThePrUrl(django.test.TestCase):
         assert "https://example.test/o/r/pull/7" in text
         assert "no URL recorded" not in text
 
-    def test_a_url_less_legacy_row_falls_back_to_the_ref_never_to_a_dead_literal(self) -> None:
+    def test_a_url_less_legacy_row_derives_a_link_never_a_dead_literal(self) -> None:
+        # "changes_requested", not "draft" — a draft never announces at all (#4523),
+        # and this test's own point is the fallback rendering, orthogonal to the reason.
+        # "o/r" looks like a real owner/repo, so link_for() derives a clickable URL
+        # (#4523) rather than the bare ref TestEveryAlarmCarriesALink's branch-shaped-slug
+        # case falls back to.
         urlless = ScanSignal(
             kind="pr_sweep.skip",
-            summary="o/r#7 skip (draft)",
-            payload={"slug": "o/r", "pr_id": 7, "decision": "skip", "reason": "draft", "overlay": "t3"},
+            summary="o/r#7 skip (changes_requested)",
+            payload={"slug": "o/r", "pr_id": 7, "decision": "skip", "reason": "changes_requested", "overlay": "t3"},
         )
         notifier = _Recorder()
         for _ in range(SURFACE_AFTER_TICKS):
@@ -406,4 +471,4 @@ class TestTheAlarmCarriesThePrUrl(django.test.TestCase):
 
         text, _key = notifier.sent[0]
         assert "no URL recorded" not in text
-        assert text.rstrip().endswith("o/r#7")
+        assert text.rstrip().endswith("https://github.com/o/r/pull/7")
