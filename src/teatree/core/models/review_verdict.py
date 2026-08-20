@@ -27,7 +27,7 @@ this same verdict just vouched for (or held).
 
 import enum
 from dataclasses import dataclass
-from typing import ClassVar, TypedDict
+from typing import ClassVar, Final, TypedDict
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -61,9 +61,12 @@ class ChecksContradictionError(ReviewVerdictError):
     identity, an out-of-scope finding), so re-arming the head is a real chance at a
     verdict. This one names something the head itself makes impossible: the checks
     are red, so a fresh reviewer reads the same red CI and either emits the same
-    contradiction or a HOLD, and the loop between the refusal and
-    :meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.enqueue`'s
-    post-deadline re-acquire burns one whole agent run per TTL, forever.
+    contradiction or a HOLD, and the loop between the refusal and the claim's
+    post-deadline re-acquire burns one whole agent run per TTL until the claim
+    saturates at :data:`~teatree.core.models.auto_review_dispatch.MAX_DISPATCH_ATTEMPTS`.
+    Bounded, then, not endless — but every one of those runs is spent on a verdict that
+    cannot be recorded however well it is argued, which is what makes latching on the
+    FIRST one worth a distinct exception type.
 
     Typed rather than string-matched so the recorder's latch
     (:mod:`teatree.agents.attempt_recorder`) is bound to the exact raise site instead
@@ -176,6 +179,41 @@ def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) 
             f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
         )
         raise ReviewVerdictError(msg)
+
+
+#: Every per-HEAD review claim a concluded review retires. Both are consulted on BOTH
+#: terminals — whichever path armed the review, the other's transition is a no-op — so
+#: "which ledgers claim a head?" is answered once instead of once per terminal. Held here
+#: because this is the only module that already imports both, and because both terminals
+#: are events about a verdict: one that landed, and one that never could.
+_PER_HEAD_REVIEW_CLAIMS: Final = (AutoReviewDispatch, CodexReviewMarker)
+
+
+def resolve_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
+    """Retire every per-head claim a RECORDED verdict concludes.
+
+    Called inside :meth:`ReviewVerdict.record`'s transaction: the verdict covers this
+    exact tree, so re-arming either claim would be review churn.
+    """
+    for claim in _PER_HEAD_REVIEW_CLAIMS:
+        claim.mark_resolved(slug=slug, pr_id=pr_id, head_sha=head_sha)
+
+
+def refuse_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
+    """Latch every per-head claim against a verdict that can never be recorded (#4530).
+
+    The twin of :func:`resolve_head_claims` over the same roster, and over the ROSTER
+    rather than one named table for the reason #4530 found: the codex / self-PR marker
+    armed the majority of the measured contradiction refusals, so a latch written against
+    the #68 dispatch ledger alone stopped the minority while the other table kept
+    re-arming the same doomed review.
+
+    Silent about how many claims moved, exactly like its twin. A reviewing task keyed by
+    its own ticket may hold no claim at all, and the caller owes the owner a page either
+    way — so a count here would only invite a caller to gate on it.
+    """
+    for claim in _PER_HEAD_REVIEW_CLAIMS:
+        claim.mark_refused(slug=slug, pr_id=pr_id, head_sha=head_sha)
 
 
 def _validated_reviewer(reviewer_identity: str) -> str:
@@ -478,8 +516,7 @@ class ReviewVerdict(models.Model):
             # dispatcher's identity, not a claim of holding nothing, and still
             # releases — a concluded review may never strand a lock (#3920). See
             # MRReviewLock.resolve for the full asymmetry.
-            AutoReviewDispatch.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
-            CodexReviewMarker.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+            resolve_head_claims(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
             return recorded
 

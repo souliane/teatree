@@ -18,4 +18,13 @@ class Migration(migrations.Migration):
                 max_length=32,
             ),
         ),
+        migrations.AlterField(
+            model_name="codexreviewmarker",
+            name="state",
+            field=models.CharField(
+                choices=[("dispatched", "Dispatched"), ("resolved", "Resolved"), ("refused", "Refused")],
+                default="dispatched",
+                max_length=32,
+            ),
+        ),
     ]

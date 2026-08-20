@@ -33,12 +33,22 @@ required checks that are RED
 (:class:`~teatree.core.models.review_verdict.ChecksContradictionError`). Nothing
 lands, so the head stays un-reviewed, so the post-``deadline`` re-acquire below
 arms another full reviewer run against the same red CI, which reaches the same
-refusal: one whole agent run burned per TTL, forever. A REFUSED row is terminal
+refusal. That burn is BOUNDED — ``attempts`` saturates at
+:data:`MAX_DISPATCH_ATTEMPTS` like any other failing dispatch — so what the latch
+buys is the difference between one wasted review session and
+:data:`MAX_DISPATCH_ATTEMPTS` of them, plus a page that names the cause instead of
+a saturated row that only says the retries ran out. A REFUSED row is terminal
 exactly like a RESOLVED one and is never re-acquired — but it is a DISTINCT state
 because no verdict covers this tree, and reading it as "reviewed" would be a lie
 to every consumer that asks. The safety valve is that the claim is keyed per HEAD:
 a push mints a new ``head_sha``, which has no row, so it arms a fresh review
 normally. A refusal latches one tree, never a pull request.
+
+The twin :class:`~teatree.core.models.codex_review_marker.CodexReviewMarker` carries
+the same terminal for the same reason and through the same
+:func:`~teatree.core.modelkit.expiring_claim.retire_head_claim` write: both tables
+claim the review path per head, so a refusal that latched only one of them would
+leave the other free to re-arm the very run it just stopped.
 
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 (idempotent claim keyed on ``(pr_url, head_sha)``).
@@ -57,7 +67,7 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q
+from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 
@@ -196,10 +206,12 @@ class AutoReviewDispatch(models.Model):
         merge_safe or hold, either way the review concluded. Resolving an
         unclaimed head is a legitimate no-op, never an error.
         """
-        return bool(
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower())
-            .filter(state__in=cls._ACTIVE_STATES)
-            .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
+        return retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.RESOLVED,
         )
 
     @classmethod
@@ -221,10 +233,12 @@ class AutoReviewDispatch(models.Model):
         that legitimately re-arms — a push. Refusing an unclaimed head is a no-op, never
         an error, and leaves the lock alone.
         """
-        latched = bool(
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower())
-            .filter(state__in=cls._ACTIVE_STATES)
-            .update(state=cls.State.REFUSED, resolved_at=timezone.now())
+        latched = retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.REFUSED,
         )
         if latched:
             MRReviewLock.resolve(slug=slug.strip(), pr_id=pr_id, holder=LOOP_SCANNER_HOLDER)

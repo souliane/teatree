@@ -21,8 +21,19 @@ from django.utils import timezone
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
-from teatree.core.models import AutoReviewDispatch, DeferredQuestion, MRReviewLock, ReviewVerdict, Session, Task, Ticket
+from teatree.core.models import (
+    AutoReviewDispatch,
+    CodexReviewMarker,
+    DeferredQuestion,
+    MRReviewLock,
+    ReviewVerdict,
+    Session,
+    Task,
+    Ticket,
+)
 from teatree.core.models.phase_landing import phase_landing_evidence
+from teatree.loop.dispatch import DispatchAction
+from teatree.loop.persistence_self_pr_review import handle_self_pr_review
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -583,3 +594,148 @@ class TestOnlyTheChecksContradictionLatches(TestCase):
         dispatch.refresh_from_db()
         assert dispatch.state == AutoReviewDispatch.State.RESOLVED
         assert _pending_refusal_questions() == []
+
+
+def _reviewing_task_via_codex_marker(*, pr_id: int = _PR_ID, head_sha: str = _HEAD) -> Task:
+    """A reviewing task armed by the codex / self-PR claim rather than the #68 ledger.
+
+    Built through the production handler, so what the latch has to close is a real
+    :class:`CodexReviewMarker` and not a fixture that resembles one. The recorder reaches
+    the same PR and head here through ``review_target_for_task``'s reviewer-ticket half —
+    there is no dispatch row to read, which is exactly why a latch written against that
+    table alone could not see this run.
+    """
+    pr_url = f"https://github.com/{_SLUG}/pull/{pr_id}"
+    task = handle_self_pr_review(
+        DispatchAction(
+            kind="agent",
+            zone="t3:reviewer",
+            detail="self-PR review",
+            payload={
+                "slug": _SLUG,
+                "pr_id": pr_id,
+                "head_sha": head_sha,
+                "pr_url": pr_url,
+                "url": pr_url,
+                "variant": "claude:review",
+                "overlay": "teatree",
+                "self_pr": True,
+            },
+        )
+    )
+    assert task is not None
+    assert not AutoReviewDispatch.objects.filter(slug=_SLUG, pr_id=pr_id).exists()
+    task.claim(claimed_by="headless-reviewer")
+    return task
+
+
+def _expire_codex_claims(*, pr_id: int = _PR_ID) -> None:
+    """Push every codex / self-PR claim for the PR past its deadline."""
+    CodexReviewMarker.objects.filter(slug=_SLUG, pr_id=pr_id).update(deadline=timezone.now() - dt.timedelta(minutes=1))
+
+
+class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
+    """#4530: the twin claim carried most of the measured refusals, so it must latch too.
+
+    ``AutoReviewDispatch`` and ``CodexReviewMarker`` both claim the review path per
+    ``(slug, pr_id, head_sha)`` and both re-arm an un-verdicted head once the deadline
+    lapses. #4522 latched only the first, which left the path that armed the majority of
+    the contradiction refusals free to keep sending reviewers at the same red CI — up to
+    ``MAX_DISPATCH_ATTEMPTS`` whole review sessions per head. One roster now retires both.
+    """
+
+    def test_a_refusal_latches_the_marker_and_no_later_claim_takes_the_same_head(self) -> None:
+        task = _reviewing_task_via_codex_marker()
+
+        attempt = record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        assert "recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+        # Past the deadline the un-verdicted head is exactly what `claim` re-arms; the
+        # latch is the only thing left standing between it and another burned run. Asserted
+        # FIRST so a regression reads as "the head re-armed", not as a state mismatch.
+        _expire_codex_claims()
+        assert CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) is None, (
+            "the codex / self-PR claim re-armed a head whose verdict can never be recorded"
+        )
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state == CodexReviewMarker.State.REFUSED
+        assert marker.attempts == 1
+
+    def test_a_live_claim_at_another_head_survives_the_refusal(self) -> None:
+        """The safety valve, and the reason the latch may never key on the PR.
+
+        This path takes no per-MR lock, so a push landing mid-review claims the new head
+        while the old review is still running — two live claims, one pull request. When
+        the first reviewer comes back with a contradiction about the OLD tree, the new
+        tree has been told nothing about itself, and latching it would suppress the very
+        review the push earned.
+        """
+        task = _reviewing_task_via_codex_marker()
+        pushed = CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_OTHER_HEAD, variant="claude:review")
+        assert pushed is not None
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        pushed.refresh_from_db()
+        assert pushed.state == CodexReviewMarker.State.DISPATCHED, (
+            "a refusal at one head latched a DIFFERENT head's live claim on the same PR"
+        )
+
+    def test_a_new_head_after_a_refusal_arms_normally_on_this_path(self) -> None:
+        # The other half of the valve: a push AFTER the latch mints a row of its own.
+        task = _reviewing_task_via_codex_marker()
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        rearmed = CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_OTHER_HEAD, variant="claude:review")
+
+        assert rearmed is not None
+        assert rearmed.state == CodexReviewMarker.State.DISPATCHED
+        assert CodexReviewMarker.objects.filter(slug=_SLUG, pr_id=_PR_ID).count() == 2
+
+    def test_the_latch_is_not_recorded_as_a_verdict_covering_the_tree(self) -> None:
+        # REFUSED, never RESOLVED: no verdict covers this head, and a consumer that read
+        # the latch as "reviewed" would vouch for a tree nobody could vote on.
+        task = _reviewing_task_via_codex_marker()
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state != CodexReviewMarker.State.RESOLVED
+
+    def test_the_owner_is_paged_once_on_this_path_too(self) -> None:
+        task = _reviewing_task_via_codex_marker()
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        questions = _pending_refusal_questions()
+        assert len(questions) == 1, [question.dedupe_marker for question in questions]
+        assert questions[0].dedupe_marker == f"review-refusal:{_SLUG}#{_PR_ID}@{_HEAD[:12]}"
+
+    def test_a_hold_on_red_checks_resolves_the_marker_rather_than_latching_it(self) -> None:
+        # The recordable shape the brief asks for: red checks reported as a HOLD are a
+        # complete review, so the claim retires RESOLVED and nobody is paged.
+        task = _reviewing_task_via_codex_marker()
+        envelope = _contradiction_envelope(
+            verdict="hold",
+            findings=[{"severity": "high", "summary": "required check `test (3.13)` is red"}],
+        )
+
+        attempt = record_result_envelope(task, envelope, phase="reviewing")
+
+        assert attempt.error == ""
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state == CodexReviewMarker.State.RESOLVED
+        assert _pending_refusal_questions() == []
+
+    def test_an_ordinary_refusal_leaves_this_path_re_armable(self) -> None:
+        # Same discrimination as on the #68 ledger: a maker identity is a defect in ONE
+        # run, so the head keeps its ordinary retry rather than being latched shut.
+        task = _reviewing_task_via_codex_marker()
+
+        record_result_envelope(task, _verdict_envelope(reviewer="coding-agent"), phase="reviewing")
+
+        assert _pending_refusal_questions() == []
+        _expire_codex_claims()
+        assert CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) is not None
