@@ -8,10 +8,12 @@ that is empty or carries no What/Why header, returning the EXACT expected
 format in each error.
 """
 
+import re
+
 import pytest
 
 from teatree.core.review.mr_metadata import (
-    AUTO_CREATED_WHY_PLACEHOLDER,
+    AUTO_CREATED_MARKER,
     DEFAULT_MR_TITLE_REGEX,
     auto_created_description,
     ensure_standard_body,
@@ -289,11 +291,15 @@ class TestAutoCreatedDescription:
     """The body a PR opened with no author-written description ships.
 
     The no-orphan pre-push hook has only the commit to work from, so the body it
-    renders must satisfy this same gate — and its ``## Why`` must ask the author
-    rather than invent a rationale.
+    renders must satisfy this same gate — and its ``## Why`` must state provenance
+    rather than invent a rationale or issue an instruction nobody will follow.
     """
 
     _TITLE = "fix(pr): render a gate-conforming auto-created body"
+    _ISSUE = "https://github.com/souliane/teatree/issues/4424"
+
+    def _why(self, **kwargs: str) -> str:
+        return auto_created_description(self._TITLE, "- the commit body", **kwargs).split("## Why\n", 1)[1]
 
     def test_output_passes_the_gate(self) -> None:
         out = auto_created_description(self._TITLE, "- the commit body")
@@ -316,10 +322,34 @@ class TestAutoCreatedDescription:
         out = auto_created_description(self._TITLE, "")
         assert f"## What\n{self._TITLE}" in out
 
-    def test_why_is_an_explicit_placeholder_not_a_rationale(self) -> None:
-        out = auto_created_description(self._TITLE, "- the commit body")
-        assert out.endswith(f"## Why\n{AUTO_CREATED_WHY_PLACEHOLDER}")
-        assert AUTO_CREATED_WHY_PLACEHOLDER.startswith("TODO")
+    def test_why_issues_no_instruction_nobody_will_follow(self) -> None:
+        """#4424: the hook opens the PR BECAUSE no author did, so an ask-the-author TODO never lands."""
+        why = self._why()
+        assert "TODO" not in why
+        assert "Replace this line" not in why
+        assert "before requesting review" not in why
+
+    def test_why_states_the_hooks_provenance(self) -> None:
+        why = self._why()
+        assert AUTO_CREATED_MARKER in why
+        assert "No author-written rationale exists" in why
+
+    def test_why_names_the_branch_it_rescued(self) -> None:
+        assert "`4424-todo-body`" in self._why(branch="4424-todo-body")
+
+    def test_why_tracks_the_owning_ticket(self) -> None:
+        assert f"Tracks {self._ISSUE}." in self._why(issue_url=self._ISSUE)
+
+    def test_the_tracked_issue_carries_no_closing_keyword(self) -> None:
+        """A rescue PR is not necessarily the whole fix — merging it must not auto-close the ticket."""
+        why = self._why(issue_url=self._ISSUE)
+        assert not re.search(r"\b(closes|fixes|resolves)\b", why, re.IGNORECASE)
+
+    def test_unknown_branch_and_ticket_leave_no_dangling_clause(self) -> None:
+        why = self._why(branch="  ", issue_url="  ")
+        assert "``" not in why
+        assert "Tracks" not in why
+        assert "the branch is not pushed without a tracking PR" in why
 
 
 class TestLacksRationale:
@@ -334,6 +364,16 @@ class TestLacksRationale:
 
     def test_the_hook_body_lacks_rationale(self) -> None:
         assert lacks_rationale(auto_created_description(self._TITLE, "- the commit body")) is True
+
+    def test_the_fully_derived_hook_body_still_lacks_rationale(self) -> None:
+        """#4424 preservation: a provenance body carrying a branch and a ticket is still not a rationale."""
+        body = auto_created_description(
+            self._TITLE,
+            "- the commit body",
+            branch="4424-todo-body",
+            issue_url="https://github.com/souliane/teatree/issues/4424",
+        )
+        assert lacks_rationale(body) is True
 
     def test_the_placeholder_is_still_found_under_an_appended_section(self) -> None:
         """The hook's body goes through ``ensure_standard_body``, which appends after ``## Why``."""

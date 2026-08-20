@@ -29,7 +29,7 @@ import re
 from teatree.types import DEFAULT_MR_TITLE_REGEX
 
 __all__ = [
-    "AUTO_CREATED_WHY_PLACEHOLDER",
+    "AUTO_CREATED_MARKER",
     "DEFAULT_MR_TITLE_REGEX",
     "STANDARD_SECTIONS",
     "auto_created_description",
@@ -50,34 +50,53 @@ _WHAT_WHY_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(what|why)\b\s*:?", re.IGNORECASE 
 # ``ensure_standard_body``.
 STANDARD_SECTIONS: tuple[str, ...] = ("What", "Why")
 
-AUTO_CREATED_WHY_PLACEHOLDER = (
-    "TODO — opened automatically by the no-orphan pre-push hook, which sees only "
-    "the commit. Replace this line with the rationale before requesting review."
-)
+#: The stable phrase :func:`lacks_rationale` keys on, so a reword of the surrounding
+#: sentence cannot silently stop the predicate from recognising the hook's own body.
+AUTO_CREATED_MARKER = "opened automatically by the no-orphan pre-push hook"
 
-# The stable slice of the placeholder :func:`lacks_rationale` keys on, so a reword of
-# the surrounding sentence cannot silently stop the predicate from recognising it.
-_PLACEHOLDER_MARKER = "opened automatically by the no-orphan pre-push hook"
+_NO_RATIONALE_LINE = (
+    "- No author-written rationale exists — the hook runs from the commit alone, so the "
+    "`## What` body and the diff are the whole record."
+)
 
 _NEXT_HEADER_RE = re.compile(r"^\s*#{1,6}\s", re.MULTILINE)
 
 
-def auto_created_description(title: str, commit_body: str) -> str:
+def auto_created_description(title: str, commit_body: str, *, branch: str = "", issue_url: str = "") -> str:
     """The What/Why body for a PR opened with no author-written description.
 
     The no-orphan invariant opens the PR from the commit alone, so the rationale
-    has no source: ``## Why`` carries a visible ask-the-author placeholder rather
-    than a plausible-sounding invention, which would be worse than an obviously
-    unfinished body.
+    has no source. ``## Why`` therefore states PROVENANCE — never a plausible-sounding
+    invention, and never (#4424) an ask-the-author ``TODO``: the hook opens the PR
+    precisely because no author did, so that instruction is addressed to nobody and
+    every reviewer rediscovers it unfollowed.
     """
-    return f"{title}\n\n## What\n{commit_body.strip() or title}\n\n## Why\n{AUTO_CREATED_WHY_PLACEHOLDER}"
+    why = _auto_created_why(branch, issue_url)
+    return f"{title}\n\n## What\n{commit_body.strip() or title}\n\n## Why\n{why}"
+
+
+def _auto_created_why(branch: str, issue_url: str) -> str:
+    """Provenance plus whatever the hook can derive TRUTHFULLY — the branch, the owning ticket.
+
+    The tracked issue is referenced with no closing keyword on purpose: a rescue PR
+    is not necessarily the whole fix, so auto-closing its ticket on merge would claim
+    more than the hook knows.
+    """
+    rescued = f"branch `{branch.strip()}`" if branch.strip() else "the branch"
+    lines = [
+        f"- This PR was {AUTO_CREATED_MARKER}, so {rescued} is not pushed without a tracking PR.",
+        _NO_RATIONALE_LINE,
+    ]
+    if issue_url.strip():
+        lines.append(f"- Tracks {issue_url.strip()}.")
+    return "\n".join(lines)
 
 
 def lacks_rationale(description: str) -> bool:
     """Whether *description* is a body the no-orphan hook left unfinished (#3991).
 
     True for the shapes the hook itself produces — a blank body, the
-    :data:`AUTO_CREATED_WHY_PLACEHOLDER` marker, or a ``## Why`` header with nothing
+    :data:`AUTO_CREATED_MARKER` phrase, or a ``## Why`` header with nothing
     under it — so a ship step adopting the hook's PR knows its body is still owed one.
 
     A body carrying NO ``## Why`` header is deliberately False: the caller overwrites
@@ -86,7 +105,7 @@ def lacks_rationale(description: str) -> bool:
     """
     if not description.strip():
         return True
-    if _PLACEHOLDER_MARKER in description:
+    if AUTO_CREATED_MARKER in description:
         return True
     why = _section_body(description, "Why")
     return why is not None and not why.strip()
