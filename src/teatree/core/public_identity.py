@@ -6,7 +6,7 @@ machine's inherited git identity. Strictly scoped by remote host AND
 visibility — non-github (e.g. GitLab) and private remotes are excluded
 so their own configured identity is left as-is. Reused by the worktree
 provisioner and the fast-push commit-identity leak gate
-(:meth:`teatree.core.fast_push.LeakGateScan._author_identity`).
+(:meth:`teatree.core.push.fast_push.LeakGateScan._author_identity`).
 
 The gate is HOST-AWARE (#2655): callers pass the full remote URL (host
 intact), never the host-stripped slug — a bare ``owner/repo`` from a

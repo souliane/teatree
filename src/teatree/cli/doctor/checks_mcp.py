@@ -195,7 +195,21 @@ def _check_version_skew(*, repair: bool) -> bool:
     )
     from teatree.mcp.liveness import skew_finding  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.utils.dep_drift import editable_source_path  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    try:
+        from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+    except ModuleNotFoundError as exc:
+        # The skew check is the ONE check that needs a non-stdlib import (``packaging``,
+        # for real specifier semantics). The env it measures is the env it runs in, so the
+        # exact breakage it exists to catch can take it out first — and, uncaught, it took
+        # the WHOLE doctor run with it. A check that cannot run is an absent answer, not a
+        # clean one: WARN naming the module so the next run's DM carries the cause.
+        typer.echo(
+            f"WARN  the declared-versus-installed skew check could not run: {exc.__class__.__name__}: {exc}. "
+            "Reinstall the running env (`uv tool install --editable . --overrides uv-overrides.txt --reinstall`) "
+            "to restore it."
+        )
+        return True
 
     source = editable_source_path()
     if source is None:

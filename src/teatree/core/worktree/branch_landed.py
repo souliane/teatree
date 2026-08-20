@@ -110,6 +110,10 @@ def branch_content_landed_on_base(repo: str, branch: str, target: str) -> bool:
         landed when that exact content is no longer at that exact path. Blob-only
         matching would read a branch whose entire work is a deletion as landed —
         it introduces nothing — and discharge an obligation that is still real.
+        Landed means the path is ABSENT from the base tree, not merely holding
+        different content: a base that independently REWROTE the path still has
+        it, so the branch's deletion has not actually landed there and would
+        still conflict — fail closed rather than silently discharge it.
 
     A branch with NO tree delta at all is never landed. "Introduced nothing
     anywhere" is not evidence the work reached the base; it is evidence there was
@@ -133,7 +137,7 @@ def branch_content_landed_on_base(repo: str, branch: str, target: str) -> bool:
         return False
     if any(base_introduced[blob] < count for blob, count in tip_introduced.items()):
         return False
-    return all(base.get(path) != blob for path, blob in withdrawn)
+    return all(path not in base for path, _blob in withdrawn)
 
 
 def assess_revert_risk(repo: str, branch: str, target: str) -> RevertRisk:

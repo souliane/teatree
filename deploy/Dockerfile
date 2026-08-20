@@ -253,6 +253,19 @@ ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
 # A separate ENV so it can expand $TEATREE_CLONE_DIR from the block above.
 ENV UV_OVERRIDE="${TEATREE_CLONE_DIR}/uv-overrides.txt"
 
+# `uv tool install --reinstall` RE-RESOLVES from the index and reads no lockfile, so the
+# container has always run a graph no CI lane resolved. gunicorn 26.1.0 dropped its
+# `packaging` dependency; `packaging` reached the tool env only through that edge, and
+# `teatree.utils.dep_skew` imports it on the `t3 doctor` path — the doctor plane was down
+# for 72 watchdog passes while `uv.lock` still pinned gunicorn 26.0.0 and every CI lane
+# stayed green. `UV_CONSTRAINT` is the one setting that reaches ALL of them — the bake
+# below, the entrypoint's runtime reinstall, `t3 update`, doctor repair — exactly as
+# `UV_OVERRIDE` above. The file is DERIVED from the clone's own `uv.lock` (never
+# committed), baked here and regenerated on every boot by `entrypoint.sh`'s
+# `ensure_uv_constraints`; uv errors outright on a missing constraints path, so that
+# function always leaves a file behind.
+ENV UV_CONSTRAINT="${TEATREE_CLONE_DIR}/uv-constraints.txt"
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # ============================================================
@@ -277,8 +290,19 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 # update` work. Building requires network (as the apt/node/uv layers already do) —
 # it is the RUNTIME that becomes deterministic and offline-capable.
 ARG TEATREE_SOURCE_REF=main
+#
+# The `uv export` renders the pinned lock as the constraints file both this bake and the
+# runtime reinstall resolve against. `--no-default-groups` is BOOT-SAFETY, not tidiness:
+# an export carrying the dev group pins `prek`, and the `uv tool install prek==<pin>`
+# below then dies "your requirements are unsatisfiable" under the ambient UV_CONSTRAINT.
+# `--all-extras` keeps `[slack]` in scope; `--frozen` reads the committed lock and never
+# re-resolves it. It runs BEFORE the first `uv tool install`, because uv errors outright
+# when UV_CONSTRAINT names a file that does not exist.
 RUN git clone "$TEATREE_REPO_URL" "$TEATREE_CLONE_DIR" && \
     git -C "$TEATREE_CLONE_DIR" checkout --quiet "$TEATREE_SOURCE_REF" && \
     uv python install 3.13 && \
-    uv tool install --editable "${TEATREE_CLONE_DIR}[slack]" --python 3.13 && \
+    uv export --no-hashes --no-emit-project --frozen --no-default-groups --all-extras \
+        --directory "$TEATREE_CLONE_DIR" -o "${TEATREE_CLONE_DIR}/uv-constraints.txt" && \
+    uv tool install --editable "${TEATREE_CLONE_DIR}[slack]" --python 3.13 \
+        --constraints "${TEATREE_CLONE_DIR}/uv-constraints.txt" && \
     uv tool install prek==0.3.13

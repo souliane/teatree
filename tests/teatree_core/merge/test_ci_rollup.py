@@ -36,6 +36,7 @@ from teatree.core.merge.ci_rollup import (
     _required_contexts_verdict,
     attach_touched_paths,
 )
+from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeClear
 from teatree.utils.pr_ref import PrRef
 
@@ -273,8 +274,12 @@ class TestRequiredContextsGate:
         # Fail CLOSED: when the branch-protection required_status_checks endpoint
         # cannot be read (403 no-admin, 5xx, network), the required set is
         # indeterminate and the merge is REFUSED — never falls open to green.
+        # The WORD is ``unreadable`` rather than ``failed`` (nothing red was
+        # observed); the posture is identical, which is what the second assert pins.
         rollup = _all_required_green()
-        assert _verdict(rollup, protection_rc=1, protection_body="HTTP 403: Forbidden") == "failed"
+        verdict = _verdict(rollup, protection_rc=1, protection_body="HTTP 403: Forbidden")
+        assert verdict == "unreadable"
+        assert verdict in REFUSING_CHECK_VERDICTS
 
     def test_branch_not_protected_404_is_no_gate_green(self) -> None:
         # A determinate "Branch not protected" 404 is NOT a fetch failure — it
@@ -343,7 +348,8 @@ class TestRulesEndpointRequiredSetResolution:
             protection_body=self._PAT_403,
             rules=(1, "", "HTTP 500: server error"),
         )
-        assert verdict == "failed"
+        assert verdict == "unreadable"
+        assert verdict in REFUSING_CHECK_VERDICTS
 
 
 class TestDedupeNewestPerName:

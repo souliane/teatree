@@ -9,10 +9,12 @@ at all — the shape where a finished branch quietly never merges.
 
 One row per ``(slug, pr_id)`` counts how many CONSECUTIVE sweep passes produced the
 same reason GROUP. Persistence is what surfaces, not any individual skip: a reason
-from a different group restarts the count (a different problem), a non-skip outcome
-deletes the row (the PR moved), and ``surfaced_at`` — the last time this PR was
-announced, independent of which reason triggered it — gates a cooldown so a PR held
-for days is announced once, then again only after backing off, rather than every tick.
+from a different group restarts the count (a different problem), a MERGE deletes the
+row (the PR moved — every other outcome is one more pass on which it did NOT land, so
+``keystone_refused`` and the ``flag_*`` family accrue here too), and ``surfaced_at`` —
+the last time this PR was announced, independent of which reason triggered it — gates a
+cooldown so a PR held for days is announced once, then again only after backing off,
+rather than every tick.
 
 ``classify_sweep_ci`` emits four reasons — ``required_checks_indeterminate``,
 ``ci_pending``, ``uv_audit_red_but_clean_on_main``, ``ci_red`` — for the ONE condition
@@ -150,7 +152,7 @@ class SweepSkipStreakManager(models.Manager["SweepSkipStreak"]):
         return row
 
     def resolve(self, *, slug: str, pr_id: int) -> int:
-        """Drop the streak — the PR produced a non-skip outcome. Returns rows removed."""
+        """Drop the streak — the PR LANDED. Returns rows removed."""
         deleted, _ = self.filter(slug=slug, pr_id=pr_id).delete()
         return deleted
 

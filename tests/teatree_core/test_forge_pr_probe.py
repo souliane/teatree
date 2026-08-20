@@ -142,6 +142,19 @@ class TestFindOpenPrForBranch:
         assert find_open_pr_for_branch(repo, "").outcome is PrProbeOutcome.UNKNOWN
         assert seen == []
 
+    def test_an_unreadable_repo_is_unknown_not_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A repo whose remote cannot be READ (not a git repo, no origin, a
+        # corrupted .git) must not be confused with a readable repo pointing at
+        # an unrecognised host — the former has a PR to protect and no way to
+        # ask, the latter genuinely has none. Collapsing them onto NONE told a
+        # fail-closed teardown gate "nothing to protect" on a repo it could not
+        # even read.
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        seen = _fake_cli(monkeypatch, AssertionError("an unreadable repo must not probe a forge CLI"))
+        assert find_open_pr_for_branch(not_a_repo, "feature").outcome is PrProbeOutcome.UNKNOWN
+        assert seen == []
+
 
 class TestProbeRunsWithTheWriterCredential:
     """#4116: the probe authenticates with the same token the writer path uses.

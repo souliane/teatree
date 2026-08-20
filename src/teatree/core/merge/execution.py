@@ -42,6 +42,7 @@ from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha, resolve_pr_repo_slug
 from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
+from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.project import find_project_root
 from teatree.utils.pr_ref import PrRef
 
@@ -210,20 +211,23 @@ def assert_merge_preconditions(
     _refuse_unless_draft_state_clears(query.pr_draft_state(), slug=slug, pr_id=pr_id, refusing="refusing to merge")
 
     # 3. CI still not FAILED — against the forge's LIVE rollup, not the saved
-    # snapshot. Three-valued (green/pending/failed):
-    #   * failed  — a real red verdict; ALWAYS refused. Expedite can never waive it
-    #               (the anti-vacuity pin: even a fully-authorized expedite CLEAR
-    #               with FAILED live checks is refused here).
-    #   * pending — queued checks, no verdict; refused UNLESS the CLEAR carries a
-    #               valid human-authorized waiver re-presented as ``expedite_authorized``
-    #               AND still bound to the reviewed tree (``expedite_pending_waived_by``).
-    #   * green   — proceeds unchanged.
+    # snapshot. Four-valued (green/pending/failed/unreadable):
+    #   * failed     — a real red verdict; ALWAYS refused. Expedite can never waive it
+    #                  (the anti-vacuity pin: even a fully-authorized expedite CLEAR
+    #                  with FAILED live checks is refused here).
+    #   * unreadable — the rollup could not be read, so no verdict exists; refused on
+    #                  exactly the same terms as ``failed`` (``REFUSING_CHECK_VERDICTS``).
+    #                  An unreadable forge is a non-answer, and a non-answer never merges.
+    #   * pending    — queued checks, no verdict; refused UNLESS the CLEAR carries a
+    #                  valid human-authorized waiver re-presented as ``expedite_authorized``
+    #                  AND still bound to the reviewed tree (``expedite_pending_waived_by``).
+    #   * green      — proceeds unchanged.
     checks = query.required_checks_status()
-    if checks == "failed":
+    if checks in REFUSING_CHECK_VERDICTS:
         msg = (
             f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — refusing to "
             f"merge (§17.4.3 step 3; the live list is the source of truth, not the CLEAR snapshot). "
-            f"A FAILED required check is a verdict — expedite can never waive it"
+            f"A FAILED or UNREADABLE required check is a verdict — expedite can never waive it"
         )
         raise MergePreconditionError(msg)
     if checks != "green":
@@ -281,19 +285,20 @@ def assert_not_draft(query: CodeHostQuery) -> None:
 
 
 def assert_ci_not_failed(query: CodeHostQuery) -> None:
-    """§17.4.3 step 3 floor: refuse the bound merge on a live FAILED required-checks verdict.
+    """§17.4.3 step 3 floor: refuse the bound merge on a FAILED or UNREADABLE checks verdict.
 
     The last-line CI-verdict gate at the merge chokepoint — re-reads the forge's
     LIVE rollup so a green→red flip in the TOCTOU window is refused here. A FAILED
-    required check is a verdict expedite can NEVER waive, so it is refused
-    unconditionally (the pending-waiver lives only in
+    required check is a verdict expedite can NEVER waive, and an UNREADABLE rollup
+    is a non-answer that cannot rule one out, so both are refused unconditionally
+    via ``REFUSING_CHECK_VERDICTS`` (the pending-waiver lives only in
     :func:`assert_merge_preconditions`, which the keystone runs first). A registered
     ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
     """
-    if query.required_checks_status() == "failed":
+    if (checks := query.required_checks_status()) in REFUSING_CHECK_VERDICTS:
         msg = (
-            f"live required-checks for {query.ref.slug}#{query.ref.pr_id} are failed — refusing bound merge "
-            f"(§17.4.3 step 3; a FAILED required check is a verdict expedite can never waive)"
+            f"live required-checks for {query.ref.slug}#{query.ref.pr_id} are {checks} — refusing bound merge "
+            f"(§17.4.3 step 3; a FAILED or UNREADABLE required check is a verdict expedite can never waive)"
         )
         raise MergePreconditionError(msg)
 
@@ -561,6 +566,8 @@ def _merge_ticket_pr_inner(
     else:
         merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha)
         reconciled = False
+    # Post-merge, for the AUDIT only: no gate reads this back, so an ``unreadable``
+    # verdict is stamped as-is rather than laundered into a false ``failed``.
     checks = CodeHostQuery.for_ref(ref).required_checks_status()
     state = record_merge_and_advance(
         clear=clear,

@@ -6171,8 +6171,16 @@ Usage: t3 slack check [OPTIONS]
  Reads the JSONL queue written by ``t3 slack listen``, filters for
  user messages (ignoring bot posts), reacts with ``eyes`` on each
  to signal the bot has seen it, then prints each as a JSON line.
- Returns exit code 0 when messages were found, 1 when the queue
+ Returns exit code 0 when messages were found, 2 when the queue
  was empty. Designed to be called from a fast cron (every 30s).
+
+ Exit code 2 (not 1) for the empty-queue case is deliberate: a crashing
+ drain (Django boot failure, a DB error) also exits 1 with empty stdout —
+ byte-identical to the old "empty queue" signal — so a caller polling on
+ "rc=1 and no stdout" could not tell a healthy quiet box from a crash. 2
+ is unambiguous, and preferred over an ``EMPTY`` stdout sentinel: stdout
+ is already the message channel, and a sentinel would need filtering by
+ every future consumer.
 
  A singleton guard serialises the drain: the 30s cron can double-fire and
  two concurrent drains would ack the same mentions twice, so a second drain
@@ -11739,9 +11747,10 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
 
  Parses the PR/MR URL, fetches the live head SHA, looks up the latest
  recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
- (head moved — re-review needed), or ``no recorded verdict``. The point
- is to avoid re-deriving a full cold review when a fresh verdict already
- vouches for the current tree.
+ (head moved — re-review needed), ``head unreadable`` / ``checks
+ unreadable`` (the forge did not answer; the recorded verdict stands,
+ so retry the READ), or ``no recorded verdict``. The point is to avoid
+ re-deriving a cold review when a fresh verdict already vouches for it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │

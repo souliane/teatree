@@ -33,6 +33,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.diff_scope import ChangedFileSet, out_of_scope_refusal
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE, head_sha_unreadable
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha
@@ -493,13 +494,34 @@ class ReviewVerdict(models.Model):
     def is_merge_safe(self) -> bool:
         return self.verdict == self.Verdict.MERGE_SAFE
 
+    @staticmethod
+    def is_head_unreadable(current_head_sha: str) -> bool:
+        """True iff the forge named no head at all, so no staleness question can be answered.
+
+        The guard a REPORTING caller owes its reader before it reaches for
+        :meth:`is_stale_at`: a verdict on an unchanged tree is not invalidated by a
+        failed read OF that tree, and calling one stale on a forge hiccup spends a
+        full cold re-review on a pull request nobody touched.
+        """
+        return head_sha_unreadable(current_head_sha)
+
     def is_stale_at(self, current_head_sha: str) -> bool:
         """True iff the PR's live head has moved off the reviewed tree.
 
         A stale verdict reviewed a tree the PR no longer points at — its
         judgment cannot vouch for the current head, so ``review status``
         reports it as needing a re-review.
+
+        The explicit UNREADABLE sentinel is REFUSED rather than answered: it is a
+        non-answer about the head, and quietly returning True for it is precisely
+        the "unchanged PR reported stale" defect. Ask :meth:`is_head_unreadable`
+        first. A merely EMPTY head still answers True — every gate caller
+        (:meth:`ReviewVerdictQuerySet.effective_state_at` and its siblings) rests on
+        that fail-CLOSED reading, and a scanner tick must not learn to raise.
         """
+        if current_head_sha == HEAD_SHA_UNREADABLE:
+            msg = "is_stale_at cannot answer for an UNREADABLE head — ask is_head_unreadable first"
+            raise ReviewVerdictError(msg)
         return self.reviewed_sha != current_head_sha.strip().lower()
 
     def is_safe_to_approve_at(self, current_head_sha: str, *, live_checks_status: str) -> bool:

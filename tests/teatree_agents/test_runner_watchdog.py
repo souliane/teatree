@@ -3,7 +3,7 @@
 ``LoopWatchdog`` / ``TaskUsage`` live in ``teatree.agents.runner_watchdog`` and
 are re-exported from ``teatree.agents.runner`` for back-compat. This mirror
 names the new module's public symbols directly so the per-diff coverage sees the
-seam that owns them; the DB-backed evaluation stays in ``test_headless.py``.
+seam that owns them; the DB-backed evaluation stays in ``test_runner.py``.
 """
 
 import sqlite3

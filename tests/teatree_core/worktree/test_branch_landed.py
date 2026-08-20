@@ -94,6 +94,26 @@ class TestBranchContentLandedOnBase:
 
         assert branch_content_landed_on_base(str(repo), "chore/drop-dead", "main") is True
 
+    def test_a_deletion_is_not_landed_when_the_base_merely_rewrote_the_file(self, tmp_path: Path) -> None:
+        """A base that REWROTE the path (not deleted it) has not discharged the removal.
+
+        ``base.get(path) != blob`` is true both when the base deleted the path
+        AND when it merely holds different content there — the file still
+        EXISTS on the base, so the branch's deletion has not landed and would
+        still conflict. Only absence from the base tree counts.
+        """
+        repo = make_git_repo(tmp_path / "clone")
+        (repo / "f.py").write_text("obsolete = True\n")
+        _commit(repo, "add f")
+        run_git(repo, "checkout", "-q", "-b", "chore/drop-f")
+        (repo / "f.py").unlink()
+        _commit(repo, "chore: drop f")
+        run_git(repo, "checkout", "-q", "main")
+        (repo / "f.py").write_text("obsolete = False\n")
+        _commit(repo, "rewrite f on main instead of dropping it")
+
+        assert branch_content_landed_on_base(str(repo), "chore/drop-f", "main") is False
+
     def test_a_rename_the_base_also_performed_is_landed(self, tmp_path: Path) -> None:
         repo = make_git_repo(tmp_path / "clone")
         (repo / "old.py").write_text(FIX)

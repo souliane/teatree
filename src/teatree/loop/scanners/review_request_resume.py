@@ -68,6 +68,13 @@ def _release_resume(post: ReviewRequestPost, claimed_at: dt.datetime) -> None:
 
 
 def _required_checks_green(mr_url: str, host: CodeHostBackend) -> bool:
+    """Resume ONLY on a proven-green rollup — a whitelist, deliberately not a red denylist.
+
+    Every other verdict holds: ``failed``, ``pending``, and ``unreadable`` (the
+    rollup could not be read, so nothing was proven about it). Keeping this an
+    equality test against GREEN is what makes a newly-introduced verdict fail
+    closed here by construction instead of by someone remembering to add it.
+    """
     ref = pr_ref_from_url(mr_url)
     if ref is None:
         logger.warning("review_request_resume: unparsable merge request URL %s — holding the resume", mr_url)

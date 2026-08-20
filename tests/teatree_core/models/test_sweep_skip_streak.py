@@ -79,7 +79,7 @@ class TestObserve(django.test.TestCase):
 
 
 class TestResolve(django.test.TestCase):
-    def test_a_non_skip_outcome_clears_the_streak(self) -> None:
+    def test_resolve_drops_the_streak(self) -> None:
         _observe()
 
         assert SweepSkipStreak.objects.resolve(slug="o/r", pr_id=7) == 1

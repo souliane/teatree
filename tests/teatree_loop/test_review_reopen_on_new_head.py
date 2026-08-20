@@ -50,6 +50,7 @@ from typing import Any
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -238,6 +239,18 @@ class TestGap2ReviewedPrHeadScanner(TestCase):
         _seed_reviewed_ticket()
 
         assert ReviewedPrHeadScanner(host=FakeCodeHost(), overlay_name="team-overlay").scan() == []
+
+    def test_the_unreadable_head_sentinel_never_re_reviews(self) -> None:
+        """The sentinel is a TRUTHY string — read raw it sails past the falsy guard.
+
+        A backend that says "I could not read this" would otherwise dispatch a cold
+        re-review against a head the forge never named, which is the same wasted
+        review this whole change exists to stop, arriving through the other door.
+        """
+        _seed_reviewed_ticket()
+        host = FakeCodeHost(live_head_by_url={MR_URL: HEAD_SHA_UNREADABLE})
+
+        assert ReviewedPrHeadScanner(host=host, overlay_name="team-overlay").scan() == []
 
     def test_other_overlays_tickets_are_left_alone(self) -> None:
         ticket = _seed_reviewed_ticket()

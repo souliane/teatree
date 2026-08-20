@@ -10,6 +10,7 @@ round-trip, and the staleness / safe-to-approve logic the status command reads.
 import pytest
 from django.test import TestCase
 
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.models import (
     Finding,
     MergeClear,
@@ -381,6 +382,38 @@ class TestStalenessAndSafety(TestCase):
         )
         assert verdict.is_stale_at(_OTHER_SHA)
         assert not verdict.is_stale_at(_SHA.upper())
+
+    def test_an_unreadable_head_is_not_answerable_as_stale(self) -> None:
+        """The sentinel is a NON-ANSWER — refused, never quietly reported as drift.
+
+        ``reviewed_sha != <anything unreadable>`` is trivially true, so a silent
+        answer here is always "stale" no matter what the tree did.
+        """
+        verdict = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+        assert verdict.is_head_unreadable(HEAD_SHA_UNREADABLE)
+        assert verdict.is_head_unreadable("")
+        assert not verdict.is_head_unreadable(_SHA)
+        with pytest.raises(ReviewVerdictError, match="is_head_unreadable"):
+            verdict.is_stale_at(HEAD_SHA_UNREADABLE)
+
+    def test_an_empty_head_still_answers_stale_for_the_gates(self) -> None:
+        # Deliberately NOT a raise: the merge-gate queryset helpers
+        # (``effective_state_at`` and siblings) rest on an empty head reading as
+        # stale to fail closed, and a scanner tick must not learn to raise.
+        verdict = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+        assert verdict.is_stale_at("")
 
     def test_safe_to_approve_only_when_at_head_and_checks_green(self) -> None:
         verdict = ReviewVerdict.record(

@@ -5,9 +5,9 @@ PR skipped every tick forever produces no signal — a finished branch quietly n
 merges and nobody is told why. Silence is the defect, not the skip.
 
 This reads the sweep's own emitted signals rather than reaching into the scanner, so
-``pr_sweep`` needs no hook: a ``pr_sweep.skip`` extends that PR's streak, any other
-``pr_sweep.*`` outcome resolves it, and a streak reaching :data:`SURFACE_AFTER_TICKS`
-is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
+``pr_sweep`` needs no hook: every outcome on which the PR did NOT land extends that
+PR's streak, only a :data:`_PROGRESS_KINDS` outcome resolves it, and a streak reaching
+:data:`SURFACE_AFTER_TICKS` is announced — then again only after backing off for :data:`REANNOUNCE_COOLDOWN`.
 A deliberately-parked reason (a draft PR) never announces however long it runs, and the
 doctor's standing view is ONE finding naming the count rather than a line per row (#4523).
 A granular reason wobble (``ci_red`` flapping to ``ci_pending`` and back on the same
@@ -53,8 +53,14 @@ REANNOUNCE_COOLDOWN = dt.timedelta(hours=24)
 #: missed pass is not a departure; at the ~5-min sweep cadence this is ~12 passes of slack.
 DEPARTURE_GRACE = dt.timedelta(hours=1)
 
-_SKIP_KIND = "pr_sweep.skip"
 _SWEEP_PREFIX = "pr_sweep."
+
+#: The sweep outcomes that mean the PR MOVED — the only ones that clear a streak.
+#: A merge is the whole set: ``pr_sweep.blocked`` (the shape every persistent refusal
+#: takes, ``keystone_refused`` among them), the ``flag_*`` family and
+#: ``pr_sweep.needs_branch_update`` all name a remedy the sweep DECLINED, so each is
+#: one more pass on which the PR did not land and must EXTEND the streak, not erase it.
+_PROGRESS_KINDS: frozenset[str] = frozenset({"pr_sweep.merged"})
 
 type SkipNotifier = Callable[..., None]
 
@@ -126,7 +132,7 @@ def render_standing_skips(summary: "StandingSkips", *, threshold: int) -> list[s
 
 def _surface_text(row: "SweepSkipStreak") -> str:
     return (
-        f"PR {row.ref} has been skipped by the merge sweep {row.tick_count} consecutive times "
+        f"PR {row.ref} has been refused by the merge sweep {row.tick_count} consecutive times "
         f"({row.age_label()}) — reason `{row.reason}`. {link_for(row) or row.ref}"
     )
 
@@ -139,7 +145,7 @@ def _observe(signal: ScanSignal, moment: dt.datetime) -> None:
     pr_id = payload.get("pr_id")
     if not slug or not isinstance(pr_id, int):
         return
-    if signal.kind != _SKIP_KIND:
+    if signal.kind in _PROGRESS_KINDS:
         SweepSkipStreak.objects.resolve(slug=slug, pr_id=pr_id)
         return
     SweepSkipStreak.objects.observe(

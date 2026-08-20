@@ -95,7 +95,7 @@ src/teatree/           Python package (the Django app + CLI)
     gitlab/            GitLab code-host client, CI pipeline operations, per-concern sync modules
     slack/, notion/, msteams/, sentry.py, sharepoint.py, figma.py   Other integrations
   agents/              Agent runtime
-    headless.py        Headless in-process runs behind the `Harness` seam (structured JSON envelope)
+    runner.py          Headless in-process runs behind the `Harness` seam (structured JSON envelope)
     harness.py         The `Harness` / `HarnessSession` protocols the runtimes implement
     handover.py        Headless ↔ interactive session handover (resume by session id)
     model_tiering.py   Per-phase model override resolution

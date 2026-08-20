@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.fast_push import FastPushOutcome
 from teatree.core.handover_orchestration import (
     _has_pending_work,
     _is_subagent_worktree,
     drive_subagents_to_fast_push,
     in_flight_subagent_worktrees,
 )
+from teatree.core.push.fast_push import FastPushOutcome
 from teatree.utils.run import run_checked
 
 
