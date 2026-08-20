@@ -47,7 +47,7 @@ radius = 400
   "00ce882c37c6c8e7",
   "f807cf99027303d9",
   "53403ec58ab78f9b",
-  "a0bbc53a9c91e952"
+  "2c2d867c54bb7151"
 ]
 # The TaskCreated event's own hooks.json wiring (no matcher).
 "hooks/hooks.json" = ["9e08240bd68c3563"]

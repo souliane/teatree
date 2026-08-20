@@ -260,6 +260,7 @@ main_clone_guard_gate_enabled = true # bool — refuse an edit to the main clone
 mcp_privacy_gate_enabled = true # bool — scan MCP tool payloads for private data before they leave the box
 mcp_slack_write_gate_enabled = true # bool — gate MCP Slack writes behind the on-behalf rules
 memory_recall_enabled = true # bool — recall durable memories into a session's context
+merged_detection_gate_enabled = true # bool — warn when a hand-rolled probe asks whether a branch has landed
 no_self_reviewer_assign_gate_enabled = true # bool — refuse assigning the author as their own reviewer
 orchestrator_boundary_agent_gate_enabled = true # bool — refuse orchestrator work that belongs in a sub-agent
 orchestrator_investigation_gate_enabled = true # bool — refuse an orchestrator investigation that should be dispatched

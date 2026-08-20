@@ -67,6 +67,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree followup sync": followup.Command.sync,
         "teatree worktree status": worktree.Command.status,
         "teatree worktree diagnose": worktree.Command.diagnose,
+        "teatree workspace branch-verdict": workspace.Command.branch_verdict,
         "teatree workspace release-dead-rows": workspace.Command.release_dead_rows_cmd,
         "teatree workspace repair-branch-upstreams": workspace.Command.repair_branch_upstreams,
         "teatree workspace stamp-owners": workspace.Command.stamp_owners,

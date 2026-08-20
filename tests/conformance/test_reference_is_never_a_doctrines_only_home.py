@@ -121,7 +121,6 @@ _ORPHANED_BEFORE_THIS_GUARD: frozenset[tuple[str, str]] = frozenset(
         ("skills/workspace/references/troubleshooting.md", "gh pr create"),
         ("skills/workspace/references/troubleshooting.md", "git clean"),
         ("skills/workspace/references/troubleshooting.md", "git diff --cached"),
-        ("skills/workspace/references/troubleshooting.md", "git merge-base --is-ancestor"),
         ("skills/workspace/references/troubleshooting.md", "git remote set-url"),
         ("skills/workspace/references/troubleshooting.md", "git reset --hard"),
         ("skills/workspace/references/troubleshooting.md", "git restore --staged"),
@@ -133,7 +132,7 @@ _ORPHANED_BEFORE_THIS_GUARD: frozenset[tuple[str, str]] = frozenset(
 
 #: The ratchet's real invariant: the list may DRAIN, never GROW. Lower this number
 #: when rows are fixed; raising it is the change reviewers must refuse.
-_CEILING = 24
+_CEILING = 23
 
 #: Anti-vacuity floor on the corpus the parser recognises, not on the baseline.
 #: Fixing an orphan moves the command INTO the spine and leaves the reference's
