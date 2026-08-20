@@ -45,12 +45,14 @@ from contextlib import contextmanager
 from typing import Annotated
 
 import typer
+from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 from teatree.core.notify_types import NotifyReason
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
@@ -197,10 +199,6 @@ class Command(TyperCommand):
         ] = "",
     ) -> str:
         """Read the status signals the classifier kept off the DM channel (#4524)."""
-        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-        from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
         if since_hours <= 0:
             self.stderr.write("--since-hours must be positive")
             raise SystemExit(2)
