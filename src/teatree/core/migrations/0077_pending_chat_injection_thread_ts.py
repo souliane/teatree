@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0075_loop_last_attempt_at"),
+        ("core", "0076_botping_pulled_status"),
     ]
 
     operations = [

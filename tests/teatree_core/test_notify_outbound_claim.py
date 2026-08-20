@@ -24,7 +24,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
             "tests passing on s-1019",
             kind=NotifyKind.INFO,
             idempotency_key="sess=a;turn=1",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -45,7 +45,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
             "won't post",
             kind=NotifyKind.INFO,
             idempotency_key="failed-key",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -65,7 +65,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "shh",
                 kind=NotifyKind.INFO,
                 idempotency_key="disabled-key",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -84,7 +84,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "tests passing",
                 kind=NotifyKind.INFO,
                 idempotency_key="sess=z;turn=1",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=_backend(),
                 user_id="U_ME",
             )
@@ -109,7 +109,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "tests passing",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-error-key",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=_backend(),
                 user_id="U_ME",
             )

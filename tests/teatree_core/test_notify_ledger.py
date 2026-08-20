@@ -15,6 +15,7 @@ from teatree.core.notify_ledger import (
     maybe_stamp_answered,
     record_noop,
     record_outbound_claim,
+    record_pulled,
 )
 from teatree.core.notify_types import NotifyKind, NotifyReason
 
@@ -74,6 +75,41 @@ class RecordNoopTests(TestCase):
         row = BotPing.objects.get(idempotency_key="notify:noop:1")
         assert row.status == BotPing.Status.NOOP
         assert row.error_message == NotifyReason.NO_MESSAGING_BACKEND.detail
+
+
+class RecordPulledTests(TestCase):
+    def test_record_pulled_writes_a_pulled_row_verbatim(self) -> None:
+        record_pulled(
+            idempotency_key="pr_sweep_aged_skip:notify:pulled:1",
+            kind=NotifyKind.INFO,
+            text="PR skipped again",
+            audience=NotifyAudience.OWNER_ESCALATION,
+        )
+        row = BotPing.objects.get(idempotency_key="pr_sweep_aged_skip:notify:pulled:1")
+        assert row.status == BotPing.Status.PULLED
+        assert row.text == "PR skipped again"
+        assert row.audience == NotifyAudience.OWNER_ESCALATION.value
+
+    def test_a_database_error_is_swallowed_never_raised(self) -> None:
+        with patch("teatree.core.models.BotPing.record_pulled", side_effect=DatabaseError("locked")):
+            record_pulled(
+                idempotency_key="pr_sweep_aged_skip:notify:pulled:2",
+                kind=NotifyKind.INFO,
+                text="never lands",
+                audience=NotifyAudience.OWNER_ESCALATION,
+            )
+        assert not BotPing.objects.filter(idempotency_key="pr_sweep_aged_skip:notify:pulled:2").exists()
+
+    def test_a_concurrent_pull_of_the_same_key_is_an_integrity_race_noop(self) -> None:
+        """A second writer's INSERT losing the unique-key race must not raise."""
+        with patch("teatree.core.models.BotPing.objects.get_or_create", side_effect=IntegrityError("dup")):
+            record_pulled(
+                idempotency_key="pr_sweep_aged_skip:notify:pulled:race",
+                kind=NotifyKind.INFO,
+                text="second writer loses the race",
+                audience=NotifyAudience.OWNER_ESCALATION,
+            )
+        assert not BotPing.objects.filter(idempotency_key="pr_sweep_aged_skip:notify:pulled:race").exists()
 
 
 class MaybeStampAnsweredTests(TestCase):

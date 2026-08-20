@@ -449,6 +449,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Slack egress from the shell (#1030, #1750).",
         [
             ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
+            ("digest", "Read the status signals the push/pull classifier kept off the DM channel."),
             ("post", "Post, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
             ("react", "React, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
         ],

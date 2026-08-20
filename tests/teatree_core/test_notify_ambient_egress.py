@@ -129,7 +129,7 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
                 "five reviews are done",
                 kind=NotifyKind.INFO,
                 idempotency_key="no-backend",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(user_id="U_ME"),
             )
         assert outcome.sent is False
@@ -141,7 +141,7 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
                 "five reviews are done",
                 kind=NotifyKind.INFO,
                 idempotency_key="no-user-id",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(backend=_backend()),
             )
         assert outcome.sent is False
@@ -153,7 +153,7 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
                 "five reviews are done",
                 kind=NotifyKind.INFO,
                 idempotency_key="ledger-reason",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(user_id="U_ME"),
             )
         row = BotPing.objects.get(idempotency_key="ledger-reason")
@@ -166,7 +166,7 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
                 "five reviews are done",
                 kind=NotifyKind.INFO,
                 idempotency_key="disabled",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(backend=_backend(), user_id="U_ME"),
             )
         assert outcome.reason is NotifyReason.FEATURE_DISABLED
@@ -176,7 +176,7 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
             "five reviews are done",
             kind=NotifyKind.INFO,
             idempotency_key="delivered",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             options=NotifyOptions(backend=_backend(), user_id="U_ME"),
         )
         assert outcome.sent is True
@@ -188,7 +188,7 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
                 "five reviews are done",
                 kind=NotifyKind.INFO,
                 idempotency_key="bool-contract",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=_backend(),
                 user_id="U_ME",
             )
@@ -227,7 +227,7 @@ class TestOwnerDmTransportResolution(TestCase):
                 "review of !42 is done",
                 kind=NotifyKind.INFO,
                 idempotency_key="fallback-delivers",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(user_id="U_ME"),
             )
 
@@ -245,7 +245,7 @@ class TestOwnerDmTransportResolution(TestCase):
                 "review of !42 is done",
                 kind=NotifyKind.INFO,
                 idempotency_key="no-transport-anywhere",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(user_id="U_ME"),
             )
 
@@ -267,7 +267,7 @@ class TestOwnerDmTransportResolution(TestCase):
                 "review of !42 is done",
                 kind=NotifyKind.INFO,
                 idempotency_key="two-transports",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 options=NotifyOptions(user_id="U_ME"),
             )
 

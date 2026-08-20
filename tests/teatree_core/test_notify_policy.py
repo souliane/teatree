@@ -89,26 +89,42 @@ class TestOwnerAudienceDelivers(TestCase):
     def test_owner_delivery_posts_and_is_recoverable_when_stranded(self) -> None:
         backend = _backend()
         sent = notify_user(
-            "merged souliane/teatree#3280 @ deadbeef",
+            "the compose stack is down",
             kind=NotifyKind.INFO,
-            idempotency_key="merge-announce:souliane/teatree#3280:deadbeef",
+            idempotency_key="watchdog:compose-up-failed:20260819",
             audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
         assert sent is True
         backend.post_message.assert_called_once()
-        row = BotPing.objects.get(idempotency_key="merge-announce:souliane/teatree#3280:deadbeef")
+        row = BotPing.objects.get(idempotency_key="watchdog:compose-up-failed:20260819")
         assert row.status == BotPing.Status.SENT
         assert row.audience == NotifyAudience.OWNER_DELIVERY.value
 
     def test_stranded_owner_row_redelivers_when_backend_available(self) -> None:
         BotPing.objects.create(
-            idempotency_key="stranded-owner",
+            idempotency_key="watchdog:doctor-unreachable:20260819",
             kind=BotPing.Kind.INFO,
             status=BotPing.Status.NOOP,
-            text="merged souliane/teatree#1 @ abc",
+            text="the box is unreachable",
             audience=NotifyAudience.OWNER_DELIVERY.value,
         )
         delivered, total = drain_undelivered_notifies(user_id="U_ME", backend=_backend())
         assert (delivered, total) == (1, 1)
+
+    def test_a_stranded_status_row_is_not_resurrected_onto_the_dm_channel(self) -> None:
+        """The drain re-attempts DELIVERY, so it must inherit the routing decision (#4524)."""
+        BotPing.objects.create(
+            idempotency_key="merge-announce:souliane/teatree#3280:deadbeef",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="merged souliane/teatree#3280 @ deadbeef",
+            audience=NotifyAudience.OWNER_DELIVERY.value,
+        )
+        backend = _backend()
+
+        delivered, total = drain_undelivered_notifies(user_id="U_ME", backend=backend)
+
+        assert (delivered, total) == (0, 1)
+        backend.post_message.assert_not_called()

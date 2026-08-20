@@ -73,7 +73,7 @@ class TestStaleSendingClaim(TestCase):
             "loop error summary",
             kind=NotifyKind.INFO,
             idempotency_key=_KEY,
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -88,7 +88,7 @@ class TestStaleSendingClaim(TestCase):
             "would be a double-DM",
             kind=NotifyKind.INFO,
             idempotency_key=_KEY,
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
