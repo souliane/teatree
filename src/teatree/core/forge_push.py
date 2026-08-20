@@ -29,7 +29,20 @@ from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.git_run import run as git_read
 from teatree.utils.run import CompletedProcess, TimeoutExpired, run_allowed_to_fail
 
-PUSH_TIMEOUT_SECONDS = 300.0
+#: The single ``git push`` subprocess call runs the WHOLE pre-push hook chain
+#: (``dev/push-gate.sh``: the never-lockout contract, ``tests/conformance``, the
+#: incremental push gate's scoped doctest + ast-grep) before any byte reaches the
+#: network — hooks run as a child of git itself, so one Python-level timeout
+#: necessarily covers both phases; splitting them would mean running the hooks a
+#: second time standalone and pushing with ``--no-verify``, defeating the "hooks
+#: always gate the push" guarantee this module exists for (souliane/teatree#4484).
+#: Evidence for the bound: ``dev/push-gate.sh`` alone measured 428s GREEN on a
+#: 3-file diff at box load 40; ticket 1015 (#4404, a materially larger diff)
+#: independently stalled behind a ~1200s (20min) gate run at similar load. 1800s
+#: clears both with headroom while staying a genuinely-enforced, finite bound —
+#: a real transport hang is still caught, just not mistaken for a hook chain that
+#: is merely slow under load.
+PUSH_TIMEOUT_SECONDS = 1800.0
 
 #: The post-condition read is a second network round trip, so it is bounded too — but
 #: far tighter than the push: it transfers one ref, never a pack.

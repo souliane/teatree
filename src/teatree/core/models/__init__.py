@@ -86,7 +86,7 @@ from teatree.core.models.outer_loop_experiment import (
     ProposalSpec,
 )
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
-from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_chat_injection import DmContext, PendingChatInjection
 from teatree.core.models.pending_pull_request import PendingPullRequest, PendingPullRequestManager
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
@@ -203,6 +203,7 @@ __all__ = [
     "DirectiveError",
     "DirectiveManager",
     "DirtyWorktreeError",
+    "DmContext",
     "DreamQaProbe",
     "DreamRunMarker",
     "E2EBypassApproval",

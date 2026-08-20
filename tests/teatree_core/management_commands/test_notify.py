@@ -48,7 +48,7 @@ class TestNotifySendSubcommand(TestCase):
                 "--kind",
                 "info",
                 "--idempotency-key",
-                "session=s;turn=1",
+                "watchdog:doctor-unreachable:session=s;turn=1",
             )
 
         assert code == 0
@@ -56,7 +56,7 @@ class TestNotifySendSubcommand(TestCase):
         backend.post_message.assert_called_once()
         text = backend.post_message.call_args.kwargs["text"]
         assert "PR #1016 merged." in text
-        row = BotPing.objects.get(idempotency_key="session=s;turn=1")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:session=s;turn=1")
         assert row.status == BotPing.Status.SENT
         assert row.kind == BotPing.Kind.INFO
         assert "sent" in out.lower()
@@ -79,7 +79,7 @@ class TestNotifySendSubcommand(TestCase):
                 "--kind",
                 "info",
                 "--idempotency-key",
-                "k-overlay",
+                "watchdog:doctor-unreachable:k-overlay",
                 "--overlay",
                 "teatree",
             )
@@ -101,7 +101,7 @@ class TestNotifySendSubcommand(TestCase):
                 "--kind",
                 "info",
                 "--idempotency-key",
-                "k-stdin",
+                "watchdog:doctor-unreachable:k-stdin",
             )
 
         assert code == 0
@@ -118,11 +118,11 @@ class TestNotifySendSubcommand(TestCase):
                 "--kind",
                 "info",
                 "--idempotency-key",
-                "k-fail",
+                "watchdog:doctor-unreachable:k-fail",
             )
 
         assert code == 1
-        assert BotPing.objects.get(idempotency_key="k-fail").status == BotPing.Status.NOOP
+        assert BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:k-fail").status == BotPing.Status.NOOP
 
     def test_failed_delivery_surfaces_recorded_reason_on_stderr(self) -> None:
         """rc=1 carries *why* delivery failed, not a bare key (#1181)."""
@@ -139,7 +139,7 @@ class TestNotifySendSubcommand(TestCase):
                     "--kind",
                     "info",
                     "--idempotency-key",
-                    "k-reason",
+                    "watchdog:doctor-unreachable:k-reason",
                     stderr=err,
                 )
             except SystemExit as exc:
@@ -147,7 +147,7 @@ class TestNotifySendSubcommand(TestCase):
 
         assert code == 1
         message = err.getvalue()
-        assert "k-reason" in message
+        assert "watchdog:doctor-unreachable:k-reason" in message
         # The NOOP reason recorded on the BotPing row is echoed verbatim — the
         # typed NotifyReason names itself instead of the old conflated string.
         assert "no_messaging_backend" in message
@@ -184,7 +184,7 @@ class TestNotifySendSubcommand(TestCase):
             "--kind",
             "bogus",
             "--idempotency-key",
-            "k-kind",
+            "watchdog:doctor-unreachable:k-kind",
         )
 
         assert code == 2
@@ -203,7 +203,7 @@ class TestNotifySendSubcommand(TestCase):
                     "--kind",
                     "info",
                     "--idempotency-key",
-                    "k-restore-prev",
+                    "watchdog:doctor-unreachable:k-restore-prev",
                     "--overlay",
                     "teatree",
                 )
@@ -224,7 +224,7 @@ class TestNotifySendSubcommand(TestCase):
                 "--kind",
                 "info",
                 "--idempotency-key",
-                "k-restore",
+                "watchdog:doctor-unreachable:k-restore",
                 "--overlay",
                 "teatree",
             )
@@ -241,7 +241,7 @@ class TestNotifySendSubcommand(TestCase):
             "--kind",
             "info",
             "--idempotency-key",
-            "k-empty",
+            "watchdog:doctor-unreachable:k-empty",
         )
 
         assert code == 2

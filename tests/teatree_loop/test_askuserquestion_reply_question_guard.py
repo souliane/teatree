@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import DmContext, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
@@ -76,7 +76,9 @@ def _record_question(*, slack_ts: str) -> DeferredQuestion:
 
 
 def _record_reply(text: str, *, slack_ts: str) -> PendingChatInjection:
-    row = PendingChatInjection.record(channel=_CHANNEL, slack_ts=slack_ts, text=text, user_id="U-owner")
+    row = PendingChatInjection.record(
+        channel=_CHANNEL, slack_ts=slack_ts, text=text, context=DmContext(user_id="U-owner")
+    )
     assert row is not None
     return row
 

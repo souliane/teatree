@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0075_loop_last_attempt_at"),
+        ("core", "0077_pending_chat_injection_thread_ts"),
     ]
 
     operations = [

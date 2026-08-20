@@ -9,7 +9,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import DmContext, PendingChatInjection
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -20,10 +20,10 @@ class TestRecordIdempotency:
 
     def test_same_ts_recorded_twice_yields_one_row(self) -> None:
         first = PendingChatInjection.record(
-            channel="D0DEMOTEAM1", slack_ts="1700000000.0001", text="hello", user_id="U0DEMOUSER1"
+            channel="D0DEMOTEAM1", slack_ts="1700000000.0001", text="hello", context=DmContext(user_id="U0DEMOUSER1")
         )
         second = PendingChatInjection.record(
-            channel="D0DEMOTEAM1", slack_ts="1700000000.0001", text="hello", user_id="U0DEMOUSER1"
+            channel="D0DEMOTEAM1", slack_ts="1700000000.0001", text="hello", context=DmContext(user_id="U0DEMOUSER1")
         )
 
         assert first is not None

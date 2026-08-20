@@ -4625,29 +4625,16 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 # router carried. The leaf is a pure ``teatree.hooks`` (platform-layer) leaf:
 # it must not import ``teatree.backends.slack`` / ``teatree.core`` (a backwards
 # layer edge tach forbids), so the router — which lives outside ``src`` and may
-# touch the domain — builds the Slack ``post`` and the active-DM-thread resolver
-# here and INJECTS them into the leaf. The router keeps the ROUTING decision
+# touch the domain — builds the Slack ``post`` and the audio enricher here and
+# INJECTS them into the leaf. The router keeps the ROUTING decision
 # (which present-/away-mode arm fires, the DeferredQuestion capture); these thin
 # wrappers preserve the ``patch.object(router, "_perform_slack_post" /
 # "_slack_config_from_toml" / "_read_dm_channel_cache")`` seam the handler tests
 # intercept.
-
-
-def _active_dm_thread_for_channel(channel: str) -> str:
-    """Resolve the user's active DM thread for ``channel`` from ``IncomingEvent``.
-
-    Threads the mirrored question under the conversation the user is already in
-    instead of opening a new top-level message. Fail-open: any bootstrap or DB
-    error yields ``""`` (post at root) so the hook stays crash-proof.
-    """
-    if not channel or not bootstrap_teatree_django():
-        return ""
-    try:
-        from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        return IncomingEvent.objects.active_dm_thread(channel=channel)
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return ""
+#
+# No active-DM-thread resolver is injected: the mirror posts AT ROOT so
+# its ``ts`` is a thread root, which is the only ts a later Slack reply carries
+# in ``thread_ts`` — the identity ``teatree.loop.question_binding`` binds on.
 
 
 def _slack_config_from_toml() -> tuple[str, str] | None:
@@ -4663,7 +4650,6 @@ def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> st
         slack_cfg,
         questions,
         poster=_slack_http_poster(),
-        resolve_thread=_active_dm_thread_for_channel,
         enrich_audio=build_dm_audio_enricher(slack_enabled=_speak_settings()[1]),
     )
 
