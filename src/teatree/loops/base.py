@@ -112,6 +112,14 @@ class MiniLoop:
     :func:`teatree.loops.loop_staleness.driverless_loops` alarms on. Meaningless on a
     live-tick loop, which the timer chain already drives.
 
+    ``off_tick_deadline_seconds`` is the per-loop ceiling
+    :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` enforces on that
+    subprocess, ``None`` ⇒ the driver's shared default. It exists because a shared
+    deadline cannot be right for every off-live-tick loop at once: ``dream`` carries an
+    IN-PASS wall-clock budget and needs the external SIGKILL to sit above it, or the kill
+    lands first and the pass never reaches its own tail. Meaningless on a live-tick loop,
+    whose deadline the timer chain computes from its cadence.
+
     ``declared_reach`` and ``determinism`` are the loop's visible tags, and they live
     HERE rather than on the mutable ``Loop`` DB row so no surface can render a
     classification that disagrees with what the code does. Both default to ``None``
@@ -127,6 +135,7 @@ class MiniLoop:
     off_live_tick: bool = False
     cadence_is_floor: bool = False
     off_tick_command: tuple[str, ...] = ()
+    off_tick_deadline_seconds: float | None = None
     declared_reach: frozenset[LoopReach] | None = None
     determinism: LoopDeterminism | None = None
 
