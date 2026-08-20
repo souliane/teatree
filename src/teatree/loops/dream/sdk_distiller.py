@@ -69,7 +69,12 @@ _DISTILL_PROMPT_TEMPLATE = (
     "Snippets:\n{snippets}"
 )
 
-_DISTILL_WATCHDOG_SECONDS = 5 * 60
+#: The wall clock ONE distiller turn may take — the connect, the query AND the drain.
+#: Public because it is the per-call cost
+#: :meth:`teatree.loops.dream.pass_config.PassBudget.allows_new_call` must reserve before
+#: launching another batch: a call started with less than this left can overrun the pass
+#: budget by its whole value, which is how the tail became unreachable.
+DISTILL_WATCHDOG_SECONDS = 5 * 60
 #: ``cluster_key`` is NO LONGER required from the LLM — it is derived deterministically
 #: from the member set (#2723), matching the ``ConsolidatedMemory`` docstring's "sha256
 #: over the normalized member identities". A reworded slug for the same root cause used
@@ -202,7 +207,7 @@ async def _collect_turn(prompt: str, *, env: dict[str, str] | None = None) -> st
     # ``claude`` connect hung the dream pass forever (no rows, no marker, no
     # output) instead of failing loud; ``asyncio.timeout`` raises ``TimeoutError``
     # on expiry and the ``async with`` tears the subprocess down on unwind.
-    async with asyncio.timeout(_DISTILL_WATCHDOG_SECONDS), ClaudeSDKClient(options=options) as client:
+    async with asyncio.timeout(DISTILL_WATCHDOG_SECONDS), ClaudeSDKClient(options=options) as client:
         await client.query(prompt)
         async for message in client.receive_response():
             if isinstance(message, AssistantMessage):

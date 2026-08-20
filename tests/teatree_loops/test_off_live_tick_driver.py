@@ -17,6 +17,7 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.loops import off_live_tick_driver
 from teatree.loops.deadlined_tick import TickOutcome, run_deadlined_argv
+from teatree.loops.dream.loop import DREAM_OFF_TICK_DEADLINE_SECONDS
 from teatree.loops.off_live_tick_driver import (
     drive_off_live_tick_loops,
     ensure_off_live_tick_driver_chain,
@@ -56,10 +57,16 @@ class TestOffLiveTickDriver(django.test.TestCase):
         driven = {tuple(argv[-2:]) for argv, _deadline in self._ran}
         assert driven == {("directive", "tick"), ("dream", "tick"), ("outer", "tick")}
         assert result["driven"] == 3
-        # Each runs as its own `python -m teatree <cmd> tick` subprocess, deadlined.
+        # Each runs as its own `python -m teatree <cmd> tick` subprocess, deadlined at
+        # the loop's OWN ceiling when it declares one and the shared default otherwise.
+        declared = {name: deadline for name, _argv, deadline in off_live_tick_commands()}
+        by_command = {tuple(argv[-2:]): deadline for argv, deadline in self._ran}
         for argv, deadline in self._ran:
             assert argv[1:3] == ["-m", "teatree"]
-            assert deadline == off_live_tick_driver.DEADLINE_SECONDS
+            assert deadline in set(declared.values())
+        assert by_command["dream", "tick"] == DREAM_OFF_TICK_DEADLINE_SECONDS
+        assert by_command["outer", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
+        assert by_command["directive", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
 
     def test_reschedules_itself_before_running_the_ticks(self) -> None:
         def _explode(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
@@ -112,11 +119,23 @@ class TestDeclaredCommands(django.test.TestCase):
     """Every off-live-tick loop declares the tick command the chain fires."""
 
     def test_the_real_registry_declares_all_three_tick_commands(self) -> None:
-        assert dict(off_live_tick_commands()) == {
+        assert {name: argv for name, argv, _deadline in off_live_tick_commands()} == {
             "directive_loop": ("directive", "tick"),
             "dream": ("dream", "tick"),
             "outer_loop": ("outer", "tick"),
         }
+
+    def test_only_dream_overrides_the_shared_deadline(self) -> None:
+        # The other two off-live-tick loops are UNCHANGED by the per-loop override:
+        # neither has ever reached the shared ceiling, and raising dream's must not
+        # quietly raise theirs (the driver runs all three serially on one executor slot).
+        deadlines = {name: deadline for name, _argv, deadline in off_live_tick_commands()}
+        assert deadlines == {
+            "directive_loop": off_live_tick_driver.DEADLINE_SECONDS,
+            "dream": DREAM_OFF_TICK_DEADLINE_SECONDS,
+            "outer_loop": off_live_tick_driver.DEADLINE_SECONDS,
+        }
+        assert DREAM_OFF_TICK_DEADLINE_SECONDS > off_live_tick_driver.DEADLINE_SECONDS
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
