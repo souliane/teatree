@@ -1,4 +1,11 @@
-"""Behaviour tests for the bot→user notification helper (#963)."""
+"""Behaviour tests for the bot→user notification helper (#963).
+
+These exercise the TRANSPORT — threading, linkify, idempotency, failure audit — so each
+needs a notification that actually reaches it. Since #4524 the push/pull classifier keeps
+an unregistered status signal off the DM channel entirely, and a question is the one thing
+that always reaches it whatever its key; the routing decision itself is covered by
+``test_dm_channel_policy.py`` and ``test_notify_pull_routing.py``.
+"""
 
 import json
 import os
@@ -51,7 +58,7 @@ class TestNotifyUser(TestCase):
             "tests are green",
             kind=NotifyKind.INFO,
             idempotency_key="sess=a;turn=1",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -88,7 +95,7 @@ class TestNotifyUser(TestCase):
             "answering your question",
             kind=NotifyKind.ANSWER,
             idempotency_key="threaded-answer",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -102,7 +109,7 @@ class TestNotifyUser(TestCase):
             "first message in the conversation",
             kind=NotifyKind.INFO,
             idempotency_key="rootless",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -121,7 +128,7 @@ class TestNotifyUser(TestCase):
             message.fence,
             kind=NotifyKind.INFO,
             idempotency_key="table-dm",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
             blocks=message.blocks,
@@ -141,7 +148,7 @@ class TestNotifyUser(TestCase):
             "plain text notification",
             kind=NotifyKind.INFO,
             idempotency_key="plain-no-blocks",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -158,7 +165,7 @@ class TestNotifyUser(TestCase):
                 "lookup blew up but the DM still lands",
                 kind=NotifyKind.INFO,
                 idempotency_key="thread-lookup-db-error",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -172,7 +179,7 @@ class TestNotifyUser(TestCase):
             "draft reply ready",
             kind="answer",
             idempotency_key="alias-str",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -186,7 +193,7 @@ class TestNotifyUser(TestCase):
             "first",
             kind=NotifyKind.INFO,
             idempotency_key="dup",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -194,7 +201,7 @@ class TestNotifyUser(TestCase):
             "second",
             kind=NotifyKind.INFO,
             idempotency_key="dup",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -226,7 +233,7 @@ class TestNotifyUser(TestCase):
                     "concurrent second tick",
                     kind=NotifyKind.INFO,
                     idempotency_key="toctou",
-                    audience=NotifyAudience.OWNER_DELIVERY,
+                    audience=NotifyAudience.OWNER_QUESTION,
                     backend=backend,
                     user_id="U_ME",
                 )
@@ -238,7 +245,7 @@ class TestNotifyUser(TestCase):
             "first tick",
             kind=NotifyKind.INFO,
             idempotency_key="toctou",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -270,7 +277,7 @@ class TestNotifyUser(TestCase):
                 "retry me",
                 kind=NotifyKind.INFO,
                 idempotency_key="retry-1306",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=bad_backend,
                 user_id="U_ME",
             )
@@ -285,7 +292,7 @@ class TestNotifyUser(TestCase):
                 "retry me",
                 kind=NotifyKind.INFO,
                 idempotency_key="retry-1306",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=good_backend,
                 user_id="U_ME",
             )
@@ -302,7 +309,7 @@ class TestNotifyUser(TestCase):
                 "no backend",
                 kind=NotifyKind.QUESTION,
                 idempotency_key="noop-backend",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=None,
                 user_id="U_ME",
             )
@@ -318,7 +325,7 @@ class TestNotifyUser(TestCase):
             "no user id",
             kind=NotifyKind.QUESTION,
             idempotency_key="noop-uid",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="",
         )
@@ -335,7 +342,7 @@ class TestNotifyUser(TestCase):
             "boom",
             kind=NotifyKind.INFO,
             idempotency_key="failed",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -360,7 +367,7 @@ class TestNotifyUser(TestCase):
             "this never lands",
             kind=NotifyKind.INFO,
             idempotency_key="empty-channel",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -388,7 +395,7 @@ class TestNotifyUser(TestCase):
             "not actually posted",
             kind=NotifyKind.INFO,
             idempotency_key="ok-false",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -410,7 +417,7 @@ class TestNotifyUser(TestCase):
             "phantom success",
             kind=NotifyKind.INFO,
             idempotency_key="empty-ts",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -429,7 +436,7 @@ class TestNotifyUser(TestCase):
             "still sent",
             kind=NotifyKind.INFO,
             idempotency_key="permalink-fail",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -449,7 +456,7 @@ class TestNotifyUser(TestCase):
                 "shh",
                 kind=NotifyKind.INFO,
                 idempotency_key="disabled",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -481,7 +488,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "delivery claim under lock contention",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-claim",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -497,7 +504,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "lock contention on the sent finalize",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-sent",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -515,7 +522,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "no backend, locked audit",
                 kind=NotifyKind.QUESTION,
                 idempotency_key="db-locked-noop",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=None,
                 user_id="U_ME",
             )
@@ -530,7 +537,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "delivery failed, locked finalize",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-failed",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -548,7 +555,7 @@ class TestNotifyUserLinkify(TestCase):
             text,
             kind=NotifyKind.INFO,
             idempotency_key="linkify-md",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
         )
@@ -575,7 +582,7 @@ class TestNotifyUserLinkify(TestCase):
                 "approve !281 then !999",
                 kind=NotifyKind.INFO,
                 idempotency_key="linkify-mr",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -593,7 +600,7 @@ class TestNotifyUserLinkify(TestCase):
             text,
             kind=NotifyKind.INFO,
             idempotency_key="linkify-off",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U_ME",
             linkify=False,
@@ -610,7 +617,7 @@ class TestNotifyUserLinkify(TestCase):
                 "ship [the PR](https://example.com/pr/1) and !281",
                 kind=NotifyKind.INFO,
                 idempotency_key="linkify-overlay-fail",
-                audience=NotifyAudience.OWNER_DELIVERY,
+                audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -623,13 +630,13 @@ class TestNotifyUserLinkify(TestCase):
         assert "!281" in sent_text
 
     def test_workaround_user_id_kwarg_still_supported(self) -> None:
-        """``notify_user(user_id="U0DEMOUSER1", audience=NotifyAudience.OWNER_DELIVERY)`` workaround must still work."""
+        """``notify_user(user_id="U0DEMOUSER1", audience=NotifyAudience.OWNER_QUESTION)`` workaround must still work."""
         backend = _backend()
         sent = notify_user(
             "ping",
             kind=NotifyKind.INFO,
             idempotency_key="user-id-workaround",
-            audience=NotifyAudience.OWNER_DELIVERY,
+            audience=NotifyAudience.OWNER_QUESTION,
             backend=backend,
             user_id="U0DEMOUSER1",
         )

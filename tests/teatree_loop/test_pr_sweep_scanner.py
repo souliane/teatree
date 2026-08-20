@@ -1806,23 +1806,25 @@ class TestSlackMergeNotifier:
         b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
         return b
 
-    def test_announce_dms_the_owner_once_per_merge(self) -> None:
+    def test_announce_records_the_merge_once_without_dming(self) -> None:
+        """A landed merge is status, not a decision — pulled since #4524, still once per SHA."""
         backend = self._backend()
         notifier = SlackMergeNotifier(backend=backend, user_id="U1")
         notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
-        # A second announce of the SAME merge is an idempotent no-op (once per SHA).
         notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
 
-        backend.post_message.assert_called_once()
-        assert f"merged {SLUG}#42 @ {MAIN_SHA[:8]}" in backend.post_message.call_args.kwargs["text"]
-        row = BotPing.objects.get(idempotency_key=f"merge-announce:{SLUG}#42:{MAIN_SHA}")
-        assert row.status == BotPing.Status.SENT
-        assert row.audience == "owner_delivery"
+        backend.post_message.assert_not_called()
+        rows = BotPing.objects.filter(idempotency_key=f"merge-announce:{SLUG}#42:{MAIN_SHA}")
+        assert rows.count() == 1
+        assert rows.first().status == BotPing.Status.PULLED
+        assert rows.first().audience == "owner_delivery"
+        assert f"merged {SLUG}#42 @ {MAIN_SHA[:8]}" in rows.first().text
 
     def test_announce_marks_uv_audit_fallback(self) -> None:
         backend = self._backend()
         SlackMergeNotifier(backend=backend, user_id="U1").announce(slug=SLUG, pr_id=42, merged_sha="", fallback=True)
-        assert f"merged (uv-audit fallback) {SLUG}#42 @ ?" in backend.post_message.call_args.kwargs["text"]
+        row = BotPing.objects.get(idempotency_key=f"merge-announce:{SLUG}#42:")
+        assert f"merged (uv-audit fallback) {SLUG}#42 @ ?" in row.text
 
     def test_two_flag_calls_send_zero_owner_dms(self) -> None:
         backend = self._backend()

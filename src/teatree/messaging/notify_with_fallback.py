@@ -29,9 +29,18 @@ from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.dm_channel_policy import DmChannel, classify
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, DeliveryClaim
 from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, notify_user, resolve_user_id
+
+
+def _withheld_by_design(*, audience: NotifyAudience, idempotency_key: str) -> bool:
+    """Whether the primary withheld this DM as a routing DECISION, not a transport failure."""
+    if audience == NotifyAudience.INTERNAL:
+        return True
+    return classify(audience=audience, idempotency_key=idempotency_key) is DmChannel.PULL
+
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +111,8 @@ def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress mirrorin
     :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL` notification
     is logged-only (the primary returns ``False`` with a terminal LOGGED row)
     and the fallback transport is NOT attempted — a log-only DM has nothing to
-    verify-deliver.
+    verify-deliver. A status signal the push/pull classifier withheld (#4524) stands
+    down for the same reason.
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
@@ -118,10 +128,12 @@ def notify_with_fallback(  # noqa: PLR0913 — verified-delivery egress mirrorin
         _stamp_transport(idempotency_key, NotifyTransport.PRIMARY)
         return NotifyResult(delivered=True, transport=NotifyTransport.PRIMARY)
 
-    if audience == NotifyAudience.INTERNAL:
-        # A log-only notification did not "fail" — it was never meant to leave
-        # the machine. The primary already recorded a terminal LOGGED row; do
-        # not fall back to a direct send.
+    if _withheld_by_design(audience=audience, idempotency_key=idempotency_key):
+        # Not a failure — never meant to leave the machine, so a second transport is
+        # not a recovery but a bypass of the decision that withheld it. Re-asked of
+        # the CLASSIFIER, never inferred from the audit row: a lost ledger write
+        # would read as "no row, fall back conservatively" and put the withheld
+        # signal on the DM channel after all.
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
 
     if not _primary_failure_is_recoverable(idempotency_key):
