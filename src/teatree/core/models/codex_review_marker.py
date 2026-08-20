@@ -22,28 +22,25 @@ silent.
 same event that spends the sibling per-head claim, because it means the head really
 was reviewed.
 
-``mark_refused`` is the OTHER terminal (#4522, #4530). A reviewer can return a verdict
-the recorder is structurally unable to record — a ``merge_safe`` judgement over required
-checks it reports RED — and the refusal is correct, but NOTHING lands, so the head keeps
-no verdict, so ``claim`` re-arms it the moment the ``deadline`` lapses and sends a fresh
-reviewer at the same red CI for the same refusal. ``attempts`` bounds that at
-:data:`MAX_DISPATCH_ATTEMPTS`, so the cost is up to three whole review sessions per head
-rather than an unbounded burn; the latch makes it one and pages a human with the cause.
-This path is where the burn was actually measured: of the 18 review runs that hit the
-contradiction refusal on this deploy, 11 were armed by THIS table and every one of the
-recent repeats was — the #68 dispatch ledger carried the rest, so latching only there
-would have left the majority re-arming. Both tables retire through the one
-:func:`~teatree.core.modelkit.expiring_claim.retire_head_claim` write, and
-:mod:`teatree.core.models.review_verdict` retires BOTH on either terminal, so whichever
-path armed the review the other's transition is a no-op.
+``mark_refused`` is the OTHER terminal (#4522, #4530), and this table is where the re-arm
+was actually measured: of the 18 review runs that hit the checks-contradiction refusal on
+this deploy, 11 were armed by THIS claim. A reviewer returns ``merge_safe`` over required
+checks the same reviewer reported RED; recording is refused, nothing lands, the head keeps
+no verdict, and ``claim`` re-arms it once the ``deadline`` lapses.
 
-Unlike its twin this terminal releases no
-:class:`~teatree.core.models.mr_review_lock.MRReviewLock`: the codex / self-PR path never
-takes one (see that model's docstring), and a refusal — which records nothing — must not
-free a lock some OTHER, still-running reviewer holds. A concluded ``ReviewVerdict``
-releases it because a merge guard is about to consume the verdict, and a lock left held
-would block the merge that verdict just authorised; a refusal authorises nothing, so
-taking the guard away would give nothing back.
+The latch fires only at :data:`MAX_DISPATCH_ATTEMPTS`, never on the first refusal. The
+refusal compares two fields of ONE envelope and so describes that reviewer, not the tree:
+6 of the 9 heads that ever hit it recorded a verdict at the SAME head afterwards, three of
+them a ``hold`` over checks that genuinely were red. Latching early buys back runs at the
+price of those recoveries. At the bound the claim is spent either way, so the latch costs
+nothing and adds the one thing saturation cannot say — WHY.
+
+Neither this terminal nor its twin frees an
+:class:`~teatree.core.models.mr_review_lock.MRReviewLock`. This path never takes one, and a
+refusal — which records nothing a merge can consume — must not free a lock some OTHER,
+still-running reviewer holds. A concluded ``ReviewVerdict`` releases it because a merge
+guard is about to consume that verdict and a held lock would block the merge it just
+authorised; a refusal authorises nothing, so taking the guard away would give nothing back.
 """
 
 import datetime as dt
@@ -196,20 +193,22 @@ class CodexReviewMarker(models.Model):
 
     @classmethod
     def mark_refused(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
-        """Terminal: this head can never produce a recordable verdict, so stop arming it.
+        """Terminal for a head whose retry budget ran out on an unrecordable verdict.
 
         Returns ``True`` iff a row transitioned. The twin of
         :meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.mark_refused`
-        and deliberately the same write, because this table is where the re-arm actually
-        happens most: the codex / self-PR claim is what :meth:`claim` re-acquires after
-        the ``deadline``, and a latch on the sibling ledger alone leaves this one free to
-        send the next doomed reviewer.
+        and now byte-for-byte the same rule, which is the #4530 correction: neither frees a
+        per-MR lock, and each latches ONLY its own row, only at
+        :data:`MAX_DISPATCH_ATTEMPTS`. This table matters because it is what :meth:`claim`
+        re-acquires after the ``deadline`` on the codex / self-PR path — the path that armed
+        11 of the 18 measured refusal runs.
 
-        Unlike the twin it frees no per-MR lock — this path takes none, and a refusal
-        records nothing that a merge is waiting on. Refusing an unclaimed head is a no-op.
+        Below the bound this is a deliberate no-op: the refusal describes one reviewer's
+        self-contradictory envelope, not the tree, and the head recovers on a later attempt
+        more often than not. Refusing an unclaimed head is a no-op too, never an error.
         """
         return retire_head_claim(
-            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            cls.objects.filter(state__in=cls._ACTIVE_STATES, attempts__gte=MAX_DISPATCH_ATTEMPTS),
             slug=slug,
             pr_id=pr_id,
             head_sha=head_sha,

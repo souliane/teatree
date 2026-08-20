@@ -27,28 +27,32 @@ ledger rather than re-armed forever. ``mark_resolved`` is the terminal, fired
 when a :class:`~teatree.core.models.review_verdict.ReviewVerdict` lands for the
 head.
 
-``mark_refused`` is the OTHER terminal (#4522). A head can produce a verdict the
-recorder is structurally unable to record — a ``merge_safe`` judgement over
-required checks that are RED
+``mark_refused`` is the OTHER terminal (#4522, #4530). A reviewer can return a
+verdict the recorder refuses outright — a ``merge_safe`` judgement over required
+checks the SAME reviewer reported RED
 (:class:`~teatree.core.models.review_verdict.ChecksContradictionError`). Nothing
-lands, so the head stays un-reviewed, so the post-``deadline`` re-acquire below
-arms another full reviewer run against the same red CI, which reaches the same
-refusal. That burn is BOUNDED — ``attempts`` saturates at
-:data:`MAX_DISPATCH_ATTEMPTS` like any other failing dispatch — so what the latch
-buys is the difference between one wasted review session and
-:data:`MAX_DISPATCH_ATTEMPTS` of them, plus a page that names the cause instead of
-a saturated row that only says the retries ran out. A REFUSED row is terminal
-exactly like a RESOLVED one and is never re-acquired — but it is a DISTINCT state
-because no verdict covers this tree, and reading it as "reviewed" would be a lie
-to every consumer that asks. The safety valve is that the claim is keyed per HEAD:
-a push mints a new ``head_sha``, which has no row, so it arms a fresh review
-normally. A refusal latches one tree, never a pull request.
+lands, so the head keeps no verdict, so the post-``deadline`` re-acquire below arms
+another reviewer. That burn was always BOUNDED by :data:`MAX_DISPATCH_ATTEMPTS`
+like any other failing dispatch, and the retries are not waste: 6 of the 9 heads
+that ever hit this refusal recorded a verdict at that SAME head afterwards. So the
+latch fires only AT the bound, where nothing is left to spend. What it buys is not
+saved runs but a named cause — a claim that stops at ``refused`` says the last
+reviewer contradicted its own checks report, where one that stops saturated says
+only that three attempts ran out, which is what a crashed reviewer looks like too.
+
+A REFUSED row is terminal exactly like a RESOLVED one and is never re-acquired —
+but it is a DISTINCT state because no verdict covers this tree, and reading it as
+"reviewed" would be a lie to every consumer that asks. The safety valve is that the
+claim is keyed per HEAD: a push mints a new ``head_sha``, which has no row, so it
+arms a fresh review normally. A refusal latches one tree, never a pull request.
 
 The twin :class:`~teatree.core.models.codex_review_marker.CodexReviewMarker` carries
-the same terminal for the same reason and through the same
-:func:`~teatree.core.modelkit.expiring_claim.retire_head_claim` write: both tables
-claim the review path per head, so a refusal that latched only one of them would
-leave the other free to re-arm the very run it just stopped.
+an identical terminal through the same
+:func:`~teatree.core.modelkit.expiring_claim.retire_head_claim` write. Identical is
+the point: a refusal is RUN-scoped, so it retires only the claim that armed the run
+(:attr:`~teatree.core.models.review_target.ReviewTarget.armed_by`) and frees no lock
+on either path. Only :func:`~teatree.core.models.review_verdict.resolve_head_claims`
+reaches both tables, because a recorded verdict is a fact about the TREE.
 
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 (idempotent claim keyed on ``(pr_url, head_sha)``).
@@ -216,33 +220,37 @@ class AutoReviewDispatch(models.Model):
 
     @classmethod
     def mark_refused(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
-        """Terminal: this head can never produce a recordable verdict, so stop arming it (#4522).
+        """Terminal for a head whose retry budget ran out on an unrecordable verdict (#4522, #4530).
 
-        Returns ``True`` iff a row transitioned. Called when the recorder refuses a
-        returned verdict with a
-        :class:`~teatree.core.models.review_verdict.ChecksContradictionError` — the one
-        refusal class no re-dispatch can satisfy at this tree. Unlike
-        :meth:`mark_resolved` this asserts NO verdict; it asserts that the loop between
-        the refusal and the post-``deadline`` re-acquire is closed and a human owns the
-        head now.
+        Returns ``True`` iff a row transitioned. Called when the recorder refuses a returned
+        verdict with a
+        :class:`~teatree.core.models.review_verdict.ChecksContradictionError`. Unlike
+        :meth:`mark_resolved` this asserts NO verdict — it renames an already-spent claim
+        from "the retries ran out" to "the last reviewer contradicted its own checks
+        report", which is the difference between a cause the owner can act on and a count.
 
-        The per-MR :class:`~teatree.core.models.mr_review_lock.MRReviewLock` is released
-        in the same call, on :meth:`ReviewVerdict.record`'s reasoning: the review this
-        concluded is no longer in flight, and no reviewer will be armed for this head
-        again, so holding the MR for the rest of the lock's TTL would delay the ONE thing
-        that legitimately re-arms — a push. Refusing an unclaimed head is a no-op, never
-        an error, and leaves the lock alone.
+        Latches ONLY at :data:`MAX_DISPATCH_ATTEMPTS`, never on the first refusal, and that
+        bound is the whole safety property (#4530). The contradiction is between two fields
+        one reviewer wrote in one envelope, not a fact about the tree: 6 of the 9 heads that
+        ever hit it went on to record a verdict at that SAME head, three of them a ``hold``
+        over checks that really were red. Latching early would spend those recoveries to
+        save runs that are how the recoveries happened. At the bound there is nothing left
+        to spend — :meth:`_reclaim` already refuses — so the latch takes nothing away.
+
+        Frees NO :class:`~teatree.core.models.mr_review_lock.MRReviewLock`, deliberately and
+        unlike :meth:`ReviewVerdict.record`. A recorded verdict releases the lock because a
+        merge guard is about to consume it and a held lock would block the merge that verdict
+        just authorised. A refusal authorises nothing, so releasing would only remove a guard
+        while some other reviewer may still be running against this MR; the lock's own
+        ``deadline`` and ``reconcile_stale`` handle a holder that never came back.
         """
-        latched = retire_head_claim(
-            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+        return retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES, attempts__gte=MAX_DISPATCH_ATTEMPTS),
             slug=slug,
             pr_id=pr_id,
             head_sha=head_sha,
             to_state=cls.State.REFUSED,
         )
-        if latched:
-            MRReviewLock.resolve(slug=slug.strip(), pr_id=pr_id, holder=LOOP_SCANNER_HOLDER)
-        return latched
 
     @classmethod
     def enqueue(

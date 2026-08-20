@@ -50,29 +50,31 @@ class ReviewVerdictError(ValueError):
 
 
 class ChecksContradictionError(ReviewVerdictError):
-    """The one refusal class no re-dispatch can ever satisfy at the same head (#4522).
+    """A reviewer's verdict contradicted its OWN checks report (#4522, #4530).
 
-    A ``merge_safe`` verdict carrying ``gh_verify_result=failed`` is not a format
-    slip and not a reviewer that bound to the wrong tree — it is a self-contradictory
-    judgement about a tree whose required checks are RED, and §17.8 clause 3 refuses
-    it outright. Every other :class:`ReviewVerdictError` names something the next
-    reviewer could get right (an unknown choice value, an abbreviated SHA, a maker
-    identity, an out-of-scope finding), so re-arming the head is a real chance at a
-    verdict. This one names something the head itself makes impossible: the checks
-    are red, so a fresh reviewer reads the same red CI and either emits the same
-    contradiction or a HOLD, and the loop between the refusal and the claim's
-    post-deadline re-acquire burns one whole agent run per TTL until the claim
-    saturates at :data:`~teatree.core.models.auto_review_dispatch.MAX_DISPATCH_ATTEMPTS`.
-    Bounded, then, not endless — but every one of those runs is spent on a verdict that
-    cannot be recorded however well it is argued, which is what makes latching on the
-    FIRST one worth a distinct exception type.
+    A ``merge_safe`` verdict carrying ``gh_verify_result=failed`` is refused outright by
+    §17.8 clause 3, and that refusal is right. What it is NOT is a statement about the
+    tree. ``gh_verify_result`` is self-asserted — :func:`_assert_checks_admit_merge_safe`
+    reads the string the reviewer put in its own envelope and this module makes no network
+    call — so the contradiction is between two fields ONE reviewer wrote in ONE envelope.
 
-    Typed rather than string-matched so the recorder's latch
-    (:mod:`teatree.agents.attempt_recorder`) is bound to the exact raise site instead
-    of to a message that a later reword would silently detach it from. The PENDING
-    branch of :func:`_assert_checks_admit_merge_safe` deliberately does NOT raise this:
-    a queued check is not a red one, and both an expedite waiver and the checks simply
-    finishing make that same head recordable, so it keeps the ordinary retry.
+    An earlier revision of this docstring claimed the head itself made a recordable verdict
+    impossible. The control DB refutes it: of the 9 heads that ever raised this, 6 recorded
+    a verdict at that SAME head afterwards, and 3 of those were a ``hold`` over checks that
+    genuinely were red — which is exactly the recordable outcome
+    :data:`~teatree.core.modelkit.review_contract.VERDICT_CHECKS_RULE` asks reviewers for.
+    A red head does not make a verdict impossible; it makes ``merge_safe`` impossible.
+
+    So this class does NOT short-circuit the retry. It is typed rather than string-matched
+    only so the claim's TERMINAL
+    (:meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.mark_refused`) can
+    tell an exhausted budget spent on this from an exhausted budget spent on crashed
+    reviewers — a distinction the operator needs and a saturated row cannot make. Every
+    attempt before the bound is left alone.
+
+    The PENDING branch of :func:`_assert_checks_admit_merge_safe` deliberately does not
+    raise this: a queued check is not a red one, and both an expedite waiver and the checks
+    simply finishing make that same head recordable.
     """
 
 
@@ -180,11 +182,18 @@ def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) 
         raise ReviewVerdictError(msg)
 
 
-#: Every per-HEAD review claim a concluded review retires. Both are consulted on BOTH
-#: terminals — whichever path armed the review, the other's transition is a no-op — so
-#: "which ledgers claim a head?" is answered once instead of once per terminal. Held here
-#: because this is the only module that already imports both, and because both terminals
-#: are events about a verdict: one that landed, and one that never could.
+#: Every per-HEAD review claim a RECORDED verdict retires. Both, because a verdict is a
+#: fact about the TREE — it covers that exact head however the review was armed, so every
+#: claim on the head is spent and re-arming either would be churn. Held here because this
+#: is the only module that already imports both.
+#:
+#: Deliberately NOT reused by the refusal terminal (#4530). A refusal is a fact about ONE
+#: RUN — a reviewer whose verdict and checks report contradicted each other — so it may
+#: retire only the claim that armed that run
+#: (:attr:`~teatree.core.models.review_target.ReviewTarget.armed_by`). Walking this list
+#: there let a codex-path refusal latch a dispatch claim whose reviewer had not run yet and
+#: free the review lock it held; 328 of 444 dispatch rows share a head with a marker row,
+#: so that reach-across was the common case, not the corner.
 _PER_HEAD_REVIEW_CLAIMS: Final = (AutoReviewDispatch, CodexReviewMarker)
 
 
@@ -196,24 +205,6 @@ def resolve_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
     """
     for claim in _PER_HEAD_REVIEW_CLAIMS:
         claim.mark_resolved(slug=slug, pr_id=pr_id, head_sha=head_sha)
-
-
-def refuse_head_claims(*, slug: str, pr_id: int, head_sha: str) -> None:
-    """Latch every per-head claim against a verdict that can never be recorded (#4530).
-
-    The twin of :func:`resolve_head_claims` over the same
-    :data:`_PER_HEAD_REVIEW_CLAIMS`, and over that shared list rather than one named table
-    for the reason #4530 found: the codex / self-PR marker armed the majority of the
-    measured contradiction refusals, so a latch written against the #68 dispatch ledger
-    alone stopped the minority while the other table kept re-arming the same doomed
-    review.
-
-    Silent about how many claims moved, exactly like its twin. A reviewing task keyed by
-    its own ticket may hold no claim at all, and the caller owes the owner a page either
-    way — so a count here would only invite a caller to gate on it.
-    """
-    for claim in _PER_HEAD_REVIEW_CLAIMS:
-        claim.mark_refused(slug=slug, pr_id=pr_id, head_sha=head_sha)
 
 
 def _validated_reviewer(reviewer_identity: str) -> str:

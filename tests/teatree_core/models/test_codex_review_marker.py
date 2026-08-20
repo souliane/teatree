@@ -192,18 +192,42 @@ NEW_HEAD = "0badc0de1234567890abcdef1234567890abcdef"
 
 
 class TestARefusedHeadIsTerminalButThePrIsNot:
-    """#4530: the latch #4522 gave the #68 ledger belongs on THIS claim too.
+    """#4530: the same terminal as the #68 ledger's, on the path that armed most refusals.
 
-    A ``merge_safe`` verdict over required checks the reviewer itself reports RED cannot
-    be recorded, so the head keeps no verdict, so :meth:`CodexReviewMarker.claim` re-arms
-    it the moment the deadline lapses and burns another whole review session on the same
-    refusal — bounded by :data:`MAX_DISPATCH_ATTEMPTS`, but bounded at THREE sessions, and
-    this is the path most of the measured refusals arrived on. The latch makes it one.
+    Of the 18 review runs that hit the checks-contradiction refusal, 11 were armed by THIS
+    claim. The latch is nonetheless deliberately late: the refusal compares two fields of
+    one reviewer's envelope, and 6 of the 9 heads that hit it recorded a verdict at the
+    SAME head afterwards — three of them a ``hold`` over checks that really were red. So a
+    refusal below :data:`MAX_DISPATCH_ATTEMPTS` changes nothing, and at the bound it renames
+    a claim that was spent either way.
     """
 
-    def test_a_refused_head_is_never_re_armed_even_past_its_deadline(self) -> None:
+    @staticmethod
+    def _exhaust(head: str = HEAD) -> CodexReviewMarker:
+        """Drive the head's claim to its last attempt — the only state the latch acts on."""
+        row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=head)
+        assert row is not None
+        while row.attempts < MAX_DISPATCH_ATTEMPTS:
+            _expire(row)
+            row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=head)
+            assert row is not None
+        return row
+
+    def test_a_refusal_below_the_bound_leaves_the_head_re_armable(self) -> None:
+        """#4530's correction: with budget left, a refusal must change nothing at all."""
         row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
         assert row is not None
+        assert row.attempts < MAX_DISPATCH_ATTEMPTS
+
+        assert CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is False
+        row.refresh_from_db()
+        assert row.state == CodexReviewMarker.State.DISPATCHED
+
+        _expire(row)
+        assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is not None
+
+    def test_a_refused_head_is_never_re_armed_even_past_its_deadline(self) -> None:
+        row = self._exhaust()
         assert CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
         row.refresh_from_db()
         assert row.state == CodexReviewMarker.State.REFUSED
@@ -211,13 +235,11 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         _expire(row)
 
         assert CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is None
-        row.refresh_from_db()
-        assert row.attempts == 1, "a latched head must not spend another attempt"
 
     def test_a_live_claim_at_another_head_survives_the_refusal(self) -> None:
         # Two live claims, one PR — the shape a push mid-review produces on this path,
         # which takes no per-MR lock. A latch keyed on the PR would take both.
-        CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        self._exhaust()
         pushed = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=NEW_HEAD)
         assert pushed is not None
 
@@ -229,9 +251,7 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         )
 
     def test_a_new_head_on_a_refused_pr_arms_normally(self) -> None:
-        # The safety valve. The latch binds ONE tree, never the pull request: a push must
-        # always earn a fresh review, or the fix silently suppresses legitimate ones.
-        CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        self._exhaust()
         CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
 
         rearmed = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=NEW_HEAD, variant="claude:review")
@@ -250,18 +270,18 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         )
         assert list(key.fields) == ["slug", "pr_id", "head_sha"]
 
-    def test_a_refused_head_is_not_reported_as_saturated(self) -> None:
-        # Saturation means "the retry budget ran out"; this head has budget left and is
-        # unarmable for a different reason, so reporting it there would misname the cause.
-        row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
-        assert row is not None
-        CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+    def test_the_latch_moves_the_head_off_the_saturation_ledger_onto_a_named_cause(self) -> None:
+        # The surface swap, both directions, so it can never happen silently.
+        row = self._exhaust()
         _expire(row)
+        assert CodexReviewMarker.saturated().count() == 1
+
+        CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
 
         assert CodexReviewMarker.saturated().count() == 0
 
     def test_mark_refused_normalizes_the_head(self) -> None:
-        CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        self._exhaust()
 
         assert CodexReviewMarker.mark_refused(slug=f" {SLUG} ", pr_id=PR_ID, head_sha=HEAD.upper()) is True
 
@@ -270,8 +290,7 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
 
     def test_a_resolved_claim_is_not_downgraded_to_refused(self) -> None:
         # A verdict already covers this tree; a later refusal must not erase that record.
-        row = CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
-        assert row is not None
+        row = self._exhaust()
         CodexReviewMarker.mark_resolved(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
 
         assert CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is False
@@ -279,15 +298,9 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         assert row.state == CodexReviewMarker.State.RESOLVED
 
     def test_refusing_frees_no_per_mr_lock_this_path_never_took(self) -> None:
-        """The one place the two terminals deliberately DIFFER (see the model docstring).
-
-        This path takes no :class:`MRReviewLock`, so any lock held for the PR belongs to
-        somebody else — a manual ``review lock-acquire`` here. A refusal records nothing a
-        merge is waiting on, so releasing that lock would remove a live reviewer's guard
-        and give nothing back.
-        """
+        """Any lock held for this PR belongs to somebody else — this path takes none."""
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="manual-reviewer")
-        CodexReviewMarker.claim(slug=SLUG, pr_id=PR_ID, head_sha=HEAD)
+        self._exhaust()
 
         assert CodexReviewMarker.mark_refused(slug=SLUG, pr_id=PR_ID, head_sha=HEAD) is True
 

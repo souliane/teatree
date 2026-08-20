@@ -39,8 +39,8 @@ from teatree.core.models import (
     TaskAttempt,
     Worktree,
 )
+from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
-from teatree.core.models.review_verdict import refuse_head_claims
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -417,24 +417,31 @@ def _refusal_marker(target: ReviewTarget) -> str:
 
 
 def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str) -> None:
-    """Stop re-arming this head and page a human ONCE instead (#4522).
+    """Name the cause when this head's LAST retry is spent, and page once (#4522, #4530).
 
-    The refusal is correct and stays; what changes is that it costs ONE agent run instead
-    of one per dispatch TTL until the claim saturates at ``MAX_DISPATCH_ATTEMPTS``. Two
-    halves, both keyed on the reviewed head: EVERY per-head claim latches REFUSED
-    (:func:`refuse_head_claims` — the codex / self-PR marker as well as the #68 dispatch
-    ledger, because that marker armed most of the refusals actually measured) so the next
-    post-deadline re-acquire finds a terminal row whichever path armed this run, and a
-    :class:`DeferredQuestion` carries the fact to the owner — deduped on
-    :func:`_refusal_marker`, so a second reviewer that reached the same contradiction
-    before the latch landed adds no second page. A push mints a new head, which has no
-    claim and no marker, and re-arms review normally.
+    The refusal is correct and stays. What this adds is a distinction the operator could
+    not otherwise make: a claim that stops at ``refused`` says the last reviewer
+    contradicted its own checks report, where one that stops saturated says only that three
+    attempts ran out — which is also what three crashed reviewers look like.
 
-    The question is recorded even when no claim latched: a reviewing task keyed by its own
-    reviewer ticket may hold none, but the contradiction it hit is the same durable fact
-    and the human is owed it either way.
+    Two deliberate narrowings, both from #4530:
+
+    ONE claim, not both. ``target.armed_by`` is the table that armed THIS run; a refusal is
+    run-scoped, so it may not touch the sibling claim on the same head. Walking both let a
+    codex-path refusal latch a dispatch claim whose reviewer had not run and free the review
+    lock it held.
+
+    ONLY at the bound. ``mark_refused`` no-ops below :data:`MAX_DISPATCH_ATTEMPTS`, so every
+    ordinary retry survives — which matters because 6 of the 9 heads that hit this refusal
+    recovered at that same head. The page follows the latch rather than the refusal: below
+    the bound there is nothing terminal to report, and a run holding no claim at all has
+    nothing re-arming it, so neither is worth waking the owner for.
+
+    A push mints a new head, which has no claim and no marker, and re-arms review normally.
     """
-    refuse_head_claims(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    latched = target.armed_by.mark_refused(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    if not latched:
+        return
     DeferredQuestion.record(
         _refusal_question(target, reason=reason),
         session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
@@ -443,13 +450,14 @@ def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str
 
 
 def _refusal_question(target: ReviewTarget, *, reason: str) -> str:
-    """The owner-facing statement of a structurally unrecordable verdict."""
+    """The owner-facing statement of a head that spent its last retry on a refused verdict."""
     return (
-        f"[review-refusal {target.slug}#{target.pr_id}@{target.head_sha[:8]}] A reviewer returned a "
-        f"merge_safe verdict over required checks it reported RED, and recording it is refused: "
-        f"{reason} Auto-review is STOPPED for this head — re-arming it would send a fresh reviewer "
-        f"at the same red CI for the same refusal, one whole agent run per dispatch TTL. A new push "
-        f"re-arms review by itself. Fix the red checks and push, land a human verdict, or close the PR?"
+        f"[review-refusal {target.slug}#{target.pr_id}@{target.head_sha[:8]}] This head has used all "
+        f"{MAX_DISPATCH_ATTEMPTS} auto-review attempts, and the last one returned a merge_safe verdict "
+        f"over required checks the same reviewer reported RED, which cannot be recorded: {reason} "
+        f"Auto-review is done for this head — not because the tree is unreviewable, but because the "
+        f"retries are spent. A new push re-arms review by itself. Fix the red checks and push, land a "
+        f"human verdict, or close the PR?"
     )
 
 
