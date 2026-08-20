@@ -20,6 +20,7 @@ from teatree.agents.envelope_contract import (
 )
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence, required_evidence_for_phase
+from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models import Session, Task, Ticket
 
 _WORK_PHASE = "coding"
@@ -120,3 +121,36 @@ class TestSystemContextCarriesTheContract(TestCase):
         context = self._context("scoping")
         assert CONTRACT_HEADING in context
         assert check_evidence(_contract_example(context), "scoping") == ""
+
+
+class TestVerdictPhasesAreTaughtTheChecksRule(SimpleTestCase):
+    """#4522: cut the merge_safe-over-red-checks contradiction where it is written.
+
+    ``ReviewVerdict.record`` refuses that combination and the refusal is right, but no
+    re-review of the same head can satisfy it — the checks stay red — so the brief has to
+    tell the reviewer the recordable shape (a HOLD carrying the CI finding) BEFORE it
+    writes the contradiction. Prompt-side and unfalsifiable on its own; these only pin
+    that the clause reaches the phases that can breach it and no others.
+    """
+
+    def test_a_verdict_returning_phase_carries_the_rule(self) -> None:
+        for phase in ("reviewing", "codex_reviewing", "codex_adversarial_reviewing"):
+            text = "\n".join(envelope_contract_lines(phase))
+            assert VERDICT_CHECKS_RULE in text, phase
+
+    def test_a_phase_that_returns_no_verdict_is_not_taught_a_reviewer_rule(self) -> None:
+        for phase in ("coding", "planning", "shipping", "scoping"):
+            text = "\n".join(envelope_contract_lines(phase))
+            assert VERDICT_CHECKS_RULE not in text, phase
+
+    def test_the_rule_names_the_recordable_shape_not_only_the_refusal(self) -> None:
+        # A brief that only forbids leaves the reviewer without an answer for a red PR,
+        # which is how "merge_safe anyway" gets written in the first place.
+        assert '"hold"' in VERDICT_CHECKS_RULE
+        assert '"findings"' in VERDICT_CHECKS_RULE
+
+    def test_the_clause_does_not_disturb_the_copyable_example(self) -> None:
+        # ``_contract_example`` raw-decodes from the FIRST brace after the heading, so a
+        # clause carrying one would silently make every brief teach an unparsable example.
+        text = "\n".join(envelope_contract_lines("reviewing"))
+        assert check_evidence(_contract_example(text), "reviewing") == ""

@@ -501,3 +501,89 @@ class TestUnverdictedHeadIsAlwaysReArmable:
         assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is not None
 
         assert Task.objects.filter(pk=stale_task_pk).not_auto_review_armed().count() == 1
+
+
+class TestARefusedHeadIsTerminalButThePrIsNot:
+    """#4522: ``mark_refused`` closes ONE tree, and a push is what re-opens review.
+
+    A verdict the recorder is structurally unable to record leaves the head with no
+    verdict, which is precisely the state :meth:`enqueue` re-arms on once the claim's
+    deadline lapses — so the same doomed review is dispatched once per TTL forever. The
+    latch makes that head terminal. What keeps it from suppressing legitimate reviews is
+    the unique key: it is ``(slug, pr_id, head_sha)``, so a new head is a different row.
+    """
+
+    @staticmethod
+    def _arm(head: str = HEAD) -> AutoReviewDispatch:
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=head, pr_url=URL, overlay="teatree")
+        assert row is not None
+        return row
+
+    @staticmethod
+    def _expire() -> None:
+        past = timezone.now() - dt.timedelta(minutes=1)
+        AutoReviewDispatch.objects.filter(slug=SLUG, pr_id=6230).update(deadline=past)
+        MRReviewLock.objects.filter(slug=SLUG, pr_id=6230).update(deadline=past)
+
+    def test_the_unique_key_is_per_head_so_a_new_head_is_a_different_row(self) -> None:
+        # The safety valve, read off the schema rather than inferred: nothing keyed on
+        # (slug, pr_id) alone can be latched by a refusal at one head.
+        key = next(
+            constraint
+            for constraint in AutoReviewDispatch._meta.constraints
+            if constraint.name == "uniq_auto_review_slug_pr_head"
+        )
+        assert list(key.fields) == ["slug", "pr_id", "head_sha"]
+
+    def test_a_refused_head_is_never_re_acquired_even_past_its_deadline(self) -> None:
+        row = self._arm()
+        assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
+        row.refresh_from_db()
+        assert row.state == AutoReviewDispatch.State.REFUSED
+
+        self._expire()
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None
+        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 1
+
+    def test_a_refused_head_is_not_reported_as_saturated(self) -> None:
+        # Saturation means "the retry budget ran out"; this head has budget left and is
+        # unarmable for a different reason, so reporting it there would misname the cause.
+        self._arm()
+        AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        self._expire()
+
+        assert AutoReviewDispatch.saturated().count() == 0
+
+    def test_a_new_head_on_a_refused_pr_arms_normally(self) -> None:
+        self._arm()
+        AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
+
+        rearmed = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL, overlay="teatree")
+
+        assert rearmed is not None
+        assert rearmed.state == AutoReviewDispatch.State.DISPATCHED
+        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 2
+
+    def test_refusing_releases_the_per_mr_lock_so_the_next_push_need_not_wait_out_its_ttl(self) -> None:
+        self._arm()
+        assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.REVIEW_DISPATCHED
+
+        AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
+
+        assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.RESOLVED
+
+    def test_refusing_an_unclaimed_head_is_a_no_op_and_touches_no_lock(self) -> None:
+        self._arm()
+
+        assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD) is False
+        assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.REVIEW_DISPATCHED
+
+    def test_a_resolved_claim_is_not_downgraded_to_refused(self) -> None:
+        # A verdict already covers this tree; a later refusal must not erase that record.
+        row = self._arm()
+        AutoReviewDispatch.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD)
+
+        assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is False
+        row.refresh_from_db()
+        assert row.state == AutoReviewDispatch.State.RESOLVED

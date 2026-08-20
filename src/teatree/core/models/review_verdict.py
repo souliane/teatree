@@ -50,6 +50,30 @@ class ReviewVerdictError(ValueError):
     """A ``ReviewVerdict`` was rejected at record time — the contract failed."""
 
 
+class ChecksContradictionError(ReviewVerdictError):
+    """The one refusal class no re-dispatch can ever satisfy at the same head (#4522).
+
+    A ``merge_safe`` verdict carrying ``gh_verify_result=failed`` is not a format
+    slip and not a reviewer that bound to the wrong tree — it is a self-contradictory
+    judgement about a tree whose required checks are RED, and §17.8 clause 3 refuses
+    it outright. Every other :class:`ReviewVerdictError` names something the next
+    reviewer could get right (an unknown choice value, an abbreviated SHA, a maker
+    identity, an out-of-scope finding), so re-arming the head is a real chance at a
+    verdict. This one names something the head itself makes impossible: the checks
+    are red, so a fresh reviewer reads the same red CI and either emits the same
+    contradiction or a HOLD, and the loop between the refusal and
+    :meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.enqueue`'s
+    post-deadline re-acquire burns one whole agent run per TTL, forever.
+
+    Typed rather than string-matched so the recorder's latch
+    (:mod:`teatree.agents.attempt_recorder`) is bound to the exact raise site instead
+    of to a message that a later reword would silently detach it from. The PENDING
+    branch of :func:`_assert_checks_admit_merge_safe` deliberately does NOT raise this:
+    a queued check is not a red one, and both an expedite waiver and the checks simply
+    finishing make that same head recordable, so it keeps the ordinary retry.
+    """
+
+
 class HeadVerdictState(enum.Enum):
     """The effective (newest-wins) verdict state among a PR's non-stale verdicts at a head.
 
@@ -143,7 +167,7 @@ def _assert_checks_admit_merge_safe(normalized_verify: str, *, expedited: bool) 
             f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
             f"a failed CLEAR)"
         )
-        raise ReviewVerdictError(msg)
+        raise ChecksContradictionError(msg)
     if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
         msg = (
             f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "

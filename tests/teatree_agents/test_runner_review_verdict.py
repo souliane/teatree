@@ -11,15 +11,17 @@ orchestrator path directly with a returned envelope and assert the verdict lands
 and the lock releases.
 """
 
+import datetime as dt
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
-from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Session, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, DeferredQuestion, MRReviewLock, ReviewVerdict, Session, Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -368,3 +370,216 @@ class TestBranchOnlyProbeIsRefused(TestCase):
 
         fetch.assert_not_called()
         assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+
+def _envelope_with(**overrides: object) -> dict[str, object]:
+    """A well-formed verdict envelope with *overrides* applied to the verdict itself."""
+    verdict: dict[str, object] = {
+        "verdict": "merge_safe",
+        "reviewed_sha": _HEAD,
+        "reviewer_identity": "cold-reviewer-agent",
+        "gh_verify_result": "green",
+        "findings": [],
+        **overrides,
+    }
+    return {"summary": "Completed an independent cold review of the pull request.", "review_verdict": verdict}
+
+
+def _contradiction_envelope(**overrides: object) -> dict[str, object]:
+    """A ``merge_safe`` verdict over required checks the reviewer itself reports RED.
+
+    The structurally unrecordable combination §17.8 clause 3 refuses — not a format slip
+    and not a reviewer bound to the wrong tree, but a self-contradictory judgement about a
+    tree whose checks stay red however many reviewers are sent at it.
+    """
+    return _envelope_with(gh_verify_result="failed", **overrides)
+
+
+def _expire_every_claim(*, pr_id: int = _PR_ID) -> None:
+    """Push the dispatch claim AND the per-MR lock past their deadlines."""
+    past = timezone.now() - dt.timedelta(minutes=1)
+    AutoReviewDispatch.objects.filter(slug=_SLUG, pr_id=pr_id).update(deadline=past)
+    MRReviewLock.objects.filter(slug=_SLUG, pr_id=pr_id).update(deadline=past)
+
+
+def _enqueue(*, head_sha: str, pr_id: int = _PR_ID) -> AutoReviewDispatch | None:
+    return AutoReviewDispatch.enqueue(
+        slug=_SLUG,
+        pr_id=pr_id,
+        head_sha=head_sha,
+        pr_url=f"https://github.com/{_SLUG}/pull/{pr_id}",
+        overlay="teatree",
+    )
+
+
+def _pending_refusal_questions() -> "list[DeferredQuestion]":
+    """Every pending refusal page, matched on the QUESTION TEXT rather than its marker.
+
+    Deliberately not keyed on ``dedupe_marker``: the marker is the thing under test, and a
+    query that filtered on it would read "the dedupe was dropped" and "no page was ever
+    recorded" as the same empty result.
+    """
+    return list(
+        DeferredQuestion.objects.filter(
+            question__startswith="[review-refusal ",
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+        )
+    )
+
+
+def _second_reviewing_task_at_the_same_head(dispatch: AutoReviewDispatch) -> Task:
+    """Another reviewing task answerable for the SAME PR and head, with no claim of its own.
+
+    Resolves through the reviewer-ticket half of ``review_target_for_task`` (the dispatch
+    FK still points at the first task), which is how a real second run at one head reaches
+    the recorder once the claim is spent.
+    """
+    first = dispatch.task
+    assert first is not None
+    ticket = first.ticket
+    ticket.extra = {**(ticket.extra or {}), "reviewed_sha": _HEAD}
+    ticket.save(update_fields=["extra"])
+    session = Session.objects.create(ticket=ticket, agent_id="second-reviewer")
+    return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.PENDING)
+
+
+class TestAContradictedChecksVerdictLatchesTheHead(TestCase):
+    """#4522: the refusal stays, but it stops costing one whole agent run per dispatch TTL.
+
+    ``merge_safe`` + ``gh_verify_result=failed`` is refused (§17.8 clause 3) and nothing is
+    recorded, so the head keeps no verdict, so the sweep re-acquires the claim the moment
+    ``DEFAULT_DISPATCH_TTL`` lapses and sends a fresh reviewer at the same red CI for the
+    same refusal — forever. The task-level halt already fired; it is the DISPATCH-level
+    re-arm that never stopped.
+    """
+
+    def test_a_refusal_latches_the_claim_and_no_later_acquire_takes_the_same_head(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        assert "recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.REFUSED
+
+        # Every claim past its deadline and the per-MR lock free: the REFUSED row is the
+        # only thing left standing between the sweep and another burned reviewer run.
+        _expire_every_claim()
+        assert _enqueue(head_sha=_HEAD) is None
+        assert Task.objects.filter(phase="reviewing").count() == 1
+
+    def test_the_latch_is_not_recorded_as_a_verdict_covering_the_tree(self) -> None:
+        # REFUSED, never RESOLVED: no verdict covers this head, and a consumer that read
+        # the latch as "reviewed" would vouch for a tree nobody could vote on.
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        dispatch.refresh_from_db()
+        assert dispatch.state != AutoReviewDispatch.State.RESOLVED
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+    def test_a_new_head_on_the_same_pr_still_arms_a_fresh_review(self) -> None:
+        # The safety valve. The latch binds ONE tree, never the pull request: a push must
+        # always earn a fresh review, or the fix silently suppresses legitimate reviews.
+        task, _ = _reviewing_task_via_dispatch()
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        rearmed = _enqueue(head_sha=_OTHER_HEAD)
+
+        assert rearmed is not None
+        assert rearmed.task is not None
+        assert rearmed.state == AutoReviewDispatch.State.DISPATCHED
+        assert Task.objects.filter(phase="reviewing").count() == 2
+
+    def test_two_refusals_at_one_head_page_the_owner_once(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+        second = _second_reviewing_task_at_the_same_head(dispatch)
+
+        record_result_envelope(second, _contradiction_envelope(), phase="reviewing")
+
+        questions = _pending_refusal_questions()
+        assert len(questions) == 1, [question.dedupe_marker for question in questions]
+        assert questions[0].dedupe_marker == f"review-refusal:{_SLUG}#{_PR_ID}@{_HEAD[:12]}"
+        assert str(_PR_ID) in questions[0].question
+
+    def test_a_refusal_at_a_second_head_pages_separately(self) -> None:
+        # The marker is per head for the same reason the claim is: a different tree is a
+        # different fact, and folding it into the first head's page would hide it.
+        task, _ = _reviewing_task_via_dispatch()
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+        rearmed = _enqueue(head_sha=_OTHER_HEAD)
+        assert rearmed is not None
+        assert rearmed.task is not None
+        rearmed.task.claim(claimed_by="headless-reviewer")
+
+        record_result_envelope(rearmed.task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert len(_pending_refusal_questions()) == 2
+
+
+class TestOnlyTheChecksContradictionLatches(TestCase):
+    """Every other refusal names something the NEXT reviewer could get right (#4522).
+
+    A maker identity, an unknown choice value, a head the reviewer did not bind to — each
+    is a defect in one run, not in the tree, so the head keeps its ordinary retry. Latching
+    on every ``ReviewVerdictError`` would strand PRs whose only fault was one bad envelope.
+    """
+
+    def _assert_did_not_latch(self, dispatch: AutoReviewDispatch) -> None:
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert _pending_refusal_questions() == []
+        _expire_every_claim()
+        again = _enqueue(head_sha=_HEAD)
+        assert again is not None, "an ordinary refusal must leave the head re-armable"
+
+    def test_a_maker_reviewer_identity_does_not_latch(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        record_result_envelope(task, _verdict_envelope(reviewer="coding-agent"), phase="reviewing")
+
+        self._assert_did_not_latch(dispatch)
+
+    def test_a_malformed_envelope_field_does_not_latch(self) -> None:
+        # An unknown ``blast_class`` reaches ``ReviewVerdict.record`` and is refused there
+        # (the evidence gate does not police that field), so this is a genuine
+        # ReviewVerdictError of a non-contradiction class — the discrimination under test.
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _envelope_with(blast_class="galactic"), phase="reviewing")
+
+        assert "Unknown blast_class" in attempt.error
+        self._assert_did_not_latch(dispatch)
+
+    def test_a_head_mismatch_does_not_latch(self) -> None:
+        # Refused UPSTREAM of ``record`` (it never raises), so the latch is unreachable
+        # here by construction. Pinned anyway: a later refactor that routed the head check
+        # through the recording refusal would otherwise silently latch on a divergent
+        # self-assertion, which is a defect in one reviewer, not in the tree.
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        record_result_envelope(task, _verdict_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        self._assert_did_not_latch(dispatch)
+
+    def test_a_hold_on_red_checks_records_normally_and_never_latches(self) -> None:
+        # The outcome the brief now asks for: red checks reported as a HOLD are a
+        # complete, recordable review, and the claim retires RESOLVED rather than REFUSED.
+        task, dispatch = _reviewing_task_via_dispatch()
+        envelope = _contradiction_envelope(
+            verdict="hold",
+            findings=[{"severity": "high", "summary": "required check `test (3.13)` is red"}],
+        )
+
+        attempt = record_result_envelope(task, envelope, phase="reviewing")
+
+        assert attempt.error == ""
+        recorded = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID)
+        assert recorded.verdict == ReviewVerdict.Verdict.HOLD
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.RESOLVED
+        assert _pending_refusal_questions() == []
