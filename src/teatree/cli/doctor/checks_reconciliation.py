@@ -28,10 +28,12 @@ straight from ``TaskAttempt`` telemetry, so a regression of the CAS is caught
 here even if Wave A's own unit tests stay green.
 """
 
-import dataclasses
 import datetime as dt
 
 import typer
+
+from teatree.cli.doctor.checks_external_outcomes import EXTERNAL_CHECKS
+from teatree.cli.doctor.reconciliation_finding import Level, ReconciliationFinding, _alarm, _degraded, _now, _ok
 
 # ``notify_policy`` is enum-only (Django-free), so it is safe at module load — the
 # doctor CLI group loads BEFORE ``ensure_django()``. ``teatree.core.notify`` pulls
@@ -80,49 +82,6 @@ MAX_INCOMING_EVENT_ROWS = 100_000
 #: blind to 85% of the live data by construction.
 MAX_TICKET_TRANSITION_ROWS = 100_000
 MAX_TASK_RESULT_ROWS = 100_000
-
-
-class _Level:
-    OK = "ok"
-    ALARM = "alarm"
-    DEGRADED = "degraded"
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class ReconciliationFinding:
-    """One end-to-end invariant's verdict: healthy, violated (DM'd), or unreadable."""
-
-    check_id: str
-    level: str
-    message: str
-
-    @property
-    def is_alarm(self) -> bool:
-        return self.level == _Level.ALARM
-
-
-def _ok(check_id: str, message: str = "") -> ReconciliationFinding:
-    return ReconciliationFinding(check_id=check_id, level=_Level.OK, message=message)
-
-
-def _alarm(check_id: str, message: str) -> ReconciliationFinding:
-    return ReconciliationFinding(check_id=check_id, level=_Level.ALARM, message=message)
-
-
-def _degraded(check_id: str, exc: Exception) -> ReconciliationFinding:
-    return ReconciliationFinding(
-        check_id=check_id,
-        level=_Level.DEGRADED,
-        message=f"reconciliation check `{check_id}` read crashed: {exc.__class__.__name__}: {exc}",
-    )
-
-
-def _now(now: dt.datetime | None) -> dt.datetime:
-    if now is not None:
-        return now
-    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-    return timezone.now()
 
 
 def _check_park_spin(now: dt.datetime | None = None) -> ReconciliationFinding:
@@ -503,6 +462,14 @@ def _check_high_churn_table_size(now: dt.datetime | None = None) -> Reconciliati
     )
 
 
+def _external_window(now: dt.datetime | None) -> tuple[dt.datetime, dt.timedelta]:
+    from teatree.core.factory.external_outcomes import (  # noqa: PLC0415 — deferred: ORM-backed, Django-free at CLI load
+        DEFAULT_EXTERNAL_WINDOW_DAYS,
+    )
+
+    return _now(now), dt.timedelta(days=DEFAULT_EXTERNAL_WINDOW_DAYS)
+
+
 #: Every reconciliation check, in a stable report order.
 CHECKS: tuple = (
     _check_park_spin,
@@ -515,6 +482,7 @@ CHECKS: tuple = (
     _check_duplicate_execution,
     _check_high_churn_table_size,
     _check_review_dispatch_saturation,
+    *EXTERNAL_CHECKS,
 )
 
 
@@ -571,6 +539,6 @@ def _check_reconciliation_ledger() -> bool:
         typer.echo(f"WARN  Reconciliation ledger crashed: {exc.__class__.__name__}: {exc}")
         return True
     for finding in findings:
-        if finding.level in {_Level.ALARM, _Level.DEGRADED}:
+        if finding.level in {Level.ALARM, Level.DEGRADED}:
             typer.echo(f"WARN  {finding.message}")
     return True
