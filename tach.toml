@@ -588,7 +588,8 @@ depends_on = [
   "teatree.loop.rendering_permalinks",
   "teatree.loop.rendering_zones",
   "teatree.loop.rendering",
-  "teatree.loop.slack_answer"
+  "teatree.loop.slack_answer",
+  "teatree.loop.question_binding"
 ]
 
 [[modules]]
@@ -638,6 +639,16 @@ depends_on = []
 path = "teatree.loop.inbound_reading"
 layer = "domain"
 depends_on = ["teatree.agents", "teatree.loop.inbound_classifier"]
+
+[[modules]]
+# Which queued DeferredQuestion a Slack reply answers. Consumed by BOTH consumers of
+# the PendingChatInjection queue — teatree.loop.slack_answer and teatree.loop.scanners
+# (both domain) — which is the point: one binder, so their reply->question join cannot
+# drift. Declared at domain rather than inheriting orchestration from its package,
+# mirroring teatree.loop.inbound_reading above.
+path = "teatree.loop.question_binding"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.loop.inbound_reading"]
 
 [[modules]]
 # The shared paginated ``check-runs`` argv + page-parser (#4090 sibling). A pure leaf
@@ -733,6 +744,7 @@ path = "teatree.loop.scanners"
 layer = "domain"
 depends_on = [
   "teatree.loop.inbound_reading",
+  "teatree.loop.question_binding",
   "teatree.loop.main_check_runs",
   "teatree.types",
   "teatree.paths",
@@ -861,6 +873,7 @@ layer = "domain"
 depends_on = [
   "teatree.loop.inbound_reading",
   "teatree.loop.inbound_classifier",
+  "teatree.loop.question_binding",
   "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",

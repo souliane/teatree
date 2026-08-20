@@ -180,6 +180,23 @@ def record_outbound_claim(
         logger.debug("notify_user outbound-claim record failed for key=%s: %s", idempotency_key, exc)
 
 
+def record_pulled(*, idempotency_key: str, kind: NotifyKind, text: str, audience: NotifyAudience) -> None:
+    """Record an owner-audience status signal the classifier routed to the pulled surface.
+
+    DEBUG, not the ERROR :func:`record_noop` shouts: nothing went wrong and nobody needs
+    to act — the signal is exactly where it belongs. A ``DatabaseError`` is swallowed to
+    keep the never-raise contract; the egress stands down on the classifier's verdict, not
+    on this row, so a lost write cannot leak the signal back onto the DM channel.
+    """
+    from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    logger.debug("notify_user routed to the pulled surface: key=%s audience=%s", idempotency_key, audience.value)
+    try:
+        BotPing.record_pulled(idempotency_key, kind=kind.value, text=text, audience=audience.value)
+    except DatabaseError as exc:
+        logger.warning("notify_user pulled audit write failed for key=%s: %s", idempotency_key, exc)
+
+
 def record_noop(
     *,
     idempotency_key: str,

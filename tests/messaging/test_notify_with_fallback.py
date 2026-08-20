@@ -1,5 +1,10 @@
 """Tests for the verified-delivery notify wrapper (#1181).
 
+Keys carry a registered outage prefix so the #4524 push/pull classifier lets them reach
+the transport under test — an outage page is also the case this verified fallback exists
+for. The wrapper's own stand-down on a withheld signal is covered by
+``tests/teatree_core/test_notify_pull_routing.py``.
+
 ``notify_with_fallback`` tries the canonical :func:`teatree.core.notify.notify_user`
 path first and, when that path does not deliver (the #1173 silent-rc=1
 class), automatically falls back to a direct messaging-backend send, then
@@ -46,7 +51,7 @@ class TestPrimaryDelivers:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-primary-ok",
+                idempotency_key="watchdog:doctor-unreachable:k-primary-ok",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -68,7 +73,7 @@ class TestFallbackFires:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-fallback",
+                idempotency_key="watchdog:doctor-unreachable:k-fallback",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -82,7 +87,7 @@ class TestFallbackFires:
         # ...and round-trip verified the landed message.
         backend.fetch_message.assert_called_once_with(channel="D-USER", ts="1700000000.000100")
 
-        row = BotPing.objects.get(idempotency_key="k-fallback")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:k-fallback")
         assert row.status == BotPing.Status.SENT
         assert row.transport == NotifyTransport.FALLBACK.value
         assert row.posted_ts == "1700000000.000100"
@@ -96,12 +101,12 @@ class TestFallbackFires:
             notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-observe",
+                idempotency_key="watchdog:doctor-unreachable:k-observe",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
-        row = BotPing.objects.get(idempotency_key="k-observe")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:k-observe")
         # The original primary failure is surfaced so #1173 stays diagnosable.
         assert "primary" in row.error_message.lower()
 
@@ -118,14 +123,14 @@ class TestFallbackVerificationGuards:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-unverified",
+                idempotency_key="watchdog:doctor-unreachable:k-unverified",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
         assert result.delivered is False
         assert result.transport == NotifyTransport.NONE
-        row = BotPing.objects.get(idempotency_key="k-unverified")
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:k-unverified")
         # SENT_UNVERIFIED (not FAILED): the send returned a ts, so the DM almost
         # certainly landed — a NON-recoverable state that must never re-post.
         assert row.status == BotPing.Status.SENT_UNVERIFIED
@@ -140,7 +145,7 @@ class TestFallbackVerificationGuards:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-postfail",
+                idempotency_key="watchdog:doctor-unreachable:k-postfail",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -158,7 +163,7 @@ class TestFallbackVerificationGuards:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-nobackend",
+                idempotency_key="watchdog:doctor-unreachable:k-nobackend",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -172,7 +177,7 @@ class TestFallbackClaimGuardsDoublePost:
         """A concurrent fallback holding a fresh SENDING claim blocks a duplicate post."""
         backend = _delivering_backend()
         BotPing.objects.create(
-            idempotency_key="k-race",
+            idempotency_key="watchdog:doctor-unreachable:k-race",
             kind=BotPing.Kind.INFO,
             status=BotPing.Status.SENDING,
             text="the body",
@@ -187,7 +192,7 @@ class TestFallbackClaimGuardsDoublePost:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-race",
+                idempotency_key="watchdog:doctor-unreachable:k-race",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -201,7 +206,7 @@ class TestFallbackClaimGuardsDoublePost:
         """A SENT_UNVERIFIED row is terminal — a retry never re-posts the sent DM."""
         backend = _delivering_backend()
         BotPing.objects.create(
-            idempotency_key="k-uv-retry",
+            idempotency_key="watchdog:doctor-unreachable:k-uv-retry",
             kind=BotPing.Kind.INFO,
             status=BotPing.Status.SENT_UNVERIFIED,
             text="the body",
@@ -213,7 +218,7 @@ class TestFallbackClaimGuardsDoublePost:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-uv-retry",
+                idempotency_key="watchdog:doctor-unreachable:k-uv-retry",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -248,7 +253,7 @@ class TestNoopDoesNotFallBack:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-noop",
+                idempotency_key="watchdog:doctor-unreachable:k-noop",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
@@ -279,7 +284,7 @@ class TestNoopDoesNotFallBack:
             result = notify_with_fallback(
                 "the body",
                 kind="info",
-                idempotency_key="k-failed-transport",
+                idempotency_key="watchdog:doctor-unreachable:k-failed-transport",
                 audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
