@@ -28,6 +28,7 @@ _LOADED = "0068_the_head_this_process_booted_with"
 _APPLIED = "0071_the_head_the_db_has_now"
 _STARTED = "2026-08-11T08:22:00+00:00"
 _APPLIED_AT = "2026-08-11T17:31:00+00:00"
+_PID = 4242
 
 
 @pytest.fixture(autouse=True)
@@ -36,18 +37,19 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _publish(data_dir: Path, *, role: str, verdict: str, at: datetime, pid: int = 4242) -> None:
+def _publish(data_dir: Path, *, role: str, verdict: str, at: datetime, detail: str = "") -> None:
     payload = {
         "role": role,
-        "pid": pid,
+        "pid": _PID,
         "process_started_at": _STARTED,
         "loaded_head": _LOADED,
         "applied_head": _APPLIED,
         "applied_at": _APPLIED_AT,
         "verdict": verdict,
+        "detail": detail,
         "at": at.isoformat(),
     }
-    (data_dir / f"{RECORD_PREFIX}{role}-{pid}{RECORD_SUFFIX}").write_text(json.dumps(payload), encoding="utf-8")
+    (data_dir / f"{RECORD_PREFIX}{role}-{_PID}{RECORD_SUFFIX}").write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_a_behind_record_fails_and_names_both_heads_and_both_timestamps(
@@ -91,6 +93,24 @@ def test_a_current_record_passes_silently(data_dir: Path, capsys: pytest.Capture
 
     assert doctor_check_process_code_freshness() is True
     assert "FAIL" not in capsys.readouterr().out
+
+
+def test_a_role_that_measured_nothing_warns_and_passes(data_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """#4411: an unmeasured role is a question mark — it must not read as a clean bill of health."""
+    _publish(
+        data_dir,
+        role="worker",
+        verdict="unknown",
+        at=datetime.now(UTC),
+        detail="no app declared a readable max_migration.txt",
+    )
+
+    assert doctor_check_process_code_freshness() is True
+
+    output = capsys.readouterr().out
+    assert output.startswith("WARN")
+    assert "could not measure its own freshness" in output
+    assert "no app declared a readable max_migration.txt" in output
 
 
 def test_no_record_yet_warns_and_passes(data_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
