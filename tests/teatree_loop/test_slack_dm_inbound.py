@@ -150,6 +150,7 @@ class TestScan:
             "user_id": "U0DEMOUSER1",
             "text": "ping",
             "overlay": "demo",
+            "thread_ts": "",
         }
         assert "ping" in signals[0].summary
 
@@ -179,3 +180,35 @@ class TestScan:
         backend = FakeMessaging()
         scanner = SlackDmInboundScanner(backend=backend, overlay="demo")
         assert "slack_dm_inbound" in scanner.name
+
+
+class TestThreadTsIsRecorded:
+    """A reply's thread root is the only identity binding it to its question.
+
+    Dropping it at this seam is what left the binder guessing which of the
+    mirrored questions in one DM a reply belonged to.
+    """
+
+    def test_thread_reply_records_its_root(self) -> None:
+        backend = FakeMessaging(
+            dms=[{"ts": "2.0", "thread_ts": "1.0", "user": "U", "channel": "D", "text": "postgres-1"}],
+        )
+        signals = SlackDmInboundScanner(backend=backend).scan()
+
+        assert PendingChatInjection.objects.get().thread_ts == "1.0"
+        assert signals[0].payload["thread_ts"] == "1.0"
+
+    def test_top_level_message_records_no_thread(self) -> None:
+        backend = FakeMessaging(dms=[{"ts": "1.0", "user": "U", "channel": "D", "text": "hi"}])
+        SlackDmInboundScanner(backend=backend).scan()
+
+        assert PendingChatInjection.objects.get().thread_ts == ""
+
+    def test_a_thread_root_is_not_a_reply_to_itself(self) -> None:
+        """Slack stamps ``thread_ts == ts`` on a root, which references nothing."""
+        backend = FakeMessaging(
+            dms=[{"ts": "1.0", "thread_ts": "1.0", "user": "U", "channel": "D", "text": "hi"}],
+        )
+        SlackDmInboundScanner(backend=backend).scan()
+
+        assert PendingChatInjection.objects.get().thread_ts == ""

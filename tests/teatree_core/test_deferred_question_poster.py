@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
-from teatree.core.models import BotPing, DeferredQuestion
+from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 
 
@@ -108,3 +108,29 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
 
         assert (delivered, total) == (0, 0)
         backend.post_message.assert_not_called()
+
+
+class TestMirrorIsPostedAtThreadRoot(TestCase):
+    """The mirror never nests under the owner's active DM thread.
+
+    The stamped ``slack_ts`` is the reply-binding identity: a Slack reply
+    carries its thread ROOT's ts, so a mirror posted one level down inside the
+    conversation the owner happened to be in records a ts no reply can name.
+    """
+
+    def test_posts_at_root_even_mid_conversation(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref="D-USER",
+            thread_ref="1699999999.000000",
+            idempotency_key="slack:Ev-owner-thread",
+        )
+        question = DeferredQuestion.record("Which DB host?", session_id="s")
+        backend = _backend()
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
+
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+        question.refresh_from_db()
+        assert question.slack_ts == "1700000000.000000"

@@ -327,28 +327,58 @@ class DeferredQuestion(models.Model):
         return (current or 0) + 1
 
     @classmethod
-    def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
-        """The single currently-live question a Slack reply can resolve.
+    def _reply_candidates(cls, *, channel: str, after_ts: str) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows mirrored to *channel* whose mirror ts precedes *after_ts*.
 
-        Returns the highest-generation pending row mirrored to *channel*
-        whose mirror ``slack_ts`` is strictly before *after_ts* (the
-        reply's ts) — so a reply can never bind a question posted after it
-        (the ``after_ts`` guard). ``None`` when no such live row exists,
-        which the caller treats as a stale reply (ordinary DM context).
+        The ``after_ts`` guard is the one invariant every reply-binding query
+        shares: a reply can never answer a question posted after it.
+        """
+        return cls.objects.filter(
+            slack_channel=channel,
+            slack_ts__lt=after_ts,
+            slack_ts__gt="",
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+        )
+
+    @classmethod
+    def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The highest-generation pending question mirrored to *channel* before *after_ts*.
+
+        Recency is a heuristic, not identity: with a deep mirrored backlog the
+        newest row is reliably NOT the one an unaddressed reply answers. Reply
+        binding therefore goes through :meth:`for_thread` /
+        :meth:`sole_for_reply`; this stays the generation cursor for the
+        capture path, where one live generation per (session, run) is the rule.
         """
         if not channel or not after_ts:
             return None
-        return (
-            cls.objects.filter(
-                slack_channel=channel,
-                slack_ts__lt=after_ts,
-                slack_ts__gt="",
-                answered_at__isnull=True,
-                dismissed_at__isnull=True,
-            )
-            .order_by("-generation", "-created_at")
-            .first()
-        )
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).order_by("-generation", "-created_at").first()
+
+    @classmethod
+    def for_thread(cls, *, channel: str, thread_ts: str, after_ts: str) -> "DeferredQuestion | None":
+        """The pending question *thread_ts* roots on — an exact mirror join, no guessing.
+
+        A Slack thread roots on the message being replied to, so a reply
+        carrying ``thread_ts`` names its question's mirror ``slack_ts``
+        outright. ``None`` when no pending row was mirrored at that ts.
+        """
+        if not channel or not thread_ts or not after_ts:
+            return None
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).filter(slack_ts=thread_ts).first()
+
+    @classmethod
+    def sole_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The only live question on *channel*, or ``None`` when there is not exactly one.
+
+        The fallback for a top-level reply that names no question: with a single
+        pending mirror the reply cannot be for anything else, and with two or
+        more it is unattributable — so nothing binds rather than the wrong row.
+        """
+        if not channel or not after_ts:
+            return None
+        candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
+        return candidates[0] if len(candidates) == 1 else None
 
     def mark_stale(self, reason: str) -> None:
         """Stamp ``dismissed_at`` + ``resolved_via='stale'`` + audit, single-use.

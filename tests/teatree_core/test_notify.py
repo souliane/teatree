@@ -20,8 +20,8 @@ from django.test import TestCase
 from teatree.core import notify as notify_module
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, IncomingEvent
-from teatree.core.notify import NotifyKind, notify_user, resolve_owner_dm_backend
-from teatree.core.notify_types import NotifyReason
+from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
+from teatree.core.notify_types import NotifyOptions, NotifyReason
 
 _DB_LOCKED = OperationalError("database is locked")
 
@@ -101,6 +101,25 @@ class TestNotifyUser(TestCase):
         )
 
         assert backend.post_message.call_args.kwargs["thread_ts"] == "1700000000.000111"
+
+    def test_as_thread_root_ignores_the_active_dm_thread(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref="D-USER",
+            thread_ref="1700000000.000111",
+            idempotency_key="slack:Ev-active-root-opt-out",
+        )
+        backend = _backend()
+
+        notify_user_outcome(
+            "pending question #7",
+            kind=NotifyKind.QUESTION,
+            idempotency_key="rooted-question",
+            audience=NotifyAudience.OWNER_QUESTION,
+            options=NotifyOptions(backend=backend, user_id="U_ME", as_thread_root=True),
+        )
+
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
     def test_no_active_thread_posts_at_root(self) -> None:
         backend = _backend()

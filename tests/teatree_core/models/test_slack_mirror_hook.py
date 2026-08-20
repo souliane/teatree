@@ -329,8 +329,8 @@ class TestRouterDomainWiring(TestCase):
     """The router owns the platform→domain edges the leaf must not carry.
 
     The ``teatree.hooks.slack_mirror`` leaf is a pure platform leaf, so the
-    Slack ``post`` (``teatree.backends.slack``) and the active-DM-thread lookup
-    (``teatree.core``) are built HERE and injected. These pin that wiring.
+    Slack ``post`` (``teatree.backends.slack``) and the audio enricher
+    (``teatree.core.speak``) are built HERE and injected. These pin that wiring.
     """
 
     def test_http_poster_is_slack_client_post_with_no_retry(self) -> None:
@@ -338,25 +338,6 @@ class TestRouterDomainWiring(TestCase):
         client = poster.__self__
         assert client._max_retries == 0
         assert client._timeout == pytest.approx(wiring._SLACK_POST_TIMEOUT_SECONDS)
-
-    def test_active_dm_thread_resolves_most_recent_ref_for_channel(self) -> None:
-        from teatree.core.models import IncomingEvent  # noqa: PLC0415
-
-        IncomingEvent.objects.create(
-            source=IncomingEvent.Source.SLACK,
-            channel_ref="D-cached",
-            thread_ref="1700000000.0009",
-            idempotency_key="slack:Ev-mirror",
-        )
-
-        assert router._active_dm_thread_for_channel("D-cached") == "1700000000.0009"
-
-    def test_active_dm_thread_empty_when_no_channel(self) -> None:
-        assert router._active_dm_thread_for_channel("") == ""
-
-    def test_active_dm_thread_empty_when_django_unavailable(self) -> None:
-        with patch.object(router, "bootstrap_teatree_django", return_value=False):
-            assert router._active_dm_thread_for_channel("D-cached") == ""
 
 
 class TestHooksJsonWiring(TestCase):
