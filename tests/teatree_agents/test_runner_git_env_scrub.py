@@ -20,15 +20,16 @@ import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.runner import _provider_child_env, run_agent
 from teatree.config import AgentHarnessProvider
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 
 class TestGitEnvStrippedAtDispatch(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_child_inherits_no_git_overrides_and_they_are_restored(self) -> None:
         captured: dict[str, set[str]] = {}
@@ -83,7 +84,7 @@ class TestReaderPhaseEnvScrubbedAtDispatch(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_reader_child_base_and_options_env_carry_no_secret_and_no_tool_source(self) -> None:
         captured: dict[str, object] = {}

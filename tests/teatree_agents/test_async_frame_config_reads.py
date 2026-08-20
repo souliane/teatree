@@ -27,7 +27,8 @@ from teatree.agents.harness import PydanticAiHarness, resolve_harness
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.config.override_read_health import degraded_read_report
-from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task
+from tests.factories import planned_ticket
 
 _RESULT_ENVELOPE = '{"summary": "test summary", "files_modified": ["a.py"]}'
 
@@ -44,7 +45,7 @@ async def _resolve_under_a_live_loop(harness: PydanticAiHarness, model: str) -> 
 
 class TestADispatchLeavesTheOverrideTierReadable(TestCase):
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         self.marker = Path(tempfile.mkdtemp()) / "config-read-degraded.json"

@@ -57,12 +57,16 @@ class TicketPlanCommandTest(TestCase):
         assert artifact is not None
         assert artifact.recorded_by == "souliane"
 
-    def test_plan_on_non_started_ticket_returns_error_not_crash(self) -> None:
-        # plan() is sourced only from STARTED; running it on a CODED ticket
-        # surfaces the transition refusal as a structured error, not a crash.
+    def test_plan_on_non_started_ticket_still_records_the_signal(self) -> None:
+        # plan() (the STARTED -> PLANNED FSM transition) is sourced only from
+        # STARTED; for an already-in-flight ticket (#4449 class), the gate's
+        # satisfying signal is the PlanArtifact's EXISTENCE, not the transition
+        # -- so the artifact is still recorded, with no transition attempted
+        # and no error surfaced, and the ticket's state is left untouched.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
         result = cast("dict[str, object]", call_command("ticket", "plan", str(ticket.pk), "a plan"))
-        assert result.get("error")
+        assert not result.get("error")
+        assert PlanArtifact.objects.filter(ticket=ticket).exists()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.CODED
 
@@ -88,3 +92,27 @@ class TicketPlanBypassCommandTest(TestCase):
         assert artifact is not None
         assert "souliane" in artifact.recorded_by or artifact.recorded_by == "souliane"
         assert result["state"] == Ticket.State.PLANNED
+
+    def test_plan_bypass_on_non_started_ticket_still_records_the_signal(self) -> None:
+        # Same #4449-class fix as `plan`: an already-in-flight (non-STARTED)
+        # ticket still gets its audited bypass artifact recorded -- no
+        # transition attempted, no error, state unchanged.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "plan-bypass",
+                str(ticket.pk),
+                "--human-authorize",
+                "souliane",
+                "--reason",
+                "user-ordered ASAP fix",
+            ),
+        )
+        assert not result.get("error")
+        artifact = PlanArtifact.objects.filter(ticket=ticket).first()
+        assert artifact is not None
+        assert "souliane" in artifact.recorded_by or artifact.recorded_by == "souliane"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED

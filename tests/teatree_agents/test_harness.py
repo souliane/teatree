@@ -60,9 +60,10 @@ from teatree.agents.pydantic_ai_config import (
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.config import AgentHarnessProvider, get_effective_settings
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, UsageWindowState
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, UsageWindowState
 from teatree.llm.credentials import CredentialError
 from teatree.llm.openai_compatible import OpenAICompatibleBackend
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
 
 
@@ -161,7 +162,7 @@ class TestResolveHarnessRehydratesPydanticAiThread(TestCase):
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.parked = Task.objects.create(ticket=self.ticket, session=self.session)
         self.resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
@@ -211,7 +212,7 @@ class TestDriveThroughInjectedHarness(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.task = Task.objects.create(ticket=self.ticket, session=self.session)
         # A threaded ORM read under TestCase's wrapping SQLite transaction is a
@@ -268,7 +269,7 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
     """``run_agent`` genuinely dispatches through ``PydanticAiHarness`` when selected."""
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -549,7 +550,7 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     """
 
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -639,7 +640,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         self.task = Task.objects.create(
             ticket=self.ticket,

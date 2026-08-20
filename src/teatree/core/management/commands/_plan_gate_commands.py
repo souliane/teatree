@@ -92,30 +92,49 @@ def record_bypass_and_advance(*, ticket: Ticket, plan_text: str, recorded_by: st
 
 
 def _advance_with(ticket: Ticket, make_artifact: "Callable[[], PlanArtifact]") -> "PlanArtifact":
-    """Create an artifact via *make_artifact* then drive ``ticket.plan()`` in one atomic block."""
+    """Create an artifact via *make_artifact*, then drive ``ticket.plan()`` ONLY when it can apply.
+
+    ``ticket.plan()``'s FSM source is exclusively ``Ticket.State.STARTED``; the
+    plan-dispatch gate's satisfying signal
+    (``plan_dispatch_gate.unplanned_dispatch_refusal``) is the *existence* of a
+    ``PlanArtifact``/trivial-skip marker, never the transition itself. Most
+    dispatch targets this command actually runs against are already past
+    STARTED (coded/tested/reviewed/etc. — the #4449 class), so unconditionally
+    attempting the transition inside this same atomic block would raise
+    ``TransitionNotAllowed`` and roll the artifact write back too, leaving the
+    gate's own named remedy unusable for the overwhelming majority of
+    already-in-flight tickets (#4409). Recording the artifact is
+    therefore unconditional; the STARTED → PLANNED advance is attempted only
+    when the ticket is actually STARTED.
+    """
     try:
         with transaction.atomic():
             artifact = make_artifact()
-            ticket.plan()
-            ticket.save()
+            if ticket.state == Ticket.State.STARTED:
+                ticket.plan()
+                ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
         raise PlanAdvanceError(ticket, str(exc)) from exc
     return artifact
 
 
 def record_trivial_skip_and_advance(*, ticket: Ticket, reason: str, by: str) -> None:
-    """Record a trivial-skip marker and drive ``ticket.plan()`` in one atomic block.
+    """Record a trivial-skip marker, then drive ``ticket.plan()`` ONLY when it can apply.
 
     The lightweight sibling of :func:`record_artifact_and_advance` — no
-    ``PlanArtifact`` is written; the marker is the satisfying signal. Raises
-    :class:`PlanAdvanceError` on a rejected marker or a refused transition (the
-    atomic block rolls the marker write back).
+    ``PlanArtifact`` is written; the marker is the satisfying signal. Marker
+    recording is unconditional; the STARTED → PLANNED advance is attempted
+    only when ``ticket.state == Ticket.State.STARTED`` (see
+    :func:`_advance_with` for why — the #4449 class, #4409). Raises
+    :class:`PlanAdvanceError` on a rejected marker (the atomic block rolls the
+    marker write back).
     """
     try:
         with transaction.atomic():
             mark_trivial_plan_skip(ticket, reason=reason, by=by)
-            ticket.plan()
-            ticket.save()
+            if ticket.state == Ticket.State.STARTED:
+                ticket.plan()
+                ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
         raise PlanAdvanceError(ticket, str(exc)) from exc
 

@@ -30,6 +30,7 @@ from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.runner import TaskUsage, _collect, run_agent
 from teatree.core.models import Session, Task, Ticket, Worktree
+from tests.factories import planned_ticket
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 #: The opening sentence a toolless run stops on — attempt 6534's whole output.
@@ -111,7 +112,7 @@ class TestRunHeadlessRefusesAToollessCodingRun(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def test_prose_only_coding_run_is_refused_by_the_action_gate(self) -> None:
         session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
@@ -139,7 +140,7 @@ class TestToollessCodingAttemptIsNotASuccess(TestCase):
         self._tmp_path = tmp_path
 
     def _task(self, *, phase: str = "coding") -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 

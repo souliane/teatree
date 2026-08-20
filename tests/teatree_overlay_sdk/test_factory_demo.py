@@ -18,7 +18,8 @@ import teatree.overlay_sdk as sdk
 from teatree.agents import harness_registry
 from teatree.agents import runner as runner_mod
 from teatree.agents.runner import TaskUsage
-from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 
@@ -37,7 +38,7 @@ class _DemoFactoryHarness:
 
 class TestOverlaySdkDrivesFullCycle(TestCase):
     def test_demo_overlay_dispatch_attempt_cost_via_overlay_sdk_only(self) -> None:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         task.renew_lease = lambda **_kw: None
@@ -65,7 +66,7 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
         assert breakdown.attempts >= 1
 
     def test_attempt_recording_via_overlay_sdk_surface(self) -> None:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
