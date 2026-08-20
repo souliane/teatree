@@ -92,6 +92,36 @@ class PendingPrDrainScannerTestCase(TestCase):
         assert [signal.kind for signal in signals] == ["pending_pr.drained"]
         assert not PendingPullRequest.objects.filter(branch=branch).exists()
 
+    def test_content_that_squash_merged_then_came_back_as_a_merge_discharges(self) -> None:
+        """#4429: the branch is ahead by SHA and delivers nothing — a PR would be empty.
+
+        Renewing here is what re-opened a PR on already-merged content twice in one
+        evening, each costing a full cold review it could not repay.
+
+        The branch needs a SECOND commit whose subject the squash commit cannot
+        absorb: a single-commit branch whose only subject the squash-commit's
+        `(#N)`-suffix match reuses makes `genuinely_ahead` empty, so the branch
+        reads SYNCED at the pre-existing `ahead == 0` arm — never reaching the
+        layer this test means to guard (review finding on #4550).
+        """
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        call_command("pr", "ensure-pr", repo=str(repo), branch=branch)
+        (repo / "test_feature.py").write_text("def test_feature() -> None:\n    assert value == 1\n")
+        _run_git("add", "test_feature.py", cwd=repo)
+        _run_git("commit", "-m", "test: cover the feature", cwd=repo)
+        _run_git("checkout", "main", cwd=repo)
+        _run_git("merge", "--squash", branch, cwd=repo)
+        _run_git("commit", "-m", "feat: add the feature (#4422)", cwd=repo)
+        _run_git("push", "origin", "main", cwd=repo)
+        _run_git("checkout", branch, cwd=repo)
+        _run_git("merge", "--no-edit", "origin/main", cwd=repo)
+        _run_git("push", "origin", branch, cwd=repo)
+
+        signals = PendingPrDrainScanner().scan()
+
+        assert [signal.kind for signal in signals] == ["pending_pr.drained"]
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
     def test_repo_gone_from_disk_keeps_the_obligation_rather_than_dropping_it(self) -> None:
         PendingPullRequest.objects.owe(
             repo_path=str(self._tmp_path / "reaped-worktree"),

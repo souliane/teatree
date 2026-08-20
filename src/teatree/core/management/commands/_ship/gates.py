@@ -27,6 +27,7 @@ from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.core.worktree.branch_currency import require_current_branch
+from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -66,7 +67,7 @@ class NoCommitsAheadError(TypedDict):
 
 
 def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | None:
-    """Block a hollow ship: the branch must have ≥1 commit ahead of base (#788).
+    """Block a hollow ship: the branch must be ahead of base by a commit AND by content (#788).
 
     The phase gate answers "is the work attested?"; this answers "is
     there actually anything to ship?". Without it, a
@@ -76,12 +77,19 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
     between main and branch", deferring the real failure into the async
     worker where it is easy to miss.
 
-    Blocks **only on a confirmed zero** (``rev_count(base..branch) ==
-    0``), naming the branch and the base it was compared against. If git
-    introspection cannot be performed (no real repo, base undetectable,
-    git error) the state is *unverifiable* — distinct from the
-    confirmed-zero bug — so the prior behaviour (proceed) is preserved
-    rather than blocking on an unknown.
+    Counting commits answers it only by SHA, which a squash-merge rewrites: a
+    branch that shipped and then merged the base back is ahead by several commits
+    and delivers nothing, so the forge opens a zero-file PR instead of refusing
+    (#4429). The content half asks git the three-dot question the forge itself
+    diffs a pull request on.
+
+    Blocks **only on a confirmed zero** — ``rev_count(base..branch) == 0``, or a
+    delta git proved empty — naming the branch and the base it was compared
+    against. If git introspection cannot be performed (no real repo, base
+    undetectable, git error) the state is *unverifiable* — distinct from the
+    confirmed-zero bug — so the prior behaviour (proceed) is preserved rather
+    than blocking on an unknown, which is also what an unreadable three-dot
+    probe reports.
     """
     repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     branch = worktree.branch
@@ -105,7 +113,17 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
         )
         return None  # unverifiable ≠ the confirmed-zero bug — do not block
     if ahead > 0:
-        return None
+        if not pr_from_branch_would_be_empty(repo, branch, base):
+            return None
+        return NoCommitsAheadError(
+            error=(
+                f"Refusing to ship: branch {branch!r} carries no changes over {base} — "
+                f"its pull request would be empty, so the work it holds has already landed "
+                f"(a squash-merge, then a merge back). Nothing to ship."
+            ),
+            branch=branch,
+            base=base,
+        )
     return NoCommitsAheadError(
         error=(
             f"Refusing to ship: branch {branch!r} has 0 commits ahead of {base} — "

@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -237,6 +238,32 @@ class TestAssertCommitsAheadOfBase(TestCase):
         assert result["branch"] == "feat-parity"
         assert result["base"] == "origin/main"
         assert "0 commits ahead" in result["error"]
+
+    def test_commits_ahead_but_no_content_over_base_blocks(self) -> None:
+        """#4429: a squash-merged branch that merged the base back would ship an empty PR."""
+        with tempfile.TemporaryDirectory() as root:
+            self._git(root, "init", "-q", "-b", "main")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            (Path(root) / "a").write_text("1", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            self._git(root, "checkout", "-q", "-b", "feat-squashed")
+            (Path(root) / "b").write_text("2", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "feat: the work")
+            self._git(root, "checkout", "-q", "main")
+            self._git(root, "merge", "-q", "--squash", "feat-squashed")
+            self._git(root, "commit", "-q", "-m", "feat: the work (#4422)")
+            self._git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+            self._git(root, "checkout", "-q", "feat-squashed")
+            self._git(root, "merge", "-q", "--no-edit", "origin/main")
+
+            result = _assert_commits_ahead_of_base(self._wt(root, "feat-squashed"))
+
+        assert result is not None, "a branch whose pull request would be empty MUST block"
+        assert result["branch"] == "feat-squashed"
+        assert "carries no changes" in result["error"]
 
     def test_unverifiable_git_error_returns_none_proceeds(self) -> None:
         """No-block-on-unknown safety contract (#788's make-or-break fail-direction).

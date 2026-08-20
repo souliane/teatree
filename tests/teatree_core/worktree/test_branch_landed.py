@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.worktree.branch_landed import assess_revert_risk, branch_content_landed_on_base
+from teatree.core.worktree.branch_landed import (
+    assess_revert_risk,
+    branch_content_landed_on_base,
+    pr_from_branch_would_be_empty,
+)
 from tests._git_repo import make_git_repo, run_git
 
 FIX = "def parse(raw: str) -> int:\n    return int(raw.strip() or 0)\n"
@@ -176,6 +180,45 @@ class TestBranchContentLandedOnBase:
         repo = _repo_with_branch_carrying_the_fix(tmp_path)
 
         assert branch_content_landed_on_base(str(repo), branch, target) is False
+
+
+class TestPrFromBranchWouldBeEmpty:
+    """#4429: the branch that squash-merged, then merged the base back in."""
+
+    def _base_takes_the_fix_and_the_branch_merges_it_back(self, tmp_path: Path) -> Path:
+        repo = _repo_with_branch_carrying_the_fix(tmp_path)
+        (repo / "app" / "parse.py").write_text(FIX)
+        (repo / "app" / "test_parse.py").write_text(TESTS)
+        _commit(repo, "fix(parse): honour whitespace (#4422)")
+        run_git(repo, "checkout", "-q", "fix/parse")
+        run_git(repo, "merge", "-q", "--no-edit", "main")
+        return repo
+
+    def test_empty_once_the_base_holds_the_work_the_branch_merged_back(self, tmp_path: Path) -> None:
+        repo = self._base_takes_the_fix_and_the_branch_merges_it_back(tmp_path)
+
+        assert pr_from_branch_would_be_empty(str(repo), "fix/parse", "main") is True
+
+    def test_empty_even_when_the_base_moved_on_afterwards(self, tmp_path: Path) -> None:
+        """The forge diffs from the merge base, so later base work is not the branch's delta."""
+        repo = self._base_takes_the_fix_and_the_branch_merges_it_back(tmp_path)
+        run_git(repo, "checkout", "-q", "main")
+        (repo / "CHANGELOG.md").write_text("the base moves on\n")
+        _commit(repo, "docs: unrelated base work")
+
+        assert pr_from_branch_would_be_empty(str(repo), "fix/parse", "main") is True
+
+    def test_not_empty_while_the_branch_still_carries_work(self, tmp_path: Path) -> None:
+        repo = _repo_with_branch_carrying_the_fix(tmp_path)
+
+        assert pr_from_branch_would_be_empty(str(repo), "fix/parse", "main") is False
+
+    @pytest.mark.parametrize(("branch", "target"), [("no/such/branch", "main"), ("fix/parse", "origin/nope")])
+    def test_unresolvable_ref_fails_closed(self, tmp_path: Path, branch: str, target: str) -> None:
+        """A probe that could not run never suppresses a pull request the branch owes."""
+        repo = _repo_with_branch_carrying_the_fix(tmp_path)
+
+        assert pr_from_branch_would_be_empty(str(repo), branch, target) is False
 
 
 class TestAssessRevertRisk:
