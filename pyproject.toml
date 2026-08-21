@@ -162,9 +162,9 @@ dev = [
   # ``typer-slim`` and ``click<8.4`` instead. That combination hands the CLI
   # ``typer._click`` Command objects while the code reads the real ``click``
   # context stack, so every command dies with "There is no active click context"
-  # (#4570). 3.5.1 also caps ``django<6.1``, which would silently undo the
-  # ``django>=6,<6.2`` widening #4404 needs. Raise this ceiling only together
-  # with a django-typer release that supports the newer typer.
+  # (#4570). 3.5.1 also caps ``django<6.1``, which would block the Django 6.1
+  # move #4404 owns. Raise this ceiling only together with a django-typer
+  # release that supports the newer typer.
   "typer>=0.12,<0.26",
 ]
 docs = [
