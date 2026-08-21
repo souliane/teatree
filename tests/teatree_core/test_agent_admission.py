@@ -658,11 +658,19 @@ class TestTheDrainingClassHasAReservedSlot(TestCase):
         assert self._verdict(expensive=0, cheap=self._CEILING - 1).denied_for(PhaseCost.EXPENSIVE) is None
 
     def test_the_reservation_can_never_starve_the_expensive_class(self) -> None:
-        # Clamped to at most ceiling-1: a fat-fingered reservation must not be able to
-        # stop the factory writing code at all.
+        # Clamped to at most ceiling-2, so the expensive class always keeps TWO slots and a
+        # fat-fingered reservation cannot stop the factory writing code at all.
+        #
+        # `expensive=1` is what pins the clamp; `expensive=0` passes under either value and
+        # cannot tell them apart. Every case in this suite runs at `cores=8` (ceiling 4), so
+        # nothing here reaches the 4-core ceiling-2 box directly — a reservation of 99 is the
+        # local stand-in, since it saturates the clamp at any ceiling. Without this line a
+        # revert to ceiling-1 passes the whole local suite and is caught only by a 4-core CI
+        # drain test that names none of this code (#4407's factory-starves-itself outage).
         ConfigSetting.objects.set_value("drain_slot_reservation", 99)
 
         assert self._verdict(expensive=0).denied_for(PhaseCost.EXPENSIVE) is None
+        assert self._verdict(expensive=1).denied_for(PhaseCost.EXPENSIVE) is None
 
     def test_a_zero_reservation_is_the_rollback_lever(self) -> None:
         # Byte-identical to the pre-#4374 verdict: the expensive class takes every slot

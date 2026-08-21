@@ -1099,8 +1099,10 @@ class _ProvisioningSettings:
     # about how much is kept FOR it, so expensive work filled every slot and zero reviews
     # ran — the #4098 outcome by a different route. Reviewing and shipping RETIRE pull
     # requests where coding CREATES them, so with capacity allocated purely first-come the
-    # producing side can occupy the whole factory. Clamped to at most ``ceiling - 1``, so
-    # a fat-fingered value can never stop the factory writing code. ``0`` restores the
+    # producing side can occupy the whole factory. Clamped to at most ``ceiling - 2``, so
+    # the expensive class always keeps two slots and a fat-fingered value can never stop the
+    # factory writing code — two rather than one because a 4-core box's ceiling is 2, where a
+    # ``ceiling - 1`` clamp leaves a SINGLE expensive slot (#4407). ``0`` restores the
     # pre-#4374 first-come allocation: the rollback lever. Per-overlay overridable.
     drain_slot_reservation: int = 1
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
