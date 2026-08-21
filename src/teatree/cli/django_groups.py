@@ -383,6 +383,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
             ("record-evidence", "Record a review-evidence artifact for a ticket."),
             ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
+            ("findings", "Print a recorded verdict's findings, so a HOLD can be read and acted on."),
+            ("publish-findings", "Post a recorded verdict's findings to its PR."),
             ("lock-acquire", "Acquire the per-MR review-dispatch lock before a manual review."),
             ("lock-status", "Report the current MRReviewLock state for an MR (read-only)."),
             ("rebind-clearance", "Re-bind a CLEAR to a conflict-only merge commit."),

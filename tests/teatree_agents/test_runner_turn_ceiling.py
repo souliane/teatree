@@ -25,8 +25,8 @@ from teatree.agents.runner_truncation import (
 )
 from teatree.config import UserSettings
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.task_failure_taxonomy import RecoveryStrategy, classify_failure, recovery_strategy
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
-from teatree.failure_signatures import is_transient_failure
 
 
 def _result(subtype: str, *, num_turns: int = 250) -> ResultMessage:
@@ -133,15 +133,15 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
 
     def test_the_cap_is_not_laundered_into_a_transient_auto_requeue(self) -> None:
         # A turn ceiling is a DELIBERATE bound, not an infrastructure interruption.
-        # Recorded under the generic ``result_error:`` prefix it would match the
-        # transient marker set and be auto-requeued straight back into the same
-        # ceiling; the named reason keeps it deterministic, so the repair sweep
-        # escalates it durably instead of silently re-spending the run.
+        # Recorded under the generic ``result_error:`` prefix it would classify as a
+        # RETRY kind and be auto-requeued straight back into the same ceiling; the named
+        # reason keeps it deterministic, so the repair sweep escalates it durably instead
+        # of silently re-spending the run.
         task = self._task()
         with patch("teatree.agents.runner.alert_owner_max_turns_truncation"):
             attempt = _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         assert attempt is not None
-        assert is_transient_failure(attempt.error) is False
+        assert recovery_strategy(classify_failure(attempt.error)) is not RecoveryStrategy.RETRY
 
     def test_the_reason_names_the_turns_and_both_lanes_ceilings(self) -> None:
         # ONE subtype covers both lanes' per-run caps, so the reason names both knobs

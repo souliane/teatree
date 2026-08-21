@@ -126,6 +126,7 @@ def ladder(
         return evaluate(spec, runner.run(spec))
 
     rows = run_escalation_ladder(specs, models, run_trial=_run_trial, policy=LadderPolicy(trials=trials, require="all"))
+    RunGuards.hooks_registered(rows)
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
     graded = [row for row in rows if not row.skipped]
     RunGuards.api_metered_total(

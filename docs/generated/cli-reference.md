@@ -11795,6 +11795,9 @@ Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
 │ record-evidence   Record a review-evidence artifact for a ticket.            │
 │ status            Report whether an MR is safe to approve at its current     │
 │                   head (read-only).                                          │
+│ findings          Print a recorded verdict's findings, so a HOLD can be read │
+│                   and acted on.                                              │
+│ publish-findings  Post a recorded verdict's findings to its PR.              │
 │ lock-acquire      Acquire the per-MR review-dispatch lock before a manual    │
 │                   review.                                                    │
 │ lock-status       Report the current MRReviewLock state for an MR            │
@@ -11859,6 +11862,8 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │                                       not the branch checkout alone. Without │
 │                                       it such a finding cannot carry         │
 │                                       blocking severity (#4251).             │
+│ --json                                Emit the record result as JSON on      │
+│                                       stdout.                                │
 │ --help                                Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11887,6 +11892,7 @@ Usage: t3 teatree review record-evidence [OPTIONS] TICKET_ID
 │ --head-sha        TEXT  Full 40-char hex commit id of the reviewed tree.     │
 │ --repos           TEXT  Comma-separated repos covered (≥2 required for       │
 │                         integration_review).                                 │
+│ --json                  Emit the evidence record as JSON.                    │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11899,17 +11905,68 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
  Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
 
  Parses the PR/MR URL, fetches the live head SHA, looks up the latest
- recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
+ recorded verdict, and reports one of: ``safe-to-approve``, ``stale``
  (head moved — re-review needed), ``head unreadable`` / ``checks
- unreadable`` (the forge did not answer; the recorded verdict stands,
- so retry the READ), or ``no recorded verdict``. The point is to avoid
- re-deriving a cold review when a fresh verdict already vouches for it.
+ unreadable`` (the forge did not answer; the recorded verdict stands, so
+ retry the READ), or ``no recorded verdict``. The point is to avoid
+ re-deriving a full cold review when a fresh verdict already vouches for
+ the current tree. The record carries the verdict's ``findings`` so a
+ HOLD can be read and acted on, not just counted.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the full status record as JSON.                         │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review findings`
+
+```
+Usage: t3 teatree review findings [OPTIONS] MR_URL
+
+ Print the recorded findings for *mr_url* — the surface a HOLD is acted on
+ through.
+
+ A HOLD asserts that N things are wrong; this is where the author, a
+ later reviewer, or an operator reads WHAT they are. A findings payload
+ that cannot be rendered is a loud refusal, never a count with nothing
+ behind it.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --sha         TEXT  Read the verdict recorded at this exact SHA (default:    │
+│                     the latest verdict).                                     │
+│ --json              Emit the findings record as JSON.                        │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review publish-findings`
+
+```
+Usage: t3 teatree review publish-findings [OPTIONS] MR_URL
+
+ Post a recorded verdict's findings to its PR, so the author sees them where
+ the work is.
+
+ ``review record`` already attempts this; run it here to retry after an
+ on-behalf approval lands, or to backfill a verdict recorded before the
+ publish path existed. Idempotent — a re-run finds its own comment and
+ skips rather than posting a duplicate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --sha         TEXT  Publish the verdict recorded at this exact SHA (default: │
+│                     the latest).                                             │
+│ --json              Emit the publish result as JSON.                         │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

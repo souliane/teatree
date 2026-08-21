@@ -317,6 +317,7 @@ ticket_transition_prune_disabled = false # bool — stop pruning old ticket tran
 admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated
 cheap_phase_admission_ceiling = 2 # int — how many cheap-class phase agents still run while the box is braked
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
+drain_slot_reservation = 1 # int — slots only reviewing/shipping agents may occupy, so drains never starve
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle
 idle_stack_reaper_cadence_minutes = 5 # int — minutes between idle-stack reaper runs

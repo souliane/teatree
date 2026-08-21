@@ -17,6 +17,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -70,13 +71,13 @@ class TestTransientRequeue(TestCase):
         healthy = _failed_task()
         _add_failed_attempt(healthy, error="outage_death: connection refused")
 
-        def _raise_on_poison(error: str) -> bool:
+        def _raise_on_poison(error: str) -> str:
             if "poison" in error:
                 msg = "classifier blew up on the poison row"
                 raise ValueError(msg)
-            return True
+            return FailureKind.OUTAGE
 
-        with mock.patch("teatree.loop.transient_requeue.is_transient_failure", side_effect=_raise_on_poison):
+        with mock.patch("teatree.loop.transient_requeue.classify_failure", side_effect=_raise_on_poison):
             reopened = requeue_transient_failed()
 
         healthy.refresh_from_db()
@@ -1020,4 +1021,60 @@ class TestSpawnFailureEscalation(TestCase):
 
         requeue_transient_failed()
 
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+class TestTheKindDecidesTheRecovery(TestCase):
+    """The router reads the one kind → strategy table, not a second text list (#4505).
+
+    ``harness_crash`` is the evidence the ticket cites: environmental by classification and
+    absent from the deleted text predicate, so eleven tasks were dropped in one day and a PR
+    reached the owner unreviewed because its reviewing task died this way.
+    """
+
+    _CRASH = "Traceback (most recent call last):\n  File 'runner.py'\nException: Control request timeout"
+
+    def test_a_harness_crash_is_reopened(self) -> None:
+        task = _failed_task(phase="reviewing")
+        _add_failed_attempt(task, error=self._CRASH)
+
+        assert requeue_transient_failed() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_a_repeating_harness_crash_still_halts_loudly(self) -> None:
+        """The widening stays bounded: two identical failures escalate rather than loop."""
+        task = _failed_task(phase="reviewing")
+        _add_failed_attempt(task, error=self._CRASH)
+        assert requeue_transient_failed() == 1
+        _add_failed_attempt(task, error=self._CRASH)
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_an_unusable_envelope_still_earns_its_one_correction(self) -> None:
+        """``unexpected keys`` was unnamed before #4505; naming it must not cost it the retry."""
+        task = _failed_task()
+        _add_failed_attempt(task, error="Agent result contains unexpected keys: bogus")
+
+        assert requeue_transient_failed() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "envelope" in task.execution_reason.lower()
+
+    def test_a_withheld_verdict_is_escalated_not_corrected(self) -> None:
+        """Same kind as the row above; the sweep's own predicate is what declines the retry."""
+        task = _failed_task(phase="reviewing")
+        _add_failed_attempt(task, error="review verdict recording refused: reviewer identity is a maker role")
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

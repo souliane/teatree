@@ -140,6 +140,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         ApiRunnerParams(max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd),
     )
     rows = collect_matrix_rows(specs, columns, runner=runner, policy=TrialPolicy(trials=trials))
+    RunGuards.hooks_registered(rows)
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
     # The benchmark is always api-metered, yet (unlike the single-run lane and the
     # suite) it lacked the unmetered-$0 guard: an executed-but-$0 run (auth ok but

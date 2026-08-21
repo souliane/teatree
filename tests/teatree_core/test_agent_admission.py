@@ -148,7 +148,10 @@ class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
         assert "at/over governor ceiling 4" in reason
 
     def test_an_unknown_quota_still_admits_below_the_ceiling(self) -> None:
-        self._live_headless_agents(3)
+        # Two, not three: the machine-derived ceiling is 4 and the top slot is reserved
+        # for the draining class (#4374), so 3 is where the reservation bites, not where
+        # the unknown-quota bound does.
+        self._live_headless_agents(2)
         with (
             patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
@@ -501,9 +504,10 @@ class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
 
         assert self._probe().admit(row.pk, "reviewing", at="after the window") is True
 
-    def test_the_expensive_class_is_seated_without_a_lane_ceiling(self) -> None:
+    def test_the_expensive_class_is_not_seated_against_the_cheap_ceiling(self) -> None:
         # The cheap ceiling bounds the cheap lane only; an expensive row is braked by the
-        # governor's own verdict and must not inherit a width that was never about it.
+        # governor's own verdict and its own reserved-slot bound (#4374), and must not
+        # inherit a width that was never about it.
         for _ in range(3):
             self._seated_row()
         coding = Task.objects.create(
@@ -607,3 +611,247 @@ class TestAutoEnqueueConsultsTheGovernor(TestCase):
                 self._create_pending("reviewing")
 
             assert enqueue_task.enqueue.call_count == 2
+
+
+class TestTheDrainingClassHasAReservedSlot(TestCase):
+    """#4374: a CEILING on the cheap class is not a RESERVATION for it.
+
+    ``cheap_phase_admission_ceiling`` bounds how much of the box the cheap class may take;
+    it says nothing about how much is kept FOR it. Measured live: three coding agents held
+    every slot for over half an hour with five reviewing rows queued behind them and zero
+    reviews running — the #4098 outcome (no verdicts, no merges) reached by a different
+    route, because expensive work that CREATES pull requests had occupied the whole
+    factory and nothing that RETIRES one could get in.
+
+    ``_machine()`` is 8 cores and ``_healthy_quota()`` paces at 1.0, so the governor's
+    ceiling is a deterministic 4 throughout; the default reservation of 1 leaves the
+    expensive class 3.
+    """
+
+    _CEILING = 4
+
+    def _verdict(self, *, expensive: int = 0, cheap: int = 0) -> AgentAdmission:
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "claimed_agent_count", return_value=expensive + cheap),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=expensive),
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=cheap),
+        ):
+            return agent_admission_verdict()
+
+    def test_the_expensive_class_is_refused_the_reserved_slot(self) -> None:
+        verdict = self._verdict(expensive=self._CEILING - 1)
+
+        assert "reserved for the draining class" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_the_expensive_class_keeps_every_unreserved_slot(self) -> None:
+        assert self._verdict(expensive=self._CEILING - 2).denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_a_cheap_agent_holding_the_reserved_slot_does_not_brake_the_expensive_class(self) -> None:
+        # The reservation is carved out of the ceiling for the draining class, so it must
+        # be measured against the EXPENSIVE lane's own occupancy. Measured against the
+        # whole live population it would invert into the opposite starvation: a box full
+        # of reviews would refuse the coding work those reviews exist to retire.
+        assert self._verdict(expensive=0, cheap=self._CEILING - 1).denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_the_reservation_can_never_starve_the_expensive_class(self) -> None:
+        # Clamped to at most ceiling-2, so the expensive class always keeps TWO slots and a
+        # fat-fingered reservation cannot stop the factory writing code at all.
+        #
+        # `expensive=1` is what pins the clamp; `expensive=0` passes under either value and
+        # cannot tell them apart. Every case in this suite runs at `cores=8` (ceiling 4), so
+        # nothing here reaches the 4-core ceiling-2 box directly — a reservation of 99 is the
+        # local stand-in, since it saturates the clamp at any ceiling. Without this line a
+        # revert to ceiling-1 passes the whole local suite and is caught only by a 4-core CI
+        # drain test that names none of this code (#4407's factory-starves-itself outage).
+        ConfigSetting.objects.set_value("drain_slot_reservation", 99)
+
+        assert self._verdict(expensive=0).denied_for(PhaseCost.EXPENSIVE) is None
+        assert self._verdict(expensive=1).denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_a_zero_reservation_is_the_rollback_lever(self) -> None:
+        # Byte-identical to the pre-#4374 verdict: the expensive class takes every slot
+        # under the governor's own ceiling and nothing is held back.
+        ConfigSetting.objects.set_value("drain_slot_reservation", 0)
+
+        assert self._verdict(expensive=self._CEILING - 1).denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_a_wider_reservation_holds_more_slots(self) -> None:
+        # The tuning the issue asks for: a box whose reviews keep backing up reserves two.
+        ConfigSetting.objects.set_value("drain_slot_reservation", 2)
+
+        assert self._verdict(expensive=self._CEILING - 2).denied_for(PhaseCost.EXPENSIVE) is not None
+        assert self._verdict(expensive=self._CEILING - 3).denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_the_governor_ceiling_still_refuses_the_expensive_class_above_it(self) -> None:
+        # The pre-existing arm is kept, not replaced: the live headless population at the
+        # ceiling refuses expensive work whichever lane is holding it.
+        verdict = self._verdict(expensive=0, cheap=self._CEILING)
+
+        assert "at/over governor ceiling" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+
+    def test_the_kill_switch_lifts_the_reservation_too(self) -> None:
+        with patch.object(gate_mod, "governor_enabled", return_value=False):
+            verdict = agent_admission_verdict()
+
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_a_refused_reservation_is_announced(self) -> None:
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            self._verdict(expensive=self._CEILING - 1).log_denials()
+
+        assert any("reserved for the draining class" in line for line in logs.output)
+
+
+class TestTheReservedSlotIsArbitratedInsideTheWrite(TestCase):
+    """The reservation is GUARANTEED capacity, so a stale probe must not be able to spend it.
+
+    The #4125 lesson applied to the expensive lane: an occupancy read and an admission
+    stamp are two unsynchronised statements, so two processes reaching a chokepoint in one
+    window would each see the last unreserved slot free and each take it — leaving the
+    draining class exactly the zero slots the reservation exists to prevent. The racers are
+    deliberately NOT wrapped in ``transaction.atomic()``, for the reason the cheap-lane
+    twin records: the wrapper would serialize them and hide the race.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+
+    def _expensive_row(self) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+    def _seated_expensive_row(self) -> Task:
+        row = self._expensive_row()
+        Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now())
+        return row
+
+    def _probe(self) -> AgentAdmission:
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            return agent_admission_verdict()
+
+    def test_two_racing_chokepoints_cannot_both_take_the_last_unreserved_slot(self) -> None:
+        # Ceiling 4 minus the reserved 1 leaves 3; two already seated leaves room for one.
+        for _ in range(2):
+            self._seated_expensive_row()
+        racer_one, racer_two = self._probe(), self._probe()
+        first, second = self._expensive_row(), self._expensive_row()
+
+        assert racer_one.admit(first.pk, "coding", at="racer-one") is True
+        assert racer_two.admit(second.pk, "coding", at="racer-two") is False
+        assert Task.objects.expensive_lane_occupancy() == 3
+
+    def test_the_reservation_binds_within_one_pass(self) -> None:
+        # A drain probes once and walks N rows, so the headroom the verdict carries is what
+        # bounds the lane inside that pass — without it one drain admits every pending
+        # coding row at once and the reserved slot is gone before the next probe.
+        self._seated_expensive_row()
+        verdict = self._probe()
+        rows = [self._expensive_row() for _ in range(4)]
+
+        admitted = [row.pk for row in rows if verdict.admit(row.pk, "coding", at="drain")]
+
+        assert admitted == [rows[0].pk, rows[1].pk]
+
+    def test_the_cheap_lane_is_not_narrowed_by_the_expensive_lane_bound(self) -> None:
+        # Two lanes, two widths: a full expensive lane must still leave the cheap one its
+        # own seats, which is the whole point of reserving them.
+        for _ in range(3):
+            self._seated_expensive_row()
+        reviewing = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            status=Task.Status.PENDING,
+            phase="reviewing",
+        )
+
+        assert self._probe().admit(reviewing.pk, "reviewing", at="cheap") is True
+
+
+class TestTheDrainReservesCapacityForTheDrainingClass(TestCase):
+    """#4374's headline guard, end to end through the real drain.
+
+    The live shape the issue records: every slot held by ``coding``, five ``reviewing``
+    rows queued, zero reviews running. The drain must hold the marginal coding row and
+    admit the review — the reservation is what makes the review's capacity guaranteed
+    rather than merely permitted.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create()
+
+    def _claimed(self, phase: str) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            status=Task.Status.CLAIMED,
+            phase=phase,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+        )
+
+    def _pending(self, phase: str) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            status=Task.Status.PENDING,
+            phase=phase,
+        )
+
+    def _drain(self) -> dict:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
+
+        with (
+            patch.object(gate_mod, "governor_enabled", return_value=True),
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            return drain_queue_body()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_lane_full_of_coding_still_admits_the_queued_review(self) -> None:
+        for _ in range(3):
+            self._claimed("coding")
+        coding = self._pending("coding")
+        reviewing = self._pending("reviewing")
+
+        result = self._drain()
+
+        assert result["enqueued"] == [reviewing.pk]
+        coding.refresh_from_db()
+        assert coding.status == Task.Status.PENDING
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_box_already_over_the_reservation_still_admits_a_review(self) -> None:
+        # The transient the fix inherits rather than creates: leases taken before the
+        # reservation existed can hold every slot. The draining class still gets in.
+        for _ in range(4):
+            self._claimed("coding")
+        reviewing = self._pending("reviewing")
+
+        assert self._drain()["enqueued"] == [reviewing.pk]

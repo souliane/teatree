@@ -316,6 +316,12 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # phase agents stay admissible while the governor brakes the expensive class. 0
     # disables the exemption (cheap is braked like expensive). Per-overlay overridable.
     "cheap_phase_admission_ceiling": _parse_strict_int,
+    # #4374 Slots in the governor's ceiling only the DRAINING class may occupy, so
+    # expensive work cannot fill the whole factory and leave zero reviews running.
+    # Clamped to at most ceiling-2, so the expensive class always keeps two slots — a
+    # 4-core box's ceiling is 2, where ceiling-1 would leave it a single one (#4407).
+    # 0 restores first-come allocation. Per-overlay overridable.
+    "drain_slot_reservation": _parse_strict_int,
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap — the measured p90 worker RSS. A non-positive value drops
     # the memory term and leaves the cores-derived bound. Per-overlay overridable.

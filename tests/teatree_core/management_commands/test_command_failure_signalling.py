@@ -216,7 +216,6 @@ _KNOWN_EXIT_CONTRACT_OFFENDERS: frozenset[tuple[str, str]] = frozenset(
         ("core/management/commands/repro.py", "record_red"),
         ("core/management/commands/repro.py", "waive"),
         ("core/management/commands/review.py", "lock_acquire"),
-        ("core/management/commands/review.py", "record"),
         ("core/management/commands/review.py", "record_evidence"),
         ("core/management/commands/ticket.py", "clear"),
         ("core/management/commands/ticket.py", "comment"),

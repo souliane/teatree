@@ -202,6 +202,32 @@ def _check_starved_intake_candidates() -> bool:
     return False
 
 
+def _check_drain_lane_starved() -> bool:
+    """WARN when reviewing/shipping work is queued, none of it is running, and it has waited (#4374).
+
+    The signature of a factory that has stopped moving while every surface reads healthy:
+    the worker is busy, the loop ticks, no error is raised — and the queued work that would
+    RETIRE a pull request cannot get in behind expensive work that only creates more.
+    Advisory: the reservation is what prevents the state, this only names it, and a box run
+    deliberately at ``drain_slot_reservation = 0`` should not go red for it. Crash-proof:
+    any error degrades to OK.
+    """
+    from teatree.core.factory.drain_starvation import read_drain_lane_state  # noqa: PLC0415 — ORM read at call time
+
+    try:
+        state = read_drain_lane_state()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Drain-lane starvation check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not state.starved:
+        return True
+    typer.echo(
+        f"WARN  {state.report()}. Reserve more capacity for it with "
+        "`t3 <overlay> config_setting set drain_slot_reservation <n>` (#4374).",
+    )
+    return False
+
+
 def _check_intake_pass_incomplete() -> bool:
     """FAIL when intake keeps running out of budget before finishing a pass (#4466).
 
