@@ -9,11 +9,13 @@ the typer surface and the runner loop.
 """
 
 import dataclasses
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.judge import ClaudeJudge, JudgeBudget
 from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import EvalRun, EvalSpec
@@ -22,11 +24,13 @@ from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
 from teatree.eval.skip_guard import (
     AllSkippedError,
     EmptyFreshRunError,
+    HooksNotRegisteredError,
     UnmeteredApiRunError,
     UnmeteredJudgeError,
     assert_api_run_was_metered,
     assert_executed_when_required,
     assert_judge_was_metered,
+    assert_production_hooks_registered,
     assert_pydantic_ai_run_produced_output,
 )
 from teatree.eval.surface import is_advisory
@@ -34,12 +38,39 @@ from teatree.eval.surface import is_advisory
 if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord
 
+#: The three result shapes a lane hands the harness-failure guard. Each carries the
+#: signal differently — a run's ``terminal_reason``, a fold over the per-trial results,
+#: an explicit cell flag — which is why :func:`_unmeasured_scenarios` dispatches on type
+#: rather than every lane spelling the extraction itself.
+GuardedResult = ScenarioResult | PassAtKResult | MatrixRow
+
+
+def _unmeasured_scenarios(results: Sequence[GuardedResult]) -> list[str]:
+    """The name of every scenario in *results* whose run measured NOTHING."""
+    return [_name(result) for result in results if _measured_nothing(result)]
+
+
+def _name(result: GuardedResult) -> str:
+    if isinstance(result, PassAtKResult):
+        return result.spec_name
+    if isinstance(result, MatrixRow):
+        return result.scenario
+    return result.spec.name
+
+
+def _measured_nothing(result: GuardedResult) -> bool:
+    if isinstance(result, ScenarioResult):
+        return measured_nothing(result.run.terminal_reason)
+    return result.harness_failed
+
 
 class RunGuards:
     """Translate the no-coverage :mod:`teatree.eval.skip_guard` assertions into a CLI exit.
 
-    Both guards turn a vacuous-green run RED at the ``t3 eval run`` boundary: an
-    all-skipped required run, and an api run that executed scenarios but metered $0.
+    Each guard turns a run that proved nothing RED at the ``t3 eval run`` boundary: an
+    all-skipped required run, an api run that executed scenarios but metered $0, a
+    ``--judge`` run whose judge graded none of its oracles, and a hooked run whose
+    plugin never registered.
     """
 
     @staticmethod
@@ -47,6 +78,22 @@ class RunGuards:
         try:
             assert_executed_when_required(collected=collected, executed=executed, required=required)
         except AllSkippedError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def hooks_registered(results: Sequence[GuardedResult]) -> None:
+        """Fail-loud when a ``production_hooks`` scenario captured zero hook events.
+
+        The guard runs BESIDE each lane's verdict, never inside it, and takes no
+        surface argument — so the advisory exemption cannot reach it. That separation
+        is the fix: the reason used to ride a terminal :class:`EvalRun`, i.e. a failing
+        verdict, and every hooked scenario on the nightly shard is advisory, so the
+        fail-loud could never gate (souliane/teatree#3922).
+        """
+        try:
+            assert_production_hooks_registered(unmeasured=_unmeasured_scenarios(results))
+        except HooksNotRegisteredError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
 

@@ -20,6 +20,11 @@ from pathlib import Path
 from textwrap import dedent
 from types import ModuleType
 
+from teatree.eval.harness_failure import (
+    HARNESS_FAILURE_ADVISORY_CARVE_OUTS,
+    HARNESS_FAILURE_FOLD_POINTS,
+    HARNESS_FAILURE_GUARD_POINTS,
+)
 from teatree.eval.surface import ADVISORY_EXEMPT_CONSUMERS, ADVISORY_EXEMPT_VERDICT_POINTS
 
 #: The prose that must name the verdict points, never count them.
@@ -221,3 +226,79 @@ class TestTheDocsNameRatherThanCount:
         for doc in _DOCS:
             body = (_repo_root() / doc).read_text(encoding="utf-8").lower()
             assert "green_proof" in body or "green-proof" in body
+
+
+#: The guard call every runner-driving lane must make. A lane that skips it silently
+#: re-opens souliane/teatree#3922 on that lane alone.
+_GUARD_CALL = "hooks_registered"
+
+#: The predicate both ``advisory``-flag producers must consult before writing the flag.
+_CARVE_OUT_PREDICATE = "measured_nothing"
+
+#: The field every ``PassAtKResult`` → ``MatrixRow`` fold must carry across.
+_FOLD_FIELD = "harness_failed"
+
+
+def _executable_names(dotted: str) -> set[str]:
+    """Every EXECUTABLE name in the module owning *dotted* — docstrings excluded.
+
+    The un-narrowed sibling of :func:`_axis_references`: same AST walk, same
+    prose-is-not-code guarantee, but the caller supplies the token it is looking for.
+    """
+    source = Path(str(_owning_module(dotted).__file__)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    docstrings = _docstring_constants(tree)
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.alias):
+            names.add(node.asname or node.name)
+        elif isinstance(node, ast.arg) or (isinstance(node, ast.keyword) and node.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            names.add(node.value)
+    return names
+
+
+class TestEveryLaneGuardsTheHarnessAxis:
+    """A run that MEASURED NOTHING has no verdict, so no lane may reach it via the surface.
+
+    The complement of the exemption above. ``hooks_not_registered`` rode a terminal
+    ``EvalRun`` — a failing VERDICT — and 6 of the 7 hooked scenarios are advisory, so on
+    a shard carrying only those the fail-loud could never gate (souliane/teatree#3922).
+    Each lane now calls the guard BESIDE its verdict; a new lane that forgets reds here
+    rather than in a metered CI leg.
+    """
+
+    def test_the_list_is_not_empty(self) -> None:
+        assert HARNESS_FAILURE_GUARD_POINTS
+
+    def test_every_guard_point_resolves(self) -> None:
+        assert [_resolve(name) for name in HARNESS_FAILURE_GUARD_POINTS]
+
+    def test_every_guard_point_calls_the_guard(self) -> None:
+        missing = [name for name in HARNESS_FAILURE_GUARD_POINTS if _GUARD_CALL not in _executable_names(name)]
+        assert missing == []
+
+    def test_every_fold_point_resolves(self) -> None:
+        assert [_resolve(name) for name in HARNESS_FAILURE_FOLD_POINTS]
+
+    def test_every_fold_point_carries_the_field(self) -> None:
+        # Calling the guard is not enough: it reads the ROW's flag, so a fold that drops
+        # it hands over a clean row and that lane's guard call is vacuous.
+        missing = [name for name in HARNESS_FAILURE_FOLD_POINTS if _FOLD_FIELD not in _executable_names(name)]
+        assert missing == []
+
+    def test_every_advisory_flag_producer_resolves(self) -> None:
+        assert [_resolve(name) for name in HARNESS_FAILURE_ADVISORY_CARVE_OUTS]
+
+    def test_every_advisory_flag_producer_carves_the_axis_out(self) -> None:
+        # The lane exits on the guard, but the serialized flag outlives the process: the
+        # combine job re-gates the merged artifact after every shard has finished.
+        missing = [
+            name for name in HARNESS_FAILURE_ADVISORY_CARVE_OUTS if _CARVE_OUT_PREDICATE not in _executable_names(name)
+        ]
+        assert missing == []
