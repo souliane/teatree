@@ -1,3 +1,6 @@
+# test-path: cross-cutting — scans the repo's prose surfaces (README, BLUEPRINT, AGENTS,
+# CLAUDE, docs/, skills/) for stale OverlayBase references; it imports teatree.core.overlay
+# only as the name-resolution oracle, so its subject is the doc corpus, not any one package.
 """Every ``OverlayBase.<name>`` reference in the prose docs must resolve on the live class.
 
 PR-27b regrouped the optional extension hooks onto composed facets and dropped the

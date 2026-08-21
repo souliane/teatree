@@ -20,7 +20,7 @@ cluster is scrubbed by the SAME gate as a transcript-derived one, at the same ch
 output, not instructions; mining them would have the accountant grading itself and would
 let its own prose be attributed as an owner rule. The allowlist is the ``slack_user_id``
 recorded per overlay in the DB ``overlays`` registry — the same field every other Slack
-surface uses to answer "who owns this DM" (``t3 slack dm-doctor``: *the bot cannot DM or
+surface uses to answer "who owns this DM" (``t3 doctor check``: *the bot cannot DM or
 read its owner*). It fails CLOSED: an unresolvable owner id enumerates NOTHING rather
 than falling back to "everything that is not obviously the bot", because a denylist gets
 the dangerous case wrong (a blank ``user_id``, a second app, a renamed bot all pass one).
