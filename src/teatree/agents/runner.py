@@ -70,6 +70,7 @@ from teatree.agents.usage_window import (
     park_task_on_all_exhausted,
 )
 from teatree.config import AgentHarnessProvider
+from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.task_claim import describe_lease_loss, drive_claim
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -163,16 +164,10 @@ def _run_agent(
     """Drive an agent for *task* in-process via the ``agent_harness`` backend."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415 — lazy import
 
-    # Checked BEFORE resolving the harness (souliane/teatree#2916): for a
-    # resumed pydantic_ai task, resolving the harness destructively pops the
-    # parked ancestor's thread. A budget-breached ticket must never trigger
-    # that pop, or the conversation is lost even though the run never starts.
-    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
-    if budget_breach is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
-        return _record_failure(
-            task, error=budget_breach
-        )  # no-usage: refused before the harness opened — no turn billed
+    refusal = _pre_harness_refusal(task, phase=phase)
+    if refusal is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
+        return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
 
     harness = _resolve_backend_or_failure(task, phase=phase)
     if isinstance(harness, TaskAttempt):
@@ -267,6 +262,20 @@ def _run_agent(
         lane=lane,
         provenance=DispatchProvenance(reasoning_effort=resolve_spawn_effort(phase) or "", skills_loaded=tuple(skills)),
     )
+
+
+def _pre_harness_refusal(task: Task, *, phase: str) -> str | None:
+    """Why this dispatch must not run at all, or ``None`` to proceed.
+
+    Both checks are resolved BEFORE the harness (souliane/teatree#2916): for a
+    resumed pydantic_ai task, resolving the harness destructively pops the parked
+    ancestor's thread, and a refused dispatch must never trigger that pop or the
+    conversation is lost even though the run never starts.
+    """
+    plan_refusal = unplanned_dispatch_refusal(task.ticket, phase=phase)
+    if plan_refusal is not None:
+        return plan_refusal
+    return TicketBudget.from_settings().breach_reason(task.ticket)
 
 
 def _turn_ceiling(harness: Harness) -> int:

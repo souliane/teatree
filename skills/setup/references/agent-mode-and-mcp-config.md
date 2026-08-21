@@ -125,7 +125,7 @@ mismatch, is a LOUD, named finding with a reconnect hint — never a silent pass
 A probe that cannot run (`claude` absent) degrades to a WARN.
 
 An overlay declares the **expected provider** per MCP server via
-`OverlayBase.get_mcp_provider_expectations() -> dict[str, str]` (default `{}`),
+`overlay.connectors.mcp_provider_expectations() -> dict[str, str]` (default `{}`),
 mapping a server name to either `CLAUDE_AI_HOSTED` (a `claude.ai <Service>`
 connector served from an Anthropic-hosted endpoint) or `THIRD_PARTY` (a
 self-hosted or local-command server). Teatree's own default is empty — the
@@ -149,8 +149,8 @@ active account; one that **has** connected before but is now down is a
 
 Beyond "is every *enabled* server connected" (§ 2.1), an overlay declares which
 claude.ai connectors it **hard-depends on** vs merely benefits from, by NAME, by
-overriding `OverlayBase.get_connector_manifest() -> list[ConnectorRequirement]`
-(default `[]`, the same method-override shape as `get_mcp_provider_expectations`;
+overriding `overlay.connectors.manifest() -> list[ConnectorRequirement]`
+(default `[]`, the same method-override shape as `mcp_provider_expectations`;
 core is empty — teatree's own dogfood overlay hard-depends on no claude.ai
 connector). `teatree.core.connector_manifest.check_connector_manifest`
 reads the same enabled/connected ground truth the § 2.1 probe uses and classifies

@@ -21,8 +21,8 @@ from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.intake.budget import read_intake_budget, release_deadlocked_holder
 from teatree.core.intake.concurrency import resolve_intake_concurrency
-from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
+from teatree.core.overlay_repos import owned_repo_slugs
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR
@@ -58,7 +58,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
 
@@ -331,24 +330,6 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
     )
 
 
-def _owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
-    """The ``owner/name`` slugs of the repos this overlay works in — the intake scope.
-
-    Unions the overlay's followup repos (where the factory files and picks up issues)
-    with its declared merge-candidate working repos (e.g. an ``e2e`` companion), each
-    normalized up to ``owner/repo``. An overlay with no repo declarations (or none at
-    all) yields ``()`` — the scanner then keeps the pre-scope global author search.
-    """
-    if overlay is None:
-        return ()
-    slugs: list[str] = []
-    for value in (*overlay.review.merge_candidate_repo_slugs(), *overlay.metadata.get_followup_repos()):
-        slug = normalize_repo_slug(value)
-        if slug and slug not in slugs:
-            slugs.append(slug)
-    return tuple(slugs)
-
-
 def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | None:
     """Build the per-overlay unified intake scanner behind the triple gate (#3634).
 
@@ -435,7 +416,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
         trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
         exclude_labels=backend.exclude_labels,
-        repo_slugs=_owned_repo_slugs(backend.overlay),
+        repo_slugs=owned_repo_slugs(backend.overlay),
         can_claim=can_claim,
         max_concurrent=limit,
         pass_budget_seconds=settings.issue_intake_pass_budget_seconds,

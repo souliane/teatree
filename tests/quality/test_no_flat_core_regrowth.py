@@ -234,7 +234,15 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # grows a second module, rather than each one separately arguing for a root slot. One root
 # leaf leaves (fast_push.py) and the new helper never lands at the root, netting -1 against
 # the pre-existing baseline of 111.
-PINNED_FLAT_CORE_MODULES = 110
+# 111: +overlay_repos.py (#4515) — the one derivation of "which forge repos does this
+# overlay work in?". Both the intake scanner (which issues to claim, via
+# loop/scanner_factories) and the external-outcome measure (which repos' merges count as
+# output) read the same slug set, and a second derivation would let the two disagree about
+# what the factory's own repos are. That shared readership is what keeps it at the root:
+# intake/ cannot own it without factory/ reaching across, and factory/ cannot own it
+# without intake/ doing the same. Same shape as claim_liveness.py (#4164) above — a small
+# ORM-free derivation two subpackages consult, so it belongs to neither.
+PINNED_FLAT_CORE_MODULES = 111
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

@@ -804,26 +804,25 @@ class _ScannerSettings:
     eval_local_disabled: bool = False
     eval_local_skill: str = "eval"
     eval_local_cadence_hours: int = 168
-    # #2419 Periodic backlog-sweep scanner — DEFAULT-OFF (kill switch ships
-    # ON) with a weekly cadence (168h). Companion to the `sweeping-tickets`
-    # skill: once the sweep's verdicts prove trustworthy the loop fires a
-    # low-frequency `backlog_sweep` task that groups the issue tracker
-    # (shipped / group-into-epic / regressive / still-standalone
-    # against current `main`). The sweep is destructive-capable — it can
-    # propose closing issues — so unlike the always-on news/eval scanners
-    # the kill switch defaults ON: the scanner stays inert until the user
-    # sets ``backlog_sweep_disabled = false`` in ``[teatree]`` (or
-    # per-overlay).
-    backlog_sweep_disabled: bool = True
+    # #2419/#4344 Periodic backlog-sweep scanner — a DAILY cadence (24h), the
+    # rate at which the backlog actually grows. Companion to the
+    # `sweeping-tickets` skill: the loop fires a `backlog_sweep` task that
+    # GROUPS the issue tracker, bundling related rows into an existing host so
+    # the fixed per-ticket delivery cost is paid once for the bundle. The kill
+    # switch ships OPEN, leaving the `backlog_sweep` Loop row as the single
+    # switch (the `issue_implementer` / `triage_assessor` / `directive_loop`
+    # shape) — set ``backlog_sweep_disabled = true`` in ``[teatree]`` (or
+    # per-overlay) to stop scheduling sweeps without touching the row.
+    backlog_sweep_disabled: bool = False
     backlog_sweep_skill: str = "sweeping-tickets"
-    backlog_sweep_cadence_hours: int = 168
-    # #2419 Ask-gate for backlog-sweep issue closes. When true (default),
+    backlog_sweep_cadence_hours: int = 24
+    # #2419 Ask-gate for backlog-sweep row retirements. When true (default),
     # the sweeping-tickets skill must NOT mass-close or mass-fold issues
-    # unattended — it records each close proposal with its citation and
-    # surfaces the batch to the user, closing only on explicit approval.
-    # Only the high-confidence shipped-by-merged-PR class auto-closes.
-    # Default ON: an unattended wrong close destroys tracker signal, the
-    # failure mode this gate forecloses. Per-overlay overridable.
+    # unattended — it records each fold proposal with its citation and
+    # surfaces the batch to the user, retiring a row only on explicit approval
+    # and only once its fold is verified. Default ON: an unattended wrong
+    # close destroys tracker signal, the failure mode this gate forecloses.
+    # Per-overlay overridable.
     ask_before_backlog_sweep_closes: bool = True
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence

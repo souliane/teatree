@@ -18,6 +18,7 @@ import teatree.agents.runner as runner_mod
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import Session, Task, Ticket
 from teatree.failure_signatures import is_spawn_failure
+from tests.factories import planned_ticket
 
 
 def _raising_client(exc: Exception) -> Any:
@@ -29,7 +30,7 @@ def _raising_client(exc: Exception) -> Any:
 
 class TestSpawnFailureIsRecordedByName(TestCase):
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
         self.session = Session.objects.create(ticket=self.ticket, agent_id="testing")
         self.task = Task.objects.create(
             ticket=self.ticket, session=self.session, phase="testing", status=Task.Status.CLAIMED

@@ -121,8 +121,9 @@ def check_plan_current(ticket: "Ticket") -> bool:
         return True
 
     if artifact is None:
-        # No plan at all — absence is the plan-first gate's (plan()) concern, not
-        # this one's; do not introduce a second absence-block. Currency is moot.
+        # No plan at all — absence is the plan-first gate's (plan()) and the
+        # dispatch gate's (``plan_dispatch_gate``, #4409) concern, not this one's;
+        # do not introduce a third absence-block. Currency is moot.
         return True
     if not is_adequate(artifact.adequacy):
         raise NoCurrentPlanError(_inadequate_reason(ticket))

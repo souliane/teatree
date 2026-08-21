@@ -29,7 +29,8 @@ from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_envelope_refusal
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.runner import TaskUsage, run_agent
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import Session, Task, TaskAttempt
+from tests.factories import planned_ticket
 
 _PROSE = "I finished the work but forgot to emit the JSON result envelope."
 
@@ -81,7 +82,7 @@ def _fake_sdk(agent_text: str) -> Iterator[None]:
 class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = Ticket.objects.create()
+        cls.ticket = planned_ticket()
 
     def _assert_refused(self, attempt: Any, task: Task, session: Session) -> None:
         task.refresh_from_db()
