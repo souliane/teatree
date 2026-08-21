@@ -106,7 +106,13 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
+from teatree.core.models.review_verdict import (
+    ChecksContradictionError,
+    Finding,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Severity,
+)
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
@@ -164,6 +170,7 @@ __all__ = [
     "BotPing",
     "BranchUpdateAttempt",
     "BroadcastObservation",
+    "ChecksContradictionError",
     "CiEvalHealSession",
     "CiEvalHealSessionManager",
     "ClearIssuanceError",
