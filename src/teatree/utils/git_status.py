@@ -5,7 +5,10 @@ status reads (lenient and fail-closed) and the data-loss-guard diff capture
 (#835), all via the :mod:`teatree.utils.git_run` runners.
 """
 
-from teatree.utils.git_run import git_env_without_overrides, run, run_strict
+import tempfile
+from pathlib import Path
+
+from teatree.utils.git_run import git_env_without_overrides, run, run_strict, run_strict_verbatim
 from teatree.utils.run import run_checked
 
 
@@ -41,7 +44,7 @@ def status_porcelain_z_strict(repo: str = ".") -> str:
     Fail-closed like :func:`status_porcelain_strict`: a non-zero ``git status``
     raises rather than reading as a clean tree.
     """
-    return run_checked(["git", "-C", repo, "status", "--porcelain", "-z"]).stdout
+    return run_strict_verbatim(repo=repo, args=["status", "--porcelain", "-z"])
 
 
 def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
@@ -50,8 +53,14 @@ def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
     ``git diff HEAD`` alone omits untracked files. Marking them intent-to-add
     (``git add -N``) makes them appear in the diff as new-file hunks (without
     staging their content), so a single ``git apply`` of the returned patch
-    restores edits and brand-new files alike. The intent-to-add marks are
-    harmless: the worktree is about to be removed.
+    restores edits and brand-new files alike. ``.gitignore`` is still honoured,
+    so ignored trees stay out of the patch.
+
+    Those marks land in a THROWAWAY index (``GIT_INDEX_FILE`` under a scratch
+    dir), never ``repo``'s own: the salvage capture (#4435) runs against
+    checkouts that are about to be KEPT, and a live agent working in one would
+    otherwise see every untracked file turn "added" under it. Reading is all
+    this does, so it is safe on any checkout, live or condemned.
 
     ``base`` is the revision the working tree is diffed against — ``HEAD`` for
     a normal worktree. A dangling-HEAD worktree (forge post-merge ref deletion)
@@ -66,10 +75,12 @@ def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
     loss of the captured work, the exact #835 scenario. Forcing the prefixes
     keeps the patch standard and ``git apply``-able regardless of user config.
     """
-    env = git_env_without_overrides()
-    run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
-    result = run_checked(
-        ["git", "-C", repo, "diff", base, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
-        env=env,
-    )
+    with tempfile.TemporaryDirectory(prefix="t3-diff-index-") as scratch:
+        env = git_env_without_overrides() | {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        run_checked(["git", "-C", repo, "read-tree", base], env=env)
+        run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
+        result = run_checked(
+            ["git", "-C", repo, "diff", base, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+            env=env,
+        )
     return result.stdout

@@ -1321,6 +1321,10 @@
           "name": "salvage"
         },
         {
+          "help": "Apply a captured salvage bundle back into a checkout (#4435)",
+          "name": "restore"
+        },
+        {
           "help": "Tear down every done worktree (analyze-then-wipe) on demand",
           "name": "clean-merged"
         },

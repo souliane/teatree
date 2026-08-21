@@ -8290,6 +8290,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                          worktree (the judgment skill's input).              │
 │ salvage                  Capture a branch's unique content to a PR, verify   │
 │                          it landed, then delete the branch.                  │
+│ restore                  Apply a captured salvage bundle back into a         │
+│                          checkout (--into, --dry-run).                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8646,6 +8648,26 @@ Usage: t3 teatree workspace salvage [OPTIONS] SOURCE_REF
 │                                                cleaned the content).         │
 │                                                [default: no-allow-banned]    │
 │ --help                                         Show this message and exit.   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace restore`
+
+```
+Usage: t3 teatree workspace restore [OPTIONS] REFERENCE
+
+ Apply a captured salvage bundle back into a checkout (#4435).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    reference      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --into                       TEXT  Checkout to apply the bundle into         │
+│                                    (required — never inferred).              │
+│ --dry-run    --no-dry-run          Report whether each part applies; write   │
+│                                    nothing.                                  │
+│                                    [default: no-dry-run]                     │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
