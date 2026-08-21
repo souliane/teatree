@@ -128,6 +128,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
             ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
+            ("restore", "Apply a captured salvage bundle back into a checkout (--into, --dry-run)."),
         ],
     ),
     "run": DjangoGroup(

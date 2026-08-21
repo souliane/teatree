@@ -90,6 +90,8 @@ class UnshippedWorkCheckTest(TestCase):
         assert "1 unpushed commit(s)" in out
         assert "unshipped-work/agent-a1" in out
         assert "workspace salvage" in out
+        # The finding must name the recovery path, not just the capture (#4435).
+        assert "workspace restore" in out
 
     def test_a_re_capture_does_not_reset_the_reported_age(self) -> None:
         # The regression. Capture re-runs on every non-dry-run sweep for every kept

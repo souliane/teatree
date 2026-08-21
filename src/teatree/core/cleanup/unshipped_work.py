@@ -13,11 +13,17 @@ disposition changes and no #706/#835 guard is loosened.
 ``git diff`` compares the working tree to the INDEX, so a checkout whose whole
 delta is STAGED reports zero bytes while holding real work. Every probe here is
 therefore anchored on a revision (``git diff HEAD``) or on ``git status``.
+
+The patches are captured VERBATIM — never through ``git.run_strict``, whose
+``.strip()`` leaves a patch ``git apply`` rejects as corrupt (#4435) — and read
+back by ``t3 <overlay> workspace restore``, which is what keeps that contract
+honest instead of an operator discovering it mid-recovery.
 """
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models import UnshippedWorkRecord
@@ -29,6 +35,11 @@ from teatree.utils.run import CommandFailedError
 logger = logging.getLogger(__name__)
 
 ARTIFACT_NAMESPACE = "unshipped-work"
+UNCOMMITTED_SUFFIX = ".uncommitted.patch"
+COMMITS_SUFFIX = ".commits.patch"
+FILES_SUFFIX = ".files"
+#: The distinct key an unreadable probe writes to, so it never lands on content.
+UNREADABLE_SUFFIX = ".unreadable"
 _INDEX_AWARE_BASE = "HEAD"
 # A porcelain entry whose status is a rename/copy carries a SECOND path field.
 _RENAME_STATUS = frozenset("RC")
@@ -80,19 +91,38 @@ def _commits_patch(checkout: Path, commits: list[str]) -> str:
     if not commits:
         return ""
     shas = [line.split(maxsplit=1)[0] for line in commits]
-    return git.run_strict(
+    return git.run_strict_verbatim(
         repo=str(checkout),
         args=["log", "-p", "--binary", "--no-walk", "--reverse", *shas, "--src-prefix=a/", "--dst-prefix=b/"],
     )
 
 
+def _uncommitted_patch(checkout: Path) -> str:
+    """The staged + unstaged + untracked delta, as a patch ``git apply`` restores.
+
+    Untracked content is IN scope: the bundle is the last copy of the work, and a
+    ``force`` delete would otherwise keep the filename and drop the file. The
+    untracked-inclusive route needs a ``read-tree`` and an ``add -N`` against a
+    throwaway index; if either is refused, degrade to the tracked-only delta
+    rather than report the whole checkout unreadable.
+    """
+    try:
+        return git.full_worktree_diff(str(checkout), _INDEX_AWARE_BASE)
+    except CommandFailedError:
+        return git.run_strict_verbatim(
+            repo=str(checkout),
+            args=["diff", _INDEX_AWARE_BASE, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+        )
+
+
 def probe_unshipped_work(checkout: Path) -> UnshippedWork:
     """Read ``checkout``'s unshipped delta without mutating it.
 
-    Read-only on purpose: the checkout may be KEPT, so the index is never touched
-    (which rules out the ``git add -N`` trick that would fold untracked files into
-    the patch — they are named in ``dirty_paths`` instead). A path that is not
-    there holds nothing; only a PRESENT checkout git cannot read is ``unreadable``.
+    Read-only on purpose: the checkout may be KEPT and may hold a live agent, so
+    its own index is never touched — the ``git add -N`` that folds untracked files
+    into the patch runs against a throwaway index instead (:func:`_uncommitted_patch`).
+    A path that is not there holds nothing; only a PRESENT checkout git cannot
+    read is ``unreadable``.
 
     The venue is asked BEFORE git, because git cannot distinguish the two things
     that stop it reading a checkout: a repository that is broken, and one whose
@@ -110,10 +140,7 @@ def probe_unshipped_work(checkout: Path) -> UnshippedWork:
         return UnshippedWork(unreadable=f"{checkout}: no resolvable HEAD to diff against")
     try:
         dirty_paths = _porcelain_paths(checkout)
-        uncommitted_patch = git.run_strict(
-            repo=str(checkout),
-            args=["diff", _INDEX_AWARE_BASE, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
-        )
+        uncommitted_patch = _uncommitted_patch(checkout)
         unpushed_commits = git.commits_absent_from_all_remotes(str(checkout), _INDEX_AWARE_BASE)
         commits_patch = _commits_patch(checkout, unpushed_commits)
     except CommandFailedError as exc:
@@ -136,20 +163,68 @@ def bundle_path(artifact_prefix: str, suffix: str) -> Path:
 
 
 def _write_bundle(prefix: Path, checkout: Path, branch: str, work: UnshippedWork) -> None:
+    """Write the bundle — the four content artifacts ONLY when the read succeeded.
+
+    A read this venue could not complete proves nothing about the delta, so its
+    empty patches must never land on top of a good capture: the same checkout
+    swept from a venue that cannot resolve its gitdir used to overwrite a real
+    152-byte patch with 0 bytes and blank the file list (#4435). The cause goes
+    to its own key, which a later successful read clears.
+    """
     prefix.parent.mkdir(parents=True, exist_ok=True)
-    meta = (
-        f"worktree={checkout}\n"
-        f"branch={branch}\n"
-        f"dirty={len(work.dirty_paths)} ahead={len(work.unpushed_commits)}\n"
-        + (f"unreadable={work.unreadable}\n" if work.unreadable else "")
-    )
+    marker = bundle_path(str(prefix), UNREADABLE_SUFFIX)
+    if work.unreadable:
+        marker.write_text(f"{work.unreadable}\n", encoding="utf-8")
+        return
+    meta = f"worktree={checkout}\nbranch={branch}\ndirty={len(work.dirty_paths)} ahead={len(work.unpushed_commits)}\n"
     for suffix, content in (
-        (".uncommitted.patch", work.uncommitted_patch),
-        (".commits.patch", work.commits_patch),
-        (".files", "".join(f"{path}\n" for path in work.dirty_paths)),
+        (UNCOMMITTED_SUFFIX, work.uncommitted_patch),
+        (COMMITS_SUFFIX, work.commits_patch),
+        (FILES_SUFFIX, "".join(f"{path}\n" for path in work.dirty_paths)),
         (".meta", meta),
     ):
         bundle_path(str(prefix), suffix).write_text(content, encoding="utf-8")
+    marker.unlink(missing_ok=True)
+
+
+class RecordDefaults(TypedDict, total=False):
+    """The ``update_or_create`` defaults for one capture — partial by design.
+
+    An unreadable read omits the delta keys rather than writing them empty, so
+    ``update_or_create`` leaves the last good capture's values in place.
+    """
+
+    branch: str
+    overlay: str
+    dirty_paths: list[str]
+    unpushed_commits: list[str]
+    artifact_prefix: str
+    unreadable: str
+
+
+def _record_defaults(branch: str, overlay: str, prefix: Path, work: UnshippedWork) -> RecordDefaults:
+    """The row fields to write — an unreadable read updates the cause, never the delta.
+
+    Blanking ``dirty_paths``/``unpushed_commits`` because THIS venue could not
+    read the checkout discards the last successful capture's account of what is
+    in there, which is the only account anything has.
+    """
+    if work.unreadable:
+        partial: RecordDefaults = {"artifact_prefix": str(prefix), "unreadable": work.unreadable}
+        # A blank branch/overlay is "the caller did not say", not "it has none".
+        if branch:
+            partial["branch"] = branch
+        if overlay:
+            partial["overlay"] = overlay
+        return partial
+    return {
+        "branch": branch,
+        "overlay": overlay,
+        "dirty_paths": work.dirty_paths,
+        "unpushed_commits": work.unpushed_commits,
+        "artifact_prefix": str(prefix),
+        "unreadable": "",
+    }
 
 
 def _record_capture(
@@ -157,14 +232,7 @@ def _record_capture(
 ) -> UnshippedWorkRecord:
     record, _ = UnshippedWorkRecord.objects.update_or_create(
         checkout_path=str(checkout),
-        defaults={
-            "branch": branch,
-            "overlay": overlay,
-            "dirty_paths": work.dirty_paths,
-            "unpushed_commits": work.unpushed_commits,
-            "artifact_prefix": str(prefix),
-            "unreadable": work.unreadable,
-        },
+        defaults=_record_defaults(branch, overlay, prefix, work),
     )
     return record
 
@@ -216,4 +284,14 @@ def capture_unshipped_work(
         return None
 
 
-__all__ = ["ARTIFACT_NAMESPACE", "UnshippedWork", "bundle_path", "capture_unshipped_work", "probe_unshipped_work"]
+__all__ = [
+    "ARTIFACT_NAMESPACE",
+    "COMMITS_SUFFIX",
+    "FILES_SUFFIX",
+    "UNCOMMITTED_SUFFIX",
+    "UNREADABLE_SUFFIX",
+    "UnshippedWork",
+    "bundle_path",
+    "capture_unshipped_work",
+    "probe_unshipped_work",
+]
