@@ -1084,6 +1084,11 @@ class _ProvisioningSettings:
     # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
     # pre-governor static behaviour. Per-overlay overridable.
     admission_governor_enabled: bool = True
+    # #4508 The admission-pressure scalar at which the EXPENSIVE agent class is refused
+    # while the CHEAP review/ship lanes keep draining. 1.0 collapses SHED into HALT —
+    # the rollback lever, restoring pre-#4508 admission byte-for-byte. Clamped into
+    # [DEGRADE_AT, HALT_AT] on read so a typo cannot wedge the lane. Per-overlay overridable.
+    admission_pressure_shed_at: float = 0.9
     # #4098 How many CHEAP headless phase agents (reviews, review requests, ship/merge,
     # short assessors — ``teatree.core.modelkit.phases.CHEAP_PHASES``) may occupy the
     # lane while the governor brakes the EXPENSIVE class. Those phases are what RETIRE

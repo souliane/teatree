@@ -15,7 +15,7 @@ import django.test
 
 import teatree.cli.doctor.run_checks as doctor_runner
 from teatree.cli.doctor.checks_loop import _check_box_occupancy
-from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal
+from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.models import Task
 
 _CORES = 8
@@ -23,16 +23,59 @@ _WATERMARK = BRAKE_LOAD_PER_CORE * _CORES
 _MACHINE = "teatree.core.admission_governor.read_machine_signal"
 
 
-def _report(load1: float, *, agents: int = 3) -> str:
+_QUOTA = "teatree.core.admission_governor.read_quota_signal"
+_WEEK = 7 * 24 * 3600
+
+
+def _quota(weekly: float = 0.0) -> QuotaSignal:
+    return QuotaSignal(
+        fresh=True,
+        all_accounts_exhausted=False,
+        weekly_utilization=weekly,
+        short_utilization=0.0,
+        seconds_to_weekly_reset=_WEEK * 0.02,
+    )
+
+
+def _report(load1: float, *, agents: int = 3, weekly: float = 0.0) -> str:
     """The check's own output for a stated box, with its verdict asserted advisory."""
     machine = MachineSignal(cores=_CORES, load1=load1, ram_available_gb=20.0)
     with (
         patch(_MACHINE, return_value=machine),
+        patch(_QUOTA, return_value=_quota(weekly)),
         patch.object(Task.objects, "claimed_agent_count", return_value=agents),
         patch("typer.echo") as echo,
     ):
         assert _check_box_occupancy() is True
     return "\n".join(str(call.args[0]) for call in echo.call_args_list)
+
+
+class TestReportsThePressureScalar(django.test.TestCase):
+    """#4508 — the operator's read of the one number the decisions consult.
+
+    Load alone cannot show why admission is refusing: the two dimensions that halt a
+    factory most often are quota-shaped and leave the load average looking healthy.
+    """
+
+    def test_a_quiet_box_names_its_band(self) -> None:
+        assert "pressure 0." in _report(1.0)
+        assert "FULL" in _report(1.0)
+
+    def test_a_spent_window_names_the_cause_a_load_reading_cannot_show(self) -> None:
+        report = _report(1.0, weekly=0.92)
+        assert "SHED" in report
+        assert "weekly-quota" in report
+
+    def test_an_unreadable_probe_degrades_to_the_load_line(self) -> None:
+        machine = MachineSignal(cores=_CORES, load1=1.0, ram_available_gb=20.0)
+        with (
+            patch(_MACHINE, return_value=machine),
+            patch(_QUOTA, side_effect=RuntimeError("boom")),
+            patch.object(Task.objects, "claimed_agent_count", return_value=1),
+            patch("typer.echo") as echo,
+        ):
+            assert _check_box_occupancy() is True
+        assert "box load" in "\n".join(str(call.args[0]) for call in echo.call_args_list)
 
 
 class TestAlwaysPrintsBothNumbers(django.test.TestCase):
