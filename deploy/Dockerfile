@@ -90,7 +90,7 @@ RUN apt-get update -qq && \
         echo "deploy image: FATAL - npm is absent after installing nodejs ($(node --version 2>/dev/null || echo 'node missing')). The NodeSource repo did not take effect, so this is Ubuntu's nodejs, which packages npm separately." >&2; \
         exit 1; \
     fi && \
-    npm install -g @anthropic-ai/claude-code@2.1.226 pyright@1.1.411 && \
+    npm install -g @anthropic-ai/claude-code@2.1.233 pyright@1.1.411 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 

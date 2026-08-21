@@ -385,14 +385,14 @@ wheels = [
 
 [[package]]
 name = "click"
-version = "8.3.3"
+version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bb/63/f9e1ea081ce35720d8b92acde70daaedace594dc93b693c869e0d5910718/click-8.3.3.tar.gz", hash = "sha256:398329ad4837b2ff7cbe1dd166a4c0f8900c3ca3a218de04466f38f6497f18a2", size = 328061, upload-time = "2026-04-22T15:11:27.506Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/44/c1221527f6a71a01ec6fbad7fa78f1d50dfa02217385cf0fa3eec7087d59/click-8.3.3-py3-none-any.whl", hash = "sha256:a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613", size = 110502, upload-time = "2026-04-22T15:11:25.044Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl", hash = "sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76", size = 119243, upload-time = "2026-06-24T17:45:13.73Z" },
 ]
 
 [[package]]
@@ -714,17 +714,16 @@ wheels = [
 
 [[package]]
 name = "django-typer"
-version = "3.5.1"
+version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "django" },
-    { name = "shellingham" },
-    { name = "typer-slim" },
+    { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/69/ad177aa9acd536f4b6f45a46cf25c4549e2f88169115492a87666e2c84ac/django_typer-3.5.1.tar.gz", hash = "sha256:9e9a6e9093b97fcb61c003a192f4398249830346c64f60276485f4c8b1e331f8", size = 3083716, upload-time = "2026-01-14T15:42:17.499Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/f3/6165a27205ad24dab25f9dd527816df71b7b60920d7b480cb15d307187a3/django_typer-3.8.0.tar.gz", hash = "sha256:8fedd0aa684f43e23013831ad614a31a800ea8cb080a63b166b6af0bdfa0bd69", size = 2984323, upload-time = "2026-08-08T15:00:32.592Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/1d/891bffc8d93000f91e06d598bee625d7a47df6fd7c7908b746070d5660d6/django_typer-3.5.1-py3-none-any.whl", hash = "sha256:e8a68aa6f95bf40f8fff66a2af16d90e6a21c7963564c3aecb25a0e37c47033d", size = 295789, upload-time = "2026-01-14T15:42:15.804Z" },
+    { url = "https://files.pythonhosted.org/packages/49/9a/a3c2bb405f3fcd695b2da762c273800a0e46d8b36eb38454e8cbf6d3355a/django_typer-3.8.0-py3-none-any.whl", hash = "sha256:332c885f74d7fb3ed2a35b92f8791baa61db6b238245528d6a9ee7f4e24ddbf7", size = 297345, upload-time = "2026-08-08T15:00:30.755Z" },
 ]
 
 [[package]]
@@ -3311,7 +3310,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = "==0.2.139" },
     { name = "coverage", specifier = ">=7" },
     { name = "croniter", specifier = ">=6.2.2" },
-    { name = "django", specifier = ">=6,<6.2" },
+    { name = "django", specifier = ">=6,<6.1" },
     { name = "django-fsm-2", specifier = ">=4,<5" },
     { name = "django-linear-migrations", specifier = ">=2.19" },
     { name = "django-rich", specifier = ">=2.2" },
@@ -3355,7 +3354,7 @@ dev = [
     { name = "tach", specifier = ">=0.34" },
     { name = "trogon", extras = ["typer"], specifier = ">=0.6" },
     { name = "ty", specifier = ">=0.0.18" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.12,<0.26" },
 ]
 docs = [
     { name = "mkdocs", specifier = ">=1.6" },
@@ -3547,30 +3546,17 @@ wheels = [
 
 [[package]]
 name = "typer"
-version = "0.27.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "rich" },
-    { name = "shellingham" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ae/40/4a3db7990d1f62a53182aa96eaef57aeb2886a27f90a195bc66713565d31/typer-0.27.1.tar.gz", hash = "sha256:a79bef8469a79c45498e7b814ecf8d603cc7644e9acbd9e19cac0334240b18df", size = 203994, upload-time = "2026-08-03T14:41:03.438Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/89/9518bc0c3929bee36b3a4a8e3daddd6e03f92f9961c66d4983b837160543/typer-0.27.1-py3-none-any.whl", hash = "sha256:53150287edd11baeb4e4722c8e394fcdf8181c0ae89485cba8d25c778d5edd56", size = 122874, upload-time = "2026-08-03T14:41:04.391Z" },
-]
-
-[[package]]
-name = "typer-slim"
-version = "0.21.2"
+version = "0.25.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
     { name = "click" },
+    { name = "rich" },
+    { name = "shellingham" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a5/ca/0d9d822fd8a4c7e830cba36a2557b070d4b4a9558a0460377a61f8fb315d/typer_slim-0.21.2.tar.gz", hash = "sha256:78f20d793036a62aaf9c3798306142b08261d4b2a941c6e463081239f062a2f9", size = 120497, upload-time = "2026-02-10T19:33:45.836Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/51/9aed62104cea109b820bbd6c14245af756112017d309da813ef107d42e7e/typer-0.25.1.tar.gz", hash = "sha256:9616eb8853a09ffeabab1698952f33c6f29ffdbceb4eaeecf571880e8d7664cc", size = 122276, upload-time = "2026-04-30T19:32:16.964Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/54/03/e09325cfc40a33a82b31ba1a3f1d97e85246736856a45a43b19fcb48b1c2/typer_slim-0.21.2-py3-none-any.whl", hash = "sha256:4705082bb6c66c090f60e47c8be09a93158c139ce0aa98df7c6c47e723395e5f", size = 56790, upload-time = "2026-02-10T19:33:47.221Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/f9/2b3ff4e56e5fa7debfaf9eb135d0da96f3e9a1d5b27222223c7296336e5f/typer-0.25.1-py3-none-any.whl", hash = "sha256:75caa44ed46a03fb2dab8808753ffacdbfea88495e74c85a28c5eefcf5f39c89", size = 58409, upload-time = "2026-04-30T19:32:18.271Z" },
 ]
 
 [[package]]

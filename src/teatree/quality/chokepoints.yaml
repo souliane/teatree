@@ -112,6 +112,7 @@
     - teatree.backends.gitlab.client
     - teatree.core.reply_transport
     - teatree.core.review.review_findings
+    - teatree.core.review.verdict_findings_publish
     - teatree.core.management.commands.pr
     - teatree.core.management.commands.ticket
     - teatree.core.management.commands._test_plan.post

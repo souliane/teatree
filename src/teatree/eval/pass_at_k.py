@@ -23,6 +23,7 @@ over :class:`~teatree.eval.api_runner.ApiInProcessRunner` + ``evaluate``.
 import dataclasses
 from collections.abc import Callable
 
+from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.models import CAP_TERMINAL_REASONS, EvalSpec, TokenUsage
 from teatree.eval.report import ScenarioResult
 
@@ -78,6 +79,18 @@ class PassAtKResult:
     @property
     def pass_rate(self) -> float:
         return self.passes / self.trials if self.trials else 0.0
+
+    @property
+    def harness_failed(self) -> bool:
+        """Whether EVERY executed trial died on a harness failure — the cell measured nothing.
+
+        Folded the way ``is_error`` is: one trial that genuinely ran proves the wiring
+        came up, so ``require="any"`` can still grade the cell on it. Kept apart from
+        :attr:`terminal_reason` (a BILLING identity, cap reasons only) because this
+        decides whether the lane is gated at all.
+        """
+        executed = [t for t in self.trial_results if not t.skipped]
+        return bool(executed) and all(measured_nothing(t.run.terminal_reason) for t in executed)
 
     @property
     def _cap_excused(self) -> bool:

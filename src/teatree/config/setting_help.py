@@ -108,6 +108,7 @@ SETTING_HELP: dict[str, str] = {
     "dogfood_smoke_disabled": "stop scheduling dogfood smoke runs",
     "dogfood_smoke_overlay": "overlay the dogfood smoke run exercises",
     "dogfood_smoke_skill": "skill the dogfood smoke loop runs",
+    "drain_slot_reservation": "slots only reviewing/shipping agents may occupy, so drains never starve",
     "dream_propose_evals": "let the dream loop propose new eval scenarios",
     "e2e_confidence_threshold": "confidence an E2E verdict must reach before it counts as evidence",
     "e2e_mandatory_gate_enabled": "require posted E2E evidence before a display-impacting change ships",

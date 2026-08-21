@@ -338,7 +338,7 @@ jobs:
       - name: Install and assert the Claude CLI
         if: ${{ (inputs.backend || 'api') == 'api' }}
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.226
+          npm install -g @anthropic-ai/claude-code@2.1.233
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
