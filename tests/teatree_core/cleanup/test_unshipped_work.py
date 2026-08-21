@@ -22,6 +22,8 @@ from teatree.core.cleanup.unshipped_work import (
     COMMITS_SUFFIX,
     UNCOMMITTED_SUFFIX,
     UNREADABLE_SUFFIX,
+    UnshippedWork,
+    _record_defaults,
     bundle_path,
     capture_unshipped_work,
     probe_unshipped_work,
@@ -370,6 +372,33 @@ class TestAFailedReadNeverOverwritesAGoodCapture(_CheckoutFixture):
         assert recovered is not None
         assert not recovered.unreadable
         assert not marker.exists()
+
+
+class TestRecordDefaultsOmitsUnsaidFields:
+    """``_record_defaults`` on an unreadable read — pure logic, no git or DB needed.
+
+    A blank ``branch``/``overlay`` means the caller did not pass one (the orphan-worktree
+    reaper calls with no ``overlay=`` at all), not that the checkout has none — so an
+    unreadable read must OMIT the key rather than write an empty string over whatever a
+    prior good capture recorded.
+    """
+
+    def test_a_blank_branch_is_omitted_not_written_empty(self) -> None:
+        defaults = _record_defaults("", "test", Path("/prefix"), UnshippedWork(unreadable="boom"))
+
+        assert "branch" not in defaults
+        assert defaults.get("overlay") == "test"
+
+    def test_a_blank_overlay_is_omitted_not_written_empty(self) -> None:
+        defaults = _record_defaults("feat", "", Path("/prefix"), UnshippedWork(unreadable="boom"))
+
+        assert "overlay" not in defaults
+        assert defaults.get("branch") == "feat"
+
+    def test_both_blank_leaves_only_the_prefix_and_cause(self) -> None:
+        defaults = _record_defaults("", "", Path("/prefix"), UnshippedWork(unreadable="boom"))
+
+        assert defaults == {"artifact_prefix": "/prefix", "unreadable": "boom"}
 
 
 class TestCaptureNeverRaises(_CheckoutFixture):
