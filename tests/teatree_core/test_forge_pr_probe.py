@@ -14,6 +14,7 @@ external) is faked.
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -50,15 +51,17 @@ def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[
     return subprocess.CompletedProcess(args=["stub"], returncode=returncode, stdout=stdout, stderr="")
 
 
-def _fake_cli(monkeypatch: pytest.MonkeyPatch, result: object) -> list[list[str]]:
+def _fake_cli(
+    monkeypatch: pytest.MonkeyPatch, result: subprocess.CompletedProcess[str] | BaseException
+) -> list[list[str]]:
     """Fake the forge subprocess. ``result`` is a CompletedProcess or an exception to raise."""
     seen: list[list[str]] = []
 
-    def _run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def _run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         seen.append(cmd)
         if isinstance(result, BaseException):
             raise result
-        return result  # type: ignore[return-value]
+        return result
 
     monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
     return seen
@@ -194,7 +197,7 @@ class TestProbeRunsWithTheWriterCredential:
         monkeypatch.setenv("TEATREE_GH_TOKEN", "tok-from-the-writer-chain")
         captured: dict[str, object] = {}
 
-        def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             captured.update(kwargs)
             return _completed("[]")
 
@@ -209,7 +212,7 @@ class TestProbeRunsWithTheWriterCredential:
         """A ``gh`` that refuses an unauthenticated read — every private repo — still answers."""
         monkeypatch.setenv("GH_TOKEN", "tok-writer")
 
-        def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             env = kwargs.get("env")
             authenticated = isinstance(env, dict) and bool(env.get("GH_TOKEN"))
             if not authenticated:

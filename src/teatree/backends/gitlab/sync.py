@@ -16,6 +16,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab.api import _as_int
 from teatree.backends.gitlab.sync_conflicts import collect_conflicted_mrs
 from teatree.backends.gitlab.sync_issues import fetch_assigned_issues, fetch_issue_labels
 from teatree.backends.gitlab.sync_prs import _PRContext, extract_repo_path, upsert_ticket_from_pr
@@ -70,7 +71,7 @@ class GitLabSyncBackend(SyncBackend):
             result.prs_found += 1
             repo_path = extract_repo_path(raw)
             repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
-            project_id = int(raw.get("project_id", 0))  # type: ignore[arg-type]
+            project_id = _as_int(raw.get("project_id", 0))
             project = (
                 ProjectInfo(project_id=project_id, path_with_namespace=repo_path, short_name=repo_short)
                 if project_id
@@ -156,7 +157,7 @@ class GitLabSyncBackend(SyncBackend):
         for raw in reviewer_prs:
             web_url = str(raw.get("web_url", ""))
             author_info = raw.get("author", {})
-            author_name = str(author_info.get("username", "")) if isinstance(author_info, dict) else ""  # ty: ignore[no-matching-overload]
+            author_name = str(author_info.get("username", "")) if isinstance(author_info, dict) else ""
             repo_path = extract_repo_path(raw)
             repo_short = repo_path.rsplit("/", maxsplit=1)[-1]
             iid = str(raw.get("iid", ""))

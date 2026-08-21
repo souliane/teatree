@@ -262,7 +262,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         project = self._resolve_project(repo)
         if project is None:
             return []
-        return cast("list[RawAPIDict]", self._client.get_mr_discussions(project.project_id, pr_iid))
+        return self._client.get_mr_discussions(project.project_id, pr_iid)
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
@@ -358,7 +358,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return ""
         author = cast("_GitLabMergeRequestSummary", mr).get("author")
         if isinstance(author, dict):
-            username = cast("_GitLabUser", author).get("username")
+            username = author.get("username")
             if isinstance(username, str):
                 return username
         return ""

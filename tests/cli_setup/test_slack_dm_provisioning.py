@@ -7,6 +7,7 @@ is invoked by ``t3 setup`` and surfaces clean errors at setup time rather
 than at first DM attempt mid-run.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -83,7 +84,7 @@ class TestProvisionOverlayDmChannel(TestCase):
         assert result.status == ProvisionResult.PROVISIONED
         assert result.channel_id == "D0DEMOCLNT1"
 
-        registry = ConfigSetting.objects.get_effective("overlays")
+        registry = cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays"))
         assert registry["teatree"]["slack_dm_channel_id"] == "D0DEMOCLNT1"
 
     def test_fails_when_conversations_open_returns_empty(self) -> None:
@@ -108,7 +109,7 @@ class TestProvisionOverlayDmChannel(TestCase):
             result = provision_overlay_dm_channel(overlay_name="teatree")
 
         assert result.status == ProvisionResult.FAILED_OPEN_DM
-        registry = ConfigSetting.objects.get_effective("overlays")
+        registry = cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays"))
         assert "slack_dm_channel_id" not in registry["teatree"]
 
     def test_skips_when_no_bot_token_in_pass(self) -> None:

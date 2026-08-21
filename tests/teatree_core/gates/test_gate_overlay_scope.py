@@ -9,6 +9,7 @@ silently evaluated OFF (a fail-toward-green hole). These tests pin that the
 overlay reaches the resolver.
 """
 
+from collections.abc import Callable
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -54,7 +55,7 @@ _DIRECT_REQUIRED_CASES = [
 
 
 @pytest.mark.parametrize(("module", "func", "field"), _DIRECT_REQUIRED_CASES)
-def test_required_returns_its_own_setting_field(module: object, func: object, field: str) -> None:
+def test_required_returns_its_own_setting_field(module: object, func: Callable[..., bool], field: str) -> None:
     """Each ``*_required`` returns exactly the boolean of the setting field it binds.
 
     Exercises the real contract on the directly-imported symbol: with the resolver
@@ -69,7 +70,7 @@ def test_required_returns_its_own_setting_field(module: object, func: object, fi
             return _forced
 
         with patch.object(module, "get_effective_settings", _fake):
-            assert func("acme-overlay") is expected  # type: ignore[operator]
+            assert func("acme-overlay") is expected
 
 
 @pytest.mark.parametrize(("module", "func", "field"), _REQUIRED_CASES)

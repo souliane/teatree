@@ -468,5 +468,5 @@ class TestDetectE2ETestPlan:
         assert detect_e2e_test_plan([], "https://example.com") == ""
 
     def test_non_dict_entries_skipped(self) -> None:
-        bad_input: list[RawAPIDict] = ["not-a-dict"]  # type: ignore[list-item]
+        bad_input: list[RawAPIDict] = ["not-a-dict"]  # ty: ignore[invalid-assignment] — the WRONG shape IS the test input; the assertion is that the callee rejects it.
         assert detect_e2e_test_plan(bad_input, "https://example.com") == ""

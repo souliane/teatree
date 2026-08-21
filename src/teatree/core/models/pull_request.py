@@ -9,6 +9,7 @@ from teatree.url_classify import repo_and_iid
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
 
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import JSONObject
@@ -269,21 +270,21 @@ class PullRequest(models.Model):
     def __str__(self) -> str:
         return f"{self.repo} #{self.iid}"
 
-    @transition(field=state, source=State.OPEN, target=State.REVIEW_REQUESTED)
-    def request_review(self, *, slack_url: str = "", review_requested_at: "models.DateTimeField | None" = None) -> None:
+    @transition(field="state", source=State.OPEN, target=State.REVIEW_REQUESTED)
+    def request_review(self, *, slack_url: str = "", review_requested_at: "datetime | None" = None) -> None:
         if slack_url:
             self.slack_url = slack_url
         self.review_requested_at = review_requested_at or timezone.now()
 
-    @transition(field=state, source=State.REVIEW_REQUESTED, target=State.APPROVED)
+    @transition(field="state", source=State.REVIEW_REQUESTED, target=State.APPROVED)
     def approve(self) -> None:
         pass
 
-    @transition(field=state, source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.MERGED)
+    @transition(field="state", source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.MERGED)
     def mark_merged(self) -> None:
         pass
 
-    @transition(field=state, source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.CLOSED)
+    @transition(field="state", source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.CLOSED)
     def mark_closed(self) -> None:
         """Record that the forge closed this PR WITHOUT merging it.
 

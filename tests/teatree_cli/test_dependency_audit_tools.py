@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.dependency_audit_tools import register, run_dependency_audit
+from tests._color_env import strip_ansi
 
 runner = CliRunner()
 
@@ -47,7 +48,7 @@ class TestRegister:
         register(fresh_app)
         result = runner.invoke(fresh_app, ["dependency-audit", "--help"])
         assert result.exit_code == 0
-        assert "--report" in result.output
+        assert "--report" in strip_ansi(result.output)
 
     def test_the_shared_tool_app_carries_the_registration(self) -> None:
         # `teatree.cli` builds `app` by calling `.register(tool_app)` for every
@@ -56,7 +57,7 @@ class TestRegister:
         # test in this file, so this test names the property directly.
         result = runner.invoke(app, ["tool", "dependency-audit", "--help"])
         assert result.exit_code == 0
-        assert "--report" in result.output
+        assert "--report" in strip_ansi(result.output)
 
 
 class TestRunDependencyAudit:

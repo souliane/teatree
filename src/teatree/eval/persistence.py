@@ -33,7 +33,7 @@ function-local runtime imports, never at module import time.
 """
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from django.db import transaction
 
@@ -49,7 +49,20 @@ if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 
 
-def _token_columns(usage: TokenUsage) -> dict[str, int]:
+class _TokenColumns(TypedDict):
+    """The four ``record_scenario`` token kwargs, named so ``**`` maps key-by-key.
+
+    A plain ``dict[str, int]`` makes the spread offer ``int`` to EVERY parameter of
+    the callee, not just these four, so the checker rejects the unrelated ones.
+    """
+
+    input_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    output_tokens: int
+
+
+def _token_columns(usage: TokenUsage) -> _TokenColumns:
     """Map a :class:`TokenUsage` onto the ``record_scenario`` token kwargs."""
     return {
         "input_tokens": usage.input,

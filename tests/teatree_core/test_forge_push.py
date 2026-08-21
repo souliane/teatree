@@ -9,6 +9,7 @@ import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -63,7 +64,7 @@ class _SpyingRun:
         self._inner = inner
         self.commands: list[list[str]] = []
 
-    def __call__(self, cmd: list[str], **kwargs: object) -> CompletedProcess[str]:
+    def __call__(self, cmd: list[str], **kwargs: Any) -> CompletedProcess[str]:
         self.commands.append(list(cmd))
         return self._inner(cmd, **kwargs)
 
@@ -308,7 +309,7 @@ class TestPushTimeoutCoversTheHookChainNotJustTransport:
         """MUTATION: restore ``PUSH_TIMEOUT_SECONDS = 300.0`` → red."""
         real_run = forge_push.run_allowed_to_fail  # captured BEFORE patching, so the fake can still delegate
 
-        def clock_gated_run(cmd: list[str], *, timeout: float | None = None, **kwargs: object) -> CompletedProcess[str]:
+        def clock_gated_run(cmd: list[str], *, timeout: float | None = None, **kwargs: Any) -> CompletedProcess[str]:
             """A fake clock: refuses the call if its budget is too small, else runs for real.
 
             No wall-clock sleep — the *requested timeout* stands in for "how long
@@ -391,7 +392,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
     def test_a_verification_that_times_out_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
         timed_out = TimeoutExpired("git", 1.0)
 
-        def time_out_only_on_the_remote_read(*, repo: str, args: list[str], **kwargs: object) -> CompletedProcess[str]:
+        def time_out_only_on_the_remote_read(*, repo: str, args: list[str], **kwargs: Any) -> CompletedProcess[str]:
             if args[0] == "ls-remote":
                 raise timed_out
             return run_with_status(repo=repo, args=args, **kwargs)
@@ -408,8 +409,8 @@ class TestTheRemoteSettlesWhetherThePushLanded:
     def test_a_commit_landing_during_the_push_does_not_falsify_it(self, clone_with_origin: Path) -> None:
         """The tip is what was ASKED to be pushed, read before the attempt — not after."""
 
-        def push_then_commit_locally(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-            done = subprocess.run(cmd, capture_output=True, text=True, check=False, env=kwargs.get("env"))  # type: ignore[arg-type]
+        def push_then_commit_locally(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            done = subprocess.run(cmd, capture_output=True, text=True, check=False, env=kwargs.get("env"))
             (clone_with_origin / "later.txt").write_text("later\n")
             run_git(clone_with_origin, "add", "later.txt")
             run_git(clone_with_origin, "commit", "-q", "-m", "later")

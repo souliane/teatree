@@ -356,7 +356,7 @@ Usage: t3 admin [OPTIONS]
 ### `t3 info`
 
 ```
-Usage: t3 info [OPTIONS] COMMAND [ARGS]...
+Usage: t3 info [OPTIONS] [COMMAND] [ARGS]...
 
  Installation info (bare) and read-only per-ticket artifact discovery.
 
@@ -1587,7 +1587,7 @@ Usage: t3 review-request post [OPTIONS]
 ### `t3 eval`
 
 ```
-Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
+Usage: t3 eval [OPTIONS] [COMMAND] [ARGS]...
 
  Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands
  target one lane.
@@ -3162,7 +3162,7 @@ Usage: t3 eval quarantine audit [OPTIONS] SUMMARY_JSON
 ### `t3 doctor`
 
 ```
-Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
+Usage: t3 doctor [OPTIONS] [COMMAND] [ARGS]...
 
  Smoke-test hooks, imports, services.
 
@@ -4017,7 +4017,7 @@ Usage: t3 hook run [OPTIONS] NAME
 ### `t3 setup`
 
 ```
-Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
+Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 
  First-time setup and global skill management.
 
@@ -4122,7 +4122,7 @@ Usage: t3 setup recover-account-switch [OPTIONS]
 ### `t3 update`
 
 ```
-Usage: t3 update [OPTIONS] COMMAND [ARGS]...
+Usage: t3 update [OPTIONS] [COMMAND] [ARGS]...
 
  Sync teatree core and registered overlays to their default branch.
 
@@ -5326,7 +5326,7 @@ Usage: t3 goal list [OPTIONS]
 ### `t3 worker`
 
 ```
-Usage: t3 worker [OPTIONS] COMMAND [ARGS]...
+Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 
  The singleton loop-timer worker (#1796 / PR-28). Bare `t3 worker` runs it (the
  cadence owner, default ON via `loop_runner_enabled`). `status` reports the
@@ -6283,7 +6283,7 @@ Usage: t3 task cancel [OPTIONS]
 ### `t3 recover`
 
 ```
-Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
+Usage: t3 recover [OPTIONS] [COMMAND] [ARGS]...
 
  Find (and optionally recover) work stranded by a network-outage death (#1764).
 
@@ -6300,7 +6300,7 @@ Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
 ### `t3 dogfood`
 
 ```
-Usage: t3 dogfood [OPTIONS] COMMAND [ARGS]...
+Usage: t3 dogfood [OPTIONS] [COMMAND] [ARGS]...
 
  Overlay-smoke commands — exercise CLI paths so bugs surface in the loop, not
  in E2E.
@@ -6749,7 +6749,7 @@ Usage: t3 directive history [OPTIONS]
 ### `t3 teatree`
 
 ```
-Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
+Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 
  Commands for the t3-teatree overlay.
 

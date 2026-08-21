@@ -74,7 +74,7 @@ class ReviewRequestPickupTests(TestCase):
     def test_slack_mention_emits_review_request_in_slack_signal(self) -> None:
         messaging = FakeMessaging()
         text = f"<@{USER_SLACK_ID}> can you review {MR_OPEN}?"
-        messages = {CHANNEL: [{"text": text, "ts": TS}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": TS}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))
@@ -102,7 +102,7 @@ class ReviewRequestPickupTests(TestCase):
         # Different user mentioned — the scanner must not pick this up.
         messaging = FakeMessaging()
         text = f"<@U99999999> please review {MR_OPEN}"
-        messages = {CHANNEL: [{"text": text, "ts": TS}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": TS}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))
@@ -130,7 +130,7 @@ class ReviewRequestPickupTests(TestCase):
         # user's own GitLab MRs.
         messaging = FakeMessaging()
         text = f"<@{USER_SLACK_ID}> can you review {MR_OPEN}?"
-        messages = {CHANNEL: [{"text": text, "ts": TS}]}
+        messages: dict[str, list[RawAPIDict]] = {CHANNEL: [{"text": text, "ts": TS}]}
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages.get(channel, []))

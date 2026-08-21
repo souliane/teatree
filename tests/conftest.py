@@ -213,13 +213,12 @@ def _restore_django_settings_module() -> Iterator[None]:
     #3160 leak sentinel catches. Restore-only (snapshot-and-put-back, never touching the
     value at setup) so a well-behaved test is unaffected and only the leak is reverted.
     """
-    absent = object()
-    before: object = os.environ.get("DJANGO_SETTINGS_MODULE", absent)
+    before = os.environ.get("DJANGO_SETTINGS_MODULE")
     yield
-    if before is absent:
+    if before is None:
         os.environ.pop("DJANGO_SETTINGS_MODULE", None)
     else:
-        os.environ["DJANGO_SETTINGS_MODULE"] = before  # type: ignore[assignment]
+        os.environ["DJANGO_SETTINGS_MODULE"] = before
 
 
 @pytest.fixture(autouse=True)

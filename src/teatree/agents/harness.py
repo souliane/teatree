@@ -121,7 +121,17 @@ class Harness(Protocol):
     neutral fields afterward, so ``ClaudeAgentOptions`` never leaks past the boundary.
     """
 
-    capabilities: HarnessCapabilities
+    @property
+    def capabilities(self) -> HarnessCapabilities:
+        """The typed flag set the driver routes on — READ-ONLY.
+
+        Declared as a read-only property, not a mutable attribute: every consumer
+        only reads it, and a bare attribute here silently excludes any backend that
+        exposes it as a ``@property`` (``PydanticAiHarness`` does), because a
+        read-only property cannot satisfy a settable protocol member. A plain class
+        attribute — the ``claude_sdk`` backend's form — still satisfies this.
+        """
+        ...
 
     def open(self, options: ClaudeAgentOptions) -> AbstractAsyncContextManager[HarnessSession]: ...
 

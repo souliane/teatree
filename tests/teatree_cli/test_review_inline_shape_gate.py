@@ -55,9 +55,8 @@ class _StubAPI:
 
 
 def _service_with_stub(draft_notes: list[dict[str, object]]) -> tuple[ReviewService, _StubAPI]:
-    service = ReviewService(token="t")
     stub = _StubAPI(draft_notes)
-    service._get_api = lambda: stub  # type: ignore[method-assign]
+    service = ReviewService(token="t", api=stub)
     return service, stub
 
 

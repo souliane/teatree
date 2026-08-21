@@ -106,9 +106,7 @@ class _StubAPI:
 
 
 def _service_with_stub(stub: _StubAPI) -> ReviewService:
-    service = ReviewService(token="t")
-    service._get_api = lambda: stub  # type: ignore[method-assign]
-    return service
+    return ReviewService(token="t", api=stub)
 
 
 # ---------------------------------------------------------------------------

@@ -148,10 +148,10 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
     """
     invoking = str(extra.get("ship_invoking_branch") or "")
     if invoking:
-        matched = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
+        matched = ticket.worktrees.filter(branch=invoking).first()
         if matched is not None:
             return matched
-    return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    return ticket.worktrees.first()
 
 
 def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:

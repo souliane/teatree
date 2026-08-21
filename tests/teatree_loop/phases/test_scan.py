@@ -3,6 +3,7 @@
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 from django.test import TestCase
@@ -166,9 +167,9 @@ def test_scan_phase_worker_pool_is_bounded() -> None:
 
     max_seen: list[int] = []
 
-    def _capped_tpe(*, max_workers: int | None = None, **kwargs: object) -> ThreadPoolExecutor:
+    def _capped_tpe(*, max_workers: int | None = None, **kwargs: Any) -> ThreadPoolExecutor:
         max_seen.append(max_workers or 0)
-        return ThreadPoolExecutor(max_workers=max_workers, **kwargs)  # type: ignore[arg-type]
+        return ThreadPoolExecutor(max_workers=max_workers, **kwargs)
 
     jobs = [_ScannerJob(scanner=_FixedScanner(name=f"s{i}", out=[]), overlay="") for i in range(200)]
     cpu = os.cpu_count() or 4

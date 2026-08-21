@@ -405,4 +405,4 @@ class TestReportShape:
 )
 def test_plan_is_frozen(plan: PushGatePlan) -> None:
     with pytest.raises(AttributeError):
-        plan.is_full = not plan.is_full  # type: ignore[misc]
+        plan.is_full = not plan.is_full  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.

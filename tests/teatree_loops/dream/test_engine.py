@@ -769,7 +769,7 @@ class WeightedSnippetTestCase(TestCase):
     def test_is_frozen(self) -> None:
         snip = WeightedSnippet(path=Path("/x.md"), kind="memory", weight=5, text="t")
         with pytest.raises(AttributeError):
-            snip.weight = 9  # type: ignore[misc]
+            snip.weight = 9  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class DistilledClusterTestCase(TestCase):
@@ -783,7 +783,7 @@ class DistilledClusterTestCase(TestCase):
             durable_destination="",
         )
         with pytest.raises(AttributeError):
-            cluster.rule = "other"  # type: ignore[misc]
+            cluster.rule = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 class TestEnumerateMembersMainTranscripts:
@@ -1034,7 +1034,7 @@ class TestTranscriptMember:
     def test_is_frozen(self, tmp_path: Path) -> None:
         member = TranscriptMember(path=tmp_path / "x.jsonl", kind="main")
         with pytest.raises(AttributeError):
-            member.kind = "other"  # type: ignore[misc]
+            member.kind = "other"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
 
 def _many_members(tmp_path: Path, count: int) -> list[TranscriptMember]:

@@ -263,7 +263,7 @@ def driverless_loops() -> tuple[str, ...]:
     return tuple(sorted(loop.name for loop in iter_loops() if loop.off_live_tick and not loop.off_tick_command))
 
 
-def _measured_loops(now: dt.datetime) -> list["Loop"]:
+def _measured_loops(now: dt.datetime) -> list[tuple["Loop", int]]:
     """Live-tick interval rows something should be driving, UNION the ones the operator left on.
 
     Each half alone loses an alarm the other keeps:
@@ -290,9 +290,9 @@ def _measured_loops(now: dt.datetime) -> list["Loop"]:
     members = timer_chain_loop_names(now)
     live_tick = live_tick_loop_names()
     return [
-        row
+        (row, cadence)
         for row in Loop.objects.all()
-        if row.delay_seconds and (row.name in members or (row.enabled and row.name in live_tick))
+        if (cadence := row.delay_seconds) and (row.name in members or (row.enabled and row.name in live_tick))
     ]
 
 
@@ -328,13 +328,13 @@ def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER)
     stale = [
         StaleLoop(
             name=row.name,
-            cadence_seconds=row.delay_seconds,
+            cadence_seconds=cadence,
             age_seconds=age,
             ever_ran=row.last_run_at is not None,
             suppressed=_is_suppressed(row, planes),
         )
-        for row in _measured_loops(now)
-        if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * row.delay_seconds
+        for row, cadence in _measured_loops(now)
+        if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * cadence
     ]
     return sorted(stale, key=lambda loop: loop.name)
 

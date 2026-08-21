@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1329,11 +1330,11 @@ class TestShipPushSuppliesTheForgeCredential(TestCase):
         real_run = subprocess.run
 
         def spy(
-            cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: object
+            cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any
         ) -> subprocess.CompletedProcess[str]:
             if "push" in cmd:
                 push_envs.append(dict(env or {}))
-            return real_run(cmd, env=env, **kwargs)  # type: ignore[arg-type,call-overload,no-any-return]
+            return real_run(cmd, env=env, **kwargs)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),

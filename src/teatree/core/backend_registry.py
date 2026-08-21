@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
     from teatree.core.overlay import OverlayBase
     from teatree.types import RawAPIDict, ShareLinkVerification, SharePointEntry, SharePointRemoteSpec, SyncBackend
@@ -39,14 +41,28 @@ class ReviewHistoryReadLike(Protocol):
     def ok(self) -> bool: ...  # pragma: no branch
 
     @property
-    def matches(self) -> "list[ReviewMatchLike]": ...  # pragma: no branch
+    def matches(self) -> "Sequence[ReviewMatchLike]": ...  # pragma: no branch
 
 
 class ReviewMatchLike(Protocol):
-    pr_url: str
-    ts: str
-    author: str
-    permalink: str
+    """The read surface of one review-history match.
+
+    Read-only properties, not mutable attributes: consumers only read these, and a
+    settable member excludes every FROZEN dataclass implementation (whose attributes
+    are read-only) — which is what the real ``ReviewMatch`` is.
+    """
+
+    @property
+    def pr_url(self) -> str: ...
+
+    @property
+    def ts(self) -> str: ...
+
+    @property
+    def author(self) -> str: ...
+
+    @property
+    def permalink(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)

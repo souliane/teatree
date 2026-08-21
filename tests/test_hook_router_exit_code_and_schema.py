@@ -69,7 +69,7 @@ def _run_router(
     foreground-Agent deny) whose deny path this contract test must exercise.
     """
     with tempfile.TemporaryDirectory() as home:
-        env = {**os.environ, "HOME": home, "USERPROFILE": home}
+        env: dict[str, str] = {**os.environ, "HOME": home, "USERPROFILE": home}
         env.pop("XDG_DATA_HOME", None)
         if settings is not None:
             db = Path(home) / "db.sqlite3"

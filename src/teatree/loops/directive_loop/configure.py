@@ -11,10 +11,14 @@ is what makes the config half of a revert safe.
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Directive
 from teatree.core.models.mechanism_sketch import MechanismSketch
+
+if TYPE_CHECKING:
+    from teatree.core.models.config_setting import ConfigValue
 
 _MISSING = object()
 
@@ -73,7 +77,7 @@ def apply_activation(directive: Directive, *, activation: Activation | None = No
         # interpret gate blesses an empty scope as a valid global mechanism), so the
         # directive advances to VERIFYING rather than parking.
         return ConfigureResult(applied=True, reason="global mechanism — no per-overlay activation needed")
-    ConfigSetting.objects.set_value(resolved.setting_key, resolved.value, scope=resolved.scope)
+    ConfigSetting.objects.set_value(resolved.setting_key, cast("ConfigValue", resolved.value), scope=resolved.scope)
     effective = getattr(get_effective_settings(resolved.scope), resolved.setting_key, _MISSING)
     if effective != resolved.value:
         ConfigSetting.objects.clear(resolved.setting_key, scope=resolved.scope)

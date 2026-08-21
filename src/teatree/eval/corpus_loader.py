@@ -13,7 +13,7 @@ directory carrying two labels for the same ``entry_id``.
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Literal, cast, get_args
 
 import yaml
 
@@ -71,8 +71,8 @@ def _parse_label(entry: Mapping[str, Any], path: Path) -> CorpusLabel:
         expected_behavior=_required_str(entry, "expected_behavior", path),
         outcome_axis=_required_str(entry, "outcome_axis", path),
         expected_outcome=_required_str(entry, "expected_outcome", path),
-        confidence=confidence,  # type: ignore[arg-type]
-        oracle=oracle,  # type: ignore[arg-type]
+        confidence=cast('Literal["high", "medium", "low"]', confidence),
+        oracle=cast('Literal["matcher", "judge", "both"]', oracle),
         matchers=matchers,
         judge=judge,
         rule_author=str(entry.get("rule_author") or ""),

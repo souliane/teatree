@@ -19,7 +19,7 @@ from typing import cast
 from urllib.parse import urlparse
 
 from teatree.backends.github.api import _FORGE_READ_TIMEOUT_SECONDS, _gh_api_get, _run_gh
-from teatree.backends.github.payloads import _GitHubPullRequestSummary, _GitHubUser, pr_open_state_from_payload
+from teatree.backends.github.payloads import _GitHubPullRequestSummary, pr_open_state_from_payload
 from teatree.backends.types import dig
 from teatree.core.backend_protocols import ApprovalState, PrOpenState
 from teatree.types import RawAPIDict
@@ -292,7 +292,7 @@ def pr_author(*, pr_url: str, token: str) -> str:
         return ""
     user = cast("_GitHubPullRequestSummary", pr).get("user")
     if isinstance(user, dict):
-        login = cast("_GitHubUser", user).get("login")
+        login = user.get("login")
         if isinstance(login, str):
             return login
     return ""

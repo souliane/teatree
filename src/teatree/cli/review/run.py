@@ -35,13 +35,17 @@ structural (URL shape), not heuristic. A URL that names neither exits 2 with
 
 import json
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import typer
 
+from teatree.backends.gitlab.api import _as_int
 from teatree.cli.review.service import review_app
 from teatree.url_classify import Forge, forge_of, repo_and_iid
 from teatree.utils.django_bootstrap import ensure_django
+
+if TYPE_CHECKING:
+    from teatree.backends.gitlab.api import GitLabAPI
 
 # GitLab JSON payloads — narrow ``object`` rather than a fictitious schema
 # because the API surface mixes strings (paths, diffs), ints (ids), and
@@ -201,7 +205,7 @@ class _ReviewRunAPIError(RuntimeError):
     """
 
 
-def _fetch_review_state(api: object, repo: str, iid: int) -> _ReviewState:
+def _fetch_review_state(api: "GitLabAPI", repo: str, iid: int) -> _ReviewState:
     """Aggregate existing-review counts for the MR."""
     resolve_project = getattr(api, "resolve_project", None)
     project = resolve_project(repo) if callable(resolve_project) else None
@@ -209,10 +213,10 @@ def _fetch_review_state(api: object, repo: str, iid: int) -> _ReviewState:
         msg = f"resolve_project({repo!r}) returned None — token missing or repo inaccessible"
         raise _ReviewRunAPIError(msg)
     project_id = project.project_id
-    discussions = api.get_mr_discussions(project_id, iid)  # type: ignore[attr-defined]
-    draft_count = api.get_draft_notes_count(project_id, iid)  # type: ignore[attr-defined]
-    approvals = api.get_mr_approvals(project_id, iid)  # type: ignore[attr-defined]
-    approvals_count = int(approvals.get("count", 0))
+    discussions = api.get_mr_discussions(project_id, iid)
+    draft_count = api.get_draft_notes_count(project_id, iid)
+    approvals = api.get_mr_approvals(project_id, iid)
+    approvals_count = _as_int(approvals.get("count", 0))
     names = approvals.get("approved_by")
     approver_names: tuple[str, ...] = tuple(str(n) for n in names) if isinstance(names, list) else ()
     return _ReviewState(

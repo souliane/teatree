@@ -87,9 +87,8 @@ class _StubAPI:
 
 def _service_with_stub(*, mr_author: str) -> tuple[ReviewService, _StubAPI]:
     """Build a ReviewService whose API stub returns ``mr_author`` for the MR."""
-    service = ReviewService(token="t")
     stub = _StubAPI()
-    service._get_api = lambda: stub  # type: ignore[method-assign]
+    service = ReviewService(token="t", api=stub)
     # Patch the shape-gate's MR-author lookup at its source module — the
     # canonical surface every call site routes through.
     return service, stub

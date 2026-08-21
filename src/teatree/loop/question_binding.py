@@ -72,10 +72,11 @@ def apply_bound_answer(bound: BoundAnswer) -> bool:
     applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
     if applied is None:
         return False
-    if applied.parked_task_id:  # ty: ignore[unresolved-attribute]
+    parked = applied.parked_task
+    if parked is not None:
         from teatree.core.models.task_handoff import schedule_resume  # noqa: PLC0415 — lazy ORM import
 
-        schedule_resume(applied.parked_task, answer=bound.answer)
+        schedule_resume(parked, answer=bound.answer)
     return True
 
 

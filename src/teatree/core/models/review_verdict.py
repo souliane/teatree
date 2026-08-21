@@ -27,7 +27,7 @@ this same verdict just vouched for (or held).
 
 import enum
 from dataclasses import dataclass
-from typing import ClassVar, Final, TypedDict
+from typing import TYPE_CHECKING, ClassVar, Final, TypedDict
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -44,6 +44,9 @@ from teatree.core.models.reviewer_identity import (
     unrecognised_reviewer_message,
 )
 from teatree.core.models.ticket import Ticket
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class ReviewVerdictError(ValueError):
@@ -132,7 +135,7 @@ class Finding:
         return {"severity": self.severity, "summary": self.summary, "file": self.file, "line": self.line}
 
     @classmethod
-    def from_dict(cls, raw: dict) -> "Finding":
+    def from_dict(cls, raw: "Mapping[str, object]") -> "Finding":
         return cls(
             severity=str(raw.get("severity", "")),
             summary=str(raw.get("summary", "")),
@@ -304,7 +307,9 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         """
         head = head_sha.strip().lower()
         passes = [v for v in self.for_pr(slug, pr_id) if v.is_merge_safe() and not v.is_stale_at(head)]
-        return max(passes, key=lambda verdict: verdict.recorded_at, default=None)
+        if not passes:
+            return None
+        return max(passes, key=lambda verdict: verdict.recorded_at)
 
     def authorizing_verdict_at(self, *, slug: str, pr_id: int, head_sha: str) -> "ReviewVerdict | None":
         """The non-stale ``merge_safe`` row the newest-wins verdict rests on, else ``None``.

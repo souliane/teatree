@@ -73,7 +73,7 @@ def _log_ticket_transition(
         return
 
     try:
-        session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
+        session = instance.sessions.order_by("-started_at").first()
         TicketTransition.objects.create(
             ticket=instance,
             session=session,

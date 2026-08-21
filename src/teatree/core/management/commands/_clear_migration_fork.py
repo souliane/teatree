@@ -36,9 +36,9 @@ def check_clear_migration_fork(reviewed_sha: str, ticket: Ticket | None) -> str 
     invoking = str(extra.get("ship_invoking_branch") or "")
     worktree = None
     if invoking:
-        worktree = ticket.worktrees.filter(branch=invoking).first()  # ty: ignore[unresolved-attribute]
+        worktree = ticket.worktrees.filter(branch=invoking).first()
     if worktree is None:
-        worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+        worktree = ticket.worktrees.first()
     if worktree is None:
         return None
     repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path

@@ -385,7 +385,7 @@ class TestEgressReactPayload(_GateOffTestCase):
         class _NonDictReactBackend(_FakeMessaging):
             def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
                 self.react_routed_calls.append((channel, ts, emoji))
-                return ["not", "a", "dict"]  # type: ignore[return-value]
+                return ["not", "a", "dict"]  # ty: ignore[invalid-return-type] — returning the WRONG shape is the test input: the assertion is that the caller rejects a non-dict.
 
         backend = _NonDictReactBackend()
         posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)

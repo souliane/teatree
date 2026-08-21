@@ -83,7 +83,9 @@ class MultiChannelBroadcastFanOutTests(TestCase):
         # The same broadcast message appears in three independent channels
         # — capability A says the scanner fans out across all of them.
         messaging = FakeMessaging()
-        messages_by_channel = {channel: [{"text": f"Please review {MR_OPEN}", "ts": TS}] for channel in CHANNELS}
+        messages_by_channel: dict[str, list[RawAPIDict]] = {
+            channel: [{"text": f"Please review {MR_OPEN}", "ts": TS}] for channel in CHANNELS
+        }
 
         def fetch(*, channel: str) -> list[RawAPIDict]:
             return list(messages_by_channel.get(channel, []))

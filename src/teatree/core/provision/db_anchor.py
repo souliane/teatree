@@ -65,7 +65,7 @@ class WrongWorktreeDBError(RuntimeError):
 def _worktree_path_for(ticket: Ticket) -> str:
     # Stable ordering: a ticket can have several worktrees (multi-repo);
     # the refusal message must name a deterministic one across invocations.
-    worktree = ticket.worktrees.order_by("pk").first()  # ty: ignore[unresolved-attribute]
+    worktree = ticket.worktrees.order_by("pk").first()
     if worktree is None:
         return ""
     return worktree.worktree_path

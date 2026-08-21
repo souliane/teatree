@@ -232,7 +232,7 @@ def _record_capture(
 ) -> UnshippedWorkRecord:
     record, _ = UnshippedWorkRecord.objects.update_or_create(
         checkout_path=str(checkout),
-        defaults=_record_defaults(branch, overlay, prefix, work),
+        defaults=dict(_record_defaults(branch, overlay, prefix, work)),
     )
     return record
 

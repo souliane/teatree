@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from django.db import models
 from django_fsm import FSMField, transition
@@ -27,8 +27,12 @@ def _check_plan_artifact(ticket: object) -> bool:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from teatree.core.managers import TaskQuerySet
     from teatree.core.models.task import Task
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
+    from teatree.core.models.worktree import Worktree
 
 
 # Composed via Django abstract-model facets (the framework's own model-decomposition
@@ -38,6 +42,27 @@ if TYPE_CHECKING:
 # churn. The concrete class owns the fields, the state graph, and ``save``.
 # ``models.Model`` is not re-listed as a base: every facet already derives from it
 # via ``TicketFacet``, so it is redundant here.
+def _reviewing_task_completed(ticket: object) -> bool:
+    """``review`` guard — true once a reviewing-phase task has completed."""
+    return cast("Ticket", ticket).tasks.completed_in_phase("reviewing").exists()
+
+
+def _review_context_satisfied(ticket: object) -> bool:
+    """``review`` guard — true once the review-context gate is satisfied."""
+    return cast("Ticket", ticket).review_context_satisfied()
+
+
+def _reviewer_with_completed_review(ticket: object) -> bool:
+    """Reviewer-role guard — a REVIEWER ticket whose reviewing task has completed."""
+    row = cast("Ticket", ticket)
+    return row.role == Ticket.Role.REVIEWER and row.tasks.completed_in_phase("reviewing").exists()
+
+
+def _is_reviewer(ticket: object) -> bool:
+    """Reviewer-role guard — true only for a REVIEWER-role ticket."""
+    return cast("Ticket", ticket).role == Ticket.Role.REVIEWER
+
+
 class Ticket(
     TicketOverlayModel,
     TicketPhaseSessionModel,
@@ -47,6 +72,17 @@ class Ticket(
     TicketStateSetsModel,
     TicketIntrospectionModel,
 ):
+    if TYPE_CHECKING:
+        # Reverse accessor for ``Task.ticket``'s ``related_name="tasks"``. Django
+        # synthesises it at class-prep time, which no static checker can see, so
+        # declare it here — annotation-only, never evaluated at runtime. Typed as
+        # the QUERYSET rather than ``TaskManager`` because that manager is built
+        # dynamically (``Manager.from_queryset(TaskQuerySet)``), so the name holds
+        # a variable and cannot appear in a type expression; the related manager
+        # exposes exactly this queryset's methods, which is what callers use.
+        tasks: "TaskQuerySet"
+        worktrees: "models.Manager[Worktree]"
+
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
@@ -206,13 +242,24 @@ class Ticket(
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")
 
-    def save(self, *args: object, **kwargs: object) -> None:
+    def save(
+        self,
+        force_insert: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
+        force_update: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
+        using: str | None = None,
+        update_fields: "Iterable[str] | None" = None,
+    ) -> None:
         if not self.overlay and self.issue_url:
             self.overlay = self._infer_overlay()
         if not self.repo_namespaced_key and self.issue_url:
             self.repo_namespaced_key = compute_repo_namespaced_key(self.issue_url)
         self.issue_number = derive_issue_number(self.issue_url)
-        super().save(*args, **kwargs)  # type: ignore[arg-type]
+        super().save(
+            force_insert=force_insert,
+            force_update=force_update,
+            using=using,
+            update_fields=update_fields,
+        )
 
     def stamp_issue_title(self, title: str) -> list[str]:
         """Persist the forge issue *title* onto this ticket for the dashboard."""
@@ -238,7 +285,7 @@ class Ticket(
             return ""
         return title[: self._meta.get_field("short_description").max_length or 80]
 
-    @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
+    @transition(field="state", source=State.NOT_STARTED, target=State.SCOPED)
     def scope(
         self,
         *,
@@ -253,12 +300,12 @@ class Ticket(
         if repos is not None:
             self.repos = repos
 
-    @transition(field=state, source=[State.SCOPED, State.STARTED], target=State.STARTED)
+    @transition(field="state", source=[State.SCOPED, State.STARTED], target=State.STARTED)
     def start(self) -> None:
         """Schedule worktree provisioning + planning task."""
 
     @transition(
-        field=state,
+        field="state",
         source=State.STARTED,
         target=State.PLANNED,
         conditions=[_check_plan_artifact],
@@ -268,7 +315,7 @@ class Ticket(
         self._consume_pending_phase_tasks("planning")
         self.schedule_coding(parent_task=parent_task)
 
-    @transition(field=state, source=State.PLANNED, target=State.CODED)
+    @transition(field="state", source=State.PLANNED, target=State.CODED)
     def code(self, *, parent_task: "Task | None" = None) -> None:
         get_gate("plan_currency")(self)  # SELFCATCH-3: refuse a thin/stale plan (NO-OP unless flag on).
         self._refuse_if_worktree_dirty("coding")
@@ -276,7 +323,7 @@ class Ticket(
         self.schedule_testing(parent_task=parent_task)
 
     @transition(
-        field=state,
+        field="state",
         source=[State.NOT_STARTED, State.SCOPED, State.STARTED],
         target=State.CODED,
         conditions=[is_auto_implement],
@@ -287,7 +334,7 @@ class Ticket(
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing(parent_task=parent_task)
 
-    @transition(field=state, source=State.CODED, target=State.TESTED)
+    @transition(field="state", source=State.CODED, target=State.TESTED)
     def test(self, *, passed: bool = True, parent_task: "Task | None" = None) -> None:
         self._refuse_if_worktree_dirty("testing")
         extra = self._extra()
@@ -297,12 +344,12 @@ class Ticket(
         self.schedule_review(parent_task=parent_task)
 
     @transition(
-        field=state,
+        field="state",
         source=State.TESTED,
         target=State.REVIEWED,
         conditions=[
-            lambda t: t.tasks.completed_in_phase("reviewing").exists(),
-            lambda t: t.review_context_satisfied(),
+            _reviewing_task_completed,
+            _review_context_satisfied,
         ],
     )
     def review(self, *, parent_task: "Task | None" = None) -> None:
@@ -320,7 +367,7 @@ class Ticket(
         self.extra = extra
 
     @transition(
-        field=state,
+        field="state",
         source=_RECONCILE_SOURCE_STATES,
         target=State.REVIEWED,
     )
@@ -328,7 +375,7 @@ class Ticket(
         """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808)."""
 
     @transition(
-        field=state,
+        field="state",
         source=[
             State.NOT_STARTED,
             State.SCOPED,
@@ -351,8 +398,8 @@ class Ticket(
         ],
         target=State.REVIEW_POSTED,
         conditions=[
-            lambda t: t.role == Ticket.Role.REVIEWER and t.tasks.completed_in_phase("reviewing").exists(),
-            lambda t: t.review_context_satisfied(),
+            _reviewer_with_completed_review,
+            _review_context_satisfied,
         ],
     )
     def mark_reviewed_externally(self) -> None:
@@ -365,7 +412,7 @@ class Ticket(
             self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.APPROVED.value})
 
     @transition(
-        field=state,
+        field="state",
         source=[
             State.NOT_STARTED,
             State.SCOPED,
@@ -381,7 +428,7 @@ class Ticket(
             State.REVIEW_POSTED,
         ],
         target=State.REVIEW_POSTED,
-        conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
+        conditions=[_is_reviewer],
     )
     def mark_review_no_action(self) -> None:
         """Reviewer-role terminal disposition for a no-postable-action review."""
@@ -390,7 +437,7 @@ class Ticket(
             self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.REVIEWED_NO_ACTION.value})
         self._consume_pending_phase_tasks("reviewing")
 
-    @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
+    @transition(field="state", source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
         """Schedule push + PR creation."""
         self._refuse_if_worktree_dirty("shipping")
@@ -398,17 +445,17 @@ class Ticket(
         get_gate("forced_repro")(self)
         self._consume_pending_phase_tasks("shipping")
 
-    @transition(field=state, source=State.SHIPPED, target=State.IN_REVIEW)
+    @transition(field="state", source=State.SHIPPED, target=State.IN_REVIEW)
     def request_review(self) -> None:
         pass
 
-    @transition(field=state, source=[State.IN_REVIEW, State.MERGED], target=State.MERGED)
+    @transition(field="state", source=[State.IN_REVIEW, State.MERGED], target=State.MERGED)
     def mark_merged(self) -> None:
         """Schedule worktree teardown."""
         get_gate("merge_evidence")(self)
 
     @transition(
-        field=state,
+        field="state",
         source=_MERGED_RECONCILE_SOURCE_STATES,
         target=State.MERGED,
     )
@@ -416,11 +463,11 @@ class Ticket(
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343)."""
         get_gate("merge_evidence")(self)
 
-    @transition(field=state, source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
+    @transition(field="state", source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
     def retrospect(self) -> None:
         """Schedule retrospection I/O."""
 
-    @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
+    @transition(field="state", source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
         """Reach DELIVERED past the Definition-of-Done gates — each NO-OP unless configured."""
         get_gate("fix_record_dod")(self)
@@ -428,11 +475,11 @@ class Ticket(
         get_gate("integration_review")(self)
         get_gate("critic")(self)
 
-    @transition(field=state, source=[State.MERGED, State.DELIVERED], target=State.REVIEWED)
+    @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.REVIEWED)
     def reopen_for_followup(self) -> None:
         """Reopen a terminally-shipped ticket to REVIEWED for a follow-up PR (#3327)."""
 
-    @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
+    @transition(field="state", source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:
         extra = self._extra()
         extra.pop("tests_passed", None)
@@ -440,7 +487,7 @@ class Ticket(
         self._cancel_pending_tasks()
 
     @transition(
-        field=state,
+        field="state",
         source=[State.SHIPPED, State.IN_REVIEW, State.MERGED, State.RETROSPECTED, State.DELIVERED],
         target=State.STARTED,
     )
@@ -461,7 +508,7 @@ class Ticket(
         retire_phase_ledger(self)
 
     @transition(
-        field=state,
+        field="state",
         source=[
             State.NOT_STARTED,
             State.SCOPED,

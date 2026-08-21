@@ -15,22 +15,13 @@ import logging
 from claude_agent_sdk import ResultMessage
 
 from teatree.agents.pydantic_ai_session import MAX_TOKENS_TRUNCATION_SUBTYPE
+from teatree.agents.runner_failure_taxonomy import TURN_CEILING_SUBTYPE
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user
 
 logger = logging.getLogger(__name__)
-
-#: The terminal ``ResultMessage`` subtype a run carries when it ended because it
-#: reached its own per-run turn ceiling — emitted by the ``claude`` CLI for the
-#: ``ClaudeAgentOptions.max_turns`` cap (``agent_max_turns``) and stamped by
-#: :mod:`teatree.agents.pydantic_ai_session` for that lane's ``UsageLimits`` request
-#: cap (``pydantic_ai_request_limit``). ONE subtype for one meaning, so both lanes
-#: land in the same branch. It distinguishes "the run was cut off at its ceiling"
-#: from every other failed result, so a cap is never mistaken for an ordinary error
-#: — nor an ordinary error laundered into a cap.
-TURN_CEILING_SUBTYPE = "error_max_turns"
 
 
 def is_max_tokens_truncation(message: ResultMessage | None) -> bool:

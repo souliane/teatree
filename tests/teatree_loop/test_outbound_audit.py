@@ -389,7 +389,7 @@ class GitLabNoteVerifierTests(TestCase):
 
         # Save real entry (if loaded) and shadow with None.
         saved = sys.modules.get("teatree.backends.gitlab.api")
-        sys.modules["teatree.backends.gitlab.api"] = None  # type: ignore[assignment]
+        sys.modules["teatree.backends.gitlab.api"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
             assert _gitlab_note_verifier() is None
         finally:
@@ -519,7 +519,7 @@ class GitLabApproveVerifierTests(TestCase):
         import sys  # noqa: PLC0415
 
         saved = sys.modules.get("teatree.backends.gitlab.api")
-        sys.modules["teatree.backends.gitlab.api"] = None  # type: ignore[assignment]
+        sys.modules["teatree.backends.gitlab.api"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
             assert _gitlab_approve_verifier() is None
         finally:
@@ -646,7 +646,7 @@ class SlackDmVerifierTests(TestCase):
         import sys  # noqa: PLC0415
 
         saved = sys.modules.get("teatree.core.backend_factory")
-        sys.modules["teatree.core.backend_factory"] = None  # type: ignore[assignment]
+        sys.modules["teatree.core.backend_factory"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
             assert _slack_dm_verifier() is None
         finally:
@@ -774,7 +774,7 @@ class GitHubNoteVerifierTests(TestCase):
         import sys  # noqa: PLC0415
 
         saved = sys.modules.get("teatree.backends.github")
-        sys.modules["teatree.backends.github"] = None  # type: ignore[assignment]
+        sys.modules["teatree.backends.github"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
             assert _github_note_verifier() is None
         finally:

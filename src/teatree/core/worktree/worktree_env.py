@@ -16,7 +16,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.utils import secrets
@@ -29,7 +29,7 @@ from teatree.utils.postgres_secret import (
 )
 
 if TYPE_CHECKING:
-    from teatree.core.models import Ticket, Worktree
+    from teatree.core.models import Worktree
     from teatree.core.models.types import WorktreeExtra
     from teatree.core.overlay import OverlayBase
 
@@ -123,7 +123,7 @@ def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
         return []
     wt_path = Path(wt_path_str)
     ticket_dir = wt_path.parent
-    ticket = cast("Ticket", worktree.ticket)
+    ticket = worktree.ticket
 
     pairs = [
         ("WT_VARIANT", ticket.variant or ""),
@@ -340,7 +340,7 @@ def worktree_pg_connection(
         overlay = get_overlay_for_worktree(worktree)
     resolved = dict(overlay.provisioning.env_extra(worktree))
 
-    env = {**os.environ, **resolved}
+    env: dict[str, str] = {**os.environ, **resolved}
     env.pop("VIRTUAL_ENV", None)
     return resolved.get("POSTGRES_USER", ""), resolved.get("POSTGRES_HOST", ""), pg_env(env)
 

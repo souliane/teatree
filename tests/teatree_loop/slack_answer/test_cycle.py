@@ -321,7 +321,7 @@ class TestLinkOnlyDmDoesNotMisfireStatusline:
 
 
 class TestRowIsolation:
-    def test_one_bad_row_does_not_block_others(self) -> None:
+    def test_one_bad_row_does_not_block_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
         bad = _row("thanks", ts="1.0")
         good = _row("ok", ts="2.0")
         backend = RecordingBackend()
@@ -337,7 +337,7 @@ class TestRowIsolation:
                 raise RuntimeError(msg)
             return original_react(channel=channel, ts=ts, emoji=emoji)
 
-        backend.react = flaky_react  # type: ignore[method-assign]
+        monkeypatch.setattr(backend, "react", flaky_react)
         report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
         good.refresh_from_db()

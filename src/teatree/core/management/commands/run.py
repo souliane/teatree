@@ -91,7 +91,7 @@ class Command(TyperCommand):
         if not compose_file:
             return "No docker-compose file found."
 
-        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
+        env: dict[str, str] = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
         cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]
@@ -193,10 +193,10 @@ class Command(TyperCommand):
         else:
             args = list(cmd)
             cwd = None
-            cmd_env = {}
+            cmd_env: dict[str, str] = {}
 
         args.extend(extra_args)
-        env = {**os.environ, **get_overlay().provisioning.env_extra(worktree), **cmd_env}
+        env: dict[str, str] = {**os.environ, **get_overlay().provisioning.env_extra(worktree), **cmd_env}
         env.pop("VIRTUAL_ENV", None)
 
         rc = run_streamed(args, cwd=cwd, env=env, check=False)

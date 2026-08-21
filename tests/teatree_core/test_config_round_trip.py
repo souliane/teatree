@@ -17,7 +17,7 @@ reproduction was on the CLI, and the two must not be able to disagree.
 """
 
 import tomllib
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 from django.test import TestCase
 
@@ -142,7 +142,7 @@ class TestARedactedExportCannotDeleteWhatItRedacted(TestCase):
             scan_terms=(),
             allow_safety_posture=True,
         )
-        registry = ConfigSetting.objects.overrides_for_scope("")["overlays"]
+        registry = cast("dict[str, Any]", ConfigSetting.objects.overrides_for_scope("")["overlays"])
         assert registry["t3-teatree"]["path"] == "~/moved"
         assert registry["t3-teatree"]["github_token_pass_key"] == "teatree/github-token"
         assert registry["second"] == {"path": "~/second"}

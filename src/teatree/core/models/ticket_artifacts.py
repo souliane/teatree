@@ -15,7 +15,7 @@ focused, importable aggregation seam.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from teatree.core.models.types import Ports
 
@@ -113,7 +113,7 @@ def collect_ticket_artifacts(ticket: "Ticket", *, port_resolver: PortResolver | 
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
-    worktree_model = apps.get_model("core", "Worktree")
+    worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
     worktrees = tuple(
         WorktreeArtifact(
             repo_path=wt.repo_path,
@@ -144,9 +144,7 @@ def collect_ticket_artifacts(ticket: "Ticket", *, port_resolver: PortResolver | 
         for plan in ticket.plan_artifacts.order_by("-recorded_at")  # ty: ignore[unresolved-attribute]
     )
     result_paths = tuple(
-        ticket.tasks.exclude(result_artifact_path="")  # ty: ignore[unresolved-attribute]
-        .order_by("pk")
-        .values_list("result_artifact_path", flat=True)
+        ticket.tasks.exclude(result_artifact_path="").order_by("pk").values_list("result_artifact_path", flat=True)
     )
     e2e_runs = tuple(
         E2eRunRef(

@@ -24,7 +24,7 @@ from teatree.agents.lane_b.tool_names import CAPABILITY_TO_LANE_B_TOOL, lane_b_t
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS, sdk_disallowed_tools_for_phase
 
-pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — zero-token guard.
+pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # zero-token guard.
 
 _SKILL_VOCABULARY = {"Bash", "Read", "Write", "Edit", "Grep"}
 

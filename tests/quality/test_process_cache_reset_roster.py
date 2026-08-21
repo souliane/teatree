@@ -24,6 +24,7 @@ are out of this gate's structural derivation.
 # test-path: cross-cutting
 import ast
 from pathlib import Path
+from typing import Any
 
 from teatree.config.seed_defaults import _cache as _seed_defaults_cache
 from teatree.config.seed_defaults import reset_seed_defaults_cache
@@ -266,7 +267,7 @@ class TestProcessCacheResetRoster:
         # Efficacy: for each plain-dict RESET cache, populate it and prove the
         # roster's reset callable empties it. (The two lru caches are covered by
         # the conftest-wiring check above plus their own module tests.)
-        cases = [
+        cases: list[tuple[dict[Any, Any], Any, Any]] = [
             (_forge_cache, ("sentinel", "repo"), reset_forge_pr_budget_cache),
             (_last_warned, "sentinel-key", reset_throttle),
             (_code_host_cache, "sentinel-overlay", reset_backend_caches),
@@ -274,6 +275,6 @@ class TestProcessCacheResetRoster:
             (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
         ]
         for container, key, reset_fn in cases:
-            container[key] = object()  # type: ignore[index]
+            container[key] = object()
             reset_fn()
             assert key not in container, f"{reset_fn.__name__}() did not clear the cache keyed {key!r}"

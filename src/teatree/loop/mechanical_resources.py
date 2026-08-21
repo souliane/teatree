@@ -52,6 +52,7 @@ import shutil
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -63,6 +64,9 @@ from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.worktree_gc import GcSurvey, collect, survey_worktrees
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +142,10 @@ def _free_resources_inner(payload: ActionPayload) -> None:
     logger.info("free_resources(%s) reclaimed ~%.2f GB", resource, plan.reclaimed_gb)
 
 
-def _persist_plan(marker: object, plan: FreePlan) -> None:
+def _persist_plan(marker: "ResourcePressureMarker", plan: FreePlan) -> None:
     try:
-        marker.last_plan = plan.render()  # type: ignore[attr-defined]
-        marker.save(update_fields=["last_plan"])  # type: ignore[attr-defined]
+        marker.last_plan = plan.render()
+        marker.save(update_fields=["last_plan"])
     except Exception:
         logger.exception("free_resources: failed to persist plan")
 

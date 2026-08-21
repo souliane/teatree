@@ -14,7 +14,7 @@ and its share links, and never writes to the remote — read-only is guaranteed 
 the OAuth-scope level (see :mod:`teatree.backends.sharepoint`).
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
@@ -23,6 +23,7 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.core.backend_factory import sharepoint_client_from_overlay
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.types import ShareLinkVerification, SharePointEntry
 
 if TYPE_CHECKING:
     from teatree.core.backend_registry import SharePointReadClient
@@ -49,7 +50,7 @@ def _client() -> "SharePointReadClient":
     )
 
 
-async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list[dict[str, Any]]:
+async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list[SharePointEntry]:
     """Entries under *subpath* in the read-only SharePoint document library."""
     return await sync_to_async(lambda: _client().list_files(subpath, recursive=recursive), thread_sensitive=True)()
 
@@ -59,7 +60,7 @@ async def _sharepoint_cat(file_path: str) -> str:
     return await sync_to_async(lambda: _client().cat(file_path), thread_sensitive=True)()
 
 
-async def _sharepoint_verify_link(folder_path: str = "") -> dict[str, Any]:
+async def _sharepoint_verify_link(folder_path: str = "") -> ShareLinkVerification:
     """The stable ``?id=`` deep-link for *folder_path* plus whether it exists live."""
     return await sync_to_async(lambda: _client().verify_link(folder_path), thread_sensitive=True)()
 

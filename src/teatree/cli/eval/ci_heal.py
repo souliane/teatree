@@ -14,11 +14,15 @@ Never a fix: this observe surface can only dispatch, poll, GREEN, or HALT+escala
 
 import dataclasses
 import json
+from typing import TYPE_CHECKING
 
 import typer
 
 from teatree.types import RawAPIDict
 from teatree.utils.django_bootstrap import ensure_django
+
+if TYPE_CHECKING:
+    from teatree.core.models import CiEvalHealSession
 
 ci_heal_app = typer.Typer(
     no_args_is_help=True,
@@ -46,17 +50,17 @@ class _SessionRow:
         return dataclasses.asdict(self)
 
 
-def _row(session: object) -> _SessionRow:
+def _row(session: "CiEvalHealSession") -> _SessionRow:
     return _SessionRow(
-        id=session.pk,  # type: ignore[attr-defined]
-        overlay=session.overlay,  # type: ignore[attr-defined]
-        pr_ref=session.pr_ref,  # type: ignore[attr-defined]
-        state=session.state,  # type: ignore[attr-defined]
-        head_sha=session.head_sha,  # type: ignore[attr-defined]
-        red_scenarios=list(session.red_scenarios),  # type: ignore[attr-defined]
-        fix_attempts=session.fix_attempts,  # type: ignore[attr-defined]
-        max_fix_attempts=session.max_fix_attempts,  # type: ignore[attr-defined]
-        halt_reason=session.halt_reason,  # type: ignore[attr-defined]
+        id=session.pk,
+        overlay=session.overlay,
+        pr_ref=session.pr_ref,
+        state=session.state,
+        head_sha=session.head_sha,
+        red_scenarios=list(session.red_scenarios),
+        fix_attempts=session.fix_attempts,
+        max_fix_attempts=session.max_fix_attempts,
+        halt_reason=session.halt_reason,
     )
 
 

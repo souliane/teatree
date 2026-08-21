@@ -396,7 +396,7 @@ def finalize_ticket_provision(
     # worker that ``start()`` enqueued is idempotent and no-ops when it finds the
     # worktrees already in place. Single source of truth: the runner.
     result = WorktreeProvisioner(ticket).run()
-    if not result.ok and not ticket.worktrees.exists():  # ty: ignore[unresolved-attribute]
+    if not result.ok and not ticket.worktrees.exists():
         write_err(f"  Provisioning failed: {result.detail}")
         # #748: only discard the ticket if it carries NO phase attestation.
         # ``get_or_create`` may have resolved an existing loop/coordinator-built

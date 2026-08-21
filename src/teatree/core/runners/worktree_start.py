@@ -110,7 +110,7 @@ class WorktreeStartRunner(RunnerBase):
         if not compose_file:
             return RunnerResult(ok=True, detail=f"no compose file for {worktree.repo_path}")
 
-        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
+        env: dict[str, str] = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         # The build is the last fallible step, so it belongs on this side of the
         # down: a missing base image is an ordinary, recoverable condition and

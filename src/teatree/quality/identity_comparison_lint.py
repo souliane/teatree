@@ -41,6 +41,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 EXEMPT_PRAGMA = "identity-lint: ok"
 
@@ -192,7 +193,7 @@ def _assigned_normalizer_names(tree: ast.Module, normalizers: frozenset[str]) ->
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
         elif (isinstance(node, ast.AnnAssign) and node.value is not None) or isinstance(node, ast.NamedExpr):
-            targets, value = [node.target], node.value
+            targets, value = [cast("ast.expr", node.target)], node.value
         if value is not None and _is_normalizer_call(value, normalizers):
             names.update(t.id for t in targets if isinstance(t, ast.Name))
     return names

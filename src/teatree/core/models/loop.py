@@ -225,7 +225,7 @@ class Loop(models.Model):
     def is_due(self, now: dt.datetime) -> bool:
         """True when the loop should run under its cadence (interval, daily, or every tick)."""
         if self.daily_at is not None:
-            return self._daily_due(now)
+            return self._daily_due(now, self.daily_at)
         if self.delay_seconds is None:
             return True
         elapsed = self.seconds_since_run(now)
@@ -238,21 +238,26 @@ class Loop(models.Model):
         a cadence-less loop (no interval, due every tick).
         """
         if self.daily_at is not None:
-            return self._next_daily(timezone.now())
+            return self._next_daily(timezone.now(), self.daily_at)
         if self.last_run_at is None or self.delay_seconds is None:
             return None
         return self.last_run_at + dt.timedelta(seconds=self.delay_seconds)
 
-    def _daily_due(self, now: dt.datetime) -> bool:
-        """Daily-scheduled due gate: due once per day on/after ``daily_at`` local."""
+    def _daily_due(self, now: dt.datetime, daily_at: dt.time) -> bool:
+        """Daily-scheduled due gate: due once per day on/after *daily_at* local.
+
+        *daily_at* is passed in rather than re-read off ``self``: the caller has already
+        proved the nullable column non-null, and threading the value keeps that
+        guarantee visible in the signature instead of re-deriving it here.
+        """
         now_local = self._as_local(now)
-        if now_local.time() < self.daily_at:
+        if now_local.time() < daily_at:
             return False
         if self.last_run_at is None:
             return True
         return self._as_local(self.last_run_at).date() < now_local.date()
 
-    def _next_daily(self, now: dt.datetime) -> dt.datetime:
+    def _next_daily(self, now: dt.datetime, daily_at: dt.time) -> dt.datetime:
         """The next wall-clock occurrence of ``daily_at`` (today if still ahead).
 
         Each candidate slot is built as ``date + daily_at`` via
@@ -266,8 +271,8 @@ class Loop(models.Model):
         project default, there is no transition and the result is unchanged).
         """
         now_local = self._as_local(now)
-        day = now_local.date() if now_local.time() < self.daily_at else now_local.date() + dt.timedelta(days=1)
-        naive_slot = dt.datetime.combine(day, self.daily_at)
+        day = now_local.date() if now_local.time() < daily_at else now_local.date() + dt.timedelta(days=1)
+        naive_slot = dt.datetime.combine(day, daily_at)
         if timezone.is_aware(now_local):
             return timezone.make_aware(naive_slot, timezone.get_current_timezone())
         return naive_slot

@@ -1041,6 +1041,10 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
     """
 
     @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    @pytest.fixture(autouse=True)
     def _register_both_overlays(self) -> Iterator[None]:
         self.overlay_a = _NamedOverlay(_OVERLAY_A)
         self.overlay_b = _NamedOverlay(_OVERLAY_B)
@@ -1086,10 +1090,10 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         # per-instance facet so overlay_a/overlay_b don't share the class-level default.
         self.overlay_a.provisioning = type(self.overlay_a.provisioning)()
         self.overlay_b.provisioning = type(self.overlay_b.provisioning)()
-        self.overlay_a.provisioning.cleanup_steps = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_b.provisioning.cleanup_steps = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_a.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_b.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self._monkeypatch.setattr(self.overlay_a.provisioning, "cleanup_steps", lambda wt: [])
+        self._monkeypatch.setattr(self.overlay_b.provisioning, "cleanup_steps", lambda wt: [])
+        self._monkeypatch.setattr(self.overlay_a.provisioning, "reap_external_resources", lambda wt: [])
+        self._monkeypatch.setattr(self.overlay_b.provisioning, "reap_external_resources", lambda wt: [])
 
         wt = self._worktree(overlay=_OVERLAY_A)
         # Must NOT raise ImproperlyConfigured — and must complete successfully.
@@ -1126,10 +1130,10 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
 
         self.overlay_a.provisioning = type(self.overlay_a.provisioning)()
         self.overlay_b.provisioning = type(self.overlay_b.provisioning)()
-        self.overlay_a.provisioning.cleanup_steps = steps_a  # type: ignore[method-assign]
-        self.overlay_b.provisioning.cleanup_steps = steps_b  # type: ignore[method-assign]
-        self.overlay_a.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_b.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self._monkeypatch.setattr(self.overlay_a.provisioning, "cleanup_steps", steps_a)
+        self._monkeypatch.setattr(self.overlay_b.provisioning, "cleanup_steps", steps_b)
+        self._monkeypatch.setattr(self.overlay_a.provisioning, "reap_external_resources", lambda wt: [])
+        self._monkeypatch.setattr(self.overlay_b.provisioning, "reap_external_resources", lambda wt: [])
 
         wt = self._worktree(overlay=_OVERLAY_B)
         cleanup_worktree(wt)
