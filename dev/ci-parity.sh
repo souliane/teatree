@@ -73,7 +73,7 @@ if [ "${LINT_DOCKER:-0}" = "1" ]; then
     bash -c "uv run prek run --all-files"
 else
   echo "=== [4/6] prek (all hooks, all files) -- CI lint job ==="
-  # `uv run` so the prek RUNNER is the lockfile-pinned version (prek==0.4.10), the
+  # `uv run` so the prek RUNNER is the lockfile-pinned version (prek==0.4.12), the
   # exact one CI's lint job runs — not whatever standalone prek is on PATH (#3236).
   uv run prek run --all-files
 fi
