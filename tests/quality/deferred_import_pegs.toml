@@ -100,11 +100,18 @@
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
 # 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
 # app-registry reason as the rest of this command's ORM reads.
+# 1: #4476 extracted `review`'s handlers into this module and the deferred import came
+# with them — an extraction inherits its origin's edges, and a NEW file has no peg row,
+# so it lands instantly over a default of 0.
+"src/teatree/core/management/commands/_review_impl.py" = 1
 "src/teatree/core/management/commands/_pending_pr_commands.py" = 1
 "src/teatree/core/management/commands/pr.py" = 1
 "src/teatree/core/management/commands/retro.py" = 1
 "src/teatree/core/management/commands/review.py" = 2
 "src/teatree/core/management/commands/review_request_post.py" = 4
+# 6: #4476's publish path resolves the forge backend, its models and the outbound
+# privacy scan at call time so the command module stays import-light.
+"src/teatree/core/review/verdict_findings_publish.py" = 6
 "src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
 # 1: both agent_runner refusals became a declared top-level edge; the one left
