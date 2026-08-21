@@ -41,11 +41,9 @@ from teatree.core.admission_governor import (
     MachineBrake,
     decide_admission,
     governor_enabled,
-    pressure_for,
     read_machine_signal,
     read_quota_signal,
 )
-from teatree.core.admission_pressure import AdmissionPressure, PressureBand
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 
 if TYPE_CHECKING:
@@ -200,19 +198,6 @@ def _cheap_lane_ceiling() -> int:
     return max(0, int(get_effective_settings().cheap_phase_admission_ceiling))
 
 
-def _shed_denial(pressure: AdmissionPressure) -> str | None:
-    """The reason to stop starting EXPENSIVE work short of a halt, or ``None`` (#4508).
-
-    The band between "healthy" and "refuse everything" had no expression before the
-    scalar, so the box kept starting open-ended coding agents against a budget that was
-    nearly gone. Shedding here is the cheap/expensive asymmetry #4098 already established
-    — the lanes that RETIRE work keep draining, which is what makes the pressure fall.
-    """
-    if pressure.band is not PressureBand.SHED:
-        return None
-    return f"pressure {pressure.value:.2f} in the shed band — {pressure.reason}"
-
-
 def _ceiling_denial(ceiling: int, occupied: int, *, lane: str = "") -> str | None:
     if occupied < ceiling:
         return None
@@ -234,11 +219,6 @@ def agent_admission_verdict() -> AgentAdmission:
     made, so the bound is one number in the database rather than per-caller state. A
     ceiling of ``0`` collapses cheap onto expensive: the rollback lever.
 
-    Between the two sits the SHED band (#4508): the expensive class is refused while the
-    cheap drain runs on, because :func:`decide_admission` is class-BLIND and can only
-    speak at HALT. Cheap is deliberately never shed — shedding the lanes that retire work
-    is the self-holding brake #4098 records.
-
     ``static_ceiling=None`` says the operator has configured no cap for THIS lane,
     which is not the same as no cap at all: the governor always derives one from the
     signals it has, so a stale quota cache — the steady state, since healthy health
@@ -254,8 +234,7 @@ def agent_admission_verdict() -> AgentAdmission:
         cheap_ceiling = _cheap_lane_ceiling()
         decision = decide_admission(quota=quota, machine=machine, static_ceiling=None)
         live = task_model.objects.claimed_agent_count()
-        shed = _shed_denial(pressure_for(quota=quota, machine=machine))
-        expensive = decision.reason if not decision.admit else shed or _ceiling_denial(decision.ceiling, live)
+        expensive = decision.reason if not decision.admit else _ceiling_denial(decision.ceiling, live)
         if cheap_ceiling <= 0:
             return AgentAdmission(expensive_denied=expensive, cheap_denied=expensive)
         exempt = decide_admission(

@@ -12,7 +12,6 @@ import typer
 from teatree.loop.preset_resolution import consistency_findings
 
 if TYPE_CHECKING:
-    from teatree.core.admission_pressure import MachineSignal
     from teatree.core.models import DreamRunMarker
 
 
@@ -124,26 +123,6 @@ def _check_intake_budget_deadlock() -> bool:
     return not jammed
 
 
-def _pressure_reading(machine: "MachineSignal") -> str:
-    """The admission scalar beside the load line, or ``""`` when it cannot be read (#4508).
-
-    Load alone cannot explain a refusal: the dimensions that halt this factory most often
-    are quota-shaped and leave the load average looking healthy. Naming the band and its
-    dominant cause is what turns "why is nothing being admitted?" into one line.
-    """
-    from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-        pressure_for,
-        read_quota_signal,
-    )
-
-    try:
-        pressure = pressure_for(quota=read_quota_signal(), machine=machine)
-    except Exception:  # noqa: BLE001 — doctor check must never crash the run
-        return ""
-    cause = f", worst: {pressure.dominant.name}" if pressure.dominant is not None else ""
-    return f"; admission pressure {pressure.value:.2f} {pressure.band.name}{cause}"
-
-
 def _check_box_occupancy() -> bool:
     """Report the factory's own agent count BESIDE the whole box's load (#4407).
 
@@ -176,7 +155,7 @@ def _check_box_occupancy() -> bool:
     watermark = BRAKE_LOAD_PER_CORE * cores
     reading = (
         f"factory agents in flight: {agents}; box load {machine.load1:.1f} on {cores} core(s) "
-        f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f}){_pressure_reading(machine)}"
+        f"({machine.load1 / cores:.1f} per core, brake watermark {watermark:.0f})"
     )
     if machine.load1 < watermark:
         typer.echo(f"OK    Box occupancy — {reading}")

@@ -7,14 +7,10 @@ the resource loop's measurement cadence so the ramp advances once per window rat
 once per tick.
 
 The arithmetic lives in :mod:`teatree.core.intake.concurrency`; this scanner only
-supplies the signals (cgroup-aware RAM headroom, the admission-pressure scalar, the
-factory's live in-flight count, the core count), persists the answer on the resource
-loop's own ledger, and emits when the number MOVES — an adjustment nobody can see is
+supplies the signals (cgroup-aware RAM headroom, whole-box load occupancy, the factory's
+live in-flight count, the core count), persists the answer on the resource loop's own
+ledger, and emits when the number MOVES — an adjustment nobody can see is
 indistinguishable from a knob nobody turned.
-
-Reading the whole scalar rather than load alone is what gives intake the TOKEN dimension
-(#4508): this is the producer, and the one decision where slowing down cannot deadlock
-the factory, because the review and ship lanes that drain the pile are untouched.
 """
 
 import logging
@@ -23,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.core.admission_governor import MachineSignal, pressure_for, read_machine_signal, read_quota_signal
+from teatree.core.admission_governor import box_load_headroom, read_machine_signal
 from teatree.core.intake.budget import read_intake_budget
 from teatree.core.intake.concurrency import BoxSizing, adapt_concurrency
 from teatree.loop.scanners.base import ScanSignal
@@ -93,16 +89,10 @@ class IntakeConcurrencyScanner:
         # be judged saturated against a core count its own hard cap was not derived from.
         cores = available_cpu_count()
         load1 = read_machine_signal(ram_available_gb=available_gb).load1
-        # Memory is deliberately withheld from the scalar HERE: ``additional`` already owns
-        # "how many agents fit in memory", and two unsynchronised readers of one quantity
-        # drift (#4125). What the scalar adds to this decision is the TOKEN dimension.
-        pressure = pressure_for(
-            quota=read_quota_signal(), machine=MachineSignal(cores=cores, load1=load1, ram_available_gb=None)
-        )
         adapted = adapt_concurrency(
             available_gb=available_gb,
             factory_in_flight=read_intake_budget("", self.static_ceiling).in_flight,
-            admission_headroom=max(0.0, 1.0 - pressure.value),
+            box_load_headroom=box_load_headroom(load1=load1, cores=cores),
             previous=previous,
             sizing=BoxSizing(
                 cores=cores,

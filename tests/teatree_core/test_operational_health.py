@@ -14,13 +14,11 @@ from django.apps import apps
 from django.db import OperationalError
 from django.utils import timezone
 
-from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.factory import operational_health
 from teatree.core.factory.operational_health import (
     HealthSignal,
     HealthStatus,
     SignalCollection,
-    _admission_pressure_signals,
     _failed_task_signals,
     _fleet_loop_policy_signals,
     _harness_provider_consistency_signals,
@@ -41,8 +39,6 @@ pytestmark = pytest.mark.django_db
 
 _OVERLAY_ON_FIRE = "overlay is on fire"
 _DB_LOCKED = "database is locked"
-_WEEK = 7 * 24 * 3600
-_GOVERNOR = "teatree.core.admission_governor"
 
 
 def _issue(severity: str) -> KnownIssue:
@@ -76,64 +72,6 @@ class TestReadHealth:
         report = read_health()
         assert report.status is HealthStatus.YELLOW
         assert report.open_count == 1
-
-
-class TestAdmissionPressureClustersByCauseNotVolume:
-    """#4508 — "telemetry volume is not incident volume".
-
-    A saturated factory refuses on every admission decision, which on a busy box is
-    hundreds of identical observations an hour. They are ONE incident, and the registry
-    already knows how to say so: the fingerprint names the dominant CAUSE, so repeat
-    sightings refresh one row instead of piling up.
-    """
-
-    def _collect(self, *, weekly: float = 0.1, load1: float = 1.0) -> SignalCollection:
-        quota = QuotaSignal(
-            fresh=True,
-            all_accounts_exhausted=False,
-            weekly_utilization=weekly,
-            short_utilization=0.1,
-            seconds_to_weekly_reset=_WEEK * 0.02,
-        )
-        machine = MachineSignal(cores=8, load1=load1, ram_available_gb=20.0)
-        with (
-            patch(f"{_GOVERNOR}.read_quota_signal", return_value=quota),
-            patch(f"{_GOVERNOR}.read_machine_signal", return_value=machine),
-        ):
-            return _admission_pressure_signals()
-
-    def test_a_healthy_factory_emits_nothing(self) -> None:
-        assert self._collect().signals == ()
-
-    def test_the_shed_band_is_a_warning_naming_its_cause(self) -> None:
-        (signal,) = self._collect(weekly=0.92).signals
-        assert signal.fingerprint == "admission-pressure:weekly-quota"
-        assert signal.severity == KnownIssue.Severity.WARNING
-
-    def test_the_halt_band_is_critical(self) -> None:
-        (signal,) = self._collect(weekly=1.0).signals
-        assert signal.severity == KnownIssue.Severity.CRITICAL
-
-    def test_many_observations_of_one_cause_are_one_row(self) -> None:
-        for _ in range(50):
-            with patch.object(operational_health, "collect_signals", return_value=self._collect(weekly=1.0)):
-                reconcile_health()
-        rows = KnownIssue.objects.open().filter(kind="admission_pressure")
-        assert rows.count() == 1
-        assert rows.get().first_seen < rows.get().last_seen
-
-    def test_the_row_auto_resolves_when_the_pressure_falls(self) -> None:
-        with patch.object(operational_health, "collect_signals", return_value=self._collect(weekly=1.0)):
-            reconcile_health()
-        with patch.object(operational_health, "collect_signals", return_value=self._collect()):
-            reconcile_health()
-        assert not KnownIssue.objects.open().filter(kind="admission_pressure").exists()
-
-    def test_an_unreadable_probe_names_itself_unread_and_resolves_nothing(self) -> None:
-        with patch(f"{_GOVERNOR}.read_quota_signal", side_effect=OperationalError(_DB_LOCKED)):
-            collection = _admission_pressure_signals()
-        assert collection.signals == ()
-        assert collection.unread == ("_admission_pressure_signals",)
 
 
 class TestReconcileHealth:

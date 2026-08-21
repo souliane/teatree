@@ -312,9 +312,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #3644 Default-ON adaptive admission governor; false is the kill-switch that
     # reverts admission to the pre-governor static behaviour. Per-overlay overridable.
     "admission_governor_enabled": _parse_strict_bool,
-    # #4508 Pressure at which the EXPENSIVE agent class is shed while the cheap drain
-    # keeps running; 1.0 collapses SHED into HALT (the rollback lever). Per-overlay overridable.
-    "admission_pressure_shed_at": _parse_strict_float,
     # #4098 Bound on the CHEAP-phase admission lane — how many read-only/work-retiring
     # phase agents stay admissible while the governor brakes the expensive class. 0
     # disables the exemption (cheap is braked like expensive). Per-overlay overridable.

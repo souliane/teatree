@@ -14,7 +14,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.admission_governor import MachineSignal, QuotaSignal
+from teatree.core.admission_governor import MachineSignal
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
@@ -33,33 +33,14 @@ def _scanner(**overrides: object) -> IntakeConcurrencyScanner:
     return IntakeConcurrencyScanner(**{**base, **overrides})
 
 
-_WEEK = 7 * 24 * 3600
-
-
-def _quota(weekly: float = 0.0) -> QuotaSignal:
-    return QuotaSignal(
-        fresh=True,
-        all_accounts_exhausted=False,
-        weekly_utilization=weekly,
-        short_utilization=0.0,
-        # Half a week left, so a spent window reads as a genuine runway problem.
-        seconds_to_weekly_reset=_WEEK * 0.5,
-    )
-
-
 def _scan(
-    scanner: IntakeConcurrencyScanner,
-    *,
-    available_mib: int | None,
-    cores: int = 8,
-    load1: float = 0.0,
-    weekly: float = 0.0,
+    scanner: IntakeConcurrencyScanner, *, available_mib: int | None, cores: int = 8, load1: float = 0.0
 ) -> list[ScanSignal]:
     """One window against a stated box.
 
-    Every reading is pinned: the ambient load average and the account quota cache are
-    live properties of the host, so leaving either unstubbed would make the cases below
-    pass or fail on whatever else the machine happens to be doing.
+    Both readings are pinned: the ambient load average is a live property of the host,
+    so leaving it unstubbed would make every memory-shaped case below pass or fail on
+    whatever else the machine happens to be doing.
     """
     with (
         patch(
@@ -73,7 +54,6 @@ def _scan(
             f"{_MODULE}.read_machine_signal",
             return_value=MachineSignal(cores=cores, load1=load1, ram_available_gb=None),
         ),
-        patch(f"{_MODULE}.read_quota_signal", return_value=_quota(weekly)),
     ):
         return list(scanner.scan())
 
@@ -127,30 +107,6 @@ class TestSuppliesTheWholeBoxReading(TestCase):
 
         assert saturated is not None
         assert saturated < (ResourcePressureMarker.load().adaptive_intake_concurrency or 0)
-
-
-class TestIntakeSeesTheTokenRunwayNotOnlyTheBox(TestCase):
-    """#4508 — the gap the issue names: unloaded by CPU and simultaneously out of runway.
-
-    Intake's two inputs were memory and LOAD, both properties of the machine, so a box
-    with idle cores and free RAM kept claiming new issues against a weekly window that
-    was nearly gone. Feeding it ``1 - pressure`` instead of the load headroom alone adds
-    the quota dimension without changing a single CPU-bound answer.
-    """
-
-    def _sized(self, *, weekly: float, load1: float = 0.0) -> int:
-        ResourcePressureMarker.objects.all().delete()
-        _scan(_scanner(static_ceiling=3), available_mib=_idle_mib(60.0), load1=load1, weekly=weekly)
-        sized = ResourcePressureMarker.load().adaptive_intake_concurrency
-        assert sized is not None
-        return sized
-
-    def test_a_spent_weekly_window_lowers_intake_on_an_otherwise_idle_box(self) -> None:
-        assert self._sized(weekly=0.85) < self._sized(weekly=0.0)
-
-    def test_a_healthy_window_leaves_the_cpu_bound_answer_untouched(self) -> None:
-        """The generalisation must be inert where load already dominated."""
-        assert self._sized(weekly=0.0, load1=30.0) == self._sized(weekly=0.05, load1=30.0)
 
     def test_the_signal_names_the_load_it_decided_against(self) -> None:
         signal = _scan(_scanner(), available_mib=_idle_mib(), load1=2.5)[0]
