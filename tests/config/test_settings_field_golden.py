@@ -80,6 +80,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "dogfood_smoke_disabled",
         "dogfood_smoke_overlay",
         "dogfood_smoke_skill",
+        "drain_slot_reservation",
         "dream_propose_evals",
         "e2e_confidence_threshold",
         "e2e_mandatory_gate_enabled",

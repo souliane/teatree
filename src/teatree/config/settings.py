@@ -1094,6 +1094,15 @@ class _ProvisioningSettings:
     # every class. ``0`` disables the exemption entirely (cheap is braked exactly like
     # expensive): the rollback lever. Per-overlay overridable.
     cheap_phase_admission_ceiling: int = 2
+    # #4374 How many of the governor's slots only the DRAINING class may occupy. The
+    # ceiling above bounds how much of the box the cheap class may take and says nothing
+    # about how much is kept FOR it, so expensive work filled every slot and zero reviews
+    # ran — the #4098 outcome by a different route. Reviewing and shipping RETIRE pull
+    # requests where coding CREATES them, so with capacity allocated purely first-come the
+    # producing side can occupy the whole factory. Clamped to at most ``ceiling - 1``, so
+    # a fat-fingered value can never stop the factory writing code. ``0`` restores the
+    # pre-#4374 first-come allocation: the rollback lever. Per-overlay overridable.
+    drain_slot_reservation: int = 1
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
     # 2026-07-21..08-04: p50 0.65 GB, p90 1.24 GB, max 23.1 GB. The p90 is the sizing
