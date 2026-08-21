@@ -18,8 +18,18 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.core.cleanup.unshipped_work import bundle_path, capture_unshipped_work, probe_unshipped_work
+from teatree.core.cleanup.unshipped_work import (
+    COMMITS_SUFFIX,
+    UNCOMMITTED_SUFFIX,
+    UNREADABLE_SUFFIX,
+    UnshippedWork,
+    _record_defaults,
+    bundle_path,
+    capture_unshipped_work,
+    probe_unshipped_work,
+)
 from teatree.core.models import UnshippedWorkRecord
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -241,6 +251,154 @@ class TestCaptureWritesArtifactsAndRow(_CheckoutFixture):
         assert self._capture() is None
         assert not UnshippedWorkRecord.objects.exists()
         assert not self.artifacts.exists()
+
+
+class TestBundleRoundTrips(_CheckoutFixture):
+    """A bundle is only worth writing if it applies — assert the restore, not a byte count.
+
+    The capture ran through ``git.run_strict``, whose ``.stdout.strip()`` left every
+    patch unappliable (``corrupt patch``, rc=128) for as long as nothing read one
+    back (#4435). ``tracked.py`` ends on a BLANK line on purpose: the strip ate that
+    trailing context line whole, so the issue's suggested one-newline repair would
+    still have produced a corrupt patch.
+    """
+
+    def _pristine_restore_target(self) -> Path:
+        restore = self.checkout.parent / "restore"
+        _run_git("worktree", "add", "-q", "--detach", str(restore), "origin/main", cwd=self.clone)
+        return restore
+
+    def _apply(self, prefix: str, suffix: str, into: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [_GIT, "-C", str(into), "apply", str(bundle_path(prefix, suffix))],
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+            check=False,
+        )
+
+    def test_every_captured_state_applies_and_restores_byte_exact(self) -> None:
+        (self.checkout / "tracked.py").write_text("value = 1\n\n", encoding="utf-8")
+        _run_git("commit", "-qam", "trailing blank line", cwd=self.checkout)
+        (self.checkout / "tracked.py").write_text("value = 2\n\n", encoding="utf-8")
+        _run_git("add", "tracked.py", cwd=self.checkout)
+        (self.checkout / "tracked.py").write_text("value = 3\n\n", encoding="utf-8")
+        (self.checkout / "scratch.md").write_text("notes only ever untracked\n", encoding="utf-8")
+        record = capture_unshipped_work(self.checkout, branch="feat", artifact_root=self.artifacts)
+        assert record is not None
+        assert bundle_path(record.artifact_prefix, UNCOMMITTED_SUFFIX).read_text(encoding="utf-8").endswith(" \n"), (
+            "fixture invalid: the patch must end on a blank CONTEXT line, the shape a strip destroys wholesale"
+        )
+        restore = self._pristine_restore_target()
+
+        commits = self._apply(record.artifact_prefix, COMMITS_SUFFIX, restore)
+        uncommitted = self._apply(record.artifact_prefix, UNCOMMITTED_SUFFIX, restore)
+
+        assert commits.returncode == 0, commits.stderr
+        assert uncommitted.returncode == 0, uncommitted.stderr
+        for name in ("tracked.py", "scratch.md"):
+            assert (restore / name).read_bytes() == (self.checkout / name).read_bytes(), name
+
+    def test_untracked_content_is_captured_without_touching_the_checkout_index(self) -> None:
+        before = _git_out("status", "--porcelain", cwd=self.checkout)
+        (self.checkout / "scratch.md").write_text("notes\n", encoding="utf-8")
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert "notes" in work.uncommitted_patch, "a force delete keeps only the filename otherwise"
+        assert _git_out("status", "--porcelain", cwd=self.checkout) == before + "?? scratch.md\n", (
+            "the checkout may be KEPT and live — its own index must be untouched"
+        )
+
+    def test_an_unreadable_untracked_route_degrades_to_the_tracked_only_delta(self) -> None:
+        self._stage_only()
+
+        with patch(
+            "teatree.utils.git.full_worktree_diff",
+            side_effect=CommandFailedError(["git", "add", "-A", "-N"], 128, "", "index refused"),
+        ):
+            work = probe_unshipped_work(self.checkout)
+
+        assert not work.unreadable, "a refused add -N must not condemn the whole checkout as unreadable"
+        assert "value = 2" in work.uncommitted_patch
+
+
+class TestAFailedReadNeverOverwritesAGoodCapture(_CheckoutFixture):
+    """Sweeping the same checkout from a venue that cannot resolve its gitdir (#4435).
+
+    That sweep used to write a 0-byte patch over a real one and blank the row's
+    file list — loud (the row and the doctor name the cause) but the good capture
+    was gone, and capture now runs on every sweep.
+    """
+
+    def _capture(self) -> UnshippedWorkRecord | None:
+        return capture_unshipped_work(self.checkout, branch="feat", overlay="test", artifact_root=self.artifacts)
+
+    def _misdirect_gitdir(self) -> str:
+        """Point the checkout's gitdir at a root this venue cannot resolve; return the good pointer."""
+        pointer = self.checkout / ".git"
+        owning_venue = pointer.read_text(encoding="utf-8")
+        pointer.write_text("gitdir: /nonexistent-venue/clone/.git/worktrees/x\n", encoding="utf-8")
+        return owning_venue
+
+    def test_the_content_artifacts_and_the_row_survive_the_foreign_venue_sweep(self) -> None:
+        self._stage_only()
+        first = self._capture()
+        assert first is not None
+        good_patch = bundle_path(first.artifact_prefix, UNCOMMITTED_SUFFIX).read_bytes()
+        assert good_patch, "fixture invalid: the first capture must hold real content"
+        self._misdirect_gitdir()
+
+        second = self._capture()
+
+        assert second is not None
+        assert bundle_path(first.artifact_prefix, UNCOMMITTED_SUFFIX).read_bytes() == good_patch
+        assert bundle_path(first.artifact_prefix, ".files").read_text(encoding="utf-8") == "tracked.py\n"
+        assert second.dirty_paths == ["tracked.py"], "a read this venue could not do proves nothing about the delta"
+        assert second.unreadable
+
+    def test_the_cause_lands_on_its_own_key_and_a_later_good_read_clears_it(self) -> None:
+        self._stage_only()
+        record = self._capture()
+        assert record is not None
+        owning_venue = self._misdirect_gitdir()
+        self._capture()
+        marker = bundle_path(record.artifact_prefix, UNREADABLE_SUFFIX)
+        assert "execution context" in marker.read_text(encoding="utf-8")
+
+        (self.checkout / ".git").write_text(owning_venue, encoding="utf-8")
+        recovered = self._capture()
+
+        assert recovered is not None
+        assert not recovered.unreadable
+        assert not marker.exists()
+
+
+class TestRecordDefaultsOmitsUnsaidFields:
+    """``_record_defaults`` on an unreadable read — pure logic, no git or DB needed.
+
+    A blank ``branch``/``overlay`` means the caller did not pass one (the orphan-worktree
+    reaper calls with no ``overlay=`` at all), not that the checkout has none — so an
+    unreadable read must OMIT the key rather than write an empty string over whatever a
+    prior good capture recorded.
+    """
+
+    def test_a_blank_branch_is_omitted_not_written_empty(self) -> None:
+        defaults = _record_defaults("", "test", Path("/prefix"), UnshippedWork(unreadable="boom"))
+
+        assert "branch" not in defaults
+        assert defaults.get("overlay") == "test"
+
+    def test_a_blank_overlay_is_omitted_not_written_empty(self) -> None:
+        defaults = _record_defaults("feat", "", Path("/prefix"), UnshippedWork(unreadable="boom"))
+
+        assert "overlay" not in defaults
+        assert defaults.get("branch") == "feat"
+
+    def test_both_blank_leaves_only_the_prefix_and_cause(self) -> None:
+        defaults = _record_defaults("", "", Path("/prefix"), UnshippedWork(unreadable="boom"))
+
+        assert defaults == {"artifact_prefix": "/prefix", "unreadable": "boom"}
 
 
 class TestCaptureNeverRaises(_CheckoutFixture):

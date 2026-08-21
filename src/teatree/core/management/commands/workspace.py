@@ -9,6 +9,7 @@ from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
+from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
@@ -494,3 +495,21 @@ class Command(TyperCommand):
         self.print_result = False
         self.stdout.write(line)
         return line
+
+    @command(name="restore")
+    def restore(
+        self,
+        reference: str,
+        *,
+        into: str = typer.Option("", help="Checkout to apply the bundle into (required — never inferred)."),
+        dry_run: bool = typer.Option(default=False, help="Report whether each part applies; write nothing."),
+    ) -> str:
+        """Apply a captured salvage bundle back into a checkout (#4435)."""
+        if not into.strip():
+            _die(self.stderr.write, "workspace restore needs --into <checkout>: nothing is restored unnamed.\n")
+        outcome = restore_bundle(reference, Path(into).expanduser(), dry_run=dry_run)
+        self.print_result = False
+        self.stdout.write(outcome.render())
+        if not outcome.ok:
+            raise SystemExit(1)
+        return outcome.render()

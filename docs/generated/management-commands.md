@@ -653,6 +653,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `relocate` | Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup) |
 | `emit` | Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763) |
 | `salvage` | Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763) |
+| `restore` | Apply a captured salvage bundle back into a checkout (#4435) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |

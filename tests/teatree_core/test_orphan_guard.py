@@ -9,6 +9,7 @@ from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import BranchCommit, SubjectPrefilterResult
 from teatree.utils.run import CommandFailedError
+from tests._git_repo import make_git_repo, run_git
 from tests.teatree_core.cleanup._shared import _run_git
 
 _patch_classify = patch("teatree.core.gates.orphan_guard.prefilter_branch_commits_by_subject")
@@ -202,6 +203,127 @@ class TestClassifyBranchWhoseWorkAlreadyLanded:
         assert report.is_orphan
 
 
+_SQUASHED_BRANCH = "feat/parse"
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-q", "-m", message)
+
+
+def _clone_whose_branch_squash_merged_then_merged_the_base_back(tmp_path: Path) -> Path:
+    """A branch whose work squash-merged, that then merged the moved-on base back in.
+
+    The #4429 shape: the squash rewrote the branch's commits into a new SHA on the
+    base, so every graph-level probe still reads the branch as ahead, and merging
+    the base back left its tree identical to a base commit — a pull request from it
+    would carry nothing at all. The base then moves once more, so the merge base is
+    an ancestor rather than the base tip and only a three-dot read sees the emptiness.
+    """
+    origin = make_git_repo(tmp_path / "origin.git", bare=True)
+    clone = tmp_path / "clone"
+    run_git(tmp_path, "clone", "-q", str(origin), str(clone))
+    (clone / "parse.py").write_text("def parse(raw):\n    return 0\n")
+    _commit_all(clone, "initial module")
+    run_git(clone, "push", "-q", "origin", "main")
+
+    run_git(clone, "checkout", "-q", "-b", _SQUASHED_BRANCH)
+    (clone / "parse.py").write_text("def parse(raw: str) -> int:\n    return int(raw.strip() or 0)\n")
+    _commit_all(clone, "fix(parse): honour whitespace")
+    (clone / "test_parse.py").write_text("def test_parse() -> None:\n    assert parse(' 7 ') == 7\n")
+    _commit_all(clone, "test(parse): cover the whitespace case")
+    run_git(clone, "push", "-q", "origin", _SQUASHED_BRANCH)
+
+    run_git(clone, "checkout", "-q", "main")
+    run_git(clone, "merge", "-q", "--squash", _SQUASHED_BRANCH)
+    _commit_all(clone, "fix(parse): honour whitespace (#4422)")
+    run_git(clone, "push", "-q", "origin", "main")
+
+    run_git(clone, "checkout", "-q", _SQUASHED_BRANCH)
+    run_git(clone, "merge", "-q", "--no-edit", "origin/main")
+    run_git(clone, "push", "-q", "origin", _SQUASHED_BRANCH)
+
+    run_git(clone, "checkout", "-q", "main")
+    (clone / "CHANGELOG.md").write_text("the base moves on\n")
+    _commit_all(clone, "docs: unrelated base work")
+    run_git(clone, "push", "-q", "origin", "main")
+    return clone
+
+
+class TestClassifyBranchWhoseContentAlreadySquashMerged:
+    """#4429: a branch that can only open an empty pull request never owes one.
+
+    Real git — the defect is that the squash rewrites SHAs, so the graph says
+    "ahead" while the diff the forge would compute is empty. Twice in one evening a
+    cold review was spent on a 0-file PR opened from such a branch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clone_with_the_squashed_branch(self, tmp_path: Path) -> None:
+        self.clone = _clone_whose_branch_squash_merged_then_merged_the_base_back(tmp_path)
+
+    @_patch_open_pr
+    @_patch_tree_match
+    def test_a_branch_that_would_deliver_nothing_owes_no_pull_request(
+        self,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+    ) -> None:
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = PrProbe.none()
+
+        report = classify_branch(str(self.clone), _SQUASHED_BRANCH)
+
+        assert not report.is_orphan
+        assert report.status is BranchStatus.EMPTY_DELTA
+
+    @_patch_open_pr
+    @_patch_tree_match
+    def test_work_added_after_the_merge_back_still_owes_one(
+        self,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+    ) -> None:
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = PrProbe.none()
+        run_git(self.clone, "checkout", "-q", _SQUASHED_BRANCH)
+        (self.clone / "parse.py").write_text("def parse(raw: str) -> int:\n    return int(raw.strip() or -1)\n")
+        _commit_all(self.clone, "fix(parse): use a sentinel for the empty case")
+
+        report = classify_branch(str(self.clone), _SQUASHED_BRANCH)
+
+        assert report.status is BranchStatus.PUSHED_ORPHAN
+        assert report.is_orphan
+
+
+class TestClassifyBranchCarryingNoContentOfItsOwn:
+    """A branch ahead by SHA alone can only open a zero-file pull request either."""
+
+    @_patch_open_pr
+    @_patch_tree_match
+    def test_a_content_free_commit_owes_no_pull_request(
+        self,
+        mock_tree_match: MagicMock,
+        mock_open_pr: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        mock_tree_match.return_value = False
+        mock_open_pr.return_value = PrProbe.none()
+        origin = make_git_repo(tmp_path / "origin.git", bare=True)
+        clone = tmp_path / "clone"
+        run_git(tmp_path, "clone", "-q", str(origin), str(clone))
+        (clone / "app.py").write_text("VALUE = 1\n")
+        _commit_all(clone, "initial module")
+        run_git(clone, "push", "-q", "origin", "main")
+        run_git(clone, "checkout", "-q", "-b", "chore/marker")
+        run_git(clone, "commit", "-q", "--allow-empty", "-m", "chore: mark the release")
+
+        report = classify_branch(str(clone), "chore/marker")
+
+        assert report.status is BranchStatus.EMPTY_DELTA
+        assert not report.is_orphan
+
+
 class TestFindOrphansInWorkspace(TestCase):
     def _make_worktree(self, repo_path: str, branch: str) -> Worktree:
         ticket = Ticket.objects.create(
@@ -352,7 +474,11 @@ class TestClassifyBranchRespectsRepoDefaultBranch:
         _run_git("commit", "--allow-empty", "-q", "-m", "initial on master", cwd=self.clone)
         _run_git("push", "-q", "origin", "master", cwd=self.clone)
         _run_git("checkout", "-q", "-b", "feature-branch", cwd=self.clone)
-        _run_git("commit", "--allow-empty", "-q", "-m", "feat: new thing on feature", cwd=self.clone)
+        # Content, not an empty commit: ahead by SHA alone is EMPTY_DELTA (#4429),
+        # which would test the wrong branch state.
+        (self.clone / "feature.py").write_text("VALUE = 1\n")
+        _run_git("add", "-A", cwd=self.clone)
+        _run_git("commit", "-q", "-m", "feat: new thing on feature", cwd=self.clone)
 
     def test_one_commit_ahead_of_master_is_not_classified_as_synced(self) -> None:
         report = classify_branch(str(self.clone), "feature-branch")

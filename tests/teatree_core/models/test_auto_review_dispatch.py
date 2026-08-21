@@ -504,13 +504,15 @@ class TestUnverdictedHeadIsAlwaysReArmable:
 
 
 class TestARefusedHeadIsTerminalButThePrIsNot:
-    """#4522: ``mark_refused`` closes ONE tree, and a push is what re-opens review.
+    """#4522 + #4530: the latch names a SPENT head's cause; it never shortens the retry.
 
-    A verdict the recorder is structurally unable to record leaves the head with no
-    verdict, which is precisely the state :meth:`enqueue` re-arms on once the claim's
-    deadline lapses — so the same doomed review is dispatched once per TTL forever. The
-    latch makes that head terminal. What keeps it from suppressing legitimate reviews is
-    the unique key: it is ``(slug, pr_id, head_sha)``, so a new head is a different row.
+    A refused ``merge_safe``-over-red-checks verdict leaves the head with no verdict, which
+    is what :meth:`enqueue` re-arms on once the deadline lapses. Latching that on the FIRST
+    refusal was wrong: the refusal compares two fields of one reviewer's envelope, so it
+    describes the reviewer, and 6 of the 9 heads that ever hit it recorded a verdict at the
+    SAME head on a later attempt. The latch therefore fires only at
+    :data:`MAX_DISPATCH_ATTEMPTS`, where the budget is spent anyway, and its whole value is
+    that ``refused`` names a cause where ``saturated`` names only a count.
     """
 
     @staticmethod
@@ -525,6 +527,16 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         AutoReviewDispatch.objects.filter(slug=SLUG, pr_id=6230).update(deadline=past)
         MRReviewLock.objects.filter(slug=SLUG, pr_id=6230).update(deadline=past)
 
+    @classmethod
+    def _exhaust(cls, head: str = HEAD) -> AutoReviewDispatch:
+        """Drive the head's claim to its last attempt — the only state the latch acts on."""
+        row = cls._arm(head)
+        while row.attempts < MAX_DISPATCH_ATTEMPTS:
+            cls._expire()
+            row = cls._arm(head)
+        assert row.attempts == MAX_DISPATCH_ATTEMPTS
+        return row
+
     def test_the_unique_key_is_per_head_so_a_new_head_is_a_different_row(self) -> None:
         # The safety valve, read off the schema rather than inferred: nothing keyed on
         # (slug, pr_id) alone can be latched by a refusal at one head.
@@ -535,8 +547,24 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         )
         assert list(key.fields) == ["slug", "pr_id", "head_sha"]
 
-    def test_a_refused_head_is_never_re_acquired_even_past_its_deadline(self) -> None:
+    def test_a_refusal_below_the_bound_leaves_the_head_re_armable(self) -> None:
+        """#4530's correction, and the property the first-refusal latch destroyed.
+
+        Two thirds of the heads that hit this refusal recovered on a later attempt, so a
+        refusal with budget remaining must change nothing at all.
+        """
         row = self._arm()
+        assert row.attempts < MAX_DISPATCH_ATTEMPTS
+
+        assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is False
+        row.refresh_from_db()
+        assert row.state == AutoReviewDispatch.State.DISPATCHED
+
+        self._expire()
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is not None
+
+    def test_a_refused_head_is_never_re_acquired_even_past_its_deadline(self) -> None:
+        row = self._exhaust()
         assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
         row.refresh_from_db()
         assert row.state == AutoReviewDispatch.State.REFUSED
@@ -544,44 +572,57 @@ class TestARefusedHeadIsTerminalButThePrIsNot:
         self._expire()
 
         assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None
-        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 1
 
-    def test_a_refused_head_is_not_reported_as_saturated(self) -> None:
-        # Saturation means "the retry budget ran out"; this head has budget left and is
-        # unarmable for a different reason, so reporting it there would misname the cause.
-        self._arm()
-        AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
+    def test_the_latch_moves_the_head_off_the_saturation_ledger_onto_a_named_cause(self) -> None:
+        """The surface swap, asserted in both directions so it can never happen silently.
+
+        A spent claim is reported by ``t3 doctor check`` as saturated — "three attempts ran
+        out", which is also what three crashed reviewers look like. The latch is what tells
+        those apart, and it takes the row off that ledger when it does.
+        """
+        self._exhaust()
         self._expire()
+        assert AutoReviewDispatch.saturated().count() == 1
+
+        AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
 
         assert AutoReviewDispatch.saturated().count() == 0
 
     def test_a_new_head_on_a_refused_pr_arms_normally(self) -> None:
-        self._arm()
+        self._exhaust()
         AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        self._expire()  # the per-MR lock is released by its own TTL, never by the refusal
 
         rearmed = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL, overlay="teatree")
 
         assert rearmed is not None
         assert rearmed.state == AutoReviewDispatch.State.DISPATCHED
-        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 2
 
-    def test_refusing_releases_the_per_mr_lock_so_the_next_push_need_not_wait_out_its_ttl(self) -> None:
-        self._arm()
+    def test_refusing_frees_no_per_mr_lock(self) -> None:
+        """Inverted by #4530 — this used to assert the opposite, and the opposite was wrong.
+
+        Releasing here freed a lock this refusal cannot prove it owns: the lock is per
+        ``(slug, pr_id)`` while the claim is per head, so a late refusal at a spent head
+        could release the lock a LIVE review at a newer head is holding — the #1405 race.
+        A refusal records nothing a merge can consume, so it has nothing to unblock; the
+        lock's own ``deadline`` and ``reconcile_stale`` free it, as they did before #4522.
+        """
+        self._exhaust()
         assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.REVIEW_DISPATCHED
 
-        AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD)
+        assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is True
 
-        assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.RESOLVED
+        assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.REVIEW_DISPATCHED
 
     def test_refusing_an_unclaimed_head_is_a_no_op_and_touches_no_lock(self) -> None:
-        self._arm()
+        self._exhaust()
 
         assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD) is False
         assert MRReviewLock.objects.get(slug=SLUG, pr_id=6230).state == MRReviewLock.State.REVIEW_DISPATCHED
 
     def test_a_resolved_claim_is_not_downgraded_to_refused(self) -> None:
         # A verdict already covers this tree; a later refusal must not erase that record.
-        row = self._arm()
+        row = self._exhaust()
         AutoReviewDispatch.mark_resolved(slug=SLUG, pr_id=6230, head_sha=HEAD)
 
         assert AutoReviewDispatch.mark_refused(slug=SLUG, pr_id=6230, head_sha=HEAD) is False

@@ -2,9 +2,13 @@
 
 An ORPHAN is a local branch that carries work not on the repo's default branch
 (``origin/main``, ``origin/master``, or whatever ``refs/remotes/origin/HEAD``
-points at — resolved per-repo) after subject-match and tree-equality checks
-AND has no open PR on the remote. Orphans silently leak work: they accumulate
-between weekly cleanups and are easy to miss when closing a session.
+points at — resolved per-repo) after subject-match, empty-delta and tree-equality
+checks AND has no open PR on the remote. Orphans silently leak work: they
+accumulate between weekly cleanups and are easy to miss when closing a session.
+
+A branch whose three-dot delta against that base is EMPTY is never an orphan,
+however far ahead the graph says it is: the pull request it would open carries
+zero files, so it can leak no work and deliver none (#4429).
 
 This module is the single source of truth used by the three enforcement
 points that keep the no-orphan invariant:
@@ -25,7 +29,7 @@ from teatree.config import clone_root
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
-from teatree.core.worktree.branch_landed import branch_content_landed_on_base
+from teatree.core.worktree.branch_landed import branch_content_landed_on_base, pr_from_branch_would_be_empty
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -39,9 +43,14 @@ class BranchStatus(StrEnum):
     ``PR_UNKNOWN`` is the can't-tell answer, deliberately NOT folded into either
     neighbour: the forge could not be read, so the branch is neither provably
     backed by an open PR nor provably owed one.
+
+    ``EMPTY_DELTA`` is kept apart from ``SYNCED`` because it is a statement about
+    the pull request rather than about the work: the branch may hold commits no
+    layer can prove landed, yet the PR it would open shows zero files.
     """
 
     SYNCED = "synced"
+    EMPTY_DELTA = "empty_delta"
     OPEN_PR = "open_pr"
     PR_UNKNOWN = "pr_unknown"
     UNPUSHED_ORPHAN = "unpushed_orphan"
@@ -83,19 +92,36 @@ def _origin_default_branch_target(repo: str) -> str:
         return "origin/main"
 
 
+def _local_content_verdict(repo: str, branch: str, target: str, ahead: int) -> BranchReport | None:
+    """The verdicts local content alone settles, or ``None`` when the forge must be asked.
+
+    Both run before any forge read: neither costs a network round-trip, and an
+    empty-delta branch deferred on an unreadable forge would owe an obligation
+    the drain could never discharge.
+    """
+    if ahead == 0:
+        return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=0)
+    if pr_from_branch_would_be_empty(repo, branch, target):
+        return BranchReport(repo=repo, branch=branch, status=BranchStatus.EMPTY_DELTA, ahead_count=ahead)
+    return None
+
+
 def classify_branch(repo: str, branch: str) -> BranchReport:
-    """Classify ``branch`` as synced, open PR, unreadable, or orphan (unpushed / pushed).
+    """Classify ``branch`` as synced, empty, open PR, unreadable, or orphan (unpushed / pushed).
 
     The content layers run BEFORE the unreadable verdict is returned: work already
     on the base owes nothing whatever the forge says, so an unreachable forge must
     not turn a settled branch into a pending question.
+
+    :func:`_local_content_verdict` runs before the forge is consulted at all.
     """
     target = _origin_default_branch_target(repo)
     classification = prefilter_branch_commits_by_subject(repo, branch, target=target)
     ahead = len(classification.genuinely_ahead)
 
-    if ahead == 0:
-        return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=0)
+    local = _local_content_verdict(repo, branch, target, ahead)
+    if local is not None:
+        return local
 
     if _branch_tree_matches_squash(repo, branch):
         return BranchReport(repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=ahead)

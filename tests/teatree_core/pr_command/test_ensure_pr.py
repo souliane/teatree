@@ -15,6 +15,7 @@ from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import _pr_control_db
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import (
+    EMPTY_DELTA_SKIP,
     PR_UNKNOWN_DEFERRAL,
     create_or_defer_pr,
     defer_unreadable_pr_state,
@@ -80,6 +81,38 @@ class TestEnsurePr(TestCase):
 
         assert "synced" in str(result["skipped"])
         host.create_pr.assert_not_called()
+
+    def test_no_op_when_the_branch_could_only_open_an_empty_pull_request(self) -> None:
+        """#4429: a re-opened PR on already-squash-merged content costs a whole review cycle."""
+        host = MagicMock()
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-e"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-e",
+                    status=BranchStatus.EMPTY_DELTA,
+                    ahead_count=2,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert result["skipped"] == EMPTY_DELTA_SKIP
+        host.create_pr.assert_not_called()
+
+    def test_an_empty_delta_discharges_the_obligation_instead_of_renewing_it(self) -> None:
+        """No ``owed`` key: the drain retires the row rather than re-attempting forever."""
+        report = BranchReport(repo=".", branch="feat-e", status=BranchStatus.EMPTY_DELTA, ahead_count=2)
+
+        answer = skip_for_classified(report, ".", "feat-e")
+
+        assert answer == {"skipped": EMPTY_DELTA_SKIP, "branch": "feat-e"}
 
     def test_defers_when_branch_not_on_remote(self) -> None:
         host = MagicMock()

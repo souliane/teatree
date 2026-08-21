@@ -31,6 +31,7 @@ from teatree.core.models import (
     Task,
     Ticket,
 )
+from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
@@ -423,6 +424,34 @@ def _enqueue(*, head_sha: str, pr_id: int = _PR_ID) -> AutoReviewDispatch | None
     )
 
 
+def _exhaust_dispatch(*, head_sha: str = _HEAD, pr_id: int = _PR_ID) -> AutoReviewDispatch:
+    """Drive the #68 claim at *head_sha* to its last attempt — the only state the latch acts on."""
+    row = _enqueue(head_sha=head_sha, pr_id=pr_id)
+    assert row is not None
+    while row.attempts < MAX_DISPATCH_ATTEMPTS:
+        _expire_every_claim(pr_id=pr_id)
+        row = _enqueue(head_sha=head_sha, pr_id=pr_id)
+        assert row is not None
+    return row
+
+
+def _exhaust_marker(*, head_sha: str = _HEAD, pr_id: int = _PR_ID) -> CodexReviewMarker:
+    """Drive the codex / self-PR claim at *head_sha* to its last attempt.
+
+    Adopts a claim the caller already armed (the production handler takes one when it
+    creates the task) rather than claiming afresh, which a live claim would refuse.
+    """
+    row = CodexReviewMarker.objects.filter(slug=_SLUG, pr_id=pr_id, head_sha=head_sha).first()
+    if row is None:
+        row = CodexReviewMarker.claim(slug=_SLUG, pr_id=pr_id, head_sha=head_sha, variant="claude:review")
+    assert row is not None
+    while row.attempts < MAX_DISPATCH_ATTEMPTS:
+        _expire_codex_claims(pr_id=pr_id)
+        row = CodexReviewMarker.claim(slug=_SLUG, pr_id=pr_id, head_sha=head_sha, variant="claude:review")
+        assert row is not None
+    return row
+
+
 def _pending_refusal_questions() -> "list[DeferredQuestion]":
     """Every pending refusal page, matched on the QUESTION TEXT rather than its marker.
 
@@ -455,18 +484,36 @@ def _second_reviewing_task_at_the_same_head(dispatch: AutoReviewDispatch) -> Tas
     return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.PENDING)
 
 
-class TestAContradictedChecksVerdictLatchesTheHead(TestCase):
-    """#4522: the refusal stays, but it stops costing one whole agent run per dispatch TTL.
+class TestAContradictedChecksVerdictLatchesTheSPENTHead(TestCase):
+    """#4522 + #4530: the latch names a spent head's cause; it never shortens the retry.
 
     ``merge_safe`` + ``gh_verify_result=failed`` is refused (§17.8 clause 3) and nothing is
-    recorded, so the head keeps no verdict, so the sweep re-acquires the claim the moment
-    ``DEFAULT_DISPATCH_TTL`` lapses and sends a fresh reviewer at the same red CI for the
-    same refusal — forever. The task-level halt already fired; it is the DISPATCH-level
-    re-arm that never stopped.
+    recorded, so the head keeps no verdict and the claim is re-acquired once the TTL lapses.
+    Latching that on the FIRST refusal was wrong: ``gh_verify_result`` is the reviewer's own
+    self-report, so the contradiction is internal to one envelope, and 6 of the 9 heads that
+    ever hit it recorded a verdict at the SAME head on a later attempt. The latch fires only
+    at ``MAX_DISPATCH_ATTEMPTS``, where the budget is gone anyway.
     """
 
-    def test_a_refusal_latches_the_claim_and_no_later_acquire_takes_the_same_head(self) -> None:
+    def test_a_refusal_with_budget_left_changes_nothing_and_pages_nobody(self) -> None:
+        # The recovery path #4530 restored: three of those recoveries were a `hold` over
+        # checks that really were red, which is precisely a recordable verdict.
         task, dispatch = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        assert "recording refused" in attempt.error
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert _pending_refusal_questions() == []
+        _expire_every_claim()
+        assert _enqueue(head_sha=_HEAD) is not None, "a head with retries left must stay re-armable"
+
+    def test_a_refusal_at_the_bound_latches_and_no_later_acquire_takes_the_same_head(self) -> None:
+        dispatch = _exhaust_dispatch()
+        task = dispatch.task
+        assert task is not None
+        task.claim(claimed_by="headless-reviewer")
 
         attempt = record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
 
@@ -475,16 +522,16 @@ class TestAContradictedChecksVerdictLatchesTheHead(TestCase):
         dispatch.refresh_from_db()
         assert dispatch.state == AutoReviewDispatch.State.REFUSED
 
-        # Every claim past its deadline and the per-MR lock free: the REFUSED row is the
-        # only thing left standing between the sweep and another burned reviewer run.
         _expire_every_claim()
         assert _enqueue(head_sha=_HEAD) is None
-        assert Task.objects.filter(phase="reviewing").count() == 1
 
     def test_the_latch_is_not_recorded_as_a_verdict_covering_the_tree(self) -> None:
         # REFUSED, never RESOLVED: no verdict covers this head, and a consumer that read
         # the latch as "reviewed" would vouch for a tree nobody could vote on.
-        task, dispatch = _reviewing_task_via_dispatch()
+        dispatch = _exhaust_dispatch()
+        task = dispatch.task
+        assert task is not None
+        task.claim(claimed_by="headless-reviewer")
 
         record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
 
@@ -492,44 +539,119 @@ class TestAContradictedChecksVerdictLatchesTheHead(TestCase):
         assert dispatch.state != AutoReviewDispatch.State.RESOLVED
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
 
-    def test_a_new_head_on_the_same_pr_still_arms_a_fresh_review(self) -> None:
-        # The safety valve. The latch binds ONE tree, never the pull request: a push must
-        # always earn a fresh review, or the fix silently suppresses legitimate reviews.
-        task, _ = _reviewing_task_via_dispatch()
+    def test_the_owner_is_paged_once_with_the_cause(self) -> None:
+        dispatch = _exhaust_dispatch()
+        task = dispatch.task
+        assert task is not None
+        task.claim(claimed_by="headless-reviewer")
+
         record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
-
-        rearmed = _enqueue(head_sha=_OTHER_HEAD)
-
-        assert rearmed is not None
-        assert rearmed.task is not None
-        assert rearmed.state == AutoReviewDispatch.State.DISPATCHED
-        assert Task.objects.filter(phase="reviewing").count() == 2
-
-    def test_two_refusals_at_one_head_page_the_owner_once(self) -> None:
-        task, dispatch = _reviewing_task_via_dispatch()
-        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
-        second = _second_reviewing_task_at_the_same_head(dispatch)
-
-        record_result_envelope(second, _contradiction_envelope(), phase="reviewing")
 
         questions = _pending_refusal_questions()
         assert len(questions) == 1, [question.dedupe_marker for question in questions]
         assert questions[0].dedupe_marker == f"review-refusal:{_SLUG}#{_PR_ID}@{_HEAD[:12]}"
         assert str(_PR_ID) in questions[0].question
 
-    def test_a_refusal_at_a_second_head_pages_separately(self) -> None:
-        # The marker is per head for the same reason the claim is: a different tree is a
-        # different fact, and folding it into the first head's page would hide it.
-        task, _ = _reviewing_task_via_dispatch()
+    def test_a_new_head_on_the_same_pr_still_arms_a_fresh_review(self) -> None:
+        # The safety valve. The latch binds ONE tree, never the pull request.
+        dispatch = _exhaust_dispatch()
+        task = dispatch.task
+        assert task is not None
+        task.claim(claimed_by="headless-reviewer")
         record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+        _expire_every_claim()  # the per-MR lock lapses on its own TTL, never on the refusal
+
         rearmed = _enqueue(head_sha=_OTHER_HEAD)
+
         assert rearmed is not None
-        assert rearmed.task is not None
-        rearmed.task.claim(claimed_by="headless-reviewer")
+        assert rearmed.state == AutoReviewDispatch.State.DISPATCHED
 
-        record_result_envelope(rearmed.task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
 
-        assert len(_pending_refusal_questions()) == 2
+class TestARefusalTouchesOnlyTheClaimThatArmedIt(TestCase):
+    """#4530 blocking 2: a refusal is RUN-scoped, so it may not reach the sibling claim.
+
+    Both tables claim per ``(slug, pr_id, head_sha)`` and 328 of 444 dispatch rows share a
+    head with a marker row, so "retire every claim on the head" was the common case, not the
+    corner. Retiring the sibling consumed a claim whose reviewer had not run and — on the
+    #68 ledger — freed the per-MR review lock that claim was holding, which is the #1405
+    race the lock exists to prevent. Only a RECORDED verdict, a fact about the tree, retires
+    both.
+    """
+
+    @staticmethod
+    def _marker_armed_task_beside_a_spent_dispatch() -> tuple[Task, AutoReviewDispatch]:
+        """A codex-path reviewing task at the same head as a #68 dispatch whose OWN budget is spent.
+
+        Both claims exhausted is the state that makes the reach-across observable. With the
+        sibling below its bound the exhaustion guard already refuses to touch it, so a test
+        built on a fresh dispatch passes whether or not the refusal is run-scoped — it
+        proves the guard, not the scoping. Here the sibling is equally latchable, and the
+        ONLY thing keeping this run's refusal off it is that the refusal belongs to the
+        marker. Its three reviewers died, which is a different fact from "the last reviewer
+        contradicted itself", and the ledger must keep saying so.
+        """
+        dispatch = _exhaust_dispatch()
+        assert dispatch.task is not None
+        _exhaust_marker()
+        ticket = dispatch.task.ticket
+        ticket.extra = {**(ticket.extra or {}), "reviewed_sha": _HEAD, "self_pr_review_variant": "claude:review"}
+        ticket.save(update_fields=["extra"])
+        session = Session.objects.create(ticket=ticket, agent_id="self-pr-reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.PENDING)
+        return task, dispatch
+
+    def test_a_codex_path_refusal_leaves_the_dispatch_claim_and_its_lock_alone(self) -> None:
+        task, dispatch = self._marker_armed_task_beside_a_spent_dispatch()
+        dispatch_task = dispatch.task
+        assert dispatch_task is not None
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state == CodexReviewMarker.State.REFUSED, "this run's own claim should latch"
+
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED, (
+            "a codex-path refusal relabelled the #68 claim, whose reviewers died for a "
+            "different reason than this run's refusal"
+        )
+        dispatch_task.refresh_from_db()
+        assert dispatch_task.status == Task.Status.PENDING
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED, (
+            "a codex-path refusal freed the review lock the #68 dispatch was holding"
+        )
+
+    def test_a_codex_path_refusal_leaves_the_dispatch_on_the_saturation_ledger(self) -> None:
+        # The consequence the operator actually sees: the #68 claim's cause is "three
+        # attempts ran out", and a refusal on another path must not overwrite it.
+        task, _ = self._marker_armed_task_beside_a_spent_dispatch()
+        _expire_every_claim()
+        assert AutoReviewDispatch.saturated().count() == 1
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        assert AutoReviewDispatch.saturated().count() == 1, (
+            "a codex-path refusal took the #68 claim off the doctor's saturation ledger"
+        )
+
+    def test_a_dispatch_path_refusal_leaves_the_marker_claim_alone(self) -> None:
+        # The mirror, so the rule is pinned in both directions rather than on one path.
+        # The marker is exhausted too, for the same reason as above: an unspent sibling is
+        # protected by the bound rather than by the scoping, so it proves the wrong thing.
+        dispatch = _exhaust_dispatch()
+        task = dispatch.task
+        assert task is not None
+        task.claim(claimed_by="headless-reviewer")
+        marker = _exhaust_marker()
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.REFUSED, "this run's own claim should latch"
+        marker.refresh_from_db()
+        assert marker.state == CodexReviewMarker.State.DISPATCHED, (
+            "a #68-path refusal relabelled the codex claim that belongs to a different run"
+        )
 
 
 class TestOnlyTheChecksContradictionLatches(TestCase):
@@ -629,50 +751,69 @@ def _reviewing_task_via_codex_marker(*, pr_id: int = _PR_ID, head_sha: str = _HE
     return task
 
 
+def _codex_task_at_its_last_attempt(*, pr_id: int = _PR_ID, head_sha: str = _HEAD) -> Task:
+    """The same codex-path task, with its claim driven to ``MAX_DISPATCH_ATTEMPTS``.
+
+    The latch is deliberately late (#4530), so a recorder test that wants to observe it has
+    to spend the budget first — which is itself the point: every attempt before the bound is
+    a retry the head is entitled to, and 6 of 9 such heads used one.
+    """
+    task = _reviewing_task_via_codex_marker(pr_id=pr_id, head_sha=head_sha)
+    _exhaust_marker(head_sha=head_sha, pr_id=pr_id)
+    return task
+
+
 def _expire_codex_claims(*, pr_id: int = _PR_ID) -> None:
     """Push every codex / self-PR claim for the PR past its deadline."""
     CodexReviewMarker.objects.filter(slug=_SLUG, pr_id=pr_id).update(deadline=timezone.now() - dt.timedelta(minutes=1))
 
 
 class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
-    """#4530: the twin claim carried most of the measured refusals, so it must latch too.
+    """#4530: the twin claim carried most of the measured refusals, so it latches too.
 
-    ``AutoReviewDispatch`` and ``CodexReviewMarker`` both claim the review path per
-    ``(slug, pr_id, head_sha)`` and both re-arm an un-verdicted head once the deadline
-    lapses. #4522 latched only the first, which left the path that armed the majority of
-    the contradiction refusals free to keep sending reviewers at the same red CI — up to
-    ``MAX_DISPATCH_ATTEMPTS`` whole review sessions per head. One shared list retires both.
+    Both tables claim per ``(slug, pr_id, head_sha)`` and both re-arm an un-verdicted head
+    once the deadline lapses; 11 of the 18 measured refusal runs were armed by THIS one, so
+    #4522's ledger-only latch was a no-op on the majority. It latches on the same terms as
+    its twin — at the bound, on its own row, freeing no lock.
     """
 
-    def test_a_refusal_latches_the_marker_and_no_later_claim_takes_the_same_head(self) -> None:
+    def test_a_refusal_with_budget_left_changes_nothing_on_this_path_either(self) -> None:
+        # The recovery path, pinned on the path that carried most of the refusals.
         task = _reviewing_task_via_codex_marker()
+
+        record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state == CodexReviewMarker.State.DISPATCHED
+        assert _pending_refusal_questions() == []
+        _expire_codex_claims()
+        assert CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) is not None
+
+    def test_a_refusal_at_the_bound_latches_the_marker_and_no_later_claim_takes_the_head(self) -> None:
+        task = _codex_task_at_its_last_attempt()
 
         attempt = record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
 
         assert "recording refused" in attempt.error
         assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
 
-        # Past the deadline the un-verdicted head is exactly what `claim` re-arms; the
-        # latch is the only thing left standing between it and another burned run. Asserted
-        # FIRST so a regression reads as "the head re-armed", not as a state mismatch.
+        # Asserted FIRST so a regression reads as "the head re-armed", not a state mismatch.
         _expire_codex_claims()
         assert CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD) is None, (
-            "the codex / self-PR claim re-armed a head whose verdict can never be recorded"
+            "the codex / self-PR claim re-armed a head whose budget was already spent"
         )
         marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
         assert marker.state == CodexReviewMarker.State.REFUSED
-        assert marker.attempts == 1
 
     def test_a_live_claim_at_another_head_survives_the_refusal(self) -> None:
         """The safety valve, and the reason the latch may never key on the PR.
 
         This path takes no per-MR lock, so a push landing mid-review claims the new head
-        while the old review is still running — two live claims, one pull request. When
-        the first reviewer comes back with a contradiction about the OLD tree, the new
+        while the old review is still running — two live claims, one pull request. The new
         tree has been told nothing about itself, and latching it would suppress the very
         review the push earned.
         """
-        task = _reviewing_task_via_codex_marker()
+        task = _codex_task_at_its_last_attempt()
         pushed = CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_OTHER_HEAD, variant="claude:review")
         assert pushed is not None
 
@@ -685,7 +826,7 @@ class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
 
     def test_a_new_head_after_a_refusal_arms_normally_on_this_path(self) -> None:
         # The other half of the valve: a push AFTER the latch mints a row of its own.
-        task = _reviewing_task_via_codex_marker()
+        task = _codex_task_at_its_last_attempt()
         record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
 
         rearmed = CodexReviewMarker.claim(slug=_SLUG, pr_id=_PR_ID, head_sha=_OTHER_HEAD, variant="claude:review")
@@ -697,7 +838,7 @@ class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
     def test_the_latch_is_not_recorded_as_a_verdict_covering_the_tree(self) -> None:
         # REFUSED, never RESOLVED: no verdict covers this head, and a consumer that read
         # the latch as "reviewed" would vouch for a tree nobody could vote on.
-        task = _reviewing_task_via_codex_marker()
+        task = _codex_task_at_its_last_attempt()
 
         record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
 
@@ -705,7 +846,7 @@ class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
         assert marker.state != CodexReviewMarker.State.RESOLVED
 
     def test_the_owner_is_paged_once_on_this_path_too(self) -> None:
-        task = _reviewing_task_via_codex_marker()
+        task = _codex_task_at_its_last_attempt()
 
         record_result_envelope(task, _contradiction_envelope(), phase="reviewing")
 
@@ -714,9 +855,9 @@ class TestTheCodexSelfPrPathLatchesTheSameWay(TestCase):
         assert questions[0].dedupe_marker == f"review-refusal:{_SLUG}#{_PR_ID}@{_HEAD[:12]}"
 
     def test_a_hold_on_red_checks_resolves_the_marker_rather_than_latching_it(self) -> None:
-        # The recordable shape the brief asks for: red checks reported as a HOLD are a
-        # complete review, so the claim retires RESOLVED and nobody is paged.
-        task = _reviewing_task_via_codex_marker()
+        # The recordable shape the brief asks for, and the outcome three of the six real
+        # recoveries actually took: red checks reported as a HOLD are a complete review.
+        task = _codex_task_at_its_last_attempt()
         envelope = _contradiction_envelope(
             verdict="hold",
             findings=[{"severity": "high", "summary": "required check `test (3.13)` is red"}],
