@@ -267,6 +267,11 @@ _NON_CONTENT_PARAMS = frozenset(
         # deliberately absent, so a labelling write still enumerates as content.
         "label",
         "updated_after",
+        # ``since`` is the READ-query time scope of ``list_merged_prs_since``, the same
+        # shape as ``updated_after``: it bounds WHICH rows come back and ferries no
+        # outbound colleague-visible text. Registering the method as a forge WRITE
+        # instead would be a false statement about what it does (#4515).
+        "since",
         # ``enrich`` shapes how much of a READ is fetched (``list_my_prs`` skipping the
         # per-PR CI lookup); a bool cannot ferry outbound text in either position.
         "enrich",

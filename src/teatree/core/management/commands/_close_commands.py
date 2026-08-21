@@ -138,6 +138,9 @@ class CloseCommands(TyperCommand):
             member_body=self._read(member_body),
         )
         Path(out).write_text(merged, encoding="utf-8")
+        # django-typer str()-es a handler's return onto stdout unless this is pinned, which
+        # would put a Python repr on the data channel beside the human line below.
+        self.print_result = False
         self.stdout.write(f"  folded {member_ref.strip()} into the host body -> {out}")
         return {"folded": True, "member_ref": member_ref.strip(), "out": out}
 
@@ -162,6 +165,7 @@ class CloseCommands(TyperCommand):
         if refusal:
             self.stdout.write(f"  {refusal}")
             raise SystemExit(1)
+        self.print_result = False
         self.stdout.write("  fold preserved: every line of the member's body is in the host body")
         return {"preserved": True}
 
