@@ -4,10 +4,11 @@ from pathlib import Path
 
 from django.conf import settings
 
-#: One runtime's handover entry. A deliberate alias, not a TypedDict: the value may
-#: come from ``settings.TEATREE_AGENT_HANDOVER`` (arbitrary operator input), which
-#: ``get_agent_handover_config`` normalises defensively -- so a TypedDict would promise
-#: a shape the runtime explicitly does not guarantee.
+#: One runtime's handover entry. A deliberate alias, not a TypedDict.
+#:
+#: The value may come from ``settings.TEATREE_AGENT_HANDOVER``  # skill-symbol-ref: a Django setting, not a symbol
+#: -- arbitrary operator input that ``get_agent_handover_config`` normalises
+#: defensively, so a TypedDict would promise a shape the runtime does not guarantee.
 type AgentHandoverEntry = dict[str, object]
 
 _DEFAULT_STATUSLINE_STATE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-controlled path, not user input
