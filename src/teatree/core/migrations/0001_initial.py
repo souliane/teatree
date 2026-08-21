@@ -234,7 +234,7 @@ _DEFAULT_LOOPS = (
         86400,
         None,
         None,
-        "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes.",
+        "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row is the switch (backlog_sweep_disabled ships open), gated by ask_before_backlog_sweep_closes.",
         False,
         False,
     ),

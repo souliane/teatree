@@ -1123,6 +1123,10 @@
           "name": "attachments"
         },
         {
+          "help": "Merge a member ticket's body into its host's, verbatim (#4344)",
+          "name": "fold"
+        },
+        {
           "help": "Durable per-ticket knowledge store (#627, repo-namespaced key #2293)",
           "name": "context"
         },
@@ -1173,6 +1177,10 @@
         {
           "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
           "name": "bulk-close"
+        },
+        {
+          "help": "Prove a host body still carries the folded member's substance (#4344)",
+          "name": "fold-check"
         },
         {
           "help": "Record the audited escape hatch for the cross-repo integration-review gate (PR-08)",
@@ -1335,6 +1343,10 @@
         {
           "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace",
           "name": "list-orphans"
+        },
+        {
+          "help": "Is this branch's work already on the default branch? The canonical answer (#4070)",
+          "name": "branch-verdict"
         },
         {
           "help": "Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207)",

@@ -108,6 +108,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
             ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
+            ("branch-verdict", "Is this branch's work already on the default branch? The canonical answer."),
             ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),
             (
                 "reclaim-disk",
@@ -360,6 +361,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
+            ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
+            ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),
             ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
             ("reconcile-overlay", "Backfill `overlay` for rows whose attribution disagrees with inference."),
             ("comment", "Post a comment to an issue or work item by its URL."),
