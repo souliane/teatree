@@ -62,9 +62,9 @@ variables:
     # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
     # runner actually execs (`_find_cli` returns the bundle first; this global install
     # is only the presence-gate). Matching it stops the two CLIs in one image from
-    # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
-    # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
-    - npm install -g @anthropic-ai/claude-code@2.1.220
+    # disagreeing. The DEPLOYED runtime is pinned independently, may LEAD this
+    # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
+    - npm install -g @anthropic-ai/claude-code@2.1.226
     - claude --version
   # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
   retry:
