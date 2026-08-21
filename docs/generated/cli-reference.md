@@ -10961,6 +10961,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              and/or overlay.                                 │
 │ bulk-close                   Close (ignore) a batch of tickets, gated by the │
 │                              no-bulk-close guard.                            │
+│ fold                         Merge a member ticket's body into its host's,   │
+│                              verbatim (#4344).                               │
+│ fold-check                   Prove a host body still carries the folded      │
+│                              member's substance (#4344).                     │
 │ sync-completions             Reconcile the ticket board against forge truth  │
 │                              and advance what has landed.                    │
 │ reconcile-overlay            Backfill `overlay` for rows whose attribution   │
@@ -11408,6 +11412,49 @@ Usage: t3 teatree ticket bulk-close [OPTIONS]
 │ --confirm        TEXT  Comma-separated per-item confirmation tokens (each an │
 │                        id).                                                  │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket fold`
+
+```
+Usage: t3 teatree ticket fold [OPTIONS]
+
+ Merge a member ticket's body into its host's, verbatim (#4344).
+
+ The sweep groups aggressively and closes nothing for real, so a member row is
+ retired only after this has moved its substance into an existing host. The
+ copy
+ is verbatim and idempotent per ``--member-ref``, which is what makes the
+ ``fold-check`` re-read afterwards a real proof rather than a formality.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --host-body           TEXT  Path to the host ticket's current body.          │
+│ --member-body         TEXT  Path to the folded member's body.                │
+│ --member-ref          TEXT  The member's ref, e.g. `#4247`.                  │
+│ --member-title        TEXT  The member's title.                              │
+│ --out                 TEXT  Where to write the merged host body.             │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket fold-check`
+
+```
+Usage: t3 teatree ticket fold-check [OPTIONS]
+
+ Prove a host body still carries the folded member's substance (#4344).
+
+ Run it against the host body re-read off the forge, before retiring the
+ member's
+ row: a host that summarised instead of moving the body fails here, so the
+ close
+ that would have discarded the idea never happens. Exits non-zero on a loss.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --host-body          TEXT  Path to the host body to prove.                   │
+│ --member-body        TEXT  Path to the folded member's body.                 │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
