@@ -10,6 +10,13 @@
 # ``uv lock --upgrade``, and if the lockfile changed it opens (or updates) a
 # PR against main so a human can review and merge the hash refresh.
 #
+# souliane/teatree#4437: it also CLASSIFIES what the resolve moved
+# (``scripts/ci/lock_delta.py``) and self-merges only a patch-only one. A minor,
+# a major, or a version the classifier cannot read withholds auto-merge and
+# routes the PR to a human — a boundary crossing is a framework migration, not a
+# hash refresh, and must not land unattended over a weekend. The same classifier
+# renders the PR body, so what the body claims is what the lockfile resolved.
+#
 # Cadence: Sunday 03:00 UTC — offset from the dependabot weekly window so the
 # lock refresh sees any constraint bumps that landed during the week.
 # Also triggerable on-demand via workflow_dispatch.
@@ -80,6 +87,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: "3.13"
+      # #4437: the resolve overwrites uv.lock in place, so the only chance to keep the
+      # pre-upgrade versions is before it runs — a copy taken afterwards compares the
+      # new lockfile with itself and reports that nothing moved.
+      - name: Capture the pre-upgrade lockfile
+        run: cp uv.lock "${RUNNER_TEMP}/uv.lock.before"
       - name: Upgrade the lockfile
         run: uv lock --upgrade
       - name: Check whether the lockfile changed
@@ -90,6 +102,14 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Classify what the resolve moved
+        id: delta
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          python scripts/ci/lock_delta.py \
+            --before "${RUNNER_TEMP}/uv.lock.before" \
+            --after uv.lock \
+            --body-out "${RUNNER_TEMP}/lock-refresh-body.md"
       - name: Open or update the lock-refresh PR
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -98,6 +118,10 @@ jobs:
           # `test (3.13)` check (GitHub suppresses workflow-triggered workflows),
           # so the bot PR could never go green and never merge (#3245).
           GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+          # #4437: the classifier's patch-only verdict. Empty (a skipped or failed
+          # classify step) reads as not-safe, so auto-merge is fail-closed by shape.
+          AUTO_MERGE: ${{ steps.delta.outputs.auto-merge }}
+          BODY_FILE: ${{ runner.temp }}/lock-refresh-body.md
         run: |
           set -euo pipefail
           # Fail LOUD, never silently open an un-mergeable PR: without a
@@ -107,27 +131,39 @@ jobs:
             echo "::error::TEATREE_GH_TOKEN is unset. The weekly uv.lock PR must be opened with a PAT that triggers the required 'test (3.13)' check — the default GITHUB_TOKEN does not, so the PR could never merge. Set the TEATREE_GH_TOKEN secret." >&2
             exit 1
           fi
-          BRANCH="chore/uv-lock-upgrade-$(date +%Y-%W)"
+          # #4437: reuse an already-open refresh PR's branch. A review-required resolve
+          # does not merge, and the same boundary is still there next Sunday, so a dated
+          # branch would stack one more identical PR every week until a human acted.
+          EXISTING="$(gh pr list --state open --limit 100 --json headRefName \
+            -q '[.[].headRefName | select(startswith("chore/uv-lock-upgrade"))][0] // empty')"
+          BRANCH="${EXISTING:-chore/uv-lock-upgrade-$(date +%Y-%W)}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git add uv.lock
           git commit -m "chore(deps): weekly uv.lock upgrade"
           git push --force-with-lease origin "$BRANCH"
-          # Open a PR if one does not already exist for this branch.
-          if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
-            PR_BODY="Automated weekly lockfile refresh via \`uv lock --upgrade\`.\n\nDependabot proposes per-package updates; it does not re-resolve the whole graph. This PR re-resolves every pin so transitive dependencies do not drift between the packages it happens to open a PR for.\n\nOpened with a PAT so CI runs; GitHub auto-merge is enabled so it self-merges once green (#3245)."
+          # The body states what the resolve MOVED. #4432 claimed a Django 6.1 update its
+          # own lockfile did not produce, so a body written once at creation and never
+          # refreshed is worse than none: a rerun force-pushes a different resolve under it.
+          if gh pr view "$BRANCH" --json number -q .number >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --body-file "$BODY_FILE"
+          else
             gh pr create \
               --title "chore(deps): weekly uv.lock upgrade" \
-              --body "$PR_BODY" \
+              --body-file "$BODY_FILE" \
               --base main \
               --label "dependencies"
           fi
-          # Self-merge once green with NO human step: enable GitHub-native
-          # auto-merge (squash) on the PR — the PAT-triggered required check
-          # gates it, so it merges the moment `test (3.13)` passes and never
-          # accumulates in the backlog (#3245). Best-effort: if the repo has not
-          # enabled auto-merge, warn (the PR still carries CI + the loop's
-          # same-repo trusted-merge path can land it) rather than fail the run.
-          gh pr merge "$BRANCH" --auto --squash --delete-branch \
-            || echo "::warning::Could not enable auto-merge on $BRANCH — enable 'Allow auto-merge' in the repo settings, or let the ship loop merge it once green."
+          # Self-merge once green ONLY when every move is patch-level inside its pinned
+          # series (#3245 wanted the backlog gone, not a framework migration landing over
+          # a weekend). Best-effort: if the repo has not enabled auto-merge, warn — the PR
+          # still carries CI and the loop's trusted-merge path can land it.
+          if [ "${AUTO_MERGE:-}" = "true" ]; then
+            gh pr merge "$BRANCH" --auto --squash --delete-branch \
+              || echo "::warning::Could not enable auto-merge on $BRANCH — enable 'Allow auto-merge' in the repo settings, or let the ship loop merge it once green."
+          else
+            echo "::warning::$BRANCH crosses a feature/major boundary (or carries a version the classifier could not read), so auto-merge is withheld — it needs a human. The PR body names what moved."
+            # The branch is reused, so clear an auto-merge a previous patch-only run armed.
+            gh pr merge "$BRANCH" --disable-auto || true
+          fi
