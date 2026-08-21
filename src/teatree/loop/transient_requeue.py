@@ -7,6 +7,15 @@ commit) lands FAILED and stays there forever — the crashed-session reclaim
 returned failure. This tick sweep reopens such a row (FAILED → PENDING) so the
 next dispatch resumes it.
 
+WHICH failures earn which treatment is not this sweep's call: it reads the one
+kind → strategy table in
+:data:`~teatree.core.modelkit.task_failure_taxonomy.RECOVERY` (souliane/teatree#4505).
+A ``RETRY`` kind is reopened, a ``CORRECTIVE_RETRY`` kind gets the bounded correction
+below, everything else escalates. Before that table the requeue decision was a second
+hand-maintained list keyed on error TEXT, which never consulted the classification: a
+kind could be named environmental and still never be retried, and ``harness_crash``
+was exactly that.
+
 The retry is HARD-BOUNDED by the #2009 repair-loop budget so it can never retry
 endlessly (it would always fail): a ticket-phase at its iteration cap, or stalled
 on two consecutive identical failures, is NOT reopened and is escalated LOUDLY
@@ -87,9 +96,9 @@ work unboundedly. The ``DeferredQuestion`` itself is deduped by a STABLE key —
 a stuck phase mints each redispatch cycle collapse to ONE open question instead of one
 per cycle (the observed 10-15x duplicate flood).
 
-Lives in ``teatree.loop`` (orchestration): it needs both the transient classifier
-(``teatree.agents``) and the ``Task`` model (``teatree.core.models``), which sit
-in the same ``domain`` layer and so cannot import each other — only an
+Lives in ``teatree.loop`` (orchestration): it needs both the envelope-refusal
+vocabulary (``teatree.agents``) and the ``Task`` model (``teatree.core.models``),
+which sit in the same ``domain`` layer and so cannot import each other — only an
 orchestration-layer module may compose both.
 """
 
@@ -103,7 +112,12 @@ from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.modelkit.task_failure_taxonomy import stall_fingerprints
+from teatree.core.modelkit.task_failure_taxonomy import (
+    RecoveryStrategy,
+    classify_failure,
+    recovery_strategy,
+    stall_fingerprints,
+)
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task_repair import phase_attempts
@@ -113,7 +127,7 @@ from teatree.core.repair_loop import (
     requeue_verdict,
     terminal_reason_fingerprint,
 )
-from teatree.failure_signatures import is_spawn_failure, is_transient_failure
+from teatree.failure_signatures import is_spawn_failure
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
 from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, dispose_without_reopen
@@ -177,7 +191,10 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
         # No recorded error → neither transient nor deterministic; must not freeze.
         _escalate_once(task, reason="failed with no recorded error")
         return 0
-    if is_transient_failure(error):
+    # The kind is re-derived rather than read off the attempt, so a row classified by an older
+    # build cannot route on a stale kind.
+    strategy = recovery_strategy(classify_failure(error))
+    if strategy is RecoveryStrategy.RETRY:
         halt = _budget_halt_reason(task)
         if halt is None:
             return _reopen(task)
@@ -185,7 +202,7 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
         return 0
     if (cause := recoverable_exhaustion_cause(error)) is not None and autorecovery:
         return _requeue_on_window_reset(task, cause, now=now)
-    return _handle_deterministic(task)
+    return _handle_deterministic(task, strategy)
 
 
 def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) -> int:
@@ -220,16 +237,26 @@ def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) ->
     return _reopen(task)
 
 
-def _handle_deterministic(task: Task) -> int:
-    """Self-repair, corrective-retry, or escalate a deterministic failure. Returns the reopen count."""
-    if (repaired := _self_repair_reopen(task)) is not None:
-        return repaired
+def _handle_deterministic(task: Task, strategy: RecoveryStrategy) -> int:
+    """Self-repair, corrective-retry, or escalate a non-retried failure. Returns the reopen count.
+
+    The table says whether a bounded correction MAY apply to this kind; the two correction seams
+    keep their own eligibility predicates (one valid resolution, one spent retry, the phase gate),
+    and a correction they decline still escalates rather than freezing.
+    """
+    correctable = strategy is RecoveryStrategy.CORRECTIVE_RETRY
+    if correctable:
+        repaired = _self_repair_reopen(task)
+        if repaired is not None:
+            return repaired
     halt = _budget_halt_reason(task)
     if halt is not None:
         _escalate_once(task, reason=halt)
         return 0
-    if (note := _corrective_note(task)) is not None:
-        return _corrective_reopen(task, note)
+    if correctable:
+        note = _corrective_note(task)
+        if note is not None:
+            return _corrective_reopen(task, note)
     _escalate_once(task, reason=_latest_error(task) or "deterministic failure")
     return 0
 
