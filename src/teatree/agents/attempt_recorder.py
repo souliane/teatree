@@ -29,7 +29,17 @@ from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, Re
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Task, TaskAttempt, Worktree
+from teatree.core.models import (
+    ChecksContradictionError,
+    DeferredQuestion,
+    Finding,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Task,
+    TaskAttempt,
+    Worktree,
+)
+from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.utils import git
@@ -368,8 +378,87 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             merge_result_retake=bool(envelope.get("merge_result_retake")),
         )
     except ReviewVerdictError as exc:
+        # The one refusal class a re-dispatch can never satisfy at this head is latched;
+        # every other one names something the next reviewer could get right, so it keeps
+        # the ordinary retry. The discrimination is the EXCEPTION TYPE — the raise site
+        # itself — never the message text a reword would detach this from.
+        if isinstance(exc, ChecksContradictionError):
+            _latch_checks_contradiction(target, task=task, reason=str(exc))
         return f"review verdict recording refused: {exc}"
     return _unpersisted_verdict_error(target)
+
+
+#: Prefix of the refusal question's dedupe marker, per head. Distinct from
+#: ``transient_requeue``'s ticket-agnostic ``repair-halt:`` marker on purpose: that one
+#: collapses every deterministic halt sharing a failure fingerprint into ONE question, so
+#: any other pull request contradicting its own checks would be silently folded into the
+#: first one's page. The head IS the subject here, and each one needs its own answer.
+_REFUSAL_MARKER_PREFIX = "review-refusal:"
+
+#: How much of the head the marker carries. ``dedupe_marker`` is a 64-char indexed
+#: column and the full 40-char SHA does not fit beside a slug, so the head is abbreviated
+#: rather than truncated off the end — an over-long slug must never cost the marker the
+#: one component that makes it per-head. Twelve hex chars is git's own long-abbreviation
+#: length, well past the collision floor for one repository.
+_REFUSAL_MARKER_HEAD_LEN = 12
+
+
+def _refusal_marker(target: ReviewTarget) -> str:
+    """The escalate-once key for a checks-contradiction refusal — one per reviewed head.
+
+    Bounded to the ``dedupe_marker`` column's own ``max_length`` read off the field, never
+    a hand-copied 64, and composed so the head survives the bound: the SLUG is what gives
+    way when there is not room for everything.
+    """
+    limit = DeferredQuestion._meta.get_field("dedupe_marker").max_length or 64  # noqa: SLF001 — Django's documented Model._meta API
+    tail = f"#{target.pr_id}@{target.head_sha.strip().lower()[:_REFUSAL_MARKER_HEAD_LEN]}"
+    room = max(limit - len(_REFUSAL_MARKER_PREFIX) - len(tail), 0)
+    return f"{_REFUSAL_MARKER_PREFIX}{target.slug.strip()[:room]}{tail}"
+
+
+def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str) -> None:
+    """Name the cause when this head's LAST retry is spent, and page once (#4522, #4530).
+
+    The refusal is correct and stays. What this adds is a distinction the operator could
+    not otherwise make: a claim that stops at ``refused`` says the last reviewer
+    contradicted its own checks report, where one that stops saturated says only that three
+    attempts ran out — which is also what three crashed reviewers look like.
+
+    Two deliberate narrowings, both from #4530:
+
+    ONE claim, not both. ``target.armed_by`` is the table that armed THIS run; a refusal is
+    run-scoped, so it may not touch the sibling claim on the same head. Walking both let a
+    codex-path refusal latch a dispatch claim whose reviewer had not run and free the review
+    lock it held.
+
+    ONLY at the bound. ``mark_refused`` no-ops below :data:`MAX_DISPATCH_ATTEMPTS`, so every
+    ordinary retry survives — which matters because 6 of the 9 heads that hit this refusal
+    recovered at that same head. The page follows the latch rather than the refusal: below
+    the bound there is nothing terminal to report, and a run holding no claim at all has
+    nothing re-arming it, so neither is worth waking the owner for.
+
+    A push mints a new head, which has no claim and no marker, and re-arms review normally.
+    """
+    latched = target.armed_by.mark_refused(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    if not latched:
+        return
+    DeferredQuestion.record(
+        _refusal_question(target, reason=reason),
+        session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+        dedupe_marker=_refusal_marker(target),
+    )
+
+
+def _refusal_question(target: ReviewTarget, *, reason: str) -> str:
+    """The owner-facing statement of a head that spent its last retry on a refused verdict."""
+    return (
+        f"[review-refusal {target.slug}#{target.pr_id}@{target.head_sha[:8]}] This head has used all "
+        f"{MAX_DISPATCH_ATTEMPTS} auto-review attempts, and the last one returned a merge_safe verdict "
+        f"over required checks the same reviewer reported RED, which cannot be recorded: {reason} "
+        f"Auto-review is done for this head — not because the tree is unreviewable, but because the "
+        f"retries are spent. A new push re-arms review by itself. Fix the red checks and push, land a "
+        f"human verdict, or close the PR?"
+    )
 
 
 def _returned_review_verdict(result: AgentResultBlob, *, phase: str) -> "ReviewVerdictEnvelope | None":

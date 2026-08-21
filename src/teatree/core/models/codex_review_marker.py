@@ -21,6 +21,26 @@ silent.
 :class:`~teatree.core.models.review_verdict.ReviewVerdict` lands for the head — the
 same event that spends the sibling per-head claim, because it means the head really
 was reviewed.
+
+``mark_refused`` is the OTHER terminal (#4522, #4530), and this table is where the re-arm
+was actually measured: of the 18 review runs that hit the checks-contradiction refusal on
+this deploy, 11 were armed by THIS claim. A reviewer returns ``merge_safe`` over required
+checks the same reviewer reported RED; recording is refused, nothing lands, the head keeps
+no verdict, and ``claim`` re-arms it once the ``deadline`` lapses.
+
+The latch fires only at :data:`MAX_DISPATCH_ATTEMPTS`, never on the first refusal. The
+refusal compares two fields of ONE envelope and so describes that reviewer, not the tree:
+6 of the 9 heads that ever hit it recorded a verdict at the SAME head afterwards, three of
+them a ``hold`` over checks that genuinely were red. Latching early buys back runs at the
+price of those recoveries. At the bound the claim is spent either way, so the latch costs
+nothing and adds the one thing saturation cannot say — WHY.
+
+Neither this terminal nor its twin frees an
+:class:`~teatree.core.models.mr_review_lock.MRReviewLock`. This path never takes one, and a
+refusal — which records nothing a merge can consume — must not free a lock some OTHER,
+still-running reviewer holds. A concluded ``ReviewVerdict`` releases it because a merge
+guard is about to consume that verdict and a held lock would block the merge it just
+authorised; a refusal authorises nothing, so taking the guard away would give nothing back.
 """
 
 import datetime as dt
@@ -29,7 +49,7 @@ from typing import ClassVar
 from django.db import models
 from django.utils import timezone
 
-from teatree.core.modelkit.expiring_claim import acquirable_q
+from teatree.core.modelkit.expiring_claim import acquirable_q, retire_head_claim
 from teatree.core.models.auto_review_dispatch import DEFAULT_DISPATCH_TTL, MAX_DISPATCH_ATTEMPTS
 
 
@@ -39,11 +59,15 @@ class CodexReviewMarker(models.Model):
     class State(models.TextChoices):
         DISPATCHED = "dispatched", "Dispatched"
         RESOLVED = "resolved", "Resolved"
+        REFUSED = "refused", "Refused"
 
     #: In-flight: acquirable again only once ``deadline`` has passed.
     _ACTIVE_STATES: ClassVar[frozenset[str]] = frozenset({State.DISPATCHED})
-    #: Empty on purpose — a RESOLVED per-head claim is terminal: a verdict already
-    #: covers that exact tree, so re-arming it would be review churn.
+    #: Empty on purpose — a terminal per-head claim stays terminal. RESOLVED means a
+    #: verdict already covers that exact tree, so re-arming it would be review churn;
+    #: REFUSED means a verdict for that exact tree is structurally unrecordable and a
+    #: human has been paged. Neither is re-armable, for opposite reasons, and both are
+    #: escaped the same way — by a new head (#4530).
     _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
 
     slug = models.CharField(max_length=128)
@@ -159,8 +183,34 @@ class CodexReviewMarker(models.Model):
         Returns ``True`` iff a row transitioned. Resolving an unclaimed head is a
         legitimate no-op — most verdicts conclude a review this table never armed.
         """
-        return bool(
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower())
-            .filter(state__in=cls._ACTIVE_STATES)
-            .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
+        return retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.RESOLVED,
+        )
+
+    @classmethod
+    def mark_refused(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        """Terminal for a head whose retry budget ran out on an unrecordable verdict.
+
+        Returns ``True`` iff a row transitioned. The twin of
+        :meth:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch.mark_refused`
+        and now byte-for-byte the same rule, which is the #4530 correction: neither frees a
+        per-MR lock, and each latches ONLY its own row, only at
+        :data:`MAX_DISPATCH_ATTEMPTS`. This table matters because it is what :meth:`claim`
+        re-acquires after the ``deadline`` on the codex / self-PR path — the path that armed
+        11 of the 18 measured refusal runs.
+
+        Below the bound this is a deliberate no-op: the refusal describes one reviewer's
+        self-contradictory envelope, not the tree, and the head recovers on a later attempt
+        more often than not. Refusing an unclaimed head is a no-op too, never an error.
+        """
+        return retire_head_claim(
+            cls.objects.filter(state__in=cls._ACTIVE_STATES, attempts__gte=MAX_DISPATCH_ATTEMPTS),
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            to_state=cls.State.REFUSED,
         )
