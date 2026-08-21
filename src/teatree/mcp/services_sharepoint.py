@@ -23,9 +23,9 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.core.backend_factory import sharepoint_client_from_overlay
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.types import ShareLinkVerification, SharePointEntry
 
 if TYPE_CHECKING:
-    from teatree.backends.sharepoint import ShareLinkVerification, SharePointEntry
     from teatree.core.backend_registry import SharePointReadClient
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -50,7 +50,7 @@ def _client() -> "SharePointReadClient":
     )
 
 
-async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list["SharePointEntry"]:
+async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list[SharePointEntry]:
     """Entries under *subpath* in the read-only SharePoint document library."""
     return await sync_to_async(lambda: _client().list_files(subpath, recursive=recursive), thread_sensitive=True)()
 
@@ -60,7 +60,7 @@ async def _sharepoint_cat(file_path: str) -> str:
     return await sync_to_async(lambda: _client().cat(file_path), thread_sensitive=True)()
 
 
-async def _sharepoint_verify_link(folder_path: str = "") -> "ShareLinkVerification":
+async def _sharepoint_verify_link(folder_path: str = "") -> ShareLinkVerification:
     """The stable ``?id=`` deep-link for *folder_path* plus whether it exists live."""
     return await sync_to_async(lambda: _client().verify_link(folder_path), thread_sensitive=True)()
 

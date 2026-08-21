@@ -25,7 +25,13 @@ from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.landing_verification import commits_ahead_or_unknown, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, ReviewVerdictEnvelope, check_evidence
+from teatree.agents.result_schema import (
+    RESULT_JSON_SCHEMA,
+    AgentResultBlob,
+    JSONSchema,
+    ReviewVerdictEnvelope,
+    check_evidence,
+)
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
@@ -114,7 +120,7 @@ def validate_result_keys(result: AgentResultBlob) -> str:
     ``record-attempt`` both land here. Only the ``additionalProperties: false``
     rule is enforced (no full JSON-Schema dependency).
     """
-    allowed = set(cast("dict[str, object]", RESULT_JSON_SCHEMA.get("properties", {})).keys())
+    allowed = set(cast("JSONSchema", RESULT_JSON_SCHEMA.get("properties", {})).keys())
     unexpected = set(result) - allowed
     if unexpected:
         return f"Agent result contains unexpected keys: {', '.join(sorted(unexpected))}"

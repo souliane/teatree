@@ -69,8 +69,12 @@ def _expected_clone_capable_files(min_lines: int) -> set[Path]:
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("npx") is None, reason="npx (node) not on PATH")
 class TestScanCoverage:
+    # pytest 9.1 deprecates a class-scoped fixture defined as an INSTANCE method;
+    # this one returns a value rather than setting instance state, so @classmethod
+    # is a faithful conversion.
     @pytest.fixture(scope="class")
-    def analyzed(self, tmp_path_factory: pytest.TempPathFactory) -> set[Path]:
+    @classmethod
+    def analyzed(cls, tmp_path_factory: pytest.TempPathFactory) -> set[Path]:
         out = tmp_path_factory.mktemp("jscpd")
         # jscpd's ``gitignore`` filter silently scans zero files when the source
         # is an ABSOLUTE path; a path relative to ``cwd`` is required. Report

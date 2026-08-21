@@ -4,8 +4,14 @@ from pathlib import Path
 
 from django.conf import settings
 
+#: One runtime's handover entry. A deliberate alias, not a TypedDict: the value may
+#: come from ``settings.TEATREE_AGENT_HANDOVER`` (arbitrary operator input), which
+#: ``get_agent_handover_config`` normalises defensively -- so a TypedDict would promise
+#: a shape the runtime explicitly does not guarantee.
+type AgentHandoverEntry = dict[str, object]
+
 _DEFAULT_STATUSLINE_STATE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-controlled path, not user input
-_DEFAULT_AGENT_HANDOVER: list[dict[str, object]] = [
+_DEFAULT_AGENT_HANDOVER: list[AgentHandoverEntry] = [
     {
         "runtime": "claude-code",
         "telemetry": {
@@ -24,19 +30,19 @@ def get_claude_statusline_state_dir(*, state_dir: Path | str | None = None) -> P
     return Path(configured)
 
 
-def get_agent_handover_config() -> list[dict[str, object]]:
+def get_agent_handover_config() -> list[AgentHandoverEntry]:
     configured = getattr(settings, "TEATREE_AGENT_HANDOVER", _DEFAULT_AGENT_HANDOVER)
     if not isinstance(configured, list):
         return deepcopy(_DEFAULT_AGENT_HANDOVER)
 
-    normalized: list[dict[str, object]] = []
+    normalized: list[AgentHandoverEntry] = []
     for item in configured:
         if not isinstance(item, dict):
             continue
         runtime = item.get("runtime")
         if not isinstance(runtime, str) or not runtime:
             continue
-        normalized_item: dict[str, object] = {"runtime": runtime}
+        normalized_item: AgentHandoverEntry = {"runtime": runtime}
         telemetry = item.get("telemetry")
         if isinstance(telemetry, dict):
             normalized_item["telemetry"] = dict(telemetry)
@@ -44,7 +50,7 @@ def get_agent_handover_config() -> list[dict[str, object]]:
     return normalized or deepcopy(_DEFAULT_AGENT_HANDOVER)
 
 
-def _get_runtime_policy(runtime: str) -> dict[str, object]:
+def _get_runtime_policy(runtime: str) -> AgentHandoverEntry:
     for item in get_agent_handover_config():
         if item.get("runtime") == runtime:
             return item
