@@ -404,9 +404,11 @@ class _Overlay(OverlayBase):
 class TestTicketCompletionIsolation(TestCase):
     """Sibling ticket still emits when processing the first ticket raises."""
 
-    def test_failing_first_ticket_does_not_suppress_second_ticket_completion(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_failing_first_ticket_does_not_suppress_second_ticket_completion(self) -> None:
         Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/1", state="shipped")
         Ticket.objects.create(overlay="acme", issue_url="https://x/shipped/2", state="shipped")
 
@@ -418,7 +420,7 @@ class TestTicketCompletionIsolation(TestCase):
                 msg = "simulated host lookup failure"
                 raise RuntimeError(msg)
             host = _FakeCodeHost()
-            monkeypatch.setattr(host, "get_issue", lambda issue_url: {"state": "closed"})
+            self._monkeypatch.setattr(host, "get_issue", lambda issue_url: {"state": "closed"})
             return host
 
         scanner = TicketCompletionScanner(overlay=_Overlay(), overlay_name="acme")
@@ -625,7 +627,11 @@ URL_SWEEP_B = "https://example.com/issues/sweep/2"
 class TestTaskSweepIsolation(TestCase):
     """Second task still produces a signal when _verify raises on the first."""
 
-    def test_failing_first_task_does_not_suppress_second_task_signal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_failing_first_task_does_not_suppress_second_task_signal(self) -> None:
         overlay = _TaskSweepOverlay()
         ticket_a = Ticket.objects.create(overlay="acme", issue_url=URL_SWEEP_A)
         ticket_b = Ticket.objects.create(overlay="acme", issue_url=URL_SWEEP_B)
@@ -647,7 +653,7 @@ class TestTaskSweepIsolation(TestCase):
             return original_verify(self_inner, task)
 
         host_b = _FakeCodeHost()
-        monkeypatch.setattr(host_b, "get_issue", lambda url: {"state": "closed"})
+        self._monkeypatch.setattr(host_b, "get_issue", lambda url: {"state": "closed"})
 
         with (
             patch.object(TaskSweepScanner, "_verify", _raising_verify),

@@ -255,6 +255,10 @@ class TestRequiredThirdPartyServices(TestCase):
 
 
 class TestOverlayConfig(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_toml_skips_reserved_keys(self) -> None:
         mock_config = MagicMock()
         mock_config.raw = {
@@ -372,13 +376,13 @@ class TestOverlayConfig(TestCase):
         with pytest.raises(ValidationError):
             config.gitlab_url = lambda: "https://example.test"  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
 
-    def test_callable_assigned_to_non_field_shadows_class_method(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_callable_assigned_to_non_field_shadows_class_method(self) -> None:
         # The legitimate idiom must still work: a callable assigned to a NON-field
         # name (a method / helper, not a declared field) lands in the instance
         # ``__dict__`` and shadows the class attribute exactly as normal Python
         # attribute resolution does.
         config = OverlayConfig()
-        monkeypatch.setattr(config, "get_review_channel", lambda: ("chan", "C123"))
+        self._monkeypatch.setattr(config, "get_review_channel", lambda: ("chan", "C123"))
         assert config.get_review_channel() == ("chan", "C123")
 
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:

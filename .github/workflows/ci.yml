@@ -200,7 +200,7 @@ jobs:
             docker build -f dev/Dockerfile.test --target lint -t "$IMAGE" .
           fi
       # Run prek from the image's locked venv (`uv run`) so the prek RUNNER
-      # version is exactly the one the lockfile pins (prek==0.3.13) — identical
+      # version is exactly the one the lockfile pins (prek==0.4.12) — identical
       # to the documented local gate, which also runs `uv run prek`
       # (dev/ci-parity.sh). This closes the runner-version gap that let a hook
       # pass locally and fail here (or the reverse); a lockfile bump moves local

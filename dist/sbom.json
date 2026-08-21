@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.128",
+      "description": "requirements line 38: claude-agent-sdk==0.2.134",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.128",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.134",
       "type": "library",
-      "version": "0.2.128"
+      "version": "0.2.134"
     },
     {
       "bom-ref": "requirements-L40",

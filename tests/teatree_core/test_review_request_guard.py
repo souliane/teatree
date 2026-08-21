@@ -383,6 +383,10 @@ def _overlay_with_channel() -> "CommandOverlay":
 
 
 class TestResolveGuardTarget(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def test_returns_none_when_no_overlay(self) -> None:
         from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
@@ -486,10 +490,10 @@ class TestResolveGuardTarget(TestCase):
         assert target is not None
         assert target.token == "xoxp-user"
 
-    def test_returns_none_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_none_when_no_token(self) -> None:
         overlay = _bare_overlay()
-        monkeypatch.setattr(overlay.config, "get_review_channel", lambda: (_CHANNEL_NAME, _CHANNEL_ID))
-        monkeypatch.setattr(overlay.config, "get_slack_token", lambda: "")
+        self._monkeypatch.setattr(overlay.config, "get_review_channel", lambda: (_CHANNEL_NAME, _CHANNEL_ID))
+        self._monkeypatch.setattr(overlay.config, "get_slack_token", lambda: "")
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
             patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),

@@ -41,7 +41,7 @@ class TestPostTestPlan(TestCase):
         leak gate (its own suite is ``test_post_test_plan_leak_scan.py``), so the
         probe is stubbed to a clean private pass — no subprocess, deterministic.
         """
-        monkeypatch.setattr("teatree.core.gates.privacy_gate._target_is_public", lambda *a, **kw: False)
+        self._monkeypatch.setattr("teatree.core.gates.privacy_gate._target_is_public", lambda *a, **kw: False)
 
     def test_delegates_to_code_host(self) -> None:
         """post-test-plan posts a PR comment via the code host."""
@@ -76,7 +76,7 @@ class TestSweep(TestCase):
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch
 
-    def test_returns_open_prs_for_authenticated_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_open_prs_for_authenticated_user(self) -> None:
         from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
 
         host = MagicMock()
@@ -100,7 +100,7 @@ class TestSweep(TestCase):
         overlay = CommandOverlay()
         # Per-instance config so we don't mutate the class-level default shared by other tests.
         overlay.config = OverlayConfig()
-        monkeypatch.setattr(overlay.config, "get_gitlab_username", lambda: "adrien")
+        self._monkeypatch.setattr(overlay.config, "get_gitlab_username", lambda: "adrien")
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}):
             result = cast("dict[str, object]", call_command("pr", "sweep"))

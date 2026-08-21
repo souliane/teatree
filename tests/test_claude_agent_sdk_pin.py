@@ -49,7 +49,7 @@ _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 
-_PINNED_VERSION = "0.2.128"
+_PINNED_VERSION = "0.2.134"
 _PACKAGE = "claude-agent-sdk"
 _SDK_MODULE = "claude_agent_sdk"
 

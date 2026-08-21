@@ -161,6 +161,10 @@ def _clear_overlay() -> Iterator[None]:
 
 
 class TestLifecycleProvision(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
     def setUp(self) -> None:
         super().setUp()
         mock_sp = MagicMock()
@@ -355,7 +359,7 @@ class TestLifecycleProvision(TestCase):
         assert wt1.db_name != wt2.db_name
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_password_reset_runs_automatically(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_password_reset_runs_automatically(self) -> None:
         """Verify worktree provision calls provisioning.reset_passwords_command and runs it."""
         wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
@@ -377,7 +381,7 @@ class TestLifecycleProvision(TestCase):
             reset_called = True
 
         original_overlay.provisioning = type(original_overlay.provisioning)()
-        monkeypatch.setattr(
+        self._monkeypatch.setattr(
             original_overlay.provisioning,
             "reset_passwords_command",
             lambda wt: ProvisionStep(name="reset-passwords", callable=_track_reset),
